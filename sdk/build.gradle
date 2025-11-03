@@ -1,0 +1,54 @@
+apply plugin: 'com.android.library'
+
+android {
+    compileSdk 36
+    namespace = "com.paxsz.module.pos"
+
+    defaultConfig {
+        minSdk 27
+        targetSdk 36
+        versionCode 1
+        versionName "1.0"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters.add("armeabi")
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}
+
+dependencies {
+//    api fileTree(include: ['*.jar'], dir: 'libs')
+//    api files('libs/NeptuneLiteApi_V3.12.00_20200331.jar')
+//    api files('libs/NeptuneLiteApi_V3.28.00_20220112.jar')
+    api files('libs/NeptuneLiteApi_V4.10.00_20241122.jar')
+    api files('libs/BaseLinkApi_V1.03.00_T_20190122.jar')
+    api files('libs/GLBaiFuTong_V1.00.00_20180119.jar')
+    api files('libs/GLComm_V1.09.00_20211230.jar')
+    api files('libs/GLExtPrinter_V1.01.01_20191225.jar')
+    api files('libs/GLImgProcessing_V1.03.00_T_20220121.jar')
+    api files('libs/GLPacker_V1.05.00_20211230.jar')
+    api files('libs/GLUtils_V1.01.00_T_20220121.jar')
+    // Comentado: AAR módulos no pueden depender de AARs locales directamente
+    // api files('libs/nativetouchevent-release.aar')
+    compileOnly files('libs/PosApi_V1.24_20200422.jar') // just for self test
+}

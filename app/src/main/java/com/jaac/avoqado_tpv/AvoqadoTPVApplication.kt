@@ -1,46 +1,102 @@
 package com.jaac.avoqado_tpv
 
 import android.app.Application
+import androidx.hilt.work.HiltWorkerFactory
+import androidx.work.Configuration
 import com.blumonpay.pax.utils.AppManager
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import timber.log.Timber
+import javax.inject.Inject
 
 /**
  * Application class principal para Avoqado TPV
  *
  * Responsabilidades:
  * - Inicialización de Hilt para inyección de dependencias
+ * - Configuración de WorkManager con Hilt (para HeartbeatWorker)
  * - Inicialización del SDK BlumonPay
- * - Configuración global de la aplicación
+ * - Configuración de Timber para logging
+ * - Optimización de startup (< 2 segundos)
  */
 @HiltAndroidApp
-class AvoqadoTPVApplication : Application() {
+class AvoqadoTPVApplication : Application(), Configuration.Provider {
+
+    // Application-wide coroutine scope
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    // Hilt-provided WorkerFactory for dependency injection in Workers
+    @Inject
+    lateinit var workerFactory: HiltWorkerFactory
 
     override fun onCreate() {
         super.onCreate()
 
-        // Inicializar SDK BlumonPay en background thread
-        initializeBlumonSDK()
-    }
+        // ✅ Initialize critical components only (startup optimization)
+        initializeTimber()
 
-    /**
-     * Inicializa el SDK de BlumonPay en un coroutine IO dispatcher
-     * Esto optimiza el startup de la app evitando bloquear el main thread
-     */
-    private fun initializeBlumonSDK() {
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                AppManager.init(this@AvoqadoTPVApplication)
-                android.util.Log.d(TAG, "SDK BlumonPay inicializado correctamente")
-            } catch (e: Exception) {
-                android.util.Log.e(TAG, "Error al inicializar SDK BlumonPay", e)
-            }
+        // ⚠️ Defer non-critical initialization to background
+        applicationScope.launch {
+            initializeNonCritical()
         }
     }
 
-    companion object {
-        private const val TAG = "AvoqadoTPVApp"
+    /**
+     * Provide WorkManager configuration with Hilt support
+     *
+     * This allows Workers to receive dependencies via @Inject constructor.
+     * Required for HeartbeatWorker to get DeviceInfoManager, NetworkMonitor, etc.
+     */
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder()
+            .setWorkerFactory(workerFactory)
+            .build()
+
+    /**
+     * Initialize Timber logging (DEBUG only)
+     */
+    private fun initializeTimber() {
+        if (BuildConfig.DEBUG) {
+            Timber.plant(Timber.DebugTree())
+            Timber.d("🚀 Avoqado TPV initialized in DEBUG mode")
+        }
+    }
+
+    /**
+     * Initialize non-critical components in background thread
+     * This prevents blocking the main thread during app startup
+     */
+    private suspend fun initializeNonCritical() = withContext(Dispatchers.IO) {
+        try {
+            // Initialize Blumon PAX SDK
+            AppManager.init(this@AvoqadoTPVApplication)
+            Timber.d("✅ Blumon PAX SDK initialized")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error initializing Blumon PAX SDK")
+        }
+    }
+
+    /**
+     * Cleanup resources on app termination
+     *
+     * ⚠️ Note: onTerminate() is NOT called on real devices (only in emulators for testing).
+     * For production cleanup, rely on:
+     * - ViewModel.onCleared() for scoped cleanup
+     * - Process death handling for app-wide cleanup
+     *
+     * This method exists for completeness and testing purposes.
+     */
+    override fun onTerminate() {
+        super.onTerminate()
+
+        // Cancel application-wide coroutine scope
+        applicationScope.cancel("Application terminating")
+
+        Timber.d("🛑 Application terminated")
     }
 }

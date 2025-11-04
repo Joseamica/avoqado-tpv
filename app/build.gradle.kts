@@ -1,7 +1,8 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
-    id("kotlin-kapt")
+    alias(libs.plugins.kotlin.compose)
+    id("com.google.devtools.ksp")  // KSP instead of kapt (2x faster) - version managed in root
     id("com.google.dagger.hilt.android")
 }
 
@@ -11,45 +12,88 @@ android {
 
     defaultConfig {
         applicationId = "com.jaac.avoqado_tpv"
-        minSdk = 27
-        targetSdk = 36
+        minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
+        targetSdk = 34
         versionCode = 1
-        versionName = "1.0"
+        versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        // ⚠️ CRITICAL: Blumon PAX SDK requires armeabi ONLY
         ndk {
+            abiFilters.clear()
             abiFilters.add("armeabi")
         }
+
+        // Environment variables (NEVER hardcode secrets in code)
+        buildConfigField("String", "API_BASE_URL", "\"https://api.avoqado.io/api/v1/\"")
+        buildConfigField("String", "API_BASE_URL_DEV", "\"https://humane-immortal-pika.ngrok-free.app/api/v1/\"")
+        buildConfigField("String", "SOCKET_URL", "\"https://api.avoqado.io\"")
+        buildConfigField("String", "SOCKET_URL_DEV", "\"https://humane-immortal-pika.ngrok-free.app\"")
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
         }
+        debug {
+            isMinifyEnabled = false
+        }
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     kotlinOptions {
-        jvmTarget = "11"
+        jvmTarget = "17"
     }
 
     buildFeatures {
-        viewBinding = true
+        compose = true
+        buildConfig = true  // Enable BuildConfig for environment variables
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.10"
     }
 
     packaging {
         jniLibs {
             useLegacyPackaging = true
         }
+    }
+
+    // ⚠️ LINT: Fail build on orphaned files and code quality issues
+    lint {
+        abortOnError = false  // Don't fail build on warnings (for now)
+        warningsAsErrors = false
+        checkReleaseBuilds = true
+        checkDependencies = false  // Skip checking library dependencies
+
+        // Orphaned files detection
+        checkGeneratedSources = false
+        disable += setOf(
+            "ObsoleteLintCustomCheck",
+            "GradleDependency",
+            "OldTargetApi",  // targetSdk 34 is fine
+            "Aligned16KB"    // Blumon SDK issue, not our code
+        )
+
+        // Treat UnusedResources as warning (will catch orphaned drawables/layouts/strings)
+        warning += setOf(
+            "UnusedResources"
+        )
+
+        // HTML report for detailed analysis
+        htmlReport = true
+        htmlOutput = layout.buildDirectory.file("reports/lint-results-debug.html").get().asFile
     }
 }
 
@@ -74,9 +118,47 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
+    // Jetpack Compose
+    val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
+    implementation(composeBom)
+    androidTestImplementation(composeBom)
+
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.0")
+    implementation("androidx.navigation:navigation-compose:2.8.5")
+    implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
+
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+
+    // Timber for logging
+    implementation("com.jakewharton.timber:timber:5.0.1")
+
     // Hilt Dependency Injection
     implementation("com.google.dagger:hilt-android:2.57")
-    kapt("com.google.dagger:hilt-compiler:2.57")
+    ksp("com.google.dagger:hilt-compiler:2.57")
+
+    // Networking (Retrofit + OkHttp)
+    implementation("com.squareup.retrofit2:retrofit:2.9.0")
+    implementation("com.squareup.retrofit2:converter-gson:2.9.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+
+    // Socket.IO (Real-time communication)
+    implementation("io.socket:socket.io-client:2.1.0")
+
+    // Security (EncryptedSharedPreferences)
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // WorkManager (Offline sync + Heartbeat)
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+    implementation("androidx.hilt:hilt-work:1.2.0")
+    ksp("androidx.hilt:hilt-compiler:1.2.0")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
@@ -91,13 +173,20 @@ dependencies {
     // Room (para gestión de transacciones local)
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
-    kapt("androidx.room:room-compiler:2.6.1")
+    ksp("androidx.room:room-compiler:2.6.1")
 
     // Testing
     testImplementation(libs.junit)
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.1")
     testImplementation("io.mockk:mockk:1.13.14")
+    testImplementation("app.cash.turbine:turbine:1.0.0")  // Flow testing
+    testImplementation("com.google.truth:truth:1.1.5")  // Assertions
+    testImplementation("org.robolectric:robolectric:4.11.1")  // Android testing in JVM
+    testImplementation("androidx.test:core:1.5.0")  // ApplicationProvider for testing
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("com.google.dagger:hilt-android-testing:2.57")
+    kspAndroidTest("com.google.dagger:hilt-compiler:2.57")
 }

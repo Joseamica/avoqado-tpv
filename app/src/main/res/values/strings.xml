@@ -1,3 +1,47 @@
 <resources>
     <string name="app_name">avoqado-tpv</string>
+
+    <!-- Payment Screen -->
+    <string name="payment_title">Procesar Pago</string>
+    <string name="payment_close">Cerrar</string>
+    <string name="payment_cancel">Cancelar</string>
+    <string name="payment_retry">Reintentar</string>
+    <string name="payment_new_payment">Nuevo Pago</string>
+    <string name="payment_process">Procesar Pago</string>
+
+    <!-- Amount Input -->
+    <string name="payment_amount_label">Monto de la Transacción</string>
+    <string name="payment_amount_hint">Ingrese el monto</string>
+
+    <!-- Payment States -->
+    <string name="payment_state_idle">Listo para procesar</string>
+    <string name="payment_state_idle_subtitle">Ingrese el monto y presione Procesar Pago</string>
+
+    <string name="payment_state_configuring">Configurando</string>
+    <string name="payment_state_configuring_subtitle">Preparando terminal</string>
+
+    <string name="payment_state_waiting_card">Esperando tarjeta</string>
+    <string name="payment_state_waiting_card_subtitle">Inserte, deslice o acerque su tarjeta</string>
+
+    <string name="payment_state_processing">Procesando</string>
+    <string name="payment_state_processing_card">Leyendo tarjeta %1$s</string>
+
+    <string name="payment_state_pin_required">PIN requerido</string>
+    <string name="payment_state_pin_required_subtitle">Por favor ingrese su PIN en el terminal</string>
+
+    <string name="payment_state_signature_required">Firma requerida</string>
+    <string name="payment_state_signature_required_subtitle">Por favor firme el comprobante</string>
+
+    <string name="payment_state_connecting">Conectando</string>
+    <string name="payment_state_connecting_subtitle">Autorizando transacción</string>
+
+    <!-- Success -->
+    <string name="payment_success_title">¡Pago aprobado!</string>
+    <string name="payment_auth_code">Código de autorización: %1$s</string>
+    <string name="payment_card_number">Tarjeta: %1$s</string>
+
+    <!-- Error -->
+    <string name="payment_error_title">Error en el pago</string>
+    <string name="payment_error_recoverable_hint">Puede reintentar la operación</string>
+    <string name="payment_error_not_recoverable_hint">Por favor contacte al soporte técnico</string>
 </resources>

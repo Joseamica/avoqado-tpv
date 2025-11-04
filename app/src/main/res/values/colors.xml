@@ -1,5 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- ========== Avoqado Dashboard Web Dark Theme ========== -->
+    <!-- Source: avoqado-web-dashboard/src/index.css (.dark theme) -->
+
+    <!-- Background & Surface (OKLCH → HEX) -->
+    <color name="dark_background">#1C1C1C</color>      <!-- oklch(0.145 0 0) - Main background -->
+    <color name="dark_foreground">#FAFAFA</color>      <!-- oklch(0.985 0 0) - Text on background -->
+    <color name="dark_card">#2A2A2A</color>            <!-- oklch(0.205 0 0) - Cards & elevated surfaces -->
+    <color name="dark_surface">#282828</color>         <!-- oklch(0.2 0 0) - Surface layer -->
+
+    <!-- Primary (Light gray for text/buttons in dark mode) -->
+    <color name="dark_primary">#E8E8E8</color>         <!-- oklch(0.922 0 0) -->
+    <color name="dark_on_primary">#2A2A2A</color>      <!-- oklch(0.205 0 0) -->
+
+    <!-- Secondary (Muted grays) -->
+    <color name="dark_secondary">#383838</color>       <!-- oklch(0.269 0 0) -->
+    <color name="dark_on_secondary">#FAFAFA</color>    <!-- oklch(0.985 0 0) -->
+
+    <!-- Tertiary (Avoqado Green for brand consistency) -->
+    <color name="avoqado_green">#10B981</color>        <!-- Green 500 -->
+    <color name="avoqado_green_light">#34D399</color>  <!-- Green 400 -->
+    <color name="avoqado_green_dark">#059669</color>   <!-- Green 600 -->
+
+    <!-- Error/Destructive (Soft red from dashboard) -->
+    <color name="dark_error">#EB5757</color>           <!-- oklch(0.704 0.191 22.216) -->
+    <color name="dark_on_error">#FAFAFA</color>        <!-- oklch(0.985 0 0) -->
+
+    <!-- Outline & Borders -->
+    <color name="dark_outline">#383838</color>         <!-- oklch(0.269 0 0) -->
+
+    <!-- ========== Legacy Colors (for compatibility) ========== -->
     <color name="purple_200">#FFBB86FC</color>
     <color name="purple_500">#FF6200EE</color>
     <color name="purple_700">#FF3700B3</color>

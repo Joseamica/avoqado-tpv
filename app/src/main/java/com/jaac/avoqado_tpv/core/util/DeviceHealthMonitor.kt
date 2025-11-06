@@ -6,6 +6,7 @@ import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Build
 import android.os.StatFs
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import timber.log.Timber
@@ -43,8 +44,6 @@ class DeviceHealthMonitor @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
 
-    private val startTime = System.currentTimeMillis()
-
     /**
      * Get comprehensive system health metrics
      */
@@ -57,8 +56,8 @@ class DeviceHealthMonitor @Inject constructor(
             batteryLevel = getBatteryLevel(),
             batteryCharging = isBatteryCharging(),
             storageAvailableGB = getStorageAvailableGB(),
-            memoryAvailableMB = getMemoryAvailableMB(),
-            uptime = System.currentTimeMillis() - startTime
+            memoryInfo = getMemoryInfo(),
+            uptime = SystemClock.elapsedRealtime()  // Tiempo desde que el dispositivo se encendió
         )
     }
 
@@ -142,18 +141,46 @@ class DeviceHealthMonitor @Inject constructor(
     }
 
     /**
+     * Get comprehensive memory information (total, used, free)
+     *
+     * Returns memory metrics for dashboard display.
+     * Backend expects: { total, used, free } in MB
+     */
+    private fun getMemoryInfo(): MemoryInfo {
+        return try {
+            val runtime = Runtime.getRuntime()
+            val maxMemory = runtime.maxMemory() / (1024 * 1024) // Total available to app (MB)
+            val allocatedMemory = runtime.totalMemory() / (1024 * 1024) // Currently allocated (MB)
+            val freeMemory = runtime.freeMemory() / (1024 * 1024) // Free within allocated (MB)
+
+            val totalMB = maxMemory
+            val usedMB = allocatedMemory - freeMemory
+            val freeMB = maxMemory - usedMB
+
+            MemoryInfo(
+                totalMB = totalMB,
+                usedMB = usedMB,
+                freeMB = freeMB
+            )
+        } catch (e: Exception) {
+            Timber.w(e, "Failed to get memory info")
+            MemoryInfo(totalMB = -1L, usedMB = -1L, freeMB = -1L)
+        }
+    }
+
+    /**
      * Check if device health is critical
      *
      * Critical conditions (Toast/Square pattern):
      * - Battery <10% and not charging
      * - Storage <1GB
-     * - Memory <100MB
+     * - Memory <100MB free
      */
     fun isCriticalHealth(): Boolean {
         val health = getSystemHealth()
         return (health.batteryLevel in 0..10 && !health.batteryCharging) ||
                (health.storageAvailableGB in 0f..1f) ||
-               (health.memoryAvailableMB in 0..100)
+               (health.memoryInfo.freeMB in 0..100)
     }
 
     /**
@@ -162,15 +189,27 @@ class DeviceHealthMonitor @Inject constructor(
      * Warning conditions:
      * - Battery <20% and not charging
      * - Storage <5GB
-     * - Memory <500MB
+     * - Memory <500MB free
      */
     fun isWarningHealth(): Boolean {
         val health = getSystemHealth()
         return (health.batteryLevel in 0..20 && !health.batteryCharging) ||
                (health.storageAvailableGB in 0f..5f) ||
-               (health.memoryAvailableMB in 0..500)
+               (health.memoryInfo.freeMB in 0..500)
     }
 }
+
+/**
+ * Memory information data class
+ *
+ * Represents memory metrics for system monitoring.
+ * All values in MB.
+ */
+data class MemoryInfo(
+    val totalMB: Long,  // Total memory available to app
+    val usedMB: Long,   // Currently used memory
+    val freeMB: Long    // Free memory
+)
 
 /**
  * System health metrics data class
@@ -185,8 +224,8 @@ data class SystemHealth(
     val batteryLevel: Int,             // 0-100 (-1 if unknown)
     val batteryCharging: Boolean,
     val storageAvailableGB: Float,     // Available storage in GB
-    val memoryAvailableMB: Long,       // Available memory in MB
-    val uptime: Long                   // Milliseconds since app start
+    val memoryInfo: MemoryInfo,        // Memory metrics (total, used, free)
+    val uptime: Long                   // Milliseconds since device boot (SystemClock.elapsedRealtime)
 ) {
     /**
      * Get human-readable health status
@@ -195,10 +234,10 @@ data class SystemHealth(
         return when {
             batteryLevel in 0..10 && !batteryCharging -> "CRITICAL: Battery low"
             storageAvailableGB in 0f..1f -> "CRITICAL: Storage low"
-            memoryAvailableMB in 0..100 -> "CRITICAL: Memory low"
+            memoryInfo.freeMB in 0..100 -> "CRITICAL: Memory low"
             batteryLevel in 0..20 && !batteryCharging -> "WARNING: Battery low"
             storageAvailableGB in 0f..5f -> "WARNING: Storage low"
-            memoryAvailableMB in 0..500 -> "WARNING: Memory low"
+            memoryInfo.freeMB in 0..500 -> "WARNING: Memory low"
             else -> "HEALTHY"
         }
     }

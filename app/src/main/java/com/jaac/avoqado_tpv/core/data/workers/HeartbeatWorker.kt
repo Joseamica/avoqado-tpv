@@ -104,7 +104,7 @@ class HeartbeatWorker @AssistedInject constructor(
             Timber.d("  Status: ${heartbeat.status}")
             Timber.d("  Battery: ${heartbeat.systemInfo.batteryLevel}% (charging: ${heartbeat.systemInfo.batteryCharging})")
             Timber.d("  Storage: ${heartbeat.systemInfo.storageAvailableGB} GB")
-            Timber.d("  Memory: ${heartbeat.systemInfo.memoryAvailableMB} MB")
+            Timber.d("  Memory: ${heartbeat.systemInfo.memoryInfo.usedMB}/${heartbeat.systemInfo.memoryInfo.totalMB} MB (${heartbeat.systemInfo.memoryInfo.freeMB} MB free)")
             Timber.d("  Network: ${heartbeat.networkInfo.type} (metered: ${heartbeat.networkInfo.isMetered})")
 
             // Send heartbeat to backend

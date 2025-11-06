@@ -50,10 +50,31 @@ data class HeartbeatRequestDto(
 )
 
 /**
+ * Memory Info DTO
+ *
+ * Detailed memory metrics for dashboard display.
+ * Matches frontend expectation: { total, used, free }
+ */
+data class MemoryDto(
+    @SerializedName("total")
+    val total: Long,  // Total memory in MB
+
+    @SerializedName("used")
+    val used: Long,   // Used memory in MB
+
+    @SerializedName("free")
+    val free: Long    // Free memory in MB
+)
+
+/**
  * System Info DTO
  *
  * Extended system information including device health + network metrics.
  * Backend stores this as JSON in Terminal.systemInfo field.
+ *
+ * **Changes:**
+ * - Memory now sends { total, used, free } instead of single memoryAvailableMB
+ * - Uptime is in SECONDS (not milliseconds) for frontend compatibility
  */
 data class SystemInfoDto(
     @SerializedName("platform")
@@ -77,11 +98,11 @@ data class SystemInfoDto(
     @SerializedName("storageAvailableGB")
     val storageAvailableGB: Float,
 
-    @SerializedName("memoryAvailableMB")
-    val memoryAvailableMB: Long,
+    @SerializedName("memory")
+    val memory: MemoryDto,  // Changed from memoryAvailableMB to full memory object
 
     @SerializedName("uptime")
-    val uptime: Long,
+    val uptime: Long,  // In SECONDS (converted from milliseconds)
 
     // Network metrics (extension)
     @SerializedName("networkType")
@@ -120,6 +141,10 @@ data class HeartbeatResponseDto(
 
 /**
  * Convert domain Heartbeat to DTO for API request
+ *
+ * **Transformations:**
+ * - Memory: Split into { total, used, free } object
+ * - Uptime: Convert from milliseconds to seconds for frontend
  */
 fun Heartbeat.toDto(): HeartbeatRequestDto {
     return HeartbeatRequestDto(
@@ -135,8 +160,12 @@ fun Heartbeat.toDto(): HeartbeatRequestDto {
             batteryLevel = systemInfo.batteryLevel,
             batteryCharging = systemInfo.batteryCharging,
             storageAvailableGB = systemInfo.storageAvailableGB,
-            memoryAvailableMB = systemInfo.memoryAvailableMB,
-            uptime = systemInfo.uptime,
+            memory = MemoryDto(
+                total = systemInfo.memoryInfo.totalMB,
+                used = systemInfo.memoryInfo.usedMB,
+                free = systemInfo.memoryInfo.freeMB
+            ),
+            uptime = systemInfo.uptime / 1000,  // Convert ms to seconds
             networkType = networkInfo.type.name,
             networkMetered = networkInfo.isMetered,
             networkConnected = networkInfo.isConnected,

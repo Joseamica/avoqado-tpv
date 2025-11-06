@@ -661,7 +661,24 @@ class PaymentViewModel @Inject constructor(
             if (ctlssResult.isLeft) {
                 val error = ctlssResult.leftValue()
                 Timber.e("❌ [CONTACTLESS PHASE 1] Contactless transaction failed: $error")
-                _state.value = PaymentState.Error("Error procesando pago contactless: $error")
+
+                // Translate SDK error to user-friendly message
+                val userMessage = when {
+                    error.toString().contains("ReadingContactlessFailure", ignoreCase = true) -> {
+                        "La tarjeta se retiró demasiado rápido.\n\nPor favor, mantenga la tarjeta sobre el lector hasta que aparezca el mensaje de confirmación."
+                    }
+                    error.toString().contains("Timeout", ignoreCase = true) -> {
+                        "Tiempo de espera agotado.\n\nPor favor, mantenga la tarjeta cerca del lector durante toda la transacción."
+                    }
+                    error.toString().contains("Collision", ignoreCase = true) -> {
+                        "Se detectaron múltiples tarjetas.\n\nPor favor, presente solo una tarjeta a la vez."
+                    }
+                    else -> {
+                        "Error leyendo tarjeta contactless.\n\nIntente nuevamente o inserte la tarjeta en el chip."
+                    }
+                }
+
+                _state.value = PaymentState.Error(userMessage)
                 return
             }
 

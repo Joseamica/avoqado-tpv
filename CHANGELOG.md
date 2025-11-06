@@ -2128,6 +2128,46 @@ class PaymentIntegrationTest {
 
 ## Recent Changes
 
+### [2025-11-05] - Multi-Merchant Support
+
+**Added:**
+- **Multi-Merchant Payment Routing** - Enable single terminal to route payments to different merchant accounts
+  - TerminalConfig.kt - Runtime serial management (app/src/main/java/com/jaac/avoqado_tpv/core/domain/TerminalConfig.kt)
+  - MerchantAccount.kt - Domain model with 2 sandbox accounts: 2841548417, 2841548418 (app/src/main/java/com/jaac/avoqado_tpv/features/payment/domain/model/MerchantAccount.kt)
+  - MultiMerchantSDKManager.kt - Atomic merchant switching with Mutex thread safety (app/src/main/java/com/jaac/avoqado_tpv/features/payment/data/MultiMerchantSDKManager.kt)
+  - MerchantRepository.kt + MerchantRepositoryImpl.kt - Data access layer (app/src/main/java/com/jaac/avoqado_tpv/features/payment/domain/repository/)
+  - GetMerchantsUseCase.kt - Business logic for merchant retrieval (app/src/main/java/com/jaac/avoqado_tpv/features/payment/domain/use_case/)
+  - RepositoryModule.kt - Hilt DI bindings (app/src/main/java/com/jaac/avoqado_tpv/core/di/RepositoryModule.kt)
+  - PaymentViewModel: Merchant selection StateFlows (PaymentViewModel.kt:96-408)
+  - PaymentScreen: 2-button merchant selector UI (PaymentScreen.kt:108-228)
+  - BLUMON_INTEGRATION_COMPLETE.md: Section 5.7 - Multi-Merchant Support documentation
+
+**Changed:**
+- InitializationManager.kt:135-184 - **Critical fix: Dynamic posId fetching from backend**
+  - Before: Hardcoded posId = "376" for all merchants
+  - After: Fetches posId dynamically (serial 2841548417 → posId 376, serial 2841548418 → posId 378)
+  - Added STEP 1.5: GetInitDataUseCase to fetch posId before InsertInitUseCase
+  - Fixes MomentumFailure for Account B payments
+- BlumonAuthManager.kt:58,114 - Replaced BuildConfig.TERMINAL_SERIAL with TerminalConfig.serialNumber (2 occurrences)
+- BlumonInitializer.kt:252,289,299,324,341,378 - Replaced BuildConfig.TERMINAL_SERIAL with TerminalConfig.serialNumber (6 occurrences)
+- PaymentViewModel.kt:96-408 - Added merchant management (merchants, currentMerchant, merchantSwitchingLoading, merchantSwitchMessage StateFlows)
+- PaymentScreen.kt:29-228 - Added merchant selector UI with loading overlay and success/error messages
+
+**Fixed:**
+- **Critical bug: Account B (serial 2841548418) payments failing with MomentumFailure**
+  - Root cause: Hardcoded posId "376" instead of backend-validated "378"
+  - Solution: Dynamic posId fetching in InitializationManager (STEP 1.5)
+  - Result: Both Account A and Account B now process payments successfully
+
+**Testing:**
+- Switch A→B: ✅ SUCCESS (5.7s - OAuth + DUKPT download)
+- Switch B→A: ✅ SUCCESS (4.5s - OAuth cached, faster)
+- Payment on Account A: ✅ SUCCESS (14 total transactions verified in Blumon portal)
+- Payment on Account B: ✅ SUCCESS (after posId fix, 1 transaction verified)
+- User feedback: "eres un genio! no puedo creer que lo lograste!"
+
+---
+
 ### [2025-01-30] - Major Updates
 
 **Added:**

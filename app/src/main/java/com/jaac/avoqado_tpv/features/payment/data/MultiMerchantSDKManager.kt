@@ -163,15 +163,47 @@ class MultiMerchantSDKManager @Inject constructor(
                     TerminalConfig.serialNumber = previousSerial
 
                     val error = initResult.exceptionOrNull()
-                    Timber.e(error, "   SDK init error details")
+                    Timber.e(error, "   ❌ [TECHNICAL] SDK init error details")  // Log technical details
 
-                    return@withLock Result.failure(
-                        Exception(
+                    // Translate technical error to user-friendly message
+                    val userMessage = when {
+                        error?.message?.contains("timeout", ignoreCase = true) == true ||
+                        error?.message?.contains("timed out", ignoreCase = true) == true -> {
+                            "El cambio de cuenta tardó demasiado.\n\n" +
+                            "Posibles causas:\n" +
+                            "• Conexión a internet lenta\n" +
+                            "• Servidor Blumon no disponible\n\n" +
+                            "Por favor, verifique su conexión e intente nuevamente."
+                        }
+                        error?.message?.contains("network", ignoreCase = true) == true ||
+                        error?.message?.contains("no connection", ignoreCase = true) == true ||
+                        error?.message?.contains("unreachable", ignoreCase = true) == true -> {
+                            "No se pudo conectar al servidor.\n\n" +
+                            "Posibles causas:\n" +
+                            "• Sin conexión a internet\n" +
+                            "• Servidor Blumon no disponible\n\n" +
+                            "Verifique su conexión a internet e intente nuevamente."
+                        }
+                        error?.message?.contains("unauthorized", ignoreCase = true) == true ||
+                        error?.message?.contains("authentication", ignoreCase = true) == true ||
+                        error?.message?.contains("oauth", ignoreCase = true) == true -> {
+                            "No se pudo autenticar con la cuenta '${targetAccount.displayName}'.\n\n" +
+                            "Posibles causas:\n" +
+                            "• Cuenta inactiva en servidor Blumon\n" +
+                            "• Credenciales incorrectas\n\n" +
+                            "Contacte a soporte técnico para verificar la cuenta."
+                        }
+                        else -> {
                             "No se pudo cambiar a la cuenta '${targetAccount.displayName}'.\n\n" +
-                            "Error: ${error?.message ?: "Error desconocido"}\n\n" +
+                            "Posibles causas:\n" +
+                            "• Sin conexión a internet\n" +
+                            "• Cuenta inactiva\n" +
+                            "• Problema con servidor Blumon\n\n" +
                             "Intente nuevamente o contacte soporte."
-                        )
-                    )
+                        }
+                    }
+
+                    return@withLock Result.failure(Exception(userMessage))
                 }
 
                 // Step 5: Update current merchant tracking
@@ -183,14 +215,29 @@ class MultiMerchantSDKManager @Inject constructor(
                 Result.success(Unit)
 
             } catch (e: Exception) {
-                Timber.e(e, "❌ [MultiMerchantSDKManager] Unexpected error during merchant switch")
-                Result.failure(
-                    Exception(
+                Timber.e(e, "❌ [TECHNICAL] Unexpected error during merchant switch")  // Log technical details
+
+                // Translate exception to user-friendly message
+                val userMessage = when {
+                    e is IllegalStateException -> {
+                        // Already handled above for inactive accounts
+                        e.message ?: "La cuenta seleccionada no está disponible."
+                    }
+                    e.message?.contains("mutex", ignoreCase = true) == true ||
+                    e.message?.contains("lock", ignoreCase = true) == true -> {
+                        "Ya hay un cambio de cuenta en progreso.\n\n" +
+                        "Por favor espere a que termine la operación actual."
+                    }
+                    else -> {
                         "Error inesperado al cambiar de cuenta.\n\n" +
-                        "Por favor intente nuevamente.\n\n" +
-                        "Error técnico: ${e.message}"
-                    )
-                )
+                        "Posibles soluciones:\n" +
+                        "• Cierre y vuelva a abrir la app\n" +
+                        "• Verifique su conexión a internet\n" +
+                        "• Contacte a soporte si el problema persiste"
+                    }
+                }
+
+                Result.failure(Exception(userMessage))
             }
         }
     }

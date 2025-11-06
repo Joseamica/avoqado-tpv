@@ -372,13 +372,21 @@ class PaymentViewModel @Inject constructor(
             try {
                 // Step 1: Show loading
                 _merchantSwitchingLoading.value = true
-                _merchantSwitchMessage.value = "Cambiando a ${account.displayName}..."
+                _merchantSwitchMessage.value = "Iniciando cambio a ${account.displayName}..."
                 Timber.d("🏪 [Merchants] Starting switch to: ${account.displayName}")
 
-                // Step 2: Switch merchant (3-5 seconds - OAuth + re-init)
+                // TODO: Future enhancement - Add progress callback from MultiMerchantSDKManager
+                // Could show: OAuth (33%) → DUKPT (66%) → Done (100%)
+                // For now, showing informative message
+
+                // Step 2: Show intermediate progress message
+                kotlinx.coroutines.delay(500)  // Brief delay for UI update
+                _merchantSwitchMessage.value = "Autenticando con Blumon (3-5 segundos)..."
+
+                // Step 3: Switch merchant (OAuth + DUKPT download + re-init)
                 val result = multiMerchantSDKManager.switchMerchant(account)
 
-                // Step 3: Handle result
+                // Step 4: Handle result
                 if (result.isSuccess) {
                     _currentMerchant.value = account
                     _merchantSwitchMessage.value = "✅ Ahora usando ${account.displayName}. Puede procesar pago."
@@ -387,13 +395,14 @@ class PaymentViewModel @Inject constructor(
                     Timber.i("   TerminalConfig.serialNumber: ${com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber}")
                 } else {
                     val error = result.exceptionOrNull()
+                    // Error message is already user-friendly from MultiMerchantSDKManager
                     _merchantSwitchMessage.value = "❌ ${error?.message ?: "Error desconocido al cambiar cuenta"}"
                     Timber.e(error, "❌ [Merchants] Failed to switch to: ${account.displayName}")
                 }
 
             } catch (e: Exception) {
-                Timber.e(e, "❌ [Merchants] Unexpected error during merchant switch")
-                _merchantSwitchMessage.value = "❌ Error inesperado: ${e.message}"
+                Timber.e(e, "❌ [TECHNICAL] Unexpected error during merchant switch")
+                _merchantSwitchMessage.value = "❌ Error inesperado al cambiar de cuenta.\n\nCierre y vuelva a abrir la app."
             } finally {
                 _merchantSwitchingLoading.value = false
             }

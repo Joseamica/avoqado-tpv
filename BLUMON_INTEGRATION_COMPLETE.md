@@ -765,6 +765,677 @@ sealed class PaymentState {
 
 ---
 
+### 7. **Multi-Merchant Support** (2025-11-05)
+
+**Problem Statement:**
+
+A single physical PAX A910S terminal needs to process payments to **different merchant accounts** dynamically. This is critical for multi-tenant scenarios where one terminal serves multiple businesses.
+
+**User Requirement:** "Necesito dirigir el pago a una u la otra cuenta desde el mismo terminal" (Route payments to different accounts from same terminal)
+
+**Business Context:** "El corazón del negocio" - Without this, the entire application is unusable for the target market.
+
+---
+
+#### 7.1 **Architecture Overview**
+
+The multi-merchant system enables runtime switching between Blumon merchant accounts by:
+1. **Replacing immutable BuildConfig** with runtime-mutable TerminalConfig
+2. **Re-initializing Blumon SDK** with new serial number (OAuth + DUKPT keys)
+3. **Fetching correct posId** from backend (critical for authorization)
+4. **Providing merchant selection UI** before payment
+
+**Key Constraint:** Blumon SDK identifies terminal by **serial number** (username for OAuth). Changing merchant = changing serial number = full SDK re-initialization.
+
+---
+
+#### 7.2 **TerminalConfig.kt** (Runtime Serial Management)
+
+**Location:** `/app/src/main/java/com/jaac/avoqado_tpv/core/domain/TerminalConfig.kt`
+
+**Purpose:** Replaces immutable BuildConfig with mutable runtime configuration
+
+```kotlin
+package com.jaac.avoqado_tpv.core.domain
+
+import com.jaac.avoqado_tpv.BuildConfig
+
+object TerminalConfig {
+    var serialNumber: String = BuildConfig.TERMINAL_SERIAL
+    var brand: String = BuildConfig.TERMINAL_BRAND
+    var model: String = BuildConfig.TERMINAL_MODEL
+
+    fun reset() {
+        serialNumber = BuildConfig.TERMINAL_SERIAL
+        brand = BuildConfig.TERMINAL_BRAND
+        model = BuildConfig.TERMINAL_MODEL
+    }
+
+    override fun toString(): String {
+        return "TerminalConfig(serial=$serialNumber, brand=$brand, model=$model)"
+    }
+}
+```
+
+**Why needed:**
+- `BuildConfig.TERMINAL_SERIAL` is **immutable** (Gradle-generated compile-time constant)
+- Cannot change serial number at runtime without TerminalConfig pattern
+- All SDK calls now use `TerminalConfig.serialNumber` instead of `BuildConfig.TERMINAL_SERIAL`
+
+**Replaced 14 references:**
+- InitializationManager.kt: 1 reference
+- BlumonAuthManager.kt: 2 references
+- BlumonInitializer.kt: 6 references
+- TerminalConfig.kt: 3 references (self-reference)
+- BLUMON_INTEGRATION_COMPLETE.md: 2 references (documentation)
+
+---
+
+#### 7.3 **MerchantAccount.kt** (Domain Model)
+
+**Location:** `/app/src/main/java/com/jaac/avoqado_tpv/features/payment/domain/model/MerchantAccount.kt`
+
+**Purpose:** Represents a merchant account with Blumon credentials
+
+```kotlin
+data class MerchantAccount(
+    val id: String,
+    val serialNumber: String,
+    val displayName: String,
+    val description: String? = null,
+    val environment: MerchantEnvironment = MerchantEnvironment.SANDBOX,
+    val isActive: Boolean = true
+)
+
+enum class MerchantEnvironment {
+    SANDBOX,
+    PRODUCTION
+}
+
+// Sandbox Test Accounts (provided by Blumon)
+companion object {
+    val SANDBOX_ACCOUNT_A = MerchantAccount(
+        id = "merchant_sandbox_a",
+        serialNumber = "2841548417",  // posId: 376
+        displayName = "Account A",
+        description = "Primary sandbox merchant account",
+        environment = MerchantEnvironment.SANDBOX
+    )
+
+    val SANDBOX_ACCOUNT_B = MerchantAccount(
+        id = "merchant_sandbox_b",
+        serialNumber = "2841548418",  // posId: 378
+        displayName = "Account B",
+        description = "Secondary sandbox merchant account",
+        environment = MerchantEnvironment.SANDBOX
+    )
+}
+```
+
+**Key Fields:**
+- `serialNumber` - Blumon terminal serial (used for OAuth username)
+- `displayName` - User-facing name (shown in UI)
+- `id` - Unique identifier (for backend tracking)
+- `environment` - SANDBOX vs PRODUCTION (future use)
+
+**Critical:** Each serial number has a **unique posId** assigned by Blumon backend. This mapping is **server-side only** and must be fetched dynamically.
+
+---
+
+#### 7.4 **MultiMerchantSDKManager.kt** (Orchestration Layer)
+
+**Location:** `/app/src/main/java/com/jaac/avoqado_tpv/features/payment/data/MultiMerchantSDKManager.kt`
+
+**Purpose:** Orchestrates atomic merchant switching with thread safety
+
+**Key Features:**
+1. **Mutex locking** - Prevents concurrent switches
+2. **Rollback on failure** - Restores previous serial if init fails
+3. **No-op detection** - Skips re-init if already on target merchant
+4. **Full SDK re-initialization** - OAuth + DUKPT keys downloaded
+
+```kotlin
+@Singleton
+class MultiMerchantSDKManager @Inject constructor(
+    private val initializationManager: InitializationManager
+) {
+    private val switchMutex = Mutex()
+    private var currentMerchant: MerchantAccount? = null
+
+    suspend fun switchMerchant(targetAccount: MerchantAccount): Result<Unit> {
+        return switchMutex.withLock {
+            try {
+                // No-op if already active
+                if (isMerchantActive(targetAccount)) {
+                    Timber.d("✅ Already on ${targetAccount.displayName}")
+                    return@withLock Result.success(Unit)
+                }
+
+                val previousSerial = TerminalConfig.serialNumber
+                Timber.i("🔄 Switching: $previousSerial → ${targetAccount.serialNumber}")
+
+                // Update runtime config
+                TerminalConfig.serialNumber = targetAccount.serialNumber
+
+                // Re-initialize SDK (OAuth + DUKPT keys)
+                val initResult = initializationManager.forceReinitialize()
+
+                if (initResult.isFailure) {
+                    // ROLLBACK: Restore previous serial
+                    TerminalConfig.serialNumber = previousSerial
+                    Timber.e("❌ Switch failed, rolled back to $previousSerial")
+                    return@withLock Result.failure(Exception("Failed to switch merchant"))
+                }
+
+                // Success - update current merchant
+                currentMerchant = targetAccount
+                Timber.i("✅ Switched to ${targetAccount.displayName} (${targetAccount.serialNumber})")
+                Result.success(Unit)
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ Unexpected error during merchant switch")
+                Result.failure(e)
+            }
+        }
+    }
+
+    fun isMerchantActive(account: MerchantAccount): Boolean {
+        return TerminalConfig.serialNumber == account.serialNumber
+    }
+
+    fun getCurrentMerchant(): MerchantAccount? = currentMerchant
+}
+```
+
+**Performance:**
+- First switch (cold start): **5-8 seconds** (OAuth + DUKPT download)
+- Subsequent switches: **3-5 seconds** (OAuth cached, only DUKPT re-download)
+
+**Thread Safety:** `Mutex` ensures only one switch can execute at a time. Prevents race conditions if user rapidly taps merchant buttons.
+
+---
+
+#### 7.5 **Critical Bug: Dynamic posId Fetching**
+
+**Problem Discovered (2025-11-05):**
+
+InitializationManager was using **hardcoded posId = "376"** for all merchants. This caused:
+- ✅ Account A (serial 2841548417) → posId 376 → **Payments worked**
+- ❌ Account B (serial 2841548418) → posId 378 → **MomentumFailure** (wrong posId sent to backend)
+
+**Root Cause:**
+```kotlin
+// ❌ WRONG - InitializationManager.kt:137 (before fix)
+val correctPosId = "376"  // Hardcoded!
+```
+
+**Why this is critical:**
+- Blumon backend validates `posId` during online authorization
+- Serial 2841548417 → posId 376 (correct)
+- Serial 2841548418 → posId 378 (different!)
+- Sending wrong posId → backend rejects transaction → MomentumFailure
+
+**Solution (STEP 1.5 - Dynamic Fetching):**
+
+**Location:** InitializationManager.kt:135-148
+
+```kotlin
+// ✅ CORRECT - Fetch posId from backend BEFORE InsertInitUseCase
+Timber.i("[INIT STEP 1.5] GetInitDataUseCase - Fetching backend posId...")
+val preInitDataParams = GetInitDataParams()
+val preInitDataResult = getInitDataUseCase.run(preInitDataParams)
+
+val correctPosId = if (preInitDataResult.isRight) {
+    val preInitData = preInitDataResult.rightValue().initData
+    Timber.i("   Backend returned posId: ${preInitData.posId} for serial: ${TerminalConfig.serialNumber}")
+    preInitData.posId  // ✅ DYNAMIC - fetched from backend!
+} else {
+    // Fallback only if backend unreachable
+    Timber.w("   ⚠️ Failed to get posId from backend, using fallback: 376")
+    "376"
+}
+```
+
+**Initialization Sequence (updated):**
+```
+STEP 1: InitializerUseCase (OAuth + DUKPT download)
+    ↓
+STEP 1.5: GetInitDataUseCase (fetch posId from backend)  ← NEW!
+    ↓
+STEP 2: InsertInitUseCase (force correct posId)
+    ↓
+STEP 3: GetInitDataUseCase (verification)
+    ↓
+STEP 4: Save timestamp
+```
+
+**Result:**
+- ✅ Account A: Serial 2841548417 → Backend returns posId 376 → Payments work
+- ✅ Account B: Serial 2841548418 → Backend returns posId 378 → Payments work
+- ✅ No more MomentumFailure errors
+- ✅ User feedback: "eres un genio! no puedo creer que lo lograste!"
+
+---
+
+#### 7.6 **PaymentViewModel Integration**
+
+**Location:** PaymentViewModel.kt:96-408
+
+**Added Dependencies:**
+```kotlin
+@HiltViewModel
+class PaymentViewModel @Inject constructor(
+    // Existing dependencies...
+
+    // 🏪 Multi-Merchant Support (NEW)
+    private val getMerchantsUseCase: GetMerchantsUseCase,
+    private val multiMerchantSDKManager: MultiMerchantSDKManager
+) : ViewModel()
+```
+
+**Added StateFlows:**
+```kotlin
+// Merchant list
+private val _merchants = MutableStateFlow<List<MerchantAccount>>(emptyList())
+val merchants: StateFlow<List<MerchantAccount>> = _merchants.asStateFlow()
+
+// Current active merchant
+private val _currentMerchant = MutableStateFlow<MerchantAccount?>(null)
+val currentMerchant: StateFlow<MerchantAccount?> = _currentMerchant.asStateFlow()
+
+// Loading state during switch
+private val _merchantSwitchingLoading = MutableStateFlow(false)
+val merchantSwitchingLoading: StateFlow<Boolean> = _merchantSwitchingLoading.asStateFlow()
+
+// Success/error message
+private val _merchantSwitchMessage = MutableStateFlow<String?>(null)
+val merchantSwitchMessage: StateFlow<String?> = _merchantSwitchMessage.asStateFlow()
+```
+
+**Merchant Selection Function:**
+```kotlin
+fun selectMerchant(account: MerchantAccount) {
+    viewModelScope.launch(Dispatchers.IO) {
+        _merchantSwitchingLoading.value = true
+        _merchantSwitchMessage.value = "Cambiando a ${account.displayName}..."
+
+        val result = multiMerchantSDKManager.switchMerchant(account)
+
+        if (result.isSuccess) {
+            _currentMerchant.value = account
+            _merchantSwitchMessage.value = "✅ Ahora usando ${account.displayName}"
+        } else {
+            _merchantSwitchMessage.value = "❌ No se pudo cambiar a ${account.displayName}"
+        }
+
+        _merchantSwitchingLoading.value = false
+
+        // Clear message after 3 seconds
+        delay(3000)
+        _merchantSwitchMessage.value = null
+    }
+}
+```
+
+**Load Merchants on Init:**
+```kotlin
+init {
+    // Load available merchants
+    viewModelScope.launch {
+        getMerchantsUseCase().collect { merchantList ->
+            _merchants.value = merchantList
+            // Set default to first merchant
+            if (_currentMerchant.value == null && merchantList.isNotEmpty()) {
+                _currentMerchant.value = merchantList.first()
+            }
+        }
+    }
+}
+```
+
+---
+
+#### 7.7 **PaymentScreen UI** (2-Button MVP)
+
+**Location:** PaymentScreen.kt:108-228
+
+**Merchant Selector Section:**
+```kotlin
+// ═══════════════════════════════════════════════════════
+// MERCHANT SELECTION (MVP: Simple 2-button layout)
+// ═══════════════════════════════════════════════════════
+Text(
+    text = "Seleccionar Cuenta",
+    style = MaterialTheme.typography.titleMedium,
+    color = MaterialTheme.colorScheme.onSurface
+)
+
+Spacer(modifier = Modifier.height(12.dp))
+
+// Display current merchant
+Text(
+    text = "Cuenta activa: ${currentMerchant?.displayName ?: \"Default (${TerminalConfig.serialNumber})\"}",
+    style = MaterialTheme.typography.bodyMedium,
+    color = MaterialTheme.colorScheme.onSurfaceVariant
+)
+
+Spacer(modifier = Modifier.height(16.dp))
+
+// 2-button layout: Account A | Account B
+Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.spacedBy(12.dp)
+) {
+    merchants.forEach { merchant ->
+        AvoqadoButton(
+            text = merchant.displayName,
+            onClick = { onSelectMerchant(merchant) },
+            enabled = !merchantSwitchingLoading,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+// Success/error message
+merchantSwitchMessage?.let { message ->
+    Spacer(modifier = Modifier.height(12.dp))
+    Text(
+        text = message,
+        style = MaterialTheme.typography.bodySmall,
+        color = if (message.startsWith("✅")) {
+            MaterialTheme.colorScheme.primary
+        } else {
+            MaterialTheme.colorScheme.error
+        },
+        textAlign = TextAlign.Center,
+        modifier = Modifier.fillMaxWidth()
+    )
+}
+```
+
+**Loading Overlay:**
+```kotlin
+// Loading overlay during merchant switch
+if (merchantSwitchingLoading) {
+    AvoqadoLoadingOverlay(
+        message = merchantSwitchMessage ?: "Cambiando cuenta..."
+    )
+}
+```
+
+**UI Flow:**
+1. User sees 2 buttons: "Account A" | "Account B"
+2. Current active merchant displayed above buttons
+3. User taps button → Loading overlay appears
+4. Switch completes → Success message shown for 3 seconds
+5. User enters amount and proceeds with payment
+
+---
+
+#### 7.8 **Testing Results**
+
+**Test Environment:**
+- Device: PAX A910S (1280x720 dp)
+- SDK: Blumon PAX SDK 1.0 (debug build)
+- Environment: SANDBOX
+- Date: 2025-11-05
+
+**Test Cases:**
+
+| Test | Action | Duration | Result | Notes |
+|------|--------|----------|--------|-------|
+| **Switch A→B** | Tap "Account B" while on A | 5.7s | ✅ SUCCESS | OAuth + DUKPT download |
+| **Switch B→A** | Tap "Account A" while on B | 4.5s | ✅ SUCCESS | OAuth cached, faster |
+| **No-op A→A** | Tap "Account A" while on A | <0.1s | ✅ SUCCESS | Skipped re-init (already active) |
+| **Payment on A** | Process payment with Account A | 2.1s | ✅ SUCCESS | Auth code received |
+| **Payment on B (before fix)** | Process payment with Account B | - | ❌ FAILURE | MomentumFailure (wrong posId) |
+| **Payment on B (after fix)** | Process payment with Account B | 2.3s | ✅ SUCCESS | posId 378 fetched dynamically |
+
+**Portal Verification (Blumon Sandbox):**
+- Serial 2841548417: **14 successful transactions**
+- Serial 2841548418: **1 successful transaction** (after posId fix)
+
+**User Feedback:**
+> "eres un genio! no puedo creer que lo lograste! si fue exitoso!"
+
+---
+
+#### 7.9 **Merchant Switch Sequence Diagram**
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                     Merchant Switch Flow                           │
+└────────────────────────────────────────────────────────────────────┘
+
+   USER              PaymentScreen        PaymentViewModel      MultiMerchantSDKManager      InitializationManager      Backend
+    │                      │                      │                       │                           │                    │
+    │  1. Tap "Account B"  │                      │                       │                           │                    │
+    │─────────────────────▶│                      │                       │                           │                    │
+    │                      │  2. selectMerchant() │                       │                           │                    │
+    │                      │─────────────────────▶│                       │                           │                    │
+    │                      │                      │  3. switchMerchant()  │                           │                    │
+    │                      │                      │──────────────────────▶│                           │                    │
+    │                      │                      │                       │  4. Acquire Mutex         │                    │
+    │                      │                      │                       │  5. Check if active       │                    │
+    │                      │                      │                       │  6. Update TerminalConfig │                    │
+    │                      │                      │                       │     (2841548417→2841548418)                    │
+    │                      │                      │                       │  7. forceReinitialize()   │                    │
+    │                      │                      │                       │──────────────────────────▶│                    │
+    │                      │                      │                       │                           │  8. STEP 1         │
+    │                      │                      │                       │                           │  InitializerUseCase│
+    │                      │                      │                       │                           │  (OAuth + DUKPT)   │
+    │                      │                      │                       │                           │  9. STEP 1.5       │
+    │                      │                      │                       │                           │  GetInitDataUseCase│
+    │                      │                      │                       │                           │───────────────────▶│
+    │                      │                      │                       │                           │◀───────────────────│
+    │                      │                      │                       │                           │ { posId: "378" }   │
+    │                      │                      │                       │                           │ 10. STEP 2         │
+    │                      │                      │                       │                           │ InsertInitUseCase  │
+    │                      │                      │                       │                           │ (force posId 378)  │
+    │                      │                      │                       │◀──────────────────────────│ 11. Result.success │
+    │                      │                      │◀──────────────────────│ Result.success            │                    │
+    │                      │◀─────────────────────│ State.Success         │                           │                    │
+    │  12. "✅ Ahora       │                      │                       │                           │                    │
+    │   usando Account B"  │                      │                       │                           │                    │
+    │◀─────────────────────│                      │                       │                           │                    │
+```
+
+**Duration Breakdown:**
+- Step 4-6 (Mutex + Config): <0.1s
+- Step 7-11 (SDK Re-init): 3-5s
+  - OAuth: 1.5-2s (or 0s if cached)
+  - DUKPT download: 1.5-2s
+  - posId fetch: 0.5-1s
+- Step 12 (UI Update): <0.1s
+
+**Total:** 3-5 seconds per switch
+
+---
+
+#### 7.10 **Repository Layer** (Data Access)
+
+**MerchantRepository.kt** (Interface):
+```kotlin
+interface MerchantRepository {
+    fun getMerchants(): Flow<List<MerchantAccount>>
+}
+```
+
+**MerchantRepositoryImpl.kt** (Implementation):
+```kotlin
+@Singleton
+class MerchantRepositoryImpl @Inject constructor() : MerchantRepository {
+    override fun getMerchants(): Flow<List<MerchantAccount>> = flow {
+        // TODO: Fetch from backend API: GET /api/v1/tpv/merchants?terminalId={deviceId}
+        // For now, return hardcoded sandbox accounts
+        emit(
+            listOf(
+                MerchantAccount.SANDBOX_ACCOUNT_A,
+                MerchantAccount.SANDBOX_ACCOUNT_B
+            )
+        )
+    }
+}
+```
+
+**GetMerchantsUseCase.kt** (Business Logic):
+```kotlin
+@Singleton
+class GetMerchantsUseCase @Inject constructor(
+    private val merchantRepository: MerchantRepository
+) {
+    operator fun invoke(): Flow<List<MerchantAccount>> {
+        return merchantRepository.getMerchants()
+    }
+}
+```
+
+**RepositoryModule.kt** (Hilt DI):
+```kotlin
+@Module
+@InstallIn(SingletonComponent::class)
+abstract class RepositoryModule {
+
+    @Binds
+    @Singleton
+    abstract fun bindMerchantRepository(
+        impl: MerchantRepositoryImpl
+    ): MerchantRepository
+}
+```
+
+**Future Backend Integration:**
+```typescript
+// avoqado-server: GET /api/v1/tpv/merchants?terminalId=device-123
+{
+  "merchants": [
+    {
+      "id": "merchant_a",
+      "serialNumber": "2841548417",
+      "displayName": "Operativa",
+      "environment": "SANDBOX",
+      "isActive": true
+    },
+    {
+      "id": "merchant_b",
+      "serialNumber": "2841548418",
+      "displayName": "Delivery",
+      "environment": "SANDBOX",
+      "isActive": true
+    }
+  ]
+}
+```
+
+---
+
+#### 7.11 **Security Considerations**
+
+**1. Serial Number Protection:**
+- Serial numbers are **not secrets** (visible on device, used for OAuth username)
+- However, do NOT log serial numbers in production builds (prevents tracking)
+
+**2. Mutex Thread Safety:**
+- Prevents race conditions if user rapidly taps merchant buttons
+- Ensures only one switch can execute at a time
+
+**3. Rollback on Failure:**
+- If SDK re-init fails, previous serial number is restored
+- Prevents terminal from being left in broken state
+
+**4. Audit Logging (Future):**
+```kotlin
+// Log merchant switches to backend for security monitoring
+POST /api/v1/tpv/audit-log
+{
+  "eventType": "MERCHANT_SWITCH",
+  "userId": "user-123",
+  "terminalId": "2841548417",
+  "fromSerial": "2841548417",
+  "toSerial": "2841548418",
+  "timestamp": "2025-11-05T10:30:00Z",
+  "success": true
+}
+```
+
+---
+
+#### 7.12 **Known Limitations**
+
+**1. No Backend API Yet:**
+- Currently using hardcoded `MerchantAccount.SANDBOX_ACCOUNT_A` and `_B`
+- Backend endpoint `GET /api/v1/tpv/merchants` does not exist yet
+- Future: Fetch merchant list from backend based on device ID
+
+**2. No Confirmation Dialog:**
+- User can switch merchants without warning
+- Should show confirmation: "¿Cambiar a Account B?" with "Cancelar" | "Confirmar"
+- Future: Add `MerchantSwitchConfirmationDialog.kt`
+
+**3. No Progress Indicator:**
+- Loading overlay shows static "Cambiando cuenta..." message
+- Should show progress: OAuth (33%) → DUKPT (66%) → Done (100%)
+- Future: Update `AvoqadoLoadingOverlay` to accept progress percentage
+
+**4. No Analytics:**
+- No tracking of merchant switches (duration, success rate, user patterns)
+- Future: Add `AnalyticsManager.kt` with events:
+  - `merchant_switch_started`
+  - `merchant_switch_completed`
+  - `merchant_switch_failed`
+
+**5. No Production Testing:**
+- Only tested in SANDBOX environment with 2 test accounts
+- Production environment may have different behavior
+- Requires testing with real merchant accounts
+
+---
+
+#### 7.13 **Future Enhancements**
+
+**1. Material 3 Cards UI (Planned - Step 6):**
+Replace buttons with cards showing:
+- Bank icon
+- Merchant name
+- Serial number
+- Checkmark if active
+- Ripple effect on tap
+
+**2. Confirmation Dialog (Planned - Step 6):**
+Show before switching:
+- Warning about active transactions
+- "Cancelar" | "Confirmar" buttons
+
+**3. Progress Tracking (Planned - Step 6):**
+Show progress during switch:
+- 0% - Iniciando cambio...
+- 33% - Autenticación OAuth...
+- 66% - Descargando claves DUKPT...
+- 100% - Cuenta cambiada ✓
+
+**4. Analytics (Planned - Step 7):**
+Track merchant switch metrics:
+- Duration
+- Success/failure rate
+- User patterns
+- Most-used merchant
+
+**5. Audit Logging (Planned - Step 8):**
+Log all merchant switches to backend:
+- User ID
+- Terminal ID
+- From/to serial numbers
+- Timestamp
+- Success/failure
+
+**6. Backend API Integration (Planned - Step 5):**
+Replace hardcoded accounts with API:
+```
+GET /api/v1/tpv/merchants?terminalId={deviceId}
+```
+
+---
+
 ## SDK INITIALIZATION
 
 ### Initialization Flow (PaymentViewModel.kt:172-178)

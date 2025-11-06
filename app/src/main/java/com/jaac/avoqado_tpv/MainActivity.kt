@@ -1,8 +1,13 @@
 package com.jaac.avoqado_tpv
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.presentation.navigation.AppNavigation
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
@@ -41,8 +46,27 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var secureStorage: SecureStorage
 
+    /**
+     * Launcher for READ_PHONE_STATE permission request
+     *
+     * This permission is required on Android 8+ to access Build.getSerial() for hardware serial.
+     * If denied, the app gracefully falls back to ANDROID_ID.
+     */
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            Timber.i("✅ READ_PHONE_STATE permission granted - hardware serial will be used")
+        } else {
+            Timber.w("⚠️ READ_PHONE_STATE permission denied - falling back to ANDROID_ID")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Request READ_PHONE_STATE permission if needed (Android 8+)
+        requestPhoneStatePermissionIfNeeded()
 
         setContent {
             AvoqadoTheme {
@@ -56,6 +80,43 @@ class MainActivity : ComponentActivity() {
         // ✅ Square/Toast Pattern: Start heartbeat if terminal is activated
         // This runs BEFORE user logs in, enabling health monitoring
         startHeartbeatIfActivated()
+    }
+
+    /**
+     * Request READ_PHONE_STATE permission if needed (Android 8+)
+     *
+     * **Why this permission:**
+     * - Required for Build.getSerial() to access hardware serial number
+     * - Hardware serial persists forever (unlike ANDROID_ID which changes on reinstall)
+     * - Professional POS systems (Square, Toast, Clover) use hardware serial for terminal identification
+     *
+     * **Graceful degradation:**
+     * - If permission granted: Uses hardware serial (AVQD-2841548417)
+     * - If permission denied: Falls back to ANDROID_ID (AVQD-6D52CB5103BB42DC)
+     *
+     * **User experience:**
+     * - Permission requested silently on app launch
+     * - No blocking dialog for critical functionality
+     * - App works with or without permission
+     */
+    private fun requestPhoneStatePermissionIfNeeded() {
+        // Only request on Android 8+ (API 26+) where Build.getSerial() requires permission
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            when {
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.READ_PHONE_STATE
+                ) == PackageManager.PERMISSION_GRANTED -> {
+                    Timber.d("✅ READ_PHONE_STATE permission already granted")
+                }
+                else -> {
+                    Timber.d("📱 Requesting READ_PHONE_STATE permission for hardware serial")
+                    requestPermissionLauncher.launch(Manifest.permission.READ_PHONE_STATE)
+                }
+            }
+        } else {
+            Timber.d("📱 Android 7 or below - Build.SERIAL does not require permission")
+        }
     }
 
     /**

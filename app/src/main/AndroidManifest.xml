@@ -6,6 +6,12 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- Device Identification Permission -->
+    <!-- Required for Build.getSerial() on Android 8+ to obtain hardware serial number -->
+    <!-- Hardware serial persists across app reinstalls, unlike ANDROID_ID -->
+    <!-- Professional POS systems (Square, Toast, Clover) use hardware serial for terminal identification -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+
     <application
         android:name=".AvoqadoTPVApplication"
         android:allowBackup="true"

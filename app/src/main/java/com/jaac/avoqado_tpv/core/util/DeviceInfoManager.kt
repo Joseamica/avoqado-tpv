@@ -5,6 +5,7 @@ import android.os.Build
 import android.provider.Settings
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import dagger.hilt.android.qualifiers.ApplicationContext
+import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -17,13 +18,14 @@ import javax.inject.Singleton
  * Usage:
  * ```kotlin
  * val deviceInfo = deviceInfoManager.getDeviceInfo()
- * val serialNumber = deviceInfo.serialNumber // e.g., "AVQD-1A2B3C4D5E6F"
+ * val serialNumber = deviceInfo.serialNumber // e.g., "AVQD-2841548417"
  * ```
  *
  * Security Note:
- * - ANDROID_ID is unique per app installation and persists across app updates
- * - It changes on factory reset or when the app is uninstalled/reinstalled
- * - This is sufficient for terminal activation as terminals are tied to physical devices
+ * - Uses Build.SERIAL (hardware serial) which persists forever (even after factory reset)
+ * - Requires READ_PHONE_STATE permission on Android 8+
+ * - Fallback to ANDROID_ID if permission denied (changes on app reinstall)
+ * - This ensures terminals maintain fixed identification across app reinstalls
  */
 @Singleton
 class DeviceInfoManager @Inject constructor(
@@ -47,18 +49,40 @@ class DeviceInfoManager @Inject constructor(
     /**
      * Get device serial number for terminal identification
      *
-     * Format: AVQD-{androidId}
-     * Example: AVQD-1A2B3C4D5E6F
+     * Format: AVQD-{Build.SERIAL}
+     * Example: AVQD-2841548417
      *
      * This is the primary identifier for terminal activation.
+     * Uses hardware serial (Build.SERIAL) which persists forever, even after:
+     * - App uninstall/reinstall
+     * - Factory reset
+     * - OS updates
+     *
+     * Professional POS systems (Square Terminal, Toast POS, Clover) use hardware serial
+     * instead of ANDROID_ID to maintain terminal identification across app lifecycle.
+     *
+     * @return Serial number with "AVQD-" prefix (uppercase)
      */
     fun getSerialNumber(): String {
-        val androidId = Settings.Secure.getString(
-            context.contentResolver,
-            Settings.Secure.ANDROID_ID
-        ) ?: "unknown"
+        val hardwareSerial = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // Android 8+: Requires READ_PHONE_STATE permission but persists forever
+            try {
+                Build.getSerial()
+            } catch (e: SecurityException) {
+                Timber.w(e, "⚠️ No READ_PHONE_STATE permission, using ANDROID_ID fallback")
+                // Fallback to ANDROID_ID if permission denied
+                Settings.Secure.getString(
+                    context.contentResolver,
+                    Settings.Secure.ANDROID_ID
+                ) ?: "unknown"
+            }
+        } else {
+            // Android 7 and below: No permission required
+            @Suppress("DEPRECATION")
+            Build.SERIAL
+        }
 
-        return "AVQD-${androidId.uppercase()}"
+        return "AVQD-${hardwareSerial.uppercase()}"
     }
 
     /**

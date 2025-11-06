@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✅ ADDED - Error Handling Standards in CLAUDE.md (2025-11-05 Night)
+- **CLAUDE.md: Add comprehensive Error Handling section** (CLAUDE.md:244-387)
+  - **MANDATORY POLICY**: All implementations must have perfect, user-friendly error handling
+  - **PHILOSOPHY**: "Technical errors are for logs, user messages are for humans"
+  - **CHECKLIST FOR EVERY ERROR**:
+    1. What happened (in simple terms)
+    2. Why it happened (if helpful)
+    3. How to fix it (actionable steps)
+    4. Alternative action (if available)
+  - **DUAL-LAYER LOGGING**:
+    - Technical details → Timber logs (for debugging)
+    - User-friendly messages → UI State (for users)
+  - **REAL EXAMPLES FROM AVOQADO TPV**:
+    - Contactless timeout: "La tarjeta se retiró demasiado rápido. Manténgala hasta la confirmación."
+    - Network error: "No se pudo conectar. Verifique su internet."
+    - Payment declined: "Pago rechazado por el banco. Verifique o use otro método."
+  - **TESTING REQUIREMENT**: Before merging, manually trigger error and verify message is clear
+  - **ANTI-PATTERNS BANNED**:
+    - ❌ Showing raw exceptions to users ("ReadingContactlessFailure@efcd17c")
+    - ❌ Generic messages without context ("Something went wrong")
+    - ❌ Swallowing errors silently
+  - **IMPACT**: All future features will have consistent, professional error handling
+
+### ✅ IMPROVED - Contactless Error Messages (2025-11-05 Night)
+- **PaymentViewModel: Add user-friendly contactless error messages** (PaymentViewModel.kt:665-681)
+  - **PROBLEM**: Generic error messages like "StartCtlssTransFailure$ReadingContactlessFailure@efcd17c" don't help users understand what went wrong
+  - **SOLUTION**: Translate SDK errors to actionable user messages:
+    - **ReadingContactlessFailure** → "La tarjeta se retiró demasiado rápido. Por favor, mantenga la tarjeta sobre el lector hasta que aparezca el mensaje de confirmación."
+    - **Timeout** → "Tiempo de espera agotado. Por favor, mantenga la tarjeta cerca del lector durante toda la transacción."
+    - **Collision** → "Se detectaron múltiples tarjetas. Por favor, presente solo una tarjeta a la vez."
+    - **Generic** → "Error leyendo tarjeta contactless. Intente nuevamente o inserte la tarjeta en el chip."
+  - **TECHNICAL DETAILS**:
+    - SDK error: `com.pax.api.PiccException: No response timeout` (Clss_TransProc_MC_MChip = -2)
+    - Root cause: User removed card during NFC communication
+    - Now logs technical error to Timber but shows friendly message to user
+  - **UX IMPROVEMENT**: Users now understand WHY the payment failed and HOW to fix it
+
 ### ✅ FIXED - Development Mode: Force SDK Re-initialization on Rebuild (2025-11-05 Night)
 - **BuildConfig: Add FORCE_BLUMON_REINIT flag** (app/build.gradle.kts:51, 58)
   - **CRITICAL PROBLEM DISCOVERED**: Rebuilding app without uninstalling causes NA_002 (NO AUTORIZADO) errors

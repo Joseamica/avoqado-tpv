@@ -177,6 +177,10 @@ class AuthRepository @Inject constructor(
         secureStorage.saveStaffName(authResponse.staff.displayName)
         secureStorage.savePermissions(authResponse.permissions)
 
+        // Save venue info for UI (logo, name)
+        secureStorage.saveVenueLogo(authResponse.venue.logo)
+        secureStorage.saveVenueName(authResponse.venue.name)
+
         Timber.d("✅ Session saved: venueId=${authResponse.venueId}, staffId=${authResponse.staffId}")
     }
 

@@ -71,7 +71,8 @@ data class VenueInfoDto(
     @SerializedName("id") val id: String,
     @SerializedName("name") val name: String,
     @SerializedName("posType") val posType: String?,
-    @SerializedName("posStatus") val posStatus: String?
+    @SerializedName("posStatus") val posStatus: String?,
+    @SerializedName("logo") val logo: String?
 )
 
 /**
@@ -155,7 +156,8 @@ fun VenueInfoDto.toDomain(): VenueInfo {
         id = id,
         name = name,
         posType = posType,
-        posStatus = posStatus
+        posStatus = posStatus,
+        logo = logo
     )
 }
 

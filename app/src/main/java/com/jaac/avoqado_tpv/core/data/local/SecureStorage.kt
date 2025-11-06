@@ -52,6 +52,8 @@ class SecureStorage @Inject constructor(
         private const val KEY_STAFF_ID = "staff_id"
         private const val KEY_STAFF_NAME = "staff_name"
         private const val KEY_PERMISSIONS = "permissions"
+        private const val KEY_VENUE_LOGO = "venue_logo"
+        private const val KEY_VENUE_NAME = "venue_name"
 
         // Blumon keys
         private const val KEY_BLUMON_MERCHANT_ID = "blumon_merchant_id"
@@ -245,6 +247,42 @@ class SecureStorage @Inject constructor(
      */
     fun getStaffName(): String? {
         return encryptedPrefs.getString(KEY_STAFF_NAME, null)
+    }
+
+    /**
+     * Save venue logo URL
+     * @param logoUrl Venue logo URL (cached for login screen)
+     */
+    fun saveVenueLogo(logoUrl: String?) {
+        if (logoUrl != null) {
+            encryptedPrefs.edit().putString(KEY_VENUE_LOGO, logoUrl).apply()
+        } else {
+            encryptedPrefs.edit().remove(KEY_VENUE_LOGO).apply()
+        }
+    }
+
+    /**
+     * Get cached venue logo URL
+     * @return Venue logo URL or null if not set
+     */
+    fun getVenueLogo(): String? {
+        return encryptedPrefs.getString(KEY_VENUE_LOGO, null)
+    }
+
+    /**
+     * Save venue name
+     * @param name Venue name (cached for UI display)
+     */
+    fun saveVenueName(name: String) {
+        encryptedPrefs.edit().putString(KEY_VENUE_NAME, name).apply()
+    }
+
+    /**
+     * Get cached venue name
+     * @return Venue name or null if not set
+     */
+    fun getVenueName(): String? {
+        return encryptedPrefs.getString(KEY_VENUE_NAME, null)
     }
 
     /**

@@ -81,7 +81,8 @@ data class VenueInfo(
     val id: String,
     val name: String,
     val posType: String?,
-    val posStatus: String?
+    val posStatus: String?,
+    val logo: String?
 )
 
 /**

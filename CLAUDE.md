@@ -241,6 +241,267 @@ Text(color = MaterialTheme.colorScheme.primary)
 Text(color = Color(0xFF2563EB)) // WRONG
 ```
 
+#### Error Handling (CRITICAL - MANDATORY FOR ALL IMPLEMENTATIONS)
+
+> **NON-NEGOTIABLE**: Every feature MUST have perfect, user-friendly error handling. Technical errors are for logs, user messages are for humans.
+
+**Philosophy**: Errors are part of the user experience. A well-handled error builds trust; a cryptic error loses customers.
+
+##### ❌ NEVER Show Technical Errors to Users
+
+```kotlin
+// ❌ WRONG: Exposing internal SDK errors
+catch (e: Exception) {
+    _state.value = State.Error("Error: $e")
+    // User sees: "StartCtlssTransFailure$ReadingContactlessFailure@efcd17c"
+}
+
+// ❌ WRONG: Generic unhelpful messages
+catch (e: Exception) {
+    _state.value = State.Error("Something went wrong")
+    // User doesn't know WHAT or HOW to fix
+}
+
+// ❌ WRONG: Swallowing errors silently
+catch (e: Exception) {
+    // Nothing - user has no idea payment failed!
+}
+```
+
+##### ✅ ALWAYS Translate Errors to User-Friendly Messages
+
+```kotlin
+// ✅ CORRECT: Translate SDK/API errors to actionable user messages
+if (result.isLeft) {
+    val error = result.leftValue()
+    Timber.e("❌ [TECHNICAL] Contactless failed: $error")  // Log technical details
+
+    // Translate to user-friendly message
+    val userMessage = when {
+        error.toString().contains("ReadingContactlessFailure", ignoreCase = true) -> {
+            "La tarjeta se retiró demasiado rápido.\n\n" +
+            "Por favor, mantenga la tarjeta sobre el lector hasta que " +
+            "aparezca el mensaje de confirmación."
+        }
+        error.toString().contains("Timeout", ignoreCase = true) -> {
+            "Tiempo de espera agotado.\n\n" +
+            "Por favor, mantenga la tarjeta cerca del lector durante toda la transacción."
+        }
+        error.toString().contains("Collision", ignoreCase = true) -> {
+            "Se detectaron múltiples tarjetas.\n\n" +
+            "Por favor, presente solo una tarjeta a la vez."
+        }
+        error.toString().contains("NetworkException", ignoreCase = true) -> {
+            "No se pudo conectar al servidor.\n\n" +
+            "Verifique su conexión a internet e intente nuevamente."
+        }
+        else -> {
+            "Error leyendo tarjeta contactless.\n\n" +
+            "Intente nuevamente o inserte la tarjeta en el chip."
+        }
+    }
+
+    _state.value = State.Error(userMessage)  // Show friendly message
+}
+```
+
+##### Error Message Checklist (Every Error MUST Have)
+
+1. **✅ What happened** (in simple terms)
+   - ✅ "La tarjeta se retiró demasiado rápido"
+   - ❌ "ReadingContactlessFailure"
+
+2. **✅ Why it happened** (if helpful)
+   - ✅ "El servidor está en mantenimiento"
+   - ❌ "HTTP 503 Service Unavailable"
+
+3. **✅ How to fix it** (actionable steps)
+   - ✅ "Por favor, mantenga la tarjeta sobre el lector hasta que aparezca la confirmación"
+   - ❌ "Error code: 0x8001"
+
+4. **✅ Alternative action** (if available)
+   - ✅ "Intente nuevamente o inserte la tarjeta en el chip"
+   - ❌ "Payment failed"
+
+##### Real-World Examples from Avoqado TPV
+
+**Example 1: Contactless Card Removed Too Quickly**
+```kotlin
+// SDK Error: com.pax.api.PiccException: No response timeout
+// User Message: "La tarjeta se retiró demasiado rápido.\n\n
+//                Por favor, mantenga la tarjeta sobre el lector hasta
+//                que aparezca el mensaje de confirmación."
+```
+
+**Example 2: Network Timeout**
+```kotlin
+// SDK Error: java.net.SocketTimeoutException: timeout
+// User Message: "No se pudo conectar al servidor.\n\n
+//                Verifique su conexión a internet e intente nuevamente."
+```
+
+**Example 3: Payment Declined by Bank**
+```kotlin
+// Momentum Error: {"code":"NA_002","description":"NO AUTORIZADO"}
+// User Message: "Pago rechazado por el banco.\n\n
+//                Por favor, verifique con su banco o use otro método de pago."
+```
+
+##### Logging Strategy (Dual-Layer)
+
+```kotlin
+// ✅ ALWAYS log technical details for debugging
+Timber.e(e, "❌ [TECHNICAL] Payment failed with SDK error: ${error.javaClass.simpleName}")
+
+// ✅ THEN show user-friendly message
+_state.value = State.Error(userFriendlyMessage)
+```
+
+**Benefits:**
+- Developers get full technical context in logs (Logcat, Crashlytics)
+- Users get clear, actionable messages in UI
+- Support team can help users without confusing them with tech jargon
+
+##### Testing Error Messages
+
+Before merging ANY code with error handling:
+
+1. **✅ Trigger the error manually** (remove card, disable network, etc.)
+2. **✅ Read the message as a non-technical user** - Is it clear?
+3. **✅ Follow the instructions** - Can you actually fix it?
+4. **✅ Check logs** - Is technical info preserved for debugging?
+
+If ANY of these fail → FIX the error message.
+
+##### Common Error Patterns
+
+| Error Type | Bad Message | Good Message |
+|-----------|-------------|--------------|
+| **Network** | "IOException" | "No se pudo conectar. Verifique su internet." |
+| **Timeout** | "SocketTimeoutException" | "La operación tardó demasiado. Intente nuevamente." |
+| **SDK Error** | "ReadingContactlessFailure@efcd17c" | "La tarjeta se retiró muy rápido. Manténgala hasta la confirmación." |
+| **Validation** | "Invalid input" | "El monto debe ser mayor a $0.01" |
+| **Permission** | "SecurityException" | "La app necesita permiso de ubicación para procesar pagos." |
+| **Database** | "SQLiteException" | "Error guardando datos. Reinicie la app." |
+
+---
+
+#### Responsive UI Design for TPV Devices (MANDATORY)
+
+> **CRITICAL**: All UI screens MUST be responsive and work on small POS devices (480x800 to 1280x800) WITHOUT scrolling.
+
+**Philosophy**: Professional POS systems (Square Terminal, Toast POS, Clover) NEVER require scrolling on core workflows (login, payment, checkout). Everything must be visible at once.
+
+**Common TPV Device Resolutions**:
+| Device | Resolution | Density | Use Case |
+|--------|------------|---------|----------|
+| **PAX A920** | 1280x720 dp | 320 dpi | Most common |
+| **PAX A80** | 1024x600 dp | 240 dpi | Budget option |
+| **Sunmi T2s** | 1280x800 dp | 213 dpi | Alternative |
+| **Generic 10"** | 1280x800 dp | 160 dpi | Testing baseline |
+
+##### ❌ NEVER Use Fixed Sizes for Vertical Layouts
+
+```kotlin
+// ❌ WRONG: Hardcoded sizes will overflow on small screens
+Column {
+    Image(modifier = Modifier.size(120.dp))
+    Spacer(modifier = Modifier.height(48.dp))
+    Text("Title")
+    Spacer(modifier = Modifier.height(48.dp))
+    PinPad() // This will be cut off on PAX A80!
+}
+```
+
+##### ✅ ALWAYS Use ResponsiveScaffold (Reusable Component)
+
+**Component**: `core/presentation/components/ResponsiveScaffold.kt`
+
+**Philosophy**: Don't repeat BoxWithConstraints logic in every screen. Use a centralized, tested component.
+
+```kotlin
+// ✅ CORRECT: Use ResponsiveScaffold for all screens
+@Composable
+fun LoginScreen() {
+    ResponsiveScaffold(
+        scrollable = false,  // Workflow screen - everything must fit
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        val sizes = LocalResponsiveSizes.current
+
+        // All sizes automatically adjust based on screen
+        Image(modifier = Modifier.size(sizes.logoSize))
+        Spacer(modifier = Modifier.height(sizes.spacingMedium))
+        Text("Ingresa tu PIN")
+        Spacer(modifier = Modifier.height(sizes.spacingMedium))
+        PinPad() // Guaranteed to fit!
+    }
+}
+```
+
+**Available size tokens from `LocalResponsiveSizes.current`:**
+
+| Token | Small (<600dp) | Medium (600-700dp) | Large (>700dp) | Usage |
+|-------|----------------|---------------------|----------------|-------|
+| `logoSize` | 60.dp | 80.dp | 100.dp | Venue logos, app icons |
+| `iconSizeSmall` | 16.dp | 20.dp | 24.dp | Small UI icons |
+| `iconSizeMedium` | 24.dp | 32.dp | 40.dp | Action buttons |
+| `iconSizeLarge` | 48.dp | 56.dp | 64.dp | Hero icons |
+| `spacingSmall` | 8.dp | 12.dp | 16.dp | Tight spacing |
+| `spacingMedium` | 16.dp | 24.dp | 32.dp | Standard spacing |
+| `spacingLarge` | 24.dp | 32.dp | 48.dp | Section dividers |
+| `paddingScreen` | 16.dp | 20.dp | 24.dp | Screen edges |
+
+**When to set `scrollable = true`:**
+- ✅ Long lists (products, orders, history)
+- ✅ Settings screens with many options
+- ✅ Forms longer than screen height
+- ❌ Login, PIN, payment screens (must fit without scroll)
+
+**Example (scrollable screen):**
+```kotlin
+ResponsiveScaffold(scrollable = true) {
+    val sizes = LocalResponsiveSizes.current
+
+    repeat(20) {
+        ProductCard()
+        Spacer(modifier = Modifier.height(sizes.spacingSmall))
+    }
+}
+```
+
+**Real implementation**: LoginScreen.kt:98-158 uses ResponsiveScaffold.
+
+##### Testing Responsive Layouts
+
+**MANDATORY checklist before committing any screen:**
+
+1. ✅ **Wrap screen with ResponsiveScaffold** (not raw BoxWithConstraints)
+2. ✅ **Use `LocalResponsiveSizes.current`** for all dynamic sizing
+3. ✅ **Test in Android Studio Preview** with multiple device configs:
+   ```kotlin
+   @Preview(name = "Small - PAX A80", device = "spec:width=1024dp,height=600dp")
+   @Preview(name = "Medium - PAX A920", device = "spec:width=1280dp,height=720dp")
+   @Preview(name = "Large - 10 inch", device = "spec:width=1280dp,height=800dp")
+   @Composable
+   fun MyScreenPreview() { MyScreen() }
+   ```
+4. ✅ **Verify no scroll on workflow screens** (login, payment, checkout)
+5. ✅ **Check spacing ratios** - Elements should look balanced across all sizes
+
+**Rule of thumb**: If you need to scroll on a **workflow screen** (login, payment, checkout), the layout is broken.
+
+**Acceptable scroll areas**:
+- ✅ Product lists
+- ✅ Order history
+- ✅ Settings pages
+- ❌ Login screen
+- ❌ PIN pad screen
+- ❌ Payment confirmation
+
+---
+
 #### When to Create Reusable Components (Square/Toast Pattern)
 
 > **CRITICAL**: Always think "Will I need this UI pattern in more than one place?" If yes, create a component in the Design System.

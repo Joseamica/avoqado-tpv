@@ -21,11 +21,22 @@ import javax.inject.Inject
  */
 @HiltViewModel
 class LoginViewModel @Inject constructor(
-    private val authRepository: AuthRepository
+    private val authRepository: AuthRepository,
+    private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<LoginState>(LoginState.Idle)
     val state: StateFlow<LoginState> = _state.asStateFlow()
+
+    // Cached venue logo from last successful login
+    private val _venueLogo = MutableStateFlow<String?>(null)
+    val venueLogo: StateFlow<String?> = _venueLogo.asStateFlow()
+
+    init {
+        // Load cached venue logo on ViewModel creation
+        _venueLogo.value = secureStorage.getVenueLogo()
+        Timber.d("📷 Cached venue logo: ${_venueLogo.value}")
+    }
 
     /**
      * Login with PIN

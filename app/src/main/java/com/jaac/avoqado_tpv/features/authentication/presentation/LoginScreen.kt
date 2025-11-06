@@ -5,14 +5,22 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
+import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
+import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.authentication.presentation.components.PinIndicator
@@ -42,6 +50,7 @@ fun LoginScreen(
     viewModel: LoginViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val venueLogo by viewModel.venueLogo.collectAsStateWithLifecycle()
 
     // Auto-navigate on success
     LaunchedEffect(state) {
@@ -54,15 +63,16 @@ fun LoginScreen(
 
     LoginContent(
         state = state,
+        venueLogo = venueLogo,
         onPinEntered = { pin -> viewModel.loginWithPin(pin, venueId) },
         onDismissError = { viewModel.resetState() }
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LoginContent(
     state: LoginState,
+    venueLogo: String?,
     onPinEntered: (String) -> Unit,
     onDismissError: () -> Unit
 ) {
@@ -78,29 +88,34 @@ private fun LoginContent(
 
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Iniciar Sesión") },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        titleContentColor = MaterialTheme.colorScheme.onSurface
-                    )
-                )
-            },
             containerColor = MaterialTheme.colorScheme.background
         ) { padding ->
             Box(
                 modifier = Modifier.fillMaxSize()
             ) {
-                // Main content - PIN pad (always visible)
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding)
-                        .padding(24.dp),
+                // ✅ Responsive workflow screen (no scroll)
+                ResponsiveScaffold(
+                    modifier = Modifier.padding(padding),
+                    scrollable = false,
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
+                    val sizes = LocalResponsiveSizes.current
+
+                    // Venue Logo (circular) - Dynamic size
+                    AsyncImage(
+                        model = venueLogo,
+                        contentDescription = "Logo del venue",
+                        modifier = Modifier
+                            .size(sizes.logoSize)
+                            .clip(CircleShape),
+                        contentScale = ContentScale.Fit,
+                        error = painterResource(R.drawable.isotipo),
+                        placeholder = painterResource(R.drawable.isotipo)
+                    )
+
+                    Spacer(modifier = Modifier.height(sizes.spacingSmall))
+
                     // Title
                     Text(
                         text = "Ingresa tu PIN",
@@ -108,7 +123,7 @@ private fun LoginContent(
                         textAlign = TextAlign.Center
                     )
 
-                    Spacer(modifier = Modifier.height(48.dp))
+                    Spacer(modifier = Modifier.height(sizes.spacingMedium))
 
                     // PIN Indicator (circles showing how many digits entered)
                     PinIndicator(
@@ -116,7 +131,7 @@ private fun LoginContent(
                         maxLength = 4
                     )
 
-                    Spacer(modifier = Modifier.height(48.dp))
+                    Spacer(modifier = Modifier.height(sizes.spacingMedium))
 
                     // Custom PIN Pad (Square/Toast style)
                     PinPad(
@@ -138,10 +153,11 @@ private fun LoginContent(
                         enabled = state !is LoginState.Loading
                     )
 
-                    Spacer(modifier = Modifier.height(32.dp))
+                    Spacer(modifier = Modifier.height(sizes.spacingSmall))
+                }
 
-                    // Terminal deactivated message
-                    if (state is LoginState.TerminalNotActivated) {
+                // Terminal deactivated message
+                if (state is LoginState.TerminalNotActivated) {
                         Card(
                             colors = CardDefaults.cardColors(
                                 containerColor = MaterialTheme.colorScheme.errorContainer
@@ -171,7 +187,6 @@ private fun LoginContent(
                             }
                         }
                     }
-                }
 
                 // ✅ Error banner overlay (Square/Toast pattern) - Non-blocking banner at top
                 if (state is LoginState.Error) {
@@ -219,8 +234,9 @@ private fun LoginContent(
             }
         }
     }
-// ========== Previews ==========
 }
+
+// ========== Previews ==========
 @Preview(
     name = "Login - Light Mode",
     showBackground = true,
@@ -231,6 +247,7 @@ private fun LoginScreenIdlePreview() {
     AvoqadoTheme(darkTheme = false) {
         LoginContent(
             state = LoginState.Idle,
+            venueLogo = null,
             onPinEntered = {},
             onDismissError = {}
         )
@@ -247,6 +264,7 @@ private fun LoginScreenIdleDarkPreview() {
     AvoqadoTheme(darkTheme = true) {
         LoginContent(
             state = LoginState.Idle,
+            venueLogo = null,
             onPinEntered = {},
             onDismissError = {}
         )
@@ -263,6 +281,7 @@ private fun LoginScreenLoadingPreview() {
     AvoqadoTheme(darkTheme = false) {
         LoginContent(
             state = LoginState.Loading,
+            venueLogo = null,
             onPinEntered = {},
             onDismissError = {}
         )
@@ -279,6 +298,7 @@ private fun LoginScreenLoadingDarkPreview() {
     AvoqadoTheme(darkTheme = true) {
         LoginContent(
             state = LoginState.Loading,
+            venueLogo = null,
             onPinEntered = {},
             onDismissError = {}
         )
@@ -295,6 +315,7 @@ private fun LoginScreenErrorPreview() {
     AvoqadoTheme(darkTheme = false) {
         LoginContent(
             state = LoginState.Error("PIN incorrecto. Intenta de nuevo."),
+            venueLogo = null,
             onPinEntered = {},
             onDismissError = {}
         )
@@ -311,6 +332,7 @@ private fun LoginScreenErrorDarkPreview() {
     AvoqadoTheme(darkTheme = true) {
         LoginContent(
             state = LoginState.Error("PIN incorrecto. Intenta de nuevo."),
+            venueLogo = null,
             onPinEntered = {},
             onDismissError = {}
         )
@@ -330,6 +352,7 @@ private fun LoginScreenRateLimitErrorDarkPreview() {
                 "Demasiados intentos. Por favor espera un momento e intenta nuevamente.\n\n" +
                         "ℹ️ Si estás en desarrollo, el backend debe configurar rate limits más altos para DEV."
             ),
+            venueLogo = null,
             onPinEntered = {},
             onDismissError = {}
         )

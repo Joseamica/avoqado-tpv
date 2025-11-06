@@ -49,6 +49,7 @@ import com.jaac.avoqado_tpv.features.activation.presentation.ActivationScreen
 import com.jaac.avoqado_tpv.features.authentication.presentation.LoginScreen
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationState
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationViewModel
+import com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreen
 import timber.log.Timber
 
 /**
@@ -157,6 +158,9 @@ fun AppNavigation(
             val homeViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel = hiltViewModel()
 
             WelcomeScreen(
+                onNavigateToPayment = {
+                    navController.navigate(NavRoute.Payment.route)
+                },
                 onLogout = {
                     // ✅ Square/Toast Pattern: DO NOT stop heartbeat on logout
                     //
@@ -180,6 +184,15 @@ fun AppNavigation(
                     navController.navigate(NavRoute.Login.route) {
                         popUpTo(NavRoute.Home.route) { inclusive = true }
                     }
+                }
+            )
+        }
+
+        // Payment Screen - EMV chip card payment with online authorization
+        composable(NavRoute.Payment.route) {
+            PaymentScreen(
+                onNavigateBack = {
+                    navController.popBackStack()
                 }
             )
         }

@@ -18,9 +18,6 @@ dependencyResolutionManagement {
         mavenCentral()
         flatDir {
             dirs(
-                File(rootDir, "commonlib/libs"),
-                File(rootDir, "sdk/libs"),
-                File(rootDir, "emv/libs"),
                 File(rootDir, "app/libs")
             )
         }
@@ -29,6 +26,6 @@ dependencyResolutionManagement {
 
 rootProject.name = "avoqado-tpv"
 include(":app")
+include(":sdk")
 include(":commonlib")
 include(":emv")
-include(":sdk")

@@ -11,6 +11,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -37,6 +38,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 @Composable
 fun WelcomeScreen(
     modifier: Modifier = Modifier,
+    onNavigateToPayment: () -> Unit = {},
     onLogout: () -> Unit = {}
 ) {
     Scaffold(
@@ -97,6 +99,23 @@ fun WelcomeScreen(
                     )
 
                     Spacer(modifier = Modifier.height(Spacing.Space8))
+
+                    // Payment Button
+                    Button(
+                        onClick = onNavigateToPayment,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CreditCard,
+                            contentDescription = "Realizar pago",
+                            modifier = Modifier.padding(end = 8.dp)
+                        )
+                        Text("Realizar Pago")
+                    }
+
+                    Spacer(modifier = Modifier.height(Spacing.Space4))
 
                     // Logout Button
                     Button(

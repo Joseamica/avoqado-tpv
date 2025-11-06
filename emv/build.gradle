@@ -1,19 +1,19 @@
 apply plugin: 'com.android.library'
 
 android {
-    compileSdk 36
+    compileSdkVersion 34  // Updated to match app module
     namespace = "com.paxsz.module.emv"
-
     defaultConfig {
-        minSdk 27
-        targetSdk 36
+        minSdkVersion 27  // Updated to match app module (Blumon SDK requirement)
+        targetSdkVersion 34  // Updated to match app module
         versionCode 1
         versionName "1.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
     }
 
-    lint {
+    lintOptions {
         abortOnError false
     }
 
@@ -25,23 +25,23 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
+        sourceCompatibility JavaVersion.VERSION_17  // Updated to match app module
         targetCompatibility JavaVersion.VERSION_17
     }
+}
 
-    packaging {
-        jniLibs {
-            useLegacyPackaging = true
-        }
+repositories{
+    flatDir {
+        dirs 'libs'
     }
 }
 
 dependencies {
     api fileTree(include: ['*.jar'], dir: 'libs')
     api project(':commonlib')
-    implementation 'androidx.appcompat:appcompat:1.7.0'
-    implementation 'androidx.annotation:annotation-jvm:1.9.1'
-    testImplementation 'junit:junit:4.13.2'
-    androidTestImplementation 'androidx.test:runner:1.6.2'
-    androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.annotation:annotation-jvm:1.7.1'
+    testImplementation 'junit:junit:4.12'
+    androidTestImplementation 'com.android.support.test:runner:1.0.2'
+    androidTestImplementation 'com.android.support.test.espresso:espresso-core:3.0.2'
 }

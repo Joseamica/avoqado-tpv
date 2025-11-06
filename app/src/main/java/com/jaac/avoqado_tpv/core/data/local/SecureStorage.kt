@@ -58,6 +58,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_BLUMON_TERMINAL_ID = "blumon_terminal_id"
         private const val KEY_BLUMON_USERNAME = "blumon_username"
         private const val KEY_BLUMON_PASSWORD = "blumon_password"
+        private const val KEY_BLUMON_LAST_INIT_TIMESTAMP = "blumon_last_init_timestamp"
 
         // Settings keys
         private const val KEY_LAST_SYNC_TIMESTAMP = "last_sync_timestamp"
@@ -519,5 +520,37 @@ class SecureStorage @Inject constructor(
      */
     fun remove(key: String) {
         encryptedPrefs.edit().remove(key).apply()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BLUMON SDK INITIALIZATION TIMESTAMP
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Save last Blumon SDK initialization timestamp
+     *
+     * Used by InitializationManager to enforce "init only once every 24 hours" policy
+     * per Edgardo's recommendation (2025-11-05)
+     *
+     * @param timestamp Unix epoch milliseconds (System.currentTimeMillis())
+     */
+    fun saveLastBlumonInitTimestamp(timestamp: Long) {
+        encryptedPrefs.edit().putLong(KEY_BLUMON_LAST_INIT_TIMESTAMP, timestamp).apply()
+        Timber.d("💾 Blumon last init timestamp saved: $timestamp")
+    }
+
+    /**
+     * Get last Blumon SDK initialization timestamp
+     *
+     * Returns null if SDK has never been initialized (first run)
+     *
+     * @return Unix epoch milliseconds or null if never initialized
+     */
+    fun getLastBlumonInitTimestamp(): Long? {
+        return if (encryptedPrefs.contains(KEY_BLUMON_LAST_INIT_TIMESTAMP)) {
+            encryptedPrefs.getLong(KEY_BLUMON_LAST_INIT_TIMESTAMP, 0L)
+        } else {
+            null
+        }
     }
 }

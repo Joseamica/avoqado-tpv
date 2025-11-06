@@ -33,4 +33,9 @@ sealed class NavRoute(val route: String) {
      * Settings screen
      */
     data object Settings : NavRoute("settings")
+
+    /**
+     * Payment screen - EMV chip card payment with online authorization
+     */
+    data object Payment : NavRoute("payment")
 }

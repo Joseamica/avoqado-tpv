@@ -30,6 +30,12 @@ android {
         buildConfigField("String", "API_BASE_URL_DEV", "\"https://humane-immortal-pika.ngrok-free.app/api/v1/\"")
         buildConfigField("String", "SOCKET_URL", "\"https://api.avoqado.io\"")
         buildConfigField("String", "SOCKET_URL_DEV", "\"https://humane-immortal-pika.ngrok-free.app\"")
+
+        // Blumon Terminal Configuration (PAX A910S - Serial: 2841548417)
+        buildConfigField("String", "TERMINAL_SERIAL", "\"2841548417\"")
+        buildConfigField("String", "TERMINAL_BRAND", "\"PAX\"")
+        buildConfigField("String", "TERMINAL_MODEL", "\"A910S\"")
+        buildConfigField("String", "BLUMON_ENV", "\"SAND\"")  // SAND = Sandbox, PROD = Production
     }
 
     buildTypes {
@@ -98,11 +104,15 @@ android {
 }
 
 dependencies {
-    // BlumonPay SDK Modules
-    implementation(project(":sdk"))
-    implementation(project(":emv"))
-    implementation(project(":commonlib"))
+    // BlumonPay SDK Modules (project dependencies)
+    implementation(project(":sdk"))  // PAX SDK (PosApi) + Neptune API
+    implementation(project(":commonlib"))  // Common utilities
+    implementation(project(":emv"))  // EMV kernel logic
+
+    // BlumonPay SDK Modules (as AAR files directly)
     implementation(files("libs/blumon_sdk-debug.aar"))
+    implementation(files("libs/lib-services-BP-SAND_1601.aar"))  // Blumon Services (Sandbox) - Online authorization
+    implementation(files("libs/nativetouchevent-release.aar"))  // Native touch event library (moved from sdk module)
 
     // AndroidX Core
     implementation(libs.androidx.core.ktx)

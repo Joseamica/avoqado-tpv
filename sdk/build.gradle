@@ -1,20 +1,16 @@
 apply plugin: 'com.android.library'
 
 android {
-    compileSdk 36
+    compileSdkVersion 34  // Updated to match app module
     namespace = "com.paxsz.module.pos"
-
     defaultConfig {
-        minSdk 27
-        targetSdk 36
+        minSdkVersion 27  // Updated to match app module (Blumon SDK requirement)
+        targetSdkVersion 34  // Updated to match app module
         versionCode 1
         versionName "1.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
-        ndk {
-            abiFilters.add("armeabi")
-        }
     }
 
     buildTypes {
@@ -25,14 +21,8 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
+        sourceCompatibility JavaVersion.VERSION_17  // Updated to match app module
         targetCompatibility JavaVersion.VERSION_17
-    }
-
-    packaging {
-        jniLibs {
-            useLegacyPackaging = true
-        }
     }
 }
 
@@ -48,7 +38,7 @@ dependencies {
     api files('libs/GLImgProcessing_V1.03.00_T_20220121.jar')
     api files('libs/GLPacker_V1.05.00_20211230.jar')
     api files('libs/GLUtils_V1.01.00_T_20220121.jar')
-    // Comentado: AAR módulos no pueden depender de AARs locales directamente
+    // Moved to app/libs (AAR modules can't depend on local AAR files)
     // api files('libs/nativetouchevent-release.aar')
     compileOnly files('libs/PosApi_V1.24_20200422.jar') // just for self test
 }

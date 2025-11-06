@@ -46,9 +46,16 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+
+            // Production: Use 24-hour cache for SDK initialization
+            buildConfigField("boolean", "FORCE_BLUMON_REINIT", "false")
         }
         debug {
             isMinifyEnabled = false
+
+            // Development: Force re-init on every app launch to prevent DUKPT key corruption
+            // This fixes NA_002 errors when doing rebuild without uninstalling
+            buildConfigField("boolean", "FORCE_BLUMON_REINIT", "true")
         }
     }
 
@@ -148,6 +155,9 @@ dependencies {
 
     // Timber for logging
     implementation("com.jakewharton.timber:timber:5.0.1")
+
+    // Coil for image loading
+    implementation("io.coil-kt:coil-compose:2.5.0")
 
     // Hilt Dependency Injection
     implementation("com.google.dagger:hilt-android:2.57")

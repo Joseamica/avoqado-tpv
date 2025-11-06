@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ✅ FIXED - Development Mode: Force SDK Re-initialization on Rebuild (2025-11-05 Night)
+- **BuildConfig: Add FORCE_BLUMON_REINIT flag** (app/build.gradle.kts:51, 58)
+  - **CRITICAL PROBLEM DISCOVERED**: Rebuilding app without uninstalling causes NA_002 (NO AUTORIZADO) errors
+  - **ROOT CAUSE**:
+    - Rebuild → `adb install -r` → SDK database persists with old/corrupted DUKPT keys
+    - InitializationManager sees timestamp < 24h → Skips initialization
+    - Payment uses corrupted keys → Momentum rejects with NA_002
+  - **EVIDENCE FROM LOGS**:
+    - Scenario A (✅ Works): Uninstall → Install → Fresh DUKPT keys → Payment approved
+    - Scenario B (❌ Fails): Rebuild → `install -r` → Old keys → NA_002 NO AUTORIZADO
+  - **SOLUTION**:
+    - **DEBUG builds**: `buildConfigField("boolean", "FORCE_BLUMON_REINIT", "true")`
+      - Forces SDK re-initialization on EVERY app launch
+      - Downloads fresh DUKPT keys from Blumon
+      - Prevents NA_002 errors during development
+    - **RELEASE builds**: `buildConfigField("boolean", "FORCE_BLUMON_REINIT", "false")`
+      - Uses 24-hour cache (production behavior)
+      - Prevents duplicate database rows
+  - **TRADE-OFFS**:
+    - ✅ Development: No more "works when uninstalling, fails when rebuilding"
+    - ✅ Production: Maintains 24-hour cache for performance
+    - ⚠️ Development: Slower app startup (full init every time)
+    - ⚠️ Development: More network calls to Blumon backend
+
+- **InitializationManager: Respect FORCE_BLUMON_REINIT flag** (InitializationManager.kt:83-88)
+  - Added check at start of `shouldInitialize()` method
+  - If `BuildConfig.FORCE_BLUMON_REINIT == true` → Always return true (force init)
+  - Logs warning: "⚠️ [DEV MODE] Forcing Blumon SDK re-initialization (FORCE_BLUMON_REINIT=true)"
+  - Production builds ignore this check (flag is false)
+
 ### ✅ FIXED - Contactless Payment Configuration (2025-11-05 Evening)
 - **PaymentViewModel: Fix contactless EMV tag list to match chip configuration** (PaymentViewModel.kt:737-765)
   - **ISSUE**: Contactless payments failed while chip payments worked perfectly

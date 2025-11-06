@@ -80,7 +80,7 @@ private fun LoginContent(
 
     // Auto-submit when PIN length is 4 digits (Square/Toast standard)
     LaunchedEffect(pin) {
-        if (pin.length == 4 && state !is LoginState.Loading) {
+        if (pin.length == 4 && state !is LoginState.Loading && state !is LoginState.Success) {
             onPinEntered(pin)
             pin = "" // Clear after submit
         }
@@ -136,21 +136,21 @@ private fun LoginContent(
                     // Custom PIN Pad (Square/Toast style)
                     PinPad(
                         onNumberClick = { digit ->
-                            if (pin.length < 4 && state !is LoginState.Loading) {
+                            if (pin.length < 4 && state !is LoginState.Loading && state !is LoginState.Success) {
                                 pin += digit
                             }
                         },
                         onBackspace = {
-                            if (pin.isNotEmpty() && state !is LoginState.Loading) {
+                            if (pin.isNotEmpty() && state !is LoginState.Loading && state !is LoginState.Success) {
                                 pin = pin.dropLast(1)
                             }
                         },
                         onClear = {
-                            if (state !is LoginState.Loading) {
+                            if (state !is LoginState.Loading && state !is LoginState.Success) {
                                 pin = ""
                             }
                         },
-                        enabled = state !is LoginState.Loading
+                        enabled = state !is LoginState.Loading && state !is LoginState.Success
                     )
 
                     Spacer(modifier = Modifier.height(sizes.spacingSmall))
@@ -228,7 +228,8 @@ private fun LoginContent(
                 }
 
                 // ✅ Loading overlay (Square/Toast pattern) - Reusable component from Design System
-                if (state is LoginState.Loading) {
+                // Show overlay for both Loading AND Success to prevent flash during navigation
+                if (state is LoginState.Loading || state is LoginState.Success) {
                     AvoqadoLoadingOverlay(message = "Autenticando...")
                 }
             }

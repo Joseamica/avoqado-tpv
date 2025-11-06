@@ -148,9 +148,7 @@ class MultiMerchantSDKManager @Inject constructor(
                 // Step 3: Update TerminalConfig (runtime serial number)
                 val previousSerial = TerminalConfig.serialNumber
                 Timber.d("   [Step 1/2] Updating TerminalConfig...")
-                TerminalConfig.serialNumber = targetAccount.serialNumber
-                TerminalConfig.brand = com.jaac.avoqado_tpv.BuildConfig.TERMINAL_BRAND
-                TerminalConfig.model = com.jaac.avoqado_tpv.BuildConfig.TERMINAL_MODEL
+                TerminalConfig.updateSerial(targetAccount.serialNumber)
                 Timber.i("   ✅ TerminalConfig updated: $previousSerial → ${targetAccount.serialNumber}")
 
                 // Step 4: Force SDK re-initialization with new credentials
@@ -160,7 +158,7 @@ class MultiMerchantSDKManager @Inject constructor(
                 if (initResult.isFailure) {
                     // Rollback TerminalConfig on failure
                     Timber.e("   ❌ SDK re-initialization failed - rolling back TerminalConfig")
-                    TerminalConfig.serialNumber = previousSerial
+                    TerminalConfig.updateSerial(previousSerial)
 
                     val error = initResult.exceptionOrNull()
                     Timber.e(error, "   ❌ [TECHNICAL] SDK init error details")  // Log technical details

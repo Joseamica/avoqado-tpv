@@ -31,11 +31,14 @@ android {
         buildConfigField("String", "SOCKET_URL", "\"https://api.avoqado.io\"")
         buildConfigField("String", "SOCKET_URL_DEV", "\"https://humane-immortal-pika.ngrok-free.app\"")
 
-        // Blumon Terminal Configuration (PAX A910S - Serial: 2841548417)
-        buildConfigField("String", "TERMINAL_SERIAL", "\"2841548417\"")
-        buildConfigField("String", "TERMINAL_BRAND", "\"PAX\"")
-        buildConfigField("String", "TERMINAL_MODEL", "\"A910S\"")
-        buildConfigField("String", "BLUMON_ENV", "\"SAND\"")  // SAND = Sandbox, PROD = Production
+        // ⚠️ REMOVED: Hardcoded terminal configuration (2025-11-05)
+        // Serial numbers and merchant accounts now fetched dynamically from backend
+        // See: TerminalConfigRepository, GET /api/v1/tpv/terminals/:serial/config
+        //
+        // buildConfigField("String", "TERMINAL_SERIAL", "\"2841548417\"")  // ← REMOVED
+        // buildConfigField("String", "TERMINAL_BRAND", "\"PAX\"")         // ← REMOVED
+        // buildConfigField("String", "TERMINAL_MODEL", "\"A910S\"")       // ← REMOVED
+        // buildConfigField("String", "BLUMON_ENV", "\"SAND\"")            // ← REMOVED
     }
 
     buildTypes {

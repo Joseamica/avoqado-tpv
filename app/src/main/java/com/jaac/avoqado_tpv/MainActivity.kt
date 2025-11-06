@@ -8,12 +8,16 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
 import com.jaac.avoqado_tpv.core.presentation.navigation.AppNavigation
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
+import com.jaac.avoqado_tpv.features.payment.data.MerchantRepositoryImpl
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -45,6 +49,12 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var secureStorage: SecureStorage
+
+    @Inject
+    lateinit var terminalConfigRepository: TerminalConfigRepository
+
+    @Inject
+    lateinit var merchantRepository: MerchantRepositoryImpl
 
     /**
      * Launcher for READ_PHONE_STATE permission request
@@ -80,6 +90,10 @@ class MainActivity : ComponentActivity() {
         // ✅ Square/Toast Pattern: Start heartbeat if terminal is activated
         // This runs BEFORE user logs in, enabling health monitoring
         startHeartbeatIfActivated()
+
+        // ✅ Fetch terminal config from backend (dynamic multi-merchant support)
+        // This loads merchant accounts assigned to this terminal by superadmin
+        fetchTerminalConfigIfActivated()
     }
 
     /**
@@ -141,6 +155,71 @@ class MainActivity : ComponentActivity() {
             HeartbeatScheduler.start(applicationContext)
         } else {
             Timber.d("🔴 Terminal not activated - heartbeat will not start until activation")
+        }
+    }
+
+    /**
+     * Fetch terminal configuration from backend if activated
+     *
+     * **Phase 2: Dynamic Multi-Merchant Configuration**
+     * - Fetches merchant accounts assigned to this terminal by superadmin
+     * - Replaces hardcoded SANDBOX_ACCOUNT_A/B with backend-managed config
+     * - Enables multi-merchant routing (Account A for main restaurant, Account B for bar)
+     *
+     * **Design Pattern (Square/Toast):**
+     * - Configuration loaded on app startup (NOT on login)
+     * - Updates MerchantRepository with fetched merchants
+     * - Allows PaymentViewModel to show merchant selection dialog
+     *
+     * **Flow:**
+     * 1. Get device serial number (e.g., "AVQD-2841548417")
+     * 2. Call GET /tpv/terminals/:serial/config
+     * 3. Update MerchantRepository with fetched merchants
+     * 4. PaymentViewModel reactively updates via getMerchantsUseCase
+     *
+     * **Error Handling:**
+     * - Silently fails with log warning (doesn't block app startup)
+     * - Falls back to hardcoded sandbox accounts if backend unreachable
+     * - User can still process payments with fallback accounts
+     */
+    private fun fetchTerminalConfigIfActivated() {
+        val isActivated = secureStorage.isTerminalActivated()
+
+        if (!isActivated) {
+            Timber.d("🔴 Terminal not activated - skipping config fetch")
+            return
+        }
+
+        // Get device serial number (e.g., "AVQD-2841548417")
+        val serialNumber = deviceInfoManager.getSerialNumber()
+
+        Timber.d("🔧 [TerminalConfig] Fetching config from backend for serial: $serialNumber")
+
+        lifecycleScope.launch {
+            terminalConfigRepository.fetchConfig(serialNumber)
+                .onSuccess { (terminalInfo, merchantAccounts) ->
+                    Timber.i("✅ [TerminalConfig] Fetched ${merchantAccounts.size} merchant accounts")
+                    Timber.d("   📋 Terminal: ${terminalInfo.brand} ${terminalInfo.model}")
+                    Timber.d("   🏢 Venue: ${terminalInfo.venueName}")
+
+                    // Update MerchantRepository with fetched merchants
+                    // This replaces the hardcoded fallback accounts
+                    merchantAccounts.forEach { merchant ->
+                        merchantRepository.addOrUpdateMerchant(merchant)
+                        Timber.d("   ✅ Added merchant: ${merchant.displayName} (${merchant.serialNumber})")
+                    }
+
+                    Timber.i("✅ [TerminalConfig] Successfully loaded dynamic config from backend")
+                }
+                .onFailure { error ->
+                    // Silently fail with log warning (doesn't block app startup)
+                    Timber.w(
+                        error,
+                        "⚠️ [TerminalConfig] Failed to fetch config - using fallback accounts"
+                    )
+                    Timber.d("   ℹ️  This is normal if backend is unreachable")
+                    Timber.d("   ℹ️  App will use hardcoded sandbox accounts as fallback")
+                }
         }
     }
 }

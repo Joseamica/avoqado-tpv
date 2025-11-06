@@ -130,6 +130,22 @@ fun AppNavigation(
             // Get venueId from DeviceInfoManager (saved during activation)
             val venueId = deviceInfoManager.getVenueId() ?: ""
 
+            // 🚨 SECURITY: Monitor activation status (Square/Toast pattern)
+            // If terminal gets RETIRED by admin, HeartbeatWorker clears venueId
+            // This forces immediate navigation back to activation screen
+            LaunchedEffect(Unit) {
+                while (true) {
+                    delay(2000) // Check every 2 seconds
+                    if (deviceInfoManager.getVenueId() == null) {
+                        Timber.e("🚨 Terminal activation cleared - redirecting to activation")
+                        navController.navigate(NavRoute.Activation.route) {
+                            popUpTo(0) { inclusive = true } // Clear entire back stack
+                        }
+                        break
+                    }
+                }
+            }
+
             LoginScreen(
                 venueId = venueId,
                 onLoginSuccess = {
@@ -156,6 +172,22 @@ fun AppNavigation(
         composable(NavRoute.Home.route) {
             val context = LocalContext.current
             val homeViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel = hiltViewModel()
+
+            // 🚨 SECURITY: Monitor activation status (Square/Toast pattern)
+            // If terminal gets RETIRED by admin, HeartbeatWorker clears venueId
+            // This forces immediate logout and navigation back to activation screen
+            LaunchedEffect(Unit) {
+                while (true) {
+                    delay(2000) // Check every 2 seconds
+                    if (deviceInfoManager.getVenueId() == null) {
+                        Timber.e("🚨 Terminal activation cleared - forcing logout and redirecting to activation")
+                        navController.navigate(NavRoute.Activation.route) {
+                            popUpTo(0) { inclusive = true } // Clear entire back stack
+                        }
+                        break
+                    }
+                }
+            }
 
             WelcomeScreen(
                 onNavigateToPayment = {
@@ -225,22 +257,52 @@ private fun SplashScreen(
     onNavigateToHome: () -> Unit
 ) {
     LaunchedEffect(Unit) {
-        // Check activation status from SecureStorage
-        val isActivated = deviceInfoManager.isDeviceActivated()
+        // ✅ Square/Toast Pattern: Check activation status with BACKEND first
+        // This prevents routing to LoginScreen when terminal has venueId locally
+        // but activatedAt = NULL on backend (happens after DB reset)
+        val backendStatusResult = deviceInfoManager.checkActivationStatusWithBackend()
 
-        if (!isActivated) {
-            // Device not activated → go to activation screen
-            Timber.d("🔐 Device not activated - navigating to activation")
-            onNavigateToActivation()
-        } else {
-            // ✅ Check if user is logged in (check session token)
-            val hasValidSession = secureStorage.isAuthenticated()
-            if (hasValidSession) {
-                Timber.d("🔑 Valid session found - navigating to Home")
-                onNavigateToHome()
-            } else {
-                Timber.d("🔐 No valid session - navigating to Login")
-                onNavigateToLogin()
+        when (backendStatusResult) {
+            is com.jaac.avoqado_tpv.core.domain.models.Result.Success -> {
+                val status = backendStatusResult.data
+
+                if (!status.isActivated) {
+                    // Backend says not activated → force re-activation
+                    Timber.w("🔐 Backend reports not activated - navigating to activation")
+                    onNavigateToActivation()
+                } else {
+                    // ✅ Backend confirms activation → check session
+                    Timber.d("✅ Backend confirms activation - checking session")
+                    val hasValidSession = secureStorage.isAuthenticated()
+                    if (hasValidSession) {
+                        Timber.d("🔑 Valid session found - navigating to Home")
+                        onNavigateToHome()
+                    } else {
+                        Timber.d("🔐 No valid session - navigating to Login")
+                        onNavigateToLogin()
+                    }
+                }
+            }
+            is com.jaac.avoqado_tpv.core.domain.models.Result.Error -> {
+                // Network error → trust local venueId (offline support)
+                Timber.w(backendStatusResult.exception, "⚠️ Network error checking backend - using local venueId")
+
+                val localActivated = deviceInfoManager.isDeviceActivated()
+                if (!localActivated) {
+                    Timber.d("🔐 No local venueId - navigating to activation")
+                    onNavigateToActivation()
+                } else {
+                    // Trust local venueId when offline
+                    Timber.d("📱 Offline mode - trusting local venueId")
+                    val hasValidSession = secureStorage.isAuthenticated()
+                    if (hasValidSession) {
+                        Timber.d("🔑 Valid session found - navigating to Home")
+                        onNavigateToHome()
+                    } else {
+                        Timber.d("🔐 No valid session - navigating to Login")
+                        onNavigateToLogin()
+                    }
+                }
             }
         }
     }

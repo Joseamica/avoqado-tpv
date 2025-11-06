@@ -4,6 +4,10 @@ import android.content.Context
 import android.os.Build
 import android.provider.Settings
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.data.network.dto.ActivationStatusResponse
+import com.jaac.avoqado_tpv.core.domain.models.ApiException
+import com.jaac.avoqado_tpv.core.domain.models.Result
 import dagger.hilt.android.qualifiers.ApplicationContext
 import timber.log.Timber
 import javax.inject.Inject
@@ -30,7 +34,8 @@ import javax.inject.Singleton
 @Singleton
 class DeviceInfoManager @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val secureStorage: SecureStorage
+    private val secureStorage: SecureStorage,
+    private val apiService: ApiService
 ) {
 
     /**
@@ -128,6 +133,55 @@ class DeviceInfoManager @Inject constructor(
     fun isDeviceActivated(): Boolean {
         val venueId = secureStorage.getVenueId()
         return venueId != null
+    }
+
+    /**
+     * Check activation status with backend
+     *
+     * **Square/Toast Pattern:**
+     * Verifies terminal is activated on backend (activatedAt !== null).
+     * Used by SplashScreen to prevent routing to LoginScreen when not activated.
+     *
+     * **Security:**
+     * - Detects RETIRED terminals (stolen devices)
+     * - Clears local venueId if backend reports not activated
+     * - Returns user-friendly Spanish error messages
+     *
+     * **Offline Handling:**
+     * - On network error → trust local venueId (allow app to work)
+     * - User can still access app offline if previously activated
+     *
+     * @return Result.Success(ActivationStatusResponse) if API call succeeds
+     * @return Result.Error on network failure or server error
+     */
+    suspend fun checkActivationStatusWithBackend(): Result<ActivationStatusResponse> {
+        return try {
+            val serialNumber = getSerialNumber()
+            Timber.d("🔍 Checking activation status with backend for serial: $serialNumber")
+
+            val response = apiService.checkActivationStatus(serialNumber)
+
+            if (response.isSuccessful && response.body() != null) {
+                val status = response.body()!!
+                Timber.d("✅ Backend activation check: isActivated=${status.isActivated}, status=${status.status}")
+
+                // 🚨 SECURITY: Clear local data if backend says not activated or RETIRED
+                if (!status.isActivated || status.status == "RETIRED") {
+                    Timber.w("⚠️ Terminal not activated or RETIRED on backend - clearing local data")
+                    secureStorage.clearAll()
+                }
+
+                Result.Success(status)
+            } else {
+                val errorMessage = "Error checking activation: ${response.code()} ${response.message()}"
+                Timber.e("❌ Backend activation check failed: $errorMessage")
+                Result.Error(ApiException.HttpError(response.code(), errorMessage))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Network error checking activation status")
+            // Offline: Trust local venueId (don't block app)
+            Result.Error(ApiException.NetworkError(e))
+        }
     }
 
     /**

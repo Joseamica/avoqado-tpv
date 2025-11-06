@@ -61,9 +61,11 @@ class MerchantRepositoryImpl @Inject constructor(
     private val _merchants = MutableStateFlow<List<MerchantAccount>>(emptyList())
 
     init {
-        // Initialize with default sandbox accounts
+        // Initialize with default sandbox accounts (fallback)
+        // These will be replaced when terminal config is fetched from backend
         _merchants.value = MerchantAccount.getDefaultSandboxAccounts()
-        Timber.d("📋 [MerchantRepository] Initialized with ${_merchants.value.size} sandbox accounts")
+        Timber.d("📋 [MerchantRepository] Initialized with ${_merchants.value.size} sandbox accounts (fallback)")
+        Timber.d("   ⚠️  These will be replaced by backend config on app startup")
     }
 
     /**

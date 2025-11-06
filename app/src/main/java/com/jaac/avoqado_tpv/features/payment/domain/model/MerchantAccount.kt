@@ -15,6 +15,7 @@ package com.jaac.avoqado_tpv.features.payment.domain.model
  * **Technical Context:**
  * Each merchant account is registered with Blumon as a separate "device":
  * - Serial number acts as device identifier
+ * - posId is Momentum API position ID (CRITICAL for payment routing)
  * - SDK must re-initialize when switching accounts (3-5 seconds)
  * - DUKPT keys are unique per serial number
  *
@@ -23,6 +24,7 @@ package com.jaac.avoqado_tpv.features.payment.domain.model
  * val accountA = MerchantAccount(
  *     id = "merchant_001",
  *     serialNumber = "2841548417",
+ *     posId = "376",
  *     displayName = "Main Restaurant",
  *     environment = MerchantEnvironment.SANDBOX
  * )
@@ -30,6 +32,7 @@ package com.jaac.avoqado_tpv.features.payment.domain.model
  *
  * @property id Unique identifier (from backend database)
  * @property serialNumber Blumon device serial (acts as OAuth username)
+ * @property posId Momentum API position ID (CRITICAL - must match serial)
  * @property displayName User-friendly name shown in UI
  * @property description Optional description for clarification
  * @property environment SANDBOX or PRODUCTION
@@ -38,6 +41,7 @@ package com.jaac.avoqado_tpv.features.payment.domain.model
 data class MerchantAccount(
     val id: String,
     val serialNumber: String,
+    val posId: String? = null,
     val displayName: String,
     val description: String? = null,
     val environment: MerchantEnvironment = MerchantEnvironment.SANDBOX,
@@ -65,27 +69,92 @@ data class MerchantAccount(
 
     companion object {
         /**
-         * Default sandbox accounts for testing (Edgardo's registered devices)
+         * ⚠️ DEPRECATED: Hardcoded sandbox accounts (FALLBACK ONLY)
+         *
+         * **Current Usage:**
+         * Used ONLY as fallback when backend is unreachable.
+         * MerchantRepository replaces these on app startup with dynamic config from backend.
+         *
+         * **Migration Path:**
+         * 1. Superadmin creates merchant accounts in backend
+         * 2. Assigns merchants to terminal via POST /superadmin/terminals/:id/merchants
+         * 3. Android fetches config via GET /tpv/terminals/:serial/config on startup
+         * 4. These hardcoded accounts are replaced with backend config
+         *
+         * **When These Are Used:**
+         * - Backend is unreachable (network error, server down)
+         * - Terminal not yet configured by superadmin
+         * - Development/testing without backend connection
+         *
+         * **Future Action:**
+         * These will be removed in v2.0 when backend config is mandatory.
+         *
+         * @see com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
+         * @see com.jaac.avoqado_tpv.features.payment.data.MerchantRepositoryImpl
          */
+        @Deprecated(
+            message = "Use MerchantRepository.getMerchants() to get dynamic config from backend. " +
+                    "These hardcoded accounts are FALLBACK ONLY.",
+            replaceWith = ReplaceWith(
+                "merchantRepository.getMerchants().first()",
+                "com.jaac.avoqado_tpv.features.payment.data.MerchantRepositoryImpl"
+            ),
+            level = DeprecationLevel.WARNING
+        )
         val SANDBOX_ACCOUNT_A = MerchantAccount(
             id = "merchant_sandbox_a",
             serialNumber = "2841548417",
-            displayName = "Account A",
-            description = "Primary sandbox merchant account",
+            posId = "376",
+            displayName = "Account A (Fallback)",
+            description = "Hardcoded fallback - replaced by backend config",
             environment = MerchantEnvironment.SANDBOX
         )
 
+        @Deprecated(
+            message = "Use MerchantRepository.getMerchants() to get dynamic config from backend. " +
+                    "These hardcoded accounts are FALLBACK ONLY.",
+            replaceWith = ReplaceWith(
+                "merchantRepository.getMerchants().first()",
+                "com.jaac.avoqado_tpv.features.payment.data.MerchantRepositoryImpl"
+            ),
+            level = DeprecationLevel.WARNING
+        )
         val SANDBOX_ACCOUNT_B = MerchantAccount(
             id = "merchant_sandbox_b",
             serialNumber = "2841548418",
-            displayName = "Account B",
-            description = "Secondary sandbox merchant account",
+            posId = "378",
+            displayName = "Account B (Fallback)",
+            description = "Hardcoded fallback - replaced by backend config",
             environment = MerchantEnvironment.SANDBOX
         )
 
         /**
-         * Get default sandbox accounts for testing
+         * Get default sandbox accounts for testing (FALLBACK ONLY)
+         *
+         * ⚠️ **DEPRECATED**: Use MerchantRepository to fetch dynamic config from backend.
+         *
+         * **Current Behavior:**
+         * MerchantRepository initializes with these accounts, then replaces them
+         * on app startup with config fetched from backend.
+         *
+         * **Fallback Scenario:**
+         * If backend is unreachable, these accounts remain available for payment processing.
+         *
+         * **Production Behavior:**
+         * In production, backend config is fetched successfully, and these accounts
+         * are never used (replaced immediately on startup).
+         *
+         * @return List of 2 sandbox accounts (Account A + Account B)
          */
+        @Deprecated(
+            message = "Use MerchantRepository.getMerchants() to get dynamic config from backend. " +
+                    "This method returns FALLBACK accounts only.",
+            replaceWith = ReplaceWith(
+                "merchantRepository.getMerchants().first()",
+                "com.jaac.avoqado_tpv.features.payment.data.MerchantRepositoryImpl"
+            ),
+            level = DeprecationLevel.WARNING
+        )
         fun getDefaultSandboxAccounts(): List<MerchantAccount> {
             return listOf(SANDBOX_ACCOUNT_A, SANDBOX_ACCOUNT_B)
         }

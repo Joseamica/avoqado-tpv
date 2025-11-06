@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.core.di
 
+import com.jaac.avoqado_tpv.core.data.repository.TerminalConfigRepositoryImpl
+import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
 import com.jaac.avoqado_tpv.features.payment.data.MerchantRepositoryImpl
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import dagger.Binds
@@ -24,10 +26,34 @@ import javax.inject.Singleton
  * **Bindings:**
  * - MerchantRepository → MerchantRepositoryImpl
  *   (Provides merchant account management for multi-merchant payment routing)
+ * - TerminalConfigRepository → TerminalConfigRepositoryImpl
+ *   (Fetches terminal configuration from backend on app startup)
  */
 @Module
 @InstallIn(SingletonComponent::class)
 abstract class RepositoryModule {
+
+    /**
+     * Bind TerminalConfigRepository to its implementation
+     *
+     * **Usage:**
+     * ```kotlin
+     * class SplashViewModel @Inject constructor(
+     *     private val terminalConfigRepository: TerminalConfigRepository
+     * ) : ViewModel() {
+     *     // Fetch terminal config on app startup
+     *     terminalConfigRepository.fetchConfig(serialNumber)
+     * }
+     * ```
+     *
+     * @param impl TerminalConfigRepositoryImpl instance (Hilt creates automatically)
+     * @return TerminalConfigRepository interface
+     */
+    @Binds
+    @Singleton
+    abstract fun bindTerminalConfigRepository(
+        impl: TerminalConfigRepositoryImpl
+    ): TerminalConfigRepository
 
     /**
      * Bind MerchantRepository to its implementation

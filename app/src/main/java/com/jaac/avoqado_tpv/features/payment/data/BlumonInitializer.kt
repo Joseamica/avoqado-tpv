@@ -15,6 +15,19 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * Blumon environment constant
+ *
+ * TODO: Fetch dynamically from backend via TerminalConfigRepository
+ * For now, hardcoded to "SAND" (Sandbox) for development
+ *
+ * When implementing dynamic config:
+ * - Fetch from GET /api/v1/tpv/terminals/:serial/config
+ * - Store in TerminalConfig.environment
+ * - Replace references to BLUMON_ENV with TerminalConfig.environment
+ */
+private const val BLUMON_ENV = "SAND"  // "SAND" or "PROD"
+
+/**
  * BlumonInitializer - Configures Blumon SDK credentials for Momentum Sandbox
  *
  * **Problems Solved:**
@@ -152,7 +165,7 @@ class BlumonInitializer @Inject constructor(
             return true
         }
 
-        Timber.i("🔧 [BlumonInitializer] Starting SDK initialization for ${BuildConfig.BLUMON_ENV} environment...")
+        Timber.i("🔧 [BlumonInitializer] Starting SDK initialization for $BLUMON_ENV environment...")
 
         return try {
             // Step 0: ALWAYS authenticate via OAuth (PROD and SAND)
@@ -166,7 +179,7 @@ class BlumonInitializer @Inject constructor(
 
             // SAND mode: Only fetch access_token (no RSA/DUKPT to avoid Integer overflow)
             // PROD mode: Fetch full credentials (needs RSA/DUKPT keys)
-            val isSandbox = (BuildConfig.BLUMON_ENV == "SAND")
+            val isSandbox = (BLUMON_ENV == "SAND")
 
             if (isSandbox) {
                 // SANDBOX: Get token only
@@ -384,7 +397,7 @@ class BlumonInitializer @Inject constructor(
                 email = "test@avoqado.io"
             ),
             dollarMembership = false, // Dollar payments not enabled in Sandbox
-            transactionProfile = BuildConfig.BLUMON_ENV, // "SAND"
+            transactionProfile = BLUMON_ENV, // "SAND" or "PROD"
             emv = true,           // ✅ Chip cards enabled
             contactless = true,   // ✅ NFC enabled
             manual = false,       // ❌ Manual entry disabled

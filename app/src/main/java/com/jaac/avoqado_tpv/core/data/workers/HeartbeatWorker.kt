@@ -12,6 +12,7 @@ import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.domain.models.TerminalStatus
 import com.jaac.avoqado_tpv.core.util.DeviceHealthMonitor
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -114,6 +115,25 @@ class HeartbeatWorker @AssistedInject constructor(
                     androidx.work.ListenableWorker.Result.success()
                 }
                 is com.jaac.avoqado_tpv.core.domain.models.Result.Error -> {
+                    val errorMessage = heartbeatResult.exception?.message ?: ""
+
+                    // 🚨 SECURITY: Terminal has been RETIRED by admin (Square/Toast pattern)
+                    // This happens when device is stolen, employee fired, or security breach
+                    // Force clear activation and stop heartbeat immediately
+                    if (errorMessage.contains("retired", ignoreCase = true)) {
+                        Timber.e("🚨 Terminal has been RETIRED by administrator - clearing all data")
+
+                        // Clear ALL data including activation (forces user back to activation screen)
+                        // This revokes device activation, not just user session
+                        secureStorage.clearAll()
+
+                        // Stop heartbeat worker (no more heartbeats from this device)
+                        HeartbeatScheduler.stop(applicationContext)
+
+                        // Return failure (don't retry - terminal is permanently disabled)
+                        return androidx.work.ListenableWorker.Result.failure()
+                    }
+
                     Timber.w(heartbeatResult.exception, "❌ Heartbeat failed, will retry")
                     // WorkManager will retry with exponential backoff
                     androidx.work.ListenableWorker.Result.retry()
@@ -135,9 +155,9 @@ class HeartbeatWorker @AssistedInject constructor(
      * - NetworkMonitor (connection type, quality)
      */
     private fun buildHeartbeat(): Heartbeat {
-        // Get terminal serial number (without AVQD- prefix for backend)
-        val serialNumber = deviceInfoManager.getSerialNumber()
-        val terminalId = serialNumber.removePrefix("AVQD-")
+        // Get terminal serial number (with AVQD- prefix, e.g., AVQD-2841548417)
+        // Backend handles both formats: "AVQD-2841548417" and "2841548417"
+        val terminalId = deviceInfoManager.getSerialNumber()
 
         // Get system health metrics
         val systemHealth = deviceHealthMonitor.getSystemHealth()

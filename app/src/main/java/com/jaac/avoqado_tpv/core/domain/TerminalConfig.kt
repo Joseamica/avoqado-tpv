@@ -1,14 +1,14 @@
 package com.jaac.avoqado_tpv.core.domain
 
-import com.jaac.avoqado_tpv.BuildConfig
-
 /**
  * Runtime configuration for terminal/device identification
  *
  * **Purpose:** Enables dynamic serial number switching for multi-merchant support
  *
+ * **UPDATED (2025-11-05):** Removed BuildConfig dependency
+ * Configuration now fetched dynamically from backend via TerminalConfigRepository.
+ *
  * **Background:**
- * BuildConfig.TERMINAL_SERIAL is a compile-time constant (immutable).
  * Multi-merchant payment routing requires changing the serial at runtime to:
  * 1. Authenticate with different Blumon merchant accounts
  * 2. Download DUKPT keys for the target merchant
@@ -16,8 +16,9 @@ import com.jaac.avoqado_tpv.BuildConfig
  *
  * **Usage:**
  * ```kotlin
- * // Default (uses BuildConfig value)
- * TerminalConfig.serialNumber // "2841548417"
+ * // Initialize from backend
+ * val config = terminalConfigRepository.getConfig()
+ * TerminalConfig.serialNumber = config.primaryMerchant.serialNumber
  *
  * // Switch to different merchant
  * TerminalConfig.serialNumber = "2841548418"
@@ -29,7 +30,7 @@ import com.jaac.avoqado_tpv.BuildConfig
  *
  * **CRITICAL:**
  * All SDK initialization code MUST use `TerminalConfig.serialNumber`
- * instead of `BuildConfig.TERMINAL_SERIAL` for multi-merchant to work.
+ * instead of hardcoded values for multi-merchant to work.
  *
  * Files using this:
  * - InitializationManager.kt
@@ -41,29 +42,75 @@ import com.jaac.avoqado_tpv.BuildConfig
  */
 object TerminalConfig {
     /**
+     * Default values for development/testing
+     *
+     * ⚠️ TEMPORARY: These will be replaced by backend-fetched values
+     * Once TerminalConfigRepository is implemented, these defaults
+     * are only used as fallback if backend fetch fails.
+     */
+    private const val DEFAULT_SERIAL = "2841548417"  // Sandbox device
+    private const val DEFAULT_BRAND = "PAX"
+    private const val DEFAULT_MODEL = "A910S"
+
+    /**
      * Current terminal serial number
      *
-     * Default: BuildConfig.TERMINAL_SERIAL ("2841548417")
-     * Can be changed at runtime for multi-merchant switching
+     * Initially set to DEFAULT_SERIAL, should be updated from backend
+     * during app initialization or after terminal activation.
      */
-    var serialNumber: String = BuildConfig.TERMINAL_SERIAL
+    var serialNumber: String = DEFAULT_SERIAL
+        private set
 
     /**
      * Terminal brand (e.g., "PAX")
      *
-     * Currently not changed dynamically, but available for future use
+     * Fetched from backend terminal config
      */
-    var brand: String = BuildConfig.TERMINAL_BRAND
+    var brand: String = DEFAULT_BRAND
+        private set
 
     /**
      * Terminal model (e.g., "A910S")
      *
-     * Currently not changed dynamically, but available for future use
+     * Fetched from backend terminal config
      */
-    var model: String = BuildConfig.TERMINAL_MODEL
+    var model: String = DEFAULT_MODEL
+        private set
 
     /**
-     * Reset all configuration to BuildConfig defaults
+     * Initialize terminal config from backend response
+     *
+     * Should be called during app startup after fetching config
+     * from GET /api/v1/tpv/terminals/:serial/config
+     *
+     * @param serial Terminal serial number
+     * @param brand Terminal brand (optional)
+     * @param model Terminal model (optional)
+     */
+    fun initialize(
+        serial: String,
+        brand: String = DEFAULT_BRAND,
+        model: String = DEFAULT_MODEL
+    ) {
+        this.serialNumber = serial
+        this.brand = brand
+        this.model = model
+    }
+
+    /**
+     * Update serial number (used for merchant switching)
+     *
+     * This method is called by MultiMerchantSDKManager when switching
+     * between merchant accounts.
+     *
+     * @param newSerial New serial number to use
+     */
+    fun updateSerial(newSerial: String) {
+        this.serialNumber = newSerial
+    }
+
+    /**
+     * Reset all configuration to defaults
      *
      * Useful for:
      * - Testing (reset to known state)
@@ -71,9 +118,9 @@ object TerminalConfig {
      * - App logout (clear merchant selection)
      */
     fun reset() {
-        serialNumber = BuildConfig.TERMINAL_SERIAL
-        brand = BuildConfig.TERMINAL_BRAND
-        model = BuildConfig.TERMINAL_MODEL
+        serialNumber = DEFAULT_SERIAL
+        brand = DEFAULT_BRAND
+        model = DEFAULT_MODEL
     }
 
     /**

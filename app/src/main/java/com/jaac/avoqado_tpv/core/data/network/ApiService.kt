@@ -60,6 +60,31 @@ interface ApiService {
         @Body request: com.jaac.avoqado_tpv.core.data.network.dto.ActivateTerminalRequest
     ): Response<com.jaac.avoqado_tpv.core.data.network.dto.ActivationResponse>
 
+    /**
+     * Check terminal activation status
+     *
+     * GET /tpv/terminals/{serialNumber}/activation-status
+     *
+     * **PUBLIC ENDPOINT** - No authentication required
+     * - Used by SplashScreen to verify backend activation before routing
+     * - Prevents routing to LoginScreen when terminal is not activated
+     * - Returns RETIRED status to force logout of stolen devices
+     *
+     * Flow:
+     * 1. SplashScreen calls this BEFORE checking local venueId
+     * 2. Backend checks if activatedAt !== null
+     * 3. If not activated → route to ActivationScreen
+     * 4. If RETIRED → clear local data and route to ActivationScreen
+     * 5. If activated → proceed to login check
+     *
+     * @param serialNumber Device serial number (e.g., AVQD-2841548417)
+     * @return Activation status with venueId if activated
+     */
+    @GET("tpv/terminals/{serialNumber}/activation-status")
+    suspend fun checkActivationStatus(
+        @Path("serialNumber") serialNumber: String
+    ): Response<com.jaac.avoqado_tpv.core.data.network.dto.ActivationStatusResponse>
+
     // ========== Health Monitoring (Public Endpoint) ==========
 
     /**
@@ -84,6 +109,59 @@ interface ApiService {
     suspend fun sendHeartbeat(
         @Body request: com.jaac.avoqado_tpv.core.data.network.dto.HeartbeatRequestDto
     ): Response<com.jaac.avoqado_tpv.core.data.network.dto.HeartbeatResponseDto>
+
+    // ========== Terminal Configuration (Public Endpoint) ==========
+
+    /**
+     * Get terminal configuration with assigned merchant accounts
+     *
+     * GET /tpv/terminals/{serialNumber}/config
+     *
+     * **PUBLIC ENDPOINT** - No authentication required
+     * - Called on app startup before login
+     * - Fetches terminal info + assigned merchant accounts
+     * - Enables dynamic multi-merchant support
+     *
+     * Flow:
+     * 1. App startup → reads device serial number
+     * 2. Calls this endpoint to fetch config
+     * 3. Backend returns terminal + merchant accounts
+     * 4. App stores in TerminalConfig and MerchantRepository
+     * 5. User can switch between merchants in payment screen
+     *
+     * **Response Example:**
+     * ```json
+     * {
+     *   "success": true,
+     *   "data": {
+     *     "terminal": {
+     *       "id": "term_xxxxx",
+     *       "serialNumber": "2841548417",
+     *       "brand": "PAX",
+     *       "model": "A910S",
+     *       "status": "ACTIVE",
+     *       "venueId": "venue_xxxxx"
+     *     },
+     *     "merchantAccounts": [
+     *       {
+     *         "id": "ma_xxxxx",
+     *         "displayName": "Main Account",
+     *         "serialNumber": "2841548417",
+     *         "posId": "376",
+     *         "environment": "SANDBOX"
+     *       }
+     *     ]
+     *   }
+     * }
+     * ```
+     *
+     * @param serialNumber Terminal serial number (e.g., "2841548417")
+     * @return Terminal config response with terminal info and merchant accounts
+     */
+    @GET("tpv/terminals/{serialNumber}/config")
+    suspend fun getTerminalConfig(
+        @Path("serialNumber") serialNumber: String
+    ): Response<com.jaac.avoqado_tpv.core.data.network.dto.TerminalConfigResponse>
 
     // ========== Authentication ==========
 

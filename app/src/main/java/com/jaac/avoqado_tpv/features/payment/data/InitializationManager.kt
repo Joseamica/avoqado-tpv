@@ -10,6 +10,7 @@ import com.example.clean_lib_services.shared.initializer.domain.use_case.initial
 import com.example.clean_lib_services.shared.initializer.domain.use_case.insert_init.InsertInitParams
 import com.example.clean_lib_services.shared.initializer.domain.use_case.insert_init.InsertInitUseCase
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.domain.TerminalConfig
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -117,9 +118,9 @@ class InitializationManager @Inject constructor(
             // STEP 1: InitializerUseCase (OAuth + DUKPT download)
             Timber.i("[INIT STEP 1] InitializerUseCase - OAuth + DUKPT key download...")
             val initParams = InitializerParams(
-                serial = com.jaac.avoqado_tpv.BuildConfig.TERMINAL_SERIAL,
-                brand = com.jaac.avoqado_tpv.BuildConfig.TERMINAL_BRAND,
-                model = com.jaac.avoqado_tpv.BuildConfig.TERMINAL_MODEL
+                serial = com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber,
+                brand = com.jaac.avoqado_tpv.core.domain.TerminalConfig.brand,
+                model = com.jaac.avoqado_tpv.core.domain.TerminalConfig.model
             )
 
             val initResult = initializerUseCase.run(initParams)
@@ -132,9 +133,23 @@ class InitializationManager @Inject constructor(
 
             Timber.i("✅ [INIT STEP 1] OAuth + DUKPT keys downloaded successfully")
 
+            // STEP 1.5: Get the correct posId from backend BEFORE overwriting
+            Timber.i("[INIT STEP 1.5] GetInitDataUseCase - Fetching backend posId...")
+            val preInitDataParams = GetInitDataParams()
+            val preInitDataResult = getInitDataUseCase.run(preInitDataParams)
+
+            val correctPosId = if (preInitDataResult.isRight) {
+                val preInitData = preInitDataResult.rightValue().initData
+                Timber.i("   Backend returned posId: ${preInitData.posId} for serial: ${TerminalConfig.serialNumber}")
+                preInitData.posId
+            } else {
+                // Fallback to old hardcoded value if backend call fails
+                Timber.w("   ⚠️ Failed to get posId from backend, using fallback: 376")
+                "376"
+            }
+
             // STEP 2: InsertInitUseCase (posId bug workaround)
-            Timber.i("[INIT STEP 2] InsertInitUseCase - Forcing correct posId (376)...")
-            val correctPosId = "376"
+            Timber.i("[INIT STEP 2] InsertInitUseCase - Forcing correct posId ($correctPosId)...")
             val postInitData = InitData(
                 posId = correctPosId,
                 commerceName = "Avoqado Test Venue",
@@ -167,7 +182,7 @@ class InitializationManager @Inject constructor(
                 return Result.failure(Exception("InsertInitUseCase failed"))
             }
 
-            Timber.i("✅ [INIT STEP 2] posId corrected: 2841548417 → 376")
+            Timber.i("✅ [INIT STEP 2] posId corrected: ${TerminalConfig.serialNumber} → $correctPosId")
 
             // STEP 3: Verification with GetInitDataUseCase
             Timber.i("[INIT STEP 3] GetInitDataUseCase - Verifying posId...")

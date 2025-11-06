@@ -249,7 +249,7 @@ class BlumonInitializer @Inject constructor(
         return try {
             Timber.d("   🔍 Calling InitUseCase to validate terminal...")
             val params = com.example.clean_lib_services.shared.core.domain.use_case.init.InitParams(
-                serial = BuildConfig.TERMINAL_SERIAL  // "2841548417"
+                serial = com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber
             )
 
             when (val result = initUseCase.run(params)) {
@@ -286,7 +286,7 @@ class BlumonInitializer @Inject constructor(
             // Step 2: Insert RSA keys
             Timber.d("   [Step 2/3] Inserting REAL RSA keys from OAuth...")
             val rsaParams = InsertRSADataParams(
-                posId = BuildConfig.TERMINAL_SERIAL,
+                posId = com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber,
                 tk = credentials.rsaKey
             )
             insertRSADataUseCase.runInfallible(rsaParams)
@@ -296,7 +296,7 @@ class BlumonInitializer @Inject constructor(
             Timber.d("   [Step 3/3] Inserting REAL DUKPT keys from OAuth...")
             val dukptParams = InsertDUKPTDataParams(
                 dukptData = credentials.toDUKPTData(),
-                posID = BuildConfig.TERMINAL_SERIAL
+                posID = com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber
             )
             insertDUKPTDataUseCase.runInfallible(dukptParams)
             Timber.i("   ✅ Real DUKPT keys inserted (KSN: ${credentials.dukptKsn})")
@@ -321,7 +321,7 @@ class BlumonInitializer @Inject constructor(
             // Step 2: Insert placeholder RSA keys
             Timber.d("   [Step 2/3] Inserting placeholder RSA keys...")
             val rsaParams = InsertRSADataParams(
-                posId = BuildConfig.TERMINAL_SERIAL,
+                posId = com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber,
                 tk = RSA_PLACEHOLDER_KEY
             )
             insertRSADataUseCase.runInfallible(rsaParams)
@@ -338,7 +338,7 @@ class BlumonInitializer @Inject constructor(
             )
             val dukptParams = InsertDUKPTDataParams(
                 dukptData = dukptData,
-                posID = BuildConfig.TERMINAL_SERIAL
+                posID = com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber
             )
             insertDUKPTDataUseCase.runInfallible(dukptParams)
             Timber.i("   ✅ Placeholder DUKPT keys inserted")
@@ -375,7 +375,7 @@ class BlumonInitializer @Inject constructor(
      */
     private fun createSandboxInitData(): InitData {
         return InitData(
-            posId = BuildConfig.TERMINAL_SERIAL, // "2841548417"
+            posId = com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber,
             commerceName = "Avoqado Test Venue",
             commerceAddress = "Test Address, Test City",
             contact = Contact(

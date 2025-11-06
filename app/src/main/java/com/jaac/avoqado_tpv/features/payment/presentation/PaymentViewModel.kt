@@ -91,11 +91,36 @@ class PaymentViewModel @Inject constructor(
     // 🛠️ InsertInitUseCase - Manual fix for SDK bug where InitializerUseCase stores serial as posId
     private val insertInitUseCase: InsertInitUseCase,
     // 🔧 InitializationManager - Ensures Blumon SDK init runs once every 24h (per Edgardo 2025-11-05)
-    private val initializationManager: com.jaac.avoqado_tpv.features.payment.data.InitializationManager
+    private val initializationManager: com.jaac.avoqado_tpv.features.payment.data.InitializationManager,
+    // 🏪 Multi-Merchant Support - Allow single terminal to process payments for multiple merchant accounts
+    private val getMerchantsUseCase: com.jaac.avoqado_tpv.features.payment.domain.use_case.GetMerchantsUseCase,
+    private val multiMerchantSDKManager: com.jaac.avoqado_tpv.features.payment.data.MultiMerchantSDKManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentState>(PaymentState.Idle)
     val state: StateFlow<PaymentState> = _state.asStateFlow()
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MULTI-MERCHANT STATE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Available merchant accounts (reactive - updates from repository)
+    private val _merchants = MutableStateFlow<List<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount>>(emptyList())
+    val merchants: StateFlow<List<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount>> = _merchants.asStateFlow()
+
+    // Currently active merchant account
+    private val _currentMerchant = MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount?>(null)
+    val currentMerchant: StateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount?> = _currentMerchant.asStateFlow()
+
+    // Loading state during merchant switch (3-5 seconds)
+    private val _merchantSwitchingLoading = MutableStateFlow(false)
+    val merchantSwitchingLoading: StateFlow<Boolean> = _merchantSwitchingLoading.asStateFlow()
+
+    // Success/error message after merchant switch
+    private val _merchantSwitchMessage = MutableStateFlow<String?>(null)
+    val merchantSwitchMessage: StateFlow<String?> = _merchantSwitchMessage.asStateFlow()
+
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private var currentAmount: String = ""
     private var currentTrack2: String = ""
@@ -175,6 +200,20 @@ class PaymentViewModel @Inject constructor(
             initializationManager.ensureInitialized().onFailure { error ->
                 Timber.e(error, "❌ Failed to initialize Blumon SDK")
             }
+        }
+
+        // 🏪 Load available merchant accounts
+        viewModelScope.launch {
+            getMerchantsUseCase().collect { merchantList ->
+                _merchants.value = merchantList
+                Timber.d("🏪 [Merchants] Loaded ${merchantList.size} accounts: ${merchantList.map { it.displayName }}")
+            }
+        }
+
+        // 🏪 Track current merchant from SDK manager
+        viewModelScope.launch {
+            _currentMerchant.value = multiMerchantSDKManager.getCurrentMerchant()
+            Timber.d("🏪 [Merchants] Current account: ${_currentMerchant.value?.displayName ?: "Default (${com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber})"}")
         }
 
         collectPinDialogFlows()
@@ -290,6 +329,86 @@ class PaymentViewModel @Inject constructor(
      *
      * Recommended by Blumon consultant: Implement OFFLINE first, then migrate to ONLINE
      */
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MULTI-MERCHANT SWITCHING
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Select a merchant account for payment processing
+     *
+     * **Flow:**
+     * 1. Show loading overlay (3-5 seconds)
+     * 2. Call MultiMerchantSDKManager.switchMerchant()
+     *    - Updates TerminalConfig.serialNumber
+     *    - Triggers SDK re-initialization (OAuth + DUKPT keys)
+     * 3. Show success/error message
+     * 4. Update current merchant state
+     *
+     * **Usage in UI:**
+     * ```kotlin
+     * Button(onClick = { viewModel.selectMerchant(accountA) }) {
+     *     Text("Account A")
+     * }
+     * ```
+     *
+     * **User Experience:**
+     * - Button click → "Cambiando a Account A..." (3-5s loading)
+     * - Success → "✅ Ahora usando Account A. Puede procesar pago."
+     * - Error → "❌ No se pudo cambiar. Intente nuevamente."
+     *
+     * @param account Target merchant account to switch to
+     */
+    fun selectMerchant(account: com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount) {
+        Timber.i("🏪 [Merchants] User selected: ${account.displayName} (${account.serialNumber})")
+
+        // Prevent switching during active payment
+        if (_state.value !is PaymentState.Idle) {
+            Timber.w("⚠️ [Merchants] Cannot switch during active payment")
+            _merchantSwitchMessage.value = "No puede cambiar de cuenta durante un pago activo"
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // Step 1: Show loading
+                _merchantSwitchingLoading.value = true
+                _merchantSwitchMessage.value = "Cambiando a ${account.displayName}..."
+                Timber.d("🏪 [Merchants] Starting switch to: ${account.displayName}")
+
+                // Step 2: Switch merchant (3-5 seconds - OAuth + re-init)
+                val result = multiMerchantSDKManager.switchMerchant(account)
+
+                // Step 3: Handle result
+                if (result.isSuccess) {
+                    _currentMerchant.value = account
+                    _merchantSwitchMessage.value = "✅ Ahora usando ${account.displayName}. Puede procesar pago."
+                    Timber.i("✅ [Merchants] Successfully switched to: ${account.displayName}")
+                    Timber.i("   Serial: ${account.serialNumber}")
+                    Timber.i("   TerminalConfig.serialNumber: ${com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber}")
+                } else {
+                    val error = result.exceptionOrNull()
+                    _merchantSwitchMessage.value = "❌ ${error?.message ?: "Error desconocido al cambiar cuenta"}"
+                    Timber.e(error, "❌ [Merchants] Failed to switch to: ${account.displayName}")
+                }
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Merchants] Unexpected error during merchant switch")
+                _merchantSwitchMessage.value = "❌ Error inesperado: ${e.message}"
+            } finally {
+                _merchantSwitchingLoading.value = false
+            }
+        }
+    }
+
+    /**
+     * Clear merchant switch message (dismiss success/error notification)
+     */
+    fun clearMerchantSwitchMessage() {
+        _merchantSwitchMessage.value = null
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+
     /**
      * Start chip card payment with ONLINE bank authorization via Momentum platform
      *

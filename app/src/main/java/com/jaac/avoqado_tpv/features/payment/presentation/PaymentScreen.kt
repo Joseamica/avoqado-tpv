@@ -11,7 +11,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoButton
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoCard
-import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingIndicator
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTextField
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
@@ -27,6 +27,10 @@ fun PaymentScreen(
     viewModel: PaymentViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val merchants by viewModel.merchants.collectAsStateWithLifecycle()
+    val currentMerchant by viewModel.currentMerchant.collectAsStateWithLifecycle()
+    val merchantSwitchingLoading by viewModel.merchantSwitchingLoading.collectAsStateWithLifecycle()
+    val merchantSwitchMessage by viewModel.merchantSwitchMessage.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -44,6 +48,16 @@ fun PaymentScreen(
             when (val currentState = state) {
                 is PaymentState.Idle -> {
                     PaymentIdleContent(
+                        merchants = merchants,
+                        currentMerchant = currentMerchant,
+                        merchantSwitchingLoading = merchantSwitchingLoading,
+                        merchantSwitchMessage = merchantSwitchMessage,
+                        onSelectMerchant = { merchant ->
+                            viewModel.selectMerchant(merchant)
+                        },
+                        onClearMerchantMessage = {
+                            viewModel.clearMerchantSwitchMessage()
+                        },
                         onStartPayment = { amount ->
                             viewModel.startPayment(amount)
                         }
@@ -93,52 +107,123 @@ fun PaymentScreen(
 
 @Composable
 private fun PaymentIdleContent(
+    merchants: List<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount>,
+    currentMerchant: com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount?,
+    merchantSwitchingLoading: Boolean,
+    merchantSwitchMessage: String?,
+    onSelectMerchant: (com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount) -> Unit,
+    onClearMerchantMessage: () -> Unit,
     onStartPayment: (String) -> Unit
 ) {
     var amount by remember { mutableStateOf("") }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        AvoqadoCard(
-            modifier = Modifier.fillMaxWidth()
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+            AvoqadoCard(
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Text(
-                    text = "Pago con Chip EMV",
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // ═══════════════════════════════════════════════════════
+                    // MERCHANT SELECTION (MVP: Simple 2-button layout)
+                    // ═══════════════════════════════════════════════════════
+                    Text(
+                        text = "Seleccionar Cuenta",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
 
-                Spacer(modifier = Modifier.height(24.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
-                AvoqadoTextField(
-                    value = amount,
-                    onValueChange = { amount = it },
-                    label = "Monto (MXN)",
-                    placeholder = "100.00"
-                )
+                    // Display current merchant
+                    Text(
+                        text = "Cuenta activa: ${currentMerchant?.displayName ?: "Default (${com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber})"}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
 
-                Spacer(modifier = Modifier.height(24.dp))
+                    Spacer(modifier = Modifier.height(16.dp))
 
-                AvoqadoButton(
-                    text = "Iniciar Pago",
-                    onClick = {
-                        if (amount.isNotBlank()) {
-                            onStartPayment(amount)
+                    // 2-button layout: Account A | Account B
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        merchants.forEach { merchant ->
+                            AvoqadoButton(
+                                text = merchant.displayName,
+                                onClick = { onSelectMerchant(merchant) },
+                                enabled = !merchantSwitchingLoading,
+                                modifier = Modifier.weight(1f)
+                            )
                         }
-                    },
-                    enabled = amount.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth()
-                )
+                    }
+
+                    // Success/error message
+                    merchantSwitchMessage?.let { message ->
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (message.startsWith("✅")) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            },
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(32.dp))
+
+                    // ═══════════════════════════════════════════════════════
+                    // PAYMENT AMOUNT INPUT
+                    // ═══════════════════════════════════════════════════════
+                    Text(
+                        text = "Pago con Chip EMV",
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    AvoqadoTextField(
+                        value = amount,
+                        onValueChange = { amount = it },
+                        label = "Monto (MXN)",
+                        placeholder = "100.00"
+                    )
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    AvoqadoButton(
+                        text = "Iniciar Pago",
+                        onClick = {
+                            if (amount.isNotBlank()) {
+                                onStartPayment(amount)
+                            }
+                        },
+                        enabled = amount.isNotBlank() && !merchantSwitchingLoading,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
+        }
+
+        // Loading overlay during merchant switch
+        if (merchantSwitchingLoading) {
+            AvoqadoLoadingOverlay(
+                message = merchantSwitchMessage ?: "Cambiando cuenta..."
+            )
         }
     }
 }

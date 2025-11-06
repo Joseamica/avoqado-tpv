@@ -55,9 +55,9 @@ class BlumonAuthManager @Inject constructor(
      */
     suspend fun fetchAccessTokenOnly(): String? {
         return try {
-            val serialNumber = BuildConfig.TERMINAL_SERIAL
-            val brand = BuildConfig.TERMINAL_BRAND
-            val model = BuildConfig.TERMINAL_MODEL
+            val serialNumber = com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber
+            val brand = com.jaac.avoqado_tpv.core.domain.TerminalConfig.brand
+            val model = com.jaac.avoqado_tpv.core.domain.TerminalConfig.model
 
             Timber.i("🔐 [BlumonAuthManager] Fetching OAuth token only (no keys)...")
             Timber.d("   Serial: $serialNumber, Brand: $brand, Model: $model")
@@ -111,9 +111,9 @@ class BlumonAuthManager @Inject constructor(
 
     suspend fun fetchCredentials(): BlumonCredentials? {
         return try {
-            val serialNumber = BuildConfig.TERMINAL_SERIAL
-            val brand = BuildConfig.TERMINAL_BRAND  // "PAX" (not UNISOC!)
-            val model = BuildConfig.TERMINAL_MODEL  // "A910S"
+            val serialNumber = com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber
+            val brand = com.jaac.avoqado_tpv.core.domain.TerminalConfig.brand  // "PAX" (not UNISOC!)
+            val model = com.jaac.avoqado_tpv.core.domain.TerminalConfig.model  // "A910S"
 
             Timber.i("🔐 [BlumonAuthManager] Starting OAuth flow...")
             Timber.d("   Serial: $serialNumber, Brand: $brand, Model: $model")

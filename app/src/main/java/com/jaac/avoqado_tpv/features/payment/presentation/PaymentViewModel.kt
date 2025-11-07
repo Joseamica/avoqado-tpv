@@ -45,6 +45,7 @@ import com.example.clean_lib_services.shared.core.domain.entity.init.InitData
 import com.example.clean_lib_services.shared.core.domain.entity.init.Contact
 import com.example.clean_lib_services.shared.core.domain.entity.init.KushkiData
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
+import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.pax.dal.entity.EReaderType
 import com.paxsz.module.emv.process.enums.TransResultEnum
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -122,7 +123,8 @@ class PaymentViewModel @Inject constructor(
 
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private var currentAmount: String = ""
+    private var currentAmount: String = ""  // Amount in decimal format (e.g., "30.00") for UI display
+    private var currentAmountInCents: String = ""  // Amount in cents (e.g., "3000") for SDK calls
     private var currentTrack2: String = ""
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -361,8 +363,9 @@ class PaymentViewModel @Inject constructor(
     fun selectMerchant(account: com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount) {
         Timber.i("🏪 [Merchants] User selected: ${account.displayName} (${account.serialNumber})")
 
-        // Prevent switching during active payment
-        if (_state.value !is PaymentState.Idle) {
+        // Allow switching in Idle or SelectingMerchant states
+        val currentState = _state.value
+        if (currentState !is PaymentState.Idle && currentState !is PaymentState.SelectingMerchant) {
             Timber.w("⚠️ [Merchants] Cannot switch during active payment")
             _merchantSwitchMessage.value = "No puede cambiar de cuenta durante un pago activo"
             return
@@ -417,6 +420,149 @@ class PaymentViewModel @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // NEW PAYMENT FLOW: Rating → Tip → Merchant → Payment
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Initiate payment flow - Start with amount input
+     *
+     * **New Flow (Phase 4):**
+     * EnteringAmount → CollectingRating → CollectingTip → SelectingMerchant → Payment
+     */
+    fun initiatePaymentFlow() {
+        Timber.d("🎯 [Payment Flow] Initiating new payment flow")
+        _state.value = PaymentState.EnteringAmount()
+    }
+
+    /**
+     * Submit amount and proceed to rating screen
+     */
+    fun submitAmount(amount: String) {
+        Timber.d("💰 [Payment Flow] Amount entered: $$amount")
+        _state.value = PaymentState.CollectingRating(amount = amount)
+    }
+
+    /**
+     * Update selected merchant in SelectingMerchant state (visual only, no SDK switch yet)
+     */
+    fun updateSelectedMerchant(merchant: MerchantAccount) {
+        if (_state.value is PaymentState.SelectingMerchant) {
+            Timber.d("🏪 [Payment Flow] Merchant selected (visual): ${merchant.displayName}")
+            _currentMerchant.value = merchant
+        } else {
+            Timber.w("⚠️ [Payment Flow] updateSelectedMerchant called outside SelectingMerchant state")
+        }
+    }
+
+    /**
+     * Update rating when user taps a star
+     */
+    fun updateRating(amount: String, rating: Int) {
+        Timber.d("⭐ [Payment Flow] Rating updated: $rating stars")
+        _state.value = PaymentState.CollectingRating(amount = amount, rating = rating)
+    }
+
+    /**
+     * Submit rating and proceed to tip screen
+     */
+    fun submitRating(amount: String, rating: Int) {
+        Timber.d("⭐ [Payment Flow] Rating submitted: $rating stars")
+        _state.value = PaymentState.CollectingTip(amount = amount, rating = rating)
+    }
+
+    /**
+     * Skip rating and proceed to tip screen
+     */
+    fun skipRating(amount: String) {
+        Timber.d("⏭️  [Payment Flow] Rating skipped")
+        _state.value = PaymentState.CollectingTip(amount = amount, rating = null)
+    }
+
+    /**
+     * Submit tip and proceed to merchant selection
+     */
+    fun submitTip(subtotal: String, tipAmount: String, rating: Int?) {
+        val totalAmount = calculateTotal(subtotal, tipAmount)
+        Timber.d("💵 [Payment Flow] Tip submitted: $$tipAmount (Total: $$totalAmount)")
+        _state.value = PaymentState.SelectingMerchant(
+            subtotal = subtotal,
+            tipAmount = tipAmount,
+            totalAmount = totalAmount,
+            rating = rating
+        )
+    }
+
+    /**
+     * Skip tip (no tip) and proceed to merchant selection
+     */
+    fun skipTip(subtotal: String, rating: Int?) {
+        Timber.d("⏭️  [Payment Flow] Tip skipped")
+        _state.value = PaymentState.SelectingMerchant(
+            subtotal = subtotal,
+            tipAmount = "0",
+            totalAmount = subtotal,
+            rating = rating
+        )
+    }
+
+    /**
+     * Update tip percentage selection
+     */
+    fun updateTipPercentage(amount: String, rating: Int?, percentage: Int) {
+        val tipAmount = calculateTipAmount(amount, percentage)
+        Timber.d("💵 [Payment Flow] Tip percentage selected: $percentage% = $$tipAmount")
+        _state.value = PaymentState.CollectingTip(
+            amount = amount,
+            rating = rating,
+            selectedTipPercentage = percentage,
+            tipAmount = tipAmount
+        )
+    }
+
+    /**
+     * Update custom tip amount
+     */
+    fun updateCustomTip(amount: String, rating: Int?, customTip: String) {
+        Timber.d("💵 [Payment Flow] Custom tip entered: $$customTip")
+        _state.value = PaymentState.CollectingTip(
+            amount = amount,
+            rating = rating,
+            selectedTipPercentage = null,
+            tipAmount = customTip
+        )
+    }
+
+    /**
+     * Calculate tip amount based on percentage
+     */
+    private fun calculateTipAmount(subtotal: String, percentage: Int): String {
+        val subtotalDecimal = subtotal.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+        val tip = subtotalDecimal.multiply(java.math.BigDecimal(percentage))
+            .divide(java.math.BigDecimal(100), 2, java.math.RoundingMode.HALF_UP)
+        return tip.toString()
+    }
+
+    /**
+     * Calculate total amount (subtotal + tip)
+     */
+    private fun calculateTotal(subtotal: String, tipAmount: String): String {
+        val subtotalDecimal = subtotal.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+        val tipDecimal = tipAmount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+        return subtotalDecimal.add(tipDecimal).toString()
+    }
+
+    /**
+     * Convert decimal amount to cents
+     * Example: "30.00" → "3000"
+     */
+    private fun convertToCents(amount: String): String {
+        val amountDecimal = amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+        val cents = amountDecimal.multiply(java.math.BigDecimal(100))
+            .setScale(0, java.math.RoundingMode.HALF_UP)
+        return cents.toLong().toString()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
 
     /**
      * Start chip card payment with ONLINE bank authorization via Momentum platform
@@ -427,15 +573,17 @@ class PaymentViewModel @Inject constructor(
      * This prevents error -11 (FailureSecondGenerate) for cards that don't need ARPC.
      */
     fun startPayment(amount: String) {
-        currentAmount = amount
+        currentAmount = amount  // Save for UI display
+        currentAmountInCents = convertToCents(amount)  // Save for SDK calls
         Timber.d("🎯 [BlumonPayment] Starting ONLINE chip payment flow: $$amount")
+        Timber.d("   💰 Amount: $$amount → $currentAmountInCents centavos")
         _state.value = PaymentState.ConfiguringKernel
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 // PASO 1: PreTrans (configure EMV kernel)
                 Timber.i("[PHASE 1] PreTrans - Configuring EMV kernel...")
-                val preParams = PreTransParams(amount, "0", TransType.SALE, CountryConstants.MEX)
+                val preParams = PreTransParams(currentAmountInCents, "0", TransType.SALE, CountryConstants.MEX)
                 preTransUseCase.runInfallible(preParams)
                 Timber.d("✅ [PHASE 1] PreTrans completed")
 
@@ -465,7 +613,7 @@ class PaymentViewModel @Inject constructor(
                 when (cardType) {
                     CardType.PICC -> {
                         Timber.i("🔄 [ROUTING] Contactless card detected → Calling processContactlessPayment()")
-                        processContactlessPayment(amount)
+                        processContactlessPayment(currentAmountInCents)  // ✅ Pass cents format
                         return@launch  // Exit startPayment() - contactless flow handles everything
                     }
                     CardType.ICC, CardType.MAG -> {
@@ -578,7 +726,7 @@ class PaymentViewModel @Inject constructor(
                 _state.value = PaymentState.Processing("Autorizando con banco...")
                 Timber.i("[PHASE 4] SaleIcc - Sending to Momentum for ONLINE authorization...")
                 val saleResponse = performOnlineAuthorization(
-                    amount = currentAmount,
+                    amount = currentAmountInCents,  // ✅ Pass cents format to SDK
                     track2 = currentTrack2,  // Extracted from emvTagListStr above
                     cardHolderName = "CARDHOLDER",  // TODO: Extract from tag 5F20 if available
                     emvTagList = emvTagListStr
@@ -835,7 +983,7 @@ class PaymentViewModel @Inject constructor(
                 TransResultEnum.RESULT_REQ_ONLINE -> {
                     // Card requires online authorization with bank
                     Timber.i("[CONTACTLESS PHASE 3] RESULT_REQ_ONLINE → Extracting EMV tags and calling SaleIcc...")
-                    processContactlessOnlineAuthorization(amount)
+                    processContactlessOnlineAuthorization(currentAmountInCents)  // ✅ Pass cents format
                 }
 
                 TransResultEnum.RESULT_OFFLINE_APPROVED -> {
@@ -843,7 +991,7 @@ class PaymentViewModel @Inject constructor(
                     Timber.i("🎉 [CONTACTLESS PHASE 3] RESULT_OFFLINE_APPROVED → Payment approved offline!")
                     _state.value = PaymentState.Success(
                         authCode = "OFFLINE_APPROVED",
-                        amount = amount
+                        amount = currentAmount  // ✅ Use decimal format for display
                     )
                 }
 
@@ -968,7 +1116,7 @@ class PaymentViewModel @Inject constructor(
 
             _state.value = PaymentState.Success(
                 authCode = saleData.authorization ?: "",
-                amount = amount
+                amount = currentAmount  // ✅ Use decimal format for display
             )
 
         } catch (e: Exception) {

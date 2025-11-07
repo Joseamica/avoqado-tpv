@@ -140,6 +140,22 @@ class MerchantRepositoryImpl @Inject constructor(
     }
 
     /**
+     * Replace all merchants with new list from backend
+     *
+     * This REPLACES fallback accounts with dynamic config from backend.
+     * Used by MainActivity when fetching terminal config on startup.
+     *
+     * @param merchants List of merchant accounts from backend
+     */
+    fun updateMerchants(merchants: List<MerchantAccount>) {
+        _merchants.value = merchants
+        Timber.i("📋 [MerchantRepository] Replaced with ${merchants.size} merchants from backend")
+        merchants.forEach { merchant ->
+            Timber.d("   ✅ ${merchant.displayName} (${merchant.serialNumber})")
+        }
+    }
+
+    /**
      * Add or update a merchant account (for testing/admin)
      *
      * ⚠️ NOT part of interface (implementation-specific method)

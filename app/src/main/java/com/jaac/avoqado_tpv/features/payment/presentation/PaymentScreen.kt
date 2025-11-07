@@ -46,23 +46,79 @@ fun PaymentScreen(
                 .padding(paddingValues)
         ) {
             when (val currentState = state) {
-                is PaymentState.Idle -> {
-                    PaymentIdleContent(
-                        merchants = merchants,
-                        currentMerchant = currentMerchant,
-                        merchantSwitchingLoading = merchantSwitchingLoading,
-                        merchantSwitchMessage = merchantSwitchMessage,
-                        onSelectMerchant = { merchant ->
-                            viewModel.selectMerchant(merchant)
-                        },
-                        onClearMerchantMessage = {
-                            viewModel.clearMerchantSwitchMessage()
-                        },
-                        onStartPayment = { amount ->
-                            viewModel.startPayment(amount)
+                // NEW FLOW: Pre-payment steps
+                is PaymentState.EnteringAmount -> {
+                    AmountInputScreen(
+                        currentAmount = currentState.amount,
+                        onAmountChange = { /* handled by state */ },
+                        onContinue = { amount ->
+                            viewModel.submitAmount(amount)
                         }
                     )
                 }
+
+                is PaymentState.CollectingRating -> {
+                    RatingScreen(
+                        currentRating = currentState.rating,
+                        onRatingChange = { rating ->
+                            viewModel.updateRating(currentState.amount, rating)
+                        },
+                        onContinue = {
+                            viewModel.submitRating(currentState.amount, currentState.rating)
+                        },
+                        onSkip = {
+                            viewModel.skipRating(currentState.amount)
+                        }
+                    )
+                }
+
+                is PaymentState.CollectingTip -> {
+                    TipScreen(
+                        subtotal = currentState.amount,
+                        selectedTipPercentage = currentState.selectedTipPercentage,
+                        customTipAmount = if (currentState.selectedTipPercentage == null && currentState.tipAmount != "0") {
+                            currentState.tipAmount
+                        } else null,
+                        onTipPercentageSelected = { percentage ->
+                            viewModel.updateTipPercentage(currentState.amount, currentState.rating, percentage)
+                        },
+                        onCustomTipSelected = { customTip ->
+                            viewModel.updateCustomTip(currentState.amount, currentState.rating, customTip)
+                        },
+                        onContinue = {
+                            viewModel.submitTip(currentState.amount, currentState.tipAmount, currentState.rating)
+                        },
+                        onSkipTip = {
+                            viewModel.skipTip(currentState.amount, currentState.rating)
+                        }
+                    )
+                }
+
+                is PaymentState.SelectingMerchant -> {
+                    MerchantSelectionContent(
+                        totalAmount = currentState.totalAmount,
+                        tipAmount = currentState.tipAmount,
+                        rating = currentState.rating,
+                        merchants = merchants,
+                        currentMerchant = currentMerchant,
+                        merchantSwitchingLoading = merchantSwitchingLoading,
+                        onSelectMerchant = { merchant ->
+                            viewModel.selectMerchant(merchant)
+                        },
+                        onStartPayment = {
+                            viewModel.startPayment(currentState.totalAmount)
+                        }
+                    )
+                }
+
+                // LEGACY: Old idle state (redirect to new flow)
+                is PaymentState.Idle -> {
+                    LaunchedEffect(Unit) {
+                        viewModel.initiatePaymentFlow()
+                    }
+                }
+
+                // Payment processing states (EXISTING - No changes)
                 is PaymentState.ConfiguringKernel -> {
                     PaymentLoadingContent("Configurando terminal...")
                 }

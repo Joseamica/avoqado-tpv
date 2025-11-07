@@ -4,6 +4,129 @@
 
 ---
 
+## [2025-11-06] - Phase 4: New Payment Flow (Rating → Tip → Merchant Selection)
+
+### **Added (Android - avoqado-tpv)**
+
+1. **AvoqadoRatingInput Component** (core/presentation/components/AvoqadoRatingInput.kt)
+   - Reusable 5-star rating input component
+   - Tap-to-select interaction (1-5 stars)
+   - Optional label, enabled/disabled states
+   - Material3 styling with responsive sizing
+   - **Use Case:** Collect customer satisfaction rating before payment
+
+2. **AvoqadoTipSelector Component** (core/presentation/components/AvoqadoTipSelector.kt)
+   - Reusable tip selection component
+   - Quick tip buttons: 10%, 15%, 20%
+   - Custom amount dialog for manual entry
+   - Automatic tip calculation based on subtotal
+   - Real-time total display
+   - **Use Case:** Collect optional tip before payment
+
+3. **AmountInputScreen** (features/payment/presentation/AmountInputScreen.kt)
+   - First step of new payment flow
+   - Amount input with validation (must be > 0)
+   - Clean card-based UI with AvoqadoTextField
+   - "Continuar" button enabled only with valid amount
+   - **Flow:** User enters amount → Rating screen
+
+4. **RatingScreen** (features/payment/presentation/RatingScreen.kt)
+   - Second step of payment flow (OPTIONAL)
+   - Uses AvoqadoRatingInput component
+   - Two actions: "Continuar" (with rating) or "Saltar" (skip rating)
+   - Clean card-based layout
+   - **Flow:** Rating → Tip screen
+
+5. **TipScreen** (features/payment/presentation/TipScreen.kt)
+   - Third step of payment flow (OPTIONAL)
+   - Uses AvoqadoTipSelector component
+   - Shows subtotal, tip amount, and total calculation
+   - Two actions: "Continuar" (with tip) or "Sin propina" (skip tip)
+   - **Flow:** Tip → Merchant selection
+
+6. **MerchantSelectionContent** (features/payment/presentation/MerchantSelectionContent.kt)
+   - Fourth step of payment flow (REQUIRED)
+   - Displays payment summary (total, tip, rating with stars)
+   - Merchant account selection (Account A / Account B)
+   - Shows current active merchant
+   - "Procesar Pago" button to start payment
+   - Loading overlay during merchant switching
+   - **Flow:** Merchant selection → Payment processing
+
+### **Changed (Android - avoqado-tpv)**
+
+7. **PaymentState Enum** (features/payment/domain/PaymentState.kt)
+   - Added `EnteringAmount(amount: String)` state
+   - Added `CollectingRating(amount: String, rating: Int)` state
+   - Added `CollectingTip(amount: String, rating: Int?, selectedTipPercentage: Int?, tipAmount: String)` state
+   - Added `SelectingMerchant(subtotal: String, tipAmount: String, totalAmount: String, rating: Int?)` state
+   - Existing states unchanged (ConfiguringKernel, DetectingCard, Processing, Success, Error, Cancelled, Idle)
+
+8. **PaymentViewModel State Machine** (features/payment/presentation/PaymentViewModel.kt)
+   - Added `initiatePaymentFlow()` - Starts new flow from EnteringAmount state
+   - Added `submitAmount(amount)` - Validates amount → CollectingRating
+   - Added `submitRating(amount, rating)` - Saves rating → CollectingTip
+   - Added `skipRating(amount)` - Skips rating (rating = null) → CollectingTip
+   - Added `submitTip(subtotal, tipAmount, rating)` - Calculates total → SelectingMerchant
+   - Added `skipTip(subtotal, rating)` - No tip (tipAmount = "0") → SelectingMerchant
+   - Added `updateTipPercentage(amount, rating, percentage)` - Updates tip when percentage selected
+   - Added `updateCustomTip(amount, rating, customTip)` - Updates tip with custom amount
+   - Added `resetPayment()` - Resets to EnteringAmount (for retry flow)
+   - Helper functions: `calculateTipAmount()`, `calculateTotal()`
+
+9. **PaymentScreen Routing** (features/payment/presentation/PaymentScreen.kt:48-117)
+   - Routes `EnteringAmount` → `AmountInputScreen`
+   - Routes `CollectingRating` → `RatingScreen`
+   - Routes `CollectingTip` → `TipScreen`
+   - Routes `SelectingMerchant` → `MerchantSelectionContent`
+   - Updated `Idle` state to redirect to new flow via `LaunchedEffect`
+   - Existing payment processing states unchanged
+
+### **Flow Diagram**
+
+```
+New Payment Flow:
+┌────────────────────────────────────────────────────────────┐
+│ 1. EnteringAmount                                          │
+│    → User enters amount (e.g., "100.00")                   │
+│    → Clicks "Continuar"                                    │
+└────────────────────────────────────────────────────────────┘
+                         ↓
+┌────────────────────────────────────────────────────────────┐
+│ 2. CollectingRating (OPTIONAL)                             │
+│    → User selects 1-5 stars                                │
+│    → Clicks "Continuar" (with rating) OR "Saltar" (skip)   │
+└────────────────────────────────────────────────────────────┘
+                         ↓
+┌────────────────────────────────────────────────────────────┐
+│ 3. CollectingTip (OPTIONAL)                                │
+│    → User selects 10%, 15%, 20%, or custom amount          │
+│    → Sees calculated total (subtotal + tip)                │
+│    → Clicks "Continuar" (with tip) OR "Sin propina" (skip) │
+└────────────────────────────────────────────────────────────┘
+                         ↓
+┌────────────────────────────────────────────────────────────┐
+│ 4. SelectingMerchant (REQUIRED)                            │
+│    → Shows payment summary (total, tip, rating)            │
+│    → User selects merchant (Account A / Account B)         │
+│    → Clicks "Procesar Pago"                                │
+└────────────────────────────────────────────────────────────┘
+                         ↓
+                 [Existing payment flow]
+              (ConfiguringKernel → DetectingCard →
+               Processing → Success/Error)
+```
+
+### **Design Decisions**
+
+- **Rating:** OPTIONAL with "Saltar" button (can skip entirely)
+- **Tip:** OPTIONAL with "Sin propina" button (defaults to $0 if skipped)
+- **Merchant Selection:** REQUIRED (must select before payment processing)
+- **UI:** Functional first (clean card-based layouts with AvoqadoCard)
+- **Reusability:** AvoqadoRatingInput and AvoqadoTipSelector are reusable components for future order-based payments
+
+---
+
 ## [2025-11-06] - Phase 2: Dynamic Multi-Merchant Configuration
 
 ### **Added (Backend - avoqado-server)**

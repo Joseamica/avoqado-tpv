@@ -202,12 +202,8 @@ class MainActivity : ComponentActivity() {
                     Timber.d("   📋 Terminal: ${terminalInfo.brand} ${terminalInfo.model}")
                     Timber.d("   🏢 Venue: ${terminalInfo.venueName}")
 
-                    // Update MerchantRepository with fetched merchants
-                    // This replaces the hardcoded fallback accounts
-                    merchantAccounts.forEach { merchant ->
-                        merchantRepository.addOrUpdateMerchant(merchant)
-                        Timber.d("   ✅ Added merchant: ${merchant.displayName} (${merchant.serialNumber})")
-                    }
+                    // Replace MerchantRepository fallback accounts with fetched merchants from backend
+                    merchantRepository.updateMerchants(merchantAccounts)
 
                     Timber.i("✅ [TerminalConfig] Successfully loaded dynamic config from backend")
                 }

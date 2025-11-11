@@ -1,12 +1,22 @@
 package com.jaac.avoqado_tpv
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
@@ -57,64 +67,100 @@ class MainActivity : ComponentActivity() {
     lateinit var merchantRepository: MerchantRepositoryImpl
 
     /**
+     * State to track permission status
+     * - null: Checking permission
+     * - true: Permission granted, app can proceed
+     * - false: Permission denied, show error screen
+     */
+    private var permissionGranted = mutableStateOf<Boolean?>(null)
+
+    /**
      * Launcher for READ_PHONE_STATE permission request
      *
-     * This permission is required on Android 8+ to access Build.getSerial() for hardware serial.
-     * If denied, the app gracefully falls back to ANDROID_ID.
+     * **CRITICAL REQUIREMENT:**
+     * This permission is MANDATORY on Android 8+ to access Build.getSerial() for hardware serial.
+     * NO fallback to ANDROID_ID - app REQUIRES hardware serial for terminal identification.
+     *
+     * **Why hardware serial is mandatory:**
+     * - Professional POS systems (Square, Toast, Clover) ALWAYS use hardware serial
+     * - Hardware serial persists forever (app reinstall, factory reset, OS updates)
+     * - ANDROID_ID changes on app reinstall → breaks terminal identification
+     * - Backend relies on consistent serial number for terminal management
      */
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (isGranted) {
-            Timber.i("✅ READ_PHONE_STATE permission granted - hardware serial will be used")
+            Timber.i("✅ READ_PHONE_STATE permission granted - hardware serial: ${deviceInfoManager.getSerialNumber()}")
+            permissionGranted.value = true
         } else {
-            Timber.w("⚠️ READ_PHONE_STATE permission denied - falling back to ANDROID_ID")
+            Timber.e("❌ READ_PHONE_STATE permission DENIED - app cannot function without hardware serial")
+            permissionGranted.value = false
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Request READ_PHONE_STATE permission if needed (Android 8+)
-        requestPhoneStatePermissionIfNeeded()
+        // Check/Request READ_PHONE_STATE permission (MANDATORY on Android 8+)
+        checkAndRequestPhoneStatePermission()
 
         setContent {
             AvoqadoTheme {
-                AppNavigation(
-                    deviceInfoManager = deviceInfoManager,
-                    secureStorage = secureStorage
-                )
+                val permissionStatus by permissionGranted
+
+                when (permissionStatus) {
+                    true -> {
+                        // Permission granted → Show normal app
+                        AppNavigation(
+                            deviceInfoManager = deviceInfoManager,
+                            secureStorage = secureStorage
+                        )
+                    }
+                    false -> {
+                        // Permission denied → Show error screen
+                        PermissionDeniedScreen(
+                            onOpenSettings = { openAppSettings() },
+                            onRequestAgain = { checkAndRequestPhoneStatePermission() }
+                        )
+                    }
+                    null -> {
+                        // Checking permission → Show loading
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    }
+                }
             }
         }
 
         // ✅ Square/Toast Pattern: Start heartbeat if terminal is activated
-        // This runs BEFORE user logs in, enabling health monitoring
-        startHeartbeatIfActivated()
-
-        // ✅ Fetch terminal config from backend (dynamic multi-merchant support)
-        // This loads merchant accounts assigned to this terminal by superadmin
-        fetchTerminalConfigIfActivated()
+        // Only runs after permission is granted
+        if (permissionGranted.value == true) {
+            startHeartbeatIfActivated()
+            fetchTerminalConfigIfActivated()
+        }
     }
 
     /**
-     * Request READ_PHONE_STATE permission if needed (Android 8+)
+     * Check and request READ_PHONE_STATE permission (MANDATORY on Android 8+)
      *
-     * **Why this permission:**
+     * **Why this permission is MANDATORY:**
      * - Required for Build.getSerial() to access hardware serial number
      * - Hardware serial persists forever (unlike ANDROID_ID which changes on reinstall)
-     * - Professional POS systems (Square, Toast, Clover) use hardware serial for terminal identification
-     *
-     * **Graceful degradation:**
-     * - If permission granted: Uses hardware serial (AVQD-2841548417)
-     * - If permission denied: Falls back to ANDROID_ID (AVQD-6D52CB5103BB42DC)
+     * - Professional POS systems (Square, Toast, Clover) ALWAYS use hardware serial for terminal identification
+     * - NO fallback to ANDROID_ID - app cannot function without hardware serial
      *
      * **User experience:**
-     * - Permission requested silently on app launch
-     * - No blocking dialog for critical functionality
-     * - App works with or without permission
+     * - Permission requested on app launch
+     * - If denied: Show error screen with explanation and "Open Settings" button
+     * - App blocks all functionality until permission is granted
      */
-    private fun requestPhoneStatePermissionIfNeeded() {
-        // Only request on Android 8+ (API 26+) where Build.getSerial() requires permission
+    private fun checkAndRequestPhoneStatePermission() {
+        // Only required on Android 8+ (API 26+) where Build.getSerial() requires permission
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             when {
                 ContextCompat.checkSelfPermission(
@@ -122,15 +168,28 @@ class MainActivity : ComponentActivity() {
                     Manifest.permission.READ_PHONE_STATE
                 ) == PackageManager.PERMISSION_GRANTED -> {
                     Timber.d("✅ READ_PHONE_STATE permission already granted")
+                    permissionGranted.value = true
                 }
                 else -> {
-                    Timber.d("📱 Requesting READ_PHONE_STATE permission for hardware serial")
+                    Timber.d("📱 Requesting READ_PHONE_STATE permission for hardware serial (MANDATORY)")
                     requestPermissionLauncher.launch(Manifest.permission.READ_PHONE_STATE)
                 }
             }
         } else {
+            // Android 7 and below: Build.SERIAL does not require permission
             Timber.d("📱 Android 7 or below - Build.SERIAL does not require permission")
+            permissionGranted.value = true
         }
+    }
+
+    /**
+     * Open app settings so user can manually grant permission
+     */
+    private fun openAppSettings() {
+        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.fromParts("package", packageName, null)
+        }
+        startActivity(intent)
     }
 
     /**
@@ -216,6 +275,100 @@ class MainActivity : ComponentActivity() {
                     Timber.d("   ℹ️  This is normal if backend is unreachable")
                     Timber.d("   ℹ️  App will use hardcoded sandbox accounts as fallback")
                 }
+        }
+    }
+}
+
+/**
+ * Screen shown when READ_PHONE_STATE permission is denied
+ *
+ * Explains why the permission is critical and provides actions:
+ * - Open Settings: Direct link to app settings where user can grant permission
+ * - Request Again: Trigger permission dialog again
+ */
+@Composable
+private fun PermissionDeniedScreen(
+    onOpenSettings: () -> Unit,
+    onRequestAgain: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "⚠️",
+                style = MaterialTheme.typography.displayLarge,
+                modifier = Modifier.padding(bottom = 16.dp)
+            )
+
+            Text(
+                text = "Permiso Requerido",
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            Text(
+                text = "Avoqado TPV requiere acceso al número de serie del dispositivo para identificar esta terminal.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(bottom = 24.dp)
+            )
+
+            Card(
+                modifier = Modifier.padding(bottom = 24.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        text = "¿Por qué es necesario?",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    Text(
+                        text = "• El número de serie identifica esta terminal de forma única\n" +
+                                "• Persiste incluso después de reinstalar la aplicación\n" +
+                                "• Es requerido para activación y procesamiento de pagos\n" +
+                                "• Sistemas POS profesionales (Square, Toast) usan este método",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Button(
+                onClick = onOpenSettings,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary
+                )
+            ) {
+                Text("Abrir Configuración")
+            }
+
+            OutlinedButton(
+                onClick = onRequestAgain,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Solicitar Nuevamente")
+            }
         }
     }
 }

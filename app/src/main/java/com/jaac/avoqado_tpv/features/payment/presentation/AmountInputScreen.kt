@@ -9,7 +9,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoButton
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoCard
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTextField
@@ -31,6 +30,7 @@ fun AmountInputScreen(
     currentAmount: String,
     onAmountChange: (String) -> Unit,
     onContinue: (String) -> Unit,
+    onNavigateBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var amount by remember { mutableStateOf(currentAmount) }

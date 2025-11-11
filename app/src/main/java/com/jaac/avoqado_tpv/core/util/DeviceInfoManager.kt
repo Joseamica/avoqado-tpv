@@ -66,20 +66,26 @@ class DeviceInfoManager @Inject constructor(
      * Professional POS systems (Square Terminal, Toast POS, Clover) use hardware serial
      * instead of ANDROID_ID to maintain terminal identification across app lifecycle.
      *
+     * **SECURITY REQUIREMENT:**
+     * - ALWAYS uses hardware serial (no ANDROID_ID fallback)
+     * - Throws SecurityException if READ_PHONE_STATE permission not granted
+     * - App must request permission in runtime before calling this method
+     *
      * @return Serial number with "AVQD-" prefix (uppercase)
+     * @throws SecurityException if READ_PHONE_STATE permission not granted (Android 8+)
      */
     fun getSerialNumber(): String {
         val hardwareSerial = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // Android 8+: Requires READ_PHONE_STATE permission but persists forever
+            // Android 8+: Requires READ_PHONE_STATE permission
+            // ⚠️ NO FALLBACK - Permission must be granted before calling this
             try {
                 Build.getSerial()
             } catch (e: SecurityException) {
-                Timber.w(e, "⚠️ No READ_PHONE_STATE permission, using ANDROID_ID fallback")
-                // Fallback to ANDROID_ID if permission denied
-                Settings.Secure.getString(
-                    context.contentResolver,
-                    Settings.Secure.ANDROID_ID
-                ) ?: "unknown"
+                Timber.e(e, "❌ CRITICAL: READ_PHONE_STATE permission not granted - cannot get hardware serial")
+                throw SecurityException(
+                    "READ_PHONE_STATE permission required to obtain hardware serial number. " +
+                    "Please grant permission in app settings."
+                )
             }
         } else {
             // Android 7 and below: No permission required

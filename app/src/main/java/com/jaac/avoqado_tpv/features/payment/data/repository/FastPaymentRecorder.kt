@@ -208,6 +208,11 @@ class FastPaymentRecorder @Inject constructor(
             // Card details from Blumon SDK
             authorizationNumber = authorizationNumber,
             referenceNumber = referenceNumber,
+
+            // ⭐ PROVIDER-AGNOSTIC MERCHANT TRACKING (2025-01-10)
+            merchantAccountId = context.merchantAccountId, // 🆕 PRIMARY: Merchant account ID
+            blumonSerialNumber = context.blumonSerialNumber.takeIf { it.isNotBlank() }, // ⚠️ LEGACY: Fallback
+
             maskedPan = cardDetails.maskedPan,
             cardBrand = if (cardDetails.cardBrand == CardBrand.UNKNOWN) null else cardDetails.cardBrand.name, // Send null if UNKNOWN
             entryMode = cardDetails.entryMode.toBackendString(), // CHIP → "CHIP"
@@ -216,8 +221,8 @@ class FastPaymentRecorder @Inject constructor(
             currency = "MXN",
             isInternational = cardDetails.isInternational,
 
-            // Optional rating (null for fast payments)
-            reviewRating = null,
+            // Optional rating: Send numeric rating as string (1-5 stars)
+            reviewRating = context.rating?.toString(),
         )
     }
 }

@@ -4,6 +4,1112 @@
 
 ---
 
+## [Unreleased]
+
+### **Fixed**
+
+16. **PaymentScreen: Prevent flash screen when navigating from WelcomeScreen** (features/payment/presentation/PaymentScreen.kt:170-176)
+   - **UX PROBLEM**: Brief flash of WelcomeScreen visible during navigation to PaymentScreen
+   - **USER FEEDBACK**: "Cuando ingreso la cantidad en Welcome, por un momento flash vuelvo a ver el welcome screen mientras se cambia de pantalla a la calificacion"
+   - **ROOT CAUSE**: No loading state between closing amount modal and showing review screen
+   - **SOLUTION**: Add `AvoqadoLoadingOverlay` in PaymentState.Idle when initialAmount is present
+   - **IMPLEMENTATION**:
+     ```kotlin
+     is PaymentState.Idle -> {
+         // ✅ Prevent flash when coming from Home
+         if (initialAmount != null) {
+             AvoqadoLoadingOverlay(message = "Preparando pago...")
+         }
+
+         LaunchedEffect(initialAmount) {
+             if (initialAmount != null) {
+                 viewModel.submitAmount(initialAmount)
+             }
+         }
+     }
+     ```
+   - **USER EXPERIENCE**:
+     - ❌ **Before**: Modal closes → Brief flash of WelcomeScreen → ReviewScreen appears
+     - ✅ **After**: Modal closes → Smooth loading overlay → ReviewScreen appears
+   - **PATTERN**: Consistent loading state prevents jarring visual glitches
+   - **RELATED**: See CLAUDE.md section "Loading States & Preventing Flash Screens (CRITICAL UX)"
+
+15. **AmountInputBottomSheet: Smooth animated error message** (core/presentation/components/AmountInputBottomSheet.kt:3-4, 40, 74, 115-166)
+   - **UX PROBLEM**: Error message "Ingresa un monto mayor a $0.00" appeared/disappeared while typing → caused jarring UI experience
+   - **USER FEEDBACK**: "cuando uno escribe algo desaparezca y todo el ui se mueve, como user experience esto no esta muy bien"
+   - **SOLUTION** (Material Design 3 animation pattern):
+     1. **Error only when user confirms**: Show error ONLY when user presses "✓" with invalid amount (not while typing)
+     2. **Smooth 200ms animation**: Use `animateContentSize()` on Column → error slides in/out smoothly
+     3. **Auto-hide on edit**: Error automatically disappears when user starts typing (onNumberClick, onBackspaceClick, onClearClick)
+   - **IMPLEMENTATION**:
+     - Added imports: `animateContentSize`, `tween` (lines 3-4)
+     - Added state: `var showError by remember { mutableStateOf(false) }` (line 40)
+     - Column modifier: `.animateContentSize(animationSpec = tween(durationMillis = 200))` (line 74)
+     - onConfirmClick: `if (!isValid) showError = true else proceed` (lines 144-146)
+     - onNumberClick/onBackspaceClick/onClearClick: `showError = false` (lines 117, 127, 131)
+     - UI: `if (showError) { Spacer + Text }` (lines 157-166)
+   - **USER EXPERIENCE**:
+     - ✅ No annoying error while typing
+     - ✅ Clear feedback when trying to confirm invalid amount
+     - ✅ Error disappears automatically when correcting
+     - ✅ Smooth 200ms animation - feels polished and intentional (not jarring)
+   - **PATTERN**: Material Design 3 animation guidelines for content size changes
+
+14. **ReviewScreen: Fix preview colors (purple → dark theme)** (features/payment/presentation/ReviewScreen.kt:18, 119, 133)
+   - **BUG**: Previews showed purple colors instead of dark theme (#1C1C1C background)
+   - **USER FEEDBACK**: Screenshot showing purple buttons/text in Android Studio previews
+   - **ROOT CAUSE**: Previews used `MaterialTheme` (Material3 defaults) instead of `AvoqadoTheme`
+   - **FIX**:
+     - Added import: `com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme` (line 18)
+     - Changed preview wrapper: `MaterialTheme { }` → `AvoqadoTheme { }` (lines 119, 133)
+   - **RESULT**: Previews now show correct dark theme colors matching app:
+     - Background: #1C1C1C (deep charcoal)
+     - Text: #FAFAFA (soft white)
+     - Buttons: Primary #E8E8E8 (light gray)
+     - Stars: Correct purple accent (#7C3AED)
+   - **AFFECTED PREVIEWS**:
+     - ✅ "No Review" preview (line 119)
+     - ✅ "With Review" preview (line 133)
+
+13. **ReviewScreen: Remove duplicate "X de 5 estrellas" text** (features/payment/presentation/ReviewScreen.kt:75-85)
+   - **BUG**: Screen showed "5 de 5 estrellas" twice (above buttons and below buttons)
+   - **USER FEEDBACK**: Screenshot showing duplicate information
+   - **FIX**: Removed redundant helper text between stars and buttons
+   - **RESULT**: Cleaner layout showing only:
+     - Title: "¿Cómo fue tu experiencia?"
+     - Star rating input (AvoqadoRatingInput)
+     - Buttons: "Saltar" / "Continuar"
+     - Bottom text: "La calificación es opcional" (no rating) or "Gracias por calificar" (rated)
+
+11. **AmountInputBottomSheet: Fix locale parsing bug causing $0.00 total** (core/presentation/components/AmountInputBottomSheet.kt:51, 137)
+   - **BUG**: Merchant selection screen showed "$0.00 MXN" instead of correct total
+   - **ROOT CAUSE**: Spanish locale formatted amounts as "25,00" (comma separator) but `toBigDecimalOrNull()` expects "25.00" (period)
+   - **SYMPTOM**: `calculateTotal()` parsed "25,00" as null → defaulted to BigDecimal.ZERO
+   - **FIX #1**: Force US locale when converting amount to string (line 137)
+     ```kotlin
+     // BEFORE: onConfirm(String.format("%.2f", decimal))  // → "25,00"
+     // AFTER:  onConfirm(String.format(java.util.Locale.US, "%.2f", decimal))  // → "25.00"
+     ```
+   - **FIX #2**: Force US locale in display format for consistency (line 51)
+     ```kotlin
+     // BEFORE: "$${String.format("%,.2f", decimal)}"  // → "$25,00" (comma)
+     // AFTER:  "$${String.format(java.util.Locale.US, "%,.2f", decimal)}"  // → "$25.00" (period)
+     ```
+   - **LOGS EVIDENCE**:
+     ```
+     💵 submitTip called with: subtotal='25,00', tipAmount='0'
+     🧮 calculateTotal Parsed: subtotalDecimal=0, tipDecimal=0  ← NULL!
+     💵 Calculated total: '0'  ← BUG
+     ```
+   - **IMPACT**:
+     - ✅ Modal displays "$25.00" (period) instead of "$25,00" (comma)
+     - ✅ Total amount displays correctly in merchant selection (e.g., "$25.00 MXN")
+
+12. **PaymentSuccessContent: Fix double "$" and missing decimals in receipt** (features/payment/presentation/PaymentScreen.kt:572, 601, 618)
+   - **BUG #1**: Receipt showed "$$25" instead of "$25.00" (double dollar sign)
+   - **BUG #2**: No decimal places shown ("$25" instead of "$25.00")
+   - **ROOT CAUSE**:
+     - `totalAmount`, `subtotalAmount`, `tipAmount` are BigDecimal (not strings)
+     - Template used `"$$totalAmount"` → automatic toString() without format
+     - Extra "$" in template + no decimal formatting
+   - **FIX**: Apply Locale.US formatting with 2 decimal places
+     ```kotlin
+     // BEFORE: text = "$$totalAmount"  // → "$$25" (double $, no decimals)
+     // AFTER:  text = "$${String.format(java.util.Locale.US, "%.2f", totalAmount)}"  // → "$25.00"
+     ```
+   - **AFFECTED FIELDS**:
+     - ✅ "Total pagado" (main total) - line 572
+     - ✅ "Total" (subtotal breakdown) - line 601
+     - ✅ "Propina" (tip breakdown) - line 618
+   - **IMPACT**: Receipt now shows clean, properly formatted amounts (e.g., "$25.00")
+
+### **Changed**
+
+1. **PaymentSuccessContent: Redesign as physical receipt** (features/payment/presentation/PaymentScreen.kt:455-663)
+   - **DESIGN CHANGE**: Complete redesign to look like physical receipt (inspired by AvoqadoPOS)
+   - **VISUAL CHANGES**:
+     - ✅ QR code floats on top with white background and outline border (180dp, 10dp border)
+     - ✅ QR border uses MaterialTheme.colorScheme.outline (#383838) instead of black for dark theme
+     - ✅ Receipt background uses `ilu_ticket_background.xml` drawable (ticket paper texture)
+     - ✅ Receipt background tinted with MaterialTheme.colorScheme.surface for dark theme adaptation
+     - ✅ Image uses ContentScale.FillBounds for proper stretching
+     - ✅ Added DashedDivider (dashed line like receipt perforation)
+     - ✅ "Total pagado" section with large amount display
+     - ✅ Breakdown shows "Total" (subtotal) and "Propina" (tip)
+     - ✅ Print button with surface background (not primary)
+     - ✅ "Nuevo Pago" button at bottom (was "Finalizar")
+   - **LAYOUT STRUCTURE**:
+     - Box with layered content (background + QR + text)
+     - QR code positioned at top center (.align(Alignment.TopCenter))
+     - Receipt content starts at 90.dp padding (space for QR)
+     - Full-screen layout (no AvoqadoCard wrapper)
+   - **TOPBAR REMOVAL**: Hidden topBar in Success state (PaymentScreen.kt:60-71)
+     - Added `showTopBar = state !is PaymentState.Success`
+     - Success screen now full-screen without navigation header
+   - **TYPOGRAPHY**: Uses MaterialTheme.typography (titleMedium, bodyMedium)
+   - **COLORS**: MaterialTheme.colorScheme.surface for receipt background
+   - **PATTERN**: Matches AvoqadoPOS PaymentResultScreen design philosophy
+
+2. **PaymentScreen: Hide topBar on Success state** (features/payment/presentation/PaymentScreen.kt:60-71)
+   - **UI FIX**: TopBar no longer shows "Pago con Tarjeta" on success screen
+   - **IMPLEMENTATION**:
+     ```kotlin
+     val showTopBar = state !is PaymentState.Success
+     Scaffold(
+         topBar = {
+             if (showTopBar) {
+                 AvoqadoTopBar(...)
+             }
+         }
+     )
+     ```
+   - **REASON**: Success screen is a receipt display, not a workflow step
+   - **USER IMPACT**: Cleaner, more focused success experience
+
+3. **MerchantSelectionContent: Fix duplicate header** (features/payment/presentation/MerchantSelectionContent.kt:47-178)
+   - **BUG FIX**: Removed duplicate Scaffold causing "Cuenta Merchant" + "Seleccionar Merchant" double headers
+   - **CHANGES**:
+     - Removed Scaffold wrapper (lines 47-56 deleted)
+     - Removed AvoqadoTopBar import (unused)
+     - Changed title in PaymentScreen topBar from "Cuenta Merchant" to "Seleccionar Merchant"
+   - **RESULT**: Single header "Seleccionar Merchant · Paso 4 de 4 · Total: $X" in PaymentScreen topBar
+
+4. **AvoqadoTopBar: Redesign with rounded corners and dark theme** (core/presentation/components/AvoqadoTopBar.kt:43-99)
+   - **DESIGN IMPROVEMENTS**:
+     - ✅ Added rounded bottom corners (20.dp radius) for modern, prominent look
+     - ✅ Changed from light gray (`primary` #E8E8E8) to dark surface (`surface` #2A2A2A)
+     - ✅ Added 1dp border using `outline` color (#383838) for header distinction
+     - ✅ Updated text colors to use `onSurface` (#FAFAFA) for proper contrast
+   - **VISUAL IMPACT**:
+     - Better integration with dark theme background (#1C1C1C)
+     - Clear visual separation as header component
+     - Professional POS aesthetic matching Square Terminal / Toast POS
+   - **IMPLEMENTATION**: Uses `RoundedCornerShape` with `.clip()` and `.border()` modifiers
+
+2. **PaymentScreen: Fix duplicate topBar issue** (features/payment/presentation/PaymentScreen.kt:37-54)
+   - **BUG FIX**: Removed nested Scaffold components causing duplicate headers
+   - **AFFECTED FILES**:
+     - ✅ AmountInputScreen.kt:41-48 - Removed Scaffold, kept ResponsiveScaffold only
+     - ✅ RatingScreen.kt:42-51 - Removed Scaffold, kept ResponsiveScaffold only
+     - ✅ TipScreen.kt:54-63 - Removed Scaffold, kept ResponsiveScaffold only
+   - **NEW FEATURE**: Dynamic topBar titles based on payment state
+     - "Nuevo Pago" + "Paso 1 de 4" for EnteringAmount
+     - "Calificación" + "Paso 2 de 4 · $X" for CollectingRating
+     - "Propina" + "Paso 3 de 4 · Subtotal: $X" for CollectingTip
+     - "Cuenta Merchant" + "Paso 4 de 4" for SelectingMerchant
+   - **RESULT**: Single unified topBar across entire payment flow (no more duplicate headers)
+
+3. **PaymentDetectingCard: Redesign with amount display** (features/payment/presentation/PaymentScreen.kt:347-387)
+   - **DESIGN IMPROVEMENTS**:
+     - ✅ Show payment amount prominently: "$79.66" in display-large font
+     - ✅ Custom contactless icon (ic_contact_payment.xml) at 120.dp size
+     - ✅ Simplified instructions: "Tap or insert" instead of long description
+     - ✅ Center-aligned layout with clear visual hierarchy
+     - ✅ Icon tinted with onBackground color for dark theme compatibility
+   - **DATA MODEL CHANGE**:
+     - ✅ PaymentState.DetectingCard: Changed from `data object` to `data class(amount: String)`
+     - ✅ PaymentViewModel.kt:678 - Pass currentAmount to DetectingCard state
+   - **IMPLEMENTATION**: Uses `painterResource` + `ColorFilter.tint` for drawable vector
+   - **VISUAL IMPACT**: Matches professional POS UX (Square Terminal, Toast POS, Stripe Terminal)
+
+4. **PaymentScreen: Add @Preview annotations with AvoqadoTheme** (features/payment/presentation/PaymentScreen.kt:639-687)
+   - **PREVIEWS ADDED**:
+     - ✅ PaymentDetectingCard preview - Shows "$79.66" with contactless icon
+     - ✅ PaymentLoadingContent preview - Shows loading spinner with message
+     - ✅ PaymentSuccessContent preview (2 variants: with/without receipt)
+   - **BUG FIX**: Changed from `MaterialTheme` to `AvoqadoTheme` in all previews
+     - **BEFORE**: Previews showed purple colors in light mode (Material3 defaults)
+     - **AFTER**: Previews show correct dark theme (#1C1C1C background, #FAFAFA text)
+   - **BENEFIT**: Developers can now preview components in Android Studio with accurate colors
+
+5. **ReviewScreen: Redesign and rename from RatingScreen** (features/payment/presentation/ReviewScreen.kt:32-154, PaymentScreen.kt:100-103)
+   - **DESIGN OVERHAUL**: Complete redesign with cleaner, modern layout
+   - **NAMING CHANGE**: All "Rating" references renamed to "Review"
+     - File: RatingScreen.kt → ReviewScreen.kt
+     - Function: `RatingScreen()` → `ReviewScreen()`
+     - Parameters: `currentRating` → `currentReview`, `onRatingChange` → `onReviewChange`
+     - PaymentScreen.kt updated to use new naming (line 100-103)
+   - **VISUAL CHANGES**:
+     - ✅ Removed AvoqadoCard wrapper - Direct Column layout for cleaner look
+     - ✅ Changed title typography: headlineSmall → displaySmall with FontWeight.Bold
+     - ✅ Larger, more prominent title: "¿Cómo fue tu experiencia?"
+     - ✅ Enhanced helper text: Shows star count "${currentReview} de 5 estrellas"
+     - ✅ Improved spacing with ResponsiveScaffold (consistent with other screens)
+     - ✅ Better visual hierarchy with MaterialTheme.colorScheme colors
+     - ✅ Centered layout with Arrangement.Center (vertically centered)
+   - **USER FEEDBACK IMPLEMENTED**:
+     - User quote: "Renombra todo a Review en lugar de Rating, y porfavor el screen esta horrible, no encierres el contenido en un recuadro"
+     - ❌ OLD: Card wrapper made layout cluttered
+     - ✅ NEW: Direct column with better spacing and bold typography
+   - **TECHNICAL**: Uses ResponsiveScaffold with scrollable=false (workflow screen must fit without scroll)
+   - **PREVIEW**: Added 2 preview variants (no review, with 4-star review)
+
+### **Security**
+
+1. **AppNavigation: Prevent unauthenticated payment processing** (core/presentation/navigation/AppNavigation.kt:228-246)
+   - **SECURITY FIX**: Added authentication guard before allowing access to payment screen
+   - **ISSUE**: Users could navigate to payment screen without logging in
+     - Blumon payment would succeed locally
+     - Backend recording would fail (401 Unauthorized - no staffId)
+     - No digital receipt generated
+     - Payment orphaned (successful hardware transaction, no backend record)
+   - **FIX APPLIED**:
+     ```kotlin
+     LaunchedEffect(Unit) {
+         if (!secureStorage.isAuthenticated()) {
+             Timber.w("⚠️ [Payment] User not authenticated - redirecting to login")
+             navController.navigate(NavRoute.Login.route) {
+                 popUpTo(NavRoute.Home.route) { inclusive = false }
+             }
+         }
+     }
+     ```
+   - **BEHAVIOR**:
+     - ✅ Check authentication immediately when Payment route is accessed
+     - ✅ Redirect to login screen if not authenticated
+     - ✅ Prevent payment flow from starting without valid session
+     - ✅ Ensure all payments have staffId for backend recording
+   - **USER IMPACT**:
+     - Users must be logged in with PIN before processing payments
+     - All payments guaranteed to record in Avoqado backend
+     - Digital receipts always generated
+     - No orphaned transactions
+   - **ALTERNATIVE CONSIDERED**: Allow payment then queue for sync (rejected - too complex for v1)
+
+### **Added**
+
+1. **CLAUDE.md: Loading States & Preventing Flash Screens documentation** (CLAUDE.md:609-789)
+   - **NEW SECTION**: Comprehensive guide on preventing flash screens during navigation
+   - **CRITICAL UX RULE**: MANDATORY to use `AvoqadoLoadingOverlay` for all loading states
+   - **CONTENT**:
+     - What are "Flash Screens" (brief flicker of previous screen during navigation)
+     - ❌ BAD example: Instant navigation with async state change
+     - ✅ GOOD example: Loading overlay prevents flash
+     - MANDATORY Rules:
+       1. ALWAYS use same loading component (`AvoqadoLoadingOverlay`)
+       2. ALWAYS show loading during state transitions
+       3. NEVER navigate without loading if data processing involved
+       4. Loading message should be contextual
+     - Common Flash Screen Scenarios & Fixes (table with 4 scenarios)
+     - Real Example: Payment Flow with no flash screens
+     - Testing Checklist (6 items to verify before committing)
+   - **PHILOSOPHY**: Flash screens feel unprofessional and jarring - they signal poor state management
+   - **PATTERN**: Matches Square Terminal / Toast POS quality standards
+   - **REAL FIX**: PaymentScreen.kt:170-176 now shows loading when `initialAmount` is present
+   - **USER FEEDBACK**: "Cuando ingreso la cantidad en Welcome, por un momento flash vuelvo a ver el welcome screen"
+
+2. **CustomKeyboard: Teclado numérico reutilizable** (core/presentation/components/CustomKeyboard.kt)
+   - **NEW COMPONENT**: Teclado numérico grande con diseño adaptado al dark theme
+   - **LAYOUT**:
+     - Grid 4x3 para números (1-9, C, 0, .)
+     - Columna derecha con Backspace (80dp) y Confirm (expandible)
+   - **STYLING**:
+     - Botones: surface (#2A2A2A) con borde outline (#383838)
+     - Confirm: primary (#E8E8E8) con check icon
+     - Text: 24sp Bold onSurface (#FAFAFA)
+   - **CALLBACKS**:
+     - onNumberClick: (Int) -> Unit - Números 0-9
+     - onDecimalClick: () -> Unit - Punto decimal
+     - onClearClick: () -> Unit - Botón "C" (clear)
+     - onBackspaceClick: () -> Unit - Borrar último dígito
+     - onConfirmClick: () -> Unit - Confirmar entrada
+   - **INSPIRED BY**: AvoqadoPOS CustomKeyboard (diseño visual)
+   - **REUSABLE**: Se puede usar en cualquier flujo de entrada numérica
+
+2. **AmountInputBottomSheet: Modal para entrada de monto** (core/presentation/components/AmountInputBottomSheet.kt)
+   - **NEW COMPONENT**: ModalBottomSheet con CustomKeyboard para ingresar monto de pago
+   - **FEATURES**:
+     - Slide-up animation desde abajo
+     - Título "Cantidad personalizada" con botón cerrar
+     - Display grande del monto ($X.XX formato moneda)
+     - CustomKeyboard integrado
+     - Validación en tiempo real (monto > $0.00)
+   - **LOGIC**:
+     - Entrada en centavos (almacena como string "1234" = $12.34)
+     - Formato automático con 2 decimales
+     - Max 6 dígitos ($9999.99)
+   - **CALLBACKS**:
+     - onDismiss: () -> Unit - Cerrar modal
+     - onConfirm: (String) -> Unit - Confirmar monto (formato: "12.34")
+
+3. **WelcomeScreen: Agregado bottom sheet para inicio rápido de pago** (core/presentation/screens/WelcomeScreen.kt:46-158)
+   - **NEW FEATURE**: Modal de entrada de monto en lugar de navegación directa
+   - **CHANGES**:
+     - Agregado state: `showAmountBottomSheet: Boolean`
+     - Agregado callback: `onStartPaymentWithAmount: (String) -> Unit`
+     - Botón "Realizar Pago" ahora muestra bottom sheet
+     - AmountInputBottomSheet renderizado condicionalmente
+   - **UX IMPROVEMENT**: Flujo más rápido - usuario ingresa monto sin cambio de pantalla
+   - **FLOW**: Welcome → Modal (monto) → Payment (calificación directa)
+   - **PREVIEW ADDED**: `WelcomeScreenWithModalPreview` (core/presentation/screens/WelcomeScreen.kt:173-263)
+     - Shows WelcomeScreen with AmountInputBottomSheet modal open
+     - Helps visualize complete modal interaction in Android Studio preview pane
+     - Uses AvoqadoTheme for accurate dark theme colors
+     - Device spec: 800x1280px @ 160dpi (standard POS tablet size)
+
+4. **AppNavigation: Callback para inicio de pago con monto** (core/presentation/navigation/AppNavigation.kt:181-206)
+   - **NEW INTEGRATION**: Conecta bottom sheet con flujo de pago
+   - **IMPLEMENTATION**:
+     - Obtiene PaymentViewModel en Home composable scope
+     - Callback `onStartPaymentWithAmount` llama `paymentViewModel.submitAmount(amount)`
+     - Navega a Payment.route (estado ya configurado en CollectingRating)
+   - **RESULT**: Usuario pasa de Welcome → Modal → Rating sin pantalla de entrada de monto intermedia
+   - **KEPT**: onNavigateToPayment callback (deprecated pero mantenido para compatibilidad)
+
+5. **ilu_ticket_background.xml: Receipt paper texture drawable** (app/src/main/res/drawable/ilu_ticket_background.xml)
+   - **NEW ASSET**: Vector drawable for receipt background texture
+   - **USAGE**: Used in PaymentSuccessContent to simulate physical receipt paper
+   - **SOURCE**: Copied from AvoqadoPOS design system
+   - **VISUAL**: Ticket/receipt paper texture with subtle pattern
+   - **INTEGRATION**: Rendered with ContentScale.FillBounds in PaymentScreen
+
+2. **DashedDivider: Receipt perforation line** (features/payment/presentation/PaymentScreen.kt:437-453)
+   - **NEW COMPONENT**: Composable for dashed line separator
+   - **USAGE**: Simulates receipt paper perforation line
+   - **IMPLEMENTATION**: Canvas with PathEffect.dashPathEffect(floatArrayOf(10f, 10f))
+   - **STYLING**: Uses onSurfaceVariant color with 50% opacity
+   - **PATTERN**: Matches AvoqadoPOS DashedDivider design
+
+3. **PaymentState: Smart Retry with context preservation (Toast/Square/Stripe pattern)** (features/payment/domain/PaymentState.kt:5-50)
+   - **NEW**: `RetryContext` data class to preserve transaction state during retry
+   - **PHILOSOPHY**: When payment fails (card timeout, declined, SDK error), user should NEVER lose entered data
+   - **FEATURES**:
+     - ✅ Preserves: amount, tip, rating, merchant selection
+     - ✅ Validates context before retry (amount > 0, merchant selected)
+     - ✅ Calculates total (amount + tip) for validation
+   - **BENEFITS**:
+     - User doesn't have to re-enter $50 + 10% tip + 5★ rating after card error
+     - Goes directly to DetectingCard (not back to EnteringAmount)
+     - Professional UX matching Square Terminal, Toast POS, Stripe Terminal
+
+2. **PaymentViewModel: retryPayment() function with context restoration** (features/payment/presentation/PaymentViewModel.kt:1289-1332)
+   - **NEW**: `retryPayment(context: RetryContext?)` - Smart retry function
+   - **FLOW**:
+     1. Validate context (null check + isValid())
+     2. Restore ViewModel state: currentAmount, currentTip, currentRating
+     3. Restore merchant selection from merchantAccountId
+     4. Log restored values for debugging
+     5. Call `startPayment(amount)` to jump directly to ConfiguringKernel
+   - **ERROR HANDLING**: Falls back to `resetPayment()` if context is invalid
+   - **LOGGING**: Detailed Timber logs for debugging retry flow
+
+3. **PaymentViewModel: Updated all error creation points to include context** (features/payment/presentation/PaymentViewModel.kt)
+   - **CHIP PAYMENT ERRORS** (8 points):
+     - Line 635-638: Detect card failed
+     - Line 664-667: Unknown card type
+     - Line 681-684: EMV processing error
+     - Line 782-785: Online authorization failed
+   - **CONTACTLESS PAYMENT ERRORS** (8 points):
+     - Line 1044-1047: Generic contactless error (timeout, collision, etc.)
+     - Line 1058-1061: TransResult null error
+     - Line 1067-1070: TransResultEnum null error
+     - Line 1097-1100: Offline denied error
+     - Line 1106-1109: Unknown result error
+     - Line 1115-1118: Unexpected error in contactless flow
+     - Line 1207-1210: Contactless online authorization failed
+     - Line 1238-1241: Contactless online unexpected error
+   - **PATTERN**: All errors now call `createPaymentContext()` before setting Error state
+   - **RESULT**: Every payment error preserves user context for smart retry
+
+4. **PaymentScreen: Updated error handling to call retryPayment()** (features/payment/presentation/PaymentScreen.kt:164-181)
+   - **CHANGE**: Error retry button now calls `viewModel.retryPayment(context)` instead of `resetPayment()`
+   - **LOGIC**: If context exists → smart retry, else → reset to idle
+   - **UX**: User taps "Reintentar" and immediately sees ConfiguringKernel (no re-entering data)
+
+5. **PrinterManager: Professional receipt printing with QR code bitmap** (core/printer/PrinterManager.kt:69-263)
+   - **STYLE**: Toast/Square/Clip/MercadoPago professional format adapted for Mexico
+   - **NEW FORMAT**:
+     ```
+     ================================
+              AVOQADO
+         Comprobante de Venta
+     ================================
+
+     Fecha: 10/11/2025  13:45:23
+
+     --------------------------------
+     Mastercard ****7182
+     Tarjeta Contactless
+     --------------------------------
+
+     Monto:         $25 MXN
+     Propina:        $5 MXN
+     ================================
+     TOTAL:         $30 MXN
+     ================================
+
+     Autorizacion:  CDIHLK
+     Referencia:    757355196496
+
+     [QR CODE BITMAP - 200x200]
+
+     Escanea para ver recibo digital
+
+     ================================
+        Gracias por su compra
+     ================================
+     ```
+   - **FEATURES**:
+     - ✅ QR code printed as bitmap (not URL text)
+     - ✅ Card brand and masked PAN (e.g., "Mastercard ****7182")
+     - ✅ Entry mode (Chip, Contactless, Swipe)
+     - ✅ Formatted date/time (dd/MM/yyyy HH:mm:ss)
+     - ✅ Subtotal + Propina + Total calculation
+     - ✅ Authorization and reference numbers
+     - ✅ Professional spacing and separators
+   - **QR GENERATION**: Added `generateQrBitmap()` using ZXing library (lines 225-263)
+     - 200x200 pixels, RGB_565 format
+     - Error correction level M
+     - Minimal margins for thermal printing
+
+2. **PaymentState: Add card and reference data to Success state** (features/payment/domain/PaymentState.kt:58-59)
+   - Added `cardDetails: CardDetails?` - card brand, masked PAN, entry mode
+   - Added `referenceNumber: String?` - transaction reference for receipts
+   - Enables professional receipt printing with full transaction info
+
+### **Changed**
+
+1. **PaymentViewModel: Pass card details to Success state** (features/payment/presentation/PaymentViewModel.kt:1480-1486, 1723-1730)
+   - Updated `handlePaymentSuccess()` to include cardDetails and referenceNumber in state
+   - Modified `printReceipt()` to pass full transaction data to PrinterManager
+   - Added logging: "🎫 [Receipt] Card: MASTERCARD 512912******XXXX | Entry: CONTACTLESS"
+
+2. **PaymentScreen: Fix print button visibility on success screen** (features/payment/presentation/PaymentScreen.kt:4-5, 424)
+   - **ISSUE**: Print button was rendering but cut off on small screens due to content overflow
+   - **ROOT CAUSE**: PaymentSuccessContent's inner Column lacked vertical scrolling
+   - **FIX**: Added `.verticalScroll(rememberScrollState())` to enable scrolling when content overflows
+   - **RESULT**: Print button now visible on all screen sizes (user can scroll if needed)
+   - Debug logs confirmed button WAS rendering, just not visible without scrolling
+   - Added imports: `androidx.compose.foundation.verticalScroll`, `androidx.compose.foundation.rememberScrollState`
+
+3. **PaymentViewModel: Add debug logs for receipt state updates** (features/payment/presentation/PaymentViewModel.kt:1490-1491)
+   - Added verification log after updating Success state with receipt
+   - Confirms receipt is actually set in state (debugging print button visibility issue)
+   - Logs showed receipt was correctly stored: "🐛 [DEBUG] Confirmed state update | receipt is NOT NULL"
+
+4. **PaymentScreen: Add debug logs to trace receipt flow in UI** (features/payment/presentation/PaymentScreen.kt:407, 480, 519)
+   - Added log at start of PaymentSuccessContent showing receipt null/non-null status
+   - Added log inside QR code rendering block
+   - Added log inside print button rendering block
+   - Debug logs revealed button WAS rendering: "🖨️ [PaymentSuccessContent] Rendering print button"
+   - Identified issue as layout overflow, not logic error
+
+### **Technical Details**
+
+**Receipt Printing Flow:**
+1. User completes payment → Success state created
+2. Backend records payment → Returns receipt URL
+3. ViewModel updates Success state with receipt + cardDetails + referenceNumber
+4. User taps "Imprimir Recibo" → ViewModel calls printReceipt()
+5. PrinterManager generates QR bitmap from URL (ZXing)
+6. PrinterManager formats professional receipt (Toast/Square style)
+7. PAX printer prints: header + card info + amounts + auth + QR bitmap + footer
+
+**Dependencies:**
+- ZXing: `com.google.zxing:core:3.5.3` (already present) - QR code generation
+- PAX Neptune SDK: IPrinter.printBitmap() - Bitmap printing
+
+**Testing:**
+- QR code generation: 200x200 pixels, tested with receipt URLs
+- Thermal printing: Compatible with PAX A920/A80 printers
+- Professional format: Inspired by Toast POS, Square Terminal, Clip, MercadoPago
+
+---
+
+## [2025-01-30] - Receipt QR Code & Thermal Printer Support
+
+### **Overview**
+Implemented digital receipt display via QR code and physical receipt printing using PAX thermal printer. When a payment is successful, the app displays a QR code that can be scanned to view the digital receipt, and provides a button to print a physical receipt on the PAX device.
+
+### **Added**
+
+1. **PaymentState: Add receipt field and printing states** (features/payment/domain/PaymentState.kt:3, 57, 63-67)
+   - Added import: `import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt`
+   - Updated Success state with `receipt: PaymentReceipt? = null` parameter
+   - Added `data object Printing : PaymentState()` for print loading indicator
+   - Added `data class PrintError(message: String, previousState: Success)` for print error handling
+
+2. **QrCodeGenerator: Reusable QR code composable** (core/presentation/components/QrCodeGenerator.kt - NEW FILE)
+   - Created `rememberQrBitmapPainter(content: String, size: Dp, padding: Dp)` composable
+   - Uses ZXing library (already in build.gradle.kts:194)
+   - Generates QR bitmap asynchronously on IO dispatcher
+   - Remembers bitmap to avoid regeneration
+   - Black/white color scheme optimized for scanning
+
+3. **PrinterManager: PAX thermal printer access** (core/printer/PrinterManager.kt - NEW FILE)
+   - Singleton class injected via Hilt
+   - Direct access to PAX Neptune SDK (bypasses Blumon SDK which returns null)
+   - Uses `NeptuneLiteUser.getInstance().getDal(context).getPrinter()`
+   - `printReceipt(receiptUrl, amount, authCode, tipAmount)` - Prints formatted receipt
+   - `printTest()` - Test printer functionality
+   - `isPrinterAvailable()` - Check printer status
+   - Proper error handling with user-friendly messages
+
+4. **PrinterModule: Hilt dependency injection** (core/di/PrinterModule.kt - NEW FILE)
+   - Provides PrinterManager singleton
+   - Application context injection prevents memory leaks
+   - Lazy initialization of printer hardware
+
+5. **PaymentViewModel: Receipt storage and printing** (features/payment/presentation/PaymentViewModel.kt:112, 1474-1479, 1692-1748)
+   - Added `private val printerManager: PrinterManager` to constructor
+   - Updated `handlePaymentSuccess()` to update Success state with receipt when available
+   - Added `printReceipt()` function to trigger physical printing
+   - Added `dismissPrintError()` to return from print error to success screen
+   - Updated `goBackOneStep()` when expression to include Printing and PrintError states
+
+6. **PaymentScreen: QR code display and print button** (features/payment/presentation/PaymentScreen.kt:387-388, 460-504, 154-155, 173-185)
+   - Updated `PaymentSuccessContent` signature with `receipt` and `onPrintReceipt` parameters
+   - Added QR code display section after auth code (180dp size, centered)
+   - Added "Imprimir Recibo" button before "Finalizar" button
+   - Added Printing state handler (shows loading indicator "Imprimiendo recibo...")
+   - Added PrintError state handler (shows error with retry/dismiss options)
+   - Connected all callbacks to ViewModel functions
+
+### **Technical Details**
+
+**QR Code Flow:**
+1. Payment succeeds → Backend returns `PaymentReceipt` with `receiptUrl`
+2. `handlePaymentSuccess()` updates Success state with receipt
+3. PaymentScreen observes state change
+4. QR code generated from `receiptUrl` using ZXing
+5. User scans QR → Opens receipt in browser
+
+**Printing Flow:**
+1. User taps "Imprimir Recibo" button
+2. ViewModel → `printReceipt()` → State becomes `Printing`
+3. PrinterManager accesses PAX printer via Neptune SDK
+4. Prints: Header, amount, auth code, QR instruction, footer
+5. On success → Return to Success state
+6. On failure → Show PrintError with retry option
+
+**Dependencies:**
+- ZXing: `com.google.zxing:core:3.5.3` (already present)
+- PAX Neptune SDK: Direct IDAL access (no new dependencies)
+
+**Files Created:**
+- `QrCodeGenerator.kt` (71 lines)
+- `PrinterManager.kt` (193 lines)
+- `PrinterModule.kt` (53 lines)
+
+**Files Modified:**
+- `PaymentState.kt` (+7 lines)
+- `PaymentViewModel.kt` (+77 lines)
+- `PaymentScreen.kt` (+63 lines)
+
+**Compilation:** ✅ BUILD SUCCESSFUL in 5s
+
+---
+
+## [2025-01-11] - Rating Feature Implementation & Enhanced Payment Flow UX
+
+### **Overview**
+Implemented complete rating feature allowing users to rate their experience (1-5 stars) during payment flow. Ratings are sent to backend and preserved in offline queue. Also added professional checkout-style navigation with step-back functionality and contextual headers.
+
+### **Added**
+
+1. **AvoqadoTopBar: Add subtitle parameter for contextual information** (core/presentation/components/AvoqadoTopBar.kt:26, 35, 41-55)
+   - Added `subtitle: String? = null` parameter
+   - Implemented Column layout with title + subtitle when subtitle is present
+   - Subtitle uses bodyMedium style with 80% opacity for visual hierarchy
+   - Added preview: `AvoqadoTopBarWithSubtitlePreview()`
+
+2. **PaymentViewModel: Add step-back navigation logic** (features/payment/presentation/PaymentViewModel.kt:1240-1295)
+   - NEW function: `goBackOneStep(): Boolean`
+   - State machine implementation for bidirectional payment flow
+   - EnteringAmount → return false (caller navigates to home)
+   - CollectingRating → EnteringAmount (preserves amount)
+   - CollectingTip → CollectingRating (preserves amount + rating)
+   - SelectingMerchant → CollectingTip (preserves amount + rating + tip)
+   - Processing states → return false (blocks back during payment)
+   - Comprehensive Timber logging for debugging
+
+3. **WelcomeScreen: Add contextual header** (features/home/presentation/WelcomeScreen.kt)
+   - Added AvoqadoTopBar with title "Avoqado TPV"
+   - Added subtitle "Terminal de Punto de Venta"
+
+4. **AmountInputScreen: Add step indicator header** (features/payment/presentation/AmountInputScreen.kt:32-47)
+   - Added AvoqadoTopBar with title "Nuevo Pago"
+   - Added subtitle "Paso 1 de 4"
+   - Connected `onNavigateBack` to payment flow navigation
+
+5. **RatingScreen: Add amount context in header** (features/payment/presentation/RatingScreen.kt:34, 45-48)
+   - Added `amount: String` parameter to composable
+   - Added AvoqadoTopBar with title "Calificación"
+   - Added subtitle "Paso 2 de 4 · $${amount}"
+   - Connected `onNavigateBack` callback
+   - Updated both preview composables with example amounts
+
+6. **TipScreen: Add subtotal context in header** (features/payment/presentation/TipScreen.kt:56-61)
+   - Added AvoqadoTopBar with title "Propina"
+   - Added subtitle "Paso 3 de 4 · Subtotal: $${subtotal}"
+   - Connected `onNavigateBack` callback
+
+7. **MerchantSelectionContent: Add total amount in header** (features/payment/presentation/MerchantSelectionContent.kt:48-53)
+   - Added AvoqadoTopBar with title "Seleccionar Merchant"
+   - Added subtitle "Paso 4 de 4 · Total: $${totalAmount}"
+   - Connected `onNavigateBack` callback
+
+8. **PaymentScreen: Connect step-back navigation** (features/payment/presentation/PaymentScreen.kt:59-128)
+   - Connected all `onNavigateBack` callbacks to `viewModel.goBackOneStep()`
+   - EnteringAmount: If goBackOneStep() returns false → navigate to home
+   - CollectingRating: Call goBackOneStep() to return to amount
+   - CollectingTip: Call goBackOneStep() to return to rating
+   - SelectingMerchant: Call goBackOneStep() to return to tip
+
+9. **PaymentContext: Add rating field** (features/payment/domain/model/PaymentContext.kt:26, 58, 96)
+   - Added `rating: Int?` to abstract PaymentContext class
+   - Updated FastPayment data class with rating parameter
+   - Updated OrderPayment data class with rating parameter
+   - Supports 1-5 stars rating or null if skipped
+
+10. **PaymentViewModel: Include rating in backend recording** (features/payment/presentation/PaymentViewModel.kt:1452, 1457, 1485)
+    - Updated handlePaymentSuccess() to pass currentRating to PaymentContext
+    - Updated logging to include rating value
+    - Updated QueuedPayment creation to include currentRating
+
+11. **FastPaymentRecorder: Send numeric rating** (features/payment/data/repository/FastPaymentRecorder.kt:225)
+    - Updated buildFastPaymentRequest() to send rating as string ("1", "2", "3", "4", "5")
+    - Simple `rating?.toString()` conversion (no mapping needed)
+    - Backend receives reviewRating field with numeric value
+
+12. **OrderPaymentRecorder: Send numeric rating** (features/payment/data/repository/OrderPaymentRecorder.kt:247)
+    - Same simple conversion: `rating?.toString()`
+    - Updated buildOrderPaymentRequest() to send rating
+
+13. **QueuedPayment: Add rating field** (features/payment/domain/model/QueuedPayment.kt:40, 72)
+    - Added rating: Int? field to QueuedPayment domain model
+    - Updated toPaymentContext() to preserve rating during offline retry
+
+14. **PendingPaymentEntity: Add rating column** (core/data/local/entity/PendingPaymentEntity.kt:53-54)
+    - Added rating column (nullable Int) to Room entity
+    - Preserves user rating in offline payment queue
+
+15. **AvoqadoDatabase: Migration 3 → 4** (core/data/local/AvoqadoDatabase.kt:16, 49, 113-120)
+    - Updated database version from 3 to 4
+    - Added MIGRATION_3_4: ALTER TABLE pending_payments ADD COLUMN rating INTEGER DEFAULT NULL
+    - Non-destructive migration (preserves existing queued payments)
+
+16. **DatabaseModule: Add MIGRATION_3_4** (core/di/DatabaseModule.kt:70-73)
+    - Registered MIGRATION_3_4 in Room database builder
+    - Ensures smooth upgrade from version 3 to 4
+
+17. **PaymentQueueRepositoryImpl: Map rating field** (features/payment/data/repository/PaymentQueueRepositoryImpl.kt:148, 179)
+    - Updated toEntity() to map rating from domain to Room entity
+    - Updated toDomain() to map rating from Room entity to domain
+
+### **Technical Details**
+
+**Rating Feature:**
+- UI captures 1-5 stars in RatingScreen
+- Optional (can skip) - no blocking
+- Stored in PaymentContext domain model as Int (1-5)
+- Sent to backend as string ("1", "2", "3", "4", "5") - no mapping needed
+- Backend receives reviewRating field with numeric value
+- Preserved in offline queue for retry
+
+**Database Migration:**
+- Version 3 → 4 (non-destructive)
+- Added rating column (nullable INTEGER)
+- Preserves existing queued payments
+- Auto-upgrade on app launch
+
+**UX Pattern:**
+- Follows world-class e-commerce checkout flows (Amazon, Stripe, Shopify)
+- Step indicators show progress (Paso X de 4)
+- Contextual amounts displayed in subtitles
+- State preservation when going back
+
+**Navigation Safety:**
+- Processing states block back navigation (payment in progress)
+- First step returns false → caller handles navigation to home
+- Each step preserves user inputs when navigating backward
+
+**Benefits:**
+- ✅ Users can rate their experience during checkout
+- ✅ Ratings sent to backend for analytics
+- ✅ Offline queue preserves ratings for retry
+- ✅ Users can correct mistakes without restarting
+- ✅ Clear progress indication at each step
+- ✅ Contextual information always visible
+- ✅ Professional POS UX (matches Square Terminal, Toast POS)
+- ✅ Maintains Clean Architecture (ViewModel handles state transitions)
+
+---
+
+## [2025-01-10] - Provider-Agnostic Merchant Account Tracking (Multi-Provider Support)
+
+### **Overview**
+Migrated from Blumon-specific `blumonSerialNumber` to provider-agnostic `merchantAccountId` architecture. This hybrid approach maintains backward compatibility while enabling future support for Stripe Terminal, Clip, and other payment providers.
+
+### **Changed (Backend - avoqado-server)**
+
+1. **Payment Model - Added merchantAccountId FK** (prisma/schema.prisma:1523-1524, 1578, 2008)
+   - Added `merchantAccountId String?` field to Payment model (nullable for backward compatibility)
+   - Added FK relation: `merchantAccount MerchantAccount? @relation(fields: [merchantAccountId], references: [id], onDelete: Restrict)`
+   - Added reverse relation in MerchantAccount: `payments Payment[]`
+   - Added index on `merchantAccountId` for efficient queries
+   - Migration file: `20251110112527_add_merchant_account_to_payments/migration.sql`
+
+2. **PaymentCreationData Interface** (src/services/tpv/payment.tpv.service.ts:698-711)
+   - Added `merchantAccountId?: string` (primary field)
+   - Kept `blumonSerialNumber?: string` (legacy/deprecated)
+
+3. **resolveBlumonSerialToMerchantId() Helper** (src/services/tpv/payment.tpv.service.ts:713-762)
+   - NEW function for backward compatibility with old Android clients
+   - Resolves Blumon serial number → merchant account ID
+   - Queries MerchantAccount with venue configuration validation
+
+4. **recordOrderPayment() - Merchant Resolution** (src/services/tpv/payment.tpv.service.ts:878-893, 928)
+   - Added merchant resolution logic before transaction
+   - Priority: merchantAccountId → blumonSerialNumber → undefined
+   - Added `merchantAccountId` to payment creation
+
+5. **recordFastPayment() - Merchant Resolution** (src/services/tpv/payment.tpv.service.ts:1249-1264, 1316)
+   - Same merchant resolution logic as recordOrderPayment
+   - Comprehensive logging for debugging
+
+### **Changed (Android - avoqado-tpv)**
+
+1. **PaymentContext Domain Model** (features/payment/domain/model/PaymentContext.kt:27-29, 57-58, 94-95)
+   - Added `merchantAccountId: String` abstract property (primary)
+   - Kept `blumonSerialNumber: String` abstract property (legacy)
+   - Updated FastPayment and OrderPayment data classes
+
+2. **FastPaymentRequest DTO** (features/payment/data/dto/FastPaymentRequest.kt:71-75)
+   - Added `merchantAccountId: String?` field
+   - Kept `blumonSerialNumber: String?` field
+
+3. **FastPaymentRecorder** (features/payment/data/repository/FastPaymentRecorder.kt:213-214)
+   - Updated buildFastPaymentRequest() to send merchantAccountId
+   - Sends both merchantAccountId (primary) and blumonSerialNumber (fallback)
+
+4. **PaymentViewModel** (features/payment/presentation/PaymentViewModel.kt:1375-1387, 1415-1416)
+   - Updated handlePaymentSuccess() to capture `_currentMerchant.value?.id`
+   - Updated QueuedPayment creation to include merchantAccountId
+   - ✅ CRITICAL FIX: Use `_currentMerchant.value?.serialNumber` (virtual serial) instead of `TerminalConfig.serialNumber` (physical terminal serial)
+   - Updated log message to show both merchantId and blumonSerial
+
+5. **QueuedPayment Domain Model** (features/payment/domain/model/QueuedPayment.kt:42-43, 71-72)
+   - Added `merchantAccountId: String` field
+   - Updated toPaymentContext() to preserve merchantAccountId on retry
+
+6. **PendingPaymentEntity Room Table** (core/data/local/entity/PendingPaymentEntity.kt:55-60)
+   - Added `merchant_account_id TEXT` column
+   - Room schema version 2 → 3
+
+7. **AvoqadoDatabase Migration** (core/data/local/AvoqadoDatabase.kt:13-15, 48, 85-92)
+   - Updated database version from 2 to 3
+   - Added MIGRATION_2_3 with ALTER TABLE statement
+   - Preserves existing data (no destructive migration)
+
+8. **DatabaseModule** (core/di/DatabaseModule.kt:70)
+   - Added `.addMigrations(AvoqadoDatabase.MIGRATION_2_3)`
+
+9. **PaymentQueueRepositoryImpl Mapping** (features/payment/data/repository/PaymentQueueRepositoryImpl.kt:148-149, 178-179)
+   - Updated toEntity() to map merchantAccountId
+   - Updated toDomain() to map merchantAccountId
+
+### **Technical Details**
+
+**Hybrid Approach:**
+- `merchantAccountId` (NEW): Structured FK to MerchantAccount table (e.g., "cuid_abc123")
+- `blumonSerialNumber` (LEGACY): Provider-specific serial (e.g., "2841548417")
+- Both fields coexist for backward compatibility
+- New clients send both, old clients send only blumonSerialNumber (auto-resolved)
+
+**Benefits:**
+- ✅ NO breaking changes (old Android clients continue working)
+- ✅ Structured revenue attribution per merchant account
+- ✅ Ready for Stripe Terminal, Clip, and other providers
+- ✅ Efficient queries with indexed merchantAccountId FK
+- ✅ Offline payment queue preserves merchant account context
+
+**Migration Path:**
+1. Backend deployed first (accepts both fields)
+2. Android updated (sends both fields)
+3. Old Android clients automatically resolved via blumonSerialNumber
+4. Future: Deprecate blumonSerialNumber once all clients updated
+
+---
+
+## [2025-01-10] - Offline Payment Queue (World-Class Reliability)
+
+### **Added (Android - avoqado-tpv)**
+
+1. **PendingPaymentEntity Room Table** (core/data/local/entity/PendingPaymentEntity.kt)
+   - SQLite table for offline payment queue
+   - Fields: referenceNumber (unique), venueId, staffId, amount, tip, cardDetails, authorizationNumber
+   - Retry tracking: retryCount, lastError, syncStatus (PENDING/SYNCING/SUCCESS/FAILED)
+   - Unique index on referenceNumber for idempotency
+   - MAX_RETRY_ATTEMPTS = 3 before marking as FAILED
+
+2. **PendingPaymentDao** (core/data/local/dao/PendingPaymentDao.kt)
+   - Room DAO with CRUD operations
+   - insert(): OnConflictStrategy.IGNORE for duplicate prevention
+   - getAllPending(): Fetch PENDING payments ordered by createdAt (FIFO)
+   - markSynced(): Update status to SUCCESS after successful sync
+   - updateRetry(): Increment retryCount, auto-mark FAILED after 3 attempts
+   - getPendingCount(), getFailedCount(): For UI badges
+   - deleteOldSyncedPayments(): Cleanup after 7 days
+
+3. **AvoqadoDatabase** (core/data/local/AvoqadoDatabase.kt)
+   - Room database definition with PendingPaymentEntity
+   - Version 1, WAL journaling mode for concurrency
+   - DatabaseModule for Hilt injection
+
+4. **PaymentQueueRepository Interface** (features/payment/domain/repository/PaymentQueueRepository.kt)
+   - Repository interface for offline queue operations
+   - Methods: enqueue(), getAllPending(), markSynced(), updateRetry()
+   - Statistics: getPendingCount(), getFailedCount()
+   - Cleanup: deleteOldSyncedPayments(daysAgo)
+
+5. **PaymentQueueRepositoryImpl** (features/payment/data/repository/PaymentQueueRepositoryImpl.kt)
+   - Implementation with entity/domain mapping
+   - All operations run on Dispatchers.IO
+   - Comprehensive Timber logging for debugging
+   - Result wrapper for error handling
+
+6. **QueuedPayment Domain Model** (features/payment/domain/model/QueuedPayment.kt)
+   - Domain representation of queued payment
+   - SyncStatus enum: PENDING → SYNCING → SUCCESS/FAILED
+   - Conversion methods: toPaymentContext(), toCardDetails() for retry
+   - Includes all payment metadata for full retry capability
+
+7. **PaymentSyncWorker** (core/data/workers/PaymentSyncWorker.kt)
+   - Background worker using WorkManager + Hilt
+   - Runs every 15 minutes (Toast/Square standard)
+   - Fetches pending payments and retries with exponential backoff
+   - Retry delays: 1s → 2s → 4s (3 attempts max)
+   - Handles HTTP 409 (duplicate) as success (idempotency)
+   - Marks 4xx errors as FAILED immediately (won't fix themselves)
+   - Returns Result.success() to continue periodic runs
+
+8. **PaymentSyncScheduler** (core/util/PaymentSyncScheduler.kt)
+   - Utility for managing PaymentSyncWorker lifecycle
+   - start(): Enqueue periodic work (15-min interval)
+   - stop(): Cancel work on logout/deactivation
+   - isRunning(): Check worker status
+   - runNow(): Trigger immediate sync (for testing)
+   - ExistingPeriodicWorkPolicy.KEEP to preserve backoff state
+
+9. **PaymentViewModel Queue Integration** (features/payment/presentation/PaymentViewModel.kt:110)
+   - Injected PaymentQueueRepository dependency
+   - Updated handlePaymentSuccess() to queue on failure (lines 1397-1439)
+   - Creates QueuedPayment with all metadata on backend error
+   - Logs detailed queueing information for debugging
+
+10. **AppNavigation PaymentSync Startup** (core/presentation/navigation/AppNavigation.kt:159)
+    - Added PaymentSyncScheduler.start() on login success
+    - Runs alongside HeartbeatScheduler
+    - Continues running even when user logs out (like HeartbeatScheduler)
+
+11. **PaymentModule DI Updates** (core/di/PaymentModule.kt:184-193)
+    - Added providePaymentQueueRepository() provider
+    - Singleton scope for consistent queue access
+
+12. **DatabaseModule** (core/di/DatabaseModule.kt)
+    - NEW module for Room database dependencies
+    - provideDatabase(): AvoqadoDatabase with WAL journaling
+    - providePendingPaymentDao(): DAO injection
+
+### **Added (Backend - avoqado-server)**
+
+1. **Idempotency Check - recordOrderPayment()** (services/tpv/payment.tpv.service.ts:727-755)
+   - Check for existing payment with same referenceNumber before creating
+   - Returns existing payment if duplicate detected (safe retry)
+   - Logs warning with details for monitoring
+
+2. **Idempotency Check - recordFastPayment()** (services/tpv/payment.tpv.service.ts:1130-1157)
+   - Same idempotency logic as recordOrderPayment()
+   - Prevents duplicate payments from offline queue retries
+
+3. **Transaction Atomicity - recordOrderPayment()** (services/tpv/payment.tpv.service.ts:825-929)
+   - Wrapped in prisma.$transaction() for all-or-nothing execution
+   - Atomic operations: payment, venueTransaction, order.splitType, paymentAllocation
+   - Prevents orphaned records on partial failures
+
+4. **Transaction Atomicity - recordFastPayment()** (services/tpv/payment.tpv.service.ts:1196-1284)
+   - Wrapped in prisma.$transaction()
+   - Atomic operations: order, payment, venueTransaction, paymentAllocation
+   - Returns both payment and fastOrder for socket events
+
+### **Fixed**
+
+1. **Smart Retry: Merchant selection bug causing invalid RetryContext** (features/payment/presentation/PaymentScreen.kt:122-126, PaymentViewModel.kt:469-476)
+   - **BUG**: PaymentScreen was calling `selectMerchant()` (async 3-5s switch) instead of `updateSelectedMerchant()` (immediate visual selection)
+   - **SYMPTOM**: When payment failed, `_currentMerchant.value` was NULL because async switch hadn't completed
+   - **LOGS SHOWED**: `merchant=NULL`, `merchantAccountId: '' (blank: true)`, `isValid=false`
+   - **CONSEQUENCE**: Smart retry fell back to `resetPayment()` instead of preserving context
+   - **FIX**: Changed PaymentScreen line 123 to call `updateSelectedMerchant(merchant)` for immediate selection
+   - **RESULT**: Merchant is saved instantly, RetryContext is valid, smart retry works correctly
+
+2. **Payment Flow: Missing merchant switch validation before payment starts** (features/payment/presentation/PaymentViewModel.kt:621-652)
+   - **BUG**: `startPayment()` didn't verify correct merchant SDK was active before processing payment
+   - **RISK**: Payment could fail or charge wrong merchant account if SDK not switched
+   - **FIX**: Added PASO 0 (Merchant Switch Validation):
+     - ✅ Check if merchant is selected (error if NULL)
+     - ✅ Check if SDK is already on correct merchant (`isMerchantActive()`)
+     - ✅ Switch if needed (`switchMerchant()` - 3-5s OAuth + DUKPT)
+     - ✅ No-op if already active (0ms overhead)
+   - **BENEFITS**:
+     - Multi-merchant payments guaranteed to use correct credentials
+     - Smart retry works even if merchant wasn't switched yet
+     - Clear error messages if merchant not selected
+   - **LOGS**: Detailed merchant switch logging for debugging
+
+3. **Race Condition: Concurrent merchant switches from rapid back/forward navigation** (features/payment/presentation/PaymentViewModel.kt:625-636)
+   - **BUG**: User could trigger multiple concurrent switches by rapidly navigating back/forward
+   - **SYMPTOM**: Multiple `switchMerchant()` calls queued in Mutex, confusing UI states
+   - **SCENARIO**: User selects Merchant A → clicks "Procesar Pago" → goes back → selects Merchant B → clicks "Procesar Pago" again (before first switch completes)
+   - **CONSEQUENCE**: Two switches queued (A then B), user sees "Configurando Cuenta A..." then "Configurando Cuenta B..." (confusing)
+   - **FIX**: Added loading check BEFORE PASO 0:
+     ```kotlin
+     if (_merchantSwitchingLoading.value) {
+         _state.value = PaymentState.Error(
+             message = "Ya hay un cambio de cuenta en progreso.\n\nPor favor espere.",
+             context = createPaymentContext()
+         )
+         return@launch
+     }
+     ```
+   - **RESULT**: Duplicate switches blocked, user sees clear error message
+   - **INDUSTRY ALIGNMENT**: Matches Square Terminal pattern (block concurrent operations)
+
+4. **TypeScript Scope Error** (services/tpv/payment.tpv.service.ts:1283)
+   - Fixed `fastOrder` variable scope issue in transaction
+   - Changed transaction return from single `payment` to `{ payment, fastOrder }`
+   - Renamed internal variable from `fastOrder` to `order` inside transaction
+   - Now accessible outside transaction for socket broadcasting
+
+5. **CustomKeyboard: Deprecated Backspace icon** (core/presentation/components/CustomKeyboard.kt:8, 97)
+   - **DEPRECATION WARNING**: `Icons.Filled.Backspace` is deprecated in Material3
+   - **FIX**: Updated to `Icons.AutoMirrored.Filled.Backspace` for RTL language support
+   - **CHANGES**:
+     - Import changed from `icons.filled.Backspace` to `icons.automirrored.filled.Backspace` (line 8)
+     - Usage updated from `Icons.Default.Backspace` to `Icons.AutoMirrored.Filled.Backspace` (line 97)
+   - **BENEFIT**: Future-proof with Material3 guidelines for bidirectional layouts
+   - **BUILD**: Deprecation warning eliminated from build output
+
+6. **AmountInputBottomSheet: Fix modal expansion to fully expanded** (core/presentation/components/AmountInputBottomSheet.kt:42-44, 61)
+   - **UX BUG**: ModalBottomSheet opened at 50% height (partially expanded), requiring manual swipe to fully expand
+   - **FIX**: Added `rememberModalBottomSheetState(skipPartiallyExpanded = true)`
+   - **CHANGES**:
+     - Line 42-44: Added sheetState with `skipPartiallyExpanded = true` flag
+     - Line 61: Passed `sheetState` to ModalBottomSheet
+   - **RESULT**: Modal now opens fully expanded on first show, no manual swipe needed
+   - **PATTERN**: Matches professional POS UX (Square Terminal keyboard modals)
+
+7. **AmountInputBottomSheet: Fix amount formatting (100x bug)** (core/presentation/components/AmountInputBottomSheet.kt:48-50, 135-136)
+   - **CRITICAL BUG**: Amount displayed as $0.10 when user typed "10" (expected $10.00) - 100x undercharge
+   - **ROOT CAUSE**: Logic treated input as centavos and divided by 100, but UI presented as direct dollar entry
+   - **USER IMPACT**: Typing "10" → displayed "$0.10" → charged $0.10 (should be $10.00)
+   - **FIX**: Removed division by 100, treat input as direct dollar amount
+   - **CHANGES**:
+     - Line 48-50: Changed `decimal.divide(BigDecimal(100))` to just `decimal` in formattedAmount
+     - Line 135-136: Removed division in onConfirm, pass amount directly
+     - Added thousands separator: `%,.2f` format for better readability ($1,000.00)
+     - Increased max digits from 6 to 8 (allows up to $99,999,999.00)
+   - **EXAMPLES**:
+     | User Types | OLD Display | OLD Charge | NEW Display | NEW Charge |
+     |-----------|-------------|------------|-------------|------------|
+     | 10 | $0.10 | $0.10 | $10.00 | $10.00 |
+     | 100 | $1.00 | $1.00 | $100.00 | $100.00 |
+     | 5000 | $50.00 | $50.00 | $5,000.00 | $5,000.00 |
+   - **SEVERITY**: CRITICAL - Financial accuracy bug affecting all payments
+
+8. **CustomKeyboard: Improve button visibility** (core/presentation/components/CustomKeyboard.kt:142)
+   - **UX BUG**: Keyboard buttons hard to distinguish - borders barely visible (10% opacity)
+   - **PROBLEM**: Border at 0.3 alpha on dark background (#2A2A2A) created ~3.5% contrast difference
+   - **FIX**: Increased border opacity from 0.3f to 0.8f (267% increase)
+   - **CHANGE**: Line 142: `outline.copy(alpha = 0.3f)` → `outline.copy(alpha = 0.8f)`
+   - **RESULT**: Clear button boundaries, improved tap accuracy on small POS screens
+   - **ACCESSIBILITY**: Contrast ratio improved from ~1.1:1 to ~2.5:1 (WCAG minimum is 3:1)
+   - **PATTERN**: Matches Square Terminal keyboard visibility standards
+
+9. **MainActivity: Enforce hardware serial with mandatory READ_PHONE_STATE permission** (MainActivity.kt:69-193, core/util/DeviceInfoManager.kt:77-97)
+   - **CRITICAL CHANGE**: App now REQUIRES hardware serial (no ANDROID_ID fallback)
+   - **PROBLEM**: Device was using ANDROID_ID (`AVQD-6D52CB5103BB42DC`) instead of hardware serial (`AVQD-2841548417`)
+     - ANDROID_ID changes on app reinstall/factory reset → breaks terminal identification
+     - Backend relies on consistent serial number for terminal management
+     - Professional POS systems (Square, Toast, Clover) ALWAYS use hardware serial
+   - **ROOT CAUSE**: READ_PHONE_STATE permission declared in manifest but not requested at runtime
+     - Android 6.0+: Dangerous permissions require runtime request, not just manifest declaration
+     - `Build.getSerial()` threw SecurityException → fell back to ANDROID_ID
+   - **FIX IMPLEMENTED**:
+     1. **Permission State Management** (MainActivity.kt:75)
+        - Added `permissionGranted: MutableState<Boolean?>` to track status
+        - null = checking, true = granted, false = denied
+     2. **Mandatory Permission Request** (MainActivity.kt:90-100)
+        - Request permission on app launch (Android 8+)
+        - Log hardware serial when granted
+        - Block app functionality when denied (no fallback)
+     3. **Conditional UI Rendering** (MainActivity.kt:108-138)
+        - null → Show loading indicator (CircularProgressIndicator)
+        - true → Show normal app (AppNavigation)
+        - false → Show PermissionDeniedScreen with explanation
+     4. **Permission Denied Screen** (MainActivity.kt:289-374)
+        - Explains why permission is critical
+        - "Abrir Configuración" button → direct link to app settings
+        - "Solicitar Nuevamente" button → re-trigger permission dialog
+     5. **DeviceInfoManager: Remove ANDROID_ID fallback** (DeviceInfoManager.kt:77-97)
+        - Removed `Settings.Secure.ANDROID_ID` fallback logic
+        - Now throws SecurityException if permission not granted
+        - Updated docs: "SECURITY REQUIREMENT - ALWAYS uses hardware serial"
+   - **USER FLOW**:
+     1. User opens app → Permission dialog appears
+     2. If granted → App proceeds normally with hardware serial
+     3. If denied → PermissionDeniedScreen blocks all functionality
+     4. User can open settings to grant manually or request again
+   - **BENEFITS**:
+     - ✅ Consistent terminal identification across app lifecycle
+     - ✅ Hardware serial persists through reinstall/factory reset
+     - ✅ Backend can reliably track terminal status
+     - ✅ Matches professional POS systems (Square/Toast pattern)
+   - **TECHNICAL DETAILS**:
+     - Permission required: `android.permission.READ_PHONE_STATE`
+     - API level: Android 8.0+ (API 26+) requires runtime permission
+     - Android 7 and below: No permission required (Build.SERIAL accessible)
+   - **RESULT**: Device now always uses `AVQD-2841548417` (hardware serial), never `AVQD-6D52CB5103BB42DC` (ANDROID_ID)
+
+10. **Navigation: Fix payment flow loop (amount → amount instead of amount → rating)** (core/presentation/navigation/AppNavigation.kt:181-217, features/payment/presentation/PaymentScreen.kt:43, 169-178)
+   - **WORKFLOW BUG**: After entering amount in modal, user looped back to amount input screen instead of rating screen
+   - **ROOT CAUSE #1**: Home composable created PaymentViewModel instance (VM1), Payment composable created different instance (VM2)
+     - VM1 state set to CollectingRating → navigation happens → VM2 starts with Idle state → resets to EnteringAmount
+   - **ROOT CAUSE #2**: Two competing LaunchedEffects in PaymentScreen
+     - LaunchedEffect(initialAmount) tried to call submitAmount(initialAmount)
+     - LaunchedEffect(Unit) in Idle state called initiatePaymentFlow() (goes to EnteringAmount)
+     - Both executed simultaneously, initiatePaymentFlow() won the race
+   - **FIX**:
+     1. Removed PaymentViewModel from Home composable, pass amount via savedStateHandle instead
+     2. Merged competing LaunchedEffects into single conditional logic in Idle state handler
+   - **CHANGES**:
+     - AppNavigation.kt:181-192: Removed PaymentViewModel from Home, added pendingAmount state + LaunchedEffect
+     - AppNavigation.kt:214-216: Changed `onStartPaymentWithAmount` to set `pendingAmount` (triggers navigation)
+     - AppNavigation.kt:259: Read initialAmount from `previousBackStackEntry.savedStateHandle`
+     - PaymentScreen.kt:43: Added `initialAmount: String? = null` parameter
+     - PaymentScreen.kt:169-178: Changed Idle LaunchedEffect to check initialAmount first
+       - If initialAmount exists → call submitAmount(initialAmount) → go to Rating
+       - If initialAmount is null → call initiatePaymentFlow() → go to EnteringAmount
+   - **FLOW NOW**:
+     1. User enters amount in WelcomeScreen modal
+     2. Modal sets pendingAmount state
+     3. LaunchedEffect navigates with amount in savedStateHandle
+     4. PaymentScreen reads initialAmount
+     5. Idle state LaunchedEffect detects initialAmount and calls submitAmount
+     6. State transitions to CollectingRating (rating screen shows)
+   - **RESULT**: Correct flow: Welcome → Modal → Rating (Paso 2) → Tip (Paso 3) → Merchant (Paso 4) → Payment
+   - **PATTERN**: Matches Jetpack Compose Navigation best practices (avoid cross-scope ViewModels)
+
+### **Architecture Highlights**
+
+- **Offline-First**: Payments succeed locally (Blumon), queue for backend sync
+- **Idempotent**: Blumon referenceNumber prevents duplicate payments on retry
+- **Eventually Consistent**: Payments sync when network available (15-min periodic)
+- **Fault Tolerant**: 3 retry attempts with exponential backoff
+- **Production Ready**: Follows Square Terminal and Toast POS patterns
+
+---
+
 ## [2025-11-10] - Backend Payment Recording (Toast/Square Pattern)
 
 ### **Added (Android - avoqado-tpv)**

@@ -1,6 +1,8 @@
 package com.jaac.avoqado_tpv.core.presentation.components
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
@@ -13,7 +15,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 
 /**
@@ -23,6 +27,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
  *
  * @param title Bar title
  * @param modifier Modifier for customization
+ * @param subtitle Optional subtitle for context (e.g., "$125.50 · 5 items")
  * @param onNavigationClick Optional back button click handler
  * @param actions Optional action buttons
  */
@@ -31,17 +36,49 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 fun AvoqadoTopBar(
     title: String,
     modifier: Modifier = Modifier,
+    subtitle: String? = null,
     onNavigationClick: (() -> Unit)? = null,
     actions: @Composable RowScope.() -> Unit = {}
 ) {
+    val shape = RoundedCornerShape(
+        topStart = 0.dp,
+        topEnd = 0.dp,
+        bottomStart = 20.dp,  // Rounded bottom corners (increased for modern look)
+        bottomEnd = 20.dp
+    )
+
     CenterAlignedTopAppBar(
         title = {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleLarge
-            )
+            if (subtitle != null) {
+                // Title + Subtitle layout
+                androidx.compose.foundation.layout.Column(
+                    horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+                }
+            } else {
+                // Title only
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge
+                )
+            }
         },
-        modifier = modifier,
+        modifier = modifier
+            .clip(shape)
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outline,
+                shape = shape
+            ),
         navigationIcon = {
             if (onNavigationClick != null) {
                 IconButton(onClick = onNavigationClick) {
@@ -54,10 +91,10 @@ fun AvoqadoTopBar(
         },
         actions = actions,
         colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-            containerColor = MaterialTheme.colorScheme.primary,
-            titleContentColor = MaterialTheme.colorScheme.onPrimary,
-            navigationIconContentColor = MaterialTheme.colorScheme.onPrimary,
-            actionIconContentColor = MaterialTheme.colorScheme.onPrimary
+            containerColor = MaterialTheme.colorScheme.surface,  // Dark surface (#2A2A2A)
+            titleContentColor = MaterialTheme.colorScheme.onSurface,  // White text
+            navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
+            actionIconContentColor = MaterialTheme.colorScheme.onSurface
         )
     )
 }
@@ -99,6 +136,18 @@ private fun AvoqadoTopBarWithActionsPreview() {
                     )
                 }
             }
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun AvoqadoTopBarWithSubtitlePreview() {
+    AvoqadoTheme {
+        AvoqadoTopBar(
+            title = "Checkout",
+            subtitle = "$125.50 · 5 items",
+            onNavigationClick = { /* Handle back */ }
         )
     }
 }

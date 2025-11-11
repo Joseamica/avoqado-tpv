@@ -1,14 +1,31 @@
 package com.jaac.avoqado_tpv.features.payment.presentation
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoButton
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoCard
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
@@ -23,6 +40,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
  */
 @Composable
 fun PaymentScreen(
+    initialAmount: String? = null,
     onNavigateBack: () -> Unit,
     viewModel: PaymentViewModel = hiltViewModel()
 ) {
@@ -32,12 +50,27 @@ fun PaymentScreen(
     val merchantSwitchingLoading by viewModel.merchantSwitchingLoading.collectAsStateWithLifecycle()
     val merchantSwitchMessage by viewModel.merchantSwitchMessage.collectAsStateWithLifecycle()
 
+    // Dynamic topBar titles based on payment state
+    val (topBarTitle, topBarSubtitle) = when (val currentState = state) {
+        is PaymentState.EnteringAmount -> "Nuevo Pago" to "Paso 1 de 4"
+        is PaymentState.CollectingRating -> "Calificación" to "Paso 2 de 4 · $${currentState.amount}"
+        is PaymentState.CollectingTip -> "Propina" to "Paso 3 de 4 · Subtotal: $${currentState.amount}"
+        is PaymentState.SelectingMerchant -> "Seleccionar Merchant" to "Paso 4 de 4 · Total: $${currentState.totalAmount}"
+        else -> "Pago con Tarjeta" to null
+    }
+
+    // Hide topBar on Success screen (full-screen receipt)
+    val showTopBar = state !is PaymentState.Success
+
     Scaffold(
         topBar = {
-            AvoqadoTopBar(
-                title = "Pago con Tarjeta",
-                onNavigationClick = onNavigateBack
-            )
+            if (showTopBar) {
+                AvoqadoTopBar(
+                    title = topBarTitle,
+                    subtitle = topBarSubtitle,
+                    onNavigationClick = onNavigateBack
+                )
+            }
         }
     ) { paddingValues ->
         Box(
@@ -53,14 +86,21 @@ fun PaymentScreen(
                         onAmountChange = { /* handled by state */ },
                         onContinue = { amount ->
                             viewModel.submitAmount(amount)
+                        },
+                        onNavigateBack = {
+                            // First step - go back to home
+                            if (!viewModel.goBackOneStep()) {
+                                onNavigateBack()
+                            }
                         }
                     )
                 }
 
                 is PaymentState.CollectingRating -> {
-                    RatingScreen(
-                        currentRating = currentState.rating,
-                        onRatingChange = { rating ->
+                    ReviewScreen(
+                        currentReview = currentState.rating,
+                        amount = currentState.amount,
+                        onReviewChange = { rating ->
                             viewModel.updateRating(currentState.amount, rating)
                         },
                         onContinue = {
@@ -68,6 +108,10 @@ fun PaymentScreen(
                         },
                         onSkip = {
                             viewModel.skipRating(currentState.amount)
+                        },
+                        onNavigateBack = {
+                            // Go back to amount input
+                            viewModel.goBackOneStep()
                         }
                     )
                 }
@@ -90,6 +134,10 @@ fun PaymentScreen(
                         },
                         onSkipTip = {
                             viewModel.skipTip(currentState.amount, currentState.rating)
+                        },
+                        onNavigateBack = {
+                            // Go back to rating
+                            viewModel.goBackOneStep()
                         }
                     )
                 }
@@ -103,18 +151,38 @@ fun PaymentScreen(
                         currentMerchant = currentMerchant,
                         merchantSwitchingLoading = merchantSwitchingLoading,
                         onSelectMerchant = { merchant ->
-                            viewModel.selectMerchant(merchant)
+                            // ✅ FIX: Use updateSelectedMerchant for immediate visual selection
+                            // (SDK switch happens later in startPayment if needed)
+                            viewModel.updateSelectedMerchant(merchant)
                         },
                         onStartPayment = {
                             viewModel.startPayment(currentState.totalAmount)
+                        },
+                        onNavigateBack = {
+                            // Go back to tip selection
+                            viewModel.goBackOneStep()
                         }
                     )
                 }
 
                 // LEGACY: Old idle state (redirect to new flow)
                 is PaymentState.Idle -> {
-                    LaunchedEffect(Unit) {
-                        viewModel.initiatePaymentFlow()
+                    // ✅ Show loading overlay when coming from Home with initialAmount
+                    // Prevents flash of previous screen during navigation
+                    if (initialAmount != null) {
+                        AvoqadoLoadingOverlay(
+                            message = "Preparando pago..."
+                        )
+                    }
+
+                    LaunchedEffect(initialAmount) {
+                        if (initialAmount != null) {
+                            // Coming from Home with amount already entered → skip to rating
+                            viewModel.submitAmount(initialAmount)
+                        } else {
+                            // Normal flow → start from amount input
+                            viewModel.initiatePaymentFlow()
+                        }
                     }
                 }
 
@@ -123,7 +191,7 @@ fun PaymentScreen(
                     PaymentLoadingContent("Configurando terminal...")
                 }
                 is PaymentState.DetectingCard -> {
-                    PaymentDetectingCard()
+                    PaymentDetectingCard(amount = currentState.amount)
                 }
                 is PaymentState.Processing -> {
                     PaymentLoadingContent(currentState.message)
@@ -132,6 +200,8 @@ fun PaymentScreen(
                     PaymentSuccessContent(
                         authCode = currentState.authCode,
                         amount = currentState.amount,
+                        receipt = currentState.receipt,  // 🆕 NEW: Pass receipt for QR code
+                        onPrintReceipt = viewModel::printReceipt,  // 🆕 NEW: Print callback
                         onFinish = {
                             viewModel.resetPayment()
                             onNavigateBack()
@@ -142,11 +212,31 @@ fun PaymentScreen(
                     PaymentErrorContent(
                         message = currentState.message,
                         canRetry = currentState.canRetry,
-                        onRetry = { viewModel.resetPayment() },
+                        onRetry = {
+                            // 🔄 Smart Retry: Restore context if available, otherwise reset
+                            if (currentState.context != null) {
+                                viewModel.retryPayment(currentState.context)
+                            } else {
+                                viewModel.resetPayment()
+                            }
+                        },
                         onCancel = {
                             viewModel.resetPayment()
                             onNavigateBack()
                         }
+                    )
+                }
+                // 🆕 NEW: Printing state (show loading indicator)
+                is PaymentState.Printing -> {
+                    PaymentLoadingContent("Imprimiendo recibo...")
+                }
+                // 🆕 NEW: Print error state (show error dialog, can retry or dismiss)
+                is PaymentState.PrintError -> {
+                    PaymentErrorContent(
+                        message = currentState.message,
+                        canRetry = true,
+                        onRetry = viewModel::printReceipt,  // Retry printing
+                        onCancel = viewModel::dismissPrintError  // Return to success screen
                     )
                 }
                 is PaymentState.Cancelled -> {
@@ -285,44 +375,44 @@ private fun PaymentIdleContent(
 }
 
 @Composable
-private fun PaymentDetectingCard() {
-    Column(
+private fun PaymentDetectingCard(amount: String) {
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        contentAlignment = Alignment.Center
     ) {
-        AvoqadoCard(
-            modifier = Modifier.fillMaxWidth()
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
-            Column(
-                modifier = Modifier.padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(64.dp),
-                    color = MaterialTheme.colorScheme.primary
-                )
+            // Contactless payment icon (custom drawable)
+            Image(
+                painter = painterResource(id = R.drawable.ic_contact_payment),
+                contentDescription = "Contactless payment",
+                modifier = Modifier.size(120.dp),
+                colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onBackground)
+            )
 
-                Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-                Text(
-                    text = "Acerque la tarjeta al lector",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Center
-                )
+            // Amount display (large, bold)
+            Text(
+                text = "$$amount",
+                style = MaterialTheme.typography.displayLarge.copy(
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                ),
+                color = MaterialTheme.colorScheme.onBackground,
+                textAlign = TextAlign.Center
+            )
 
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Text(
-                    text = "Coloque la tarjeta sobre el lector\ndel terminal PAX",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
-                )
-            }
+            // Instructions (smaller, below amount)
+            Text(
+                text = "Acerca o inserta la tarjeta",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                textAlign = TextAlign.Center
+            )
         }
     }
 }
@@ -361,90 +451,231 @@ private fun PaymentLoadingContent(message: String) {
     }
 }
 
+/**
+ * DashedDivider - Dashed line separator (like receipt paper perforation)
+ */
+@Composable
+private fun DashedDivider(
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+) {
+    Canvas(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(1.dp)
+    ) {
+        drawLine(
+            color = color,
+            start = Offset(0f, 0f),
+            end = Offset(size.width, 0f),
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
+        )
+    }
+}
+
 @Composable
 private fun PaymentSuccessContent(
     authCode: String,
     amount: String,
+    receipt: com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt? = null,
+    onPrintReceipt: () -> Unit = {},
     onFinish: () -> Unit
 ) {
+    // Parse amounts (prefer receipt data if available)
+    val totalAmount = receipt?.amount ?: (amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)
+    val tipAmount = receipt?.tipAmount ?: java.math.BigDecimal.ZERO
+    val subtotalAmount = receipt?.baseAmount ?: totalAmount
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+            .background(MaterialTheme.colorScheme.background)
     ) {
-        AvoqadoCard(
-            modifier = Modifier.fillMaxWidth()
+        // Receipt visual (weight 1f to push buttons to bottom)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
         ) {
-            Column(
-                modifier = Modifier.padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 24.dp)
             ) {
-                Text(
-                    text = "✅",
-                    style = MaterialTheme.typography.displayLarge,
-                    color = MaterialTheme.colorScheme.primary
+                // Receipt background image (ticket paper texture)
+                Image(
+                    painter = painterResource(R.drawable.ilu_ticket_background),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 90.dp), // Space for QR code
+                    contentDescription = "",
+                    contentScale = ContentScale.FillBounds,
+                    colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.surface)
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Text(
-                    text = "Pago Aprobado",
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                Text(
-                    text = "Monto: $$amount MXN",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Text(
-                    text = "Código de autorización:",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Text(
-                    text = authCode,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-
-                // ⭐ Show OFFLINE indicator if auth code starts with "OFFLINE-"
-                if (authCode.startsWith("OFFLINE-")) {
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Text(
-                        text = "⚠️ MODO OFFLINE",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.secondary,
-                        textAlign = TextAlign.Center
-                    )
-
-                    Text(
-                        text = "Sin autorización bancaria",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
+                // QR Code (centered on top)
+                receipt?.receiptUrl?.let { qrUrl ->
+                    Box(
+                        modifier = Modifier
+                            .size(180.dp)
+                            .align(Alignment.TopCenter)
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(Color.White)
+                            .border(
+                                width = 10.dp,
+                                color = MaterialTheme.colorScheme.outline,
+                                shape = RoundedCornerShape(24.dp)
+                            )
+                    ) {
+                        Image(
+                            painter = com.jaac.avoqado_tpv.core.presentation.components.rememberQrBitmapPainter(
+                                content = qrUrl,
+                                size = 140.dp,
+                                padding = 0.dp
+                            ),
+                            contentDescription = "Código QR del recibo",
+                            modifier = Modifier
+                                .size(140.dp)
+                                .align(Alignment.Center)
+                        )
+                    }
                 }
 
-                Spacer(modifier = Modifier.height(32.dp))
+                // Receipt content
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 90.dp) // Match background padding
+                        .padding(horizontal = 24.dp, vertical = 32.dp)
+                        .align(Alignment.BottomCenter)
+                ) {
+                    // Instruction text
+                    Text(
+                        text = "Escanea el código QR para descargar el recibo y dejar una calificación",
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.fillMaxWidth()
+                    )
 
-                AvoqadoButton(
-                    text = "Finalizar",
-                    onClick = onFinish,
-                    modifier = Modifier.fillMaxWidth()
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    // Dashed divider
+                    DashedDivider()
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    // Total pagado
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Total pagado",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "$${String.format(java.util.Locale.US, "%.2f", totalAmount)}",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Solid divider
+                    HorizontalDivider(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Breakdown: Total
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Total",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "$${String.format(java.util.Locale.US, "%.2f", subtotalAmount)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    // Breakdown: Propina
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Propina",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "$${String.format(java.util.Locale.US, "%.2f", tipAmount)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+                }
+            }
+        }
+
+        // Print button (if receipt available)
+        receipt?.let {
+            Button(
+                onClick = onPrintReceipt,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .padding(horizontal = 16.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.onSurface
+                )
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_contact_payment), // Placeholder - ideally use print icon
+                    contentDescription = "Imprimir",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(20.dp)
+                )
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Text(
+                    text = "O imprime el recibo",
+                    fontSize = 16.sp
                 )
             }
         }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Finish button
+        AvoqadoButton(
+            text = "Nuevo Pago",
+            onClick = onFinish,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
     }
 }
 
@@ -514,5 +745,59 @@ private fun PaymentErrorContent(
                 }
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PREVIEWS (ALWAYS use AvoqadoTheme for correct dark theme + colors)
+// ═══════════════════════════════════════════════════════════════════════════
+
+@androidx.compose.ui.tooling.preview.Preview(name = "Detecting Card - Dark Theme", showBackground = true)
+@Composable
+private fun PaymentDetectingCardPreview() {
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
+        PaymentDetectingCard(amount = "79.66")
+    }
+}
+
+@androidx.compose.ui.tooling.preview.Preview(name = "Loading - Dark Theme", showBackground = true)
+@Composable
+private fun PaymentLoadingContentPreview() {
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
+        PaymentLoadingContent(message = "Configurando terminal...")
+    }
+}
+
+@androidx.compose.ui.tooling.preview.Preview(name = "Success - No Receipt", showBackground = true)
+@Composable
+private fun PaymentSuccessContentPreview() {
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
+        PaymentSuccessContent(
+            authCode = "123456",
+            amount = "500.00",
+            receipt = null,  // No receipt - button won't show
+            onPrintReceipt = {},
+            onFinish = {}
+        )
+    }
+}
+
+@androidx.compose.ui.tooling.preview.Preview(name = "Success - With Receipt & QR", showBackground = true)
+@Composable
+private fun PaymentSuccessWithReceiptPreview() {
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
+        PaymentSuccessContent(
+            authCode = "123456",
+            amount = "500.00",
+            receipt = com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt(
+                paymentId = "pay_abc123",
+                receiptUrl = "https://api.avoqado.io/api/v1/public/receipt/cmhti3qev000f9keochwkvz5e",
+                accessKey = "cmhti3qev000f9keochwkvz5e",
+                amount = java.math.BigDecimal("500.00"),
+                tipAmount = java.math.BigDecimal("50.00")
+            ),
+            onPrintReceipt = {},
+            onFinish = {}
+        )
     }
 }

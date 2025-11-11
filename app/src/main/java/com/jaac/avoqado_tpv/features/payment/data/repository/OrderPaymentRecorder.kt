@@ -243,8 +243,8 @@ class OrderPaymentRecorder @Inject constructor(
             currency = "MXN",
             isInternational = cardDetails.isInternational,
 
-            // Optional rating
-            reviewRating = null,
+            // Optional rating: Send numeric rating as string (1-5 stars)
+            reviewRating = context.rating?.toString(),
         )
     }
 }

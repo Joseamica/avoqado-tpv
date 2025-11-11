@@ -5,9 +5,12 @@ import com.example.clean_lib_services.shared_tools.api.server.TokenServer
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.features.payment.data.BlumonAuthManager
 // ⭐ NEW: Backend payment recording dependencies
+import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
 import com.jaac.avoqado_tpv.features.payment.data.repository.FastPaymentRecorder
 import com.jaac.avoqado_tpv.features.payment.data.repository.OrderPaymentRecorder
+import com.jaac.avoqado_tpv.features.payment.data.repository.PaymentQueueRepositoryImpl
+import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
 import dagger.Module
 import dagger.Provides
@@ -158,6 +161,33 @@ object PaymentModule {
         return RecordPaymentUseCase(
             fastPaymentRecorder = fastPaymentRecorder,
             orderPaymentRecorder = orderPaymentRecorder
+        )
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ⭐ NEW: OFFLINE PAYMENT QUEUE (Room Database)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Provides PaymentQueueRepository for offline payment queue.
+     *
+     * **Purpose:** Queue failed payment recordings for retry
+     *
+     * **Implementation:** PaymentQueueRepositoryImpl (Room database persistence)
+     *
+     * **Injected Into:**
+     * - PaymentViewModel: Enqueue payments when backend recording fails
+     * - PaymentSyncWorker: Fetch pending payments for retry
+     *
+     * @param pendingPaymentDao DAO for Room database operations
+     */
+    @Provides
+    @Singleton
+    fun providePaymentQueueRepository(
+        pendingPaymentDao: PendingPaymentDao
+    ): PaymentQueueRepository {
+        return PaymentQueueRepositoryImpl(
+            pendingPaymentDao = pendingPaymentDao
         )
     }
 }

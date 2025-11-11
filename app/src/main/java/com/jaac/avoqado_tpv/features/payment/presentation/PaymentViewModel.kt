@@ -45,6 +45,7 @@ import com.example.clean_lib_services.shared.core.domain.entity.init.InitData
 import com.example.clean_lib_services.shared.core.domain.entity.init.Contact
 import com.example.clean_lib_services.shared.core.domain.entity.init.KushkiData
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
+import com.jaac.avoqado_tpv.features.payment.domain.RetryContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 // ⭐ NEW: Backend payment recording
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
@@ -105,7 +106,11 @@ class PaymentViewModel @Inject constructor(
     // 💾 Backend Payment Recording - Record payments to avoqado-server database
     private val recordPaymentUseCase: RecordPaymentUseCase,
     // 🔐 Auth Repository - Get current venue and staff context
-    private val authRepository: com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
+    private val authRepository: com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository,
+    // 💾 Payment Queue Repository - Offline payment queue for failed backend recordings
+    private val paymentQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository,
+    // 🖨️ Printer Manager - PAX thermal printer for receipt printing
+    private val printerManager: com.jaac.avoqado_tpv.core.printer.PrinterManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentState>(PaymentState.Idle)
@@ -498,8 +503,11 @@ class PaymentViewModel @Inject constructor(
      * Submit tip and proceed to merchant selection
      */
     fun submitTip(subtotal: String, tipAmount: String, rating: Int?) {
+        Timber.d("💵 [Payment Flow] submitTip called with: subtotal='$subtotal', tipAmount='$tipAmount', rating=$rating")
+
         val totalAmount = calculateTotal(subtotal, tipAmount)
-        Timber.d("💵 [Payment Flow] Tip submitted: $$tipAmount (Total: $$totalAmount)")
+
+        Timber.d("💵 [Payment Flow] Calculated total: '$totalAmount' (subtotal='$subtotal' + tip='$tipAmount')")
 
         // ⭐ NEW: Save tip and rating for backend recording
         currentTip = tipAmount
@@ -511,6 +519,8 @@ class PaymentViewModel @Inject constructor(
             totalAmount = totalAmount,
             rating = rating
         )
+
+        Timber.d("💵 [Payment Flow] SelectingMerchant state created: subtotal='$subtotal', tipAmount='$tipAmount', totalAmount='$totalAmount'")
     }
 
     /**
@@ -572,9 +582,18 @@ class PaymentViewModel @Inject constructor(
      * Calculate total amount (subtotal + tip)
      */
     private fun calculateTotal(subtotal: String, tipAmount: String): String {
+        Timber.d("🧮 [calculateTotal] Input: subtotal='$subtotal', tipAmount='$tipAmount'")
+
         val subtotalDecimal = subtotal.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
         val tipDecimal = tipAmount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
-        return subtotalDecimal.add(tipDecimal).toString()
+
+        Timber.d("🧮 [calculateTotal] Parsed: subtotalDecimal=$subtotalDecimal, tipDecimal=$tipDecimal")
+
+        val total = subtotalDecimal.add(tipDecimal)
+
+        Timber.d("🧮 [calculateTotal] Result: $total")
+
+        return total.toString()
     }
 
     /**
@@ -613,14 +632,64 @@ class PaymentViewModel @Inject constructor(
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                // ═══════════════════════════════════════════════════════════════════════════
+                // PASO 0: Ensure correct merchant SDK is active (multi-merchant support)
+                // ═══════════════════════════════════════════════════════════════════════════
+
+                // 🛡️ CRITICAL: Prevent race condition if user rapidly clicks back/forward
+                // during merchant switch. Without this check, user can trigger multiple
+                // concurrent switches (queued by Mutex) leading to confusing UI states.
+                if (_merchantSwitchingLoading.value) {
+                    Timber.w("⚠️ [Merchant Switch] Switch already in progress, blocking duplicate request")
+                    _state.value = PaymentState.Error(
+                        message = "Ya hay un cambio de cuenta en progreso.\n\n" +
+                                  "Por favor espere a que termine la operación actual.",
+                        context = createPaymentContext()
+                    )
+                    return@launch
+                }
+
+                val selectedMerchant = _currentMerchant.value
+                if (selectedMerchant == null) {
+                    Timber.e("❌ [Merchant Switch] No merchant selected before payment")
+                    _state.value = PaymentState.Error(
+                        message = "Debe seleccionar una cuenta de pago antes de continuar",
+                        context = createPaymentContext()
+                    )
+                    return@launch
+                }
+
+                // Check if we need to switch merchants (3-5 seconds if switching, 0ms if already active)
+                if (!multiMerchantSDKManager.isMerchantActive(selectedMerchant)) {
+                    Timber.i("🔄 [Merchant Switch] Switching SDK to: ${selectedMerchant.displayName} (${selectedMerchant.serialNumber})")
+                    _state.value = PaymentState.Processing("Configurando cuenta ${selectedMerchant.displayName}...")
+
+                    val switchResult = multiMerchantSDKManager.switchMerchant(selectedMerchant)
+                    if (switchResult.isFailure) {
+                        val error = switchResult.exceptionOrNull()
+                        Timber.e(error, "❌ [Merchant Switch] Failed to switch to: ${selectedMerchant.displayName}")
+                        _state.value = PaymentState.Error(
+                            message = "Error configurando cuenta:\n${error?.message ?: "Error desconocido"}",
+                            context = createPaymentContext()
+                        )
+                        return@launch
+                    }
+                    Timber.i("✅ [Merchant Switch] Successfully switched to: ${selectedMerchant.displayName}")
+                } else {
+                    Timber.d("✅ [Merchant Switch] Already on correct merchant: ${selectedMerchant.displayName} (no switch needed)")
+                }
+
+                // ═══════════════════════════════════════════════════════════════════════════
                 // PASO 1: PreTrans (configure EMV kernel)
+                // ═══════════════════════════════════════════════════════════════════════════
+                _state.value = PaymentState.ConfiguringKernel
                 Timber.i("[PHASE 1] PreTrans - Configuring EMV kernel...")
                 val preParams = PreTransParams(currentAmountInCents, "0", TransType.SALE, CountryConstants.MEX)
                 preTransUseCase.runInfallible(preParams)
                 Timber.d("✅ [PHASE 1] PreTrans completed")
 
                 // PASO 2: StartDetectCard (wait for card tap)
-                _state.value = PaymentState.DetectingCard
+                _state.value = PaymentState.DetectingCard(currentAmount)
                 Timber.i("[PHASE 2] StartDetectCard - Waiting for card tap...")
                 val detectParams = StartDetectCardParams(EReaderType.MAG_ICC_PICC)
                 val detectResult = startDetectCardUseCase.run(detectParams)
@@ -628,7 +697,10 @@ class PaymentViewModel @Inject constructor(
                 if (detectResult.isLeft) {
                     val error = detectResult.leftValue()
                     Timber.e("❌ [PHASE 2] Detect card failed: $error")
-                    _state.value = PaymentState.Error("Error detectando tarjeta: $error")
+                    _state.value = PaymentState.Error(
+                        message = "Error detectando tarjeta: $error",
+                        context = createPaymentContext()  // 🔄 Preserve context for smart retry
+                    )
                     return@launch
                 }
 
@@ -654,7 +726,10 @@ class PaymentViewModel @Inject constructor(
                     }
                     CardType.UNKNOWN -> {
                         Timber.e("❌ [ROUTING] Unknown card type detected: $detectedReaderType")
-                        _state.value = PaymentState.Error("Tipo de tarjeta no soportado")
+                        _state.value = PaymentState.Error(
+                            message = "Tipo de tarjeta no soportado",
+                            context = createPaymentContext()  // 🔄 Preserve context for smart retry
+                        )
                         return@launch
                     }
                 }
@@ -668,7 +743,10 @@ class PaymentViewModel @Inject constructor(
                 if (emvResult.isLeft) {
                     val error = emvResult.leftValue()
                     Timber.e("❌ [PHASE 3] EMV failed: $error")
-                    _state.value = PaymentState.Error("Error procesando EMV: $error")
+                    _state.value = PaymentState.Error(
+                        message = "Error procesando EMV: $error",
+                        context = createPaymentContext()  // 🔄 Preserve context for smart retry
+                    )
                     return@launch
                 }
 
@@ -757,20 +835,23 @@ class PaymentViewModel @Inject constructor(
                 // PASO 4: ⭐ SaleIcc - ONLINE AUTHORIZATION ⭐
                 _state.value = PaymentState.Processing("Autorizando con banco...")
                 Timber.i("[PHASE 4] SaleIcc - Sending to Momentum for ONLINE authorization...")
-                val saleResponse = performOnlineAuthorization(
+                val authResult = performOnlineAuthorization(
                     amount = currentAmountInCents,  // ✅ Pass cents format to SDK
                     track2 = currentTrack2,  // Extracted from emvTagListStr above
                     cardHolderName = "CARDHOLDER",  // TODO: Extract from tag 5F20 if available
                     emvTagList = emvTagListStr
                 )
 
-                if (saleResponse == null) {
+                if (authResult.response == null) {
                     Timber.e("❌ [PHASE 4] Online authorization FAILED")
-                    _state.value = PaymentState.Error("Error en autorización con banco")
+                    _state.value = PaymentState.Error(
+                        message = authResult.userFriendlyError ?: "Error en autorización con banco",
+                        context = createPaymentContext()  // 🔄 Preserve context for smart retry
+                    )
                     return@launch
                 }
 
-                val saleData = saleResponse.saleData
+                val saleData = authResult.response.saleData
                 Timber.i("✅ [PHASE 4] Online authorization SUCCESS!")
                 Timber.i("   Auth Code: ${saleData.authorization}")
                 Timber.i("   Reference: ${saleData.reference}")
@@ -852,12 +933,22 @@ class PaymentViewModel @Inject constructor(
      *
      * Based on successful implementation from BLUMON_INTEGRATION_GUIDE.md
      */
+    /**
+     * Result class for online authorization
+     * @param response The successful response from Blumon, or null if failed
+     * @param userFriendlyError User-friendly error message (Spanish), or null if success
+     */
+    private data class AuthorizationResult(
+        val response: SaleIccResponse?,
+        val userFriendlyError: String?
+    )
+
     private suspend fun performOnlineAuthorization(
         amount: String,
         track2: String,
         cardHolderName: String,
         emvTagList: String
-    ): SaleIccResponse? {
+    ): AuthorizationResult {
         return try {
             // ⚠️ CRITICAL: Retrieve validated posId from SDK database BEFORE calling SaleIccUseCase
             // This must be done in the same suspend context to prevent NumberFormatException
@@ -868,7 +959,10 @@ class PaymentViewModel @Inject constructor(
             if (initDataResult.isLeft) {
                 val failure = initDataResult.leftValue()
                 Timber.e("❌ [GetInitData] Failed: $failure")
-                return null
+                return AuthorizationResult(
+                    response = null,
+                    userFriendlyError = "Error obteniendo configuración del terminal.\n\nPor favor, reinicie la aplicación."
+                )
             }
 
             val initDataResponse = initDataResult.rightValue()
@@ -922,11 +1016,48 @@ class PaymentViewModel @Inject constructor(
             // Handle Either<Failure, Success> result
             when {
                 result.isLeft -> {
-                    // Handle failure
+                    // Handle failure - Translate SDK error to user-friendly message
                     val failure = result.leftValue()
-                    val errorMessage = "Payment failed: $failure"
-                    Timber.e("❌ [SaleIcc] Failed: $errorMessage")
-                    null
+                    Timber.e("❌ [SaleIcc] Failed: $failure")
+
+                    // Extract error message from SDK failure object
+                    val errorString = failure.toString()
+
+                    // Translate SDK errors to user-friendly Spanish messages
+                    val userMessage = when {
+                        errorString.contains("AMOUNT' must be greater than", ignoreCase = true) -> {
+                            "El monto del pago debe ser mayor a $0.00\n\n" +
+                            "Por favor, verifica el monto e intenta nuevamente."
+                        }
+                        errorString.contains("RQ_002", ignoreCase = true) -> {
+                            "Error en validación de datos.\n\n" +
+                            "Verifica el monto del pago e intenta nuevamente."
+                        }
+                        errorString.contains("401", ignoreCase = true) ||
+                        errorString.contains("Unauthorized", ignoreCase = true) -> {
+                            "Error de autenticación con el banco.\n\n" +
+                            "Verifica la configuración del terminal."
+                        }
+                        errorString.contains("timeout", ignoreCase = true) -> {
+                            "Tiempo de espera agotado.\n\n" +
+                            "Verifica tu conexión a internet e intenta nuevamente."
+                        }
+                        errorString.contains("network", ignoreCase = true) -> {
+                            "Error de conexión.\n\n" +
+                            "Verifica tu conexión a internet e intenta nuevamente."
+                        }
+                        errorString.contains("declined", ignoreCase = true) ||
+                        errorString.contains("rechazado", ignoreCase = true) -> {
+                            "Pago rechazado por el banco.\n\n" +
+                            "Solicita otra forma de pago."
+                        }
+                        else -> {
+                            "Error en autorización con banco.\n\n" +
+                            "Por favor, intenta nuevamente o contacta soporte."
+                        }
+                    }
+
+                    AuthorizationResult(response = null, userFriendlyError = userMessage)
                 }
                 else -> {
                     // Handle success
@@ -968,13 +1099,16 @@ class PaymentViewModel @Inject constructor(
                     }
                     Timber.d("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-                    response
+                    AuthorizationResult(response = response, userFriendlyError = null)
                 }
             }
 
         } catch (e: Exception) {
             Timber.e(e, "❌ [SaleIcc] Exception in online authorization")
-            null
+            AuthorizationResult(
+                response = null,
+                userFriendlyError = "Error inesperado procesando el pago.\n\nPor favor, intenta nuevamente."
+            )
         }
     }
 
@@ -1025,7 +1159,10 @@ class PaymentViewModel @Inject constructor(
                     }
                 }
 
-                _state.value = PaymentState.Error(userMessage)
+                _state.value = PaymentState.Error(
+                    message = userMessage,
+                    context = createPaymentContext()  // 🔄 Preserve context for smart retry
+                )
                 return
             }
 
@@ -1036,13 +1173,19 @@ class PaymentViewModel @Inject constructor(
             Timber.i("[CONTACTLESS PHASE 2] Extracting transaction result...")
             val transResult = ctlssResponse.transResult ?: run {
                 Timber.e("❌ [CONTACTLESS PHASE 2] transResult is null in SDK response")
-                _state.value = PaymentState.Error("Error procesando resultado contactless")
+                _state.value = PaymentState.Error(
+                    message = "Error procesando resultado contactless",
+                    context = createPaymentContext()  // 🔄 Preserve context for smart retry
+                )
                 return
             }
             val transResultEnum = transResult.transResult
             if (transResultEnum == null) {
                 Timber.e("❌ [CONTACTLESS PHASE 2] transResultEnum is null (resultCode=${transResult.resultCode})")
-                _state.value = PaymentState.Error("Error procesando resultado contactless")
+                _state.value = PaymentState.Error(
+                    message = "Error procesando resultado contactless",
+                    context = createPaymentContext()  // 🔄 Preserve context for smart retry
+                )
                 return
             }
             Timber.i(
@@ -1069,19 +1212,28 @@ class PaymentViewModel @Inject constructor(
                 TransResultEnum.RESULT_OFFLINE_DENIED -> {
                     // Card declined offline
                     Timber.e("❌ [CONTACTLESS PHASE 3] RESULT_OFFLINE_DENIED → Card declined")
-                    _state.value = PaymentState.Error("Tarjeta declinada")
+                    _state.value = PaymentState.Error(
+                        message = "Tarjeta declinada",
+                        context = createPaymentContext()  // 🔄 Preserve context for smart retry
+                    )
                 }
 
                 else -> {
                     // Unknown result
                     Timber.e("❌ [CONTACTLESS PHASE 3] Unknown transaction result: $transResultEnum")
-                    _state.value = PaymentState.Error("Resultado desconocido: $transResultEnum")
+                    _state.value = PaymentState.Error(
+                        message = "Resultado desconocido: $transResultEnum",
+                        context = createPaymentContext()  // 🔄 Preserve context for smart retry
+                    )
                 }
             }
 
         } catch (e: Exception) {
             Timber.e(e, "❌ [CONTACTLESS] Unexpected error in contactless payment flow")
-            _state.value = PaymentState.Error("Error inesperado en pago contactless: ${e.message}")
+            _state.value = PaymentState.Error(
+                message = "Error inesperado en pago contactless: ${e.message}",
+                context = createPaymentContext()  // 🔄 Preserve context for smart retry
+            )
         }
     }
 
@@ -1161,19 +1313,23 @@ class PaymentViewModel @Inject constructor(
             _state.value = PaymentState.Processing("Autorizando con banco...")
             Timber.i("[CONTACTLESS ONLINE PHASE 2] Calling SaleIcc for online authorization...")
 
-            val saleResponse = performOnlineAuthorization(
+            val authResult = performOnlineAuthorization(
                 amount = amount,
                 track2 = track2,
                 cardHolderName = "CARDHOLDER",
                 emvTagList = emvTagListStr
             )
 
-            if (saleResponse == null) {
-                Timber.e("❌ [CONTACTLESS ONLINE PHASE 2] Online authorization FAILED")
-                _state.value = PaymentState.Error("Error en autorización con banco")
+            if (authResult.response == null || authResult.userFriendlyError != null) {
+                Timber.e("❌ [CONTACTLESS ONLINE PHASE 2] Online authorization FAILED: ${authResult.userFriendlyError}")
+                _state.value = PaymentState.Error(
+                    message = authResult.userFriendlyError ?: "Error en autorización con banco",
+                    context = createPaymentContext()  // 🔄 Preserve context for smart retry
+                )
                 return
             }
 
+            val saleResponse = authResult.response!!
             val saleData = saleResponse.saleData
             Timber.i("✅ [CONTACTLESS ONLINE PHASE 2] Online authorization SUCCESS!")
             Timber.i("   Auth Code: ${saleData.authorization}")
@@ -1198,7 +1354,10 @@ class PaymentViewModel @Inject constructor(
 
         } catch (e: Exception) {
             Timber.e(e, "❌ [CONTACTLESS ONLINE] Unexpected error")
-            _state.value = PaymentState.Error("Error inesperado: ${e.message}")
+            _state.value = PaymentState.Error(
+                message = "Error inesperado: ${e.message}",
+                context = createPaymentContext()  // 🔄 Preserve context for smart retry
+            )
         }
     }
 
@@ -1214,13 +1373,167 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
-     * Reset payment state to idle
+     * Reset payment state to idle (ONLY for cancel/success).
+     *
+     * ⚠️ WARNING: Do NOT use this for error retry!
+     * Use retryPayment() instead to preserve user's entered data.
      */
     fun resetPayment() {
         _state.value = PaymentState.Idle
         currentAmount = ""
+        currentTip = "0"
+        currentRating = null
         currentTrack2 = ""
         Timber.d("🔄 Payment state reset")
+    }
+
+    /**
+     * Create immutable RetryContext from current ViewModel state.
+     *
+     * **Philosophy (Toast/Square pattern):**
+     * Snapshot the current transaction data to enable smart retry.
+     * If payment fails, context can be restored without losing user input.
+     *
+     * @return RetryContext with amount, tip, rating, merchant
+     */
+    private fun createPaymentContext(): RetryContext {
+        val context = RetryContext(
+            amount = currentAmount,
+            tipAmount = currentTip,
+            rating = currentRating,
+            merchantAccountId = _currentMerchant.value?.id ?: ""
+        )
+        Timber.d("📸 [Context Snapshot] amount=$currentAmount | tip=$currentTip | rating=$currentRating | merchant=${_currentMerchant.value?.id ?: "NULL"}")
+        Timber.d("📸 [Context Snapshot] isValid=${context.isValid()}")
+        return context
+    }
+
+    /**
+     * Smart retry with preserved context (Toast/Square/Stripe pattern).
+     *
+     * **Philosophy:**
+     * When payment fails (card timeout, declined, SDK error), user should
+     * NEVER have to re-enter amount, tip, rating, or merchant selection.
+     *
+     * **Flow:**
+     * 1. User enters $50 + 10% tip + 5★ rating
+     * 2. Card times out during payment
+     * 3. Error state preserves context
+     * 4. User taps "Reintentar"
+     * 5. → Restore context (amount/tip/rating/merchant)
+     * 6. → Go directly to ConfiguringKernel → DetectingCard
+     * 7. User presents card again (NO re-entering data!)
+     *
+     * **Called from:** PaymentErrorContent when user taps "Reintentar"
+     *
+     * @param context Preserved payment data from Error state
+     */
+    fun retryPayment(context: RetryContext?) {
+        Timber.i("🔄 [Smart Retry] Called with context: $context")
+
+        if (context == null) {
+            Timber.w("⚠️ [Retry] Context is NULL, resetting to idle")
+            resetPayment()
+            return
+        }
+
+        if (!context.isValid()) {
+            Timber.w("⚠️ [Retry] Context is INVALID")
+            Timber.w("   - amount: ${context.amount} (valid: ${context.amount.toBigDecimalOrNull()?.let { it > java.math.BigDecimal.ZERO }})")
+            Timber.w("   - tipAmount: ${context.tipAmount}")
+            Timber.w("   - rating: ${context.rating}")
+            Timber.w("   - merchantAccountId: '${context.merchantAccountId}' (blank: ${context.merchantAccountId.isBlank()})")
+            resetPayment()
+            return
+        }
+
+        // Restore context to ViewModel state
+        currentAmount = context.amount
+        currentTip = context.tipAmount
+        currentRating = context.rating
+
+        // Restore merchant selection
+        val merchant = _merchants.value.firstOrNull { it.id == context.merchantAccountId }
+        if (merchant != null) {
+            _currentMerchant.value = merchant
+        }
+
+        Timber.i("🔄 [Smart Retry] Restored context | amount=${context.amount} | tip=${context.tipAmount} | rating=${context.rating} | merchant=${context.merchantAccountId}")
+
+        // ✅ Go directly to payment processing (skip amount/tip/rating steps)
+        startPayment(context.amount)
+    }
+
+    /**
+     * Navigate back one step in the payment flow.
+     *
+     * **Flow:**
+     * - EnteringAmount → NO back (return false, caller should navigate to home)
+     * - CollectingRating → EnteringAmount(preserve amount)
+     * - CollectingTip → CollectingRating(preserve amount + rating)
+     * - SelectingMerchant → CollectingTip(preserve amount + rating + tip)
+     * - Processing states → NO back (return false, transaction in progress)
+     *
+     * **Returns:** true if handled, false if caller should handle navigation (e.g., go to home)
+     */
+    fun goBackOneStep(): Boolean {
+        val currentState = _state.value
+
+        return when (currentState) {
+            is PaymentState.EnteringAmount -> {
+                // First step - caller should navigate to home
+                Timber.d("⬅️  [Payment Flow] Back from EnteringAmount → Return to home")
+                false
+            }
+
+            is PaymentState.CollectingRating -> {
+                // Go back to amount input
+                Timber.d("⬅️  [Payment Flow] Back from CollectingRating → EnteringAmount")
+                _state.value = PaymentState.EnteringAmount(amount = currentState.amount)
+                true
+            }
+
+            is PaymentState.CollectingTip -> {
+                // Go back to rating
+                Timber.d("⬅️  [Payment Flow] Back from CollectingTip → CollectingRating")
+                _state.value = PaymentState.CollectingRating(
+                    amount = currentState.amount,
+                    rating = currentState.rating ?: 0
+                )
+                true
+            }
+
+            is PaymentState.SelectingMerchant -> {
+                // Go back to tip
+                Timber.d("⬅️  [Payment Flow] Back from SelectingMerchant → CollectingTip")
+                _state.value = PaymentState.CollectingTip(
+                    amount = currentState.subtotal,
+                    rating = currentState.rating,
+                    tipAmount = currentState.tipAmount
+                )
+                true
+            }
+
+            // During payment processing - no back allowed
+            is PaymentState.ConfiguringKernel,
+            is PaymentState.DetectingCard,
+            is PaymentState.Processing -> {
+                Timber.w("⚠️  [Payment Flow] Back not allowed during payment processing")
+                false
+            }
+
+            // Final states - no back
+            is PaymentState.Success,
+            is PaymentState.Error,
+            is PaymentState.Cancelled,
+            is PaymentState.Idle,
+            // 🆕 NEW: Printing states - no back
+            is PaymentState.Printing,
+            is PaymentState.PrintError -> {
+                Timber.d("⬅️  [Payment Flow] Back from final state → Return to home")
+                false
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1370,14 +1683,20 @@ class PaymentViewModel @Inject constructor(
                 Timber.d("💾 [Backend Recording] Card details: brand=${cardDetails.cardBrand} | masked=${cardDetails.maskedPan} | entry=${cardDetails.entryMode}")
 
                 // 2. Build payment context (FastPayment for now)
+                // ⭐ PROVIDER-AGNOSTIC MERCHANT TRACKING: Use merchant account ID (primary)
+                val merchantAccountId = _currentMerchant.value?.id ?: ""
+                val blumonSerial = _currentMerchant.value?.serialNumber ?: "" // ✅ CRITICAL FIX: Use VIRTUAL serial (e.g., "2841548417"), not physical terminal serial
                 val context = PaymentContext.FastPayment(
                     venueId = currentVenueId,
                     staffId = currentStaffId,
                     amount = currentAmount.toBigDecimal(),
                     tip = currentTip.toBigDecimal(),
+                    rating = currentRating, // 🆕 NEW: Include user rating (1-5 stars or null)
+                    merchantAccountId = merchantAccountId, // 🆕 PRIMARY: Merchant account ID
+                    blumonSerialNumber = blumonSerial, // ⚠️ LEGACY: Fallback (FIXED: virtual serial)
                 )
 
-                Timber.d("💾 [Backend Recording] Context: venue=$currentVenueId, staff=$currentStaffId, amount=$currentAmount, tip=$currentTip")
+                Timber.d("💾 [Backend Recording] Context: venue=$currentVenueId, staff=$currentStaffId, amount=$currentAmount, tip=$currentTip, rating=$currentRating, merchantId=${context.merchantAccountId}, blumonSerial=${context.blumonSerialNumber}")
 
                 // 3. Call use case to record payment
                 val result = recordPaymentUseCase(
@@ -1391,11 +1710,63 @@ class PaymentViewModel @Inject constructor(
                 result.onSuccess { receipt ->
                     Timber.i("✅ [Backend Recording] Payment recorded successfully | paymentId=${receipt.paymentId}")
                     Timber.i("📄 [Backend Recording] Receipt URL: ${receipt.receiptUrl}")
-                    // TODO: Emit event to show receipt or send via email/SMS
+
+                    // 🆕 NEW: Update Success state with receipt + card details for QR code display and printing
+                    val currentState = _state.value
+                    if (currentState is PaymentState.Success) {
+                        _state.value = currentState.copy(
+                            receipt = receipt,
+                            cardDetails = cardDetails,  // 🎫 Include card info for professional receipts
+                            referenceNumber = referenceNumber  // 🎫 Include reference for receipts
+                        )
+                        Timber.d("🎫 [Receipt] Updated Success state with receipt | URL=${receipt.receiptUrl}")
+                        Timber.d("🎫 [Receipt] Card: ${cardDetails.cardBrand} ${cardDetails.maskedPan} | Entry: ${cardDetails.entryMode}")
+
+                        // 🐛 DEBUG: Verify the state was actually updated
+                        val updatedState = _state.value
+                        if (updatedState is PaymentState.Success) {
+                            Timber.d("🐛 [DEBUG] Confirmed state update | receipt is ${if (updatedState.receipt != null) "NOT NULL" else "NULL"}")
+                        }
+                    }
                 }.onFailure { error ->
                     Timber.e("❌ [Backend Recording] Failed to record payment: ${error.message}")
-                    // TODO: Queue for offline sync (Room DB)
-                    // TODO: Show warning to user (payment succeeded but not synced)
+
+                    // ⭐ Queue payment for offline sync
+                    Timber.w("💾 [Offline Queue] Queueing payment for retry | ref=$referenceNumber")
+
+                    val queuedPayment = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
+                        queueId = 0, // Auto-generate
+                        referenceNumber = referenceNumber,
+                        venueId = currentVenueId,
+                        staffId = currentStaffId,
+                        amount = currentAmount.toBigDecimal(),
+                        tip = currentTip.toBigDecimal(),
+                        rating = currentRating, // 🆕 NEW: Preserve user rating for offline queue retry
+                        merchantAccountId = _currentMerchant.value?.id ?: "", // 🆕 PRIMARY: Merchant account ID
+                        blumonSerialNumber = _currentMerchant.value?.serialNumber ?: "", // ✅ CRITICAL FIX: Use VIRTUAL serial (e.g., "2841548417"), not physical terminal serial
+                        maskedPan = cardDetails.maskedPan,
+                        cardBrand = cardDetails.cardBrand.name,
+                        entryMode = cardDetails.entryMode.name,
+                        isInternational = cardDetails.isInternational,
+                        authorizationNumber = authorizationNumber,
+                        createdAt = System.currentTimeMillis(),
+                        retryCount = 0,
+                        lastError = error.message,
+                        syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING
+                    )
+
+                    viewModelScope.launch {
+                        val queueResult = paymentQueueRepository.enqueue(queuedPayment)
+                        queueResult.onSuccess {
+                            Timber.i("✅ [Offline Queue] Payment queued successfully | ref=$referenceNumber")
+                            Timber.i("   → PaymentSyncWorker will retry every 15 minutes")
+                            Timber.i("   → Payment will sync automatically when network is available")
+                        }.onFailure { queueError ->
+                            Timber.e(queueError, "❌ [Offline Queue] Failed to queue payment - CRITICAL")
+                            Timber.e("   → Payment succeeded with Blumon but NOT recorded to backend")
+                            Timber.e("   → Manual intervention may be required")
+                        }
+                    }
                 }
 
             } catch (e: Exception) {
@@ -1547,6 +1918,91 @@ class PaymentViewModel @Inject constructor(
             )
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RECEIPT PRINTING
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * 🖨️ Print physical receipt using PAX thermal printer.
+     *
+     * **Flow:**
+     * 1. Get current Success state with receipt URL
+     * 2. Call PrinterManager to print
+     * 3. Update state to Printing (loading indicator)
+     * 4. On success: Return to Success state
+     * 5. On failure: Show PrintError state with retry option
+     *
+     * **Called from:** PaymentSuccessContent when user taps "Imprimir Recibo" button
+     *
+     * **Requirements:**
+     * - Current state must be PaymentState.Success
+     * - Receipt must be available (receipt URL not null)
+     * - PAX printer must be available
+     */
+    fun printReceipt() {
+        val currentState = _state.value
+        if (currentState !is PaymentState.Success) {
+            Timber.w("⚠️ [Print] Cannot print: Not in Success state")
+            return
+        }
+
+        if (currentState.receipt == null) {
+            Timber.w("⚠️ [Print] Cannot print: No receipt available")
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                Timber.i("🖨️ [Print] Starting receipt print")
+                _state.value = PaymentState.Printing
+
+                val result = printerManager.printReceipt(
+                    receiptUrl = currentState.receipt.receiptUrl,
+                    amount = currentState.amount,
+                    authCode = currentState.authCode,
+                    tipAmount = currentState.tipAmount,
+                    cardDetails = currentState.cardDetails,  // 🎫 Pass card info for professional receipt
+                    referenceNumber = currentState.referenceNumber  // 🎫 Pass reference for receipt
+                )
+
+                result.onSuccess {
+                    Timber.i("✅ [Print] Receipt printed successfully")
+                    // Return to Success state
+                    _state.value = currentState
+                }.onFailure { error ->
+                    Timber.e(error, "❌ [Print] Failed to print receipt")
+                    _state.value = PaymentState.PrintError(
+                        message = error.message ?: "Error al imprimir recibo",
+                        previousState = currentState
+                    )
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Print] Unexpected error during print")
+                _state.value = PaymentState.PrintError(
+                    message = "Error inesperado al imprimir: ${e.message}",
+                    previousState = currentState
+                )
+            }
+        }
+    }
+
+    /**
+     * Dismiss print error and return to success screen.
+     *
+     * **Called from:** Error dialog in PaymentScreen when user taps "Cerrar"
+     */
+    fun dismissPrintError() {
+        val currentState = _state.value
+        if (currentState is PaymentState.PrintError) {
+            _state.value = currentState.previousState
+            Timber.d("🔙 [Print] Dismissed print error, returned to Success state")
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CARD DETAIL HELPERS
+    // ═══════════════════════════════════════════════════════════════════════════
 
     /**
      * Mask PAN (Primary Account Number) for security.

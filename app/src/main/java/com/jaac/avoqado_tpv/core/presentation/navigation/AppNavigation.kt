@@ -45,6 +45,7 @@ import androidx.navigation.compose.rememberNavController
 import com.jaac.avoqado_tpv.core.presentation.screens.WelcomeScreen
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
+import com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationScreen
 import com.jaac.avoqado_tpv.features.authentication.presentation.LoginScreen
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationState
@@ -153,6 +154,10 @@ fun AppNavigation(
                     Timber.d("🔑 Login successful - Starting heartbeat")
                     HeartbeatScheduler.start(context)
 
+                    // Start payment sync worker (offline payment queue)
+                    Timber.d("💾 Login successful - Starting payment sync")
+                    PaymentSyncScheduler.start(context)
+
                     // Navigate to home
                     navController.navigate(NavRoute.Home.route) {
                         popUpTo(NavRoute.Login.route) { inclusive = true }
@@ -173,6 +178,19 @@ fun AppNavigation(
             val context = LocalContext.current
             val homeViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel = hiltViewModel()
 
+            // State to track pending amount from bottom sheet
+            var pendingAmount by remember { mutableStateOf<String?>(null) }
+
+            // Navigate to payment when amount is set
+            LaunchedEffect(pendingAmount) {
+                pendingAmount?.let { amount ->
+                    // Navigate with amount as state
+                    navController.currentBackStackEntry?.savedStateHandle?.set("initialAmount", amount)
+                    navController.navigate(NavRoute.Payment.route)
+                    pendingAmount = null // Reset after navigation
+                }
+            }
+
             // 🚨 SECURITY: Monitor activation status (Square/Toast pattern)
             // If terminal gets RETIRED by admin, HeartbeatWorker clears venueId
             // This forces immediate logout and navigation back to activation screen
@@ -192,6 +210,10 @@ fun AppNavigation(
             WelcomeScreen(
                 onNavigateToPayment = {
                     navController.navigate(NavRoute.Payment.route)
+                },
+                onStartPaymentWithAmount = { amount ->
+                    // Store amount in state to trigger navigation
+                    pendingAmount = amount
                 },
                 onLogout = {
                     // ✅ Square/Toast Pattern: DO NOT stop heartbeat on logout
@@ -222,7 +244,22 @@ fun AppNavigation(
 
         // Payment Screen - EMV chip card payment with online authorization
         composable(NavRoute.Payment.route) {
+            // 🔐 SECURITY: Require authentication before processing payments
+            // This prevents payments without backend recording (Blumon succeeds, but no receipt)
+            LaunchedEffect(Unit) {
+                if (!secureStorage.isAuthenticated()) {
+                    Timber.w("⚠️ [Payment] User not authenticated - redirecting to login")
+                    navController.navigate(NavRoute.Login.route) {
+                        popUpTo(NavRoute.Home.route) { inclusive = false }
+                    }
+                }
+            }
+
+            // Get initial amount from previous screen (if coming from Home with amount)
+            val initialAmount = navController.previousBackStackEntry?.savedStateHandle?.get<String>("initialAmount")
+
             PaymentScreen(
+                initialAmount = initialAmount,
                 onNavigateBack = {
                     navController.popBackStack()
                 }

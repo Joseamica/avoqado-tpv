@@ -20,12 +20,17 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoCard
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 
@@ -38,10 +43,19 @@ import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 @Composable
 fun WelcomeScreen(
     modifier: Modifier = Modifier,
-    onNavigateToPayment: () -> Unit = {},
+    onNavigateToPayment: () -> Unit = {}, // Deprecated - kept for compatibility
+    onStartPaymentWithAmount: (String) -> Unit = {}, // New: receives amount and goes to rating
     onLogout: () -> Unit = {}
 ) {
+    // Bottom sheet state for amount input
+    var showAmountBottomSheet by remember { mutableStateOf(false) }
     Scaffold(
+        topBar = {
+            AvoqadoTopBar(
+                title = "Avoqado TPV",
+                subtitle = "Terminal de Punto de Venta"
+            )
+        },
         containerColor = MaterialTheme.colorScheme.background
     ) { paddingValues ->
         Column(
@@ -102,7 +116,7 @@ fun WelcomeScreen(
 
                     // Payment Button
                     Button(
-                        onClick = onNavigateToPayment,
+                        onClick = { showAmountBottomSheet = true },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary
                         )
@@ -134,6 +148,17 @@ fun WelcomeScreen(
                 }
             }
         }
+
+        // Amount input bottom sheet
+        if (showAmountBottomSheet) {
+            com.jaac.avoqado_tpv.core.presentation.components.AmountInputBottomSheet(
+                onDismiss = { showAmountBottomSheet = false },
+                onConfirm = { amount ->
+                    showAmountBottomSheet = false
+                    onStartPaymentWithAmount(amount)
+                }
+            )
+        }
     }
 }
 
@@ -142,5 +167,97 @@ fun WelcomeScreen(
 private fun WelcomeScreenPreview() {
     AvoqadoTheme {
         WelcomeScreen()
+    }
+}
+
+@Preview(showBackground = true, device = "spec:width=800px,height=1280px,dpi=160")
+@Composable
+private fun WelcomeScreenWithModalPreview() {
+    AvoqadoTheme {
+        // State to show modal
+        var showAmountBottomSheet by remember { mutableStateOf(true) }
+
+        Scaffold(
+            topBar = {
+                AvoqadoTopBar(
+                    title = "Avoqado TPV",
+                    subtitle = "Terminal de Punto de Venta"
+                )
+            },
+            containerColor = MaterialTheme.colorScheme.background
+        ) { paddingValues ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .verticalScroll(rememberScrollState())
+                    .padding(Spacing.Space6),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Top
+            ) {
+                Spacer(modifier = Modifier.height(Spacing.Space12))
+
+                AvoqadoCard(
+                    modifier = Modifier.padding(Spacing.Space4)
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(Spacing.Space6)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Restaurant,
+                            contentDescription = "Avoqado Logo",
+                            modifier = Modifier.size(80.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+
+                        Spacer(modifier = Modifier.height(Spacing.Space6))
+
+                        Text(
+                            text = "Avoqado TPV",
+                            style = MaterialTheme.typography.displayMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            textAlign = TextAlign.Center
+                        )
+
+                        Spacer(modifier = Modifier.height(Spacing.Space2))
+
+                        Text(
+                            text = "Sistema de Punto de Venta",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+
+                        Spacer(modifier = Modifier.height(Spacing.Space8))
+
+                        // Payment Button
+                        Button(
+                            onClick = { showAmountBottomSheet = true },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary
+                            )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CreditCard,
+                                contentDescription = "Realizar pago",
+                                modifier = Modifier.padding(end = 8.dp)
+                            )
+                            Text("Realizar Pago")
+                        }
+                    }
+                }
+            }
+
+            // Amount input bottom sheet (showing in preview)
+            if (showAmountBottomSheet) {
+                com.jaac.avoqado_tpv.core.presentation.components.AmountInputBottomSheet(
+                    onDismiss = { showAmountBottomSheet = false },
+                    onConfirm = { amount ->
+                        showAmountBottomSheet = false
+                    }
+                )
+            }
+        }
     }
 }

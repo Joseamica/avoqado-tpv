@@ -38,6 +38,7 @@ fun TipScreen(
     onCustomTipSelected: (String) -> Unit,
     onContinue: () -> Unit,
     onSkipTip: () -> Unit,
+    onNavigateBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val currentTipAmount = when {

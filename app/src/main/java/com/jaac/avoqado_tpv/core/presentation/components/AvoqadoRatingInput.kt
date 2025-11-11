@@ -74,15 +74,14 @@ fun AvoqadoRatingInput(
             }
         }
 
-        // Show selected rating count
-        if (rating > 0) {
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "$rating de 5 estrellas",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
+        // ✅ ALWAYS reserve space for rating text to prevent layout shift
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = if (rating > 0) "$rating de 5 estrellas" else "",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.height(20.dp)  // Fixed height - always reserves space
+        )
     }
 }
 

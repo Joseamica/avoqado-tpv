@@ -39,14 +39,15 @@ fun MerchantSelectionContent(
     merchantSwitchingLoading: Boolean,
     onSelectMerchant: (MerchantAccount) -> Unit,
     onStartPayment: () -> Unit,
+    onNavigateBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Box(modifier = modifier.fillMaxSize()) {
         ResponsiveScaffold(
-            scrollable = false,
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
+                scrollable = false,
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
             val sizes = LocalResponsiveSizes.current
 
             AvoqadoCard(

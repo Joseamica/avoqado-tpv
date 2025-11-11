@@ -606,6 +606,188 @@ if (state is Activating) {
 
 ---
 
+#### Loading States & Preventing Flash Screens (CRITICAL UX)
+
+> **MANDATORY**: ALWAYS use `AvoqadoLoadingOverlay` for loading states. NEVER show flash screens during navigation or state transitions.
+
+**What are "Flash Screens"?**
+- Brief flicker of previous screen during navigation
+- Momentary display of wrong UI state
+- Jarring visual glitch that feels unprofessional
+- Common in apps with poor state management
+
+**❌ BAD: Flash Screen Example**
+```kotlin
+// User flow: WelcomeScreen → Enter amount → Navigate to PaymentScreen
+// Problem: Brief flash of WelcomeScreen before PaymentScreen appears
+
+// WelcomeScreen.kt
+onStartPaymentWithAmount = { amount ->
+    showAmountBottomSheet = false
+    navController.navigate(NavRoute.Payment.route)  // ❌ Instant navigation
+}
+
+// PaymentScreen.kt
+is PaymentState.Idle -> {
+    LaunchedEffect(initialAmount) {
+        if (initialAmount != null) {
+            viewModel.submitAmount(initialAmount)  // ❌ Async - causes flash
+        }
+    }
+}
+```
+
+**Result**: User sees:
+1. Amount modal closes
+2. Brief flash of WelcomeScreen ⚠️ (BAD UX)
+3. PaymentScreen appears
+
+---
+
+**✅ GOOD: Loading Overlay Solution**
+```kotlin
+// PaymentScreen.kt
+is PaymentState.Idle -> {
+    // ✅ Show loading overlay immediately to prevent flash
+    if (initialAmount != null) {
+        AvoqadoLoadingOverlay(
+            message = "Preparando pago..."
+        )
+    }
+
+    LaunchedEffect(initialAmount) {
+        if (initialAmount != null) {
+            viewModel.submitAmount(initialAmount)
+        }
+    }
+}
+```
+
+**Result**: User sees:
+1. Amount modal closes
+2. **Smooth loading overlay** ✅ (Professional)
+3. PaymentScreen appears
+
+---
+
+**MANDATORY Rules:**
+
+1. **ALWAYS use same loading component**: `AvoqadoLoadingOverlay`
+   - ✅ Consistent UX across entire app
+   - ✅ Maintains brand identity
+   - ✅ Easy to update globally
+
+2. **ALWAYS show loading during state transitions**:
+   ```kotlin
+   // ✅ Navigation with data
+   if (initialAmount != null) {
+       AvoqadoLoadingOverlay(message = "Preparando...")
+   }
+
+   // ✅ Async operations
+   if (state is Processing) {
+       AvoqadoLoadingOverlay(message = "Procesando...")
+   }
+
+   // ✅ SDK initialization
+   if (state is ConfiguringKernel) {
+       AvoqadoLoadingOverlay(message = "Configurando terminal...")
+   }
+   ```
+
+3. **NEVER navigate without loading if data processing is involved**:
+   ```kotlin
+   // ❌ WRONG: Instant navigation with async work
+   navController.navigate(Route.Payment)
+   viewModel.loadPaymentData()  // Flash screen!
+
+   // ✅ CORRECT: Show loading first
+   if (state is LoadingPaymentData) {
+       AvoqadoLoadingOverlay(message = "Cargando...")
+   }
+   ```
+
+4. **Loading message should be contextual**:
+   ```kotlin
+   // ✅ GOOD: Specific messages
+   "Preparando pago..."
+   "Procesando transacción..."
+   "Configurando terminal..."
+   "Activando dispositivo..."
+
+   // ❌ BAD: Generic messages
+   "Cargando..."
+   "Espere..."
+   "Procesando..."
+   ```
+
+---
+
+**Common Flash Screen Scenarios & Fixes:**
+
+| Scenario | Problem | Solution |
+|----------|---------|----------|
+| **Navigation with data** | Modal closes → flash → new screen | Add `AvoqadoLoadingOverlay` in destination screen's idle/loading state |
+| **ViewModel init** | Empty state → flash → loaded state | Show loading overlay during init, hide when data ready |
+| **API calls** | Old data → flash → new data | Use loading state between requests |
+| **SDK operations** | Previous screen → flash → SDK screen | Add ConfiguringKernel state with loading overlay |
+
+---
+
+**Real Example: Payment Flow**
+
+```kotlin
+// ✅ CORRECT: No flash screens
+fun PaymentScreen(initialAmount: String?) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+
+    when (state) {
+        is PaymentState.Idle -> {
+            // ✅ Prevent flash when coming from Home
+            if (initialAmount != null) {
+                AvoqadoLoadingOverlay(message = "Preparando pago...")
+            }
+
+            LaunchedEffect(initialAmount) {
+                if (initialAmount != null) {
+                    viewModel.submitAmount(initialAmount)
+                }
+            }
+        }
+
+        is PaymentState.CollectingRating -> {
+            ReviewScreen(...)  // ✅ Smooth transition
+        }
+
+        is PaymentState.Processing -> {
+            AvoqadoLoadingOverlay(message = "Procesando transacción...")
+        }
+    }
+}
+```
+
+**User Experience**:
+- ✅ No flash screens
+- ✅ Always clear what's happening
+- ✅ Professional, polished feel
+- ✅ Matches Square Terminal / Toast POS quality
+
+---
+
+**Testing Checklist:**
+
+Before committing ANY screen:
+- [ ] Navigate to screen from different sources (Home, deep link, back button)
+- [ ] Check for flash screens during navigation
+- [ ] Verify loading overlay appears during async operations
+- [ ] Test on slow network (throttle in DevTools)
+- [ ] Test on slow device (PAX A80)
+- [ ] Ensure loading messages are contextual
+
+**If you see ANY flash screens → FIX IT IMMEDIATELY** with `AvoqadoLoadingOverlay`.
+
+---
+
 ### 3. Architecture Patterns (Clean Architecture)
 
 ```

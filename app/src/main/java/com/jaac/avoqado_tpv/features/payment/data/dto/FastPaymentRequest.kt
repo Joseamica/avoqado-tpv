@@ -67,6 +67,13 @@ data class FastPaymentRequest(
     @SerializedName("referenceNumber")
     val referenceNumber: String?,
 
+    // ⭐ PROVIDER-AGNOSTIC MERCHANT TRACKING (2025-01-10)
+    @SerializedName("merchantAccountId")
+    val merchantAccountId: String?, // 🆕 PRIMARY: Merchant account ID (FK to MerchantAccount)
+
+    @SerializedName("blumonSerialNumber")
+    val blumonSerialNumber: String?, // ⚠️ LEGACY: Blumon serial (deprecated, kept for fallback)
+
     @SerializedName("maskedPan")
     val maskedPan: String?,
 

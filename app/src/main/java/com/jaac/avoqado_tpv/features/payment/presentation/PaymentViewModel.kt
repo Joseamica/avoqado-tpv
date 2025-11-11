@@ -46,6 +46,12 @@ import com.example.clean_lib_services.shared.core.domain.entity.init.Contact
 import com.example.clean_lib_services.shared.core.domain.entity.init.KushkiData
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
+// ⭐ NEW: Backend payment recording
+import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
+import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
+import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
+import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
+import com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode
 import com.pax.dal.entity.EReaderType
 import com.paxsz.module.emv.process.enums.TransResultEnum
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -95,7 +101,11 @@ class PaymentViewModel @Inject constructor(
     private val initializationManager: com.jaac.avoqado_tpv.features.payment.data.InitializationManager,
     // 🏪 Multi-Merchant Support - Allow single terminal to process payments for multiple merchant accounts
     private val getMerchantsUseCase: com.jaac.avoqado_tpv.features.payment.domain.use_case.GetMerchantsUseCase,
-    private val multiMerchantSDKManager: com.jaac.avoqado_tpv.features.payment.data.MultiMerchantSDKManager
+    private val multiMerchantSDKManager: com.jaac.avoqado_tpv.features.payment.data.MultiMerchantSDKManager,
+    // 💾 Backend Payment Recording - Record payments to avoqado-server database
+    private val recordPaymentUseCase: RecordPaymentUseCase,
+    // 🔐 Auth Repository - Get current venue and staff context
+    private val authRepository: com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentState>(PaymentState.Idle)
@@ -125,7 +135,13 @@ class PaymentViewModel @Inject constructor(
 
     private var currentAmount: String = ""  // Amount in decimal format (e.g., "30.00") for UI display
     private var currentAmountInCents: String = ""  // Amount in cents (e.g., "3000") for SDK calls
-    private var currentTrack2: String = ""
+    private var currentTip: String = "0.00"  // Tip amount in decimal format (e.g., "5.00")
+    private var currentTrack2: String = ""  // Track2 data extracted from chip/contactless
+    private var currentRating: Int? = null  // Optional rating from user (1-5 stars)
+
+    // ⭐ NEW: Payment context data for backend recording
+    private var currentVenueId: String = ""  // Venue ID from auth context
+    private var currentStaffId: String = ""  // Staff ID from auth context
 
     // ═══════════════════════════════════════════════════════════════════════════
     // EMV TAG EXTRACTION USE CASES
@@ -484,6 +500,11 @@ class PaymentViewModel @Inject constructor(
     fun submitTip(subtotal: String, tipAmount: String, rating: Int?) {
         val totalAmount = calculateTotal(subtotal, tipAmount)
         Timber.d("💵 [Payment Flow] Tip submitted: $$tipAmount (Total: $$totalAmount)")
+
+        // ⭐ NEW: Save tip and rating for backend recording
+        currentTip = tipAmount
+        currentRating = rating
+
         _state.value = PaymentState.SelectingMerchant(
             subtotal = subtotal,
             tipAmount = tipAmount,
@@ -497,6 +518,11 @@ class PaymentViewModel @Inject constructor(
      */
     fun skipTip(subtotal: String, rating: Int?) {
         Timber.d("⏭️  [Payment Flow] Tip skipped")
+
+        // ⭐ NEW: Save zero tip and rating for backend recording
+        currentTip = "0.00"
+        currentRating = rating
+
         _state.value = PaymentState.SelectingMerchant(
             subtotal = subtotal,
             tipAmount = "0",
@@ -575,8 +601,14 @@ class PaymentViewModel @Inject constructor(
     fun startPayment(amount: String) {
         currentAmount = amount  // Save for UI display
         currentAmountInCents = convertToCents(amount)  // Save for SDK calls
+
+        // ⭐ NEW: Get venue and staff context for backend recording
+        currentVenueId = authRepository.getVenueId() ?: ""
+        currentStaffId = authRepository.getStaffId() ?: ""
+
         Timber.d("🎯 [BlumonPayment] Starting ONLINE chip payment flow: $$amount")
         Timber.d("   💰 Amount: $$amount → $currentAmountInCents centavos")
+        Timber.d("   🏪 Venue: $currentVenueId | Staff: $currentStaffId | Tip: $$currentTip")
         _state.value = PaymentState.ConfiguringKernel
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -802,6 +834,12 @@ class PaymentViewModel @Inject constructor(
                     amount = currentAmount
                 )
 
+                // ⭐ NEW: Record payment to backend (in background)
+                handlePaymentSuccess(
+                    saleData = saleData,
+                    entryMode = CardEntryMode.CHIP
+                )
+
             } catch (e: Exception) {
                 Timber.e(e, "❌ [BlumonPayment] Unexpected error in payment flow")
                 _state.value = PaymentState.Error("Error inesperado: ${e.message}")
@@ -897,6 +935,39 @@ class PaymentViewModel @Inject constructor(
                     Timber.i("   Operation: ${response.operation}")
                     Timber.i("   Auth: ${response.saleData.authorization}")
                     Timber.i("   Reference: ${response.saleData.reference}")
+
+                    // ⭐ DETAILED LOGGING: Full Blumon response structure
+                    Timber.d("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                    Timber.d("📋 [BLUMON RESPONSE] Full SaleIccResponse structure:")
+                    Timber.d("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                    try {
+                        Timber.d("🔹 operation: ${response.operation}")
+                        Timber.d("🔹 saleData.authorization: ${response.saleData.authorization}")
+                        Timber.d("🔹 saleData.reference: ${response.saleData.reference}")
+                        Timber.d("🔹 saleData.emvResponseCode: ${response.saleData.emvResponseCode}")
+                        Timber.d("🔹 saleData.arpc: ${response.saleData.arpc}")
+                        Timber.d("🔹 saleData.script: ${response.saleData.script}")
+
+                        // Try to access fields that might exist via reflection
+                        val saleDataClass = response.saleData::class.java
+                        Timber.d("🔍 SaleData class: ${saleDataClass.simpleName}")
+                        Timber.d("🔍 SaleData fields:")
+                        saleDataClass.declaredFields.forEach { field ->
+                            try {
+                                field.isAccessible = true
+                                val value = field.get(response.saleData)
+                                if (value != null) {
+                                    Timber.d("   • ${field.name}: $value (${value.javaClass.simpleName})")
+                                }
+                            } catch (e: Exception) {
+                                // Ignore fields we can't access
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Timber.w(e, "Could not extract full response structure")
+                    }
+                    Timber.d("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
                     response
                 }
             }
@@ -1119,6 +1190,12 @@ class PaymentViewModel @Inject constructor(
                 amount = currentAmount  // ✅ Use decimal format for display
             )
 
+            // ⭐ NEW: Record payment to backend (in background)
+            handlePaymentSuccess(
+                saleData = saleData,
+                entryMode = CardEntryMode.CONTACTLESS
+            )
+
         } catch (e: Exception) {
             Timber.e(e, "❌ [CONTACTLESS ONLINE] Unexpected error")
             _state.value = PaymentState.Error("Error inesperado: ${e.message}")
@@ -1214,5 +1291,322 @@ class PaymentViewModel @Inject constructor(
      */
     private fun StringBuilder.appendTag(tag: String, value: String?) {
         formatTLV(tag, value)?.let { append(it) }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ⭐ NEW: BACKEND PAYMENT RECORDING
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Handle successful payment and record to backend.
+     *
+     * This function is called after Blumon SDK approves the payment.
+     * It runs in background to avoid blocking the UI.
+     *
+     * **Flow:**
+     * 1. Show success to user immediately (already done by caller)
+     * 2. Extract card details from Blumon SDK response (binInformation)
+     * 3. Build PaymentContext (FastPayment for now)
+     * 4. Call RecordPaymentUseCase
+     * 5. Handle response (success → receipt ready, error → retry/queue)
+     *
+     * **Important:** This function does NOT block the success state.
+     * Even if backend call fails, the payment was already approved by Blumon.
+     *
+     * @param saleData Complete sale data from Blumon SDK (includes binInformation)
+     * @param entryMode How the card was read (CHIP, CONTACTLESS, SWIPE)
+     */
+    private fun handlePaymentSuccess(
+        saleData: Any, // Blumon SDK SaleData object (type from com.example.clean_lib_services)
+        entryMode: CardEntryMode,
+    ) {
+        viewModelScope.launch {
+            try {
+                // Extract authorization and reference using reflection (SDK type not directly accessible)
+                val authorizationNumber = try {
+                    val authField = saleData::class.java.getDeclaredField("authorization")
+                    authField.isAccessible = true
+                    authField.get(saleData)?.toString() ?: ""
+                } catch (e: Exception) {
+                    Timber.w("Could not extract authorization from saleData: ${e.message}")
+                    ""
+                }
+
+                val referenceNumber = try {
+                    val refField = saleData::class.java.getDeclaredField("reference")
+                    refField.isAccessible = true
+                    refField.get(saleData)?.toString() ?: ""
+                } catch (e: Exception) {
+                    Timber.w("Could not extract reference from saleData: ${e.message}")
+                    ""
+                }
+
+                Timber.d("💾 [Backend Recording] Starting payment record | auth=$authorizationNumber | ref=$referenceNumber")
+
+                // ⚠️ CRITICAL: Validate authentication before backend recording
+                // Payment already succeeded with Blumon SDK, so we don't block the user
+                // But backend recording requires auth token + staffId
+                val hasAuth = authRepository.isAuthenticated()
+                val hasStaffId = currentStaffId.isNotBlank()
+                val hasVenueId = currentVenueId.isNotBlank()
+
+                if (!hasAuth || !hasStaffId || !hasVenueId) {
+                    Timber.w("⚠️ [Backend Recording] SKIPPED - Missing authentication context")
+                    Timber.w("   → hasAuth: $hasAuth | staffId: ${if (hasStaffId) "✓" else "✗"} | venueId: ${if (hasVenueId) "✓" else "✗"}")
+                    Timber.w("   → Payment succeeded with Blumon, but backend sync requires login")
+                    Timber.w("   → SOLUTION: User must log in with PIN before processing payments")
+                    Timber.w("   → TODO: Queue payment for offline sync when user logs in")
+                    Timber.w("   → Payment details: auth=$authorizationNumber | ref=$referenceNumber | amount=$currentAmount")
+                    // Payment still shows success to user (Blumon approved it)
+                    return@launch
+                }
+
+                // 1. Extract card details from Blumon SDK response (includes real card brand from binInformation)
+                val cardDetails = extractCardDetailsFromBlumonResponse(
+                    saleData = saleData,
+                    entryMode = entryMode
+                )
+
+                Timber.d("💾 [Backend Recording] Card details: brand=${cardDetails.cardBrand} | masked=${cardDetails.maskedPan} | entry=${cardDetails.entryMode}")
+
+                // 2. Build payment context (FastPayment for now)
+                val context = PaymentContext.FastPayment(
+                    venueId = currentVenueId,
+                    staffId = currentStaffId,
+                    amount = currentAmount.toBigDecimal(),
+                    tip = currentTip.toBigDecimal(),
+                )
+
+                Timber.d("💾 [Backend Recording] Context: venue=$currentVenueId, staff=$currentStaffId, amount=$currentAmount, tip=$currentTip")
+
+                // 3. Call use case to record payment
+                val result = recordPaymentUseCase(
+                    context = context,
+                    cardDetails = cardDetails,
+                    authorizationNumber = authorizationNumber,
+                    referenceNumber = referenceNumber,
+                )
+
+                // 4. Handle result
+                result.onSuccess { receipt ->
+                    Timber.i("✅ [Backend Recording] Payment recorded successfully | paymentId=${receipt.paymentId}")
+                    Timber.i("📄 [Backend Recording] Receipt URL: ${receipt.receiptUrl}")
+                    // TODO: Emit event to show receipt or send via email/SMS
+                }.onFailure { error ->
+                    Timber.e("❌ [Backend Recording] Failed to record payment: ${error.message}")
+                    // TODO: Queue for offline sync (Room DB)
+                    // TODO: Show warning to user (payment succeeded but not synced)
+                }
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Backend Recording] Unexpected error")
+            }
+        }
+    }
+
+    /**
+     * Extract CardDetails from Blumon SDK response.
+     *
+     * ⭐ NEW: Extracts card brand from binInformation.brand instead of Track2 BIN detection.
+     * This provides accurate card brand (MASTERCARD, VISA, etc.) from the issuer.
+     *
+     * @param saleData Complete sale data from Blumon SDK
+     * @param entryMode How the card was read (CHIP, CONTACTLESS, SWIPE)
+     * @return CardDetails with real card brand from binInformation
+     */
+    private fun extractCardDetailsFromBlumonResponse(
+        saleData: Any, // Blumon SDK SaleData object
+        entryMode: CardEntryMode,
+    ): CardDetails {
+        return try {
+            // Extract binInformation from Blumon response (available via reflection)
+            val saleDataClass = saleData.javaClass
+            val binInfoField = saleDataClass.getDeclaredField("binInformation")
+            binInfoField.isAccessible = true
+            val binInfo = binInfoField.get(saleData)
+
+            var cardBrand = CardBrand.UNKNOWN
+            var bin = ""
+            var bank = ""
+
+            if (binInfo != null) {
+                val binInfoClass = binInfo::class.java
+
+                // Extract brand from binInformation
+                try {
+                    val brandField = binInfoClass.getDeclaredField("brand")
+                    brandField.isAccessible = true
+                    val brandStr = brandField.get(binInfo)?.toString() ?: ""
+
+                    // Map Blumon brand to our CardBrand enum
+                    cardBrand = when (brandStr.uppercase()) {
+                        "VISA" -> CardBrand.VISA
+                        "MASTERCARD" -> CardBrand.MASTERCARD
+                        "AMERICAN EXPRESS", "AMEX" -> CardBrand.AMEX
+                        "DISCOVER" -> CardBrand.DISCOVER
+                        "DINERS CLUB", "DINERS" -> CardBrand.DINERS
+                        "JCB" -> CardBrand.JCB
+                        else -> CardBrand.UNKNOWN
+                    }
+
+                    Timber.d("🎯 [BinInformation] Extracted real card brand: $brandStr → $cardBrand")
+                } catch (e: Exception) {
+                    Timber.w("Could not extract brand from binInformation: ${e.message}")
+                }
+
+                // Extract BIN
+                try {
+                    val binField = binInfoClass.getDeclaredField("bin")
+                    binField.isAccessible = true
+                    bin = binField.get(binInfo)?.toString() ?: ""
+                    Timber.d("🎯 [BinInformation] Extracted BIN: $bin")
+                } catch (e: Exception) {
+                    Timber.w("Could not extract bin from binInformation: ${e.message}")
+                }
+
+                // Extract bank
+                try {
+                    val bankField = binInfoClass.getDeclaredField("bank")
+                    bankField.isAccessible = true
+                    bank = bankField.get(binInfo)?.toString() ?: ""
+                    Timber.d("🎯 [BinInformation] Extracted bank: $bank")
+                } catch (e: Exception) {
+                    Timber.w("Could not extract bank from binInformation: ${e.message}")
+                }
+            }
+
+            // Mask PAN from Track2 or BIN
+            val maskedPan = if (currentTrack2.isNotEmpty()) {
+                val panEndIndex = currentTrack2.indexOf('=')
+                val pan = if (panEndIndex > 0) currentTrack2.substring(0, panEndIndex) else currentTrack2
+                maskPan(pan)
+            } else if (bin.isNotEmpty()) {
+                "$bin******XXXX" // Use BIN with masked suffix
+            } else {
+                "************"
+            }
+
+            CardDetails(
+                maskedPan = maskedPan,
+                cardBrand = cardBrand,
+                entryMode = entryMode,
+                isInternational = false, // TODO: Determine from binInformation if available
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to extract card details from Blumon response - falling back to Track2 detection")
+            // Fallback to old Track2 extraction method
+            extractCardDetailsFromTrack2(
+                track2 = currentTrack2,
+                entryMode = entryMode
+            )
+        }
+    }
+
+    /**
+     * Extract CardDetails from Track2 data.
+     *
+     * Track2 format: PAN=Separator=Expiry=ServiceCode=Discretionary
+     * Example: 4111111111111111=2512101...
+     *
+     * @param track2 Track2 data from chip/contactless (EMV tag 0x57)
+     * @param entryMode How the card was read (CHIP, CONTACTLESS, SWIPE)
+     * @return CardDetails with masked PAN, brand, entry mode
+     */
+    private fun extractCardDetailsFromTrack2(
+        track2: String,
+        entryMode: CardEntryMode,
+    ): CardDetails {
+        return try {
+            // Extract PAN (before '=' separator)
+            val panEndIndex = track2.indexOf('=')
+            val pan = if (panEndIndex > 0) track2.substring(0, panEndIndex) else track2
+
+            // Mask PAN (show first 6 and last 4 digits)
+            val maskedPan = maskPan(pan)
+
+            // Detect card brand from BIN (first 6 digits)
+            val cardBrand = detectCardBrand(pan)
+
+            // Check if international (TODO: Implement BIN database lookup)
+            val isInternational = false  // For now, assume domestic
+
+            CardDetails(
+                maskedPan = maskedPan,
+                cardBrand = cardBrand,
+                entryMode = entryMode,
+                isInternational = isInternational,
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "Failed to extract card details from Track2")
+            // Return safe default
+            CardDetails(
+                maskedPan = "************",
+                cardBrand = CardBrand.UNKNOWN,
+                entryMode = entryMode,
+                isInternational = false,
+            )
+        }
+    }
+
+    /**
+     * Mask PAN (Primary Account Number) for security.
+     *
+     * Format: First 6 digits + ******* + Last 4 digits
+     * Example: 4111111111111111 → 411111******1111
+     *
+     * @param pan Full PAN (16 digits typically)
+     * @return Masked PAN safe to log/store
+     */
+    private fun maskPan(pan: String): String {
+        return when {
+            pan.length < 10 -> "************"  // Too short, fully mask
+            pan.length <= 16 -> {
+                val first6 = pan.substring(0, 6)
+                val last4 = pan.substring(pan.length - 4)
+                val maskedCount = pan.length - 10
+                "$first6${"*".repeat(maskedCount)}$last4"
+            }
+            else -> {
+                // Very long PAN (Amex can be 15 digits)
+                val first6 = pan.substring(0, 6)
+                val last4 = pan.substring(pan.length - 4)
+                "$first6******$last4"
+            }
+        }
+    }
+
+    /**
+     * Detect card brand from BIN (Bank Identification Number).
+     *
+     * BIN = First 6 digits of PAN
+     *
+     * **Ranges:**
+     * - VISA: 4xxxxx
+     * - MASTERCARD: 51-55xxxx, 222100-272099xxxx
+     * - AMEX: 34xxxx, 37xxxx
+     * - DISCOVER: 6011xx, 622126-622925xxxx, 644-649xxx, 65xxxx
+     *
+     * @param pan Full PAN
+     * @return CardBrand enum
+     */
+    private fun detectCardBrand(pan: String): CardBrand {
+        if (pan.length < 4) return CardBrand.UNKNOWN
+
+        return try {
+            when {
+                pan.startsWith("4") -> CardBrand.VISA
+                pan.substring(0, 2).toInt() in 51..55 -> CardBrand.MASTERCARD
+                pan.length >= 6 && pan.substring(0, 6).toInt() in 222100..272099 -> CardBrand.MASTERCARD
+                pan.startsWith("34") || pan.startsWith("37") -> CardBrand.AMEX
+                pan.startsWith("6011") -> CardBrand.DISCOVER
+                pan.length >= 6 && pan.substring(0, 6).toInt() in 622126..622925 -> CardBrand.DISCOVER
+                pan.length >= 3 && pan.substring(0, 3).toInt() in 644..649 -> CardBrand.DISCOVER
+                pan.startsWith("65") -> CardBrand.DISCOVER
+                else -> CardBrand.UNKNOWN
+            }
+        } catch (e: Exception) {
+            Timber.w("Failed to detect card brand from PAN: ${e.message}")
+            CardBrand.UNKNOWN
+        }
     }
 }

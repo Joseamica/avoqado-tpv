@@ -216,9 +216,10 @@ class BlumonInitializer @Inject constructor(
             } else {
                 // PROD mode: Fetch full credentials with RSA/DUKPT keys
                 Timber.i("   🔐 Production mode - fetching RSA/DUKPT keys...")
-                val credentials = blumonAuthManager.fetchCredentials()
+                // ⭐ NEW: Use backend-first approach with fallback to direct Blumon API
+                val credentials = blumonAuthManager.fetchCredentialsWithFallback()
                 if (credentials == null) {
-                    Timber.e("   ❌ Failed to fetch production credentials")
+                    Timber.e("   ❌ Failed to fetch production credentials (both backend and Blumon API failed)")
                     return false
                 }
 

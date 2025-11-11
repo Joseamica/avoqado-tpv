@@ -9,7 +9,10 @@ import com.example.clean_lib_services.shared_tools.api.GlobalResources
 import com.example.clean_lib_services.shared_tools.api.server.CoreServer
 import com.example.clean_lib_services.shared_tools.api.server.TokenServer
 import com.jaac.avoqado_tpv.BuildConfig
+import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.util.CredentialsDecryption
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import org.json.JSONObject
 import timber.log.Timber
 import java.security.MessageDigest
 import javax.inject.Inject
@@ -19,7 +22,8 @@ import javax.inject.Singleton
 class BlumonAuthManager @Inject constructor(
     private val deviceInfoManager: DeviceInfoManager,
     private val tokenServer: TokenServer,
-    private val coreServer: CoreServer
+    private val coreServer: CoreServer,
+    private val apiService: ApiService  // Avoqado backend API
 ) {
     // Store access token for Bearer authentication
     @Volatile
@@ -172,6 +176,150 @@ class BlumonAuthManager @Inject constructor(
             Timber.e(e, "❌ [BlumonAuthManager] OAuth flow failed")
             null
         }
+    }
+
+    /**
+     * Fetch credentials from Avoqado backend (encrypted by superadmin auto-fetch)
+     *
+     * **Flow:**
+     * 1. Call GET /tpv/terminals/{serialNumber}/config
+     * 2. Extract encrypted credentials from merchantAccounts
+     * 3. Decrypt using CredentialsDecryption utility (AES-256-CBC)
+     * 4. Parse decrypted JSON to BlumonCredentials
+     *
+     * **Why Backend?**
+     * - Superadmin auto-fetched credentials via POST /superadmin/merchant-accounts/blumon/auto-fetch
+     * - Backend stored encrypted credentials (OAuth tokens, RSA keys, DUKPT keys)
+     * - Terminal fetches and decrypts on demand
+     * - Centralizes credential management
+     *
+     * **Security:**
+     * - Credentials are AES-256-CBC encrypted at rest
+     * - Encryption key is SHA-256 hashed (32 bytes exactly)
+     * - IV is random per encryption (stored with encrypted data)
+     *
+     * @param serialNumber Device serial number (e.g., "2841548417")
+     * @return BlumonCredentials if successful, null otherwise
+     */
+    suspend fun fetchCredentialsFromBackend(serialNumber: String): BlumonCredentials? {
+        return try {
+            Timber.i("🔐 [BlumonAuthManager] Fetching credentials from Avoqado backend...")
+            Timber.d("   Serial: $serialNumber")
+
+            // Step 1: Fetch terminal config from Avoqado backend
+            val response = apiService.getTerminalConfig(serialNumber)
+
+            if (!response.isSuccessful || response.body() == null) {
+                Timber.e("❌ Backend returned error: ${response.code()} - ${response.message()}")
+                return null
+            }
+
+            val configData = response.body()!!.data
+            val merchantAccounts = configData.merchantAccounts
+
+            if (merchantAccounts.isEmpty()) {
+                Timber.e("❌ No merchant accounts found for serial: $serialNumber")
+                return null
+            }
+
+            // For now, use the first merchant account
+            // TODO: Support multiple merchants (let user choose)
+            val merchant = merchantAccounts.first()
+            Timber.d("   Using merchant: ${merchant.displayName} (${merchant.id})")
+
+            // Step 2: Extract encrypted credentials
+            val encryptedCreds = merchant.credentials
+            if (encryptedCreds == null) {
+                Timber.e("❌ Merchant has no credentials")
+                return null
+            }
+
+            // Check if credentials are encrypted (backend format: { encrypted: "hex", iv: "hex" })
+            val credsJson = JSONObject(encryptedCreds)
+            if (!CredentialsDecryption.isEncrypted(credsJson)) {
+                Timber.e("❌ Credentials are not in encrypted format")
+                return null
+            }
+
+            // Step 3: Decrypt credentials
+            Timber.d("   Decrypting credentials...")
+            // Use same default as backend for testing
+            // TODO: Move to BuildConfig for production
+            val encryptionKey = "default-key-change-in-production-use-env-var"
+
+            val decryptedJson = CredentialsDecryption.decrypt(credsJson, encryptionKey)
+            val decrypted = JSONObject(decryptedJson)
+
+            // Step 4: Parse decrypted credentials to BlumonCredentials
+            val credentials = BlumonCredentials(
+                accessToken = decrypted.getString("oauthAccessToken"),
+                rsaId = decrypted.getInt("rsaId"),
+                rsaKey = decrypted.getString("rsaKey"),
+                dukptKsn = decrypted.optString("dukptKsn", ""),
+                dukptKey = decrypted.optString("dukptKey", ""),
+                dukptKeyCrc32 = decrypted.optString("dukptKeyCrc32", ""),
+                dukptKeyCheckValue = decrypted.optString("dukptKeyCheckValue", "")
+            )
+
+            // Store token for Bearer authentication
+            this.accessToken = credentials.accessToken
+
+            // ⭐ CRITICAL: Set token in GlobalResources for SDK HTTP interceptor
+            GlobalResources.tokenAuth = credentials.accessToken
+
+            Timber.i("✅ [BlumonAuthManager] Credentials fetched from backend successfully!")
+            Timber.d("   🔐 Token: ${credentials.accessToken.take(20)}...")
+            Timber.d("   🔑 RSA ID: ${credentials.rsaId}")
+            Timber.d("   🔐 DUKPT Available: ${credentials.dukptKsn.isNotEmpty()}")
+
+            credentials
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [BlumonAuthManager] Failed to fetch credentials from backend")
+            null
+        }
+    }
+
+    /**
+     * Fetch credentials with automatic fallback
+     *
+     * **Strategy:**
+     * - **Option A (Primary)**: Try Avoqado backend first (superadmin-configured credentials)
+     * - **Option B (Fallback)**: Direct Blumon API fetch if backend fails
+     *
+     * **Use Case:**
+     * - Backend unavailable → payment still works (Option B)
+     * - Backend configured → faster, centralized management (Option A)
+     * - Seamless transition: no user impact if backend is down
+     *
+     * **Future:**
+     * When backend is stable, make Option A mandatory (remove fallback).
+     *
+     * @return BlumonCredentials if either method succeeds, null if both fail
+     */
+    suspend fun fetchCredentialsWithFallback(): BlumonCredentials? {
+        val serialNumber = com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber
+
+        Timber.i("🔐 [BlumonAuthManager] Starting credential fetch with fallback...")
+
+        // Try Option A: Backend first
+        Timber.d("   [Option A] Trying Avoqado backend...")
+        val backendCreds = fetchCredentialsFromBackend(serialNumber)
+        if (backendCreds != null) {
+            Timber.i("✅ [Option A] Backend credentials obtained successfully!")
+            return backendCreds
+        }
+
+        // Fallback Option B: Direct Blumon API
+        Timber.w("   ⚠️ [Option A] Backend failed - falling back to direct Blumon API...")
+        Timber.d("   [Option B] Fetching from Blumon API directly...")
+        val blumonCreds = fetchCredentials()
+        if (blumonCreds != null) {
+            Timber.i("✅ [Option B] Blumon API credentials obtained successfully!")
+            return blumonCreds
+        }
+
+        Timber.e("❌ Both backend and Blumon API failed - no credentials available")
+        return null
     }
 
     private fun calculatePassword(serialNumber: String, brand: String, model: String): String {

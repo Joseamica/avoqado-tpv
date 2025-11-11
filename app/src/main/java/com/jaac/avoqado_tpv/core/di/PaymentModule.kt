@@ -4,10 +4,16 @@ import com.example.clean_lib_services.shared_tools.api.server.CoreServer
 import com.example.clean_lib_services.shared_tools.api.server.TokenServer
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.features.payment.data.BlumonAuthManager
+// ⭐ NEW: Backend payment recording dependencies
+import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
+import com.jaac.avoqado_tpv.features.payment.data.repository.FastPaymentRecorder
+import com.jaac.avoqado_tpv.features.payment.data.repository.OrderPaymentRecorder
+import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
+import retrofit2.Retrofit
 import javax.inject.Singleton
 
 /**
@@ -68,12 +74,90 @@ object PaymentModule {
     fun provideBlumonAuthManager(
         deviceInfoManager: DeviceInfoManager,
         tokenServer: TokenServer,
-        coreServer: CoreServer
+        coreServer: CoreServer,
+        apiService: com.jaac.avoqado_tpv.core.data.network.ApiService
     ): BlumonAuthManager {
         return BlumonAuthManager(
             deviceInfoManager = deviceInfoManager,
             tokenServer = tokenServer,
-            coreServer = coreServer
+            coreServer = coreServer,
+            apiService = apiService
+        )
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ⭐ NEW: BACKEND PAYMENT RECORDING (Retrofit API)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Provides PaymentApiService for backend payment recording.
+     *
+     * **Endpoints:**
+     * - POST /tpv/venues/{venueId}/fast
+     * - POST /tpv/venues/{venueId}/orders/{orderId}
+     *
+     * **Authentication:** Uses AuthInterceptor (adds Bearer token to all requests)
+     *
+     * @param retrofit Retrofit instance configured with base URL and interceptors
+     */
+    @Provides
+    @Singleton
+    fun providePaymentApiService(retrofit: Retrofit): PaymentApiService {
+        return retrofit.create(PaymentApiService::class.java)
+    }
+
+    /**
+     * Provides FastPaymentRecorder for recording fast payments.
+     *
+     * **Usage:** POST /tpv/venues/{venueId}/fast
+     *
+     * @param apiService PaymentApiService for Retrofit calls
+     */
+    @Provides
+    @Singleton
+    fun provideFastPaymentRecorder(
+        apiService: PaymentApiService
+    ): FastPaymentRecorder {
+        return FastPaymentRecorder(apiService)
+    }
+
+    /**
+     * Provides OrderPaymentRecorder for recording order payments.
+     *
+     * **Usage:** POST /tpv/venues/{venueId}/orders/{orderId}
+     *
+     * **Note:** This is NOT used yet (no create order feature implemented).
+     * Ready for when the feature is built.
+     *
+     * @param apiService PaymentApiService for Retrofit calls
+     */
+    @Provides
+    @Singleton
+    fun provideOrderPaymentRecorder(
+        apiService: PaymentApiService
+    ): OrderPaymentRecorder {
+        return OrderPaymentRecorder(apiService)
+    }
+
+    /**
+     * Provides RecordPaymentUseCase for orchestrating payment recording.
+     *
+     * **Strategy Pattern:**
+     * This use case selects the appropriate recorder (Fast vs Order)
+     * based on PaymentContext type.
+     *
+     * @param fastPaymentRecorder FastPaymentRecorder singleton
+     * @param orderPaymentRecorder OrderPaymentRecorder singleton
+     */
+    @Provides
+    @Singleton
+    fun provideRecordPaymentUseCase(
+        fastPaymentRecorder: FastPaymentRecorder,
+        orderPaymentRecorder: OrderPaymentRecorder
+    ): RecordPaymentUseCase {
+        return RecordPaymentUseCase(
+            fastPaymentRecorder = fastPaymentRecorder,
+            orderPaymentRecorder = orderPaymentRecorder
         )
     }
 }

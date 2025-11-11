@@ -36,6 +36,7 @@ fun MerchantSelectionContent(
     merchantSwitchingLoading: Boolean,
     onSelectMerchant: (MerchantAccount) -> Unit,
     onStartPayment: () -> Unit,
+    onStartCashPayment: () -> Unit,
     onNavigateBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
@@ -157,14 +158,24 @@ fun MerchantSelectionContent(
                 // Center content vertically
                 Spacer(modifier = Modifier.weight(1f))
 
-                // FOOTER ZONE: Single action button (fixed at bottom)
+                // FOOTER ZONE: Payment action buttons (fixed at bottom)
                 Column(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(sizes.spacingSmall)
                 ) {
+                    // Card payment button
                     AvoqadoButton(
-                        text = "Procesar Pago",
+                        text = "Procesar Pago con Tarjeta 💳",
                         onClick = onStartPayment,
+                        enabled = !merchantSwitchingLoading && currentMerchant != null,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    // Cash payment button
+                    AvoqadoSecondaryButton(
+                        text = "Pagar en Efectivo 💵",
+                        onClick = onStartCashPayment,
                         enabled = !merchantSwitchingLoading,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -197,10 +208,10 @@ private fun MerchantAccount.shortName(): String {
     }
 }
 
-@Preview(showBackground = true)
+@Preview(showBackground = true, backgroundColor = 0xFF1C1C1C)
 @Composable
 private fun MerchantSelectionContentPreview() {
-    MaterialTheme {
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
         MerchantSelectionContent(
             totalAmount = "115.00",
             tipAmount = "15.00",
@@ -224,7 +235,8 @@ private fun MerchantSelectionContentPreview() {
             currentMerchant = null,
             merchantSwitchingLoading = false,
             onSelectMerchant = {},
-            onStartPayment = {}
+            onStartPayment = {},
+            onStartCashPayment = {}
         )
     }
 }

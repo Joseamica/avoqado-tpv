@@ -1486,6 +1486,285 @@ val result = paymentRepository.recordPayment(orderId, payment)
 
 ---
 
+## 💰 Payment Reconciliation & Business Logic
+
+> **CRITICAL BUSINESS FEATURE**: Reconciliation (conciliación) is one of Avoqado's core strengths. The app MUST maintain precise separation of payment sources for accurate financial reporting.
+
+### Why Reconciliation Matters
+
+**Problem Statement**: At end of day/month, businesses need to know EXACTLY:
+- How much cash was collected?
+- How much was processed through Merchant Account A (Terminal 1)?
+- How much was processed through Merchant Account B (Terminal 2)?
+- Total tips collected per payment method?
+- Commission fees owed to payment processors?
+
+**Real-World Scenario**:
+```
+End of day report (Restaurant):
+├─ Cash: $1,250.00 (25 transactions)
+├─ Merchant A (Terminal 1): $8,450.00 (120 transactions) → -2.5% commission = $8,238.75 net
+├─ Merchant B (Terminal 2): $3,200.00 (45 transactions) → -2.5% commission = $3,120.00 net
+└─ Total: $12,900.00 gross | $12,608.75 net (after commissions)
+```
+
+**If we mix cash with merchant payments**: Reconciliation becomes IMPOSSIBLE. You can't separate cash (0% commission) from card payments (2.5% commission).
+
+---
+
+### Payment Source Separation (MANDATORY)
+
+#### ❌ WRONG: Assigning cash to a merchant account
+
+```typescript
+// ❌ BAD: Cash payment assigned to Merchant A
+{
+  method: "CASH",
+  merchantAccountId: "cm123_merchant_a",  // WRONG!
+  amount: 5000
+}
+
+// Result: Merchant A report shows $50 that was actually cash
+// Problem: Can't separate merchant commissions from cash receipts
+```
+
+#### ✅ CORRECT: Cash as separate payment source
+
+```typescript
+// ✅ GOOD: Cash payment with no merchant
+{
+  method: "CASH",
+  merchantAccountId: null,  // ← Cash has no merchant
+  amount: 5000
+}
+
+// Result: Clear separation in reports:
+// - Merchant A: $0 (no transactions)
+// - Cash: $50 (1 transaction)
+```
+
+---
+
+### Backend Schema Requirements
+
+#### Field: `merchantAccountId`
+
+**Rule**: `merchantAccountId` MUST be:
+- **REQUIRED** for card payments (`method: "CREDIT_CARD" | "DEBIT_CARD"`)
+- **NULL/Optional** for cash payments (`method: "CASH"`)
+- **NULL/Optional** for online payments (`method: "ONLINE"`)
+
+**Backend Validation** (TypeScript + Zod example):
+```typescript
+// Conditional validation based on payment method
+const PaymentSchema = z.object({
+  method: z.enum(["CASH", "CREDIT_CARD", "DEBIT_CARD", "ONLINE"]),
+  merchantAccountId: z.string().cuid().nullable().optional(),
+  amount: z.number().int().positive(),
+  // ... other fields
+}).refine((data) => {
+  // Card payments MUST have merchant account
+  if (["CREDIT_CARD", "DEBIT_CARD"].includes(data.method)) {
+    return data.merchantAccountId != null;
+  }
+  // Cash/Online payments MUST NOT have merchant account
+  if (["CASH", "ONLINE"].includes(data.method)) {
+    return data.merchantAccountId == null;
+  }
+  return true;
+}, {
+  message: "Card payments require merchantAccountId, cash/online must not have it"
+});
+```
+
+---
+
+### App-Side Implications
+
+#### 1. Queries Must Handle NULL merchant accounts
+
+```kotlin
+// ✅ CORRECT: Group payments by source
+val paymentsBySource = database.paymentDao().groupBySource()
+// Returns:
+// - merchantAccountId: "cm123_merchant_a", method: "CREDIT_CARD" → $8,450
+// - merchantAccountId: "cm123_merchant_b", method: "DEBIT_CARD" → $3,200
+// - merchantAccountId: null, method: "CASH" → $1,250
+
+// ❌ WRONG: Filter by merchant without considering null
+val merchantPayments = database.paymentDao()
+    .getByMerchant(merchantId) // This excludes cash!
+```
+
+#### 2. UI Must Display Payment Source Clearly
+
+```kotlin
+// Display payment source in UI
+fun PaymentReceipt.displaySource(): String {
+    return when {
+        method == "CASH" -> "Efectivo 💵"
+        merchantAccountId != null -> {
+            val merchant = getMerchant(merchantAccountId)
+            "${merchant.displayName} 💳"
+        }
+        else -> "Online 🌐"
+    }
+}
+
+// Example output:
+// - "Efectivo 💵"
+// - "Cuenta Blumon A (Sandbox) 💳"
+// - "Cuenta Blumon B (Producción) 💳"
+```
+
+#### 3. Reports Must Separate Sources
+
+```kotlin
+// Daily reconciliation report
+data class DailyReconciliation(
+    val date: LocalDate,
+    val cashTotal: BigDecimal,           // merchantAccountId = null, method = CASH
+    val merchantATotalGross: BigDecimal, // merchantAccountId = A, gross amount
+    val merchantACommission: BigDecimal, // merchantAccountId = A, commission (2.5%)
+    val merchantATotalNet: BigDecimal,   // merchantAccountId = A, after commission
+    val merchantBTotalGross: BigDecimal,
+    val merchantBCommission: BigDecimal,
+    val merchantBTotalNet: BigDecimal,
+    val grandTotal: BigDecimal           // Sum of all net amounts
+)
+
+// Query example
+fun getDailyReconciliation(date: LocalDate): DailyReconciliation {
+    val payments = database.paymentDao().getByDate(date)
+
+    val cashTotal = payments
+        .filter { it.method == "CASH" && it.merchantAccountId == null }
+        .sumOf { it.amount }
+
+    val merchantAPayments = payments
+        .filter { it.merchantAccountId == MERCHANT_A_ID }
+
+    val merchantAGross = merchantAPayments.sumOf { it.amount }
+    val merchantACommission = merchantAGross * 0.025 // 2.5%
+    val merchantANet = merchantAGross - merchantACommission
+
+    // ... repeat for merchant B
+
+    return DailyReconciliation(
+        date = date,
+        cashTotal = cashTotal,
+        merchantATotalGross = merchantAGross,
+        merchantACommission = merchantACommission,
+        merchantATotalNet = merchantANet,
+        // ...
+    )
+}
+```
+
+---
+
+### Risks of Making merchantAccountId Optional
+
+#### ⚠️ Potential Issues:
+
+1. **Query Complexity**: Every query filtering by merchant must explicitly handle `NULL` case
+   ```sql
+   -- ❌ WRONG: Excludes cash
+   SELECT * FROM payments WHERE merchantAccountId = 'cm123_merchant_a';
+
+   -- ✅ CORRECT: Include or exclude null explicitly
+   SELECT * FROM payments
+   WHERE merchantAccountId = 'cm123_merchant_a'
+      OR (merchantAccountId IS NULL AND method = 'CASH');
+   ```
+
+2. **Joins Can Fail**: LEFT JOIN on merchantAccount table will return null rows for cash
+   ```sql
+   -- Must handle null merchant
+   SELECT p.*, m.displayName
+   FROM payments p
+   LEFT JOIN merchantAccounts m ON p.merchantAccountId = m.id
+   -- m.displayName will be NULL for cash payments
+   ```
+
+3. **GROUP BY Behavior**: NULL is treated as a distinct group
+   ```sql
+   -- NULL becomes its own group (which is what we want!)
+   SELECT merchantAccountId, SUM(amount)
+   FROM payments
+   GROUP BY merchantAccountId;
+   -- Results:
+   -- merchantAccountId | sum
+   -- cm123_merchant_a  | 8450
+   -- cm123_merchant_b  | 3200
+   -- NULL              | 1250  ← Cash total
+   ```
+
+4. **UI Null Safety**: Every place showing merchant name must handle null
+   ```kotlin
+   // ❌ WRONG: Crashes on null
+   Text(payment.merchantAccount.displayName)
+
+   // ✅ CORRECT: Handle null case
+   Text(payment.merchantAccount?.displayName ?: "Efectivo")
+   ```
+
+#### ✅ Mitigations:
+
+1. **Helper Functions**: Create utility to get payment source display name
+2. **Database Views**: Create view that pre-joins merchant data with null handling
+3. **Type Safety**: Use sealed class to represent payment sources:
+   ```kotlin
+   sealed class PaymentSource {
+       data class Merchant(val account: MerchantAccount) : PaymentSource()
+       data object Cash : PaymentSource()
+       data object Online : PaymentSource()
+   }
+   ```
+4. **Backend Validation**: Enforce conditional requirement at API level
+5. **Documentation**: Clearly document that null = cash in all schemas
+
+---
+
+### Migration Strategy (If Changing Existing System)
+
+If you already have payments in database and want to make `merchantAccountId` optional:
+
+```sql
+-- Step 1: Identify cash payments (manual review needed)
+SELECT * FROM payments
+WHERE method = 'CASH'
+  AND merchantAccountId IS NOT NULL;
+
+-- Step 2: Set merchantAccountId to NULL for confirmed cash payments
+UPDATE payments
+SET merchantAccountId = NULL
+WHERE method = 'CASH';
+
+-- Step 3: Add database constraint (PostgreSQL example)
+ALTER TABLE payments
+ADD CONSTRAINT check_merchant_by_method
+CHECK (
+  (method IN ('CREDIT_CARD', 'DEBIT_CARD') AND merchantAccountId IS NOT NULL)
+  OR
+  (method IN ('CASH', 'ONLINE') AND merchantAccountId IS NULL)
+);
+```
+
+---
+
+### Decision Matrix: merchantAccountId Handling
+
+| Approach | Pros | Cons | Recommendation |
+|----------|------|------|----------------|
+| **Optional (null for cash)** | ✅ Correct business logic<br>✅ Clean reconciliation<br>✅ Extensible (online payments) | ⚠️ More null checks<br>⚠️ Conditional validation | **✅ RECOMMENDED** |
+| **Always required (fake merchant for cash)** | ✅ No null handling<br>✅ Simpler queries | ❌ Incorrect business logic<br>❌ Confuses reports<br>❌ Needs seed data | ❌ NOT RECOMMENDED |
+| **Separate field (paymentSource enum)** | ✅ Very explicit<br>✅ Type-safe | ⚠️ Schema migration<br>⚠️ Redundant with method | 🤔 Consider for V2 |
+
+**Final Recommendation**: Make `merchantAccountId` **optional/nullable**, with backend validation requiring it for card payments and forbidding it for cash/online payments.
+
+---
+
 ## 📝 Development Workflow
 
 ### 1. Before Starting a Feature

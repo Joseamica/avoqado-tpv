@@ -8,7 +8,43 @@
 
 ### **Added**
 
-1. **CustomKeyboard: Add Preview with toggle $/% button** (CustomKeyboard.kt:225-252)
+1. **Cash payment support (skip card reading)** (Multiple files)
+   - **USER REQUEST**: "Que haya un boton de Efectivo donde no se tenga que seleccionar ninguna cuenta, sino el pago sera en efectivo"
+   - **FEATURE**: Complete cash payment flow without card reader interaction
+   - **FILES MODIFIED**:
+     - `CardDetails.kt:31, 33-47` - Added `isCash` field + `CASH` companion object
+     - `FastPaymentRecorder.kt:199-207` - Support `method: "CASH"` in backend requests
+     - `PaymentViewModel.kt:1403-1495` - New `processCashPayment()` function
+     - `MerchantSelectionContent.kt:39, 167-181` - "Pagar en Efectivo 💵" button
+     - `PaymentScreen.kt:177-179` - Connect cash payment callback
+   - **FLOW**:
+     ```
+     Amount → Rating → Tip → MerchantSelection
+       → Click "Pagar en Efectivo 💵"
+       → Processing ("Registrando pago en efectivo...")
+       → RecordPayment (backend with method="CASH")
+       → Success (authCode="EFECTIVO")
+     ```
+   - **SKIPS**: All Blumon SDK operations (PreTrans, DetectCard, EMV processing)
+   - **REGISTERS**: Rating, tip, amount same as card payments
+   - **BACKEND**: Receives `method: "CASH"`, `authorizationNumber: "EFECTIVO"`, `referenceNumber: "CASH-{timestamp}"`
+   - **UX**: Instant payment completion (0 seconds vs 5-10 seconds for card)
+
+2. **Auto-skip merchant selection when only 1 merchant available** (PaymentViewModel.kt:530-540, 570-580)
+   - **USER REQUEST**: "es importante que si solo existe 1 merchant account el proceso de seleccio es automatico"
+   - **LOGIC**: If `merchants.size == 1` → Auto-select and skip to payment processing
+   - **FLOW BEFORE**: Amount → Rating → Tip → MerchantSelection (shows 1 button) → Click → Payment
+   - **FLOW AFTER**: Amount → Rating → Tip → **Auto-select merchant** → Payment (skips screen)
+   - **BENEFIT**: Faster checkout for single-merchant setups (most common scenario)
+   - **APPLIES TO**: Both `submitTip()` and `skipTip()` functions
+
+3. **Pre-select default merchant in merchant selection screen** (PaymentViewModel.kt:550-555, 590-595)
+   - **USER REQUEST**: "Que por default seleccione una cuenta"
+   - **LOGIC**: Auto-select first merchant if none selected when entering SelectingMerchant state
+   - **RESULT**: "Cuenta A" (or active merchant) is pre-selected with primary button style
+   - **UX**: User can immediately click "Procesar Pago con Tarjeta" without selecting merchant first
+
+4. **CustomKeyboard: Add Preview with toggle $/% button** (CustomKeyboard.kt:225-252)
    - **USER REQUEST**: "puedes agregar el otro tipo de teclado que es % en preview?"
    - **NEW PREVIEW**: `CustomKeyboardWithTogglePreview()` showing keyboard with `showToggle = true`
    - **LAYOUT**: Displays all buttons including the $/% toggle button between Backspace and Confirm
@@ -17,7 +53,7 @@
      - Keyboard with $/% toggle - for tip percentage/amount input
    - **BENEFIT**: Easier to understand CustomKeyboard API without reading code
 
-2. **TipInputBottomSheet: New modal component for custom tip input with $/% toggle (INSTANT OPEN)** (TipInputBottomSheet.kt:1-190)
+5. **TipInputBottomSheet: New modal component for custom tip input with $/% toggle (INSTANT OPEN)** (TipInputBottomSheet.kt:1-190)
    - **FEATURE**: Instant-opening modal for entering custom tip amounts (no 300ms animation delay)
    - **USER REQUESTS**:
      - "el ingresar monto personalizado sea que salga un modal con el keyboard pero de forma que tambien puedas cambiar a % para que solo pongas el % que quieras dejar y solito se calcule"
@@ -44,7 +80,7 @@
      - ✅ Click outside → Dismisses modal (line 73)
    - **PATTERN**: Dialog + Bottom sheet styling + Custom keyboard (optimized for speed)
 
-2. **CustomKeyboard: Add $/% toggle button support** (CustomKeyboard.kt:45-54, 111-119)
+6. **CustomKeyboard: Add $/% toggle button support** (CustomKeyboard.kt:45-54, 111-119)
    - **FEATURE**: Optional toggle button between $ (fixed amount) and % (percentage)
    - **PARAMETERS**:
      - `showToggle: Boolean = false` - Show/hide toggle button (line 48)
@@ -52,7 +88,7 @@
    - **LAYOUT**: Toggle button positioned between Backspace and Confirm (lines 111-119)
    - **USAGE**: `CustomKeyboard(showToggle = true, onToggleClick = { /* switch mode */ })`
 
-3. **Payment flow: Auto-open amount modal when "Nuevo Pago" is clicked** (PaymentScreen.kt:28, 44, 214-218 | AppNavigation.kt:185-190, 266)
+7. **Payment flow: Auto-open amount modal when "Nuevo Pago" is clicked** (PaymentScreen.kt:28, 44, 214-218 | AppNavigation.kt:185-190, 266)
    - **FEATURE**: When user clicks "Nuevo Pago" button in payment success screen, automatically open amount modal when returning to WelcomeScreen
    - **USER REQUEST**: "si se escoge [Nuevo Pago] en pago exitoso, deberia de ir a welcome y abrir el modal automaticamente"
    - **IMPLEMENTATION**:
@@ -70,7 +106,60 @@
 
 ### **Changed**
 
-1. **PaymentScreen: Dynamic header shows total when tip selected** (PaymentScreen.kt:57-67)
+1. **PaymentContext & PaymentState: Make merchantAccountId nullable for proper cash payment reconciliation** (Multiple files)
+   - **BUG FIX**: Cash payments were failing with "El ID de la cuenta merchant debe ser un CUID válido" validation error
+   - **ROOT CAUSE**: Android was sending empty string `""` for cash payments, but backend Zod validation required valid CUID
+   - **ARCHITECTURAL CHANGE**: Use `null` instead of empty string for cash payments (proper semantic representation)
+   - **BUSINESS LOGIC**: Cash payments don't use payment processors (no Blumon/Stripe), so no merchant account needed
+     - **Reconciliation benefit**: Clean separation of payment sources for accurate financial reports:
+       - Cash: $1,250 (0% commission, no processor)
+       - Merchant A: $8,450 (-2.5% commission)
+       - Merchant B: $3,200 (-2.5% commission)
+   - **FILES MODIFIED**:
+     - **Backend** `tpv.schema.ts:172-191` - Updated Zod validation to `.nullable().optional()` with conditional refine
+       - Card payments MUST have merchantAccountId (business rule enforced)
+       - Cash payments SHOULD NOT have merchantAccountId (null = proper reconciliation)
+     - **Backend** `transactionCost.service.ts:200-204` - Already skips TransactionCost for cash (no changes needed)
+     - **Android** `PaymentContext.kt:28-31, 60, 98-100` - Changed `merchantAccountId: String` to `String?` (nullable)
+     - **Android** `PaymentState.kt:30, 47-50` - Updated `RetryContext.merchantAccountId` to `String?` and removed validation check
+     - **Android** `PaymentViewModel.kt:1450-1460` - Changed cash payment to use `null` instead of `""`
+     - **Android** `PaymentViewModel.kt:1601-1609` - Fixed validation logging with null-safe operators
+     - **Android** `PaymentViewModel.kt:1616-1630` - Fixed merchant restoration with null-safe handling
+   - **BACKEND VALIDATION LOGIC**:
+     ```typescript
+     merchantAccountId: z.string().cuid().nullable().optional(),
+     // ...
+     }).refine((data) => {
+       // Card payments require merchantAccountId
+       if (['CREDIT_CARD', 'DEBIT_CARD', 'DIGITAL_WALLET'].includes(data.method)) {
+         return data.merchantAccountId != null && data.merchantAccountId !== ''
+       }
+       // Cash payments should not have merchantAccountId (null = correct separation)
+       if (data.method === 'CASH') {
+         return data.merchantAccountId == null || data.merchantAccountId === ''
+       }
+       return true
+     })
+     ```
+   - **ANDROID IMPLEMENTATION**:
+     ```kotlin
+     // Cash payment (PaymentViewModel.kt:1456)
+     merchantAccountId = null,  // ✅ null = cash (no processor, no commission)
+
+     // Merchant restoration (PaymentViewModel.kt:1618-1628)
+     val merchant = context.merchantAccountId?.let { merchantId ->
+         _merchants.value.firstOrNull { it.id == merchantId }
+     }
+     if (merchant != null) {
+         _currentMerchant.value = merchant
+     } else if (context.merchantAccountId == null) {
+         Timber.d("Cash payment - no merchant to restore")
+     }
+     ```
+   - **USER IMPACT**: ✅ Cash payments now work correctly without validation errors
+   - **TECHNICAL DEBT RESOLVED**: Proper type safety with nullable String? instead of empty string convention
+
+2. **PaymentScreen: Dynamic header shows total when tip selected** (PaymentScreen.kt:57-67)
    - **USER REQUEST**: "cuando se selecciona propina que tan complejo es que actualice en el header de avoqado el subtotal + la propina?"
    - **BEFORE**: Header always showed "Subtotal: $XX.XX MXN"
    - **AFTER**: Header dynamically shows:
@@ -158,7 +247,59 @@
 
 ### **Fixed**
 
-1. **TipInputBottomSheet: Fix slow opening animation (1 second delay → instant)** (TipInputBottomSheet.kt:59-95)
+1. **Preview colors showing purple instead of dark theme** (MerchantSelectionContent.kt:200-203, AmountInputScreen.kt:100-103)
+   - **USER REQUEST**: "en preview no usa mis colores, se ve morado"
+   - **ISSUE**: Previews were using `MaterialTheme` (Material3 default purple primary) instead of `AvoqadoTheme` (custom dark theme)
+   - **BEFORE**:
+     ```kotlin
+     @Preview(showBackground = true)
+     @Composable
+     private fun Preview() {
+         MaterialTheme { /* Purple colors */ }
+     }
+     ```
+   - **AFTER**:
+     ```kotlin
+     @Preview(showBackground = true, backgroundColor = 0xFF1C1C1C)
+     @Composable
+     private fun Preview() {
+         com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme { /* Dark theme */ }
+     }
+     ```
+   - **RESULT**: Previews now correctly show dark theme (#1C1C1C background, #E8E8E8 text)
+
+2. **PaymentSuccessContent: Fix QR code appearing blank/empty during backend receipt fetch** (PaymentScreen.kt:536-572, ShimmerEffect.kt:1-127)
+   - **USER ISSUE**: "Porque a veces sale el QR y a veces no? Tambien a veces tarda en generarse y sale vacio el espacio del QR"
+   - **ROOT CAUSE**: Card payments have async flow:
+     1. `PaymentState.Success` created immediately (lines 967, 1398) → User sees success screen
+     2. `handlePaymentSuccess()` calls backend in background (lines 973, 1404)
+     3. Backend responds → receipt arrives → state updated (lines 1886-1890)
+     4. **DELAY**: 1-2 seconds where QR space is empty/blank ❌
+   - **COMPARISON**:
+     - **Cash payments**: Call backend FIRST → Only show Success when receipt ready → QR always appears instantly ✅
+     - **Card payments**: Show Success FIRST → Fetch receipt in background → QR appears after delay ❌
+   - **SOLUTION**: Professional shimmer loading effect (Instagram/Facebook/Square pattern)
+     - **NEW**: `ShimmerEffect.kt` - Reusable shimmer component with smooth gradient animation
+       - `ShimmerBox()` - Generic shimmer placeholder (configurable size, corner radius)
+       - `QrShimmerPlaceholder()` - Pre-configured for QR codes (180dp, 24dp corners)
+       - 1.3s animation cycle (optimal balance between smooth and energetic)
+       - Uses theme colors (adapts to dark/light mode automatically)
+     - **UPDATED**: `PaymentSuccessContent` (lines 536-572)
+       - QR area ALWAYS visible (Box container, white background, border)
+       - `receipt == null` → Show shimmer animation (lines 563-571)
+       - `receipt != null` → Show QR code (lines 550-562)
+   - **UX BENEFITS**:
+     - ✅ No more empty/blank space - Shimmer indicates "loading in progress"
+     - ✅ Better perceived performance - Users see activity, not static nothing
+     - ✅ Consistent with modern apps (Instagram story placeholders, Facebook feed loaders)
+     - ✅ Smooth transition when receipt arrives (shimmer → QR code)
+   - **TECHNICAL NOTES**:
+     - Shimmer runs on Compose animation system (efficient, no extra threads)
+     - QR generation still async (rememberQrBitmapPainter uses Dispatchers.IO)
+     - If QR bitmap takes time, shimmer continues until ready (graceful handling)
+   - **RESULT**: Professional loading state - No more confusion about why QR isn't showing! 🎉
+
+3. **TipInputBottomSheet: Fix slow opening animation (1 second delay → instant)** (TipInputBottomSheet.kt:59-95)
    - **ISSUE**: Modal took ~1 second to open, breaking instant feedback expectation
    - **USER REQUEST**: "el modal porque tarda 1 segundo en abrir? puede ser instantaneo?"
    - **ROOT CAUSE**: Material3 ModalBottomSheet has hardcoded 300ms spring animation with no API to disable it
@@ -172,7 +313,7 @@
      - Content click consumption prevents accidental dismiss - line 87-91
    - **RESULT**: ✅ Modal now opens INSTANTLY when user clicks "Monto personalizado"
 
-2. **TipScreen: Fix cramped percentage buttons spacing** (TipScreen.kt:96-112)
+3. **TipScreen: Fix cramped percentage buttons spacing** (TipScreen.kt:96-112)
    - **USER FEEDBACK**: "se ven apretados los 3 botones" (the 3 buttons look cramped)
    - **ROOT CAUSE**: ResponsiveScaffold automatically applies `padding(horizontal = sizes.paddingScreen)`, but TipScreen was adding duplicate padding
    - **DISCOVERY**: ResponsiveScaffold.kt lines 220 and 230 apply automatic horizontal padding
@@ -181,6 +322,28 @@
      - Changed Row from `SpaceEvenly` to `spacedBy(sizes.spacingMedium)` (line 98)
      - Added `Modifier.weight(1f)` to each TipPercentageCard (line 109)
    - **RESULT**: ✅ Buttons properly spaced with equal width distribution
+
+4. **PaymentViewModel: Fix race condition crash in cash payment flow** (PaymentViewModel.kt:1434-1439)
+   - **CRITICAL BUG**: Clicking "Pagar en Efectivo" caused `IllegalStateException` crash
+   - **USER ERROR**: "al hacer click en pagar en efectivo, me sale este error: java.lang.IllegalStateException: Invalid state for cash payment. Expected SelectingMerchant, got: Processing(message=Registrando pago en efectivo...)"
+   - **ROOT CAUSE**: Race condition - state was changed to `Processing` BEFORE reading `SelectingMerchant` state (line 1434)
+   - **BEFORE (BUGGY)**:
+     ```kotlin
+     _state.value = PaymentState.Processing("Registrando pago en efectivo...")  // ❌ Sets state first
+     val currentState = _state.value as? PaymentState.SelectingMerchant  // ❌ Now reads Processing!
+         ?: throw IllegalStateException("Invalid state for cash payment. Expected SelectingMerchant, got: ${_state.value}")
+     ```
+   - **AFTER (FIXED)**:
+     ```kotlin
+     // Get current payment context from SelectingMerchant state BEFORE changing state
+     val currentState = _state.value as? PaymentState.SelectingMerchant  // ✅ Capture state first
+         ?: throw IllegalStateException("Invalid state for cash payment. Expected SelectingMerchant, got: ${_state.value}")
+
+     // Now change state to Processing
+     _state.value = PaymentState.Processing("Registrando pago en efectivo...")  // ✅ Then change state
+     ```
+   - **FIX**: Swapped order - capture `SelectingMerchant` state BEFORE mutating to `Processing`
+   - **RESULT**: ✅ Cash payments now work correctly without crashes
 
 ### **Removed**
 

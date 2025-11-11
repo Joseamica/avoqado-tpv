@@ -97,10 +97,10 @@ fun AmountInputScreen(
     }
 }
 
-@Preview(showBackground = true)
+@Preview(showBackground = true, backgroundColor = 0xFF1C1C1C)
 @Composable
 private fun AmountInputScreenPreview() {
-    MaterialTheme {
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
         AmountInputScreen(
             currentAmount = "",
             onAmountChange = {},

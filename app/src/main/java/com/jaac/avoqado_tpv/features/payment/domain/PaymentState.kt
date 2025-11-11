@@ -27,7 +27,7 @@ data class RetryContext(
     val amount: String,
     val tipAmount: String,
     val rating: Int?,
-    val merchantAccountId: String
+    val merchantAccountId: String?  // ✅ NULLABLE: null for cash payments
 ) {
     /**
      * Calculate total amount (amount + tip).
@@ -41,11 +41,12 @@ data class RetryContext(
 
     /**
      * Check if context is valid for payment processing.
-     * @return true if amount > 0 and merchant is selected
+     * ✅ FIXED: Removed merchantAccountId check (cash payments have null merchant)
+     * @return true if amount > 0 (merchant can be null for cash)
      */
     fun isValid(): Boolean {
-        return amount.toBigDecimalOrNull()?.let { it > java.math.BigDecimal.ZERO } == true &&
-               merchantAccountId.isNotBlank()
+        return amount.toBigDecimalOrNull()?.let { it > java.math.BigDecimal.ZERO } == true
+        // ✅ Removed: merchantAccountId.isNotBlank() check (cash has null merchant)
     }
 }
 

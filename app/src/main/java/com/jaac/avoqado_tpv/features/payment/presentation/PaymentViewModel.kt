@@ -527,12 +527,32 @@ class PaymentViewModel @Inject constructor(
         currentTip = tipAmount
         currentRating = rating
 
+        // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
+        val merchants = _merchants.value
+        if (merchants.size == 1) {
+            val onlyMerchant = merchants.first()
+            Timber.d("🏪 [Payment Flow] Only 1 merchant available (${onlyMerchant.displayName}) → Auto-selecting and skipping merchant selection screen")
+            updateSelectedMerchant(onlyMerchant)
+
+            // Go directly to payment processing (skip SelectingMerchant screen)
+            startPayment(totalAmount)
+            return
+        }
+
+        // Multiple merchants → Show selection screen
         _state.value = PaymentState.SelectingMerchant(
             subtotal = subtotal,
             tipAmount = tipAmount,
             totalAmount = totalAmount,
             rating = rating
         )
+
+        // Auto-select first merchant if none selected
+        if (_currentMerchant.value == null && merchants.isNotEmpty()) {
+            val defaultMerchant = merchants.first()
+            Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
+            updateSelectedMerchant(defaultMerchant)
+        }
 
         Timber.d("💵 [Payment Flow] SelectingMerchant state created: subtotal='$subtotal', tipAmount='$tipAmount', totalAmount='$totalAmount'")
     }
@@ -547,12 +567,32 @@ class PaymentViewModel @Inject constructor(
         currentTip = "0.00"
         currentRating = rating
 
+        // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
+        val merchants = _merchants.value
+        if (merchants.size == 1) {
+            val onlyMerchant = merchants.first()
+            Timber.d("🏪 [Payment Flow] Only 1 merchant available (${onlyMerchant.displayName}) → Auto-selecting and skipping merchant selection screen")
+            updateSelectedMerchant(onlyMerchant)
+
+            // Go directly to payment processing (skip SelectingMerchant screen)
+            startPayment(subtotal)  // Total = subtotal (no tip)
+            return
+        }
+
+        // Multiple merchants → Show selection screen
         _state.value = PaymentState.SelectingMerchant(
             subtotal = subtotal,
             tipAmount = "0",
             totalAmount = subtotal,
             rating = rating
         )
+
+        // Auto-select first merchant if none selected
+        if (_currentMerchant.value == null && merchants.isNotEmpty()) {
+            val defaultMerchant = merchants.first()
+            Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
+            updateSelectedMerchant(defaultMerchant)
+        }
     }
 
     /**
@@ -1376,6 +1416,113 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
+     * Process cash payment (skip card reading, direct backend recording)
+     *
+     * Flow:
+     * 1. Extract payment context from SelectingMerchant state
+     * 2. Set state to Processing
+     * 3. Call recordPaymentUseCase with CardDetails.CASH
+     * 4. Set state to Success or Error
+     *
+     * ⚠️ CRITICAL: This skips ALL Blumon SDK operations (no PreTrans, no card reading, no EMV)
+     */
+    fun processCashPayment(totalAmount: String) {
+        Timber.d("💵 [Cash Payment] Processing cash payment: \$$totalAmount")
+
+        viewModelScope.launch {
+            try {
+                // Get current payment context from SelectingMerchant state BEFORE changing state
+                val currentState = _state.value as? PaymentState.SelectingMerchant
+                    ?: throw IllegalStateException("Invalid state for cash payment. Expected SelectingMerchant, got: ${_state.value}")
+
+                // Now change state to Processing
+                _state.value = PaymentState.Processing("Registrando pago en efectivo...")
+
+                // Get venue and staff context for backend recording
+                currentVenueId = authRepository.getVenueId()
+                    ?: throw IllegalStateException("No venue ID found. Cannot process payment.")
+                currentStaffId = authRepository.getStaffId()
+                    ?: throw IllegalStateException("No staff ID found. Cannot process payment.")
+
+                Timber.d("💵 [Cash Payment] Context: Venue=$currentVenueId, Staff=$currentStaffId")
+                Timber.d("💵 [Cash Payment] Details: Subtotal=${currentState.subtotal}, Tip=${currentState.tipAmount}, Total=${currentState.totalAmount}, Rating=${currentState.rating}")
+
+                // Create payment context for cash
+                // ✅ RECONCILIATION: null merchantAccountId = proper separation (cash has no processor cost)
+                val context = PaymentContext.FastPayment(
+                    venueId = currentVenueId!!,
+                    staffId = currentStaffId!!,
+                    amount = currentState.subtotal.toBigDecimal(),
+                    tip = currentState.tipAmount.toBigDecimal(),
+                    rating = currentState.rating,
+                    merchantAccountId = null,  // ✅ null = cash (no processor, no commission)
+                    blumonSerialNumber = ""   // No Blumon SDK for cash payments
+                )
+
+                // Generate cash reference (unique ID for cash payments)
+                val cashReference = "CASH-${System.currentTimeMillis()}"
+
+                Timber.d("💵 [Cash Payment] Recording payment to backend...")
+                Timber.d("   💰 Amount: ${context.amount} + Tip: ${context.tip} = Total: ${currentState.totalAmount}")
+                Timber.d("   📝 Reference: $cashReference")
+
+                // Record payment directly (skip Blumon SDK)
+                val result = recordPaymentUseCase(
+                    context = context,
+                    cardDetails = CardDetails.CASH,
+                    authorizationNumber = "EFECTIVO",
+                    referenceNumber = cashReference
+                )
+
+                result.onSuccess { receipt ->
+                    Timber.d("✅ [Cash Payment] Successfully recorded to backend")
+                    Timber.d("   🧾 Payment ID: ${receipt.paymentId} | Receipt URL: ${receipt.receiptUrl}")
+
+                    _state.value = PaymentState.Success(
+                        authCode = "EFECTIVO",
+                        amount = currentState.subtotal,
+                        tipAmount = currentState.tipAmount,
+                        rating = currentState.rating,
+                        receipt = receipt,
+                        cardDetails = CardDetails.CASH,
+                        referenceNumber = cashReference
+                    )
+
+                    Timber.d("💚 [Cash Payment] Payment completed successfully")
+                }.onFailure { error ->
+                    Timber.e(error, "❌ [Cash Payment] Failed to record payment to backend")
+
+                    _state.value = PaymentState.Error(
+                        message = "Error registrando pago en efectivo:\n\n${error.message ?: "Error desconocido"}",
+                        context = RetryContext(
+                            amount = currentState.subtotal,
+                            tipAmount = currentState.tipAmount,
+                            rating = currentState.rating,
+                            merchantAccountId = ""  // No merchant for cash
+                        ),
+                        canRetry = true
+                    )
+                }
+
+            } catch (e: IllegalStateException) {
+                Timber.e(e, "❌ [Cash Payment] Invalid state or missing context")
+                _state.value = PaymentState.Error(
+                    message = "Error procesando pago en efectivo:\n\n${e.message}",
+                    context = null,
+                    canRetry = false
+                )
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Cash Payment] Unexpected error")
+                _state.value = PaymentState.Error(
+                    message = "Error inesperado procesando pago en efectivo:\n\n${e.message}",
+                    context = null,
+                    canRetry = false
+                )
+            }
+        }
+    }
+
+    /**
      * Cancel payment (remove card)
      */
     fun cancelPayment() {
@@ -1456,7 +1603,7 @@ class PaymentViewModel @Inject constructor(
             Timber.w("   - amount: ${context.amount} (valid: ${context.amount.toBigDecimalOrNull()?.let { it > java.math.BigDecimal.ZERO }})")
             Timber.w("   - tipAmount: ${context.tipAmount}")
             Timber.w("   - rating: ${context.rating}")
-            Timber.w("   - merchantAccountId: '${context.merchantAccountId}' (blank: ${context.merchantAccountId.isBlank()})")
+            Timber.w("   - merchantAccountId: '${context.merchantAccountId ?: "null"}' (is null/blank: ${context.merchantAccountId?.isBlank() ?: true})")
             resetPayment()
             return
         }
@@ -1466,13 +1613,21 @@ class PaymentViewModel @Inject constructor(
         currentTip = context.tipAmount
         currentRating = context.rating
 
-        // Restore merchant selection
-        val merchant = _merchants.value.firstOrNull { it.id == context.merchantAccountId }
+        // Restore merchant selection (if not cash payment)
+        // ✅ CASH HANDLING: null merchantAccountId = cash payment (no merchant to restore)
+        val merchant = context.merchantAccountId?.let { merchantId ->
+            _merchants.value.firstOrNull { it.id == merchantId }
+        }
         if (merchant != null) {
             _currentMerchant.value = merchant
+            Timber.d("🔄 [Smart Retry] Merchant restored: ${merchant.displayName}")
+        } else if (context.merchantAccountId == null) {
+            Timber.d("🔄 [Smart Retry] Cash payment - no merchant to restore")
+        } else {
+            Timber.w("🔄 [Smart Retry] Merchant not found: ${context.merchantAccountId}")
         }
 
-        Timber.i("🔄 [Smart Retry] Restored context | amount=${context.amount} | tip=${context.tipAmount} | rating=${context.rating} | merchant=${context.merchantAccountId}")
+        Timber.i("🔄 [Smart Retry] Restored context | amount=${context.amount} | tip=${context.tipAmount} | rating=${context.rating} | merchant=${context.merchantAccountId ?: "CASH"}")
 
         // ✅ Go directly to payment processing (skip amount/tip/rating steps)
         startPayment(context.amount)

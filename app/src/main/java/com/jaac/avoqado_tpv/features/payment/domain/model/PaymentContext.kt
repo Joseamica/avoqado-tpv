@@ -25,8 +25,9 @@ sealed class PaymentContext {
     abstract val tip: BigDecimal
     abstract val rating: Int? // 🆕 Optional rating from user (1-5 stars, null if skipped)
 
-    // ⭐ PROVIDER-AGNOSTIC MERCHANT TRACKING (2025-01-10)
-    abstract val merchantAccountId: String  // 🆕 PRIMARY: Structured merchant account ID (FK to MerchantAccount)
+    // ⭐ PROVIDER-AGNOSTIC MERCHANT TRACKING (2025-01-11)
+    // ✅ NULLABLE: null for cash payments (proper reconciliation separation)
+    abstract val merchantAccountId: String?  // 🆕 PRIMARY: Merchant account ID (null = cash payment, no processor)
     abstract val blumonSerialNumber: String // ⚠️ LEGACY: Blumon-specific serial (deprecated, kept for fallback)
 
     /**
@@ -56,7 +57,7 @@ sealed class PaymentContext {
         override val amount: BigDecimal,
         override val tip: BigDecimal = BigDecimal.ZERO,
         override val rating: Int? = null, // 🆕 Optional rating (1-5 stars, null if skipped)
-        override val merchantAccountId: String, // 🆕 PRIMARY: Merchant account ID (e.g., "cuid_abc123")
+        override val merchantAccountId: String?, // ✅ NULLABLE: null for cash (no processor, proper reconciliation)
         override val blumonSerialNumber: String = "", // ⚠️ LEGACY: Blumon serial (deprecated)
     ) : PaymentContext()
 
@@ -94,7 +95,7 @@ sealed class PaymentContext {
         override val amount: BigDecimal,
         override val tip: BigDecimal = BigDecimal.ZERO,
         override val rating: Int? = null, // 🆕 Optional rating (1-5 stars, null if skipped)
-        override val merchantAccountId: String, // 🆕 PRIMARY: Merchant account ID (e.g., "cuid_abc123")
+        override val merchantAccountId: String?, // ✅ NULLABLE: null for cash (no processor, proper reconciliation)
         override val blumonSerialNumber: String = "", // ⚠️ LEGACY: Blumon serial (deprecated)
     ) : PaymentContext()
 }

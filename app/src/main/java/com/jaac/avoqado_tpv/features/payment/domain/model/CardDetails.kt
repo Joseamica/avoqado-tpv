@@ -21,13 +21,31 @@ package com.jaac.avoqado_tpv.features.payment.domain.model
  * @param cardBrand Marca de la tarjeta (VISA, MASTERCARD, etc.)
  * @param entryMode Método de entrada (CHIP, CONTACTLESS, SWIPE)
  * @param isInternational true si es tarjeta internacional (BIN extranjero)
+ * @param isCash true si es pago en efectivo (sin tarjeta física)
  */
 data class CardDetails(
     val maskedPan: String,
     val cardBrand: CardBrand,
     val entryMode: CardEntryMode,
     val isInternational: Boolean = false,
-)
+    val isCash: Boolean = false
+) {
+    companion object {
+        /**
+         * Instancia especial para pagos en efectivo.
+         *
+         * Usado cuando el pago NO involucra lectura de tarjeta física.
+         * Backend registrará este pago con method = "CASH".
+         */
+        val CASH = CardDetails(
+            maskedPan = "",
+            cardBrand = CardBrand.UNKNOWN,
+            entryMode = CardEntryMode.MANUAL,
+            isInternational = false,
+            isCash = true
+        )
+    }
+}
 
 /**
  * Marca de tarjeta de crédito/débito.

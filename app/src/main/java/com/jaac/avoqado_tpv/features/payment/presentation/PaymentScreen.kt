@@ -174,6 +174,9 @@ fun PaymentScreen(
                         onStartPayment = {
                             viewModel.startPayment(currentState.totalAmount)
                         },
+                        onStartCashPayment = {
+                            viewModel.processCashPayment(currentState.totalAmount)
+                        },
                         onNavigateBack = {
                             // Go back to tip selection
                             viewModel.goBackOneStep()
@@ -530,20 +533,22 @@ private fun PaymentSuccessContent(
                     colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.surface)
                 )
 
-                // QR Code (centered on top)
-                receipt?.receiptUrl?.let { qrUrl ->
-                    Box(
-                        modifier = Modifier
-                            .size(180.dp)
-                            .align(Alignment.TopCenter)
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(Color.White)
-                            .border(
-                                width = 10.dp,
-                                color = MaterialTheme.colorScheme.outline,
-                                shape = RoundedCornerShape(24.dp)
-                            )
-                    ) {
+                // QR Code (centered on top) - Shows shimmer while loading
+                // ✅ UX: Shimmer loader while waiting for backend receipt (1-2s delay on card payments)
+                Box(
+                    modifier = Modifier
+                        .size(180.dp)
+                        .align(Alignment.TopCenter)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(Color.White)
+                        .border(
+                            width = 10.dp,
+                            color = MaterialTheme.colorScheme.outline,
+                            shape = RoundedCornerShape(24.dp)
+                        )
+                ) {
+                    receipt?.receiptUrl?.let { qrUrl ->
+                        // Receipt arrived from backend → Show QR code
                         Image(
                             painter = com.jaac.avoqado_tpv.core.presentation.components.rememberQrBitmapPainter(
                                 content = qrUrl,
@@ -554,6 +559,14 @@ private fun PaymentSuccessContent(
                             modifier = Modifier
                                 .size(140.dp)
                                 .align(Alignment.Center)
+                        )
+                    } ?: run {
+                        // Receipt pending (backend response in flight) → Show shimmer
+                        com.jaac.avoqado_tpv.core.presentation.components.ShimmerBox(
+                            modifier = Modifier
+                                .size(140.dp)
+                                .align(Alignment.Center),
+                            cornerRadius = 12.dp
                         )
                     }
                 }

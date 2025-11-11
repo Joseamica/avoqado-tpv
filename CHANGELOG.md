@@ -6,9 +6,353 @@
 
 ## [Unreleased]
 
+### **Added**
+
+1. **CustomKeyboard: Add Preview with toggle $/% button** (CustomKeyboard.kt:225-252)
+   - **USER REQUEST**: "puedes agregar el otro tipo de teclado que es % en preview?"
+   - **NEW PREVIEW**: `CustomKeyboardWithTogglePreview()` showing keyboard with `showToggle = true`
+   - **LAYOUT**: Displays all buttons including the $/% toggle button between Backspace and Confirm
+   - **PURPOSE**: Visual documentation for developers showing both keyboard variants:
+     - Basic keyboard (without toggle) - for amount input
+     - Keyboard with $/% toggle - for tip percentage/amount input
+   - **BENEFIT**: Easier to understand CustomKeyboard API without reading code
+
+2. **TipInputBottomSheet: New modal component for custom tip input with $/% toggle (INSTANT OPEN)** (TipInputBottomSheet.kt:1-190)
+   - **FEATURE**: Instant-opening modal for entering custom tip amounts (no 300ms animation delay)
+   - **USER REQUESTS**:
+     - "el ingresar monto personalizado sea que salga un modal con el keyboard pero de forma que tambien puedas cambiar a % para que solo pongas el % que quieras dejar y solito se calcule"
+     - "el modal porque tarda 1 segundo en abrir? puede ser instantaneo?"
+   - **IMPLEMENTATION**:
+     - Two modes: **Percentage mode** (%) and **Fixed amount mode** ($)
+     - Toggle button ($/$) switches between modes (line 167-169)
+     - Percentage mode: Auto-calculates tip based on subtotal (lines 45-55, 178-187)
+     - Fixed amount mode: User enters exact amount
+     - Real-time display shows: input value + calculated amount (lines 96-130)
+     - **INSTANT OPENING**: Uses `Dialog` instead of `ModalBottomSheet` (line 59-66)
+       - ModalBottomSheet has hardcoded ~300ms animation (Material3 limitation)
+       - Dialog opens instantly with no animation delay (0ms)
+       - Visual style preserved: bottom sheet appearance with rounded top corners (line 83-85)
+       - Scrim background with dismiss on outside click (line 68-76)
+     - Integrates CustomKeyboard with `showToggle = true` (line 141)
+   - **CALCULATIONS**: `BigDecimal` with `RoundingMode.HALF_UP` for precision (line 184)
+   - **USER EXPERIENCE**:
+     - ✅ Click "Monto personalizado" → Modal opens INSTANTLY (0ms, not 1 second)
+     - ✅ Toggle $/% → Input clears automatically (line 168)
+     - ✅ Percentage mode → Shows "15%" input + "= $XX.XX" calculated amount (lines 119-130)
+     - ✅ Fixed mode → Shows "$XX.XX" directly (lines 109-115)
+     - ✅ Confirm → Returns final amount (not percentage) to parent (line 163)
+     - ✅ Click outside → Dismisses modal (line 73)
+   - **PATTERN**: Dialog + Bottom sheet styling + Custom keyboard (optimized for speed)
+
+2. **CustomKeyboard: Add $/% toggle button support** (CustomKeyboard.kt:45-54, 111-119)
+   - **FEATURE**: Optional toggle button between $ (fixed amount) and % (percentage)
+   - **PARAMETERS**:
+     - `showToggle: Boolean = false` - Show/hide toggle button (line 48)
+     - `onToggleClick: (() -> Unit)? = null` - Callback when toggled (line 54)
+   - **LAYOUT**: Toggle button positioned between Backspace and Confirm (lines 111-119)
+   - **USAGE**: `CustomKeyboard(showToggle = true, onToggleClick = { /* switch mode */ })`
+
+3. **Payment flow: Auto-open amount modal when "Nuevo Pago" is clicked** (PaymentScreen.kt:28, 44, 214-218 | AppNavigation.kt:185-190, 266)
+   - **FEATURE**: When user clicks "Nuevo Pago" button in payment success screen, automatically open amount modal when returning to WelcomeScreen
+   - **USER REQUEST**: "si se escoge [Nuevo Pago] en pago exitoso, deberia de ir a welcome y abrir el modal automaticamente"
+   - **IMPLEMENTATION**:
+     - PaymentScreen now accepts `navController: NavHostController` parameter (line 44)
+     - Success state sets flag before navigating: `navController.currentBackStackEntry?.savedStateHandle?.set("openAmountModal", true)` (line 215)
+     - AppNavigation reads flag in Home route: `val openAmountModal = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("openAmountModal") ?: false` (line 185)
+     - Flag cleared immediately after reading (one-time use): `LaunchedEffect(Unit) { navController.previousBackStackEntry?.savedStateHandle?.set("openAmountModal", false) }` (lines 188-190)
+     - WelcomeScreen receives `openAmountModal` parameter and auto-opens modal via `LaunchedEffect` (WelcomeScreen.kt:56-59)
+   - **USER EXPERIENCE**:
+     - ✅ Click "Nuevo Pago" → Navigate to Home → Modal auto-opens → Instant new payment flow
+     - ✅ Back button from rating/tip → Stays in PaymentScreen → No unwanted modal
+     - ✅ Normal navigation to Home → No modal (flag cleared after use)
+   - **PATTERN**: Use savedStateHandle for one-time navigation flags (Material Design navigation pattern)
+   - **IMPORT**: Added `androidx.navigation.NavHostController` import (PaymentScreen.kt:28)
+
+### **Changed**
+
+1. **PaymentScreen: Dynamic header shows total when tip selected** (PaymentScreen.kt:57-67)
+   - **USER REQUEST**: "cuando se selecciona propina que tan complejo es que actualice en el header de avoqado el subtotal + la propina?"
+   - **BEFORE**: Header always showed "Subtotal: $XX.XX MXN"
+   - **AFTER**: Header dynamically shows:
+     - **No tip selected**: "Subtotal: $XX.XX MXN"
+     - **Tip selected**: "Total: $YY.YY MXN" (subtotal + tip)
+   - **IMPLEMENTATION**: Calculate total in `CollectingTip` state (lines 58-66)
+     ```kotlin
+     val tipAmount = currentState.tipAmount.toBigDecimalOrNull() ?: BigDecimal.ZERO
+     val subtotal = currentState.amount.toBigDecimalOrNull() ?: BigDecimal.ZERO
+     val total = subtotal.add(tipAmount)
+     if (tipAmount > BigDecimal.ZERO) {
+         "Propina" to "Paso 2 de 3 · Total: $$total MXN"
+     } else {
+         "Propina" to "Paso 2 de 3 · Subtotal: $${currentState.amount} MXN"
+     }
+     ```
+   - **UX BENEFIT**: User instantly sees final total in header when selecting tip
+
+2. **PaymentViewModel: Auto-select 15% tip by default** (PaymentViewModel.kt:486-514)
+   - **USER REQUEST**: "se puede autoseleccionar el 15%?"
+   - **CHANGE**: When entering TipScreen, 15% is pre-selected automatically
+   - **IMPLEMENTATION**:
+     - Modified `submitRating()` to calculate 15% tip on entry (lines 489-499)
+     - Modified `skipRating()` to calculate 15% tip on entry (lines 502-514)
+     - Calculates tip amount automatically: `calculateTipAmount(amount, 15)`
+   - **UX BENEFIT**: Faster checkout - user can just tap "Continuar" without selecting tip
+   - **USER CAN STILL**: Change to 10%, 20%, custom, or "Sin propina"
+
+3. **TipInputBottomSheet: Use native ModalBottomSheet (standard Android approach)** (TipInputBottomSheet.kt:33, 57-64)
+   - **USER FEEDBACK**:
+     - "cuando le pico a monto personalizado ya no sale ningun modal" (broken after direct rendering attempt)
+     - "usa lo que todas las apps usan para mostrar un modal, seguramente lo que usan es lo nativo"
+   - **FINAL SOLUTION**: Use **ModalBottomSheet** (Material3 native component)
+   - **CONFIGURATION**:
+     - `skipPartiallyExpanded = true` (line 58) - Opens directly to full height
+     - Skips 2-step animation (partial → full), reducing perceived delay
+     - Standard API used by Google apps, Material Design reference apps
+   - **WHY THIS APPROACH**:
+     - ❌ Dialog/Popup: Non-standard for bottom sheets (unexpected behavior)
+     - ❌ Direct rendering: Breaks conditional composition, z-index issues
+     - ✅ ModalBottomSheet: Industry standard, predictable, well-tested
+   - **ANIMATION**: Material3 default (~200-250ms) but `skipPartiallyExpanded` eliminates multi-step feel
+   - **RESULT**: Modal works reliably, uses same pattern as Gmail, Google Maps, etc.
+
+4. **ReviewScreen & TipScreen: Unify button positioning + Fix text sizing** (ReviewScreen.kt:43-114, TipScreen.kt:60-187)
+   - **USER REQUESTS**:
+     - "Me gustaria que los botones esten en la misma posicion, es mejor como esta en tipscreen porque esta mas al alcance de los dedos"
+     - "quiero que se quede identico como estaba [ReviewScreen], solo que los botones saltar y continuar queden abajo con un margen pequeno"
+     - "acomoda los textos de Tipscreen porque estan muy grandes, copiale a Review"
+   - **ReviewScreen changes**:
+     - **ONLY moved buttons to bottom** - Everything else stays EXACTLY the same
+     - Added `Spacer(modifier = Modifier.weight(1f))` before buttons to push them down (line 76)
+     - Small margin after buttons: `Spacer(modifier = Modifier.height(sizes.spacingSmall))` (line 99)
+     - Title, stars, helper text all preserved as original
+   - **TipScreen changes**:
+     - Copied ReviewScreen structure: padding, verticalArrangement (lines 69-73)
+     - Reduced subtotal text size: `titleLarge` → `titleMedium` (line 89)
+     - Added `Spacer(modifier = Modifier.weight(1f))` to push buttons down (line 156)
+     - Added helper text: "La propina es opcional" (lines 180-186)
+     - Buttons positioned at bottom matching ReviewScreen (lines 158-176)
+   - **ERGONOMICS**: Buttons consistently at bottom in both screens, easy thumb access on tablets (PAX A920)
+   - **RESULT**: ✅ Unified button positioning + Better text hierarchy in TipScreen
+
+2. **TipScreen: Complete redesign to full-screen layout without card wrapper** (TipScreen.kt:60-200)
+   - **USER REQUEST**: "Esta horrible, no quiero que este dentro de un box, sino que este libre en toda la pantalla"
+   - **DESIGN CHANGE**: Removed AvoqadoCard wrapper for clean, full-screen layout matching ReviewScreen style
+   - **BEFORE**: Card-based UI with internal padding → cramped appearance
+   - **AFTER**: Full-screen layout with ResponsiveScaffold automatic padding
+   - **SPACING FIXES**:
+     - Removed duplicate padding that was compressing buttons (TipScreen was adding padding on top of ResponsiveScaffold's auto-padding)
+     - Changed percentage cards Row from `SpaceEvenly` to `spacedBy(sizes.spacingMedium)` (line 98)
+     - Added `Modifier.weight(1f)` to each TipPercentageCard for equal distribution (line 109)
+     - Updated TipPercentageCard to accept `modifier` parameter (line 213)
+   - **BUTTON REDESIGN** (lines 158-175):
+     - Replaced custom Button/TextButton with AvoqadoButton/AvoqadoSecondaryButton
+     - Layout matches ReviewScreen.kt style: `Row` with two buttons using `weight(1f)`
+     - "Sin propina" (skip) → AvoqadoSecondaryButton
+     - "Continuar" → AvoqadoButton
+     - Added helper text: "La propina es opcional" (lines 180-185)
+   - **MODAL INTEGRATION**:
+     - "Monto personalizado" button opens TipInputBottomSheet modal (lines 189-198)
+     - Modal displays full screen (not half screen)
+   - **RESPONSIVENESS**: Uses `LocalResponsiveSizes.current` for adaptive sizing
+   - **RESULT**: Clean, professional look matching Square Terminal/Toast POS standards
+
 ### **Fixed**
 
-16. **PaymentScreen: Prevent flash screen when navigating from WelcomeScreen** (features/payment/presentation/PaymentScreen.kt:170-176)
+1. **TipInputBottomSheet: Fix slow opening animation (1 second delay → instant)** (TipInputBottomSheet.kt:59-95)
+   - **ISSUE**: Modal took ~1 second to open, breaking instant feedback expectation
+   - **USER REQUEST**: "el modal porque tarda 1 segundo en abrir? puede ser instantaneo?"
+   - **ROOT CAUSE**: Material3 ModalBottomSheet has hardcoded 300ms spring animation with no API to disable it
+   - **SOLUTION**: Replaced ModalBottomSheet with Dialog (lines 59-78)
+     - Dialog opens instantly without animation (0ms)
+     - Preserved bottom sheet visual design:
+       - Scrim background (semi-transparent overlay) - line 71
+       - Content aligned to bottom - line 77
+       - Rounded top corners (28dp) - line 85
+       - Dismiss on outside click - line 73
+     - Content click consumption prevents accidental dismiss - line 87-91
+   - **RESULT**: ✅ Modal now opens INSTANTLY when user clicks "Monto personalizado"
+
+2. **TipScreen: Fix cramped percentage buttons spacing** (TipScreen.kt:96-112)
+   - **USER FEEDBACK**: "se ven apretados los 3 botones" (the 3 buttons look cramped)
+   - **ROOT CAUSE**: ResponsiveScaffold automatically applies `padding(horizontal = sizes.paddingScreen)`, but TipScreen was adding duplicate padding
+   - **DISCOVERY**: ResponsiveScaffold.kt lines 220 and 230 apply automatic horizontal padding
+   - **SOLUTION**:
+     - Removed duplicate `.padding(sizes.paddingScreen)` from Column (line 69)
+     - Changed Row from `SpaceEvenly` to `spacedBy(sizes.spacingMedium)` (line 98)
+     - Added `Modifier.weight(1f)` to each TipPercentageCard (line 109)
+   - **RESULT**: ✅ Buttons properly spaced with equal width distribution
+
+### **Removed**
+
+1. **TipScreen: Delete orphaned calculateTotal function** (TipScreen.kt:273-277 removed)
+   - **REASON**: Function was never used anywhere in TipScreen.kt
+   - **DETECTION**: IDE warning "Function 'calculateTotal' is never used"
+   - **VERIFICATION**: `rg "calculateTotal"` in TipScreen.kt only showed function definition, no callers
+   - **NOTE**: `calculateTotal` exists in PaymentViewModel.kt and PaymentState.kt where it IS used - only removed from TipScreen
+   - **RESULT**: Cleaner code without dead functions
+
+20. **Payment Flow: Properly eliminate "Nuevo Pago" screen from WelcomeScreen flow** (PaymentViewModel.kt:1489-1494, PaymentScreen.kt:54-60, 68-77, 88-100, 105-110, 176-192)
+   - **CRITICAL BUG**: "Nuevo Pago" screen appeared when it shouldn't exist in this flow
+   - **USER FEEDBACK**: "[Image] porque esta screen sigue existiendo?" + "Entering amount No existe"
+   - **ROOT CAUSE:**
+     - Two entry points to PaymentScreen:
+       1. From WelcomeScreen WITH initialAmount → Should go directly to ReviewScreen ✅
+       2. From anywhere WITHOUT initialAmount → Showed AmountInputScreen ("Nuevo Pago") ❌
+     - `PaymentState.Idle` with `initialAmount == null` called `initiatePaymentFlow()`
+     - `initiatePaymentFlow()` changed state to `EnteringAmount`
+     - `EnteringAmount` rendered AmountInputScreen ("Nuevo Pago")
+   - **SOLUTION - Navigate back instead of showing screen:**
+     - Modified `PaymentState.Idle` (lines 189-207):
+       ```kotlin
+       if (initialAmount != null) {
+           viewModel.submitAmount(initialAmount)  // ✅ Normal flow
+       } else {
+           onNavigateBack()  // ✅ No amount? Go back to WelcomeScreen
+       }
+       ```
+     - Modified `PaymentState.EnteringAmount` (lines 91-103):
+       ```kotlin
+       // Auto-navigate back if we somehow end up here
+       LaunchedEffect(Unit) { onNavigateBack() }
+       AvoqadoLoadingOverlay(message = "Regresando...")
+       ```
+     - **Removed topBar title for EnteringAmount** (lines 56-61):
+       ```kotlin
+       // ❌ Removed: is PaymentState.EnteringAmount -> "Nuevo Pago" to "Paso 1 de 4"
+       // ✅ Updated step numbers: Rating = Paso 1 de 3 (was 2 de 4)
+       ```
+   - **WHY THIS WORKS:**
+     - Amount ALWAYS comes from WelcomeScreen modal (never from PaymentScreen)
+     - If no `initialAmount`, something went wrong → Return to WelcomeScreen
+     - `EnteringAmount` state can't render AmountInputScreen anymore
+     - User never sees "Nuevo Pago" screen in normal flow
+     - TopBar no longer shows incorrect "Paso 1 de 4" title
+   - **NEW FLOW:**
+     - ✅ Paso 1 de 3: Calificación (Rating)
+     - ✅ Paso 2 de 3: Propina (Tip)
+     - ✅ Paso 3 de 3: Seleccionar Merchant
+   - **USER EXPERIENCE:**
+     - ❌ **Before**: Sometimes saw "Nuevo Pago" screen (Paso 1 de 4) when navigating
+     - ✅ **After**: "Nuevo Pago" screen completely eliminated, flow is now 3 steps instead of 4
+
+22. **ReviewScreen: Back button navigates directly to WelcomeScreen (skips AmountInputScreen)** (PaymentScreen.kt:120-135)
+   - **CRITICAL BUG**: Back from ReviewScreen showed "Nuevo Pago" screen (AmountInputScreen) before going to WelcomeScreen
+   - **USER FEEDBACK**: "de esta pantalla [ReviewScreen] al hacer click en el boton de <- me lleva a [Nuevo Pago] cuando deberia de llevarte a welcome y salir el modal! elimina la pantalla de Nuevo Pago"
+   - **ROOT CAUSE - State Change Before Navigation:**
+     1. `resetPayment()` called → State changes from `CollectingRating` to `Idle`
+     2. PaymentScreen recomposes with `Idle` state
+     3. `LaunchedEffect(initialAmount)` executes in Idle state
+     4. `initialAmount == null` → Calls `initiatePaymentFlow()`
+     5. State changes to `EnteringAmount` → Shows "Nuevo Pago" screen
+     6. User sees "Nuevo Pago" screen BEFORE `onNavigateBack()` completes
+     7. Finally navigates to WelcomeScreen (but user already saw wrong screen)
+   - **SOLUTION - Navigate IMMEDIATELY without resetting state:**
+     ```kotlin
+     onNavigateBack = {
+         // 1. Remove initialAmount
+         navController.previousBackStackEntry?.savedStateHandle?.remove<String>("initialAmount")
+
+         // 2. Set flag to open modal
+         navController.previousBackStackEntry?.savedStateHandle?.set("openAmountModal", true)
+
+         // 3. Navigate IMMEDIATELY (don't reset state)
+         onNavigateBack()
+
+         // Note: ViewModel state cleans up automatically when PaymentScreen destroys
+     }
+     ```
+   - **WHY THIS WORKS:**
+     - No `resetPayment()` call → State stays in `CollectingRating`
+     - `onNavigateBack()` executes immediately → Exits PaymentScreen
+     - PaymentScreen never recomposes with `Idle` state
+     - User never sees "Nuevo Pago" screen
+     - ViewModel cleans up automatically when composable is destroyed
+   - **USER EXPERIENCE:**
+     - ❌ **Before**: ReviewScreen → Back → Brief flash of "Nuevo Pago" → WelcomeScreen
+     - ✅ **After**: ReviewScreen → Back → WelcomeScreen directly (modal opens)
+
+21. **WelcomeScreen: Fix flash screen with internal loading state** (WelcomeScreen.kt:53, 56, 169-182)
+   - **CRITICAL BUG**: Flash of empty WelcomeScreen between closing modal and showing loading
+   - **USER FEEDBACK**: "el loading aparece por un super mega flash, pero sigue viendose el welcome screen"
+   - **ROOT CAUSE - Race Condition:**
+     1. Modal `onConfirm` called → `showAmountBottomSheet = false` (modal starts closing)
+     2. Calls `onStartPaymentWithAmount(amount)` → Sets `pendingAmount` in AppNavigation
+     3. WelcomeScreen recomposes with `isNavigating = true`
+     4. BUT modal already closed → Brief frame where WelcomeScreen is empty
+     5. THEN loading overlay appears
+   - **SOLUTION - Show loading IMMEDIATELY in onConfirm:**
+     - Added internal state: `var isNavigatingToPayment by remember { mutableStateOf(false) }` (line 56)
+     - In modal onConfirm: Set `isNavigatingToPayment = true` FIRST (line 170)
+     - THEN close modal: `showAmountBottomSheet = false` (line 171)
+     - THEN navigate: `onStartPaymentWithAmount(amount)` (line 172)
+     - Loading overlay appears SAME FRAME as modal closes (line 178-182)
+   - **WHY THIS WORKS:**
+     - `isNavigatingToPayment = true` happens BEFORE modal close animation starts
+     - Loading overlay renders immediately, no gap
+     - Modal and loading coexist briefly during transition
+   - **USER EXPERIENCE:**
+     - ❌ **Before**: Confirm → Modal closes → Flash of empty screen → Loading appears
+     - ✅ **After**: Confirm → Loading appears INSTANTLY → Smooth transition (no flash)
+
+20. **WelcomeScreen: Fix preview with remember(key)** (WelcomeScreen.kt:53, 190-196)
+   - **BUG**: Preview showed WelcomeScreen but modal didn't appear
+   - **USER FEEDBACK**: "El preview de modal en welcome no se puede previsualizar"
+   - **ROOT CAUSE:**
+     - `var showAmountBottomSheet by remember { mutableStateOf(openAmountModal) }` initializes once
+     - `LaunchedEffect(openAmountModal)` may not execute correctly in Android Studio previews
+     - State doesn't reset when `openAmountModal` parameter changes
+   - **SOLUTION:**
+     - Changed to: `var showAmountBottomSheet by remember(openAmountModal) { mutableStateOf(openAmountModal) }` (line 53)
+     - `openAmountModal` as key forces state to reinitialize when parameter changes
+     - Simplified preview: `WelcomeScreen(openAmountModal = true)` (lines 190-196)
+   - **WHY THIS WORKS:**
+     - `remember(key)` recreates state when key changes
+     - Preview now correctly shows modal on initial render
+     - No dependency on LaunchedEffect execution timing
+   - **USER EXPERIENCE:**
+     - ❌ **Before**: Preview shows WelcomeScreen, modal never appears
+     - ✅ **After**: Preview shows WelcomeScreen with modal open correctly
+
+19. **AvoqadoRatingInput: Fix layout shift when rating changes** (core/presentation/components/AvoqadoRatingInput.kt:77-84)
+   - **UX PROBLEM**: "5 de 5 estrellas" text appeared/disappeared → caused UI to move up/down when selecting stars
+   - **USER REQUEST**: "haz un espacio reservador para [texto de calificación] para que no afecte el ui (mueve la pantalla)"
+   - **SOLUTION**: Always reserve space for text with fixed height (20.dp) - shows text when rating > 0, empty string otherwise
+   - **IMPLEMENTATION**:
+     ```kotlin
+     Text(
+         text = if (rating > 0) "$rating de 5 estrellas" else "",
+         style = MaterialTheme.typography.bodySmall,
+         color = MaterialTheme.colorScheme.onSurfaceVariant,
+         modifier = Modifier.height(20.dp)  // ✅ Fixed height - always reserves space
+     )
+     ```
+   - **USER EXPERIENCE**:
+     - ❌ **Before**: No rating → no text → Select star → text appears → UI jumps down
+     - ✅ **After**: No rating → empty reserved space → Select star → text appears → UI stays stable
+   - **PATTERN**: Reserve space for dynamic content to prevent layout shift (Material Design stability pattern)
+
+18. **PaymentScreen: Fix back button navigation in payment flow** (features/payment/presentation/PaymentScreen.kt:72-78)
+   - **BUG**: Clicking back button (←) in topBar navigated directly to WelcomeScreen instead of going back one step in payment flow
+   - **USER REQUEST**: "cuando le das al atras (<-) te manda a welcome screen en lugar de ir un paso atras"
+   - **ROOT CAUSE**: TopBar `onNavigationClick` called `onNavigateBack()` directly instead of using ViewModel's step-by-step navigation
+   - **FIX**: Modified topBar to call `viewModel.goBackOneStep()` first
+     ```kotlin
+     onNavigationClick = {
+         // ✅ Go back one step in payment flow first
+         // Only navigate back to home if we're at the first step
+         if (!viewModel.goBackOneStep()) {
+             onNavigateBack()
+         }
+     }
+     ```
+   - **FLOW BEHAVIOR**:
+     - Step 4 (Merchant) → Back → Step 3 (Tip) ✅
+     - Step 3 (Tip) → Back → Step 2 (Rating) ✅
+     - Step 2 (Rating) → Back → Step 1 (Amount) ✅
+     - Step 1 (Amount) → Back → Home (WelcomeScreen) ✅
+   - **USER EXPERIENCE**: Intuitive step-by-step navigation (matches Square/Toast/Stripe POS pattern)
+
+17. **PaymentScreen: Prevent flash screen when navigating from WelcomeScreen** (features/payment/presentation/PaymentScreen.kt:170-176)
    - **UX PROBLEM**: Brief flash of WelcomeScreen visible during navigation to PaymentScreen
    - **USER FEEDBACK**: "Cuando ingreso la cantidad en Welcome, por un momento flash vuelvo a ver el welcome screen mientras se cambia de pantalla a la calificacion"
    - **ROOT CAUSE**: No loading state between closing amount modal and showing review screen

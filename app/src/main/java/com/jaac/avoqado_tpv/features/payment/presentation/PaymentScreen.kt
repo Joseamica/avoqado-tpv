@@ -51,11 +51,21 @@ fun PaymentScreen(
     val merchantSwitchMessage by viewModel.merchantSwitchMessage.collectAsStateWithLifecycle()
 
     // Dynamic topBar titles based on payment state
+    // Note: EnteringAmount removed - amount now comes from WelcomeScreen modal
     val (topBarTitle, topBarSubtitle) = when (val currentState = state) {
-        is PaymentState.EnteringAmount -> "Nuevo Pago" to "Paso 1 de 4"
-        is PaymentState.CollectingRating -> "Calificación" to "Paso 2 de 4 · $${currentState.amount}"
-        is PaymentState.CollectingTip -> "Propina" to "Paso 3 de 4 · Subtotal: $${currentState.amount}"
-        is PaymentState.SelectingMerchant -> "Seleccionar Merchant" to "Paso 4 de 4 · Total: $${currentState.totalAmount}"
+        is PaymentState.CollectingRating -> "Calificación" to "Paso 1 de 3 · $${currentState.amount}"
+        is PaymentState.CollectingTip -> {
+            val tipAmount = currentState.tipAmount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+            val subtotal = currentState.amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+            val total = subtotal.add(tipAmount)
+
+            if (tipAmount > java.math.BigDecimal.ZERO) {
+                "Propina" to "Paso 2 de 3 · Total: $$total MXN"
+            } else {
+                "Propina" to "Paso 2 de 3 · Subtotal: $${currentState.amount} MXN"
+            }
+        }
+        is PaymentState.SelectingMerchant -> "Seleccionar Cuenta" to "Paso 3 de 3 · Total: $${currentState.totalAmount}"
         else -> "Pago con Tarjeta" to null
     }
 
@@ -68,7 +78,13 @@ fun PaymentScreen(
                 AvoqadoTopBar(
                     title = topBarTitle,
                     subtitle = topBarSubtitle,
-                    onNavigationClick = onNavigateBack
+                    onNavigationClick = {
+                        // Try to go back one step in payment flow first
+                        // If at first step (returns false), navigate back to home
+                        if (!viewModel.goBackOneStep()) {
+                            onNavigateBack()
+                        }
+                    }
                 )
             }
         }
@@ -79,20 +95,17 @@ fun PaymentScreen(
                 .padding(paddingValues)
         ) {
             when (val currentState = state) {
-                // NEW FLOW: Pre-payment steps
+                // ✅ EnteringAmount should never show in new flow
+                // Amount ALWAYS comes from WelcomeScreen modal
                 is PaymentState.EnteringAmount -> {
-                    AmountInputScreen(
-                        currentAmount = currentState.amount,
-                        onAmountChange = { /* handled by state */ },
-                        onContinue = { amount ->
-                            viewModel.submitAmount(amount)
-                        },
-                        onNavigateBack = {
-                            // First step - go back to home
-                            if (!viewModel.goBackOneStep()) {
-                                onNavigateBack()
-                            }
-                        }
+                    // If we somehow end up here, immediately navigate back to WelcomeScreen
+                    LaunchedEffect(Unit) {
+                        onNavigateBack()
+                    }
+
+                    // Show loading while navigating (prevents flash)
+                    AvoqadoLoadingOverlay(
+                        message = "Regresando..."
                     )
                 }
 
@@ -110,8 +123,11 @@ fun PaymentScreen(
                             viewModel.skipRating(currentState.amount)
                         },
                         onNavigateBack = {
-                            // Go back to amount input
-                            viewModel.goBackOneStep()
+                            // ✅ NEW: goBackOneStep() returns false (first step)
+                            // Navigate back to WelcomeScreen
+                            if (!viewModel.goBackOneStep()) {
+                                onNavigateBack()
+                            }
                         }
                     )
                 }
@@ -167,22 +183,22 @@ fun PaymentScreen(
 
                 // LEGACY: Old idle state (redirect to new flow)
                 is PaymentState.Idle -> {
-                    // ✅ Show loading overlay when coming from Home with initialAmount
-                    // Prevents flash of previous screen during navigation
+                    LaunchedEffect(initialAmount) {
+                        if (initialAmount != null) {
+                            // ✅ Coming from WelcomeScreen with amount → skip to rating
+                            viewModel.submitAmount(initialAmount)
+                        } else {
+                            // ✅ NO initialAmount → This flow REQUIRES amount from WelcomeScreen
+                            // Navigate back instead of showing EnteringAmount
+                            onNavigateBack()
+                        }
+                    }
+
+                    // Show loading while processing
                     if (initialAmount != null) {
                         AvoqadoLoadingOverlay(
                             message = "Preparando pago..."
                         )
-                    }
-
-                    LaunchedEffect(initialAmount) {
-                        if (initialAmount != null) {
-                            // Coming from Home with amount already entered → skip to rating
-                            viewModel.submitAmount(initialAmount)
-                        } else {
-                            // Normal flow → start from amount input
-                            viewModel.initiatePaymentFlow()
-                        }
                     }
                 }
 

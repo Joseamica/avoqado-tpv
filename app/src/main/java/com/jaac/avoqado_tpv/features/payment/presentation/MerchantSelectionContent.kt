@@ -6,11 +6,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoButton
-import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoCard
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoSecondaryButton
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
@@ -50,103 +47,121 @@ fun MerchantSelectionContent(
             ) {
             val sizes = LocalResponsiveSizes.current
 
-            AvoqadoCard(
+            // 3-zone layout: Header (reserve space) → Content (centered) → Footer (single button)
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(sizes.paddingScreen)
+                    .fillMaxSize()
+                    .padding(horizontal = sizes.paddingScreen),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                // HEADER ZONE: Reserved space for title (handled by AvoqadoTopBar)
+                // No content needed here - title is in navigation bar
+
+                // Center content vertically
+                Spacer(modifier = Modifier.weight(1f))
+
+                // CONTENT ZONE: Main content (centered)
                 Column(
-                    modifier = Modifier.padding(sizes.paddingCard),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(sizes.spacingMedium),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     // Payment summary
-                    Text(
-                        text = "Resumen de pago",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-
-                    Spacer(modifier = Modifier.height(sizes.spacingSmall))
-
-                    // Total
-                    Text(
-                        text = "Total a cobrar:",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "$$totalAmount MXN",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-
-                    // Tip (if provided)
-                    if (tipAmount.toBigDecimalOrNull()?.compareTo(java.math.BigDecimal.ZERO) ?: 0 > 0) {
-                        Spacer(modifier = Modifier.height(sizes.spacingXSmall))
-                        Text(
-                            text = "Incluye propina: $$tipAmount",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    // Rating (if provided)
-                    rating?.let {
-                        Spacer(modifier = Modifier.height(sizes.spacingXSmall))
-                        Text(
-                            text = "Calificación: ${"⭐".repeat(it)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(sizes.spacingLarge))
-
-                    // Merchant selection
-                    Text(
-                        text = "Seleccionar Cuenta",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-
-                    Spacer(modifier = Modifier.height(sizes.spacingSmall))
-
-                    // Current merchant
-                    Text(
-                        text = "Activa: ${currentMerchant?.shortName() ?: "Default"}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(sizes.spacingSmall))
-
-                    // Merchant buttons (show short names for better fit)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(sizes.spacingSmall)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        merchants.forEach { merchant ->
-                            if (merchant == currentMerchant) {
-                                AvoqadoButton(
-                                    text = merchant.shortName(),
-                                    onClick = { onSelectMerchant(merchant) },
-                                    enabled = !merchantSwitchingLoading,
-                                    modifier = Modifier.weight(1f)
-                                )
-                            } else {
-                                AvoqadoSecondaryButton(
-                                    text = merchant.shortName(),
-                                    onClick = { onSelectMerchant(merchant) },
-                                    enabled = !merchantSwitchingLoading,
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
+                        // Total
+                        Text(
+                            text = "Total a cobrar:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "$$totalAmount MXN",
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+
+                        // Tip (if provided)
+                        if ((tipAmount.toBigDecimalOrNull()?.compareTo(java.math.BigDecimal.ZERO) ?: 0) > 0) {
+                            Spacer(modifier = Modifier.height(sizes.spacingXSmall))
+                            Text(
+                                text = "Incluye propina: $$tipAmount",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        // Rating (if provided)
+                        rating?.let {
+                            Spacer(modifier = Modifier.height(sizes.spacingXSmall))
+                            Text(
+                                text = "Calificación: ${"⭐".repeat(it)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(sizes.spacingLarge))
+                    Spacer(modifier = Modifier.height(sizes.spacingMedium))
 
-                    // Process payment button
+                    // Merchant selection
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Seleccionar Cuenta",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+
+                        Spacer(modifier = Modifier.height(sizes.spacingSmall))
+
+                        // Current merchant
+                        Text(
+                            text = "Activa: ${currentMerchant?.shortName() ?: "Default"}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Spacer(modifier = Modifier.height(sizes.spacingSmall))
+
+                        // Merchant buttons (show short names for better fit)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(sizes.spacingSmall)
+                        ) {
+                            merchants.forEach { merchant ->
+                                if (merchant == currentMerchant) {
+                                    AvoqadoButton(
+                                        text = merchant.shortName(),
+                                        onClick = { onSelectMerchant(merchant) },
+                                        enabled = !merchantSwitchingLoading,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                } else {
+                                    AvoqadoSecondaryButton(
+                                        text = merchant.shortName(),
+                                        onClick = { onSelectMerchant(merchant) },
+                                        enabled = !merchantSwitchingLoading,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Center content vertically
+                Spacer(modifier = Modifier.weight(1f))
+
+                // FOOTER ZONE: Single action button (fixed at bottom)
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
                     AvoqadoButton(
                         text = "Procesar Pago",
                         onClick = onStartPayment,
@@ -154,14 +169,7 @@ fun MerchantSelectionContent(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    // Helper text
                     Spacer(modifier = Modifier.height(sizes.spacingSmall))
-                    Text(
-                        text = "Seleccione la cuenta antes de procesar",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
                 }
             }
         }

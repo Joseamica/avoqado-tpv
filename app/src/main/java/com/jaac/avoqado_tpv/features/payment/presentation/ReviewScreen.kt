@@ -48,67 +48,63 @@ fun ReviewScreen(
     ) {
         val sizes = LocalResponsiveSizes.current
 
+        // 3-zone layout: Header (reserve space) → Content (centered) → Footer (buttons)
         Column(
             modifier = Modifier
-                .fillMaxWidth()
+                .fillMaxSize()
                 .padding(horizontal = sizes.paddingScreen),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(sizes.spacingLarge)
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Title
-            Text(
-                text = "¿Cómo fue tu experiencia?",
-                style = MaterialTheme.typography.displaySmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground,
-                textAlign = TextAlign.Center
-            )
+            // HEADER ZONE: Reserved space for title (handled by AvoqadoTopBar)
+            // No content needed here - title is in navigation bar
 
-            Spacer(modifier = Modifier.height(sizes.spacingMedium))
+            // Center content vertically
+            Spacer(modifier = Modifier.weight(1f))
 
-            // Rating input (stars)
-            AvoqadoRatingInput(
-                rating = currentReview,
-                onRatingChange = onReviewChange,
-                label = null
-            )
-
-            Spacer(modifier = Modifier.height(sizes.spacingLarge))
-
-            // Buttons
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = sizes.paddingScreen),
-                horizontalArrangement = Arrangement.spacedBy(sizes.spacingMedium)
+            // CONTENT ZONE: Main content (centered)
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                // Skip button
-                AvoqadoSecondaryButton(
-                    text = "Saltar",
-                    onClick = onSkip,
-                    modifier = Modifier.weight(1f)
-                )
-
-                // Continue button
-                AvoqadoButton(
-                    text = "Continuar",
-                    onClick = onContinue,
-                    enabled = currentReview > 0,
-                    modifier = Modifier.weight(1f)
+                // Rating input (stars)
+                AvoqadoRatingInput(
+                    rating = currentReview,
+                    onRatingChange = onReviewChange,
+                    label = null
                 )
             }
 
-            // Subtle helper text
-            Text(
-                text = if (currentReview == 0) {
-                    "La calificación es opcional"
-                } else {
-                    "Gracias por calificar"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                textAlign = TextAlign.Center
-            )
+            // Center content vertically
+            Spacer(modifier = Modifier.weight(1f))
+
+            // FOOTER ZONE: Action buttons (fixed at bottom)
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(sizes.spacingMedium)
+                ) {
+                    // Skip button
+                    AvoqadoSecondaryButton(
+                        text = "Saltar",
+                        onClick = onSkip,
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    // Continue button
+                    AvoqadoButton(
+                        text = "Continuar",
+                        onClick = onContinue,
+                        enabled = currentReview > 0,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(sizes.spacingSmall))
+            }
         }
     }
 }

@@ -484,19 +484,33 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
-     * Submit rating and proceed to tip screen
+     * Submit rating and proceed to tip screen (auto-select 15% tip)
      */
     fun submitRating(amount: String, rating: Int) {
         Timber.d("⭐ [Payment Flow] Rating submitted: $rating stars")
-        _state.value = PaymentState.CollectingTip(amount = amount, rating = rating)
+        val defaultTipPercentage = 15
+        val defaultTipAmount = calculateTipAmount(amount, defaultTipPercentage)
+        _state.value = PaymentState.CollectingTip(
+            amount = amount,
+            rating = rating,
+            selectedTipPercentage = defaultTipPercentage,
+            tipAmount = defaultTipAmount
+        )
     }
 
     /**
-     * Skip rating and proceed to tip screen
+     * Skip rating and proceed to tip screen (auto-select 15% tip)
      */
     fun skipRating(amount: String) {
         Timber.d("⏭️  [Payment Flow] Rating skipped")
-        _state.value = PaymentState.CollectingTip(amount = amount, rating = null)
+        val defaultTipPercentage = 15
+        val defaultTipAmount = calculateTipAmount(amount, defaultTipPercentage)
+        _state.value = PaymentState.CollectingTip(
+            amount = amount,
+            rating = null,
+            selectedTipPercentage = defaultTipPercentage,
+            tipAmount = defaultTipAmount
+        )
     }
 
     /**
@@ -1487,10 +1501,10 @@ class PaymentViewModel @Inject constructor(
             }
 
             is PaymentState.CollectingRating -> {
-                // Go back to amount input
-                Timber.d("⬅️  [Payment Flow] Back from CollectingRating → EnteringAmount")
-                _state.value = PaymentState.EnteringAmount(amount = currentState.amount)
-                true
+                // ✅ NEW FLOW: Amount comes from WelcomeScreen modal, not EnteringAmount screen
+                // Return false to let PaymentScreen navigate back to WelcomeScreen
+                Timber.d("⬅️  [Payment Flow] Back from CollectingRating → Return to home (WelcomeScreen)")
+                false
             }
 
             is PaymentState.CollectingTip -> {

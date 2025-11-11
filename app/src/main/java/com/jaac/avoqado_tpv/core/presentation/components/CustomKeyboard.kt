@@ -11,7 +11,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -22,7 +21,13 @@ import androidx.compose.ui.unit.sp
  *
  * Diseño inspirado en AvoqadoPOS pero adaptado al dark theme.
  *
- * Layout:
+ * Layout (con toggle):
+ * 1 2 3   [Backspace]
+ * 4 5 6   [  $/%    ]
+ * 7 8 9   [  Check  ]
+ * C 0 .   [         ]
+ *
+ * Layout (sin toggle):
  * 1 2 3   [Backspace]
  * 4 5 6   [          ]
  * 7 8 9   [  Check   ]
@@ -34,15 +39,18 @@ import androidx.compose.ui.unit.sp
  * - onClearClick: () -> Unit - Botón "C" (clear)
  * - onBackspaceClick: () -> Unit - Borrar último dígito
  * - onConfirmClick: () -> Unit - Confirmar entrada
+ * - onToggleClick: (() -> Unit)? - Toggle entre $ y % (null = no mostrar botón)
  */
 @Composable
 fun CustomKeyboard(
     modifier: Modifier = Modifier,
+    showToggle: Boolean = false,
     onNumberClick: (Int) -> Unit,
     onDecimalClick: () -> Unit,
     onClearClick: () -> Unit,
     onBackspaceClick: () -> Unit,
-    onConfirmClick: () -> Unit
+    onConfirmClick: () -> Unit,
+    onToggleClick: (() -> Unit)? = null
 ) {
     val keys = listOf(
         listOf(1, 2, 3),
@@ -85,7 +93,7 @@ fun CustomKeyboard(
             }
         }
 
-        // Right side: action buttons (backspace + confirm)
+        // Right side: action buttons (backspace + toggle? + confirm)
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -97,6 +105,17 @@ fun CustomKeyboard(
                 icon = Icons.AutoMirrored.Filled.Backspace,
                 onClick = onBackspaceClick
             )
+
+            // Toggle button ($ / %) - only if showToggle = true
+            if (showToggle && onToggleClick != null) {
+                KeyboardButton(
+                    modifier = Modifier
+                        .height(80.dp)
+                        .width(100.dp),
+                    text = "$/%",
+                    onClick = onToggleClick
+                )
+            }
 
             // Confirm button (takes remaining space)
             KeyboardButton(
@@ -175,7 +194,7 @@ private fun KeyboardButton(
     }
 }
 
-@Preview(showBackground = true, backgroundColor = 0xFF1C1C1C)
+@Preview(name = "Teclado básico (sin toggle)", showBackground = true, backgroundColor = 0xFF1C1C1C)
 @Composable
 private fun CustomKeyboardPreview() {
     com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
@@ -185,7 +204,7 @@ private fun CustomKeyboardPreview() {
                 .padding(16.dp)
         ) {
             Text(
-                text = "Teclado Numérico",
+                text = "Teclado Numérico (sin toggle)",
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier.padding(bottom = 16.dp)
@@ -197,6 +216,35 @@ private fun CustomKeyboardPreview() {
                 onClearClick = {},
                 onBackspaceClick = {},
                 onConfirmClick = {}
+            )
+        }
+    }
+}
+
+@Preview(name = "Teclado con toggle $/% (propina)", showBackground = true, backgroundColor = 0xFF1C1C1C)
+@Composable
+private fun CustomKeyboardWithTogglePreview() {
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
+        Column(
+            modifier = Modifier
+                .background(MaterialTheme.colorScheme.background)
+                .padding(16.dp)
+        ) {
+            Text(
+                text = "Teclado con Toggle $/% (propina personalizada)",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.padding(bottom = 16.dp)
+            )
+
+            CustomKeyboard(
+                showToggle = true,
+                onNumberClick = {},
+                onDecimalClick = {},
+                onClearClick = {},
+                onBackspaceClick = {},
+                onConfirmClick = {},
+                onToggleClick = {}
             )
         }
     }

@@ -29,13 +29,14 @@ import java.math.RoundingMode
  * Tip screen - Collect tip amount before payment
  *
  * **Flow:**
- * 1. User selects tip percentage (10%, 15%, 20%) or custom amount
- * 2. User can "Continuar" (with tip) or "Sin propina" (skip tip)
- * 3. Proceeds to merchant selection
+ * 1. User selects tip percentage (10%, 15%, 20%) → Automatically proceeds to merchant selection
+ * 2. User can select custom amount (opens modal) → Must confirm in modal
+ * 3. User can "Sin propina" to skip tip
  *
  * **Design:**
  * Clean, full-screen layout without cards (inspired by AvoqadoPOS)
  * Quick percentage buttons + custom amount modal with $/% toggle
+ * No "Continuar" button - percentage selection is automatic (reduces clicks)
  */
 @Composable
 fun TipScreen(
@@ -85,6 +86,7 @@ fun TipScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 // Quick tip percentage buttons (10%, 15%, 20%)
+                // ⭐ Auto-advance: When user taps a percentage, save tip and proceed to merchant selection
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(sizes.spacingMedium)
@@ -97,7 +99,11 @@ fun TipScreen(
                             percentage = percentage,
                             amount = tipAmount,
                             isSelected = isSelected,
-                            onClick = { onTipPercentageSelected(percentage) },
+                            onClick = {
+                                // ⭐ FIX: Only call onTipPercentageSelected - it now handles proceed automatically
+                                // PaymentViewModel.selectTipPercentageAndProceed calculates tip and advances in one step
+                                onTipPercentageSelected(percentage)
+                            },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -151,35 +157,26 @@ fun TipScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(sizes.spacingMedium)
-                ) {
-                    // Skip tip button
-                    AvoqadoSecondaryButton(
-                        text = "Sin propina",
-                        onClick = onSkipTip,
-                        modifier = Modifier.weight(1f)
-                    )
-
-                    // Continue button
-                    AvoqadoButton(
-                        text = "Continuar",
-                        onClick = onContinue,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
+                // Only "Sin propina" button - tip selection is automatic
+                AvoqadoSecondaryButton(
+                    text = "Sin propina",
+                    onClick = onSkipTip,
+                    modifier = Modifier.fillMaxWidth()
+                )
 
                 Spacer(modifier = Modifier.height(sizes.spacingSmall))
             }
         }
 
         // Custom tip modal with keyboard + $/% toggle
+        // ⭐ Auto-advance: When user confirms custom tip, save and proceed to merchant selection
         if (showCustomTipModal) {
             TipInputBottomSheet(
                 subtotal = subtotal,
                 onDismiss = { showCustomTipModal = false },
                 onConfirm = { amount ->
+                    // ⭐ FIX: Only call onCustomTipSelected - it now handles proceed automatically
+                    // PaymentViewModel.selectCustomTipAndProceed saves tip and advances in one step
                     onCustomTipSelected(amount)
                     showCustomTipModal = false
                 }

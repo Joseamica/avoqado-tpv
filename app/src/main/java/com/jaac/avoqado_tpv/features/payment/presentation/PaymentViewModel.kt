@@ -47,6 +47,8 @@ import com.example.clean_lib_services.shared.core.domain.entity.init.KushkiData
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
 import com.jaac.avoqado_tpv.features.payment.domain.RetryContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
+// 🔌 Socket.IO Events
+import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 // ⭐ NEW: Backend payment recording
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
@@ -110,7 +112,11 @@ class PaymentViewModel @Inject constructor(
     // 💾 Payment Queue Repository - Offline payment queue for failed backend recordings
     private val paymentQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository,
     // 🖨️ Printer Manager - PAX thermal printer for receipt printing
-    private val printerManager: com.jaac.avoqado_tpv.core.printer.PrinterManager
+    private val printerManager: com.jaac.avoqado_tpv.core.printer.PrinterManager,
+    // 🔌 Socket Manager - Real-time Socket.IO events (payment updates, system alerts)
+    private val socketManager: com.jaac.avoqado_tpv.core.data.realtime.SocketManager,
+    // 🕐 Shift Repository - Validate shift is open before processing payments (Square/Toast pattern)
+    private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentState>(PaymentState.Idle)
@@ -147,6 +153,7 @@ class PaymentViewModel @Inject constructor(
     // ⭐ NEW: Payment context data for backend recording
     private var currentVenueId: String = ""  // Venue ID from auth context
     private var currentStaffId: String = ""  // Staff ID from auth context
+    private var currentShiftId: String? = null  // Shift ID from current open shift (null if no shift)
 
     // ═══════════════════════════════════════════════════════════════════════════
     // EMV TAG EXTRACTION USE CASES
@@ -240,6 +247,7 @@ class PaymentViewModel @Inject constructor(
         }
 
         collectPinDialogFlows()
+        collectSocketEvents()  // 🔌 Listen to real-time Socket.IO events
     }
 
     /**
@@ -328,6 +336,57 @@ class PaymentViewModel @Inject constructor(
                         } catch (e: Exception) {
                             Timber.e(e, "❌ Failed to send ContinueConfirmCard response")
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 🔌 Collect Socket.IO Real-time Events
+     *
+     * Listen to payment-related events from other terminals/systems:
+     * - payment_initiated: Another terminal started processing payment
+     * - payment_processing: Payment is being authorized
+     * - payment_completed: Payment succeeded (update UI, show notification)
+     * - payment_failed: Payment failed (show error notification)
+     *
+     * Use case: Multi-terminal coordination
+     * Example: Terminal 1 processes payment for Table 5
+     *          Terminal 2 (managing Table 5) receives payment_completed event
+     *          Terminal 2 updates UI to show order is paid
+     *
+     * Pattern: Similar to Square Terminal multi-device synchronization
+     */
+    private fun collectSocketEvents() {
+        viewModelScope.launch {
+            socketManager.events.collect { event ->
+                when (event) {
+                    is SocketEvent.PaymentInitiated -> {
+                        Timber.d("💳 [Socket] Payment initiated: ${event.paymentId} - Amount: ${event.amount / 100.0} ${event.currency}")
+                        // Optional: Show notification that another terminal started payment
+                    }
+
+                    is SocketEvent.PaymentProcessing -> {
+                        Timber.d("⏳ [Socket] Payment processing: ${event.paymentId}")
+                        // Optional: Update UI to show payment in progress
+                    }
+
+                    is SocketEvent.PaymentCompleted -> {
+                        Timber.i("✅ [Socket] Payment completed: ${event.paymentId} - Amount: ${event.amount / 100.0} ${event.currency}")
+                        // Optional: Show success notification
+                        // Could trigger order refresh if this payment is for current order
+                    }
+
+                    is SocketEvent.PaymentFailed -> {
+                        Timber.w("❌ [Socket] Payment failed: ${event.paymentId}")
+                        // Optional: Show error notification
+                    }
+
+                    // Ignore other events (handled by other ViewModels)
+                    else -> {
+                        // Other events like OrderCreated, SystemAlert, etc.
+                        // will be handled by MainViewModel or OrderViewModel
                     }
                 }
             }
@@ -514,6 +573,66 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
+     * ⭐ NEW: Select rating and proceed automatically to tip screen
+     *
+     * This function combines updateRating + submitRating to avoid state race condition
+     * when auto-advancing from ReviewScreen after user selects stars.
+     *
+     * **Why needed:**
+     * When ReviewScreen calls updateRating() + onContinue() sequentially,
+     * onContinue() uses the OLD rating value before recomposition happens.
+     * This function ensures the correct rating value is used when advancing.
+     */
+    fun selectRatingAndProceed(amount: String, rating: Int) {
+        Timber.d("⭐ [Payment Flow] Rating selected and proceeding: $rating stars")
+        // Call submitRating directly with the rating value (skip intermediate state update)
+        submitRating(amount, rating)
+    }
+
+    /**
+     * ⭐ TEST PAYMENT: Submit amount and skip directly to merchant selection
+     *
+     * Used for test payments from SuperAdmin screen.
+     * Skips rating and tip collection, goes directly to SelectingMerchant state.
+     *
+     * @param amount Payment amount (e.g., "10.00")
+     */
+    fun submitAmountDirectToMerchant(amount: String) {
+        Timber.d("🧪 [Test Payment] Skipping rating/tip, going directly to merchant selection: $$amount")
+
+        // Save zero tip and no rating for backend recording
+        currentTip = "0.00"
+        currentRating = null
+
+        // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
+        val merchants = _merchants.value
+        if (merchants.size == 1) {
+            val onlyMerchant = merchants.first()
+            Timber.d("🏪 [Test Payment] Only 1 merchant available (${onlyMerchant.displayName}) → Auto-selecting and starting payment")
+            updateSelectedMerchant(onlyMerchant)
+
+            // Go directly to payment processing (skip SelectingMerchant screen)
+            startPayment(amount)
+            return
+        }
+
+        // Multiple merchants → Show selection screen
+        _state.value = PaymentState.SelectingMerchant(
+            subtotal = amount,
+            tipAmount = "0",
+            totalAmount = amount,
+            rating = null
+        )
+
+        // Auto-select first merchant if none selected
+        if (_currentMerchant.value == null && merchants.isNotEmpty()) {
+            val defaultMerchant = merchants.first()
+            Timber.d("🏪 [Test Payment] Auto-selecting default merchant: ${defaultMerchant.displayName}")
+            updateSelectedMerchant(defaultMerchant)
+        }
+    }
+
+    /**
      * Submit tip and proceed to merchant selection
      */
     fun submitTip(subtotal: String, tipAmount: String, rating: Int?) {
@@ -623,6 +742,38 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
+     * ⭐ NEW: Select tip percentage and proceed automatically to merchant selection
+     *
+     * This function combines updateTipPercentage + submitTip to avoid state race condition
+     * when auto-advancing from TipScreen after user selects a percentage.
+     *
+     * **Why needed:**
+     * When TipScreen calls updateTipPercentage() + onContinue() sequentially,
+     * onContinue() uses the OLD state value before recomposition happens.
+     * This function ensures the correct tip value is used when advancing.
+     */
+    fun selectTipPercentageAndProceed(amount: String, rating: Int?, percentage: Int) {
+        val tipAmount = calculateTipAmount(amount, percentage)
+        Timber.d("💵 [Payment Flow] Tip percentage selected and proceeding: $percentage% = $$tipAmount")
+
+        // Call submitTip directly with calculated values (skip intermediate state update)
+        submitTip(amount, tipAmount, rating)
+    }
+
+    /**
+     * ⭐ NEW: Select custom tip and proceed automatically to merchant selection
+     *
+     * This function combines updateCustomTip + submitTip to avoid state race condition
+     * when auto-advancing from TipScreen after user confirms custom amount.
+     */
+    fun selectCustomTipAndProceed(amount: String, rating: Int?, customTip: String) {
+        Timber.d("💵 [Payment Flow] Custom tip selected and proceeding: $$customTip")
+
+        // Call submitTip directly with custom value (skip intermediate state update)
+        submitTip(amount, customTip, rating)
+    }
+
+    /**
      * Calculate tip amount based on percentage
      */
     private fun calculateTipAmount(subtotal: String, percentage: Int): String {
@@ -682,8 +833,41 @@ class PaymentViewModel @Inject constructor(
         Timber.d("🎯 [BlumonPayment] Starting ONLINE chip payment flow: $$amount")
         Timber.d("   💰 Amount: $$amount → $currentAmountInCents centavos")
         Timber.d("   🏪 Venue: $currentVenueId | Staff: $currentStaffId | Tip: $$currentTip")
-        _state.value = PaymentState.ConfiguringKernel
 
+        // ⭐ CRITICAL: Validate shift is open before processing payment (Square/Toast pattern)
+        // Without an open shift, cash reconciliation is impossible and payments can't be properly tracked
+        viewModelScope.launch {
+            val currentShift = shiftRepository.getCurrentShift(currentVenueId).getOrNull()
+
+            if (currentShift == null || currentShift.status != com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN) {
+                Timber.w("⚠️ [Payment] No active shift - cannot process payment")
+                Timber.w("   → Shift validation required for cash reconciliation and audit trail")
+                Timber.w("   → Pattern: Square POS / Toast POS - always require open shift for payments")
+                _state.value = PaymentState.Error(
+                    message = "No hay turno abierto.\n\n" +
+                             "Abre un turno para procesar pagos.",
+                    context = null,
+                    showOpenShiftButton = true  // ⭐ Show "Abrir Turno" button in dialog
+                )
+                return@launch
+            }
+
+            // Save shiftId for backend recording
+            currentShiftId = currentShift.id
+            Timber.d("✅ [Payment] Shift validation passed: ${currentShift.id} (${currentShift.staffName})")
+
+            // Continue with payment flow
+            _state.value = PaymentState.ConfiguringKernel
+            continuePaymentFlow()
+        }
+    }
+
+    /**
+     * Continue payment flow after shift validation
+     *
+     * Separated from startPayment() to allow coroutine launch for shift check
+     */
+    private fun continuePaymentFlow() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 // ═══════════════════════════════════════════════════════════════════════════
@@ -1077,8 +1261,64 @@ class PaymentViewModel @Inject constructor(
                     // Extract error message from SDK failure object
                     val errorString = failure.toString()
 
+                    // ⭐ NEW: Try to extract error description from Blumon response
+                    var specificErrorDescription: String? = null
+                    try {
+                        // Use reflection to access failure object's fields
+                        val failureClass = failure.javaClass
+                        Timber.d("🔍 [Error Parsing] Failure class: ${failureClass.name}")
+
+                        // Try to find error-related fields
+                        failureClass.declaredFields.forEach { field ->
+                            try {
+                                field.isAccessible = true
+                                val value = field.get(failure)
+                                if (value != null) {
+                                    Timber.d("   • ${field.name}: $value")
+
+                                    // Check if this field contains MomentumDataFailure object
+                                    val valueStr = value.toString()
+
+                                    // Strategy 1: Extract from Kotlin object toString() format
+                                    // Pattern: "description=TARJETA INVALIDA"
+                                    if (valueStr.contains("description=", ignoreCase = true)) {
+                                        val kotlinPattern = """description=([^,)]+)""".toRegex()
+                                        val match = kotlinPattern.find(valueStr)
+                                        if (match != null) {
+                                            specificErrorDescription = match.groupValues[1].trim()
+                                            Timber.i("✅ [Error Parsing] Extracted description from Kotlin object: $specificErrorDescription")
+                                        }
+                                    }
+
+                                    // Strategy 2: Extract from JSON format (fallback)
+                                    // Pattern: "description":"TARJETA INVALIDA"
+                                    if (specificErrorDescription == null &&
+                                        (valueStr.contains("\"description\":", ignoreCase = true) ||
+                                         valueStr.contains("\"error\":", ignoreCase = true))) {
+
+                                        val jsonPattern = """"description"\s*:\s*"([^"]+)"""".toRegex()
+                                        val match = jsonPattern.find(valueStr)
+                                        if (match != null) {
+                                            specificErrorDescription = match.groupValues[1]
+                                            Timber.i("✅ [Error Parsing] Extracted description from JSON: $specificErrorDescription")
+                                        }
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                // Ignore fields we can't access
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Timber.w(e, "⚠️ [Error Parsing] Failed to parse error details from failure object")
+                    }
+
                     // Translate SDK errors to user-friendly Spanish messages
                     val userMessage = when {
+                        // ⭐ NEW: Use specific error description if available
+                        specificErrorDescription != null -> {
+                            "Pago rechazado:\n\n$specificErrorDescription\n\n" +
+                            "Por favor, solicita otra forma de pago."
+                        }
                         errorString.contains("AMOUNT' must be greater than", ignoreCase = true) -> {
                             "El monto del pago debe ser mayor a $0.00\n\n" +
                             "Por favor, verifica el monto e intenta nuevamente."
@@ -1435,16 +1675,36 @@ class PaymentViewModel @Inject constructor(
                 val currentState = _state.value as? PaymentState.SelectingMerchant
                     ?: throw IllegalStateException("Invalid state for cash payment. Expected SelectingMerchant, got: ${_state.value}")
 
-                // Now change state to Processing
-                _state.value = PaymentState.Processing("Registrando pago en efectivo...")
-
                 // Get venue and staff context for backend recording
                 currentVenueId = authRepository.getVenueId()
                     ?: throw IllegalStateException("No venue ID found. Cannot process payment.")
                 currentStaffId = authRepository.getStaffId()
                     ?: throw IllegalStateException("No staff ID found. Cannot process payment.")
 
-                Timber.d("💵 [Cash Payment] Context: Venue=$currentVenueId, Staff=$currentStaffId")
+                // ⭐ CRITICAL: Validate shift is open before processing payment (Square/Toast pattern)
+                // Without an open shift, cash reconciliation is impossible
+                val currentShift = shiftRepository.getCurrentShift(currentVenueId!!).getOrNull()
+
+                if (currentShift == null || currentShift.status != com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN) {
+                    Timber.w("⚠️ [Cash Payment] No active shift - cannot process payment")
+                    Timber.w("   → Cash payments REQUIRE shift for reconciliation (starting cash + payments = expected cash)")
+                    _state.value = PaymentState.Error(
+                        message = "No hay turno abierto.\n\n" +
+                                 "Abre un turno para procesar pagos.",
+                        context = null,
+                        showOpenShiftButton = true  // ⭐ Show "Abrir Turno" button in dialog
+                    )
+                    return@launch
+                }
+
+                // Save shiftId for backend recording
+                currentShiftId = currentShift.id
+                Timber.d("✅ [Cash Payment] Shift validation passed: ${currentShift.id}")
+
+                // Now change state to Processing
+                _state.value = PaymentState.Processing("Registrando pago en efectivo...")
+
+                Timber.d("💵 [Cash Payment] Context: Venue=$currentVenueId, Staff=$currentStaffId, Shift=$currentShiftId")
                 Timber.d("💵 [Cash Payment] Details: Subtotal=${currentState.subtotal}, Tip=${currentState.tipAmount}, Total=${currentState.totalAmount}, Rating=${currentState.rating}")
 
                 // Create payment context for cash
@@ -1858,6 +2118,7 @@ class PaymentViewModel @Inject constructor(
                 val context = PaymentContext.FastPayment(
                     venueId = currentVenueId,
                     staffId = currentStaffId,
+                    shiftId = currentShiftId, // 🆕 CRITICAL: Shift ID for cash reconciliation (Square/Toast pattern)
                     amount = currentAmount.toBigDecimal(),
                     tip = currentTip.toBigDecimal(),
                     rating = currentRating, // 🆕 NEW: Include user rating (1-5 stars or null)
@@ -1865,7 +2126,7 @@ class PaymentViewModel @Inject constructor(
                     blumonSerialNumber = blumonSerial, // ⚠️ LEGACY: Fallback (FIXED: virtual serial)
                 )
 
-                Timber.d("💾 [Backend Recording] Context: venue=$currentVenueId, staff=$currentStaffId, amount=$currentAmount, tip=$currentTip, rating=$currentRating, merchantId=${context.merchantAccountId}, blumonSerial=${context.blumonSerialNumber}")
+                Timber.d("💾 [Backend Recording] Context: venue=$currentVenueId, staff=$currentStaffId, shift=$currentShiftId, amount=$currentAmount, tip=$currentTip, rating=$currentRating, merchantId=${context.merchantAccountId}, blumonSerial=${context.blumonSerialNumber}")
 
                 // 3. Call use case to record payment
                 val result = recordPaymentUseCase(

@@ -21,6 +21,7 @@ import java.math.BigDecimal
 sealed class PaymentContext {
     abstract val venueId: String
     abstract val staffId: String
+    abstract val shiftId: String? // 🆕 CRITICAL: Shift ID for cash reconciliation (Square/Toast pattern, null = no shift validation bypass)
     abstract val amount: BigDecimal
     abstract val tip: BigDecimal
     abstract val rating: Int? // 🆕 Optional rating from user (1-5 stars, null if skipped)
@@ -54,6 +55,7 @@ sealed class PaymentContext {
     data class FastPayment(
         override val venueId: String,
         override val staffId: String,
+        override val shiftId: String? = null, // 🆕 CRITICAL: Shift ID for reconciliation (required for production, null for testing)
         override val amount: BigDecimal,
         override val tip: BigDecimal = BigDecimal.ZERO,
         override val rating: Int? = null, // 🆕 Optional rating (1-5 stars, null if skipped)
@@ -91,6 +93,7 @@ sealed class PaymentContext {
     data class OrderPayment(
         override val venueId: String,
         override val staffId: String,
+        override val shiftId: String? = null, // 🆕 CRITICAL: Shift ID for reconciliation (required for production, null for testing)
         val orderId: String,
         override val amount: BigDecimal,
         override val tip: BigDecimal = BigDecimal.ZERO,

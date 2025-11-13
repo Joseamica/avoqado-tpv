@@ -21,14 +21,14 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
  * Review screen - Collect user feedback before payment
  *
  * **Flow:**
- * 1. User taps stars to rate (optional)
- * 2. User can "Continuar" (if rated) or "Saltar" (skip review)
- * 3. Proceeds to tip screen
+ * 1. User taps stars to rate → Automatically proceeds to tip screen
+ * 2. User can "Saltar" to skip review
  *
  * **Design:**
  * Clean, modern layout without card wrapper
  * Simple and fast - only overall review (1-5 stars)
  * No detailed categories for now (Food, Service, etc.)
+ * No "Continuar" button - selection is automatic (reduces clicks)
  */
 @Composable
 fun ReviewScreen(
@@ -68,9 +68,14 @@ fun ReviewScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 // Rating input (stars)
+                // ⭐ Auto-advance: When user taps a star, save rating and proceed to tip screen
                 AvoqadoRatingInput(
                     rating = currentReview,
-                    onRatingChange = onReviewChange,
+                    onRatingChange = { rating ->
+                        // ⭐ FIX: Only call onReviewChange - it now handles proceed automatically
+                        // PaymentViewModel.selectRatingAndProceed saves rating and advances in one step
+                        onReviewChange(rating)
+                    },
                     label = null
                 )
             }
@@ -83,25 +88,12 @@ fun ReviewScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(sizes.spacingMedium)
-                ) {
-                    // Skip button
-                    AvoqadoSecondaryButton(
-                        text = "Saltar",
-                        onClick = onSkip,
-                        modifier = Modifier.weight(1f)
-                    )
-
-                    // Continue button
-                    AvoqadoButton(
-                        text = "Continuar",
-                        onClick = onContinue,
-                        enabled = currentReview > 0,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
+                // Only "Saltar" button - rating selection is automatic
+                AvoqadoSecondaryButton(
+                    text = "Saltar",
+                    onClick = onSkip,
+                    modifier = Modifier.fillMaxWidth()
+                )
 
                 Spacer(modifier = Modifier.height(sizes.spacingSmall))
             }

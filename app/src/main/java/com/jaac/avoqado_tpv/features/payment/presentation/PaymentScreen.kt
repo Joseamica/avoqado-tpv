@@ -41,7 +41,9 @@ import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
 @Composable
 fun PaymentScreen(
     initialAmount: String? = null,
+    skipReview: Boolean = false,  // 🧪 Skip rating/tip (test payment from SuperAdmin)
     onNavigateBack: () -> Unit,
+    onNavigateToShifts: () -> Unit = {},  // 🆕 Navigate to Shifts screen (for "No shift open" errors)
     viewModel: PaymentViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -114,9 +116,12 @@ fun PaymentScreen(
                         currentReview = currentState.rating,
                         amount = currentState.amount,
                         onReviewChange = { rating ->
-                            viewModel.updateRating(currentState.amount, rating)
+                            // ⭐ NEW: Use combined function to avoid state race condition
+                            // This ensures correct rating value when auto-advancing
+                            viewModel.selectRatingAndProceed(currentState.amount, rating)
                         },
                         onContinue = {
+                            // This is now only called by "Saltar" button (kept for backward compatibility)
                             viewModel.submitRating(currentState.amount, currentState.rating)
                         },
                         onSkip = {
@@ -140,12 +145,16 @@ fun PaymentScreen(
                             currentState.tipAmount
                         } else null,
                         onTipPercentageSelected = { percentage ->
-                            viewModel.updateTipPercentage(currentState.amount, currentState.rating, percentage)
+                            // ⭐ NEW: Use combined function to avoid state race condition
+                            // This ensures correct tip value when auto-advancing
+                            viewModel.selectTipPercentageAndProceed(currentState.amount, currentState.rating, percentage)
                         },
                         onCustomTipSelected = { customTip ->
-                            viewModel.updateCustomTip(currentState.amount, currentState.rating, customTip)
+                            // ⭐ NEW: Use combined function to avoid state race condition
+                            viewModel.selectCustomTipAndProceed(currentState.amount, currentState.rating, customTip)
                         },
                         onContinue = {
+                            // This is now only called by "Sin propina" button (kept for backward compatibility)
                             viewModel.submitTip(currentState.amount, currentState.tipAmount, currentState.rating)
                         },
                         onSkipTip = {
@@ -186,10 +195,15 @@ fun PaymentScreen(
 
                 // LEGACY: Old idle state (redirect to new flow)
                 is PaymentState.Idle -> {
-                    LaunchedEffect(initialAmount) {
+                    LaunchedEffect(initialAmount, skipReview) {
                         if (initialAmount != null) {
-                            // ✅ Coming from WelcomeScreen with amount → skip to rating
-                            viewModel.submitAmount(initialAmount)
+                            if (skipReview) {
+                                // 🧪 Test payment from SuperAdmin → skip rating/tip, go directly to merchant selection
+                                viewModel.submitAmountDirectToMerchant(initialAmount)
+                            } else {
+                                // ✅ Coming from WelcomeScreen with amount → skip to rating
+                                viewModel.submitAmount(initialAmount)
+                            }
                         } else {
                             // ✅ NO initialAmount → This flow REQUIRES amount from WelcomeScreen
                             // Navigate back instead of showing EnteringAmount
@@ -200,7 +214,7 @@ fun PaymentScreen(
                     // Show loading while processing
                     if (initialAmount != null) {
                         AvoqadoLoadingOverlay(
-                            message = "Preparando pago..."
+                            message = if (skipReview) "Preparando pago de prueba..." else "Preparando pago..."
                         )
                     }
                 }
@@ -231,6 +245,7 @@ fun PaymentScreen(
                     PaymentErrorContent(
                         message = currentState.message,
                         canRetry = currentState.canRetry,
+                        showOpenShiftButton = currentState.showOpenShiftButton,  // 🆕 Show "Abrir Turno" button
                         onRetry = {
                             // 🔄 Smart Retry: Restore context if available, otherwise reset
                             if (currentState.context != null) {
@@ -238,6 +253,11 @@ fun PaymentScreen(
                             } else {
                                 viewModel.resetPayment()
                             }
+                        },
+                        onOpenShift = {
+                            // 🆕 Navigate to Shifts screen to open a shift
+                            viewModel.resetPayment()
+                            onNavigateToShifts()
                         },
                         onCancel = {
                             viewModel.resetPayment()
@@ -712,7 +732,9 @@ private fun PaymentSuccessContent(
 private fun PaymentErrorContent(
     message: String,
     canRetry: Boolean,
+    showOpenShiftButton: Boolean = false,  // 🆕 Show "Abrir Turno" instead of "Reintentar"
     onRetry: () -> Unit,
+    onOpenShift: () -> Unit = {},  // 🆕 Navigate to Shifts screen
     onCancel: () -> Unit
 ) {
     Column(
@@ -758,7 +780,14 @@ private fun PaymentErrorContent(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    if (canRetry) {
+                    // ⭐ SHIFT VALIDATION: Show "Abrir Turno" button when no shift is open
+                    if (showOpenShiftButton) {
+                        AvoqadoButton(
+                            text = "Abrir Turno",
+                            onClick = onOpenShift,
+                            modifier = Modifier.weight(1f)
+                        )
+                    } else if (canRetry) {
                         AvoqadoButton(
                             text = "Reintentar",
                             onClick = onRetry,

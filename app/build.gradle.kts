@@ -23,6 +23,7 @@ android {
         ndk {
             abiFilters.clear()
             abiFilters.add("armeabi")
+//            abiFilters.add("arm64-v8a")
         }
 
         // Environment variables (NEVER hardcode secrets in code)
@@ -173,7 +174,8 @@ dependencies {
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
     // Socket.IO (Real-time communication)
-    implementation("io.socket:socket.io-client:2.1.0")
+    // Version 2.1.1 is latest stable compatible with Socket.IO Server 4.x
+    implementation("io.socket:socket.io-client:2.1.1")
 
     // Security (EncryptedSharedPreferences)
     implementation("androidx.security:security-crypto:1.1.0-alpha06")

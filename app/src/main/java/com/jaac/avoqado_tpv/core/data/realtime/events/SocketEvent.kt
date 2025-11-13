@@ -1,0 +1,451 @@
+package com.jaac.avoqado_tpv.core.data.realtime.events
+
+/**
+ * SocketEvent - Type-safe Socket.IO events
+ *
+ * Sealed class representing ALL possible Socket.IO events from server.
+ * Pattern: Each event type corresponds to server events in
+ * `avoqado-server/src/communication/sockets/types/index.ts`
+ *
+ * @see avoqado-server/src/communication/sockets/types/index.ts:SocketEventType
+ */
+sealed interface SocketEvent {
+
+    // ========================================
+    // Connection Events
+    // ========================================
+
+    data object Connected : SocketEvent
+    data object Disconnected : SocketEvent
+    data class ConnectionError(val message: String, val cause: Throwable? = null) : SocketEvent
+
+    // ========================================
+    // Authentication Events
+    // ========================================
+
+    data class AuthSuccess(
+        val userId: String,
+        val venueId: String,
+        val role: String,
+        val connectedAt: String
+    ) : SocketEvent
+
+    data class AuthError(val error: String, val message: String) : SocketEvent
+
+    // ========================================
+    // Room Events
+    // ========================================
+
+    data class RoomJoined(
+        val success: Boolean,
+        val roomType: String,
+        val venueId: String,
+        val tableId: String? = null,
+        val orderId: String? = null
+    ) : SocketEvent
+
+    data class RoomLeft(
+        val success: Boolean,
+        val roomType: String,
+        val venueId: String
+    ) : SocketEvent
+
+    // ========================================
+    // Payment Events (CRITICAL for TPV)
+    // ========================================
+
+    data class PaymentInitiated(
+        val paymentId: String,
+        val amount: Int, // in cents
+        val currency: String,
+        val tableId: String?,
+        val orderId: String?,
+        val venueId: String,
+        val timestamp: String
+    ) : SocketEvent
+
+    data class PaymentProcessing(
+        val paymentId: String,
+        val amount: Int,
+        val currency: String,
+        val tableId: String?,
+        val orderId: String?,
+        val venueId: String,
+        val timestamp: String
+    ) : SocketEvent
+
+    data class PaymentCompleted(
+        val paymentId: String,
+        val amount: Int,
+        val currency: String,
+        val tableId: String?,
+        val orderId: String?,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class PaymentFailed(
+        val paymentId: String,
+        val amount: Int,
+        val currency: String,
+        val tableId: String?,
+        val orderId: String?,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    // ========================================
+    // Order Events
+    // ========================================
+
+    data class OrderCreated(
+        val orderId: String,
+        val venueId: String,
+        val tableId: String?,
+        val status: String?,
+        val items: List<Any>?,
+        val total: Double?,
+        val timestamp: String
+    ) : SocketEvent
+
+    data class OrderUpdated(
+        val orderId: String,
+        val venueId: String,
+        val tableId: String?,
+        val status: String?,
+        val items: List<Any>?,
+        val total: Double?,
+        val timestamp: String
+    ) : SocketEvent
+
+    data class OrderStatusChanged(
+        val orderId: String,
+        val venueId: String,
+        val tableId: String?,
+        val status: String,
+        val previousStatus: String?,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class OrderDeleted(
+        val orderId: String,
+        val venueId: String,
+        val userId: String?,
+        val timestamp: String
+    ) : SocketEvent
+
+    // ========================================
+    // System Events
+    // ========================================
+
+    data class SystemAlert(
+        val level: String, // 'info' | 'warning' | 'error' | 'critical'
+        val title: String,
+        val message: String,
+        val targetRoles: List<String>?,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class VenueUpdate(
+        val type: String, // 'user_connected' | 'user_disconnected'
+        val userId: String,
+        val role: String,
+        val venueId: String,
+        val timestamp: String
+    ) : SocketEvent
+
+    data class TableStatusChange(
+        val type: String, // 'user_joined_table' | 'user_left_table'
+        val userId: String,
+        val role: String,
+        val tableId: String,
+        val venueId: String,
+        val timestamp: String
+    ) : SocketEvent
+
+    // ========================================
+    // Notification Events
+    // ========================================
+
+    data class NotificationNew(
+        val notificationId: String,
+        val recipientId: String,
+        val type: String,
+        val title: String,
+        val message: String,
+        val priority: String, // 'LOW' | 'NORMAL' | 'HIGH'
+        val isRead: Boolean,
+        val actionUrl: String?,
+        val actionLabel: String?,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class NotificationRead(
+        val notificationId: String,
+        val recipientId: String,
+        val venueId: String,
+        val timestamp: String
+    ) : SocketEvent
+
+    data class NotificationDeleted(
+        val notificationId: String,
+        val recipientId: String,
+        val venueId: String,
+        val timestamp: String
+    ) : SocketEvent
+
+    data class NotificationCountUpdated(
+        val action: String, // 'increment' | 'decrement'
+        val venueId: String,
+        val timestamp: String
+    ) : SocketEvent
+
+    // ========================================
+    // TPV Admin Commands (NEW)
+    // ========================================
+
+    data class TPVCommand(
+        val terminalId: String,
+        val commandType: String, // 'MAINTENANCE_MODE' | 'RELOAD' | 'DISABLE' | 'ENABLE' | 'SHUTDOWN' | 'RESTART'
+        val payload: Map<String, Any>?,
+        val requestedBy: String,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class TPVCommandResponse(
+        val terminalId: String,
+        val commandType: String,
+        val status: String, // 'success' | 'failed' | 'timeout'
+        val message: String?,
+        val executedAt: String,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class TPVStatusUpdate(
+        val terminalId: String,
+        val status: String, // 'ONLINE' | 'OFFLINE' | 'MAINTENANCE' | 'DISABLED'
+        val lastHeartbeat: String?,
+        val version: String?,
+        val ipAddress: String?,
+        val systemInfo: Map<String, Any>?,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    // ========================================
+    // Inventory Real-time Events (NEW)
+    // ========================================
+
+    data class InventoryLowStock(
+        val rawMaterialId: String,
+        val rawMaterialName: String,
+        val currentStock: Double,
+        val unit: String,
+        val threshold: Double?,
+        val batchInfo: Map<String, Any>?,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class InventoryOutOfStock(
+        val rawMaterialId: String,
+        val rawMaterialName: String,
+        val currentStock: Double,
+        val unit: String,
+        val threshold: Double?,
+        val batchInfo: Map<String, Any>?,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class InventoryUpdated(
+        val rawMaterialId: String,
+        val rawMaterialName: String,
+        val currentStock: Double,
+        val unit: String,
+        val threshold: Double?,
+        val batchInfo: Map<String, Any>?,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    // ========================================
+    // Menu & Product Real-time Events (NEW)
+    // ========================================
+
+    data class MenuUpdated(
+        val updateType: String, // 'FULL_REFRESH' | 'PARTIAL_UPDATE'
+        val categoryIds: List<String>?, // Categories affected (if partial)
+        val productIds: List<String>?, // Products affected (if partial)
+        val reason: String, // 'PRICE_CHANGE' | 'AVAILABILITY_CHANGE' | 'ITEM_ADDED' | 'ITEM_REMOVED' | 'CATEGORY_UPDATED'
+        val updatedBy: String?, // User ID who made the change
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class MenuItemCreated(
+        val itemId: String,
+        val itemName: String,
+        val sku: String?,
+        val categoryId: String?,
+        val categoryName: String?,
+        val price: Double?,
+        val available: Boolean?,
+        val imageUrl: String?,
+        val description: String?,
+        val modifierGroupIds: List<String>?,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class MenuItemUpdated(
+        val itemId: String,
+        val itemName: String,
+        val sku: String?,
+        val categoryId: String?,
+        val categoryName: String?,
+        val price: Double?,
+        val available: Boolean?,
+        val imageUrl: String?,
+        val description: String?,
+        val modifierGroupIds: List<String>?,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class MenuItemDeleted(
+        val itemId: String,
+        val itemName: String,
+        val sku: String?,
+        val categoryId: String?,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class MenuItemAvailabilityChanged(
+        val itemId: String,
+        val itemName: String,
+        val available: Boolean,
+        val previousAvailability: Boolean,
+        val reason: String?, // 'OUT_OF_STOCK' | 'MANUAL' | 'TIME_BASED' | 'INVENTORY_DEPLETION'
+        val affectedOrders: List<String>?, // Order IDs that might be affected
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class ProductPriceChanged(
+        val productId: String,
+        val productName: String,
+        val sku: String,
+        val oldPrice: Double,
+        val newPrice: Double,
+        val priceChange: Double, // Absolute difference
+        val priceChangePercent: Double, // Percentage change
+        val categoryId: String,
+        val categoryName: String,
+        val updatedBy: String?, // User ID who made the change
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class MenuCategoryUpdated(
+        val categoryId: String,
+        val categoryName: String,
+        val action: String, // 'CREATED' | 'UPDATED' | 'DELETED' | 'ENABLED' | 'DISABLED' | 'REORDERED'
+        val displayOrder: Int?,
+        val active: Boolean?,
+        val parentId: String?,
+        val affectedItemCount: Int?, // Number of products in category
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class MenuCategoryDeleted(
+        val categoryId: String,
+        val categoryName: String,
+        val action: String, // Always 'DELETED'
+        val displayOrder: Int?,
+        val active: Boolean?,
+        val parentId: String?,
+        val affectedItemCount: Int?,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    // ========================================
+    // Hardware Events (NEW)
+    // ========================================
+
+    data class PrinterStatus(
+        val terminalId: String,
+        val printerType: String, // 'THERMAL' | 'RECEIPT' | 'KITCHEN'
+        val status: String, // 'ONLINE' | 'OFFLINE' | 'PAPER_LOW' | 'PAPER_OUT' | 'ERROR'
+        val errorMessage: String?,
+        val lastPrintedAt: String?,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class CardReaderStatus(
+        val terminalId: String,
+        val readerType: String, // 'CONTACTLESS' | 'CHIP' | 'MAGNETIC'
+        val status: String, // 'READY' | 'READING' | 'ERROR' | 'DISCONNECTED'
+        val errorMessage: String?,
+        val lastReadAt: String?,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    data class PeripheralError(
+        val terminalId: String,
+        val peripheralType: String, // 'PRINTER' | 'CARD_READER' | 'CASH_DRAWER' | 'SCANNER' | 'OTHER'
+        val errorCode: String,
+        val errorMessage: String,
+        val severity: String, // 'low' | 'medium' | 'high' | 'critical'
+        val recoverable: Boolean,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+
+    // ========================================
+    // Error Events
+    // ========================================
+
+    data class Error(
+        val correlationId: String?,
+        val error: String,
+        val statusCode: Int?,
+        val message: String? = null
+    ) : SocketEvent
+
+    data class RateLimitExceeded(
+        val error: String,
+        val message: String
+    ) : SocketEvent
+}

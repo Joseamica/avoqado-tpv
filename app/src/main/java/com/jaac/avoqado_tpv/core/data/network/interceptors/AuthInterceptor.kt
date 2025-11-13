@@ -5,15 +5,25 @@ import okhttp3.Interceptor
 import okhttp3.Response
 import timber.log.Timber
 import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Auth Interceptor
  *
- * Automatically adds JWT token to all requests
- * Handles 401 Unauthorized responses (session expired)
+ * Automatically adds JWT token to all requests.
+ * For 401 handling and token refresh, see TokenAuthenticator.
+ *
+ * **Why separate Interceptor and Authenticator?**
+ * - Interceptor: Adds Authorization header to all requests (no dependency cycle)
+ * - Authenticator: Handles 401 responses and token refresh (uses Lazy<AuthRepository> to break cycle)
+ *
+ * **Pattern:** OkHttp best practice for authentication
+ * - Interceptor runs BEFORE request (adds headers)
+ * - Authenticator runs AFTER 401 response (refreshes token)
  *
  * @param secureStorage Storage for JWT token
  */
+@Singleton
 class AuthInterceptor @Inject constructor(
     private val secureStorage: SecureStorage
 ) : Interceptor {
@@ -24,7 +34,7 @@ class AuthInterceptor @Inject constructor(
         // Get JWT token from secure storage
         val token = secureStorage.getToken()
 
-        // If no token, proceed without auth header
+        // If no token, proceed without auth header (e.g., login/activation endpoints)
         if (token == null) {
             Timber.d("No auth token found, proceeding without Authorization header")
             return chain.proceed(originalRequest)
@@ -35,20 +45,9 @@ class AuthInterceptor @Inject constructor(
             .header("Authorization", "Bearer $token")
             .build()
 
-        Timber.d("Added Authorization header to ${originalRequest.url}")
+        Timber.d("🔐 [Auth] Added Authorization header to ${originalRequest.url}")
 
-        // Execute request
-        val response = chain.proceed(authenticatedRequest)
-
-        // Handle 401 Unauthorized (session expired)
-        if (response.code == 401) {
-            Timber.w("Received 401 Unauthorized - Session expired")
-            // Clear expired session
-            secureStorage.clearSession()
-            // TODO: Emit event to force logout in UI
-            // EventBus.emit(SessionExpiredEvent)
-        }
-
-        return response
+        // Execute request (Authenticator will handle 401 if token expired)
+        return chain.proceed(authenticatedRequest)
     }
 }

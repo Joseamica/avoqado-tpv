@@ -5,6 +5,7 @@ import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.network.interceptors.AuthInterceptor
 import com.jaac.avoqado_tpv.core.data.network.interceptors.LoggingInterceptor
 import com.jaac.avoqado_tpv.core.data.network.interceptors.TenantInterceptor
+import com.jaac.avoqado_tpv.core.data.network.interceptors.TokenAuthenticator
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -94,13 +95,22 @@ object NetworkModule {
     }
 
     /**
-     * OkHttpClient with interceptors and timeouts
+     * OkHttpClient with interceptors, authenticator, and timeouts
+     *
+     * **Interceptor vs Authenticator:**
+     * - Interceptor: Runs BEFORE request (adds headers)
+     * - Authenticator: Runs AFTER 401 response (refreshes token)
+     *
+     * **Lazy Injection:**
+     * TokenAuthenticator uses Lazy<AuthRepository> to break dependency cycle.
+     * This is safe because Authenticator is only called AFTER OkHttpClient is fully constructed.
      */
     @Provides
     @Singleton
     fun provideOkHttpClient(
         authInterceptor: AuthInterceptor,
         tenantInterceptor: TenantInterceptor,
+        tokenAuthenticator: TokenAuthenticator,  // ✅ Handles 401 with token refresh
         certificatePinner: CertificatePinner?
     ): OkHttpClient {
         return OkHttpClient.Builder()
@@ -108,6 +118,9 @@ object NetworkModule {
             .addInterceptor(authInterceptor)        // Add JWT token
             .addInterceptor(tenantInterceptor)      // Add venueId
             .addInterceptor(LoggingInterceptor.create())  // Log requests (DEBUG only)
+
+            // Authenticator (handles 401 responses with token refresh)
+            .authenticator(tokenAuthenticator)       // ✅ Refresh token on 401
 
             // Timeouts
             .connectTimeout(30, TimeUnit.SECONDS)

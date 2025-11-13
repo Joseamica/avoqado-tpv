@@ -61,6 +61,9 @@ class MainActivity : ComponentActivity() {
     lateinit var secureStorage: SecureStorage
 
     @Inject
+    lateinit var sessionManager: com.jaac.avoqado_tpv.core.session.SessionManager
+
+    @Inject
     lateinit var terminalConfigRepository: TerminalConfigRepository
 
     @Inject
@@ -114,7 +117,8 @@ class MainActivity : ComponentActivity() {
                         // Permission granted → Show normal app
                         AppNavigation(
                             deviceInfoManager = deviceInfoManager,
-                            secureStorage = secureStorage
+                            secureStorage = secureStorage,
+                            sessionManager = sessionManager
                         )
                     }
                     false -> {

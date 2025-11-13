@@ -1,24 +1,21 @@
 package com.jaac.avoqado_tpv.core.presentation.screens
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.automirrored.filled.Help
+import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.Assessment
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.CreditCard
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Restaurant
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Icon
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,238 +23,324 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoCard
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jaac.avoqado_tpv.core.presentation.components.ActionButton
+import com.jaac.avoqado_tpv.core.presentation.components.ActionButtonGrid
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
+import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
+import com.jaac.avoqado_tpv.core.presentation.components.SettingsBottomSheet
+import com.jaac.avoqado_tpv.core.presentation.components.ShiftStatusBanner
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
-import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
+import com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel
+import com.jaac.avoqado_tpv.features.shift.domain.Shift
+import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
+import java.math.BigDecimal
 
 /**
  * Home Screen (Welcome Screen)
  *
  * Main dashboard after successful login.
- * Currently a placeholder while main TPV features are implemented.
+ * Shows personalized greeting and action button grid for quick access to features.
+ *
+ * Features:
+ * - Personalized greeting: "Hola, [Staff Name]"
+ * - Shift status banner (tap to navigate to Shifts screen)
+ * - 3-column grid of action buttons (enabled and future placeholders)
+ * - Settings modal for user management (logout, config, help)
+ *
+ * @param modifier Modifier for customization
+ * @param onStartPaymentWithAmount Navigate to payment with amount (opens rating screen)
+ * @param onNavigateToShifts Navigate to Shifts screen
+ * @param onLogout Logout callback
+ * @param viewModel HomeViewModel for staff info and logout logic
+ * @param shiftViewModel ShiftViewModel for shift status
  */
 @Composable
 fun WelcomeScreen(
     modifier: Modifier = Modifier,
-    onNavigateToPayment: () -> Unit = {}, // Deprecated - kept for compatibility
-    onStartPaymentWithAmount: (String) -> Unit = {}, // New: receives amount and goes to rating
-    onLogout: () -> Unit = {}
+    onStartPaymentWithAmount: (String) -> Unit = {},
+    onNavigateToShifts: () -> Unit = {},
+    onNavigateToSuperAdmin: () -> Unit = {},
+    onLogout: () -> Unit = {},
+    viewModel: HomeViewModel = hiltViewModel(),
+    shiftViewModel: com.jaac.avoqado_tpv.features.shift.presentation.ShiftViewModel = hiltViewModel()
 ) {
-    // Bottom sheet state for amount input
+    // Staff info from ViewModel
+    val staffName by viewModel.staffName.collectAsStateWithLifecycle()
+    val clockInTime by viewModel.clockInTime.collectAsStateWithLifecycle()
+
+    // Shift state from ShiftViewModel
+    val shiftState by shiftViewModel.state.collectAsStateWithLifecycle()
+    val currentShift = when (val state = shiftState) {
+        is com.jaac.avoqado_tpv.features.shift.presentation.ShiftState.ShiftActive -> state.shift
+        else -> null
+    }
+
+    // ⭐ FIX: Reload shift status whenever WelcomeScreen becomes visible
+    // This ensures shift status is updated when returning from ShiftScreen
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        shiftViewModel.loadCurrentShift()
+    }
+
+    WelcomeScreenContent(
+        modifier = modifier,
+        staffName = staffName,
+        clockInTime = clockInTime,
+        currentShift = currentShift,
+        onStartPaymentWithAmount = onStartPaymentWithAmount,
+        onNavigateToShifts = onNavigateToShifts,
+        onNavigateToSuperAdmin = onNavigateToSuperAdmin,
+        onLogout = {
+            viewModel.logout()
+            onLogout()
+        }
+    )
+}
+
+/**
+ * Welcome Screen Content
+ *
+ * Stateless UI component that can be previewed without ViewModel.
+ *
+ * @param modifier Modifier for customization
+ * @param staffName Staff member's name for greeting
+ * @param clockInTime Clock-in time or null if not clocked in
+ * @param currentShift Current active shift (null if no shift open)
+ * @param onStartPaymentWithAmount Navigate to payment with amount
+ * @param onNavigateToShifts Navigate to Shifts screen
+ * @param onLogout Logout callback
+ */
+@Composable
+private fun WelcomeScreenContent(
+    modifier: Modifier = Modifier,
+    staffName: String,
+    clockInTime: String?,
+    currentShift: Shift?,
+    onStartPaymentWithAmount: (String) -> Unit,
+    onNavigateToShifts: () -> Unit,
+    onNavigateToSuperAdmin: () -> Unit,
+    onLogout: () -> Unit
+) {
+    // ══════════════════════════════════════════════════════════════════════
+    // STATE
+    // ══════════════════════════════════════════════════════════════════════
+
+    // Modal states
     var showAmountBottomSheet by remember { mutableStateOf(false) }
+    var showSettingsModal by remember { mutableStateOf(false) }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // ACTION BUTTONS CONFIGURATION
+    // ══════════════════════════════════════════════════════════════════════
+
+    // ⭐ Check if shift is open for payment processing (Square/Toast pattern)
+    val hasOpenShift = currentShift?.status == ShiftStatus.OPEN
+
+    val actionButtons = listOf(
+        // ✅ ENABLED FEATURES
+        ActionButton(
+            icon = Icons.Default.CreditCard,
+            label = "Pago rápido",
+            enabled = hasOpenShift,  // ⭐ Only enabled when shift is open
+            badge = if (!hasOpenShift) "Abre el turno primero" else null,  // ⭐ Show hint when disabled
+            onClick = { showAmountBottomSheet = true }
+        ),
+        ActionButton(
+            icon = Icons.Default.Assessment,
+            label = "Resumen",
+            enabled = false,
+            badge = "Próximamente",
+            onClick = { /* TODO: Navigate to daily summary */ }
+        ),
+        ActionButton(
+            icon = Icons.Default.Schedule,
+            label = "Turnos",
+            enabled = true,
+            onClick = onNavigateToShifts
+        ),
+        ActionButton(
+            icon = Icons.Default.Receipt,
+            label = "Pagos",
+            enabled = false,
+            badge = "Próximamente",
+            onClick = { /* TODO: Navigate to payment history */ }
+        ),
+
+        // ⏳ FUTURE FEATURES
+        ActionButton(
+            icon = Icons.Default.Restaurant,
+            label = "Órdenes",
+            enabled = false,
+            badge = "Próximamente",
+            onClick = { /* TODO: Navigate to order management */ }
+        ),
+        ActionButton(
+            icon = Icons.Default.History,
+            label = "Historial",
+            enabled = false,
+            badge = "Próximamente",
+            onClick = { /* TODO: Navigate to transaction history */ }
+        ),
+        ActionButton(
+            icon = Icons.Default.BarChart,
+            label = "Reportes",
+            enabled = false,
+            badge = "Próximamente",
+            onClick = { /* TODO: Navigate to reports */ }
+        ),
+        ActionButton(
+            icon = Icons.AutoMirrored.Filled.Help,
+            label = "Soporte",
+            enabled = false,
+            badge = "Próximamente",
+            onClick = { /* TODO: Navigate to help/support */ }
+        ),
+
+        // 🔧 SUPERADMIN TOOLS
+        ActionButton(
+            icon = Icons.Default.AdminPanelSettings,
+            label = "SuperAdmin",
+            enabled = true,
+            onClick = onNavigateToSuperAdmin
+        )
+    )
+
+    // ══════════════════════════════════════════════════════════════════════
+    // UI
+    // ══════════════════════════════════════════════════════════════════════
+
     Scaffold(
         topBar = {
             AvoqadoTopBar(
-                title = "Avoqado TPV",
-                subtitle = "Terminal de Punto de Venta"
+                title = "Hola, $staffName",
+                onSettingsClick = { showSettingsModal = true }
             )
         },
         containerColor = MaterialTheme.colorScheme.background
     ) { paddingValues ->
-        Column(
-            modifier = modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .verticalScroll(rememberScrollState())
-                .padding(Spacing.Space6),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Top
+        ResponsiveScaffold(
+            modifier = Modifier.padding(paddingValues),
+            scrollable = false,  // LazyVerticalGrid handles scrolling internally
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Spacer(modifier = Modifier.height(Spacing.Space12))
+            // Top spacing
+            Spacer(modifier = Modifier.height(16.dp))
 
-            AvoqadoCard(
-                modifier = Modifier.padding(Spacing.Space4)
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(Spacing.Space6)
-                ) {
-                    // Logo placeholder (Restaurant icon hasta tener logo oficial)
-                    Icon(
-                        imageVector = Icons.Default.Restaurant,
-                        contentDescription = "Avoqado Logo",
-                        modifier = Modifier.size(80.dp), // TODO: Add Size.LogoLarge to Dimensions.kt
-                        tint = MaterialTheme.colorScheme.primary
-                    )
+            // Shift status banner
+            ShiftStatusBanner(
+                shift = currentShift,
+                onClick = onNavigateToShifts
+            )
 
-                    Spacer(modifier = Modifier.height(Spacing.Space6))
+            Spacer(modifier = Modifier.height(16.dp))
 
-                    Text(
-                        text = "Avoqado TPV",
-                        style = MaterialTheme.typography.displayMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        textAlign = TextAlign.Center
-                    )
-
-                    Spacer(modifier = Modifier.height(Spacing.Space2))
-
-                    Text(
-                        text = "Sistema de Punto de Venta",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-
-                    Spacer(modifier = Modifier.height(Spacing.Space8))
-
-                    Text(
-                        text = "✅ Activación completa\n✅ Login con PIN\n✅ Sistema de heartbeat\n✅ Sesión activa",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        textAlign = TextAlign.Center,
-                        lineHeight = MaterialTheme.typography.bodyLarge.lineHeight * 1.5f
-                    )
-
-                    Spacer(modifier = Modifier.height(Spacing.Space8))
-
-                    // Payment Button
-                    Button(
-                        onClick = { showAmountBottomSheet = true },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CreditCard,
-                            contentDescription = "Realizar pago",
-                            modifier = Modifier.padding(end = 8.dp)
-                        )
-                        Text("Realizar Pago")
-                    }
-
-                    Spacer(modifier = Modifier.height(Spacing.Space4))
-
-                    // Logout Button
-                    Button(
-                        onClick = onLogout,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error
-                        )
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Logout,
-                            contentDescription = "Cerrar sesión",
-                            modifier = Modifier.padding(end = 8.dp)
-                        )
-                        Text("Cerrar Sesión")
-                    }
-                }
-            }
-        }
-
-        // Amount input bottom sheet
-        if (showAmountBottomSheet) {
-            com.jaac.avoqado_tpv.core.presentation.components.AmountInputBottomSheet(
-                onDismiss = { showAmountBottomSheet = false },
-                onConfirm = { amount ->
-                    showAmountBottomSheet = false
-                    onStartPaymentWithAmount(amount)
-                }
+            // Action button grid (LazyVerticalGrid handles its own scrolling)
+            ActionButtonGrid(
+                buttons = actionButtons,
+                modifier = Modifier.fillMaxSize()
             )
         }
     }
-}
 
-@Preview(showBackground = true, device = "spec:width=800px,height=1280px,dpi=160")
-@Composable
-private fun WelcomeScreenPreview() {
-    AvoqadoTheme {
-        WelcomeScreen()
+    // ══════════════════════════════════════════════════════════════════════
+    // MODALS
+    // ══════════════════════════════════════════════════════════════════════
+
+    // Amount input bottom sheet (existing payment flow)
+    if (showAmountBottomSheet) {
+        com.jaac.avoqado_tpv.core.presentation.components.AmountInputBottomSheet(
+            onDismiss = { showAmountBottomSheet = false },
+            onConfirm = { amount ->
+                showAmountBottomSheet = false
+                onStartPaymentWithAmount(amount)
+            }
+        )
+    }
+
+    // Settings bottom sheet (new user management modal)
+    if (showSettingsModal) {
+        SettingsBottomSheet(
+            onDismiss = { showSettingsModal = false },
+            onLogout = {
+                showSettingsModal = false
+                onLogout()
+            },
+            onSettings = null, // Disabled - future feature
+            onHelp = null // Disabled - future feature
+        )
     }
 }
 
-@Preview(showBackground = true, device = "spec:width=800px,height=1280px,dpi=160")
+// ══════════════════════════════════════════════════════════════════════
+// PREVIEWS
+// ══════════════════════════════════════════════════════════════════════
+
+@Preview(showBackground = true, widthDp = 600, heightDp = 1024, name = "PAX A80 (Portrait)")
 @Composable
-private fun WelcomeScreenWithModalPreview() {
+private fun WelcomeScreenPreview() {
     AvoqadoTheme {
-        // State to show modal
-        var showAmountBottomSheet by remember { mutableStateOf(true) }
+        WelcomeScreenContent(
+            staffName = "Juan Pérez",
+            clockInTime = null,
+            currentShift = null,
+            onStartPaymentWithAmount = {},
+            onNavigateToShifts = {},
+            onNavigateToSuperAdmin = {},
+            onLogout = {}
+        )
+    }
+}
 
-        Scaffold(
-            topBar = {
-                AvoqadoTopBar(
-                    title = "Avoqado TPV",
-                    subtitle = "Terminal de Punto de Venta"
-                )
-            },
-            containerColor = MaterialTheme.colorScheme.background
-        ) { paddingValues ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-                    .verticalScroll(rememberScrollState())
-                    .padding(Spacing.Space6),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Top
-            ) {
-                Spacer(modifier = Modifier.height(Spacing.Space12))
+@Preview(showBackground = true, widthDp = 720, heightDp = 1280, name = "PAX A920 (Portrait)")
+@Composable
+private fun WelcomeScreenPreviewLarge() {
+    AvoqadoTheme {
+        WelcomeScreenContent(
+            staffName = "María González",
+            clockInTime = "Desde las 09:00",
+            currentShift = null,
+            onStartPaymentWithAmount = {},
+            onNavigateToShifts = {},
+            onNavigateToSuperAdmin = {},
+            onLogout = {}
+        )
+    }
+}
 
-                AvoqadoCard(
-                    modifier = Modifier.padding(Spacing.Space4)
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(Spacing.Space6)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Restaurant,
-                            contentDescription = "Avoqado Logo",
-                            modifier = Modifier.size(80.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-
-                        Spacer(modifier = Modifier.height(Spacing.Space6))
-
-                        Text(
-                            text = "Avoqado TPV",
-                            style = MaterialTheme.typography.displayMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            textAlign = TextAlign.Center
-                        )
-
-                        Spacer(modifier = Modifier.height(Spacing.Space2))
-
-                        Text(
-                            text = "Sistema de Punto de Venta",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
-                        )
-
-                        Spacer(modifier = Modifier.height(Spacing.Space8))
-
-                        // Payment Button
-                        Button(
-                            onClick = { showAmountBottomSheet = true },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary
-                            )
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.CreditCard,
-                                contentDescription = "Realizar pago",
-                                modifier = Modifier.padding(end = 8.dp)
-                            )
-                            Text("Realizar Pago")
-                        }
-                    }
-                }
-            }
-
-            // Amount input bottom sheet (showing in preview)
-            if (showAmountBottomSheet) {
-                com.jaac.avoqado_tpv.core.presentation.components.AmountInputBottomSheet(
-                    onDismiss = { showAmountBottomSheet = false },
-                    onConfirm = { amount ->
-                        showAmountBottomSheet = false
-                    }
-                )
-            }
-        }
+@Preview(showBackground = true, widthDp = 600, heightDp = 1024, name = "With Active Shift")
+@Composable
+private fun WelcomeScreenWithActiveShiftPreview() {
+    AvoqadoTheme {
+        WelcomeScreenContent(
+            staffName = "Juan Pérez",
+            clockInTime = null,
+            currentShift = Shift(
+                id = "shift-123",
+                venueId = "venue-1",
+                staffId = "staff-1",
+                staffName = "Juan Pérez",
+                startTime = "2025-01-15T14:30:00Z",
+                endTime = null,
+                status = ShiftStatus.OPEN,
+                startingCash = BigDecimal("500.00"),
+                endingCash = null,
+                totalSales = BigDecimal("1250.50"),
+                totalTips = BigDecimal("125.00"),
+                totalOrders = 15,
+                totalCashPayments = BigDecimal("600.00"),
+                totalCardPayments = BigDecimal("650.50"),
+                totalVoucherPayments = BigDecimal("0.00"),
+                totalOtherPayments = BigDecimal("0.00"),
+                totalProductsSold = 23,
+                durationMinutes = 150
+            ),
+            onStartPaymentWithAmount = {},
+            onNavigateToShifts = {},
+            onNavigateToSuperAdmin = {},
+            onLogout = {}
+        )
     }
 }

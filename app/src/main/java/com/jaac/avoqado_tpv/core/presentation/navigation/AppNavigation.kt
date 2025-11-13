@@ -43,6 +43,8 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.jaac.avoqado_tpv.core.presentation.screens.WelcomeScreen
+import com.jaac.avoqado_tpv.core.session.SessionEvent
+import com.jaac.avoqado_tpv.core.session.SessionManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
 import com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler
@@ -72,13 +74,42 @@ import timber.log.Timber
 fun AppNavigation(
     deviceInfoManager: DeviceInfoManager,
     secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+    sessionManager: SessionManager,
     navController: NavHostController = rememberNavController(),
     startDestination: String = NavRoute.Splash.route
 ) {
-    NavHost(
-        navController = navController,
-        startDestination = startDestination
-    ) {
+    // 🔐 GLOBAL SESSION EXPIRATION LISTENER
+    // Observes session events from TokenAuthenticator and navigates accordingly
+    LaunchedEffect(Unit) {
+        sessionManager.sessionEvents.collect { event ->
+            when (event) {
+                is SessionEvent.Expired -> {
+                    Timber.w("🚪 [AppNavigation] Session expired - navigating to Login")
+                    navController.navigate(NavRoute.Login.route) {
+                        popUpTo(0) { inclusive = true } // Clear entire back stack
+                    }
+                }
+                is SessionEvent.TerminalDeactivated -> {
+                    Timber.e("🔐 [AppNavigation] Terminal deactivated - navigating to Activation")
+                    navController.navigate(NavRoute.Activation.route) {
+                        popUpTo(0) { inclusive = true } // Clear entire back stack
+                    }
+                }
+            }
+        }
+    }
+
+    // 🌐 CONNECTION MONITORING (Square/Toast pattern)
+    // Shows discrete banner when backend is unreachable, doesn't block operations
+    val connectionViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.ConnectionViewModel = hiltViewModel()
+    val connectionState by connectionViewModel.state.collectAsStateWithLifecycle()
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Main navigation content
+        NavHost(
+            navController = navController,
+            startDestination = startDestination
+        ) {
         // Splash Screen - Determines initial route based on activation status
         composable(NavRoute.Splash.route) {
             SplashScreen(
@@ -208,12 +239,17 @@ fun AppNavigation(
             }
 
             WelcomeScreen(
-                onNavigateToPayment = {
-                    navController.navigate(NavRoute.Payment.route)
-                },
                 onStartPaymentWithAmount = { amount ->
                     // Store amount in state to trigger navigation
                     pendingAmount = amount
+                },
+                onNavigateToShifts = {
+                    // Navigate to Shifts screen
+                    navController.navigate(NavRoute.Shifts.route)
+                },
+                onNavigateToSuperAdmin = {
+                    // Navigate to SuperAdmin screen
+                    navController.navigate(NavRoute.SuperAdmin.route)
                 },
                 onLogout = {
                     // ✅ Square/Toast Pattern: DO NOT stop heartbeat on logout
@@ -242,6 +278,15 @@ fun AppNavigation(
             )
         }
 
+        // Shifts Screen - Shift management (open/close shifts)
+        composable(NavRoute.Shifts.route) {
+            com.jaac.avoqado_tpv.features.shift.presentation.ShiftScreen(
+                onNavigateBack = {
+                    navController.popBackStack()
+                }
+            )
+        }
+
         // Payment Screen - EMV chip card payment with online authorization
         composable(NavRoute.Payment.route) {
             // 🔐 SECURITY: Require authentication before processing payments
@@ -258,10 +303,18 @@ fun AppNavigation(
             // Get initial amount from previous screen (if coming from Home with amount)
             val initialAmount = navController.previousBackStackEntry?.savedStateHandle?.get<String>("initialAmount")
 
+            // 🧪 Get skipReview flag (test payment from SuperAdmin)
+            val skipReview = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("skipReview") ?: false
+
             PaymentScreen(
                 initialAmount = initialAmount,
+                skipReview = skipReview,
                 onNavigateBack = {
                     navController.popBackStack()
+                },
+                onNavigateToShifts = {
+                    // 🆕 Navigate to Shifts screen (for "No shift open" errors)
+                    navController.navigate(NavRoute.Shifts.route)
                 }
             )
         }
@@ -271,6 +324,43 @@ fun AppNavigation(
             // Placeholder for settings
             WelcomeScreen()
         }
+
+        // SuperAdmin Screen - Testing and debugging tools
+        composable(NavRoute.SuperAdmin.route) {
+            // State to track pending test payment
+            var pendingTestPayment by remember { mutableStateOf(false) }
+
+            // Navigate to payment when test payment is triggered
+            LaunchedEffect(pendingTestPayment) {
+                if (pendingTestPayment) {
+                    // 🧪 Navigate with test amount ($10.00) and skipReview flag
+                    navController.currentBackStackEntry?.savedStateHandle?.apply {
+                        set("initialAmount", "10.00")
+                        set("skipReview", true)  // Skip rating/tip for test payments
+                    }
+                    navController.navigate(NavRoute.Payment.route)
+                    pendingTestPayment = false // Reset after navigation
+                }
+            }
+
+            com.jaac.avoqado_tpv.core.presentation.screens.SuperAdminScreen(
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onTestPayment = {
+                    // Trigger test payment of $10.00
+                    pendingTestPayment = true
+                }
+            )
+        }
+    }
+
+        // 🌐 CONNECTION BANNER (overlay on top of all screens)
+        // Square/Toast pattern: Discrete warning banner that doesn't block operations
+        com.jaac.avoqado_tpv.core.presentation.components.ConnectionBanner(
+            state = connectionState,
+            modifier = Modifier.align(Alignment.TopCenter)
+        )
     }
 }
 

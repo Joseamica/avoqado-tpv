@@ -2,6 +2,8 @@ package com.jaac.avoqado_tpv.features.authentication.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.BuildConfig
+import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.authentication.domain.models.AuthResponse
@@ -18,11 +20,13 @@ import javax.inject.Inject
  *
  * Handles PIN login state and business logic.
  * Uses StateFlow for reactive UI updates.
+ * Connects Socket.IO after successful authentication.
  */
 @HiltViewModel
 class LoginViewModel @Inject constructor(
     private val authRepository: AuthRepository,
-    private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage
+    private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+    private val socketManager: SocketManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<LoginState>(LoginState.Idle)
@@ -53,6 +57,10 @@ class LoginViewModel @Inject constructor(
             _state.value = when (result) {
                 is Result.Success -> {
                     Timber.d("✅ Login successful: ${result.data.staff.displayName}")
+
+                    // 🔌 Connect Socket.IO with JWT token
+                    connectSocketIO(result.data)
+
                     LoginState.Success(result.data)
                 }
                 is Result.Error -> {
@@ -85,6 +93,57 @@ class LoginViewModel @Inject constructor(
      */
     fun resetState() {
         _state.value = LoginState.Idle
+    }
+
+    /**
+     * 🔌 Connect Socket.IO after successful login
+     *
+     * Establishes real-time connection to backend with JWT authentication.
+     * Joins venue room to receive venue-specific events.
+     *
+     * @param authResponse Authentication response containing JWT token and venue context
+     */
+    private fun connectSocketIO(authResponse: AuthResponse) {
+        viewModelScope.launch {
+            try {
+                val socketUrl = if (BuildConfig.DEBUG) {
+                    BuildConfig.SOCKET_URL_DEV  // Development: ngrok URL
+                } else {
+                    BuildConfig.SOCKET_URL  // Production: https://api.avoqado.io
+                }
+
+                val jwtToken = authResponse.accessToken
+                val venueId = authResponse.venueId
+
+                Timber.d("🔌 [Socket.IO] Connecting to: $socketUrl")
+                Timber.d("🔌 [Socket.IO] Venue ID: $venueId")
+
+                // Connect with JWT authentication
+                socketManager.connect(
+                    url = socketUrl,
+                    token = jwtToken,
+                    reconnection = true,
+                    reconnectionAttempts = 5
+                )
+
+                // Wait for connection and join venue room
+                viewModelScope.launch {
+                    socketManager.isConnected.collect { connected ->
+                        if (connected) {
+                            Timber.i("✅ [Socket.IO] Connected successfully")
+
+                            // Join venue room to receive venue-specific events
+                            socketManager.joinVenueRoom(venueId)
+                            Timber.i("✅ [Socket.IO] Joined venue room: $venueId")
+                        }
+                    }
+                }
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Socket.IO] Connection failed")
+                // Don't block login on socket failure - app can work without real-time events
+            }
+        }
     }
 }
 

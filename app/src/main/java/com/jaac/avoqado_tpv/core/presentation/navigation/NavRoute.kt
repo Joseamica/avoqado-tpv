@@ -30,6 +30,11 @@ sealed class NavRoute(val route: String) {
     data object Home : NavRoute("home")
 
     /**
+     * Shifts screen - Shift management (open/close shifts)
+     */
+    data object Shifts : NavRoute("shifts")
+
+    /**
      * Settings screen
      */
     data object Settings : NavRoute("settings")
@@ -38,4 +43,10 @@ sealed class NavRoute(val route: String) {
      * Payment screen - EMV chip card payment with online authorization
      */
     data object Payment : NavRoute("payment")
+
+    /**
+     * SuperAdmin screen - Testing and debugging tools
+     * Access limited to superadmin users
+     */
+    data object SuperAdmin : NavRoute("superadmin")
 }

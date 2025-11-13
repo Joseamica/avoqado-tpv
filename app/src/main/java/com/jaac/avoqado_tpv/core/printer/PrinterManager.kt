@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.core.printer
 
 import android.content.Context
 import android.graphics.Bitmap
+import com.jaac.avoqado_tpv.R
 import com.pax.dal.IDAL
 import com.pax.dal.IPrinter
 import com.pax.neptunelite.api.NeptuneLiteUser
@@ -71,16 +72,15 @@ class PrinterManager @Inject constructor(
      *
      * **Receipt Layout:**
      * ```
-     * ================================
-     *          AVOQADO
-     *       Comprobante de Venta
-     * ================================
+     *      [AVOQADO LOGO]
+     *    RFC: ABC123456789
+     *   Dirección del venue
      *
-     * Fecha: 10/11/2025  13:45:23
+     * Fecha: 10/11/2025  13:03:27
      *
      * --------------------------------
      * Mastercard ****7182
-     * Tarjeta Contactless
+     * Tarjeta Contactless (NFC)
      * --------------------------------
      *
      * Monto:         $500.00 MXN
@@ -92,7 +92,7 @@ class PrinterManager @Inject constructor(
      * Autorizacion:  ABC123
      * Referencia:    757355196496
      *
-     * [QR CODE BITMAP]
+     *     [QR CODE BITMAP]
      *
      * Escanea para ver recibo digital
      *
@@ -107,6 +107,8 @@ class PrinterManager @Inject constructor(
      * @param tipAmount Optional tip amount (formatted)
      * @param cardDetails Optional card information (brand, masked PAN, entry mode)
      * @param referenceNumber Optional reference number
+     * @param venueRfc Optional venue RFC for fiscal compliance
+     * @param venueAddress Optional venue address
      * @return Result.success if printed, Result.failure if printer unavailable/error
      */
     fun printReceipt(
@@ -115,7 +117,9 @@ class PrinterManager @Inject constructor(
         authCode: String,
         tipAmount: String? = null,
         cardDetails: com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails? = null,
-        referenceNumber: String? = null
+        referenceNumber: String? = null,
+        venueRfc: String? = null,
+        venueAddress: String? = null
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
@@ -128,11 +132,64 @@ class PrinterManager @Inject constructor(
             printerInstance.init()
 
             // ========================================
-            // HEADER (Toast/Square style)
+            // HEADER - Avoqado Logo (professional branding - black version for thermal printer)
             // ========================================
-            printerInstance.printStr("================================\n", null)
-            printerInstance.printStr("          AVOQADO\n", null)
-            printerInstance.printStr("    Comprobante de Venta\n", null)
+            try {
+                val originalLogo = android.graphics.BitmapFactory.decodeResource(
+                    context.resources,
+                    R.drawable.logo_avoqado_black  // Black logo optimized for thermal printer
+                )
+                if (originalLogo != null) {
+                    // Scale logo to reasonable width (220px for visibility)
+                    val targetWidth = 220
+                    val aspectRatio = originalLogo.height.toFloat() / originalLogo.width.toFloat()
+                    val targetHeight = (targetWidth * aspectRatio).toInt()
+
+                    val scaledLogo = Bitmap.createScaledBitmap(originalLogo, targetWidth, targetHeight, true)
+
+                    // Convert RGBA to RGB with white background (for thermal printer)
+                    // Step 1: Create white background bitmap in RGB_565 (thermal printer format)
+                    val logoWithWhiteBg = Bitmap.createBitmap(scaledLogo.width, scaledLogo.height, Bitmap.Config.RGB_565)
+                    val canvas = android.graphics.Canvas(logoWithWhiteBg)
+
+                    // Step 2: Fill with white background
+                    canvas.drawColor(android.graphics.Color.WHITE)
+
+                    // Step 3: Draw logo on top with proper alpha blending
+                    val paint = android.graphics.Paint().apply {
+                        isAntiAlias = true
+                        isFilterBitmap = true
+                    }
+                    canvas.drawBitmap(scaledLogo, 0f, 0f, paint)
+
+                    // Center the logo horizontally on thermal paper (384px width)
+                    val centeredLogo = centerBitmap(logoWithWhiteBg, targetWidth = 384)
+
+                    printerInstance.printBitmap(centeredLogo)
+                    printerInstance.printStr("\n", null)
+                    Timber.d("✅ [Printer] Centered black logo with white background printed (${centeredLogo.width}x${centeredLogo.height})")
+                } else {
+                    Timber.w("⚠️ [Printer] Logo resource is null, using text fallback")
+                    printerInstance.printStr("          AVOQADO\n", null)
+                }
+            } catch (e: Exception) {
+                Timber.w(e, "⚠️ [Printer] Could not print logo, using text fallback")
+                printerInstance.printStr("          AVOQADO\n", null)
+            }
+
+            printerInstance.printStr("    Comprobante de Venta\n\n", null)
+
+            // RFC and Address (if available) - small text
+            if (venueRfc != null) {
+                printerInstance.printStr("RFC: $venueRfc\n", null)
+            }
+            if (venueAddress != null) {
+                printerInstance.printStr("$venueAddress\n", null)
+            }
+            if (venueRfc != null || venueAddress != null) {
+                printerInstance.printStr("\n", null)
+            }
+
             printerInstance.printStr("================================\n\n", null)
 
             // Date & Time
@@ -157,14 +214,14 @@ class PrinterManager @Inject constructor(
             val tipValue = tipAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
             val totalValue = amountValue + tipValue
 
-            printerInstance.printStr("Monto:         $$${amount} MXN\n", null)
+            printerInstance.printStr("Monto:         \$${amount} MXN\n", null)
 
             if (tipValue > java.math.BigDecimal.ZERO) {
-                printerInstance.printStr("Propina:        $$${tipAmount} MXN\n", null)
+                printerInstance.printStr("Propina:        \$${tipAmount} MXN\n", null)
             }
 
             printerInstance.printStr("================================\n", null)
-            printerInstance.printStr("TOTAL:         $$${totalValue} MXN\n", null)
+            printerInstance.printStr("TOTAL:         \$${totalValue} MXN\n", null)
             printerInstance.printStr("================================\n\n", null)
 
             // ========================================
@@ -178,15 +235,20 @@ class PrinterManager @Inject constructor(
             }
 
             // ========================================
-            // QR CODE BITMAP (Clip/MercadoPago style)
+            // QR CODE BITMAP (Centered - Clip/MercadoPago style)
             // ========================================
             try {
                 val qrBitmap = generateQrBitmap(receiptUrl, size = 200)
                 if (qrBitmap != null) {
                     Timber.d("✅ [Printer] QR bitmap generated (${qrBitmap.width}x${qrBitmap.height})")
-                    printerInstance.printBitmap(qrBitmap)  // PAX API only needs bitmap parameter
+
+                    // Center the QR code by adding left padding
+                    // PAX thermal printer width is typically 384px, QR is 200px
+                    // Left margin = (384 - 200) / 2 = 92px ≈ centered
+                    val centeredQr = centerBitmap(qrBitmap, targetWidth = 384)
+                    printerInstance.printBitmap(centeredQr)
                     printerInstance.printStr("\n", null)
-                    Timber.d("✅ [Printer] QR bitmap printed")
+                    Timber.d("✅ [Printer] Centered QR bitmap printed")
                 } else {
                     Timber.w("⚠️ [Printer] QR bitmap generation returned null")
                 }
@@ -194,7 +256,7 @@ class PrinterManager @Inject constructor(
                 Timber.w(e, "⚠️ [Printer] Could not generate/print QR bitmap")
             }
 
-            printerInstance.printStr("Escanea para ver recibo digital\n\n", null)
+            printerInstance.printStr(" Escanea para ver recibo digital\n\n", null)
 
             // ========================================
             // FOOTER (Professional thank you)
@@ -259,6 +321,40 @@ class PrinterManager @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ [Printer] Failed to generate QR bitmap")
             null
+        }
+    }
+
+    /**
+     * Center a bitmap horizontally by adding white padding on both sides.
+     *
+     * @param source Original bitmap to center
+     * @param targetWidth Target width for the centered bitmap (default: 384px for PAX printer)
+     * @return New bitmap with centered content and white background
+     */
+    private fun centerBitmap(source: Bitmap, targetWidth: Int = 384): Bitmap {
+        return try {
+            // If source is already wider than target, return as-is
+            if (source.width >= targetWidth) {
+                return source
+            }
+
+            // Calculate left margin to center the bitmap
+            val leftMargin = (targetWidth - source.width) / 2
+
+            // Create new bitmap with target width
+            val centeredBitmap = Bitmap.createBitmap(targetWidth, source.height, Bitmap.Config.RGB_565)
+
+            // Fill with white background
+            val canvas = android.graphics.Canvas(centeredBitmap)
+            canvas.drawColor(android.graphics.Color.WHITE)
+
+            // Draw source bitmap centered
+            canvas.drawBitmap(source, leftMargin.toFloat(), 0f, null)
+
+            centeredBitmap
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ [Printer] Could not center bitmap, returning original")
+            source
         }
     }
 

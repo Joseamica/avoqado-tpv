@@ -371,13 +371,109 @@ interface ApiService {
         @Body request: UpdateTableRequest
     ): Response<Table>
 
-    // ========== Shifts (Timeclock) ==========
+    // ========== Shifts Management (Toast/Square Pattern) ==========
+
+    /**
+     * Open a new shift
+     *
+     * POST /tpv/venues/{venueId}/shifts/open
+     *
+     * Opens a new work shift with starting cash amount.
+     * Similar to Toast/Square POS shift management.
+     *
+     * Flow:
+     * 1. Staff member enters starting cash amount
+     * 2. Backend creates shift record with status = OPEN
+     * 3. Shift tracks all payments/orders automatically
+     * 4. Returns created shift with ID
+     *
+     * @param venueId Venue identifier
+     * @param request Open shift request with staffId, startingCash
+     * @return Created shift object
+     */
+    @POST("tpv/venues/{venueId}/shifts/open")
+    suspend fun openShift(
+        @Path("venueId") venueId: String,
+        @Body request: com.jaac.avoqado_tpv.features.shift.data.dto.OpenShiftRequest
+    ): Response<com.jaac.avoqado_tpv.features.shift.data.dto.ShiftResponse>
+
+    /**
+     * Close an existing shift
+     *
+     * POST /tpv/venues/{venueId}/shifts/{shiftId}/close
+     *
+     * Closes an open shift with automatic calculation of:
+     * - Payment breakdown (cash, card, voucher, other)
+     * - Products sold count
+     * - Inventory consumed (FIFO batches)
+     * - Total sales, tips, orders
+     *
+     * Backend automatically calculates all metrics.
+     * Optional closeData for future manual reconciliation (FASE 2).
+     *
+     * @param venueId Venue identifier
+     * @param shiftId Shift identifier
+     * @param request Close shift request (can be empty, backend auto-calculates)
+     * @return Updated shift with automatic calculations
+     */
+    @POST("tpv/venues/{venueId}/shifts/{shiftId}/close")
+    suspend fun closeShift(
+        @Path("venueId") venueId: String,
+        @Path("shiftId") shiftId: String,
+        @Body request: com.jaac.avoqado_tpv.features.shift.data.dto.CloseShiftRequest
+    ): Response<com.jaac.avoqado_tpv.features.shift.data.dto.ShiftResponse>
+
+    /**
+     * Get current active shift for venue
+     *
+     * GET /tpv/venues/{venueId}/shift
+     *
+     * Returns the currently open shift for the venue, or null if no shift is open.
+     * Backend returns: {"shift": ShiftDto | null}
+     *
+     * @param venueId Venue identifier
+     * @return Response wrapper containing shift (or null if no active shift)
+     */
+    @GET("tpv/venues/{venueId}/shift")
+    suspend fun getCurrentShift(
+        @Path("venueId") venueId: String
+    ): Response<com.jaac.avoqado_tpv.features.shift.data.dto.CurrentShiftResponse>
+
+    /**
+     * Get shift history for venue
+     *
+     * GET /tpv/venues/{venueId}/shifts
+     *
+     * Returns paginated list of shifts for the venue.
+     * Backend returns: {"success": true, "data": [ShiftDto, ...], "meta": {...}}
+     * Used to display shift history on Turnos screen (Square/Toast POS pattern).
+     *
+     * **IMPORTANT**: Backend does NOT support status filter. Returns all shifts (OPEN + CLOSED).
+     * Filter on Android side if you need only CLOSED shifts.
+     *
+     * @param venueId Venue identifier
+     * @param pageSize Number of shifts per page (default: 10)
+     * @param pageNumber Page number (default: 1)
+     * @return Paginated response with shifts list and metadata
+     */
+    @GET("tpv/venues/{venueId}/shifts")
+    suspend fun getShiftHistory(
+        @Path("venueId") venueId: String,
+        @Query("pageSize") pageSize: Int = 10,
+        @Query("pageNumber") pageNumber: Int = 1
+    ): Response<com.jaac.avoqado_tpv.features.shift.data.dto.ShiftHistoryResponse>
+
+    // ========== Shifts (Timeclock) - DEPRECATED ==========
+    // TODO: Remove these after shift management migration complete
 
     /**
      * Clock in (start shift)
      *
      * POST /tpv/venues/{venueId}/shifts/clock-in
+     *
+     * @deprecated Use openShift() instead
      */
+    @Deprecated("Use openShift() instead")
     @POST("tpv/venues/{venueId}/shifts/clock-in")
     suspend fun clockIn(
         @Path("venueId") venueId: String

@@ -1,0 +1,888 @@
+package com.jaac.avoqado_tpv.features.shift.presentation
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Error
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
+import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
+import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.features.shift.domain.Shift
+import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
+import java.math.BigDecimal
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
+/**
+ * Shift Screen
+ *
+ * Full-screen shift management interface (Turnos).
+ * Follows Toast/Square POS pattern with current shift card + context-aware action button.
+ *
+ * **Layout:**
+ * ```
+ * ┌─────────────────────────────────────┐
+ * │ TURNOS                        [←]   │  ← Top bar
+ * ├─────────────────────────────────────┤
+ * │ ┌─────────────────────────────────┐ │
+ * │ │ TURNO ACTUAL                    │ │
+ * │ │ 🟢 Abierto - Juan Pérez         │ │  ← Current shift card
+ * │ │ Inicio: 14:30                   │ │
+ * │ │ Ventas: $1,250.00               │ │
+ * │ │                                 │ │
+ * │ │ [Cerrar Turno] ← RED BUTTON     │ │  ← Context-aware button
+ * │ └─────────────────────────────────┘ │
+ * │                                     │
+ * │ (Future: HISTORIAL DE TURNOS)       │  ← Phase 2
+ * └─────────────────────────────────────┘
+ * ```
+ *
+ * **Usage:**
+ * ```kotlin
+ * ShiftScreen(
+ *     onNavigateBack = { navController.popBackStack() }
+ * )
+ * ```
+ *
+ * @param onNavigateBack Callback to navigate back to previous screen
+ * @param viewModel ShiftViewModel (injected by Hilt)
+ */
+@Composable
+fun ShiftScreen(
+    onNavigateBack: () -> Unit,
+    viewModel: ShiftViewModel = hiltViewModel()
+) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+
+    // Dialog states
+    var showOpenDialog by remember { mutableStateOf(false) }
+    var showCloseDialog by remember { mutableStateOf(false) }
+    var selectedShift by remember { mutableStateOf<Shift?>(null) }
+
+    Scaffold(
+        topBar = {
+            AvoqadoTopBar(
+                title = "Turnos",
+                onNavigationClick = onNavigateBack
+            )
+        }
+    ) { paddingValues ->
+        ResponsiveScaffold(
+            scrollable = true,
+            modifier = Modifier.padding(paddingValues)
+        ) {
+            when (val currentState = state) {
+                is ShiftState.Loading -> {
+                    AvoqadoLoadingOverlay(message = "Cargando turno...")
+                }
+
+                is ShiftState.ShiftActive -> {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(24.dp)
+                    ) {
+                        ActiveShiftContent(
+                            shift = currentState.shift,
+                            onCloseShift = { showCloseDialog = true }
+                        )
+
+                        if (currentState.shiftHistory.isNotEmpty()) {
+                            ShiftHistoryList(
+                                shifts = currentState.shiftHistory,
+                                onShiftClick = { shift -> selectedShift = shift }
+                            )
+                        }
+                    }
+                }
+
+                is ShiftState.NoActiveShift -> {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(24.dp)
+                    ) {
+                        NoActiveShiftContent(
+                            onOpenShift = { showOpenDialog = true }
+                        )
+
+                        if (currentState.shiftHistory.isNotEmpty()) {
+                            ShiftHistoryList(
+                                shifts = currentState.shiftHistory,
+                                onShiftClick = { shift -> selectedShift = shift }
+                            )
+                        }
+                    }
+                }
+
+                is ShiftState.ShiftClosed -> {
+                    ShiftClosedContent(
+                        shift = currentState.shift
+                    )
+                }
+
+                is ShiftState.Error -> {
+                    ErrorContent(
+                        message = currentState.message,
+                        onRetry = { viewModel.retry() }
+                    )
+                }
+
+                is ShiftState.Idle -> {
+                    // Initial state - loading will happen automatically
+                }
+            }
+        }
+
+        // Dialogs
+        if (showOpenDialog) {
+            OpenShiftDialog(
+                onDismiss = { showOpenDialog = false },
+                onConfirm = { startingCash ->
+                    viewModel.openShift(startingCash)
+                    showOpenDialog = false
+                }
+            )
+        }
+
+        if (showCloseDialog && state is ShiftState.ShiftActive) {
+            CloseShiftDialog(
+                shift = (state as ShiftState.ShiftActive).shift,
+                onDismiss = { showCloseDialog = false },
+                onConfirm = {
+                    viewModel.closeShift()
+                    showCloseDialog = false
+                }
+            )
+        }
+
+        // Shift detail dialog
+        selectedShift?.let { shift ->
+            ShiftDetailDialog(
+                shift = shift,
+                onDismiss = { selectedShift = null }
+            )
+        }
+    }
+}
+
+/**
+ * Active Shift Content
+ *
+ * Displays current active shift with close button.
+ */
+@Composable
+private fun ActiveShiftContent(
+    shift: Shift,
+    onCloseShift: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Section title
+        Spacer(modifier = Modifier.height(1.dp))
+        Text(
+            text = "TURNO ACTUAL",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+        )
+
+        // Current shift card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp)
+            ) {
+                // Status row
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = "Turno abierto",
+                        tint = Color(0xFF4CAF50),
+                        modifier = Modifier.size(24.dp)
+                    )
+
+                    Text(
+                        text = "  Abierto - ${shift.staffName}",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.Bold
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(start = 8.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Shift details
+                ShiftDetailRow(label = "Inicio", value = formatTime(shift.startTime))
+                ShiftDetailRow(label = "Duración", value = formatDuration(shift.durationMinutes))
+                ShiftDetailRow(label = "Ventas", value = "$${shift.totalSales}", highlight = true)
+                ShiftDetailRow(label = "Productos", value = "${shift.totalProductsSold}")
+                ShiftDetailRow(label = "Órdenes", value = "${shift.totalOrders}")
+                ShiftDetailRow(label = "Propinas", value = "$${shift.totalTips}")
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Close shift button
+                Button(
+                    onClick = onCloseShift,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFEB5757)  // Red for closing
+                    )
+                ) {
+                    Text("Cerrar Turno", fontSize = 16.sp)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * No Active Shift Content
+ *
+ * Displays empty state with open shift button.
+ */
+@Composable
+private fun NoActiveShiftContent(
+    onOpenShift: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Error,
+                    contentDescription = "Sin turno activo",
+                    tint = Color(0xFFEB5757),
+                    modifier = Modifier.size(48.dp)
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = "Sin Turno Activo",
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontWeight = FontWeight.Bold
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Abre un turno para comenzar a registrar ventas",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                Button(
+                    onClick = onOpenShift,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF4CAF50)  // Green for opening
+                    )
+                ) {
+                    Text("Abrir Turno", fontSize = 16.sp)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Shift Closed Content
+ *
+ * Shows closed shift summary (temporary state).
+ */
+@Composable
+private fun ShiftClosedContent(
+    shift: Shift
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = Color(0xFF4CAF50).copy(alpha = 0.1f)
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = "Turno cerrado",
+                    tint = Color(0xFF4CAF50),
+                    modifier = Modifier.size(64.dp)
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = "Turno Cerrado Exitosamente",
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontWeight = FontWeight.Bold
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Ventas: $${shift.totalSales}",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color(0xFF4CAF50)
+                )
+
+                Text(
+                    text = "Productos: ${shift.totalProductsSold}",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Error Content
+ *
+ * Shows error message with retry button.
+ */
+@Composable
+private fun ErrorContent(
+    message: String,
+    onRetry: () -> Unit
+) {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(32.dp)
+        ) {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(onClick = onRetry) {
+                Text("Reintentar")
+            }
+        }
+    }
+}
+
+/**
+ * Shift History List
+ *
+ * Displays list of closed shifts (Square/Toast POS pattern).
+ * Scrollable list to view multiple shifts.
+ */
+@Composable
+private fun ShiftHistoryList(
+    shifts: List<Shift>,
+    onShiftClick: (Shift) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // Section title
+        Text(
+            text = "HISTORIAL DE TURNOS",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+        )
+
+        // Scrollable history cards with max height
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(400.dp),  // Max height to make it scrollable
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(shifts) { shift ->
+                ShiftHistoryCard(
+                    shift = shift,
+                    onClick = { onShiftClick(shift) }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Shift History Card
+ *
+ * Individual card for a closed shift in the history list.
+ */
+@Composable
+private fun ShiftHistoryCard(
+    shift: Shift,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            // Header row: Date and staff
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = formatDate(shift.startTime),
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = FontWeight.Bold
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Text(
+                    text = shift.staffName,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Metrics row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                // Duration
+                Column {
+                    Text(
+                        text = "Duración",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                    Text(
+                        text = formatDurationForHistory(shift.durationMinutes),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                // Sales
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "Ventas",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                    Text(
+                        text = "$${shift.totalSales}",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontWeight = FontWeight.Bold
+                        ),
+                        color = Color(0xFF4CAF50)
+                    )
+                }
+
+                // Products
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "Productos",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                    Text(
+                        text = "${shift.totalProductsSold}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Shift Detail Row
+ *
+ * Reusable row for displaying shift information.
+ */
+@Composable
+private fun ShiftDetailRow(
+    label: String,
+    value: String,
+    highlight: Boolean = false
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+        )
+
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium.copy(
+                fontWeight = if (highlight) FontWeight.Bold else FontWeight.Normal
+            ),
+            color = if (highlight) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
+/**
+ * Format time from ISO 8601 to HH:mm
+ */
+private fun formatTime(isoTime: String): String {
+    return try {
+        val instant = Instant.parse(isoTime)
+        val localTime = instant.atZone(ZoneId.systemDefault()).toLocalTime()
+        DateTimeFormatter.ofPattern("HH:mm").format(localTime)
+    } catch (e: Exception) {
+        "N/A"
+    }
+}
+
+/**
+ * Format duration in minutes to readable string
+ *
+ * Used for active shifts - shows "Iniciando..." for shifts just started.
+ */
+private fun formatDuration(minutes: Int?): String {
+    if (minutes == null || minutes == 0) return "Iniciando..."
+
+    val hours = minutes / 60
+    val mins = minutes % 60
+
+    return when {
+        hours > 0 && mins > 0 -> "${hours}h ${mins}m"
+        hours > 0 -> "${hours}h"
+        else -> "${mins}m"
+    }
+}
+
+/**
+ * Format duration for shift history (closed shifts)
+ *
+ * Unlike active shifts, closed shifts should NEVER show "Iniciando...".
+ * If duration is invalid/missing, show "N/A" instead.
+ */
+private fun formatDurationForHistory(minutes: Int?): String {
+    // For closed shifts, null/0 duration = data quality issue, not "starting"
+    if (minutes == null || minutes <= 0) return "N/A"
+
+    val hours = minutes / 60
+    val mins = minutes % 60
+
+    return when {
+        hours > 0 && mins > 0 -> "${hours}h ${mins}m"
+        hours > 0 -> "${hours}h"
+        else -> "${mins}m"
+    }
+}
+
+/**
+ * Format date from ISO 8601 to "dd MMM, HH:mm"
+ */
+private fun formatDate(isoTime: String): String {
+    return try {
+        val instant = Instant.parse(isoTime)
+        val dateTime = instant.atZone(ZoneId.systemDefault())
+        DateTimeFormatter.ofPattern("dd MMM, HH:mm").format(dateTime)
+    } catch (e: Exception) {
+        "N/A"
+    }
+}
+
+/**
+ * Shift Detail Dialog
+ *
+ * Shows complete information for a selected shift from history.
+ * Displays payment breakdown, products sold, and duration.
+ */
+@Composable
+private fun ShiftDetailDialog(
+    shift: Shift,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text(
+                    text = "Detalles del Turno",
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontWeight = FontWeight.Bold
+                    )
+                )
+                Text(
+                    text = formatDate(shift.startTime),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Staff info
+                ShiftDetailRow(label = "Personal", value = shift.staffName)
+
+                // Duration
+                ShiftDetailRow(
+                    label = "Duración",
+                    value = formatDurationForHistory(shift.durationMinutes)
+                )
+
+                // Divider between Duration and VENTAS
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
+                )
+
+                // Sales summary
+                Text(
+                    text = "VENTAS",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+
+                ShiftDetailRow(
+                    label = "Total Ventas",
+                    value = "$${shift.totalSales}",
+                    highlight = true
+                )
+
+                // Divider between Total Ventas and Productos Vendidos
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
+                )
+
+                ShiftDetailRow(label = "Productos Vendidos", value = "${shift.totalProductsSold}")
+                ShiftDetailRow(label = "Órdenes", value = "${shift.totalOrders}")
+                ShiftDetailRow(label = "Propinas", value = "$${shift.totalTips}")
+
+                // Divider between Propinas and MÉTODOS DE PAGO
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
+                )
+
+                // Payment breakdown
+                Text(
+                    text = "MÉTODOS DE PAGO",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+
+                ShiftDetailRow(label = "Efectivo", value = "$${shift.totalCashPayments}")
+                ShiftDetailRow(label = "Tarjeta", value = "$${shift.totalCardPayments}")
+                ShiftDetailRow(label = "Vales", value = "$${shift.totalVoucherPayments}")
+                ShiftDetailRow(label = "Otros", value = "$${shift.totalOtherPayments}")
+
+                // Divider before EFECTIVO EN CAJA
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
+                )
+
+                // Cash drawer
+                Text(
+                    text = "EFECTIVO EN CAJA",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+
+                ShiftDetailRow(label = "Inicial", value = "$${shift.startingCash}")
+                ShiftDetailRow(
+                    label = "Final",
+                    value = shift.endingCash?.let { "$${it}" } ?: "N/A"
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cerrar")
+            }
+        }
+    )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PREVIEWS
+// ══════════════════════════════════════════════════════════════════════
+
+@Preview(showBackground = true)
+@Composable
+private fun ShiftScreenActivePreview() {
+    AvoqadoTheme {
+        ActiveShiftContent(
+            shift = Shift(
+                id = "shift-123",
+                venueId = "venue-1",
+                staffId = "staff-1",
+                staffName = "Juan Pérez",
+                startTime = "2025-01-15T14:30:00Z",
+                endTime = null,
+                status = ShiftStatus.OPEN,
+                startingCash = BigDecimal("500.00"),
+                endingCash = null,
+                totalSales = BigDecimal("1250.50"),
+                totalTips = BigDecimal("125.00"),
+                totalOrders = 15,
+                totalCashPayments = BigDecimal("600.00"),
+                totalCardPayments = BigDecimal("650.50"),
+                totalVoucherPayments = BigDecimal("0.00"),
+                totalOtherPayments = BigDecimal("0.00"),
+                totalProductsSold = 23,
+                durationMinutes = 150
+            ),
+            onCloseShift = {}
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun ShiftScreenNoActivePreview() {
+    AvoqadoTheme {
+        NoActiveShiftContent(
+            onOpenShift = {}
+        )
+    }
+}
+
+@Preview(showBackground = true, widthDp = 360)
+@Composable
+private fun ShiftDetailDialogPreview() {
+    AvoqadoTheme {
+        ShiftDetailDialog(
+            shift = Shift(
+                id = "shift-456",
+                venueId = "venue-1",
+                staffId = "staff-1",
+                staffName = "María González",
+                startTime = "2025-01-15T09:00:00Z",
+                endTime = "2025-01-15T17:30:00Z",
+                status = ShiftStatus.CLOSED,
+                startingCash = BigDecimal("1000.00"),
+                endingCash = BigDecimal("1450.00"),
+                totalSales = BigDecimal("2850.75"),
+                totalTips = BigDecimal("285.00"),
+                totalOrders = 28,
+                totalCashPayments = BigDecimal("1200.00"),
+                totalCardPayments = BigDecimal("1450.75"),
+                totalVoucherPayments = BigDecimal("150.00"),
+                totalOtherPayments = BigDecimal("50.00"),
+                totalProductsSold = 45,
+                durationMinutes = 510  // 8h 30m
+            ),
+            onDismiss = {}
+        )
+    }
+}

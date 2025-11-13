@@ -6,6 +6,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -29,6 +30,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
  * @param modifier Modifier for customization
  * @param subtitle Optional subtitle for context (e.g., "$125.50 · 5 items")
  * @param onNavigationClick Optional back button click handler
+ * @param onSettingsClick Optional settings button click handler
  * @param actions Optional action buttons
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -38,6 +40,7 @@ fun AvoqadoTopBar(
     modifier: Modifier = Modifier,
     subtitle: String? = null,
     onNavigationClick: (() -> Unit)? = null,
+    onSettingsClick: (() -> Unit)? = null,
     actions: @Composable RowScope.() -> Unit = {}
 ) {
     val shape = RoundedCornerShape(
@@ -89,7 +92,19 @@ fun AvoqadoTopBar(
                 }
             }
         },
-        actions = actions,
+        actions = {
+            // Settings button (if provided)
+            if (onSettingsClick != null) {
+                IconButton(onClick = onSettingsClick) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Settings"
+                    )
+                }
+            }
+            // Custom actions
+            actions()
+        },
         colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
             containerColor = MaterialTheme.colorScheme.surface,  // Dark surface (#2A2A2A)
             titleContentColor = MaterialTheme.colorScheme.onSurface,  // White text
@@ -148,6 +163,18 @@ private fun AvoqadoTopBarWithSubtitlePreview() {
             title = "Checkout",
             subtitle = "$125.50 · 5 items",
             onNavigationClick = { /* Handle back */ }
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun AvoqadoTopBarWithSettingsPreview() {
+    AvoqadoTheme {
+        AvoqadoTopBar(
+            title = "Hola, Juan Pérez",
+            subtitle = "Sin turno activo",
+            onSettingsClick = { /* Open settings */ }
         )
     }
 }

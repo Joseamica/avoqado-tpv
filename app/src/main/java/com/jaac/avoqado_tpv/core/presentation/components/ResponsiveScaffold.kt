@@ -117,11 +117,11 @@ data class ResponsiveSizes(
                     else -> 64.dp
                 },
 
-                // Padding
+                // Padding - ⭐ Reduced for more screen space (user request)
                 paddingScreen = when (category) {
-                    "small" -> 16.dp
-                    "medium" -> 20.dp
-                    else -> 24.dp
+                    "small" -> 8.dp   // ⭐ Was 16dp, now 8dp (closer to edge)
+                    "medium" -> 12.dp // ⭐ Was 20dp, now 12dp
+                    else -> 12.dp     // ⭐ Was 24dp, now 12dp (PAX A920)
                 },
                 paddingSection = when (category) {
                     "small" -> 12.dp

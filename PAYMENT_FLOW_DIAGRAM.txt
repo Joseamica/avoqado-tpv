@@ -1,0 +1,373 @@
+╔════════════════════════════════════════════════════════════════════════════════════════════╗
+║                         PAYMENT PROCESSING FLOW DIAGRAM                                    ║
+║                              Avoqado TPV (Android)                                        ║
+╚════════════════════════════════════════════════════════════════════════════════════════════╝
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 1: USER INPUT (Pre-Payment)                                                           │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+    WelcomeScreen
+         │
+         ├─→ Modal: AmountInputScreen
+         │        └─→ User enters amount (e.g., "30.00")
+         │             │
+         │             └─→ submitAmount("30.00")
+         │                  ├─ Line: PaymentViewModel.kt:517
+         │                  ├─ State: CollectingRating
+         │                  └─ EVENT: 🔌 PAYMENT_INITIATED
+         │                          (amount=3000 cents, venueId, staffId)
+         │
+         ├─→ Modal: RatingScreen (Optional)
+         │        └─→ User rates or skips
+         │             └─→ submitRating(5)
+         │                  └─ State: CollectingTip
+         │
+         ├─→ Modal: TipScreen (Optional)
+         │        └─→ User adds tip or skips
+         │             └─→ submitTip("5.00")
+         │                  └─ State: SelectingMerchant
+         │
+         └─→ Modal: MerchantSelectionContent
+                  └─→ User selects merchant account
+                       └─→ selectMerchant(merchantB)
+                            ├─ Reinitialize SDK (3-5 seconds)
+                            └─ State: Ready for startPayment()
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 2: BLUMON SDK CONFIGURATION                                                           │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+                    PaymentScreen: "Inserta o toca la tarjeta"
+                              │
+                              └─→ User clicks "Continuar"
+                                   │
+                                   ├─ startPayment()
+                                   │  (Line: PaymentViewModel.kt:700)
+                                   │
+                                   ├─→ PASO 1: PreTrans (ConfiguringKernel)
+                                   │   ├─ Line: 741
+                                   │   ├─ State: ConfiguringKernel
+                                   │   ├─ EVENT: 🔌 PAYMENT_PROCESSING
+                                   │   │         (message: "Configurando terminal...")
+                                   │   │
+                                   │   └─ if ERROR (Line 754-765)
+                                   │      ├─ State: Error(context preserved)
+                                   │      └─ EVENT: 🔌 PAYMENT_FAILED
+                                   │              (canRetry=true, preserves context)
+                                   │
+                                   ├─→ PASO 2: StartDetectCard
+                                   │   ├─ Line: 802
+                                   │   ├─ State: DetectingCard
+                                   │   ├─ UI: "Esperando tarjeta..."
+                                   │   │
+                                   │   └─ if ERROR (Line 810-814)
+                                   │      ├─ State: Error(context preserved)
+                                   │      └─ EVENT: 🔌 PAYMENT_FAILED
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 3: CARD DETECTION & TYPE ROUTING                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+                    Card Detected! (Line 818-822)
+                              │
+                    ┌─────────┼─────────┐
+                    │         │         │
+                   MAG       ICC       PICC
+                   │         │         │
+                   │         │         └─→ ROUTE: processContactlessPayment()
+                   │         │
+                   │         └─→ Continue to PASO 3 (Chip)
+                   │
+                   └─→ Continue to PASO 3 (Mag)
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 4: CHIP PAYMENT PROCESSING (Most Common)                                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+    PASO 3: StartEmvTrans (Line 847-865)
+    ├─ State: Processing("Procesando chip...")
+    ├─ Extract EMV tags (21 tags required)
+    │  └─ Line 877-914: GetEmvTagListUseCase
+    │     └─ Extract Track2 data
+    │
+    └─ if ERROR (Line 856-860)
+       ├─ State: Error(context preserved)
+       └─ EVENT: 🔌 PAYMENT_FAILED
+              │
+              └─ User taps "Reintentar" → Back to DetectingCard
+
+    PASO 3.5: Extract EMV Tags & Track2 (Line 869-939)
+    ├─ State: Processing("Leyendo datos de la tarjeta...")
+    ├─ GetEmvTagListUseCase (get 21 tags)
+    ├─ GetTagValueUseCase (extract Track2)
+    │
+    └─ SUCCESS: Continue to PASO 4
+
+    PASO 4: SaleIcc - Online Authorization (Line 946-970)
+    ├─ State: Processing("Autorizando con banco...")
+    ├─ performOnlineAuthorization()
+    │  ├─ Line 1056-1200
+    │  ├─ Call Blumon Momentum API (SaleIccUseCase)
+    │  ├─ Sends: amount, track2, emvTagList to bank
+    │  │
+    │  └─ Response: saleData with
+    │     ├─ authorization code
+    │     ├─ reference number
+    │     ├─ binInformation (card brand)
+    │     └─ arpc (if card requires completion)
+    │
+    └─ if ERROR (Line 957-961)
+       ├─ State: Error(userFriendlyError)
+       └─ EVENT: 🔌 PAYMENT_FAILED
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 5: EMV COMPLETION & SUCCESS                                                           │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+    PASO 4.5: Check AIP for ARPC Requirement (Line 974-994)
+    ├─ Extract tag 0x82 (Application Interchange Profile)
+    ├─ Determine if card needs CompleteEmvTrans
+    │
+    └─ arpcRequired? ────┬─→ YES: Continue to PASO 5
+                        │
+                        └─→ NO: Skip to Success
+
+    PASO 5: CompleteEmvTrans (Line 996-1020)
+    ├─ State: Processing (implicit)
+    ├─ Send ARPC to card
+    └─ if ERROR (Line 1008-1012)
+       ├─ State: Error("Error finalizando...")
+       └─ EVENT: 🔌 PAYMENT_FAILED
+
+    SUCCESS! (Line 1021-1026)
+    ├─ Log: "🎉 PAYMENT APPROVED WITH ONLINE AUTHORIZATION!"
+    ├─ State: Success(authCode, amount)
+    ├─ UI: Shows success screen with auth code
+    │
+    └─→ Call handlePaymentSuccess() [BACKGROUND, Line 1029]
+        (Does NOT block UI - user sees Success immediately)
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 6: BACKEND PAYMENT RECORDING [BACKGROUND ASYNC]                                       │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+    handlePaymentSuccess() [Background - viewModelScope.launch]
+    (Line 1857-2001)
+    │
+    ├─→ Extract card details from binInformation (Line 1903-1906)
+    │   └─ Get real card brand (VISA, MASTERCARD, etc.)
+    │
+    ├─→ Build PaymentContext.FastPayment (Line 1914-1922)
+    │   ├─ amount, tip, rating (user data from earlier)
+    │   ├─ merchantAccountId (from selected merchant)
+    │   ├─ venueId, staffId (from auth context)
+    │   └─ authorizationNumber, referenceNumber (from Blumon)
+    │
+    ├─→ recordPaymentUseCase() [BACKEND CALL]
+    │   (Line 1927-1932)
+    │   │
+    │   ├─→ FastPaymentRecorder.recordPayment()
+    │   │   (Line 54-232 in FastPaymentRecorder.kt)
+    │   │   │
+    │   │   ├─→ POST /tpv/venues/{venueId}/fast
+    │   │   │   ├─ Sends: FastPaymentRequest DTO
+    │   │   │   ├─ Headers: JWT token from auth
+    │   │   │   │
+    │   │   │   └─ Backend Response:
+    │   │   │      ├─ paymentId (generated by backend) 🆕
+    │   │   │      ├─ digitalReceipt { receiptUrl, accessKey }
+    │   │   │      └─ amount, tipAmount
+    │   │   │
+    │   │   ├─→ if 200 OK (Line 86-101)
+    │   │   │   └─ Result.success(receipt)
+    │   │   │
+    │   │   └─→ if ERROR (Line 104-159)
+    │   │      └─ Result.failure(userFriendlyError)
+    │   │
+    │   └─ Returns: Result<PaymentReceipt>
+    │
+    ├─→ result.onSuccess { receipt } (Line 1935-1955)
+    │   ├─ Update Success state with receipt + card details
+    │   ├─ PaymentState.Success(
+    │   │   authCode, amount, tip, rating,
+    │   │   receipt = receipt, 🆕
+    │   │   cardDetails = cardDetails, 🆕
+    │   │   referenceNumber = referenceNumber 🆕
+    │   │ )
+    │   │
+    │   ├─ Log: "✅ Payment recorded successfully | paymentId=${receipt.paymentId}"
+    │   │
+    │   └─ EVENT: 🔌 PAYMENT_COMPLETED
+    │          (paymentId from backend, amount, receipt URL)
+    │
+    └─→ result.onFailure { error } (Line 1956-1994)
+        ├─ Log: "❌ Failed to record payment: ${error.message}"
+        │
+        ├─ Queue for offline sync [CRITICAL]
+        │  ├─ Create QueuedPayment entity
+        │  ├─ paymentQueueRepository.enqueue()
+        │  ├─ Stored in Room database
+        │  │
+        │  └─ PaymentSyncWorker will retry every 15 minutes
+        │     (Until network is available)
+        │
+        └─ NOTE: Payment already succeeded with Blumon!
+           └─ User sees Success, backend sync is async
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 7: CONTACTLESS PAYMENT (PICC) - ALTERNATIVE FLOW                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+    [From Phase 3 routing]
+    Card type = PICC (Contactless)
+         │
+         └─→ processContactlessPayment() [Line 1243-1365]
+             │
+             ├─ State: Processing("Procesando pago contactless...")
+             │
+             ├─ PASO 3: StartCtlssTransUseCase (Contactless specific)
+             │  ├─ Line 1246-1276
+             │  └─ Extract contactless EMV tags (different from chip)
+             │
+             ├─ PASO 4: performOnlineAuthorization() [SAME AS CHIP]
+             │  └─ Call SaleIccUseCase (works for both chip & contactless)
+             │
+             └─ SUCCESS → Success state → handlePaymentSuccess() [SAME AS CHIP]
+                (Contactless follows identical backend recording flow)
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 8: ERROR RETRY - SMART RETRY CONTEXT                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+    Payment fails at any point (Line 810/856/957/1011/1272/etc)
+         │
+         └─→ State: Error(
+                message = "Tarjeta retirada demasiado rápido",
+                context = RetryContext(
+                    amount = "30.00",           🔄 Preserved!
+                    tipAmount = "5.00",         🔄 Preserved!
+                    rating = 5,                 🔄 Preserved!
+                    merchantAccountId = "m_001" 🔄 Preserved!
+                )
+            )
+         │
+         └─→ goBackOneStep() (Line 1704-1762)
+             ├─ If PaymentState.Error
+             │  └─ Return false (back to home - user can retry)
+             │
+             └─ If PaymentState.DetectingCard
+                └─ Return true (stay on payment screen)
+                   └─ User taps "Reintentar"
+                      └─→ Back to DetectingCard (NOT EnteringAmount)
+                          └─ Amount, tip, rating, merchant all preserved!
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│ SOCKET.IO EVENT FLOW - MULTI-TERMINAL COORDINATION                                          │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+    Terminal A (This Payment)          Server                    Terminal B
+    ─────────────────────────────────────────────────────────────────────────
+         │
+         ├─ PAYMENT_INITIATED 🔌       ─────→ Server listens ────→ Terminal B observes
+         │  (temp paymentId, amount)         (logs to DB)          (optional UI update)
+         │
+         ├─ PAYMENT_PROCESSING 🔌      ─────→ Server listens ────→ Terminal B observes
+         │  (configuring kernel)            (monitors DB)         (optional notification)
+         │
+         ├─ [Card processing...]
+         │
+         ├─ PAYMENT_FAILED 🔌          ─────→ Server listens ────→ Terminal B observes
+         │  (error: "card removed")         (marks as failed)      (error notification)
+         │
+         └─ PAYMENT_COMPLETED 🔌       ─────→ Server listens ────→ Terminal B observes
+            (backend paymentId, receipt)    (broadcasts to room)    (refreshes order)
+
+    Terminal B receives events via SocketManager.events SharedFlow
+    (Line: PaymentViewModel.kt:358-391)
+
+    When PaymentCompleted received:
+    ├─ Can check if it's for current order
+    ├─ Refresh order status if needed
+    └─ Optional: Show notification on another terminal's screen
+
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+│ STATE MACHINE - COMPLETE OVERVIEW                                                           │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Idle
+ │
+ └─→ EnteringAmount ──INITIATED──→ CollectingRating
+                                     │
+                                     └─→ CollectingTip
+                                         │
+                                         └─→ SelectingMerchant
+                                             │
+                                             └─→ ConfiguringKernel ──PROCESSING──→ DetectingCard
+                                                 │                                    │
+                                                 └─ERROR──┐                          └─ERROR──┐
+                                                          │                                   │
+                                                 ┌─→ Processing ──PROCESSING──→ Success    Error ──FAILED──→ (retry or home)
+                                                 │        │                       │
+                                                 │        └─ERROR──┐              └─→ handlePaymentSuccess()
+                                                 │                 │                  ├─ [Async backend recording]
+                                            (Chip/                 │                  ├─ onSuccess → Update Success + COMPLETED
+                                            Contactless)            │                  └─ onFailure → Queue offline + FAILED*
+                                                 │                   │
+                                                 └────────ERROR──────┘
+                                                              │
+                                                              └─→ Error ──FAILED──→ (retry or home)
+
+
+(*) Backend recording failure is queued for offline sync, not marked as payment failed
+    because the payment already succeeded with Blumon SDK.
+
+
+═════════════════════════════════════════════════════════════════════════════════════════════════
+KEY METRICS
+═════════════════════════════════════════════════════════════════════════════════════════════════
+
+Phase 1 (User input):           ~2-5 seconds (depends on user)
+Phase 2 (Kernel config):        ~1-2 seconds
+Phase 3 (Card detection):       ~1-3 seconds (user taps/inserts)
+Phase 4 (Online auth):          ~3-5 seconds (network dependent)
+Phase 5 (EMV completion):       ~0-2 seconds (if needed)
+Phase 6 (Backend recording):    ~1-2 seconds (async, doesn't block)
+─────────────────────────────────────────────────────────────────
+Total:                          ~8-15 seconds from amount input to success
+
+Blumon SDK reinit (merchant switch): ~3-5 seconds
+
+
+═════════════════════════════════════════════════════════════════════════════════════════════════
+CRITICAL CODE LOCATIONS - QUICK REFERENCE
+═════════════════════════════════════════════════════════════════════════════════════════════════
+
+File: PaymentViewModel.kt
+
+Event Emission Points (TO ADD):
+└─ PAYMENT_INITIATED:   Line 517 (submitAmount)
+└─ PAYMENT_PROCESSING:  Line 795 (after PreTrans success)
+└─ PAYMENT_FAILED:      Line 810, 856, 957, 1011 (error states)
+└─ PAYMENT_COMPLETED:   Line 1935 (backend success)
+
+Current Code:
+└─ State transitions:   Line 120-142 (PaymentState enum)
+└─ Socket listeners:    Line 358-391 (collectSocketEvents)
+└─ Error handling:      Line 810-1036 (startPayment error blocks)
+└─ Backend recording:   Line 1857-2001 (handlePaymentSuccess)
+
+Dependencies:
+└─ SocketManager:       Injected at line 117
+└─ recordPaymentUseCase: Injected at line 109
+└─ authRepository:      Injected at line 111
+└─ paymentQueueRepository: Injected at line 113

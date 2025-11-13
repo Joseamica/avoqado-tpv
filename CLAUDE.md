@@ -7,43 +7,43 @@
 
 ## 📚 Quick Reference
 
-- 🚀 **[GREENFIELD BLUEPRINT](./GREENFIELD_BLUEPRINT.md)** - Complete architecture & implementation plan for new TPV
+### Core Stack
 - 🏗️ **Architecture:** Clean Architecture (Presentation → Domain → Data)
 - 🎨 **UI:** 100% Jetpack Compose (NO XML)
 - 💉 **DI:** Hilt 2.57
 - 🔐 **Security:** EncryptedSharedPreferences, Certificate Pinning
-- 🌐 **Backend:** Production: `https://api.avoqado.io/api/v1/` Dev: `https://humane-immortal-pika.ngrok-free.app`
+- 🌐 **Backend:** Production: `https://api.avoqado.io/api/v1/` | Dev: `https://humane-immortal-pika.ngrok-free.app`
 - 🔌 **Real-time:** Socket.IO (room-based events)
+- 💳 **Payments:** Blumon PAX SDK (multi-merchant support)
+
+### Specialized Guides (Deep Dives)
+- 🚀 **[GREENFIELD_BLUEPRINT.md](./GREENFIELD_BLUEPRINT.md)** - Complete architecture & 28-day implementation plan
+- 💰 **[PAYMENT_RECONCILIATION.md](./PAYMENT_RECONCILIATION.md)** - Payment logic + Blumon multi-merchant system
+- 📱 **[UI_RESPONSIVE_GUIDE.md](./UI_RESPONSIVE_GUIDE.md)** - Responsive patterns for TPV devices (PAX A80, A920)
+- 🔌 **[SOCKET_IO_IMPLEMENTATION.md](./SOCKET_IO_IMPLEMENTATION.md)** - Real-time events architecture & integration
+- 🧪 **[TESTING_GUIDE.md](./TESTING_GUIDE.md)** - Unit tests, integration tests, debugging tools
+- 🧪 **[SOCKET_IO_TESTING.md](./SOCKET_IO_TESTING.md)** - Socket.IO testing strategies & examples
+- 🔐 **[SECURITY_CHECKLIST.md](./SECURITY_CHECKLIST.md)** - Encryption, tenant isolation, certificate pinning
 
 ---
 
-## 🎯 CRITICAL: Development Standards & Anti-Hallucination Protocol
+## 🎯 Core Principles: Anti-Hallucination Protocol
 
 > **MANDATORY**: All code MUST follow world-class Kotlin/Android best practices. NO exceptions unless explicitly documented.
 
-### 1. ZERO TOLERANCE for Bad Practices
+### Zero Tolerance for Bad Practices
 
-#### ❌ NEVER Do This (Immediate Red Flags)
+#### ❌ NEVER Do This
+
 ```kotlin
 // ❌ Magic numbers
 val timeout = 5000
 
-// ❌ God classes / Massive functions
-class Manager { /* 2000+ lines */ }
-
-// ❌ Mutable state without StateFlow/MutableState
+// ❌ Mutable state without StateFlow
 var isLoading = false
 
 // ❌ Blocking calls on Main thread
-suspend fun loadData() {
-    val data = database.query() // WRONG if on Main
-}
-
-// ❌ Suppress warnings without explanation
-@Suppress("UNCHECKED_CAST")
-
-// ❌ Raw types / Platform types
-fun process(data: List<Any>)
+suspend fun loadData() { database.query() }
 
 // ❌ Nullability hacks
 val value = data!!.field!!.value!!
@@ -51,36 +51,22 @@ val value = data!!.field!!.value!!
 // ❌ Exception swallowing
 try { riskyOperation() } catch (e: Exception) { }
 
-// ❌ String concatenation for paths
-val path = "https://api.com" + "/endpoint"
-
 // ❌ Manual threading
 Thread { doWork() }.start()
 ```
 
-#### ✅ ALWAYS Do This (Required Standards)
+#### ✅ ALWAYS Do This
 
 ```kotlin
 // ✅ Named constants
 private const val NETWORK_TIMEOUT_MS = 5000L
-private const val MAX_RETRY_ATTEMPTS = 3
 
-// ✅ Single Responsibility Principle
-class PaymentProcessor(private val repository: PaymentRepository) {
-    suspend fun processPayment(request: PaymentRequest): Result<Payment>
-}
-
-// ✅ Immutable state with Kotlin Flows
+// ✅ Immutable state with StateFlow
 private val _state = MutableStateFlow<UiState>(UiState.Idle)
 val state: StateFlow<UiState> = _state.asStateFlow()
 
 // ✅ Proper coroutine dispatchers
-suspend fun loadData() = withContext(Dispatchers.IO) {
-    database.query()
-}
-
-// ✅ Explicit nullability
-fun process(data: List<String>?)
+suspend fun loadData() = withContext(Dispatchers.IO) { database.query() }
 
 // ✅ Safe null handling
 val value = data?.field?.value ?: defaultValue
@@ -89,50 +75,35 @@ val value = data?.field?.value ?: defaultValue
 try {
     riskyOperation()
 } catch (e: NetworkException) {
-    Timber.e(e, "Network error during operation")
+    Timber.e(e, "Network error")
     emit(Result.Error(e.toUserFriendlyMessage()))
 }
 
-// ✅ Type-safe builders
-val url = buildString {
-    append(BASE_URL)
-    append("/api/v1")
-    append("/endpoint")
-}
-
 // ✅ Structured concurrency
-viewModelScope.launch {
-    doWork()
-}
+viewModelScope.launch { doWork() }
 ```
 
----
+### Naming Conventions
 
-### 2. Kotlin Best Practices (World-Class Standards)
-
-#### Naming Conventions
 ```kotlin
-// ✅ Classes: PascalCase
+// Classes: PascalCase
 class PaymentViewModel
 
-// ✅ Functions: camelCase (verb-based)
+// Functions: camelCase (verb-based)
 fun processPayment()
 fun calculateTotal()
-fun isValid()
 
-// ✅ Properties: camelCase
+// Properties: camelCase
 val totalAmount: BigDecimal
-val isProcessing: Boolean
 
-// ✅ Constants: SCREAMING_SNAKE_CASE
+// Constants: SCREAMING_SNAKE_CASE
 const val MAX_RETRY_ATTEMPTS = 3
-const val DEFAULT_TIMEOUT_MS = 30_000L
 
-// ✅ Private members: prefix with underscore for backing properties
-private val _state = MutableStateFlow<UiState>(UiState.Idle)
-val state: StateFlow<UiState> = _state.asStateFlow()
+// Backing properties: underscore prefix
+private val _state = MutableStateFlow(State.Idle)
+val state: StateFlow<State> = _state.asStateFlow()
 
-// ✅ Sealed classes for state
+// Sealed classes for state
 sealed class PaymentState {
     data object Idle : PaymentState()
     data class Loading(val progress: Float) : PaymentState()
@@ -141,681 +112,33 @@ sealed class PaymentState {
 }
 ```
 
-#### Coroutines & Flow (MANDATORY)
-```kotlin
-// ✅ ViewModel scope for UI operations
-viewModelScope.launch {
-    processPayment()
-}
+### Architecture Patterns (Clean Architecture)
 
-// ✅ IO dispatcher for network/database
-suspend fun fetchData() = withContext(Dispatchers.IO) {
-    api.getData()
-}
-
-// ✅ StateFlow for UI state (not LiveData)
-private val _uiState = MutableStateFlow(UiState.Idle)
-val uiState: StateFlow<UiState> = _uiState.asStateFlow()
-
-// ✅ SharedFlow for one-time events
-private val _events = Channel<PaymentEvent>(Channel.BUFFERED)
-val events = _events.receiveAsFlow()
-
-// ✅ Proper error handling in flows
-flow {
-    emit(Resource.Loading)
-    try {
-        val data = api.getData()
-        emit(Resource.Success(data))
-    } catch (e: Exception) {
-        Timber.e(e, "Failed to fetch data")
-        emit(Resource.Error(e.message))
-    }
-}
-```
-
-#### Dependency Injection (Hilt)
-```kotlin
-// ✅ Constructor injection (preferred)
-@HiltViewModel
-class PaymentViewModel @Inject constructor(
-    private val processPaymentUseCase: ProcessPaymentUseCase,
-    private val repository: PaymentRepository
-) : ViewModel()
-
-// ✅ Module provides dependencies
-@Module
-@InstallIn(SingletonComponent::class)
-object NetworkModule {
-    @Provides
-    @Singleton
-    fun provideOkHttpClient(): OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .build()
-}
-
-// ❌ NEVER use manual singletons (anti-pattern)
-object PaymentManager { /* BAD */ }
-```
-
-#### Jetpack Compose Best Practices
-```kotlin
-// ✅ Stateless composables
-@Composable
-fun PaymentButton(
-    onClick: () -> Unit,
-    enabled: Boolean,
-    modifier: Modifier = Modifier
-) {
-    Button(onClick = onClick, enabled = enabled, modifier = modifier) {
-        Text("Pay")
-    }
-}
-
-// ✅ Hoist state to caller
-@Composable
-fun PaymentScreen(
-    viewModel: PaymentViewModel = hiltViewModel()
-) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
-
-    PaymentContent(
-        state = state,
-        onPayClick = viewModel::processPayment
-    )
-}
-
-// ✅ ALWAYS add @Preview
-@Preview(showBackground = true)
-@Composable
-private fun PaymentButtonPreview() {
-    MaterialTheme {
-        PaymentButton(onClick = {}, enabled = true)
-    }
-}
-
-// ✅ Use semantic colors (not hardcoded)
-Text(color = MaterialTheme.colorScheme.primary)
-
-// ❌ NEVER hardcode colors
-Text(color = Color(0xFF2563EB)) // WRONG
-```
-
-#### Error Handling (CRITICAL - MANDATORY FOR ALL IMPLEMENTATIONS)
-
-> **NON-NEGOTIABLE**: Every feature MUST have perfect, user-friendly error handling. Technical errors are for logs, user messages are for humans.
-
-**Philosophy**: Errors are part of the user experience. A well-handled error builds trust; a cryptic error loses customers.
-
-##### ❌ NEVER Show Technical Errors to Users
-
-```kotlin
-// ❌ WRONG: Exposing internal SDK errors
-catch (e: Exception) {
-    _state.value = State.Error("Error: $e")
-    // User sees: "StartCtlssTransFailure$ReadingContactlessFailure@efcd17c"
-}
-
-// ❌ WRONG: Generic unhelpful messages
-catch (e: Exception) {
-    _state.value = State.Error("Something went wrong")
-    // User doesn't know WHAT or HOW to fix
-}
-
-// ❌ WRONG: Swallowing errors silently
-catch (e: Exception) {
-    // Nothing - user has no idea payment failed!
-}
-```
-
-##### ✅ ALWAYS Translate Errors to User-Friendly Messages
-
-```kotlin
-// ✅ CORRECT: Translate SDK/API errors to actionable user messages
-if (result.isLeft) {
-    val error = result.leftValue()
-    Timber.e("❌ [TECHNICAL] Contactless failed: $error")  // Log technical details
-
-    // Translate to user-friendly message
-    val userMessage = when {
-        error.toString().contains("ReadingContactlessFailure", ignoreCase = true) -> {
-            "La tarjeta se retiró demasiado rápido.\n\n" +
-            "Por favor, mantenga la tarjeta sobre el lector hasta que " +
-            "aparezca el mensaje de confirmación."
-        }
-        error.toString().contains("Timeout", ignoreCase = true) -> {
-            "Tiempo de espera agotado.\n\n" +
-            "Por favor, mantenga la tarjeta cerca del lector durante toda la transacción."
-        }
-        error.toString().contains("Collision", ignoreCase = true) -> {
-            "Se detectaron múltiples tarjetas.\n\n" +
-            "Por favor, presente solo una tarjeta a la vez."
-        }
-        error.toString().contains("NetworkException", ignoreCase = true) -> {
-            "No se pudo conectar al servidor.\n\n" +
-            "Verifique su conexión a internet e intente nuevamente."
-        }
-        else -> {
-            "Error leyendo tarjeta contactless.\n\n" +
-            "Intente nuevamente o inserte la tarjeta en el chip."
-        }
-    }
-
-    _state.value = State.Error(userMessage)  // Show friendly message
-}
-```
-
-##### Error Message Checklist (Every Error MUST Have)
-
-1. **✅ What happened** (in simple terms)
-   - ✅ "La tarjeta se retiró demasiado rápido"
-   - ❌ "ReadingContactlessFailure"
-
-2. **✅ Why it happened** (if helpful)
-   - ✅ "El servidor está en mantenimiento"
-   - ❌ "HTTP 503 Service Unavailable"
-
-3. **✅ How to fix it** (actionable steps)
-   - ✅ "Por favor, mantenga la tarjeta sobre el lector hasta que aparezca la confirmación"
-   - ❌ "Error code: 0x8001"
-
-4. **✅ Alternative action** (if available)
-   - ✅ "Intente nuevamente o inserte la tarjeta en el chip"
-   - ❌ "Payment failed"
-
-##### Real-World Examples from Avoqado TPV
-
-**Example 1: Contactless Card Removed Too Quickly**
-```kotlin
-// SDK Error: com.pax.api.PiccException: No response timeout
-// User Message: "La tarjeta se retiró demasiado rápido.\n\n
-//                Por favor, mantenga la tarjeta sobre el lector hasta
-//                que aparezca el mensaje de confirmación."
-```
-
-**Example 2: Network Timeout**
-```kotlin
-// SDK Error: java.net.SocketTimeoutException: timeout
-// User Message: "No se pudo conectar al servidor.\n\n
-//                Verifique su conexión a internet e intente nuevamente."
-```
-
-**Example 3: Payment Declined by Bank**
-```kotlin
-// Momentum Error: {"code":"NA_002","description":"NO AUTORIZADO"}
-// User Message: "Pago rechazado por el banco.\n\n
-//                Por favor, verifique con su banco o use otro método de pago."
-```
-
-##### Logging Strategy (Dual-Layer)
-
-```kotlin
-// ✅ ALWAYS log technical details for debugging
-Timber.e(e, "❌ [TECHNICAL] Payment failed with SDK error: ${error.javaClass.simpleName}")
-
-// ✅ THEN show user-friendly message
-_state.value = State.Error(userFriendlyMessage)
-```
-
-**Benefits:**
-- Developers get full technical context in logs (Logcat, Crashlytics)
-- Users get clear, actionable messages in UI
-- Support team can help users without confusing them with tech jargon
-
-##### Testing Error Messages
-
-Before merging ANY code with error handling:
-
-1. **✅ Trigger the error manually** (remove card, disable network, etc.)
-2. **✅ Read the message as a non-technical user** - Is it clear?
-3. **✅ Follow the instructions** - Can you actually fix it?
-4. **✅ Check logs** - Is technical info preserved for debugging?
-
-If ANY of these fail → FIX the error message.
-
-##### Common Error Patterns
-
-| Error Type | Bad Message | Good Message |
-|-----------|-------------|--------------|
-| **Network** | "IOException" | "No se pudo conectar. Verifique su internet." |
-| **Timeout** | "SocketTimeoutException" | "La operación tardó demasiado. Intente nuevamente." |
-| **SDK Error** | "ReadingContactlessFailure@efcd17c" | "La tarjeta se retiró muy rápido. Manténgala hasta la confirmación." |
-| **Validation** | "Invalid input" | "El monto debe ser mayor a $0.01" |
-| **Permission** | "SecurityException" | "La app necesita permiso de ubicación para procesar pagos." |
-| **Database** | "SQLiteException" | "Error guardando datos. Reinicie la app." |
-
----
-
-#### Responsive UI Design for TPV Devices (MANDATORY)
-
-> **CRITICAL**: All UI screens MUST be responsive and work on small POS devices (480x800 to 1280x800) WITHOUT scrolling.
-
-**Philosophy**: Professional POS systems (Square Terminal, Toast POS, Clover) NEVER require scrolling on core workflows (login, payment, checkout). Everything must be visible at once.
-
-**Common TPV Device Resolutions**:
-| Device | Resolution | Density | Use Case |
-|--------|------------|---------|----------|
-| **PAX A920** | 1280x720 dp | 320 dpi | Most common |
-| **PAX A80** | 1024x600 dp | 240 dpi | Budget option |
-| **Sunmi T2s** | 1280x800 dp | 213 dpi | Alternative |
-| **Generic 10"** | 1280x800 dp | 160 dpi | Testing baseline |
-
-##### ❌ NEVER Use Fixed Sizes for Vertical Layouts
-
-```kotlin
-// ❌ WRONG: Hardcoded sizes will overflow on small screens
-Column {
-    Image(modifier = Modifier.size(120.dp))
-    Spacer(modifier = Modifier.height(48.dp))
-    Text("Title")
-    Spacer(modifier = Modifier.height(48.dp))
-    PinPad() // This will be cut off on PAX A80!
-}
-```
-
-##### ✅ ALWAYS Use ResponsiveScaffold (Reusable Component)
-
-**Component**: `core/presentation/components/ResponsiveScaffold.kt`
-
-**Philosophy**: Don't repeat BoxWithConstraints logic in every screen. Use a centralized, tested component.
-
-```kotlin
-// ✅ CORRECT: Use ResponsiveScaffold for all screens
-@Composable
-fun LoginScreen() {
-    ResponsiveScaffold(
-        scrollable = false,  // Workflow screen - everything must fit
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        val sizes = LocalResponsiveSizes.current
-
-        // All sizes automatically adjust based on screen
-        Image(modifier = Modifier.size(sizes.logoSize))
-        Spacer(modifier = Modifier.height(sizes.spacingMedium))
-        Text("Ingresa tu PIN")
-        Spacer(modifier = Modifier.height(sizes.spacingMedium))
-        PinPad() // Guaranteed to fit!
-    }
-}
-```
-
-**Available size tokens from `LocalResponsiveSizes.current`:**
-
-| Token | Small (<600dp) | Medium (600-700dp) | Large (>700dp) | Usage |
-|-------|----------------|---------------------|----------------|-------|
-| `logoSize` | 60.dp | 80.dp | 100.dp | Venue logos, app icons |
-| `iconSizeSmall` | 16.dp | 20.dp | 24.dp | Small UI icons |
-| `iconSizeMedium` | 24.dp | 32.dp | 40.dp | Action buttons |
-| `iconSizeLarge` | 48.dp | 56.dp | 64.dp | Hero icons |
-| `spacingSmall` | 8.dp | 12.dp | 16.dp | Tight spacing |
-| `spacingMedium` | 16.dp | 24.dp | 32.dp | Standard spacing |
-| `spacingLarge` | 24.dp | 32.dp | 48.dp | Section dividers |
-| `paddingScreen` | 16.dp | 20.dp | 24.dp | Screen edges |
-
-**When to set `scrollable = true`:**
-- ✅ Long lists (products, orders, history)
-- ✅ Settings screens with many options
-- ✅ Forms longer than screen height
-- ❌ Login, PIN, payment screens (must fit without scroll)
-
-**Example (scrollable screen):**
-```kotlin
-ResponsiveScaffold(scrollable = true) {
-    val sizes = LocalResponsiveSizes.current
-
-    repeat(20) {
-        ProductCard()
-        Spacer(modifier = Modifier.height(sizes.spacingSmall))
-    }
-}
-```
-
-**Real implementation**: LoginScreen.kt:98-158 uses ResponsiveScaffold.
-
-##### Testing Responsive Layouts
-
-**MANDATORY checklist before committing any screen:**
-
-1. ✅ **Wrap screen with ResponsiveScaffold** (not raw BoxWithConstraints)
-2. ✅ **Use `LocalResponsiveSizes.current`** for all dynamic sizing
-3. ✅ **Test in Android Studio Preview** with multiple device configs:
-   ```kotlin
-   @Preview(name = "Small - PAX A80", device = "spec:width=1024dp,height=600dp")
-   @Preview(name = "Medium - PAX A920", device = "spec:width=1280dp,height=720dp")
-   @Preview(name = "Large - 10 inch", device = "spec:width=1280dp,height=800dp")
-   @Composable
-   fun MyScreenPreview() { MyScreen() }
-   ```
-4. ✅ **Verify no scroll on workflow screens** (login, payment, checkout)
-5. ✅ **Check spacing ratios** - Elements should look balanced across all sizes
-
-**Rule of thumb**: If you need to scroll on a **workflow screen** (login, payment, checkout), the layout is broken.
-
-**Acceptable scroll areas**:
-- ✅ Product lists
-- ✅ Order history
-- ✅ Settings pages
-- ❌ Login screen
-- ❌ PIN pad screen
-- ❌ Payment confirmation
-
----
-
-#### When to Create Reusable Components (Square/Toast Pattern)
-
-> **CRITICAL**: Always think "Will I need this UI pattern in more than one place?" If yes, create a component in the Design System.
-
-**✅ ALWAYS Create Reusable Component When:**
-- Pattern used in 2+ screens (Login + Activation = component)
-- Critical UI pattern (loading, errors, dialogs, empty states)
-- Consistent branding needed (buttons, cards, chips)
-- Complex UI with multiple states
-
-**❌ NEVER Duplicate UI Code:**
-```kotlin
-// ❌ WRONG: Inline overlay in LoginScreen
-if (state is Loading) {
-    Box(Modifier.fillMaxSize().background(Color.Black.copy(0.6f))) {
-        Card { CircularProgressIndicator() }
-    }
-}
-
-// ❌ WRONG: Same code duplicated in PaymentScreen
-if (state is Processing) {
-    Box(Modifier.fillMaxSize().background(Color.Black.copy(0.6f))) {
-        Card { CircularProgressIndicator() }
-    }
-}
-```
-
-**✅ CORRECT: Reusable Component in Design System:**
-```kotlin
-// ✅ core/presentation/components/AvoqadoLoadingIndicator.kt
-@Composable
-fun AvoqadoLoadingOverlay(
-    message: String,
-    modifier: Modifier = Modifier
-) {
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.6f)),
-        contentAlignment = Alignment.Center
-    ) {
-        Card { /* ... loading UI ... */ }
-    }
-}
-
-// ✅ LoginScreen.kt (1 line instead of 30+)
-if (state is Loading) {
-    AvoqadoLoadingOverlay(message = "Autenticando...")
-}
-
-// ✅ PaymentScreen.kt (reuses same component)
-if (state is Processing) {
-    AvoqadoLoadingOverlay(message = "Procesando pago...")
-}
-
-// ✅ ActivationScreen.kt (reuses same component)
-if (state is Activating) {
-    AvoqadoLoadingOverlay(message = "Activando terminal...")
-}
-```
-
-**Decision Tree:**
 ```
 ┌─────────────────────────────────────────┐
-│ Do I need this UI in 2+ places?        │
+│ PRESENTATION (UI)                       │
+│ • Composables (stateless)               │
+│ • ViewModels (StateFlow)                │
 └─────────────────────────────────────────┘
-                │
-        ┌───────┴───────┐
-        │               │
-       YES             NO
-        │               │
-        v               v
-┌───────────────┐   ┌──────────────┐
-│ Create in     │   │ Is it a      │
-│ Design System │   │ common       │
-│ (core/        │   │ pattern?     │
-│ components/)  │   │ (loading,    │
-└───────────────┘   │ error, etc.) │
-                    └──────────────┘
-                            │
-                    ┌───────┴───────┐
-                    │               │
-                   YES             NO
-                    │               │
-                    v               v
-            ┌───────────────┐   ┌──────────────┐
-            │ Create in     │   │ Keep inline  │
-            │ Design System │   │ (1-time use) │
-            │ anyway        │   └──────────────┘
-            │ (future-proof)│
-            └───────────────┘
+                  ↓
+┌─────────────────────────────────────────┐
+│ DOMAIN (Business Logic)                 │
+│ • UseCases (single responsibility)      │
+│ • Repository Interfaces                 │
+│ • Domain Models                         │
+└─────────────────────────────────────────┘
+                  ↓
+┌─────────────────────────────────────────┐
+│ DATA (Infrastructure)                   │
+│ • Repository Implementations            │
+│ • Data Sources (API, DB, SDK)           │
+│ • DTOs → Domain Mappers                 │
+└─────────────────────────────────────────┘
 ```
 
-**Examples from Avoqado TPV:**
-| UI Pattern | Component | Used In |
-|-----------|-----------|---------|
-| Loading overlay | `AvoqadoLoadingOverlay` | Login, Payment, Activation |
-| Text input | `AvoqadoTextField` | Forms across app |
-| Confirmation dialog | `AvoqadoDialog` | Delete, Logout, Confirm actions |
-| Empty state | `AvoqadoEmptyState` | Empty lists, no data screens |
-| Error message | `AvoqadoError` (TBD) | All screens with errors |
-
----
-
-#### Loading States & Preventing Flash Screens (CRITICAL UX)
-
-> **MANDATORY**: ALWAYS use `AvoqadoLoadingOverlay` for loading states. NEVER show flash screens during navigation or state transitions.
-
-**What are "Flash Screens"?**
-- Brief flicker of previous screen during navigation
-- Momentary display of wrong UI state
-- Jarring visual glitch that feels unprofessional
-- Common in apps with poor state management
-
-**❌ BAD: Flash Screen Example**
+**Example:**
 ```kotlin
-// User flow: WelcomeScreen → Enter amount → Navigate to PaymentScreen
-// Problem: Brief flash of WelcomeScreen before PaymentScreen appears
-
-// WelcomeScreen.kt
-onStartPaymentWithAmount = { amount ->
-    showAmountBottomSheet = false
-    navController.navigate(NavRoute.Payment.route)  // ❌ Instant navigation
-}
-
-// PaymentScreen.kt
-is PaymentState.Idle -> {
-    LaunchedEffect(initialAmount) {
-        if (initialAmount != null) {
-            viewModel.submitAmount(initialAmount)  // ❌ Async - causes flash
-        }
-    }
-}
-```
-
-**Result**: User sees:
-1. Amount modal closes
-2. Brief flash of WelcomeScreen ⚠️ (BAD UX)
-3. PaymentScreen appears
-
----
-
-**✅ GOOD: Loading Overlay Solution**
-```kotlin
-// PaymentScreen.kt
-is PaymentState.Idle -> {
-    // ✅ Show loading overlay immediately to prevent flash
-    if (initialAmount != null) {
-        AvoqadoLoadingOverlay(
-            message = "Preparando pago..."
-        )
-    }
-
-    LaunchedEffect(initialAmount) {
-        if (initialAmount != null) {
-            viewModel.submitAmount(initialAmount)
-        }
-    }
-}
-```
-
-**Result**: User sees:
-1. Amount modal closes
-2. **Smooth loading overlay** ✅ (Professional)
-3. PaymentScreen appears
-
----
-
-**MANDATORY Rules:**
-
-1. **ALWAYS use same loading component**: `AvoqadoLoadingOverlay`
-   - ✅ Consistent UX across entire app
-   - ✅ Maintains brand identity
-   - ✅ Easy to update globally
-
-2. **ALWAYS show loading during state transitions**:
-   ```kotlin
-   // ✅ Navigation with data
-   if (initialAmount != null) {
-       AvoqadoLoadingOverlay(message = "Preparando...")
-   }
-
-   // ✅ Async operations
-   if (state is Processing) {
-       AvoqadoLoadingOverlay(message = "Procesando...")
-   }
-
-   // ✅ SDK initialization
-   if (state is ConfiguringKernel) {
-       AvoqadoLoadingOverlay(message = "Configurando terminal...")
-   }
-   ```
-
-3. **NEVER navigate without loading if data processing is involved**:
-   ```kotlin
-   // ❌ WRONG: Instant navigation with async work
-   navController.navigate(Route.Payment)
-   viewModel.loadPaymentData()  // Flash screen!
-
-   // ✅ CORRECT: Show loading first
-   if (state is LoadingPaymentData) {
-       AvoqadoLoadingOverlay(message = "Cargando...")
-   }
-   ```
-
-4. **Loading message should be contextual**:
-   ```kotlin
-   // ✅ GOOD: Specific messages
-   "Preparando pago..."
-   "Procesando transacción..."
-   "Configurando terminal..."
-   "Activando dispositivo..."
-
-   // ❌ BAD: Generic messages
-   "Cargando..."
-   "Espere..."
-   "Procesando..."
-   ```
-
----
-
-**Common Flash Screen Scenarios & Fixes:**
-
-| Scenario | Problem | Solution |
-|----------|---------|----------|
-| **Navigation with data** | Modal closes → flash → new screen | Add `AvoqadoLoadingOverlay` in destination screen's idle/loading state |
-| **ViewModel init** | Empty state → flash → loaded state | Show loading overlay during init, hide when data ready |
-| **API calls** | Old data → flash → new data | Use loading state between requests |
-| **SDK operations** | Previous screen → flash → SDK screen | Add ConfiguringKernel state with loading overlay |
-
----
-
-**Real Example: Payment Flow**
-
-```kotlin
-// ✅ CORRECT: No flash screens
-fun PaymentScreen(initialAmount: String?) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
-
-    when (state) {
-        is PaymentState.Idle -> {
-            // ✅ Prevent flash when coming from Home
-            if (initialAmount != null) {
-                AvoqadoLoadingOverlay(message = "Preparando pago...")
-            }
-
-            LaunchedEffect(initialAmount) {
-                if (initialAmount != null) {
-                    viewModel.submitAmount(initialAmount)
-                }
-            }
-        }
-
-        is PaymentState.CollectingRating -> {
-            ReviewScreen(...)  // ✅ Smooth transition
-        }
-
-        is PaymentState.Processing -> {
-            AvoqadoLoadingOverlay(message = "Procesando transacción...")
-        }
-    }
-}
-```
-
-**User Experience**:
-- ✅ No flash screens
-- ✅ Always clear what's happening
-- ✅ Professional, polished feel
-- ✅ Matches Square Terminal / Toast POS quality
-
----
-
-**Testing Checklist:**
-
-Before committing ANY screen:
-- [ ] Navigate to screen from different sources (Home, deep link, back button)
-- [ ] Check for flash screens during navigation
-- [ ] Verify loading overlay appears during async operations
-- [ ] Test on slow network (throttle in DevTools)
-- [ ] Test on slow device (PAX A80)
-- [ ] Ensure loading messages are contextual
-
-**If you see ANY flash screens → FIX IT IMMEDIATELY** with `AvoqadoLoadingOverlay`.
-
----
-
-### 3. Architecture Patterns (Clean Architecture)
-
-```
-┌─────────────────────────────────────────────────┐
-│ PRESENTATION LAYER (UI)                         │
-│ • Composables (stateless)                       │
-│ • ViewModels (state management)                 │
-│ • StateFlow/SharedFlow                          │
-└─────────────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────────────┐
-│ DOMAIN LAYER (Business Logic)                   │
-│ • UseCases (single responsibility)              │
-│ • Repository Interfaces                         │
-│ • Domain Models (data classes)                  │
-└─────────────────────────────────────────────────┘
-                    ↓
-┌─────────────────────────────────────────────────┐
-│ DATA LAYER (Infrastructure)                     │
-│ • Repository Implementations                    │
-│ • Data Sources (API, Database, SDK)             │
-│ • DTOs → Domain Mappers                         │
-└─────────────────────────────────────────────────┘
-```
-
-#### Example: Clean Architecture in Practice
-```kotlin
-// ✅ PRESENTATION: ViewModel
+// PRESENTATION: ViewModel
 @HiltViewModel
 class PaymentViewModel @Inject constructor(
     private val processPaymentUseCase: ProcessPaymentUseCase
@@ -833,7 +156,7 @@ class PaymentViewModel @Inject constructor(
     }
 }
 
-// ✅ DOMAIN: UseCase
+// DOMAIN: UseCase
 class ProcessPaymentUseCase @Inject constructor(
     private val paymentRepository: PaymentRepository
 ) {
@@ -847,20 +170,15 @@ class ProcessPaymentUseCase @Inject constructor(
     }
 }
 
-// ✅ DATA: Repository Implementation
+// DATA: Repository Implementation
 class PaymentRepositoryImpl @Inject constructor(
     private val blumonSdk: BlumonPaySDK,
     private val api: PaymentApi
 ) : PaymentRepository {
     override suspend fun processPayment(request: PaymentRequest): TransactionResult {
         return withContext(Dispatchers.IO) {
-            // SDK integration
             val sdkResult = blumonSdk.processPayment(request.toSdkRequest())
-
-            // Backend sync
             api.recordPayment(sdkResult.toDto())
-
-            // Map to domain
             sdkResult.toDomain()
         }
     }
@@ -869,589 +187,232 @@ class PaymentRepositoryImpl @Inject constructor(
 
 ---
 
-### 4. When No Ideal Solution Exists: Workaround Protocol
+## 🧠 Quick Decision Matrix
 
-**IF** you cannot implement with best practices (e.g., SDK limitations, API constraints):
+### 1. Error Handling: Technical vs User-Friendly
 
-#### ✅ REQUIRED Documentation Format
-```kotlin
-/**
- * ⚠️ WORKAROUND: Using manual listener initialization
- *
- * **Problem:**
- * Blumon SDK listeners don't follow standard Kotlin Flow patterns.
- * They expose `getEventPinDialogStateFlow` instead of being callable.
- *
- * **Ideal Solution:**
- * SDK should provide: `suspend operator fun invoke(): Flow<EventPinDialogState>`
- *
- * **Current Implementation:**
- * Direct property access: `listenForEventPinDialogState.getEventPinDialogStateFlow`
- *
- * **Trade-offs:**
- * - ❌ Less idiomatic Kotlin
- * - ✅ Works reliably with current SDK version
- *
- * **Future Action:**
- * Contact Blumon to update SDK API in next release.
- *
- * @see [SDK Issue #123](https://github.com/blumon/sdk/issues/123)
- */
-private fun observeSDKListeners() {
-    viewModelScope.launch {
-        listenForEventPinDialogState.getEventPinDialogStateFlow.collect { state ->
-            handlePinStateChange(state)
-        }
-    }
-}
-```
+> **CRITICAL**: NEVER show technical errors to users. Always translate to actionable messages.
 
 #### Decision Tree
+
 ```
-┌─────────────────────────────────────────┐
-│ Can I implement with best practices?   │
-└─────────────────────────────────────────┘
-                │
-        ┌───────┴───────┐
-        │               │
-       YES             NO
-        │               │
-        v               v
-┌───────────┐   ┌──────────────┐
-│ Implement │   │ Document WHY │
-│ cleanly   │   │ + Trade-offs │
-└───────────┘   └──────────────┘
-                        │
-                        v
-        ┌───────────────────────────────┐
-        │ ASK USER for approval:        │
-        │                               │
-        │ "⚠️ Best practice solution    │
-        │ not possible due to [reason]. │
-        │                               │
-        │ Workaround: [description]     │
-        │                               │
-        │ Trade-offs:                   │
-        │ - Pro: [benefits]             │
-        │ - Con: [drawbacks]            │
-        │                               │
-        │ Proceed or keep trying?"      │
-        └───────────────────────────────┘
+┌─────────────────────────────────┐
+│ Error occurred                  │
+└─────────────────────────────────┘
+          │
+          v
+┌─────────────────────────────────┐
+│ Log technical details           │
+│ Timber.e(e, "Technical context")│
+└─────────────────────────────────┘
+          │
+          v
+┌─────────────────────────────────┐
+│ Translate to user message       │
+│ when (error) {                  │
+│   SDK → "Card removed too fast" │
+│   Network → "Check connection"  │
+│   Timeout → "Try again"         │
+│ }                               │
+└─────────────────────────────────┘
 ```
 
----
-
-### 5. Code Review Checklist (Self-Check Before Committing)
-
-```markdown
-## Before Every Commit:
-
-### Architecture
-- [ ] Follows Clean Architecture (Presentation → Domain → Data)
-- [ ] Single Responsibility Principle applied
-- [ ] Dependency injection via Hilt (no manual singletons)
-- [ ] No business logic in UI layer
-
-### Kotlin Style
-- [ ] No `!!` (null assertion) without try-catch
-- [ ] Proper coroutine scopes (viewModelScope, lifecycleScope)
-- [ ] StateFlow for state, Channel for events
-- [ ] Named constants for magic numbers
-- [ ] Sealed classes for exhaustive states
-
-### Compose
-- [ ] Stateless composables with hoisted state
-- [ ] @Preview annotations present
-- [ ] MaterialTheme colors (no hardcoded)
-- [ ] Proper modifiers with `= Modifier` default
-
-### Error Handling
-- [ ] Try-catch with specific exceptions
-- [ ] Timber logging with context
-- [ ] User-friendly error messages
-- [ ] No swallowed exceptions
-
-### Testing
-- [ ] Unit tests for ViewModels
-- [ ] Integration tests for critical paths
-- [ ] Edge cases covered
-
-### Documentation
-- [ ] KDoc for public APIs
-- [ ] Inline comments for complex logic
-- [ ] Workarounds clearly marked with ⚠️
-- [ ] TODO items tracked
-
-### Performance
-- [ ] No blocking calls on Main thread
-- [ ] Proper Dispatchers.IO for I/O
-- [ ] Flow cancellation handled
-- [ ] Memory leaks checked
-```
-
----
-
-### 6. Common Anti-Patterns to AVOID
-
-| ❌ Anti-Pattern | ✅ Best Practice |
-|----------------|------------------|
-| `object PaymentManager` | `@Inject constructor(private val repository: PaymentRepository)` |
-| `var isLoading = false` | `private val _state = MutableStateFlow(UiState.Idle)` |
-| `Thread { }.start()` | `viewModelScope.launch` |
-| `GlobalScope.launch` | `viewModelScope.launch` or `lifecycleScope.launch` |
-| `LiveData` in new code | `StateFlow` |
-| `data?.field!!.value!!` | `data?.field?.value ?: default` |
-| Hardcoded strings | `stringResource(R.string.key)` |
-| `Color(0xFF...)` | `MaterialTheme.colorScheme.primary` |
-| God classes (1000+ lines) | Split into focused classes |
-| Manual DI | Hilt `@Inject` |
-
----
-
-### 7. Performance Guidelines
+#### Examples
 
 ```kotlin
-// ✅ Lazy initialization
-val expensiveObject by lazy { HeavyCalculation() }
-
-// ✅ Remember in Compose
-@Composable
-fun Screen() {
-    val scrollState = rememberScrollState()
-    val coroutineScope = rememberCoroutineScope()
+// ❌ WRONG: Technical error exposed
+catch (e: Exception) {
+    _state.value = State.Error("Error: $e")
+    // User sees: "ReadingContactlessFailure@efcd17c"
 }
 
-// ✅ Derived state (not manual updates)
-val isEnabled by remember {
-    derivedStateOf { name.isNotBlank() && amount > 0 }
-}
+// ✅ CORRECT: User-friendly translation
+if (result.isLeft) {
+    val error = result.leftValue()
+    Timber.e("❌ [TECHNICAL] Contactless failed: $error")
 
-// ✅ List keys for performance
-LazyColumn {
-    items(items, key = { it.id }) { item ->
-        ItemRow(item)
-    }
-}
-
-// ✅ Background processing
-suspend fun processLargeData() = withContext(Dispatchers.Default) {
-    heavyComputation()
-}
-```
-
----
-
-### 8. Security Checklist
-
-```kotlin
-// ✅ Input validation
-fun validateAmount(input: String): BigDecimal? {
-    return input.toBigDecimalOrNull()?.takeIf { it > BigDecimal.ZERO }
-}
-
-// ✅ Encrypted storage
-val encryptedPrefs = EncryptedSharedPreferences.create(...)
-
-// ✅ Certificate pinning
-val certificatePinner = CertificatePinner.Builder()
-    .add("api.avoqado.io", "sha256/...")
-    .build()
-
-// ✅ No secrets in code
-buildConfigField("String", "API_KEY", "\"${System.getenv("AVOQADO_API_KEY")}\"")
-
-// ✅ Tenant isolation
-fun getOrders(venueId: String): Flow<List<Order>>
-
-// ❌ NEVER log sensitive data
-Timber.d("Card number: ${card.number}") // WRONG!
-```
-
----
-
-## 🚀 Quick Start
-
-### 1. Clone & Setup
-```bash
-cd /Users/amieva/Documents/Programming/Avoqado/avoqado-tpv
-./gradlew build
-```
-
-### 2. Environment Variables
-Create `local.properties`:
-```properties
-AVOQADO_API_KEY=your_api_key_here
-BLUMON_MERCHANT_ID=your_merchant_id
-```
-
-### 3. Run
-```bash
-./gradlew installDebug
-adb shell am start -n com.jaac.avoqado_tpv/.MainActivity
-```
-
----
-
-## 🏗️ Architecture Overview
-
-### Module Structure
-```
-app/
-├── core/                          # Shared infrastructure
-│   ├── data/
-│   │   ├── network/              # Retrofit, Socket.IO
-│   │   └── local/                # EncryptedSharedPreferences
-│   ├── domain/                   # Core models & interfaces
-│   ├── di/                       # Hilt modules
-│   └── presentation/             # Shared Composables
-├── features/                     # Feature modules
-│   ├── authorization/            # Login, PIN authentication
-│   ├── payment/                  # Blumon PAX integration
-│   ├── management/               # Tables, orders
-│   ├── menu/                     # Product catalog
-│   ├── cart/                     # Shopping cart
-│   └── timeclock/                # Shift management
-└── AvoqadoApp.kt                 # @HiltAndroidApp
-```
-
-### Data Flow
-```
-UI (Compose) → ViewModel (StateFlow) → UseCase → Repository → API/Database
-```
-
----
-
-## 🔐 Security Rules (NON-NEGOTIABLE)
-
-### 1. Encrypted Storage
-```kotlin
-// ✅ ALWAYS use EncryptedSharedPreferences
-val masterKey = MasterKey.Builder(context)
-    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-    .build()
-
-val encryptedPrefs = EncryptedSharedPreferences.create(
-    context, "secure_session", masterKey,
-    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-)
-```
-
-### 2. Tenant Isolation
-```kotlin
-// ✅ ALWAYS filter by venueId
-val orders = orderRepository.getOrders(venueId = authContext.venueId)
-
-// ❌ NEVER fetch without tenant filter (security risk!)
-val orders = orderRepository.getAllOrders() // WRONG!
-```
-
-### 3. No Hardcoded Secrets
-```kotlin
-// ❌ WRONG
-const val API_KEY = "sk_live_abc123"
-
-// ✅ CORRECT
-buildConfigField("String", "API_KEY", "\"${System.getenv("AVOQADO_API_KEY")}\"")
-```
-
----
-
-## 🎨 UI/UX Patterns
-
-### Composable Structure
-```kotlin
-@Composable
-fun FeatureScreen(
-    viewModel: FeatureViewModel = hiltViewModel()
-) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
-
-    Scaffold(
-        topBar = { FeatureTopBar() },
-        content = { padding ->
-            when (val currentState = state) {
-                is State.Loading -> LoadingIndicator()
-                is State.Success -> SuccessContent(currentState.data)
-                is State.Error -> ErrorMessage(currentState.message)
-            }
+    val userMessage = when {
+        error.toString().contains("ReadingContactlessFailure", ignoreCase = true) -> {
+            "La tarjeta se retiró demasiado rápido.\n\n" +
+            "Por favor, mantenga la tarjeta sobre el lector hasta que " +
+            "aparezca el mensaje de confirmación."
         }
-    )
+        error.toString().contains("Timeout", ignoreCase = true) -> {
+            "Tiempo de espera agotado.\n\n" +
+            "Por favor, mantenga la tarjeta cerca del lector durante toda la transacción."
+        }
+        error.toString().contains("NetworkException", ignoreCase = true) -> {
+            "No se pudo conectar al servidor.\n\n" +
+            "Verifique su conexión a internet e intente nuevamente."
+        }
+        else -> {
+            "Error leyendo tarjeta contactless.\n\n" +
+            "Intente nuevamente o inserte la tarjeta en el chip."
+        }
+    }
+
+    _state.value = State.Error(userMessage)
+}
+```
+
+**Every error message MUST have:**
+1. ✅ **What happened** (in simple terms) - "La tarjeta se retiró demasiado rápido"
+2. ✅ **How to fix it** (actionable steps) - "Mantenga la tarjeta sobre el lector"
+3. ✅ **Alternative action** (if available) - "Intente nuevamente o inserte en el chip"
+
+### 2. When to Create Reusable Components
+
+#### Decision Tree
+
+```
+┌─────────────────────────────────┐
+│ Do I need this UI in 2+ places? │
+└─────────────────────────────────┘
+          │
+    ┌─────┴─────┐
+   YES          NO
+    │            │
+    v            v
+┌────────┐  ┌────────────┐
+│ Create │  │ Is it a    │
+│ in     │  │ common     │
+│ Design │  │ pattern?   │
+│ System │  │ (loading,  │
+└────────┘  │ error)     │
+            └────────────┘
+                 │
+            ┌────┴────┐
+           YES       NO
+            │         │
+            v         v
+      ┌────────┐  ┌────────┐
+      │ Create │  │ Keep   │
+      │ anyway │  │ inline │
+      └────────┘  └────────┘
+```
+
+#### Example: AvoqadoLoadingOverlay
+
+```kotlin
+// ❌ WRONG: Inline overlay duplicated across screens
+if (state is Loading) {
+    Box(Modifier.fillMaxSize().background(Color.Black.copy(0.6f))) {
+        Card { CircularProgressIndicator() }
+    }
 }
 
-// ✅ MUST HAVE Preview
-@Preview
+// ✅ CORRECT: Reusable component
+// core/presentation/components/AvoqadoLoadingIndicator.kt
 @Composable
-private fun FeatureScreenPreview() {
-    AvoqadoTheme {
-        FeatureScreen()
+fun AvoqadoLoadingOverlay(
+    message: String,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.6f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Card { /* ... loading UI ... */ }
+    }
+}
+
+// Usage in LoginScreen
+if (state is Loading) {
+    AvoqadoLoadingOverlay(message = "Autenticando...")
+}
+
+// Usage in PaymentScreen
+if (state is Processing) {
+    AvoqadoLoadingOverlay(message = "Procesando pago...")
+}
+```
+
+### 3. Responsive UI for TPV Devices
+
+> **See [UI_RESPONSIVE_GUIDE.md](./UI_RESPONSIVE_GUIDE.md) for complete patterns**
+
+#### MANDATORY: Use ResponsiveScaffold
+
+```kotlin
+// ❌ WRONG: Hardcoded sizes (won't fit on PAX A80)
+Column {
+    Image(modifier = Modifier.size(120.dp))
+    Spacer(modifier = Modifier.height(48.dp))
+    PinPad()  // Cut off on small screens!
+}
+
+// ✅ CORRECT: ResponsiveScaffold with dynamic sizing
+ResponsiveScaffold(
+    scrollable = false,  // Workflow screen - no scroll allowed
+    horizontalAlignment = Alignment.CenterHorizontally
+) {
+    val sizes = LocalResponsiveSizes.current
+    Image(modifier = Modifier.size(sizes.logoSize))  // Auto-scales
+    Spacer(modifier = Modifier.height(sizes.spacingMedium))
+    PinPad()  // Guaranteed to fit!
+}
+```
+
+**Available size tokens:**
+- `logoSize`: 60dp / 80dp / 100dp (small / medium / large)
+- `spacingSmall`: 8dp / 12dp / 16dp
+- `spacingMedium`: 16dp / 24dp / 32dp
+- `spacingLarge`: 24dp / 32dp / 48dp
+- `paddingScreen`: 16dp / 20dp / 24dp
+
+**Device matrix:**
+- PAX A80: 1024x600 dp (small)
+- PAX A920: 1280x720 dp (medium)
+- Sunmi T2s: 1280x800 dp (large)
+
+### 4. Loading States: Prevent Flash Screens
+
+> **CRITICAL**: ALWAYS use `AvoqadoLoadingOverlay` to prevent jarring UI transitions
+
+#### What are Flash Screens?
+- Brief flicker of previous screen during navigation
+- User sees: Modal closes → **Flash of WelcomeScreen** ⚠️ → PaymentScreen appears
+
+#### Solution
+
+```kotlin
+// ✅ CORRECT: Loading overlay prevents flash
+is PaymentState.Idle -> {
+    // Show loading overlay immediately
+    if (initialAmount != null) {
+        AvoqadoLoadingOverlay(message = "Preparando pago...")
+    }
+
+    LaunchedEffect(initialAmount) {
+        if (initialAmount != null) {
+            viewModel.submitAmount(initialAmount)
+        }
     }
 }
 ```
 
-### Theme Usage
-```kotlin
-// ✅ ALWAYS use semantic colors
-Text(color = MaterialTheme.colorScheme.primary)
-Box(modifier = Modifier.background(MaterialTheme.colorScheme.surface))
+**Result**: User sees: Modal closes → **Smooth loading overlay** ✅ → PaymentScreen
 
-// ❌ NEVER hardcode colors
-Text(color = Color(0xFF2563EB)) // WRONG!
-```
-
-### Dark Theme (Avoqado Dashboard Web Design)
-
-**⚠️ IMPORTANT: The app ALWAYS uses Dark Mode by default** (no system theme detection)
-
-Professional POS systems like Square Terminal and Toast POS maintain consistent dark UI for restaurant environments. The app uses the EXACT same dark theme as the Avoqado Web Dashboard.
-
-Source: `avoqado-web-dashboard/src/index.css` (.dark theme)
-
-#### Color Palette
-
-| Token | OKLCH | HEX | Usage |
-|-------|-------|-----|-------|
-| **background** | oklch(0.145 0 0) | `#1C1C1C` | Main background (deep charcoal) |
-| **foreground** | oklch(0.985 0 0) | `#FAFAFA` | Primary text (soft white) |
-| **card** | oklch(0.205 0 0) | `#2A2A2A` | Cards & elevated surfaces |
-| **primary** | oklch(0.922 0 0) | `#E8E8E8` | Primary buttons & accents |
-| **secondary** | oklch(0.269 0 0) | `#383838` | Secondary elements (muted gray) |
-| **muted** | oklch(0.269 0 0) | `#383838` | Muted text & disabled states |
-| **accent** | oklch(0.371 0 0) | `#505050` | Accents & hover states |
-| **destructive** | oklch(0.704 0.191 22.216) | `#EB5757` | Errors & destructive actions |
-| **surface** | oklch(0.2 0 0) | `#282828` | Surface layers |
-| **border** | oklch(1 0 0 / 10%) | `#1AFFFFFF` | Borders (10% white) |
-
-#### Visual Comparison
-
-```
-┌─────────────────────────────────────────┐
-│  Avoqado Web Dashboard (Dark)           │
-│  ┌───────────────────────────────────┐  │
-│  │ #1C1C1C  Deep charcoal background │  │
-│  │ #2A2A2A  Card surface             │  │
-│  │ #FAFAFA  Soft white text          │  │
-│  │ #E8E8E8  Primary (light gray)     │  │
-│  │ #EB5757  Soft red (destructive)   │  │
-│  └───────────────────────────────────┘  │
-│                                          │
-│  Avoqado TPV Android (Dark) ← MATCHES!  │
-│  ┌───────────────────────────────────┐  │
-│  │ DarkBackground = #1C1C1C          │  │
-│  │ DarkSurface = #2A2A2A             │  │
-│  │ DarkOnSurface = #FAFAFA           │  │
-│  │ DarkPrimary = #E8E8E8             │  │
-│  │ DarkError = #EB5757               │  │
-│  └───────────────────────────────────┘  │
-└─────────────────────────────────────────┘
-```
-
-#### Implementation Details
-
-**File:** `app/src/main/java/com/jaac/avoqado_tpv/core/presentation/theme/Color.kt:135-188`
-
-```kotlin
-// Background & Surface (deep charcoal matching dashboard)
-val DarkBackground = Color(0xFF1C1C1C) // oklch(0.145 0 0)
-val DarkOnBackground = Color(0xFFFAFAFA) // oklch(0.985 0 0)
-val DarkSurface = Color(0xFF2A2A2A) // oklch(0.205 0 0)
-val DarkOnSurface = Color(0xFFFAFAFA) // oklch(0.985 0 0)
-
-// Primary (light gray for text/buttons in dark mode)
-val DarkPrimary = Color(0xFFE8E8E8) // oklch(0.922 0 0)
-val DarkOnPrimary = Color(0xFF2A2A2A) // oklch(0.205 0 0)
-
-// Error/Destructive (soft red from dashboard)
-val DarkError = Color(0xFFEB5757) // oklch(0.704 0.191 22.216)
-val DarkOnError = Color(0xFFFAFAFA) // oklch(0.985 0 0)
-```
-
-#### Why This Matters
-
-1. **Brand Consistency**: Users experience the same visual design across web and mobile
-2. **OKLCH Color Space**: Modern color system with better perceptual uniformity than RGB/HSL
-3. **Accessibility**: All color combinations meet WCAG AA contrast requirements
-4. **Professional Look**: Matches Square Terminal, Toast POS, Stripe Terminal aesthetics
-
-#### Usage in Components
-
-```kotlin
-// ✅ Backgrounds
-Scaffold(
-    containerColor = MaterialTheme.colorScheme.background // #1C1C1C
-)
-
-// ✅ Cards
-Card(
-    colors = CardDefaults.cardColors(
-        containerColor = MaterialTheme.colorScheme.surface // #2A2A2A
-    )
-)
-
-// ✅ Text
-Text(
-    text = "Welcome",
-    color = MaterialTheme.colorScheme.onSurface // #FAFAFA
-)
-
-// ✅ Primary buttons
-Button(
-    colors = ButtonDefaults.buttonColors(
-        containerColor = MaterialTheme.colorScheme.primary // #E8E8E8
-    )
-)
-
-// ✅ Error states
-Text(
-    text = "Error message",
-    color = MaterialTheme.colorScheme.error // #EB5757
-)
-```
+**MANDATORY Rules:**
+1. ✅ ALWAYS use same component: `AvoqadoLoadingOverlay`
+2. ✅ ALWAYS show loading during async state transitions
+3. ✅ Loading messages MUST be contextual ("Preparando pago...", not "Cargando...")
+4. ❌ NEVER navigate without loading if data processing is involved
 
 ---
 
-## 🔌 Backend Integration
+## 💰 Avoqado-Specific Domain Rules
 
-### REST API Endpoints
-```kotlin
-interface AvoqadoService {
-    // Authentication
-    @POST("tpv/venues/{venueId}/auth/login-pin")
-    suspend fun loginWithPin(
-        @Path("venueId") venueId: String,
-        @Body request: PinLoginRequest
-    ): Response<AuthResponse>
+### Payment Integration: Blumon PAX SDK
 
-    // Orders
-    @GET("tpv/venues/{venueId}/orders")
-    suspend fun getOrders(@Path("venueId") venueId: String): Response<List<Order>>
+> **Complete guide:** [PAYMENT_RECONCILIATION.md](./PAYMENT_RECONCILIATION.md)
 
-    @POST("tpv/venues/{venueId}/orders")
-    suspend fun createOrder(
-        @Path("venueId") venueId: String,
-        @Body order: CreateOrderRequest
-    ): Response<Order>
-
-    // Payments
-    @POST("tpv/venues/{venueId}/orders/{orderId}")
-    suspend fun recordPayment(
-        @Path("venueId") venueId: String,
-        @Path("orderId") orderId: String,
-        @Body payment: PaymentRequest
-    ): Response<Payment>
-}
-```
-
-### Socket.IO (Real-time)
-```kotlin
-// Join venue room
-socket.emit("join_room", JSONObject().apply {
-    put("roomType", "venue")
-    put("venueId", venueId)
-})
-
-// Listen to events
-socket.on("order_updated") { args ->
-    val data = args[0] as JSONObject
-    viewModelScope.launch {
-        _events.emit(OrderEvent.Updated(data))
-    }
-}
-```
-
-### Rate Limiting
-
-> **CRITICAL**: Backend must configure environment-specific rate limits. Development environments need higher limits to prevent blocking during testing.
-
-#### Production vs Development Limits
-
-| Endpoint | Production | Development | Reason |
-|----------|-----------|-------------|---------|
-| **PIN Login** | 10 attempts / 15 min | 100 attempts / 1 min | DEV needs rapid testing without lockouts |
-| **Activation** | 5 attempts / 15 min | 50 attempts / 1 min | Multiple device testing in DEV |
-| **API Calls** | 1000 req / hour | 10,000 req / hour | Load testing and development |
-| **Refresh Token** | 20 attempts / hour | 200 attempts / hour | Session testing |
-
-#### Backend Configuration (Recommended)
-
-```typescript
-// Backend: rate-limiter.config.ts
-const isProd = process.env.NODE_ENV === 'production';
-
-export const rateLimits = {
-  pinLogin: {
-    windowMs: isProd ? 15 * 60 * 1000 : 1 * 60 * 1000, // 15 min : 1 min
-    max: isProd ? 10 : 100, // 10 : 100 attempts
-    message: 'Too many login attempts. Please try again later.'
-  },
-  activation: {
-    windowMs: isProd ? 15 * 60 * 1000 : 1 * 60 * 1000,
-    max: isProd ? 5 : 50,
-    message: 'Too many activation attempts.'
-  },
-  api: {
-    windowMs: 60 * 60 * 1000, // 1 hour
-    max: isProd ? 1000 : 10000
-  }
-};
-```
-
-#### Android Error Handling
-
-When 429 (Rate Limit Exceeded) is received, the app shows helpful developer-friendly messages:
+#### Critical Configuration
 
 ```kotlin
-// AuthRepository.kt:110-115
-429 -> {
-    Timber.w("⚠️ Rate limit exceeded (429) - Backend should have higher limits in DEV")
-    "Demasiados intentos. Por favor espera un momento e intenta nuevamente.\n\n" +
-    "ℹ️ Si estás en desarrollo, el backend debe configurar rate limits más altos para DEV."
-}
-```
-
-**User Experience:**
-- **Production**: Protects against brute force attacks (10 attempts = ~40 PIN guesses max)
-- **Development**: Allows rapid testing without frustration (100 attempts = unlimited realistic testing)
-
-#### Testing Rate Limits
-
-```bash
-# Test rate limit in development (should NOT trigger at normal testing pace)
-for i in {1..20}; do
-  curl -X POST "http://localhost:3000/api/v1/tpv/venues/venue-123/auth/login-pin" \
-    -H "Content-Type: application/json" \
-    -d '{"pin": "1234", "serialNumber": "test-serial"}'
-  sleep 1
-done
-
-# Production: Should trigger 429 after 10 attempts
-# Development: Should NOT trigger 429 even after 20 attempts (limit is 100)
-```
-
-#### Action Items for Backend Team
-
-1. **Implement environment-based rate limiting** (see config above)
-2. **Add rate limit headers** to responses:
-   ```
-   X-RateLimit-Limit: 100
-   X-RateLimit-Remaining: 95
-   X-RateLimit-Reset: 1640000000
-   ```
-3. **Log rate limit hits** for monitoring:
-   ```typescript
-   logger.warn('Rate limit exceeded', {
-     ip: req.ip,
-     endpoint: req.path,
-     environment: process.env.NODE_ENV
-   });
-   ```
-
----
-
-## 💳 Payment Integration (Blumon PAX SDK)
-
-### Critical Configuration
-```kotlin
+// build.gradle.kts
 android {
     defaultConfig {
         ndk {
@@ -1468,363 +429,567 @@ android {
 }
 ```
 
-### Payment Flow
-```kotlin
-// 1. Initialize SDK
-AppManager.init(context)
+#### Multi-Merchant System (1 Device → N Merchants)
 
-// 2. Process payment
-val payment = PaymentRequest(
-    amount = 50000,  // cents ($500.00)
-    tip = 5000,      // cents ($50.00)
-    merchantAccountId = "ma_operativa"
-)
+**Concept**: 1 physical PAX terminal can process payments for MULTIPLE merchants using virtual serial numbers.
 
-// 3. Record in backend (triggers automatic inventory deduction)
-val result = paymentRepository.recordPayment(orderId, payment)
+```
+Physical Terminal: AVQD-2841548417
+├── Virtual Serial A: 2841548417 → Merchant A (BBVA, 1.5% rate)
+└── Virtual Serial B: 2841548418 → Merchant B (Santander, 1.8% rate)
 ```
 
----
+**Payment Flow**:
+1. User selects merchant (UI button)
+2. SDK reinitializes with new credentials (3-5 seconds)
+3. Payment routes to correct posId/merchant
+4. Backend records payment with `merchantAccountId`
 
-## 💰 Payment Reconciliation & Business Logic
-
-> **CRITICAL BUSINESS FEATURE**: Reconciliation (conciliación) is one of Avoqado's core strengths. The app MUST maintain precise separation of payment sources for accurate financial reporting.
-
-### Why Reconciliation Matters
-
-**Problem Statement**: At end of day/month, businesses need to know EXACTLY:
-- How much cash was collected?
-- How much was processed through Merchant Account A (Terminal 1)?
-- How much was processed through Merchant Account B (Terminal 2)?
-- Total tips collected per payment method?
-- Commission fees owed to payment processors?
-
-**Real-World Scenario**:
-```
-End of day report (Restaurant):
-├─ Cash: $1,250.00 (25 transactions)
-├─ Merchant A (Terminal 1): $8,450.00 (120 transactions) → -2.5% commission = $8,238.75 net
-├─ Merchant B (Terminal 2): $3,200.00 (45 transactions) → -2.5% commission = $3,120.00 net
-└─ Total: $12,900.00 gross | $12,608.75 net (after commissions)
-```
-
-**If we mix cash with merchant payments**: Reconciliation becomes IMPOSSIBLE. You can't separate cash (0% commission) from card payments (2.5% commission).
-
----
-
-### Payment Source Separation (MANDATORY)
-
-#### ❌ WRONG: Assigning cash to a merchant account
+**Critical Rule: Payment Source Separation**
 
 ```typescript
-// ❌ BAD: Cash payment assigned to Merchant A
-{
-  method: "CASH",
-  merchantAccountId: "cm123_merchant_a",  // WRONG!
-  amount: 5000
-}
-
-// Result: Merchant A report shows $50 that was actually cash
-// Problem: Can't separate merchant commissions from cash receipts
-```
-
-#### ✅ CORRECT: Cash as separate payment source
-
-```typescript
-// ✅ GOOD: Cash payment with no merchant
+// ✅ CORRECT: Cash with no merchant
 {
   method: "CASH",
   merchantAccountId: null,  // ← Cash has no merchant
   amount: 5000
 }
 
-// Result: Clear separation in reports:
-// - Merchant A: $0 (no transactions)
-// - Cash: $50 (1 transaction)
+// ✅ CORRECT: Card with merchant
+{
+  method: "CARD",
+  merchantAccountId: "merchant_002",  // ← Required for cards
+  amount: 5000
+}
 ```
 
----
+**Why?** End-of-day reconciliation separates cash (0% commission) from card payments (2.5% commission).
 
-### Backend Schema Requirements
+### Backend Integration
 
-#### Field: `merchantAccountId`
-
-**Rule**: `merchantAccountId` MUST be:
-- **REQUIRED** for card payments (`method: "CREDIT_CARD" | "DEBIT_CARD"`)
-- **NULL/Optional** for cash payments (`method: "CASH"`)
-- **NULL/Optional** for online payments (`method: "ONLINE"`)
-
-**Backend Validation** (TypeScript + Zod example):
-```typescript
-// Conditional validation based on payment method
-const PaymentSchema = z.object({
-  method: z.enum(["CASH", "CREDIT_CARD", "DEBIT_CARD", "ONLINE"]),
-  merchantAccountId: z.string().cuid().nullable().optional(),
-  amount: z.number().int().positive(),
-  // ... other fields
-}).refine((data) => {
-  // Card payments MUST have merchant account
-  if (["CREDIT_CARD", "DEBIT_CARD"].includes(data.method)) {
-    return data.merchantAccountId != null;
-  }
-  // Cash/Online payments MUST NOT have merchant account
-  if (["CASH", "ONLINE"].includes(data.method)) {
-    return data.merchantAccountId == null;
-  }
-  return true;
-}, {
-  message: "Card payments require merchantAccountId, cash/online must not have it"
-});
-```
-
----
-
-### App-Side Implications
-
-#### 1. Queries Must Handle NULL merchant accounts
+#### REST API
 
 ```kotlin
-// ✅ CORRECT: Group payments by source
-val paymentsBySource = database.paymentDao().groupBySource()
-// Returns:
-// - merchantAccountId: "cm123_merchant_a", method: "CREDIT_CARD" → $8,450
-// - merchantAccountId: "cm123_merchant_b", method: "DEBIT_CARD" → $3,200
-// - merchantAccountId: null, method: "CASH" → $1,250
+interface AvoqadoService {
+    // Authentication
+    @POST("tpv/venues/{venueId}/auth/login-pin")
+    suspend fun loginWithPin(
+        @Path("venueId") venueId: String,
+        @Body request: PinLoginRequest
+    ): Response<AuthResponse>
 
-// ❌ WRONG: Filter by merchant without considering null
-val merchantPayments = database.paymentDao()
-    .getByMerchant(merchantId) // This excludes cash!
+    // Orders
+    @GET("tpv/venues/{venueId}/orders")
+    suspend fun getOrders(@Path("venueId") venueId: String): Response<List<Order>>
+
+    // Payments
+    @POST("tpv/venues/{venueId}/orders/{orderId}")
+    suspend fun recordPayment(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body payment: PaymentRequest
+    ): Response<Payment>
+}
 ```
 
-#### 2. UI Must Display Payment Source Clearly
+#### Socket.IO (Real-time Events)
 
+> **Complete guides:**
+> - **[SOCKET_IO_IMPLEMENTATION.md](./SOCKET_IO_IMPLEMENTATION.md)** - Architecture & integration patterns
+> - **[SOCKET_IO_TESTING.md](./SOCKET_IO_TESTING.md)** - Testing strategies & examples
+
+**Core Concept**: Socket.IO provides real-time bidirectional communication for instant updates across multiple terminals/devices.
+
+**Architecture**:
+- Singleton `SocketManager` (Hilt injected)
+- Auto-connects on login with JWT authentication
+- Room-based event isolation (venue, table, order)
+- SharedFlow for reactive event streaming
+
+**Quick Example**:
 ```kotlin
-// Display payment source in UI
-fun PaymentReceipt.displaySource(): String {
-    return when {
-        method == "CASH" -> "Efectivo 💵"
-        merchantAccountId != null -> {
-            val merchant = getMerchant(merchantAccountId)
-            "${merchant.displayName} 💳"
+@HiltViewModel
+class PaymentViewModel @Inject constructor(
+    private val socketManager: SocketManager
+) : ViewModel() {
+
+    init {
+        collectSocketEvents()
+    }
+
+    private fun collectSocketEvents() {
+        viewModelScope.launch {
+            socketManager.events.collect { event ->
+                when (event) {
+                    is SocketEvent.PaymentCompleted -> {
+                        Timber.i("✅ Payment completed: ${event.paymentId}")
+                        refreshOrder(event.orderId)
+                    }
+                    else -> {}
+                }
+            }
         }
-        else -> "Online 🌐"
+    }
+}
+```
+
+##### 🎯 Decision Tree: When to Add Socket.IO Events for New Features
+
+> **MANDATORY**: Before implementing any new feature, evaluate if it needs real-time updates.
+
+```
+┌─────────────────────────────────────────────────────┐
+│ Is data shown to multiple users/terminals?         │
+└─────────────────────────────────────────────────────┘
+                    │
+            ┌───────┴───────┐
+           YES             NO
+            │               │
+            v               v
+┌──────────────────┐  ┌──────────────────┐
+│ Can data change  │  │ Does data change │
+│ while user is    │  │ while user is    │
+│ viewing?         │  │ viewing?         │
+└──────────────────┘  └──────────────────┘
+         │                     │
+    ┌────┴────┐           ┌────┴────┐
+   YES       NO          YES       NO
+    │         │           │         │
+    v         v           v         v
+┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
+│ ✅ YES │ │ ❌ NO  │ │ ⚠️ ASK │ │ ❌ NO  │
+│ Socket │ │ Polling│ │  USER  │ │ Static │
+│ needed │ │ or     │ │        │ │ fetch  │
+│        │ │ manual │ │        │ │        │
+│        │ │ refresh│ │        │ │        │
+└────────┘ └────────┘ └────────┘ └────────┘
+```
+
+**Examples**:
+
+| Feature | Multi-User? | Changes? | Socket? | Reason |
+|---------|-------------|----------|---------|--------|
+| **Payment on Order** | ✅ YES | ✅ YES | ✅ YES | Multiple terminals view same order → instant sync |
+| **Order Status Update** | ✅ YES | ✅ YES | ✅ YES | Kitchen updates status → waiters see instantly |
+| **Inventory Low Stock Alert** | ✅ YES | ✅ YES | ✅ YES | System detects shortage → all terminals notified |
+| **Admin Remote Command** | ✅ YES | ⚠️ RARE | ✅ YES | Dashboard can disable terminal remotely |
+| **Staff Login** | ❌ NO | ❌ NO | ❌ NO | Single-user, one-time action |
+| **Menu Browsing** | ❌ NO | ⚠️ RARELY | ❌ NO | Use polling or manual refresh |
+| **Historical Reports** | ❌ NO | ❌ NO | ❌ NO | Static data, fetch on demand |
+| **Table Reservation** | ✅ YES | ✅ YES | ⚠️ ASK | Depends on use case (ask user) |
+
+##### ✅ ALWAYS Use Socket.IO For:
+
+1. **Multi-terminal payment coordination** (CRITICAL)
+   - Scenario: Terminal A processes payment → Terminal B shows order as paid
+   - Event: `payment_completed`, `payment_failed`
+
+2. **Order status changes** (HIGH PRIORITY)
+   - Scenario: Kitchen marks order ready → Waiter notified
+   - Event: `order_updated`, `order_status_changed`
+
+3. **System alerts** (CRITICAL)
+   - Scenario: Backend detects issue → All terminals show warning
+   - Event: `system_alert` (levels: info, warning, error, critical)
+
+4. **Admin remote control** (SECURITY)
+   - Scenario: Admin puts terminal in maintenance mode from dashboard
+   - Event: `tpv_command` (MAINTENANCE_MODE, RELOAD, DISABLE, SHUTDOWN)
+
+5. **Inventory stock alerts** (BUSINESS LOGIC)
+   - Scenario: Ingredient runs low → Kitchen and cashiers notified
+   - Event: `inventory_low_stock`, `inventory_out_of_stock`
+
+6. **Hardware status updates** (OPERATIONAL)
+   - Scenario: Printer runs out of paper → Terminal shows alert
+   - Event: `printer_status`, `card_reader_status`, `peripheral_error`
+
+##### ❌ DON'T Use Socket.IO For:
+
+1. **Historical data fetching** → Use REST API
+2. **One-time authentication** → Use REST API
+3. **Static menu/product lists** → Use REST API with cache
+4. **Report generation** → Use REST API polling
+5. **File uploads/downloads** → Use REST API with progress tracking
+6. **Search queries** → Use REST API with debouncing
+
+##### ⚠️ ASK USER Before Adding Socket.IO For:
+
+1. **Table reservations** (depends on restaurant workflow)
+2. **Customer notifications** (might use push notifications instead)
+3. **Employee shift changes** (might not need instant updates)
+4. **Menu item price changes** (depends on how often prices change)
+
+##### How to Add a New Socket.IO Event
+
+**Step 1: Define Event in Server** (`avoqado-server/src/communication/sockets/types/index.ts`)
+```typescript
+export enum SocketEventType {
+  // ... existing events
+  NEW_FEATURE_EVENT = 'new_feature_event',
+}
+
+export interface NewFeatureEventPayload extends BaseEventPayload {
+  featureId: string
+  data: any
+  venueId: string
+}
+```
+
+**Step 2: Add Broadcasting Method** (`avoqado-server/src/communication/sockets/services/broadcasting.service.ts`)
+```typescript
+public broadcastNewFeatureEvent(
+  venueId: string,
+  data: Omit<NewFeatureEventPayload, 'correlationId' | 'timestamp' | 'venueId'>,
+  options?: BroadcastOptions,
+): void {
+  this.broadcastToVenue(venueId, SocketEventType.NEW_FEATURE_EVENT, {
+    ...data,
+    venueId,
+    correlationId: randomUUID(),
+    timestamp: new Date().toISOString(),
+  }, options)
+}
+```
+
+**Step 3: Add Event to Android** (`avoqado-tpv/app/src/main/java/com/jaac/avoqado_tpv/core/data/realtime/events/SocketEvent.kt`)
+```kotlin
+sealed interface SocketEvent {
+    // ... existing events
+
+    data class NewFeature(
+        val featureId: String,
+        val data: Map<String, Any>,
+        val venueId: String,
+        val timestamp: String,
+        val metadata: Map<String, Any>? = null
+    ) : SocketEvent
+}
+```
+
+**Step 4: Add Event Listener** (`SocketManager.kt`)
+```kotlin
+socket.on("new_feature_event") { args ->
+    try {
+        val json = args[0] as JSONObject
+        val event = SocketEvent.NewFeature(
+            featureId = json.getString("featureId"),
+            data = json.getJSONObject("data").toMap(),
+            venueId = json.getString("venueId"),
+            timestamp = json.getString("timestamp"),
+            metadata = json.optJSONObject("metadata")?.toMap()
+        )
+        emitEvent(event)
+    } catch (e: Exception) {
+        Timber.e(e, "Error parsing new_feature_event")
+    }
+}
+```
+
+**Step 5: Handle in ViewModel**
+```kotlin
+private fun collectSocketEvents() {
+    viewModelScope.launch {
+        socketManager.events.collect { event ->
+            when (event) {
+                is SocketEvent.NewFeature -> {
+                    Timber.i("✅ New feature event: ${event.featureId}")
+                    handleNewFeature(event)
+                }
+                else -> {}
+            }
+        }
+    }
+}
+```
+
+**Step 6: Add Unit Tests** (see [SOCKET_IO_TESTING.md](./SOCKET_IO_TESTING.md))
+```kotlin
+@Test
+fun `should parse new_feature_event correctly`() = runTest(testDispatcher) {
+    val json = JSONObject().apply {
+        put("featureId", "feature_123")
+        put("data", JSONObject().apply { put("key", "value") })
+        put("venueId", "venue_789")
+        put("timestamp", "2025-01-15T10:30:00Z")
+    }
+
+    capturedListeners["new_feature_event"]?.call(json)
+
+    socketManager.events.test {
+        val event = awaitItem()
+        assertThat(event).isInstanceOf(SocketEvent.NewFeature::class.java)
+        cancelAndIgnoreRemainingEvents()
+    }
+}
+```
+
+#### Rate Limiting
+
+> **Production vs Development Limits**
+
+| Endpoint | Production | Development |
+|----------|-----------|-------------|
+| PIN Login | 10 attempts / 15 min | 100 attempts / 1 min |
+| Activation | 5 attempts / 15 min | 50 attempts / 1 min |
+| API Calls | 1000 req / hour | 10,000 req / hour |
+
+**Android Error Handling (429)**:
+```kotlin
+429 -> {
+    Timber.w("⚠️ Rate limit exceeded - Backend should have higher limits in DEV")
+    "Demasiados intentos. Por favor espera un momento.\n\n" +
+    "ℹ️ Si estás en desarrollo, el backend debe configurar rate limits más altos."
+}
+```
+
+### Security
+
+> **Complete guide:** [SECURITY_CHECKLIST.md](./SECURITY_CHECKLIST.md)
+
+#### Critical Rules (NON-NEGOTIABLE)
+
+```kotlin
+// ✅ Encrypted storage (ALWAYS)
+val masterKey = MasterKey.Builder(context)
+    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+    .build()
+
+val encryptedPrefs = EncryptedSharedPreferences.create(
+    context, "secure_session", masterKey,
+    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+)
+
+// ✅ Tenant isolation (ALWAYS filter by venueId)
+val orders = orderRepository.getOrders(venueId = authContext.venueId)
+
+// ❌ NEVER fetch without tenant filter (security risk!)
+val orders = orderRepository.getAllOrders()  // WRONG!
+
+// ✅ Certificate pinning
+val certificatePinner = CertificatePinner.Builder()
+    .add("api.avoqado.io", "sha256/...")
+    .build()
+
+// ✅ No secrets in code (use environment variables)
+buildConfigField("String", "API_KEY", "\"${System.getenv("AVOQADO_API_KEY")}\"")
+
+// ❌ NEVER log sensitive data
+Timber.d("Card number: ${card.number}")  // WRONG!
+```
+
+### UI/UX Patterns
+
+> **Complete guide:** [UI_RESPONSIVE_GUIDE.md](./UI_RESPONSIVE_GUIDE.md)
+
+#### Composable Structure
+
+```kotlin
+@Composable
+fun FeatureScreen(
+    viewModel: FeatureViewModel = hiltViewModel()
+) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+
+    ResponsiveScaffold(scrollable = false) {
+        val sizes = LocalResponsiveSizes.current
+
+        when (val currentState = state) {
+            is State.Loading -> AvoqadoLoadingOverlay(message = "Cargando...")
+            is State.Success -> SuccessContent(currentState.data)
+            is State.Error -> ErrorMessage(currentState.message)
+        }
     }
 }
 
-// Example output:
-// - "Efectivo 💵"
-// - "Cuenta Blumon A (Sandbox) 💳"
-// - "Cuenta Blumon B (Producción) 💳"
-```
-
-#### 3. Reports Must Separate Sources
-
-```kotlin
-// Daily reconciliation report
-data class DailyReconciliation(
-    val date: LocalDate,
-    val cashTotal: BigDecimal,           // merchantAccountId = null, method = CASH
-    val merchantATotalGross: BigDecimal, // merchantAccountId = A, gross amount
-    val merchantACommission: BigDecimal, // merchantAccountId = A, commission (2.5%)
-    val merchantATotalNet: BigDecimal,   // merchantAccountId = A, after commission
-    val merchantBTotalGross: BigDecimal,
-    val merchantBCommission: BigDecimal,
-    val merchantBTotalNet: BigDecimal,
-    val grandTotal: BigDecimal           // Sum of all net amounts
-)
-
-// Query example
-fun getDailyReconciliation(date: LocalDate): DailyReconciliation {
-    val payments = database.paymentDao().getByDate(date)
-
-    val cashTotal = payments
-        .filter { it.method == "CASH" && it.merchantAccountId == null }
-        .sumOf { it.amount }
-
-    val merchantAPayments = payments
-        .filter { it.merchantAccountId == MERCHANT_A_ID }
-
-    val merchantAGross = merchantAPayments.sumOf { it.amount }
-    val merchantACommission = merchantAGross * 0.025 // 2.5%
-    val merchantANet = merchantAGross - merchantACommission
-
-    // ... repeat for merchant B
-
-    return DailyReconciliation(
-        date = date,
-        cashTotal = cashTotal,
-        merchantATotalGross = merchantAGross,
-        merchantACommission = merchantACommission,
-        merchantATotalNet = merchantANet,
-        // ...
-    )
+// ✅ MUST HAVE Preview
+@Preview(showBackground = true)
+@Composable
+private fun FeatureScreenPreview() {
+    AvoqadoTheme {
+        FeatureScreen()
+    }
 }
 ```
 
----
+#### Spacing & Layout Consistency
 
-### Risks of Making merchantAccountId Optional
+**⚠️ MANDATORY**: All screens MUST use consistent spacing between header and content sections.
 
-#### ⚠️ Potential Issues:
+**Standard Spacing Rules**:
 
-1. **Query Complexity**: Every query filtering by merchant must explicitly handle `NULL` case
-   ```sql
-   -- ❌ WRONG: Excludes cash
-   SELECT * FROM payments WHERE merchantAccountId = 'cm123_merchant_a';
+```kotlin
+Scaffold(
+    topBar = { AvoqadoTopBar(...) }
+) { paddingValues ->
+    ResponsiveScaffold(
+        scrollable = true,
+        modifier = Modifier.padding(paddingValues)  // ← CRITICAL: Apply paddingValues from Scaffold
+    ) {
+        val sizes = LocalResponsiveSizes.current
 
-   -- ✅ CORRECT: Include or exclude null explicitly
-   SELECT * FROM payments
-   WHERE merchantAccountId = 'cm123_merchant_a'
-      OR (merchantAccountId IS NULL AND method = 'CASH');
-   ```
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(sizes.spacingLarge)  // ← Use spacingLarge (24dp-48dp)
+        ) {
+            // Section 1
+            MainContentSection()
 
-2. **Joins Can Fail**: LEFT JOIN on merchantAccount table will return null rows for cash
-   ```sql
-   -- Must handle null merchant
-   SELECT p.*, m.displayName
-   FROM payments p
-   LEFT JOIN merchantAccounts m ON p.merchantAccountId = m.id
-   -- m.displayName will be NULL for cash payments
-   ```
+            // Section 2 (with section header)
+            SectionWithHeader()
+        }
+    }
+}
+```
 
-3. **GROUP BY Behavior**: NULL is treated as a distinct group
-   ```sql
-   -- NULL becomes its own group (which is what we want!)
-   SELECT merchantAccountId, SUM(amount)
-   FROM payments
-   GROUP BY merchantAccountId;
-   -- Results:
-   -- merchantAccountId | sum
-   -- cm123_merchant_a  | 8450
-   -- cm123_merchant_b  | 3200
-   -- NULL              | 1250  ← Cash total
-   ```
+**Spacing Tokens** (from ResponsiveSizes):
+- `spacingSmall`: 8dp / 12dp / 16dp - Between small elements (icon + text, form fields)
+- `spacingMedium`: 16dp / 24dp / 32dp - Between cards, list items
+- `spacingLarge`: 24dp / 32dp / 48dp - Between major sections, header to content
+- `paddingScreen`: 16dp / 20dp / 24dp - Screen edge padding (handled by ResponsiveScaffold)
 
-4. **UI Null Safety**: Every place showing merchant name must handle null
-   ```kotlin
-   // ❌ WRONG: Crashes on null
-   Text(payment.merchantAccount.displayName)
+**Common Patterns**:
 
-   // ✅ CORRECT: Handle null case
-   Text(payment.merchantAccount?.displayName ?: "Efectivo")
-   ```
+```kotlin
+// ✅ CORRECT: Major sections with spacingLarge
+Column(
+    verticalArrangement = Arrangement.spacedBy(sizes.spacingLarge)
+) {
+    ActiveShiftContent()
+    ShiftHistoryList()
+}
 
-#### ✅ Mitigations:
+// ✅ CORRECT: Cards within section with spacingMedium
+Column(
+    verticalArrangement = Arrangement.spacedBy(sizes.spacingMedium)
+) {
+    shifts.forEach { shift ->
+        ShiftCard(shift)
+    }
+}
 
-1. **Helper Functions**: Create utility to get payment source display name
-2. **Database Views**: Create view that pre-joins merchant data with null handling
-3. **Type Safety**: Use sealed class to represent payment sources:
-   ```kotlin
-   sealed class PaymentSource {
-       data class Merchant(val account: MerchantAccount) : PaymentSource()
-       data object Cash : PaymentSource()
-       data object Online : PaymentSource()
-   }
-   ```
-4. **Backend Validation**: Enforce conditional requirement at API level
-5. **Documentation**: Clearly document that null = cash in all schemas
+// ❌ WRONG: Hardcoded spacing
+Column(
+    verticalArrangement = Arrangement.spacedBy(16.dp)  // Don't hardcode!
+)
 
----
+// ❌ WRONG: No spacing between major sections
+Column {
+    ActiveShiftContent()
+    ShiftHistoryList()  // Too cramped!
+}
+```
 
-### Migration Strategy (If Changing Existing System)
+**Section Headers** (like "HISTORIAL DE TURNOS"):
+- Should be inside the section's Column/LazyColumn
+- Add `Spacer(modifier = Modifier.height(sizes.spacingMedium))` after header
+- Or use `verticalArrangement = Arrangement.spacedBy(sizes.spacingMedium)`
 
-If you already have payments in database and want to make `merchantAccountId` optional:
+#### Dark Theme (Avoqado Dashboard Web Design)
 
-```sql
--- Step 1: Identify cash payments (manual review needed)
-SELECT * FROM payments
-WHERE method = 'CASH'
-  AND merchantAccountId IS NOT NULL;
+**⚠️ IMPORTANT:** App ALWAYS uses Dark Mode by default (matches Avoqado Web Dashboard).
 
--- Step 2: Set merchantAccountId to NULL for confirmed cash payments
-UPDATE payments
-SET merchantAccountId = NULL
-WHERE method = 'CASH';
+**Color Palette (OKLCH)**:
 
--- Step 3: Add database constraint (PostgreSQL example)
-ALTER TABLE payments
-ADD CONSTRAINT check_merchant_by_method
-CHECK (
-  (method IN ('CREDIT_CARD', 'DEBIT_CARD') AND merchantAccountId IS NOT NULL)
-  OR
-  (method IN ('CASH', 'ONLINE') AND merchantAccountId IS NULL)
-);
+| Token | HEX | Usage |
+|-------|-----|-------|
+| **background** | `#1C1C1C` | Main background (deep charcoal) |
+| **foreground** | `#FAFAFA` | Primary text (soft white) |
+| **card** | `#2A2A2A` | Cards & elevated surfaces |
+| **primary** | `#E8E8E8` | Primary buttons & accents |
+| **error** | `#EB5757` | Errors & destructive actions |
+
+**Usage**:
+```kotlin
+// ✅ ALWAYS use semantic colors
+Text(color = MaterialTheme.colorScheme.primary)
+Box(modifier = Modifier.background(MaterialTheme.colorScheme.surface))
+
+// ❌ NEVER hardcode colors
+Text(color = Color(0xFF2563EB))  // WRONG!
 ```
 
 ---
 
-### Decision Matrix: merchantAccountId Handling
+## 🔧 Development Workflow
 
-| Approach | Pros | Cons | Recommendation |
-|----------|------|------|----------------|
-| **Optional (null for cash)** | ✅ Correct business logic<br>✅ Clean reconciliation<br>✅ Extensible (online payments) | ⚠️ More null checks<br>⚠️ Conditional validation | **✅ RECOMMENDED** |
-| **Always required (fake merchant for cash)** | ✅ No null handling<br>✅ Simpler queries | ❌ Incorrect business logic<br>❌ Confuses reports<br>❌ Needs seed data | ❌ NOT RECOMMENDED |
-| **Separate field (paymentSource enum)** | ✅ Very explicit<br>✅ Type-safe | ⚠️ Schema migration<br>⚠️ Redundant with method | 🤔 Consider for V2 |
+### Before Starting a Feature
 
-**Final Recommendation**: Make `merchantAccountId` **optional/nullable**, with backend validation requiring it for card payments and forbidding it for cash/online payments.
-
----
-
-## 📝 Development Workflow
-
-### 1. Before Starting a Feature
 - [ ] Read feature requirements
 - [ ] Check existing similar features
+- [ ] **Evaluate if feature needs Socket.IO** (see [Socket.IO Decision Tree](#-decision-tree-when-to-add-socketio-events-for-new-features))
 - [ ] Plan architecture (ViewModel → UseCase → Repository)
 - [ ] Create feature module structure
 
-### 2. During Development
+### During Development
+
 - [ ] Write ViewModel with StateFlow
 - [ ] Create Repository interface (domain layer)
 - [ ] Implement Repository (data layer)
-- [ ] Build Composable UI
+- [ ] Build Composable UI with ResponsiveScaffold
 - [ ] Add @Preview annotations
 - [ ] Use stringResource for all text
 - [ ] Use MaterialTheme for all colors
+- [ ] Translate errors to user-friendly messages
 
-### 3. Before Committing
+### Before Committing
 
 #### Code Quality
-- [ ] Run `./gradlew lint --continue` (fails build on warnings)
-- [ ] Run `./gradlew ktlintFormat` (if using ktlint)
+- [ ] Run `./gradlew lint --continue` (must pass)
 - [ ] Add/update unit tests
-- [ ] Update this CLAUDE.md if needed
+- [ ] Check for orphaned files (delete unused ViewModels, Composables, resources)
+- [ ] No debug code (println, hardcoded values)
 
 #### CHANGELOG.md (MANDATORY)
-- [ ] **ALWAYS** document changes in `CHANGELOG.md` (see [Changelog Guidelines](#-changelog-guidelines))
-- [ ] Use proper category: Added, Changed, Fixed, Removed, Security
-- [ ] Include file references and line numbers when relevant
-- [ ] Check if CHANGELOG.md size exceeds 2000 lines → suggest rotation
 
-#### Prevent Orphaned Files (CRITICAL)
-- [ ] **Find unused files**: Check if deleted/refactored code left orphaned files
-  ```bash
-  # Option 1: IDE "Find Usages" on suspicious files
-  # Option 2: Search with ripgrep
-  rg "SuspiciousClassName" --type kotlin
+**Format:**
+```markdown
+### [Category]
+- [ClassName]: [Action] [description] ([file]:[line])
+  - [Optional: Additional detail]
+  - [Optional: Related issue: #123]
+```
 
-  # Option 3: Check Android unused resources
-  ./gradlew lint
-  # Look for: UnusedResources warnings (drawables, layouts, strings)
-  ```
+**Categories:**
+- **Added**: New features, files, functionality
+- **Changed**: Modifications to existing features
+- **Fixed**: Bug fixes
+- **Removed**: Deleted features, files
+- **Security**: Vulnerability fixes, security improvements
 
-- [ ] **Delete orphaned files**: Remove files with zero references
-  - ViewModels without screens
-  - Repositories without use cases
-  - Composables not used anywhere
-  - Resources (drawable, layout, strings) marked as unused by lint
+**Example:**
+```markdown
+### Added
+- PaymentViewModel: Add credential caching mechanism (PaymentViewModel.kt:45)
+  - Reduces payment time from 6s to <1s
+  - Uses singleton pattern with fallback
+  - Issue: #234
 
-- [ ] **Verify lint passes**: Ensure no UnusedResources warnings
-  ```bash
-  ./gradlew lint --continue
-  # Check: build/reports/lint-results-debug.html
-  ```
+### Removed
+- Delete PaymentFragment.kt (orphaned after Compose migration)
+```
 
-#### Git
-- [ ] Write descriptive commit message (Conventional Commits)
-- [ ] Verify no debug code (println, hardcoded values)
+**Rotation:** If CHANGELOG.md exceeds 2000 lines, suggest rotation to `changelog/YYYY.md`.
 
-### 4. Git Commit Format
+#### Orphaned Files Prevention
+
+```bash
+# Find unused files
+rg "SuspiciousClassName" --type kotlin
+
+# Check Android unused resources
+./gradlew lint
+# Look for: UnusedResources warnings
+```
+
+**Delete if:**
+- ✅ Zero imports (`rg "import.*ClassName"`)
+- ✅ Zero references (`rg "ClassName"`)
+- ✅ Lint marks as unused
+
+#### Git Commit Format
+
 ```
 feat(payment): add credential caching for instant payments
 
@@ -1835,533 +1000,22 @@ feat(payment): add credential caching for instant payments
 Resolves #234
 ```
 
----
+### Testing
 
-## 📋 Changelog Guidelines
+> **Complete guide:** [TESTING_GUIDE.md](./TESTING_GUIDE.md)
 
-> **MANDATORY**: Every change must be documented in `CHANGELOG.md`. This creates a clear audit trail for AI and developers.
-
-### Format: Keep a Changelog
-
-Follow [Keep a Changelog](https://keepachangelog.com/) standard:
-
-```markdown
-# Changelog
-
-All notable changes to Avoqado TPV will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangeable.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
-
-### Added
-- PaymentViewModel: Add credential caching for instant payments (PaymentViewModel.kt:45)
-  - Reduces payment processing time from 6s to <1s
-  - Implements singleton CredentialManager
-  - Fallback to Constants.kt for missing credentials
-  - Related issue: #234
-
-### Changed
-- MainActivity: Migrate from XML to Jetpack Compose (MainActivity.kt:28)
-  - Remove fragment_payment.xml
-  - Add PaymentScreen composable
-  - Update navigation to use Compose Navigation
-
-### Fixed
-- PaymentViewModel: Fix credential leakage on device rotation (PaymentViewModel.kt:67)
-  - Clear sensitive data in onCleared()
-  - Add EncryptedSharedPreferences for persistence
-  - Security issue: #456
-
-### Removed
-- Delete orphaned PaymentFragment.kt (no usages found)
-- Remove unused drawable: ic_old_logo.xml
-
-### Security
-- Add certificate pinning for api.avoqado.io (NetworkModule.kt:89)
-  - SHA256: abc123...
-  - Prevents MITM attacks
-
-## [1.0.0] - 2025-01-30
-
-### Added
-- Initial release with Blumon PAX SDK integration
-- Clean Architecture structure (Presentation/Domain/Data)
-- Hilt dependency injection
-- Feature modules: authorization, payment, management, menu, cart, timeclock
-
-[Unreleased]: https://github.com/yourusername/avoqado-tpv/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/yourusername/avoqado-tpv/releases/tag/v1.0.0
-```
-
----
-
-### Categories (Use These ONLY)
-
-| Category | When to Use | Examples |
-|----------|-------------|----------|
-| **Added** | New features, files, functionality | New ViewModel, API endpoint, Composable |
-| **Changed** | Modifications to existing features | Refactor logic, update UI, change dependency |
-| **Deprecated** | Features marked for removal | Old API methods, legacy code |
-| **Removed** | Deleted features, files | Orphaned files, unused resources |
-| **Fixed** | Bug fixes | Crash fixes, logic errors, UI glitches |
-| **Security** | Vulnerability fixes, security improvements | Encryption, auth fixes, dependency updates |
-
----
-
-### Entry Format (STRICT)
-
-```markdown
-### [Category]
-- [ClassName/FileName]: [Action verb] [description] ([file:line])
-  - [Optional: Additional detail 1]
-  - [Optional: Additional detail 2]
-  - [Optional: Related issue: #123]
-```
-
-#### Examples:
-
-**Good Entries:**
-```markdown
-### Added
-- PaymentViewModel: Add credential caching mechanism (PaymentViewModel.kt:45)
-  - Reduces payment time from 6s to <1s
-  - Uses singleton pattern with fallback to Constants.kt
-  - Issue: #234
-
-### Fixed
-- CartViewModel: Fix null pointer exception on empty cart (CartViewModel.kt:89)
-  - Add null check before calculating total
-  - Display "Empty cart" message instead of crashing
-  - Bug: #456
-
-### Removed
-- Delete PaymentFragment.kt (orphaned after Compose migration)
-- Remove unused drawable resources: ic_old_logo.xml, ic_deprecated_icon.xml
-
-### Changed
-- PaymentScreen: Refactor UI to use Material3 components (PaymentScreen.kt:120)
-  - Replace deprecated Button with new FilledButton
-  - Update color scheme to MaterialTheme.colorScheme
-  - Improves consistency across app
-```
-
-**Bad Entries (DO NOT DO THIS):**
-```markdown
-### Added
-- Added some payment stuff  ❌ (too vague)
-- New feature  ❌ (no file reference, unclear)
-- PaymentViewModel.kt  ❌ (no action verb, no line number)
-```
-
----
-
-### When to Update CHANGELOG.md
-
-#### ✅ ALWAYS Document These:
-- New files created (ViewModels, Repositories, Composables)
-- Modified existing logic (bug fixes, refactors)
-- Deleted files (especially orphaned files)
-- Dependency updates
-- Security fixes
-- Breaking changes
-- Performance improvements
-
-#### ❌ DON'T Document These:
-- Typo fixes in comments
-- Whitespace changes
-- Code formatting (unless project-wide)
-- Trivial variable renames (unless part of larger refactor)
-
----
-
-### Rotation Strategy (File Size Management)
-
-#### When CHANGELOG.md Exceeds 2000 Lines:
-
-1. **Check line count:**
-   ```bash
-   wc -l CHANGELOG.md
-   ```
-
-2. **If > 2000 lines, Claude MUST suggest rotation:**
-   ```
-   ⚠️ CHANGELOG.md has exceeded 2000 lines (currently: 2345 lines).
-
-   Suggested action:
-   1. Create changelog/ directory if not exists
-   2. Move old entries to changelog/2024.md (keep last 6 months in CHANGELOG.md)
-   3. Update CHANGELOG.md header to reference archive
-
-   Proceed with rotation? [Y/n]
-   ```
-
-3. **Rotation process:**
-   ```bash
-   # Create directory
-   mkdir -p changelog
-
-   # Move old content (manual: keep last 6 months in CHANGELOG.md)
-   # Archive older entries to changelog/YYYY.md
-
-   # Update CHANGELOG.md header
-   cat > CHANGELOG.md <<'EOF'
-   # Changelog
-
-   For older changes, see:
-   - [2024 Changelog](./changelog/2024.md)
-   - [2023 Changelog](./changelog/2023.md)
-
-   ## [Unreleased]
-   ...
-   EOF
-   ```
-
-4. **Git commit:**
-   ```bash
-   git add changelog/2024.md CHANGELOG.md
-   git commit -m "docs: rotate CHANGELOG.md (archive 2024 entries)"
-   ```
-
----
-
-### AI Usage: How Claude Uses CHANGELOG.md
-
-**Before making changes:**
-1. Read CHANGELOG.md to understand recent work
-2. Avoid duplicating recently added features
-3. Follow existing patterns from recent entries
-
-**During development:**
-1. Keep track of changes in memory
-2. Prepare CHANGELOG entry alongside code changes
-
-**Before committing:**
-1. Add entry to CHANGELOG.md under `[Unreleased]` section
-2. Use proper category (Added/Changed/Fixed/Removed/Security)
-3. Include file path and line number
-4. Check if file size exceeds 2000 lines → suggest rotation
-
-**Example workflow:**
-```
-User: "Add caching to PaymentViewModel"
-
-Claude:
-1. ✅ Read CHANGELOG.md first (check for existing caching work)
-2. ✅ Implement feature
-3. ✅ Add entry:
-   ### Added
-   - PaymentViewModel: Add credential caching for instant payments (PaymentViewModel.kt:45)
-     - Reduces payment time from 6s to <1s
-     - Issue: #234
-4. ✅ Check file size: 1834 lines (OK, no rotation needed)
-5. ✅ Commit with both code + CHANGELOG changes
-```
-
----
-
-### Integration with Git Workflow
-
-#### Single commit includes BOTH code + CHANGELOG:
-
-```bash
-# ✅ CORRECT: Both in same commit
-git add app/src/.../PaymentViewModel.kt CHANGELOG.md
-git commit -m "feat(payment): add credential caching
-
-- Implement singleton CredentialManager
-- Reduce payment time from 6s to <1s
-- Update CHANGELOG.md
-
-Resolves #234"
-
-# ❌ WRONG: Separate commits
-git commit -m "feat: add caching"  # Missing CHANGELOG
-git commit -m "docs: update changelog"  # Should be together
-```
-
----
-
-### Template for Claude to Use
-
-```markdown
-### [Category]
-- [ClassName]: [Action] [description] ([file]:[line])
-  - [Detail 1]
-  - [Detail 2]
-  - [Optional: Issue #]
-```
-
-**Pre-filled example:**
-```markdown
-### Added
-- PaymentViewModel: Add credential caching mechanism (PaymentViewModel.kt:45)
-  - Reduces payment processing time from 6s to <1s
-  - Implements singleton CredentialManager with fallback
-  - Related issue: #234
-```
-
----
-
-## 🧹 Orphaned Files Prevention
-
-> **CRITICAL**: Prevent orphaned files from accumulating in the codebase. They cause confusion, slow down development, and bloat the APK.
-
-### What are Orphaned Files?
-- **Kotlin files** (ViewModels, Repositories, UseCases) with zero references
-- **Composables** never imported or used
-- **Resources** (drawables, layouts, strings) never referenced in code
-- **Old implementations** replaced but not deleted
-
-### Automated Detection (Build-time)
-
-#### 1. Lint Configuration (Already Configured in build.gradle.kts)
 ```kotlin
-// app/build.gradle.kts
-lint {
-    abortOnError = true  // Fail build on lint errors
-
-    // Treat UnusedResources as ERROR
-    error += setOf(
-        "UnusedResources",  // Unused drawables, layouts, strings
-        "UnusedIds"         // Unused view IDs
-    )
-
-    htmlReport = true
-    htmlOutput = layout.buildDirectory.file("reports/lint-results-debug.html").get().asFile
-}
-```
-
-#### 2. Run Lint Before Every Commit
-```bash
-# Option 1: Check for issues (doesn't fail)
-./gradlew lint
-
-# Option 2: Continuous (shows all issues)
-./gradlew lint --continue
-
-# View detailed report
-open app/build/reports/lint-results-debug.html
-```
-
-#### 3. CI/CD Integration
-```yaml
-# .github/workflows/ci.yml (example)
-- name: Run lint
-  run: ./gradlew lint --continue
-
-- name: Upload lint report
-  uses: actions/upload-artifact@v3
-  with:
-    name: lint-report
-    path: app/build/reports/lint-results-debug.html
-```
-
-### Manual Detection (Development-time)
-
-#### 1. IDE "Find Usages" (Fastest)
-```
-1. Right-click on suspicious file/class
-2. Select "Find Usages" (Cmd+B on Mac, Alt+F7 on Windows)
-3. If zero usages → DELETE the file
-```
-
-#### 2. Ripgrep Search (Codebase-wide)
-```bash
-# Search for class usage
-rg "PaymentViewModel" --type kotlin
-
-# Search for Composable usage
-rg "PaymentScreen" --type kotlin
-
-# Search for resource usage (in XML or code)
-rg "ic_payment" --type xml --type kotlin
-```
-
-#### 3. Grep for Imports (Alternative)
-```bash
-# Find files importing a specific class
-grep -r "import.*PaymentViewModel" app/src/
-```
-
-### Common Orphaned File Patterns
-
-#### Pattern 1: Refactored ViewModels
-```kotlin
-// ❌ WRONG: Old ViewModel still exists
-// app/.../OldPaymentViewModel.kt  ← ORPHANED
-// app/.../PaymentViewModel.kt     ← New one
-
-// ✅ CORRECT: Delete old file after refactor
-```
-
-#### Pattern 2: Unused Composables
-```kotlin
-// ❌ WRONG: Created but never used
-@Composable
-fun UnusedDialog() { ... }  // ← Nobody calls this
-
-// ✅ CORRECT: Delete if not referenced anywhere
-```
-
-#### Pattern 3: Orphaned Resources
-```xml
-<!-- res/drawable/old_icon.xml → ORPHANED -->
-<!-- Nobody references @drawable/old_icon -->
-
-<!-- ✅ CORRECT: Lint will catch this if configured -->
-```
-
-### Deletion Checklist
-
-Before deleting a file, verify:
-1. ✅ Zero imports in codebase (`rg "import.*ClassName"`)
-2. ✅ Zero direct references (`rg "ClassName"`)
-3. ✅ No dynamic references (reflection, string-based)
-4. ✅ Not used in tests
-5. ✅ Lint doesn't report it as used
-6. ✅ Git commit separately: `git rm file.kt`
-
-### Emergency: Clean All Orphaned Files
-
-```bash
-# 1. Run lint to generate report
-./gradlew lint --continue
-
-# 2. Open HTML report and check UnusedResources
-open app/build/reports/lint-results-debug.html
-
-# 3. Delete files listed as unused
-# IMPORTANT: Review carefully before deleting!
-
-# 4. Re-run lint to verify
-./gradlew lint
-
-# 5. Build to ensure nothing broke
-./gradlew assembleDebug
-```
-
----
-
-## ⚠️ Common Pitfalls & Solutions
-
-### Problem: First Payment Takes 30 Seconds
-**Cause:** SQLite connection leak in Storage singleton
-**Solution:** Use single Storage instance in AvoqadoApp
-```kotlin
-// AvoqadoApp.kt
-companion object {
-    val storage: Storage by lazy { Storage(context) }
-}
-```
-
-### Problem: Cross-Tenant Data Leak
-**Cause:** Missing venueId filter in query
-**Solution:** ALWAYS filter by venueId
-```kotlin
-// ❌ WRONG
-database.orderDao().getAll()
-
-// ✅ CORRECT
-database.orderDao().getOrdersByVenue(authContext.venueId)
-```
-
-### Problem: UI Freezes During Payment
-**Cause:** Blocking operation on main thread
-**Solution:** Use coroutines + Dispatchers.IO
-```kotlin
-viewModelScope.launch {
-    withContext(Dispatchers.IO) {
-        processPayment(payment)
-    }
-}
-```
-
-### Problem: Socket Events Not Received
-**Cause:** Not joined to correct room
-**Solution:** Join room before listening
-```kotlin
-// First join room
-SocketIOFacade.joinVenueRoom(venueId)
-
-// Then collect events
-SocketIOFacade.messageFlow.collect { message ->
-    // Handle event
-}
-```
-
----
-
-## 🧪 Testing Strategy
-
-### Unit Tests (ViewModels)
-```kotlin
-class PaymentViewModelTest {
-    @get:Rule
-    val mainDispatcherRule = MainDispatcherRule()
-
-    @Test
-    fun `should process payment successfully`() = runTest {
-        // Given
-        val payment = Payment(amount = 500, tip = 50)
-        coEvery { repository.processPayment(any()) } returns Result.success(payment)
-
-        // When
-        viewModel.processPayment(payment)
-
-        // Then
-        val state = viewModel.state.value
-        assertThat(state).isInstanceOf(PaymentState.Success::class.java)
-    }
-}
-```
-
-### Integration Tests (Critical Flows)
-```kotlin
+// Unit test example
 @Test
-fun `complete payment flow from cart to receipt`() = runTest {
-    // 1. Create order
-    val order = createOrder(items = listOf(burger, fries))
+fun `should process payment successfully`() = runTest {
+    // Given
+    coEvery { processPaymentUseCase(any()) } returns Result.success(payment)
 
-    // 2. Process payment
-    val payment = processPayment(orderId = order.id, amount = 500)
+    // When
+    viewModel.processPayment(payment)
 
-    // 3. Verify backend sync
-    val updatedOrder = getOrder(order.id)
-    assertThat(updatedOrder.status).isEqualTo(OrderStatus.PAID)
-}
-```
-
----
-
-## 🔍 Debugging Tips
-
-### ADB Log Monitoring
-```bash
-# Clear logs and monitor with filters
-adb logcat -c && adb logcat | grep -E "AvoqadoTPV|Payment|Socket" --line-buffered
-
-# Monitor specific component
-adb logcat | grep -E "PaymentViewModel|SocketIO"
-
-# Save logs to file
-adb logcat > logs.txt
-```
-
-### Socket.IO Debugging
-```kotlin
-// Enable debug logs
-socket.on(Socket.EVENT_CONNECT) {
-    Timber.d("✅ Socket connected")
-}
-
-socket.on(Socket.EVENT_DISCONNECT) {
-    Timber.w("⚠️ Socket disconnected")
-}
-
-socket.on(Socket.EVENT_ERROR) { args ->
-    Timber.e("❌ Socket error: ${args[0]}")
+    // Then
+    assertThat(viewModel.state.value).isInstanceOf(PaymentState.Success::class.java)
 }
 ```
 
@@ -2369,46 +1023,68 @@ socket.on(Socket.EVENT_ERROR) { args ->
 
 ## 📚 Additional Resources
 
-### Project Documentation
-- [GREENFIELD BLUEPRINT](./GREENFIELD_BLUEPRINT.md) - Complete architecture & 28-day implementation plan
-- [Backend API Docs](https://humane-immortal-pika.ngrok-free.app/api-docs) - Swagger documentation <- might be incomplete, double check on avoqado-server directory>
+### Documentation Guides
+- **[GREENFIELD_BLUEPRINT.md](./GREENFIELD_BLUEPRINT.md)** - Complete architecture & implementation plan
+- **[PAYMENT_RECONCILIATION.md](./PAYMENT_RECONCILIATION.md)** - Payment logic + Blumon multi-merchant
+- **[UI_RESPONSIVE_GUIDE.md](./UI_RESPONSIVE_GUIDE.md)** - Responsive patterns for TPV devices
+- **[SOCKET_IO_IMPLEMENTATION.md](./SOCKET_IO_IMPLEMENTATION.md)** - Real-time events architecture & integration
+- **[SOCKET_IO_TESTING.md](./SOCKET_IO_TESTING.md)** - Socket.IO testing strategies & examples
+- **[TESTING_GUIDE.md](./TESTING_GUIDE.md)** - Unit tests, integration tests, debugging
+- **[SECURITY_CHECKLIST.md](./SECURITY_CHECKLIST.md)** - Encryption, tenant isolation, certificate pinning
 
 ### External References
 - [Jetpack Compose Docs](https://developer.android.com/jetpack/compose)
 - [Hilt Documentation](https://dagger.dev/hilt/)
 - [Kotlin Coroutines Guide](https://kotlinlang.org/docs/coroutines-guide.html)
 - [Material Design 3](https://m3.material.io/)
+- [OWASP Mobile Top 10](https://owasp.org/www-project-mobile-top-10/)
 
 ### Team Contacts
-- Backend API: Check `avoqado-server/` Claude.md
+- Backend API: Check `avoqado-server/` CLAUDE.md
 - Payment Issues: Blumon PAX SDK documentation
 
-## Before ending
-- Try to compile to see if there is some issues
-- Always check if your changes would impact on the blumonpay implementation, it should work always
-- If some files are deprecated or unused please delete them, we want to prevent the orphaned files
+---
 
-## 🔄 Recent Changes
+## 🚀 Quick Start
 
-### [2025-01-30] - Project Setup
-- Initial project structure with Clean Architecture
-- Configured Hilt dependency injection
-- Set up Blumon PAX SDK integration
-- Created feature modules (authorization, payment, management, menu, cart, timeclock)
+```bash
+# 1. Clone & Setup
+cd /Users/amieva/Documents/Programming/Avoqado/avoqado-tpv
+./gradlew build
+
+# 2. Environment Variables (local.properties)
+AVOQADO_API_KEY=your_api_key_here
+BLUMON_MERCHANT_ID=your_merchant_id
+
+# 3. Run
+./gradlew installDebug
+adb shell am start -n com.jaac.avoqado_tpv/.MainActivity
+```
 
 ---
 
-## 🎯 Next Steps / TODO
+## ⚠️ Common Pitfalls
 
-- [ ] Implement offline payment queue
-- [ ] Add receipt printing (PAX printer SDK)
-- [ ] Implement biometric authentication
-- [ ] Add unit tests for ViewModels
-- [ ] Add integration tests for payment flow
-- [ ] Implement certificate pinning
-- [ ] Add performance monitoring (Firebase Performance)
+| Problem | Cause | Solution |
+|---------|-------|----------|
+| First payment takes 30s | SQLite connection leak | Use single Storage instance in AvoqadoApp |
+| Cross-tenant data leak | Missing venueId filter | ALWAYS filter by `venueId` |
+| UI freezes during payment | Blocking on main thread | Use `withContext(Dispatchers.IO)` |
+| Socket events not received | Not joined to room | Join room before listening |
+| Flash screens | Instant navigation without loading | Use `AvoqadoLoadingOverlay` |
 
 ---
 
-**Last Updated:** 2025-01-30
+## 🎯 Before Ending Work
+
+- [ ] Try to compile: `./gradlew compileDebugKotlin`
+- [ ] Check if changes impact Blumon integration (it should work always)
+- [ ] Delete orphaned files (prevent accumulation)
+- [ ] Update CHANGELOG.md with changes
+- [ ] Verify cross-references between guides work
+
+---
+
+**Last Updated:** 2025-01-15
 **Maintainer:** Development Team
+**Version:** 2.1 (Added: Socket.IO integration guidelines & decision tree)

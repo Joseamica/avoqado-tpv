@@ -42,6 +42,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.jaac.avoqado_tpv.core.presentation.screens.FastPaymentEntryScreen
 import com.jaac.avoqado_tpv.core.presentation.screens.WelcomeScreen
 import com.jaac.avoqado_tpv.core.session.SessionEvent
 import com.jaac.avoqado_tpv.core.session.SessionManager
@@ -53,6 +54,13 @@ import com.jaac.avoqado_tpv.features.authentication.presentation.LoginScreen
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationState
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationViewModel
 import com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreen
+import com.jaac.avoqado_tpv.features.ordering.presentation.FloorPlanCanvasScreen
+import com.jaac.avoqado_tpv.features.ordering.presentation.OrderingWelcomeScreen
+import com.jaac.avoqado_tpv.features.ordering.presentation.OrderListScreen
+import com.jaac.avoqado_tpv.features.ordering.presentation.TableServiceScreen
+import com.jaac.avoqado_tpv.features.ordering.presentation.menu.MenuScreen
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import timber.log.Timber
 
 /**
@@ -209,19 +217,6 @@ fun AppNavigation(
             val context = LocalContext.current
             val homeViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel = hiltViewModel()
 
-            // State to track pending amount from bottom sheet
-            var pendingAmount by remember { mutableStateOf<String?>(null) }
-
-            // Navigate to payment when amount is set
-            LaunchedEffect(pendingAmount) {
-                pendingAmount?.let { amount ->
-                    // Navigate with amount as state
-                    navController.currentBackStackEntry?.savedStateHandle?.set("initialAmount", amount)
-                    navController.navigate(NavRoute.Payment.route)
-                    pendingAmount = null // Reset after navigation
-                }
-            }
-
             // 🚨 SECURITY: Monitor activation status (Square/Toast pattern)
             // If terminal gets RETIRED by admin, HeartbeatWorker clears venueId
             // This forces immediate logout and navigation back to activation screen
@@ -240,12 +235,17 @@ fun AppNavigation(
 
             WelcomeScreen(
                 onStartPaymentWithAmount = { amount ->
-                    // Store amount in state to trigger navigation
-                    pendingAmount = amount
+                    // ✅ Modal flow: Navigate to PaymentScreen with amount
+                    navController.currentBackStackEntry?.savedStateHandle?.set("initialAmount", amount)
+                    navController.navigate(NavRoute.Payment.route)
                 },
                 onNavigateToShifts = {
                     // Navigate to Shifts screen
                     navController.navigate(NavRoute.Shifts.route)
+                },
+                onNavigateToOrdering = {
+                    // Navigate to Ordering Welcome screen
+                    navController.navigate(NavRoute.OrderingWelcome.route)
                 },
                 onNavigateToSuperAdmin = {
                     // Navigate to SuperAdmin screen
@@ -278,6 +278,111 @@ fun AppNavigation(
             )
         }
 
+        // Fast Payment Entry Screen - Dedicated screen for amount input
+        composable(NavRoute.FastPaymentEntry.route) {
+            FastPaymentEntryScreen(
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onAmountSubmit = { amount ->
+                    // Navigate to PaymentScreen with amount
+                    navController.currentBackStackEntry?.savedStateHandle?.set("initialAmount", amount)
+                    navController.navigate(NavRoute.Payment.route)
+                }
+            )
+        }
+
+        // Ordering Welcome Screen - Entry point for ordering system
+        composable(NavRoute.OrderingWelcome.route) {
+            OrderingWelcomeScreen(
+                onQuickOrderClick = {
+                    // Quick Order flow (retail/QSR) - No table assignment
+                    // MenuViewModel will create order via backend and get CUID
+                    Timber.d("🛒 Quick Order clicked - Creating new order via backend")
+                    navController.navigate(NavRoute.Menu.createRoute("CREATE_QUICK_ORDER"))
+                },
+                onTableServiceClick = {
+                    // Navigate to Floor Plan screen (visual canvas)
+                    navController.navigate(NavRoute.FloorPlan.route)
+                },
+                onViewOrdersClick = {
+                    // Navigate to Order List screen
+                    navController.navigate(NavRoute.OrderList.route)
+                    Timber.d("📋 Navigating to Order List")
+                },
+                onNavigateBack = {
+                    navController.popBackStack()
+                }
+            )
+        }
+
+        // Table Service Screen - Floor plan with table status
+        composable(NavRoute.TableService.route) {
+            TableServiceScreen(
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onTableAssigned = { orderId ->
+                    // Navigate to Menu screen with orderId
+                    Timber.d("🍽️ Table assigned - Navigating to Menu with Order ID: $orderId")
+                    navController.navigate(NavRoute.Menu.createRoute(orderId))
+                }
+            )
+        }
+
+        // Floor Plan Canvas Screen - Visual floor plan editor with zoom/pan
+        composable(NavRoute.FloorPlan.route) {
+            FloorPlanCanvasScreen(
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onTableAssigned = { orderId ->
+                    // Navigate to Menu screen with orderId
+                    Timber.d("🪑 Table assigned - Navigating to Menu with Order ID: $orderId")
+                    navController.navigate(NavRoute.Menu.createRoute(orderId))
+                }
+            )
+        }
+
+        // Menu Screen - Product selection + Order check (Hybrid Toast + Square pattern)
+        composable(
+            route = NavRoute.Menu.route,
+            arguments = listOf(navArgument("orderId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val orderId = backStackEntry.arguments?.getString("orderId") ?: ""
+
+            MenuScreen(
+                orderId = orderId,
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onProcessPayment = { order ->
+                    // Pass order total and orderId to PaymentScreen via savedStateHandle
+                    navController.currentBackStackEntry?.savedStateHandle?.apply {
+                        set("initialAmount", order.total.toString())
+                        set("orderId", order.id)
+                        set("orderNumber", order.orderNumber)
+                    }
+                    navController.navigate(NavRoute.Payment.route)
+                    Timber.d("💳 Navigating to payment: ${order.orderNumber} - Total: $${order.total}")
+                }
+            )
+        }
+
+        // Order List Screen - List of all orders with filters
+        composable(NavRoute.OrderList.route) {
+            OrderListScreen(
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onOrderClick = { order ->
+                    // Navigate to MenuScreen to view/edit order
+                    navController.navigate(NavRoute.Menu.createRoute(order.id))
+                    Timber.d("📋 Viewing order: ${order.orderNumber}")
+                }
+            )
+        }
+
         // Shifts Screen - Shift management (open/close shifts)
         composable(NavRoute.Shifts.route) {
             com.jaac.avoqado_tpv.features.shift.presentation.ShiftScreen(
@@ -306,8 +411,14 @@ fun AppNavigation(
             // 🧪 Get skipReview flag (test payment from SuperAdmin)
             val skipReview = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("skipReview") ?: false
 
+            // 🆕 Get order details (if coming from MenuScreen with order)
+            val orderId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderId")
+            val orderNumber = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderNumber")
+
             PaymentScreen(
                 initialAmount = initialAmount,
+                orderId = orderId,
+                orderNumber = orderNumber,
                 skipReview = skipReview,
                 onNavigateBack = {
                     navController.popBackStack()
@@ -315,6 +426,24 @@ fun AppNavigation(
                 onNavigateToShifts = {
                     // 🆕 Navigate to Shifts screen (for "No shift open" errors)
                     navController.navigate(NavRoute.Shifts.route)
+                },
+                onNavigateToNewOrder = {
+                    // 🔄 Toast/Square Pattern: Navigate FORWARD to fresh MenuScreen instance
+                    // This creates a new order with fresh ViewModel (no state reuse/patching)
+                    navController.navigate(NavRoute.Menu.createRoute("CREATE_QUICK_ORDER")) {
+                        // Pop back to OrderingWelcome but don't include it
+                        // Stack: OrderingWelcome → MenuScreen (NEW)
+                        popUpTo(NavRoute.OrderingWelcome.route) { inclusive = false }
+                    }
+                    Timber.d("🔄 [Navigation] Toast/Square pattern: Navigated to NEW quick order")
+                },
+                onNavigateToNewFastPayment = {
+                    // 🔄 Navigate to FastPaymentEntryScreen for new fast payment
+                    navController.navigate(NavRoute.FastPaymentEntry.route) {
+                        // Pop back to Home but don't include it (keep Home in backstack)
+                        popUpTo(NavRoute.Home.route) { inclusive = false }
+                    }
+                    Timber.d("🔄 [Navigation] Fast payment: Navigated to FastPaymentEntryScreen")
                 }
             )
         }

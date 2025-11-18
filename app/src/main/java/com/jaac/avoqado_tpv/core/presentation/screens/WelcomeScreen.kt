@@ -61,8 +61,9 @@ import java.math.BigDecimal
 @Composable
 fun WelcomeScreen(
     modifier: Modifier = Modifier,
-    onStartPaymentWithAmount: (String) -> Unit = {},
+    onStartPaymentWithAmount: (String) -> Unit = {},  // ✅ Keep modal for first-time flow
     onNavigateToShifts: () -> Unit = {},
+    onNavigateToOrdering: () -> Unit = {},
     onNavigateToSuperAdmin: () -> Unit = {},
     onLogout: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
@@ -90,8 +91,9 @@ fun WelcomeScreen(
         staffName = staffName,
         clockInTime = clockInTime,
         currentShift = currentShift,
-        onStartPaymentWithAmount = onStartPaymentWithAmount,
+        onStartPaymentWithAmount = onStartPaymentWithAmount,  // ✅ Modal flow for first-time
         onNavigateToShifts = onNavigateToShifts,
+        onNavigateToOrdering = onNavigateToOrdering,
         onNavigateToSuperAdmin = onNavigateToSuperAdmin,
         onLogout = {
             viewModel.logout()
@@ -119,8 +121,9 @@ private fun WelcomeScreenContent(
     staffName: String,
     clockInTime: String?,
     currentShift: Shift?,
-    onStartPaymentWithAmount: (String) -> Unit,
+    onStartPaymentWithAmount: (String) -> Unit,  // ✅ Modal flow (first-time)
     onNavigateToShifts: () -> Unit,
+    onNavigateToOrdering: () -> Unit,
     onNavigateToSuperAdmin: () -> Unit,
     onLogout: () -> Unit
 ) {
@@ -146,7 +149,7 @@ private fun WelcomeScreenContent(
             label = "Pago rápido",
             enabled = hasOpenShift,  // ⭐ Only enabled when shift is open
             badge = if (!hasOpenShift) "Abre el turno primero" else null,  // ⭐ Show hint when disabled
-            onClick = { showAmountBottomSheet = true }
+            onClick = { showAmountBottomSheet = true }  // ✅ Open modal (first-time flow)
         ),
         ActionButton(
             icon = Icons.Default.Assessment,
@@ -173,9 +176,9 @@ private fun WelcomeScreenContent(
         ActionButton(
             icon = Icons.Default.Restaurant,
             label = "Órdenes",
-            enabled = false,
-            badge = "Próximamente",
-            onClick = { /* TODO: Navigate to order management */ }
+            enabled = hasOpenShift,  // ⭐ Only enabled when shift is open
+            badge = if (!hasOpenShift) "Abre el turno primero" else null,
+            onClick = onNavigateToOrdering
         ),
         ActionButton(
             icon = Icons.Default.History,
@@ -249,7 +252,7 @@ private fun WelcomeScreenContent(
     // MODALS
     // ══════════════════════════════════════════════════════════════════════
 
-    // Amount input bottom sheet (existing payment flow)
+    // Amount input bottom sheet (first-time payment flow)
     if (showAmountBottomSheet) {
         com.jaac.avoqado_tpv.core.presentation.components.AmountInputBottomSheet(
             onDismiss = { showAmountBottomSheet = false },
@@ -288,6 +291,7 @@ private fun WelcomeScreenPreview() {
             currentShift = null,
             onStartPaymentWithAmount = {},
             onNavigateToShifts = {},
+            onNavigateToOrdering = {},
             onNavigateToSuperAdmin = {},
             onLogout = {}
         )
@@ -304,6 +308,7 @@ private fun WelcomeScreenPreviewLarge() {
             currentShift = null,
             onStartPaymentWithAmount = {},
             onNavigateToShifts = {},
+            onNavigateToOrdering = {},
             onNavigateToSuperAdmin = {},
             onLogout = {}
         )
@@ -339,6 +344,7 @@ private fun WelcomeScreenWithActiveShiftPreview() {
             ),
             onStartPaymentWithAmount = {},
             onNavigateToShifts = {},
+            onNavigateToOrdering = {},
             onNavigateToSuperAdmin = {},
             onLogout = {}
         )

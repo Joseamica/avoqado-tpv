@@ -44,4 +44,11 @@
     <string name="payment_error_title">Error en el pago</string>
     <string name="payment_error_recoverable_hint">Puede reintentar la operación</string>
     <string name="payment_error_not_recoverable_hint">Por favor contacte al soporte técnico</string>
+
+    <!-- Ordering System -->
+    <string name="ordering_welcome_title">Sistema de Pedidos</string>
+    <string name="ordering_quick_order_title">Pedido Rápido</string>
+    <string name="ordering_quick_order_subtitle">Venta sin mesa\n(Retail/QSR)</string>
+    <string name="ordering_table_service_title">Servicio de Mesa</string>
+    <string name="ordering_table_service_subtitle">Restaurante con plano de piso</string>
 </resources>

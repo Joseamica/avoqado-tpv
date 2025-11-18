@@ -8,6 +8,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -41,9 +45,13 @@ import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
 @Composable
 fun PaymentScreen(
     initialAmount: String? = null,
+    orderId: String? = null,  // 🆕 Order ID (for order payment with inventory deduction)
+    orderNumber: String? = null,  // 🆕 Order number (for display in receipt)
     skipReview: Boolean = false,  // 🧪 Skip rating/tip (test payment from SuperAdmin)
     onNavigateBack: () -> Unit,
     onNavigateToShifts: () -> Unit = {},  // 🆕 Navigate to Shifts screen (for "No shift open" errors)
+    onNavigateToNewOrder: () -> Unit = {},  // 🆕 Navigate to new order (Toast/Square pattern)
+    onNavigateToNewFastPayment: () -> Unit = {},  // 🆕 Navigate to new fast payment (open WelcomeScreen modal)
     viewModel: PaymentViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -195,14 +203,14 @@ fun PaymentScreen(
 
                 // LEGACY: Old idle state (redirect to new flow)
                 is PaymentState.Idle -> {
-                    LaunchedEffect(initialAmount, skipReview) {
+                    LaunchedEffect(initialAmount, skipReview, orderId, orderNumber) {
                         if (initialAmount != null) {
                             if (skipReview) {
                                 // 🧪 Test payment from SuperAdmin → skip rating/tip, go directly to merchant selection
-                                viewModel.submitAmountDirectToMerchant(initialAmount)
+                                viewModel.submitAmountDirectToMerchant(initialAmount, orderId, orderNumber)
                             } else {
-                                // ✅ Coming from WelcomeScreen with amount → skip to rating
-                                viewModel.submitAmount(initialAmount)
+                                // ✅ Coming from WelcomeScreen/MenuScreen with amount → start payment flow
+                                viewModel.submitAmount(initialAmount, orderId, orderNumber)
                             }
                         } else {
                             // ✅ NO initialAmount → This flow REQUIRES amount from WelcomeScreen
@@ -234,10 +242,18 @@ fun PaymentScreen(
                         authCode = currentState.authCode,
                         amount = currentState.amount,
                         receipt = currentState.receipt,  // 🆕 NEW: Pass receipt for QR code
+                        orderId = currentState.orderId,  // 🆕 Order ID (for determining if this is an order payment)
+                        orderNumber = currentState.orderNumber,  // 🆕 Order number (for display)
+                        orderItems = currentState.orderItems,  // 🆕 Order items (for displaying itemized receipt)
                         onPrintReceipt = viewModel::printReceipt,  // 🆕 NEW: Print callback
-                        onFinish = {
+                        onNavigateBack = onNavigateBack,  // 🆕 Navigate to WelcomeScreen (home button)
+                        onNewOrder = {
                             viewModel.resetPayment()
-                            onNavigateBack()
+                            onNavigateToNewOrder()  // 🔄 Toast/Square pattern: Navigate FORWARD to new order
+                        },
+                        onNewFastPayment = {
+                            viewModel.resetPayment()
+                            onNavigateToNewFastPayment()  // 🔄 Navigate to WelcomeScreen and open fast payment modal
                         }
                     )
                 }
@@ -512,24 +528,109 @@ private fun DashedDivider(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PaymentSuccessContent(
     authCode: String,
     amount: String,
     receipt: com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt? = null,
+    orderId: String? = null,  // 🆕 Order ID (for determining if this is an order payment)
+    orderNumber: String? = null,  // 🆕 Order number (for display)
+    orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null,  // 🆕 Order items (for displaying itemized receipt)
     onPrintReceipt: () -> Unit = {},
-    onFinish: () -> Unit
+    onNavigateBack: () -> Unit,  // 🆕 Navigate to WelcomeScreen (home button)
+    onNewOrder: () -> Unit,  // 🆕 Navigate to new order (for order payments)
+    onNewFastPayment: () -> Unit  // 🆕 Navigate to new fast payment (for fast payments)
 ) {
     // Parse amounts (prefer receipt data if available)
     val totalAmount = receipt?.amount ?: (amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)
     val tipAmount = receipt?.tipAmount ?: java.math.BigDecimal.ZERO
     val subtotalAmount = receipt?.baseAmount ?: totalAmount
 
+    // State for order details modal
+    var showOrderDetailsModal by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
+        // Custom toolbar with individual buttons (matching AvoqadoPOS design)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Home button (left) - Navigate to WelcomeScreen
+                IconButton(
+                    onClick = onNavigateBack,  // ✅ Navigate to WelcomeScreen
+                    modifier = Modifier
+                        .size(48.dp)
+                        .border(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.outline,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Home,  // ✅ Home icon
+                        contentDescription = "Inicio",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                // Center button - "Nueva Orden" or "Nuevo Pago"
+                // ✅ Centered using Box alignment
+                Box(
+                    modifier = Modifier.weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Button(
+                        onClick = if (orderId != null) onNewOrder else onNewFastPayment,  // ✅ Conditional navigation
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            contentColor = MaterialTheme.colorScheme.onSurface
+                        ),
+                        modifier = Modifier.height(48.dp)
+                    ) {
+                        Text(
+                            // ✅ Dynamic text based on payment type
+                            if (orderId != null) "Nueva Orden" else "Nuevo Pago"
+                        )
+                    }
+                }
+
+                // Order details sheet button (only if there are order items)
+                // ✅ Keeps right side balanced with left home button
+                if (!orderItems.isNullOrEmpty()) {
+                    IconButton(
+                        onClick = { showOrderDetailsModal = true },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .border(
+                                width = 1.dp,
+                                color = MaterialTheme.colorScheme.outline,
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Receipt,
+                            contentDescription = "Ver detalles de la orden",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                } else {
+                    // Spacer to balance layout when no receipt button
+                    Spacer(modifier = Modifier.size(48.dp))
+                }
+            }
+        }
         // Receipt visual (weight 1f to push buttons to bottom)
         Column(
             modifier = Modifier
@@ -547,7 +648,7 @@ private fun PaymentSuccessContent(
                     painter = painterResource(R.drawable.ilu_ticket_background),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 90.dp), // Space for QR code
+                        .padding(top = 70.dp), // Reduced from 90dp - less space for QR
                     contentDescription = "",
                     contentScale = ContentScale.FillBounds,
                     colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.surface)
@@ -595,8 +696,7 @@ private fun PaymentSuccessContent(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 90.dp) // Match background padding
-                        .padding(horizontal = 24.dp, vertical = 32.dp)
+                        .padding(horizontal = 40.dp)
                         .align(Alignment.BottomCenter)
                 ) {
                     // Instruction text
@@ -609,6 +709,11 @@ private fun PaymentSuccessContent(
                     )
 
                     Spacer(modifier = Modifier.height(20.dp))
+
+                    // 📦 Order items REMOVED from success screen - shown only in printed receipt
+                    // Reason: With 10+ products, UI becomes cluttered and messy
+                    // QR code section should stay clean and focused
+                    // Product details are fully visible on the printed receipt
 
                     // Dashed divider
                     DashedDivider()
@@ -632,7 +737,7 @@ private fun PaymentSuccessContent(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(12.dp))  // Reduced from 16dp to 12dp
 
                     // Solid divider
                     HorizontalDivider(
@@ -642,7 +747,7 @@ private fun PaymentSuccessContent(
                         color = MaterialTheme.colorScheme.outlineVariant
                     )
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(12.dp))  // Reduced from 16dp to 12dp
 
                     // Breakdown: Total
                     Row(
@@ -683,48 +788,107 @@ private fun PaymentSuccessContent(
             }
         }
 
-        // Print button (if receipt available)
-        receipt?.let {
-            Button(
-                onClick = onPrintReceipt,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .padding(horizontal = 16.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    contentColor = MaterialTheme.colorScheme.onSurface
-                )
-            ) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_contact_payment), // Placeholder - ideally use print icon
-                    contentDescription = "Imprimir",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(20.dp)
-                )
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Text(
-                    text = "O imprime el recibo",
-                    fontSize = 16.sp
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Finish button
-        AvoqadoButton(
-            text = "Nuevo Pago",
-            onClick = onFinish,
+        // Print button (ALWAYS visible - prints generic receipt if backend failed)
+        Button(
+            onClick = onPrintReceipt,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-        )
+                .height(48.dp)
+                .padding(horizontal = 16.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.onSurface
+            )
+        ) {
+            Icon(
+                painter = painterResource(R.drawable.ic_contact_payment), // Placeholder - ideally use print icon
+                contentDescription = "Imprimir",
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(20.dp)
+            )
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Text(
+                text = "O imprime el recibo",
+                fontSize = 16.sp
+            )
+        }
 
         Spacer(modifier = Modifier.height(24.dp))
+    }
+
+    // Order details modal (bottom sheet)
+    if (showOrderDetailsModal && !orderItems.isNullOrEmpty()) {
+        ModalBottomSheet(
+            onDismissRequest = { showOrderDetailsModal = false },
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+            ) {
+                // Header
+                Text(
+                    text = if (!orderNumber.isNullOrBlank()) "Orden #$orderNumber" else "Detalles de la Orden",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+
+                // Items list
+                orderItems.forEach { item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = androidx.compose.ui.Alignment.Top
+                    ) {
+                        // Product name + quantity
+                        Column(
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = "${item.quantity}x ${item.productName}",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            // Notes (if any)
+                            if (!item.notes.isNullOrBlank()) {
+                                Text(
+                                    text = item.notes,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                                )
+                            }
+                        }
+
+                        // Price
+                        Text(
+                            text = item.formattedTotalPrice,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Close button
+                AvoqadoButton(
+                    text = "Cerrar",
+                    onClick = { showOrderDetailsModal = false },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+        }
     }
 }
 
@@ -835,7 +999,9 @@ private fun PaymentSuccessContentPreview() {
             amount = "500.00",
             receipt = null,  // No receipt - button won't show
             onPrintReceipt = {},
-            onFinish = {}
+            onNavigateBack = {},
+            onNewOrder = {},
+            onNewFastPayment = {}
         )
     }
 }
@@ -855,7 +1021,9 @@ private fun PaymentSuccessWithReceiptPreview() {
                 tipAmount = java.math.BigDecimal("50.00")
             ),
             onPrintReceipt = {},
-            onFinish = {}
+            onNavigateBack = {},
+            onNewOrder = {},
+            onNewFastPayment = {}
         )
     }
 }

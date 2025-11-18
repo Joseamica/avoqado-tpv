@@ -87,4 +87,9 @@ data class OrderPaymentRequest(
 
     @SerializedName("reviewRating")
     val reviewRating: String? = null,
+
+    // ⭐ Provider-agnostic merchant tracking (2025-01-17)
+    // ✅ RECONCILIATION: null for cash, CUID for card payments
+    @SerializedName("merchantAccountId")
+    val merchantAccountId: String? = null,
 )

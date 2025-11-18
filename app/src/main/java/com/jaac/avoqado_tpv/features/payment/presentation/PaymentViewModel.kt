@@ -116,7 +116,9 @@ class PaymentViewModel @Inject constructor(
     // 🔌 Socket Manager - Real-time Socket.IO events (payment updates, system alerts)
     private val socketManager: com.jaac.avoqado_tpv.core.data.realtime.SocketManager,
     // 🕐 Shift Repository - Validate shift is open before processing payments (Square/Toast pattern)
-    private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
+    private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
+    // 📦 Order Repository - Load order items for displaying in success screen receipt
+    private val orderRepository: com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentState>(PaymentState.Idle)
@@ -154,6 +156,10 @@ class PaymentViewModel @Inject constructor(
     private var currentVenueId: String = ""  // Venue ID from auth context
     private var currentStaffId: String = ""  // Staff ID from auth context
     private var currentShiftId: String? = null  // Shift ID from current open shift (null if no shift)
+
+    // 🆕 Order context (for order payment with inventory deduction)
+    private var currentOrderId: String? = null  // Order ID (null = fast payment, non-null = order payment)
+    private var currentOrderNumber: String? = null  // Order number (for display in receipt)
 
     // ═══════════════════════════════════════════════════════════════════════════
     // EMV TAG EXTRACTION USE CASES
@@ -516,9 +522,21 @@ class PaymentViewModel @Inject constructor(
 
     /**
      * Submit amount and proceed to rating screen
+     *
+     * @param amount Payment amount (e.g., "10.00")
+     * @param orderId Order ID (null = fast payment, non-null = order payment with inventory deduction)
+     * @param orderNumber Order number (for display in receipt)
      */
-    fun submitAmount(amount: String) {
+    fun submitAmount(amount: String, orderId: String? = null, orderNumber: String? = null) {
         Timber.d("💰 [Payment Flow] Amount entered: $$amount")
+        // Save order context
+        currentOrderId = orderId
+        currentOrderNumber = orderNumber
+        if (orderId != null) {
+            Timber.d("📦 [Payment Flow] Order payment mode: orderId=$orderId, orderNumber=$orderNumber")
+        } else {
+            Timber.d("⚡ [Payment Flow] Fast payment mode (no order)")
+        }
         _state.value = PaymentState.CollectingRating(amount = amount)
     }
 
@@ -596,9 +614,20 @@ class PaymentViewModel @Inject constructor(
      * Skips rating and tip collection, goes directly to SelectingMerchant state.
      *
      * @param amount Payment amount (e.g., "10.00")
+     * @param orderId Order ID (null = fast payment, non-null = order payment with inventory deduction)
+     * @param orderNumber Order number (for display in receipt)
      */
-    fun submitAmountDirectToMerchant(amount: String) {
+    fun submitAmountDirectToMerchant(amount: String, orderId: String? = null, orderNumber: String? = null) {
         Timber.d("🧪 [Test Payment] Skipping rating/tip, going directly to merchant selection: $$amount")
+
+        // Save order context
+        currentOrderId = orderId
+        currentOrderNumber = orderNumber
+        if (orderId != null) {
+            Timber.d("📦 [Test Payment] Order payment mode: orderId=$orderId, orderNumber=$orderNumber")
+        } else {
+            Timber.d("⚡ [Test Payment] Fast payment mode (no order)")
+        }
 
         // Save zero tip and no rating for backend recording
         currentTip = "0.00"
@@ -1188,27 +1217,24 @@ class PaymentViewModel @Inject constructor(
         emvTagList: String
     ): AuthorizationResult {
         return try {
-            // ⚠️ CRITICAL: Retrieve validated posId from SDK database BEFORE calling SaleIccUseCase
-            // This must be done in the same suspend context to prevent NumberFormatException
-            Timber.i("🔐 [GetInitData] Retrieving validated posId from SDK database...")
-            val initDataParams = GetInitDataParams()
-            val initDataResult = getInitDataUseCase.run(initDataParams)
+            // ✅ CRITICAL FIX: Use posId from current merchant instead of SDK database
+            // Reason: SDK database may have stale posId after merchant switching
+            // The SDK stores posId internally and doesn't update immediately after InsertInitUseCase
+            val currentMerchantAccount = _currentMerchant.value
+            val posIdToUse = currentMerchantAccount?.posId
 
-            if (initDataResult.isLeft) {
-                val failure = initDataResult.leftValue()
-                Timber.e("❌ [GetInitData] Failed: $failure")
+            if (posIdToUse == null) {
+                Timber.e("❌ [Payment] No posId available - current merchant: ${currentMerchantAccount?.displayName ?: "null"}")
                 return AuthorizationResult(
                     response = null,
-                    userFriendlyError = "Error obteniendo configuración del terminal.\n\nPor favor, reinicie la aplicación."
+                    userFriendlyError = "Error de configuración del merchant.\n\n" +
+                        "Por favor, seleccione un merchant antes de procesar el pago."
                 )
             }
 
-            val initDataResponse = initDataResult.rightValue()
-            val initData = initDataResponse.initData
-            Timber.i("✅ [GetInitData] Success!")
-            Timber.i("   posId: ${initData.posId} (safe to parse as Int - prevents NumberFormatException)")
-            Timber.i("   Commerce Name: ${initData.commerceName}")
-            Timber.i("   Commerce Address: ${initData.commerceAddress}")
+            Timber.i("✅ [Payment] Using posId from current merchant: $posIdToUse")
+            Timber.i("   Merchant: ${currentMerchantAccount.displayName}")
+            Timber.i("   Serial: ${currentMerchantAccount.serialNumber}")
 
             Timber.i("🌐 [SaleIcc] Sending online authorization to Momentum...")
             Timber.d("   Amount: $amount")
@@ -1709,15 +1735,31 @@ class PaymentViewModel @Inject constructor(
 
                 // Create payment context for cash
                 // ✅ RECONCILIATION: null merchantAccountId = proper separation (cash has no processor cost)
-                val context = PaymentContext.FastPayment(
-                    venueId = currentVenueId!!,
-                    staffId = currentStaffId!!,
-                    amount = currentState.subtotal.toBigDecimal(),
-                    tip = currentState.tipAmount.toBigDecimal(),
-                    rating = currentState.rating,
-                    merchantAccountId = null,  // ✅ null = cash (no processor, no commission)
-                    blumonSerialNumber = ""   // No Blumon SDK for cash payments
-                )
+                // 🆕 Order vs Fast: If orderId present, create OrderPayment (triggers inventory deduction)
+                val context = if (currentOrderId != null) {
+                    PaymentContext.OrderPayment(
+                        venueId = currentVenueId!!,
+                        staffId = currentStaffId!!,
+                        shiftId = currentShiftId,
+                        orderId = currentOrderId!!,  // 🆕 Order ID for backend
+                        amount = currentState.subtotal.toBigDecimal(),
+                        tip = currentState.tipAmount.toBigDecimal(),
+                        rating = currentState.rating,
+                        merchantAccountId = null,  // ✅ null = cash (no processor, no commission)
+                        blumonSerialNumber = ""   // No Blumon SDK for cash payments
+                    )
+                } else {
+                    PaymentContext.FastPayment(
+                        venueId = currentVenueId!!,
+                        staffId = currentStaffId!!,
+                        shiftId = currentShiftId,
+                        amount = currentState.subtotal.toBigDecimal(),
+                        tip = currentState.tipAmount.toBigDecimal(),
+                        rating = currentState.rating,
+                        merchantAccountId = null,  // ✅ null = cash (no processor, no commission)
+                        blumonSerialNumber = ""   // No Blumon SDK for cash payments
+                    )
+                }
 
                 // Generate cash reference (unique ID for cash payments)
                 val cashReference = "CASH-${System.currentTimeMillis()}"
@@ -1738,6 +1780,9 @@ class PaymentViewModel @Inject constructor(
                     Timber.d("✅ [Cash Payment] Successfully recorded to backend")
                     Timber.d("   🧾 Payment ID: ${receipt.paymentId} | Receipt URL: ${receipt.receiptUrl}")
 
+                    // 📦 Load order items if this is an order payment (Pedido Rápido or Servicio de Mesa)
+                    val orderItems = loadOrderItems(currentOrderId)
+
                     _state.value = PaymentState.Success(
                         authCode = "EFECTIVO",
                         amount = currentState.subtotal,
@@ -1745,7 +1790,10 @@ class PaymentViewModel @Inject constructor(
                         rating = currentState.rating,
                         receipt = receipt,
                         cardDetails = CardDetails.CASH,
-                        referenceNumber = cashReference
+                        referenceNumber = cashReference,
+                        orderId = currentOrderId,  // 🆕 Order ID (for loading order items in success screen)
+                        orderNumber = currentOrderNumber,  // 🆕 Order number (for display)
+                        orderItems = orderItems  // 🆕 Order items (for displaying itemized receipt)
                     )
 
                     Timber.d("💚 [Cash Payment] Payment completed successfully")
@@ -1822,9 +1870,9 @@ class PaymentViewModel @Inject constructor(
             amount = currentAmount,
             tipAmount = currentTip,
             rating = currentRating,
-            merchantAccountId = _currentMerchant.value?.id ?: ""
+            merchantAccountId = _currentMerchant.value?.merchantAccountId  // ✅ FIX: Use backend CUID, not local ID
         )
-        Timber.d("📸 [Context Snapshot] amount=$currentAmount | tip=$currentTip | rating=$currentRating | merchant=${_currentMerchant.value?.id ?: "NULL"}")
+        Timber.d("📸 [Context Snapshot] amount=$currentAmount | tip=$currentTip | rating=$currentRating | merchant_cuid=${_currentMerchant.value?.merchantAccountId ?: "NULL"} | local_id=${_currentMerchant.value?.id}")
         Timber.d("📸 [Context Snapshot] isValid=${context.isValid()}")
         return context
     }
@@ -2111,20 +2159,43 @@ class PaymentViewModel @Inject constructor(
 
                 Timber.d("💾 [Backend Recording] Card details: brand=${cardDetails.cardBrand} | masked=${cardDetails.maskedPan} | entry=${cardDetails.entryMode}")
 
-                // 2. Build payment context (FastPayment for now)
+                // 2. Build payment context
                 // ⭐ PROVIDER-AGNOSTIC MERCHANT TRACKING: Use merchant account ID (primary)
-                val merchantAccountId = _currentMerchant.value?.id ?: ""
+                // 🆕 Order vs Fast: If orderId present, create OrderPayment (triggers inventory deduction)
+                val merchantAccountId = _currentMerchant.value?.merchantAccountId  // ✅ FIX: Use backend CUID, not local ID
+
+                // ⚠️ CRITICAL: Log warning if merchantAccountId is missing (backend will reject with 400)
+                if (merchantAccountId == null && _currentMerchant.value != null) {
+                    Timber.w("⚠️ [Payment] Merchant account missing backend CUID | local_id=${_currentMerchant.value?.id} | serial=${_currentMerchant.value?.serialNumber}")
+                    Timber.w("   → Backend will reject this payment with 400 validation error")
+                    Timber.w("   → Fetch merchant accounts from backend or add CUIDs to hardcoded accounts")
+                }
+
                 val blumonSerial = _currentMerchant.value?.serialNumber ?: "" // ✅ CRITICAL FIX: Use VIRTUAL serial (e.g., "2841548417"), not physical terminal serial
-                val context = PaymentContext.FastPayment(
-                    venueId = currentVenueId,
-                    staffId = currentStaffId,
-                    shiftId = currentShiftId, // 🆕 CRITICAL: Shift ID for cash reconciliation (Square/Toast pattern)
-                    amount = currentAmount.toBigDecimal(),
-                    tip = currentTip.toBigDecimal(),
-                    rating = currentRating, // 🆕 NEW: Include user rating (1-5 stars or null)
-                    merchantAccountId = merchantAccountId, // 🆕 PRIMARY: Merchant account ID
-                    blumonSerialNumber = blumonSerial, // ⚠️ LEGACY: Fallback (FIXED: virtual serial)
-                )
+                val context = if (currentOrderId != null) {
+                    PaymentContext.OrderPayment(
+                        venueId = currentVenueId,
+                        staffId = currentStaffId,
+                        shiftId = currentShiftId, // 🆕 CRITICAL: Shift ID for cash reconciliation (Square/Toast pattern)
+                        orderId = currentOrderId!!, // 🆕 Order ID for backend
+                        amount = currentAmount.toBigDecimal(),
+                        tip = currentTip.toBigDecimal(),
+                        rating = currentRating, // 🆕 NEW: Include user rating (1-5 stars or null)
+                        merchantAccountId = merchantAccountId, // 🆕 PRIMARY: Merchant account ID
+                        blumonSerialNumber = blumonSerial, // ⚠️ LEGACY: Fallback (FIXED: virtual serial)
+                    )
+                } else {
+                    PaymentContext.FastPayment(
+                        venueId = currentVenueId,
+                        staffId = currentStaffId,
+                        shiftId = currentShiftId, // 🆕 CRITICAL: Shift ID for cash reconciliation (Square/Toast pattern)
+                        amount = currentAmount.toBigDecimal(),
+                        tip = currentTip.toBigDecimal(),
+                        rating = currentRating, // 🆕 NEW: Include user rating (1-5 stars or null)
+                        merchantAccountId = merchantAccountId, // 🆕 PRIMARY: Merchant account ID
+                        blumonSerialNumber = blumonSerial, // ⚠️ LEGACY: Fallback (FIXED: virtual serial)
+                    )
+                }
 
                 Timber.d("💾 [Backend Recording] Context: venue=$currentVenueId, staff=$currentStaffId, shift=$currentShiftId, amount=$currentAmount, tip=$currentTip, rating=$currentRating, merchantId=${context.merchantAccountId}, blumonSerial=${context.blumonSerialNumber}")
 
@@ -2141,13 +2212,19 @@ class PaymentViewModel @Inject constructor(
                     Timber.i("✅ [Backend Recording] Payment recorded successfully | paymentId=${receipt.paymentId}")
                     Timber.i("📄 [Backend Recording] Receipt URL: ${receipt.receiptUrl}")
 
+                    // 📦 Load order items if this is an order payment (Pedido Rápido or Servicio de Mesa)
+                    val orderItems = loadOrderItems(currentOrderId)
+
                     // 🆕 NEW: Update Success state with receipt + card details for QR code display and printing
                     val currentState = _state.value
                     if (currentState is PaymentState.Success) {
                         _state.value = currentState.copy(
                             receipt = receipt,
                             cardDetails = cardDetails,  // 🎫 Include card info for professional receipts
-                            referenceNumber = referenceNumber  // 🎫 Include reference for receipts
+                            referenceNumber = referenceNumber,  // 🎫 Include reference for receipts
+                            orderId = currentOrderId,  // 🆕 Order ID (for loading order items in success screen)
+                            orderNumber = currentOrderNumber,  // 🆕 Order number (for display)
+                            orderItems = orderItems  // 🆕 Order items (for displaying itemized receipt)
                         )
                         Timber.d("🎫 [Receipt] Updated Success state with receipt | URL=${receipt.receiptUrl}")
                         Timber.d("🎫 [Receipt] Card: ${cardDetails.cardBrand} ${cardDetails.maskedPan} | Entry: ${cardDetails.entryMode}")
@@ -2172,7 +2249,7 @@ class PaymentViewModel @Inject constructor(
                         amount = currentAmount.toBigDecimal(),
                         tip = currentTip.toBigDecimal(),
                         rating = currentRating, // 🆕 NEW: Preserve user rating for offline queue retry
-                        merchantAccountId = _currentMerchant.value?.id ?: "", // 🆕 PRIMARY: Merchant account ID
+                        merchantAccountId = _currentMerchant.value?.merchantAccountId ?: "", // ✅ FIX: Use backend CUID, not local ID
                         blumonSerialNumber = _currentMerchant.value?.serialNumber ?: "", // ✅ CRITICAL FIX: Use VIRTUAL serial (e.g., "2841548417"), not physical terminal serial
                         maskedPan = cardDetails.maskedPan,
                         cardBrand = cardDetails.cardBrand.name,
@@ -2350,6 +2427,59 @@ class PaymentViewModel @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // ORDER ITEMS LOADING (for displaying in success screen receipt)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * 📦 Load order items for displaying in payment success screen.
+     *
+     * **Purpose:**
+     * When payment is for an order (Pedido Rápido or Servicio de Mesa), load the order items
+     * to display itemized receipt in the success screen.
+     *
+     * **Flow:**
+     * 1. Check if orderId is present (null = fast payment, skip loading)
+     * 2. Call orderRepository.getOrder() to fetch full order details
+     * 3. Extract items list from order
+     * 4. Return items or null on error
+     *
+     * **Called from:**
+     * - processCashPayment (after cash payment recorded successfully)
+     * - handlePaymentSuccess (after card payment recorded successfully)
+     *
+     * @param orderId Order ID to load items for (null = fast payment, skip loading)
+     * @return List of OrderItem or null if error/not applicable
+     */
+    private suspend fun loadOrderItems(orderId: String?): List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? {
+        if (orderId == null) {
+            Timber.d("📦 [Order Items] Skipping load - Fast payment (no order)")
+            return null
+        }
+
+        Timber.d("📦 [Order Items] Loading items for order: $orderId")
+        return try {
+            val result = orderRepository.getOrder(
+                venueId = currentVenueId,
+                orderId = orderId
+            )
+
+            result.onSuccess { order ->
+                Timber.d("✅ [Order Items] Loaded ${order.items.size} items for order $orderId")
+                order.items.forEach { item ->
+                    Timber.d("   - ${item.quantity}x ${item.productName} @ ${item.formattedTotalPrice}")
+                }
+            }.onFailure { error ->
+                Timber.e(error, "❌ [Order Items] Failed to load items for order $orderId")
+            }
+
+            result.getOrNull()?.items
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Order Items] Exception loading items for order $orderId")
+            null
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // RECEIPT PRINTING
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2357,8 +2487,8 @@ class PaymentViewModel @Inject constructor(
      * 🖨️ Print physical receipt using PAX thermal printer.
      *
      * **Flow:**
-     * 1. Get current Success state with receipt URL
-     * 2. Call PrinterManager to print
+     * 1. Get current Success state with payment data
+     * 2. Call PrinterManager to print (generic receipt if backend registration failed)
      * 3. Update state to Printing (loading indicator)
      * 4. On success: Return to Success state
      * 5. On failure: Show PrintError state with retry option
@@ -2367,8 +2497,11 @@ class PaymentViewModel @Inject constructor(
      *
      * **Requirements:**
      * - Current state must be PaymentState.Success
-     * - Receipt must be available (receipt URL not null)
      * - PAX printer must be available
+     *
+     * **Behavior:**
+     * - If receipt exists (backend registration succeeded): Print full receipt with URL
+     * - If receipt is null (backend failed/offline): Print generic receipt with basic payment data
      */
     fun printReceipt() {
         val currentState = _state.value
@@ -2377,9 +2510,9 @@ class PaymentViewModel @Inject constructor(
             return
         }
 
+        // ✅ REMOVED: No longer require receipt to exist - can print generic receipt
         if (currentState.receipt == null) {
-            Timber.w("⚠️ [Print] Cannot print: No receipt available")
-            return
+            Timber.i("📄 [Print] No receipt from backend - will print generic receipt with payment data")
         }
 
         viewModelScope.launch {
@@ -2388,12 +2521,14 @@ class PaymentViewModel @Inject constructor(
                 _state.value = PaymentState.Printing
 
                 val result = printerManager.printReceipt(
-                    receiptUrl = currentState.receipt.receiptUrl,
+                    receiptUrl = currentState.receipt?.receiptUrl,  // ✅ FIX: Can be null for generic receipt
                     amount = currentState.amount,
                     authCode = currentState.authCode,
                     tipAmount = currentState.tipAmount,
                     cardDetails = currentState.cardDetails,  // 🎫 Pass card info for professional receipt
-                    referenceNumber = currentState.referenceNumber  // 🎫 Pass reference for receipt
+                    referenceNumber = currentState.referenceNumber,  // 🎫 Pass reference for receipt
+                    orderNumber = currentState.orderNumber,  // 🆕 Order number (for display in receipt)
+                    orderItems = currentState.orderItems  // 🆕 Order items (for itemized receipt - only for orders, not fast payments)
                 )
 
                 result.onSuccess {

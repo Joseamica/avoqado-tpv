@@ -209,6 +209,9 @@ class OrderPaymentRecorder @Inject constructor(
         authorizationNumber: String,
         referenceNumber: String,
     ): OrderPaymentRequest {
+        // ✅ CASH vs CARD: Determine payment method
+        val isCashPayment = context.merchantAccountId == null
+
         return OrderPaymentRequest(
             // Venue ID (requerido en body además del path)
             venueId = context.venueId,
@@ -219,10 +222,14 @@ class OrderPaymentRecorder @Inject constructor(
 
             // Payment metadata
             status = "COMPLETED",
-            method = when (cardDetails.cardBrand) {
-                CardBrand.VISA, CardBrand.MASTERCARD -> "CREDIT_CARD"
-                CardBrand.AMEX -> "CREDIT_CARD"
-                else -> "DEBIT_CARD"
+            method = if (isCashPayment) {
+                "CASH"  // ✅ Cash payment (merchantAccountId = null)
+            } else {
+                when (cardDetails.cardBrand) {
+                    CardBrand.VISA, CardBrand.MASTERCARD -> "CREDIT_CARD"
+                    CardBrand.AMEX -> "CREDIT_CARD"
+                    else -> "DEBIT_CARD"
+                }
             },
             source = "AVOQADO_TPV",
             splitType = "FULLPAYMENT",
@@ -245,6 +252,9 @@ class OrderPaymentRecorder @Inject constructor(
 
             // Optional rating: Send numeric rating as string (1-5 stars)
             reviewRating = context.rating?.toString(),
+
+            // ⭐ RECONCILIATION: null = cash (no processor cost), CUID = card payment
+            merchantAccountId = context.merchantAccountId,
         )
     }
 }

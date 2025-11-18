@@ -39,7 +39,8 @@ package com.jaac.avoqado_tpv.features.payment.domain.model
  * @property isActive Whether account is currently selectable
  */
 data class MerchantAccount(
-    val id: String,
+    val id: String,  // Local ID (e.g., "merchant_sandbox_a") - kept for backwards compatibility
+    val merchantAccountId: String? = null,  // 🆕 Backend CUID (e.g., "cmi1yg8mw...") - PRIMARY for API calls
     val serialNumber: String,
     val posId: String? = null,
     val displayName: String,

@@ -108,7 +108,10 @@ sealed class PaymentState {
         val rating: Int? = null,        // NEW: Include rating in success
         val receipt: PaymentReceipt? = null,  // 🆕 NEW: Digital receipt with QR code URL
         val cardDetails: com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails? = null,  // Card info for receipt printing
-        val referenceNumber: String? = null  // Reference number for receipt
+        val referenceNumber: String? = null,  // Reference number for receipt
+        val orderId: String? = null,  // 🆕 Order ID (for loading order items in success screen)
+        val orderNumber: String? = null,  // 🆕 Order number (for display)
+        val orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null  // 🆕 Order items (for displaying itemized receipt)
     ) : PaymentState()
     /**
      * Payment error with preserved context for smart retry.

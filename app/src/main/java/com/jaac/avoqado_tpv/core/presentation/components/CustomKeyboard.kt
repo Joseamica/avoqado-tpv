@@ -60,7 +60,7 @@ fun CustomKeyboard(
     )
 
     Row(
-        modifier = modifier.height(IntrinsicSize.Max),
+        modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         // Left side: number grid
@@ -117,11 +117,21 @@ fun CustomKeyboard(
                 )
             }
 
-            // Confirm button (takes remaining space)
+            // Confirm button - height calculated to match remaining rows
+            // 4 rows (80dp each) + 3 gaps (8dp each) = 344dp total height
+            // Minus backspace (80dp) and toggle (if shown: 80dp + 8dp) and gaps
+            val confirmHeight = if (showToggle && onToggleClick != null) {
+                // With toggle: 344dp - 80dp (backspace) - 8dp - 80dp (toggle) - 8dp = 168dp
+                168.dp
+            } else {
+                // Without toggle: 344dp - 80dp (backspace) - 8dp = 256dp
+                256.dp
+            }
+
             KeyboardButton(
                 modifier = Modifier
                     .width(100.dp)
-                    .weight(1f),
+                    .height(confirmHeight),
                 icon = Icons.Default.Check,
                 isConfirm = true,
                 onClick = onConfirmClick

@@ -1,0 +1,284 @@
+package com.jaac.avoqado_tpv.features.ordering.data.dto
+
+import com.google.gson.annotations.SerializedName
+
+/**
+ * API Response Wrapper
+ *
+ * Standard response format from backend: { success: true, data: T }
+ */
+data class ApiResponse<T>(
+    @SerializedName("success") val success: Boolean,
+    @SerializedName("data") val data: T
+)
+
+/**
+ * Waiter Info DTO
+ *
+ * Staff member serving the table.
+ */
+data class WaiterInfoDto(
+    @SerializedName("id") val id: String,
+    @SerializedName("name") val name: String
+)
+
+/**
+ * Order Item DTO
+ *
+ * Individual item in an order (for order preview).
+ */
+data class OrderItemDto(
+    @SerializedName("id") val id: String,
+    @SerializedName("productName") val productName: String,
+    @SerializedName("quantity") val quantity: Int,
+    @SerializedName("unitPrice") val unitPrice: Double,
+    @SerializedName("total") val total: Double
+)
+
+/**
+ * Product Info DTO (nested in OrderItemDetailDto)
+ *
+ * Product information returned by backend in OrderItem.
+ * Backend includes full product object, not just flattened fields.
+ */
+data class ProductInfoDto(
+    @SerializedName("id") val id: String,
+    @SerializedName("name") val name: String,
+    @SerializedName("price") val price: Double? = null,
+    @SerializedName("sku") val sku: String? = null
+)
+
+/**
+ * Order Item Detail DTO
+ *
+ * Full individual item details with modifiers, notes, and kitchen status.
+ * Used when fetching complete order details.
+ */
+data class OrderItemDetailDto(
+    @SerializedName("id") val id: String,
+    @SerializedName("orderId") val orderId: String,
+    @SerializedName("productId") val productId: String,
+    @SerializedName("product") val product: ProductInfoDto,  // ✅ NESTED: Backend returns product object
+    @SerializedName("quantity") val quantity: Int,
+    @SerializedName("unitPrice") val unitPrice: Double,
+    @SerializedName("total") val totalPrice: Double,  // ✅ Backend uses "total" not "totalPrice"
+    @SerializedName("modifiers") val modifiers: List<ProductModifierDto>? = null,
+    @SerializedName("notes") val notes: String?,
+    @SerializedName("kitchenStatus") val kitchenStatus: String? = null,  // ✅ NULLABLE: Backend doesn't have this field in OrderItem schema
+    @SerializedName("createdAt") val createdAt: String,
+    @SerializedName("sentToKitchenAt") val sentToKitchenAt: String?
+)
+
+/**
+ * Product Modifier DTO
+ *
+ * Modifier applied to an order item (e.g., "Extra cheese", "No onions").
+ */
+data class ProductModifierDto(
+    @SerializedName("id") val id: String,
+    @SerializedName("name") val name: String,
+    @SerializedName("priceAdjustment") val priceAdjustment: Double,
+    @SerializedName("type") val type: String? = "MULTIPLE_CHOICE",
+    @SerializedName("required") val required: Boolean? = false,
+    @SerializedName("displayOrder") val displayOrder: Int? = 0
+)
+
+/**
+ * Current Order Info DTO
+ *
+ * Summary of the active order on a table.
+ */
+data class CurrentOrderInfoDto(
+    @SerializedName("id") val id: String,
+    @SerializedName("orderNumber") val orderNumber: String,
+    @SerializedName("covers") val covers: Int?,
+    @SerializedName("total") val total: Double,
+    @SerializedName("itemCount") val itemCount: Int,
+    @SerializedName("items") val items: List<OrderItemDto>,
+    @SerializedName("waiter") val waiter: WaiterInfoDto?,
+    @SerializedName("createdAt") val createdAt: String
+)
+
+/**
+ * Table DTO
+ *
+ * Represents table data from backend API.
+ * Matches backend TableStatusResponse interface.
+ */
+data class TableDto(
+    @SerializedName("id") val id: String,
+    @SerializedName("number") val number: String,
+    @SerializedName("capacity") val capacity: Int,
+    @SerializedName("positionX") val positionX: Double?,
+    @SerializedName("positionY") val positionY: Double?,
+    @SerializedName("shape") val shape: String,
+    @SerializedName("rotation") val rotation: Int,
+    @SerializedName("status") val status: String,  // "AVAILABLE", "OCCUPIED", "RESERVED"
+    @SerializedName("currentOrder") val currentOrder: CurrentOrderInfoDto?,
+    @SerializedName("areaId") val areaId: String?,
+    @SerializedName("areaName") val areaName: String?
+)
+
+/**
+ * Create Order Request
+ *
+ * Request body for creating a new order.
+ * Backend generates orderId (CUID) and orderNumber (sequential).
+ */
+data class CreateOrderRequest(
+    @SerializedName("tableId") val tableId: String? = null,
+    @SerializedName("covers") val covers: Int = 1,
+    @SerializedName("waiterId") val waiterId: String? = null,
+    @SerializedName("orderType") val orderType: String = "TAKEOUT"  // "DINE_IN" or "TAKEOUT"
+)
+
+/**
+ * Assign Table Request
+ *
+ * Request body for assigning a table and creating/returning an order.
+ */
+data class AssignTableRequest(
+    @SerializedName("staffId") val staffId: String,
+    @SerializedName("covers") val covers: Int
+)
+
+/**
+ * Assign Table Response Data
+ *
+ * Data from backend after assigning a table.
+ * Contains the order (new or existing) and a flag indicating if it's new.
+ * This is inside the ApiResponse wrapper: { success: true, data: { order, isNewOrder, message } }
+ */
+data class AssignTableResponseData(
+    @SerializedName("order") val order: OrderDto,
+    @SerializedName("isNewOrder") val isNewOrder: Boolean,
+    @SerializedName("message") val message: String?
+)
+
+/**
+ * Order DTO (for table assignment and order details)
+ *
+ * Full order data returned when assigning a table or fetching order details.
+ */
+data class OrderDto(
+    @SerializedName("id") val id: String,
+    @SerializedName("venueId") val venueId: String,
+    @SerializedName("tableId") val tableId: String?,
+    @SerializedName("tableName") val tableName: String? = null,
+    @SerializedName("orderNumber") val orderNumber: String,
+    @SerializedName("covers") val covers: Int?,
+    @SerializedName("waiterId") val waiterId: String? = null,
+    @SerializedName("waiterName") val waiterName: String? = null,
+    @SerializedName("status") val status: String,
+    @SerializedName("paymentStatus") val paymentStatus: String,
+    @SerializedName("kitchenStatus") val kitchenStatus: String? = "PENDING",  // ✅ NULLABLE with fallback
+    @SerializedName("type") val orderType: String = "DINE_IN",  // Backend uses "type" not "orderType"
+    @SerializedName("items") val items: List<OrderItemDetailDto> = emptyList(),
+    @SerializedName("subtotal") val subtotal: Double,
+    @SerializedName("discountAmount") val discountAmount: Double? = 0.0,
+    @SerializedName("taxAmount") val taxAmount: Double,
+    @SerializedName("total") val total: Double,
+    @SerializedName("notes") val notes: String? = null,
+    @SerializedName("servedById") val servedById: String?,
+    @SerializedName("createdAt") val createdAt: String,
+    @SerializedName("updatedAt") val updatedAt: String,
+    @SerializedName("version") val version: Int = 1
+)
+
+/**
+ * Update Table Position Request
+ *
+ * Request body for updating table position on floor plan.
+ * Coordinates are normalized 0.0-1.0 values.
+ */
+data class UpdateTablePositionRequest(
+    @SerializedName("positionX") val positionX: Double,
+    @SerializedName("positionY") val positionY: Double
+)
+
+/**
+ * Updated Table DTO
+ *
+ * Response from backend after updating table position.
+ * Contains only the essential fields that were updated.
+ */
+data class UpdatedTableDto(
+    @SerializedName("id") val id: String,
+    @SerializedName("number") val number: String,
+    @SerializedName("positionX") val positionX: Double,
+    @SerializedName("positionY") val positionY: Double
+)
+
+/**
+ * Create Table Request
+ *
+ * Request body for creating a new table.
+ */
+data class CreateTableRequest(
+    @SerializedName("number") val number: String,
+    @SerializedName("capacity") val capacity: Int,
+    @SerializedName("shape") val shape: String,
+    @SerializedName("rotation") val rotation: Int = 0,
+    @SerializedName("positionX") val positionX: Double? = null,
+    @SerializedName("positionY") val positionY: Double? = null,
+    @SerializedName("areaId") val areaId: String? = null
+)
+
+/**
+ * Update Table Request
+ *
+ * Request body for updating table properties (number, capacity, shape, rotation, areaId).
+ * All fields are optional - only provided fields will be updated.
+ */
+data class UpdateTableRequest(
+    @SerializedName("number") val number: String? = null,
+    @SerializedName("capacity") val capacity: Int? = null,
+    @SerializedName("shape") val shape: String? = null,
+    @SerializedName("rotation") val rotation: Int? = null,
+    @SerializedName("areaId") val areaId: String? = null
+)
+
+/**
+ * Add Items Request
+ *
+ * Request body for adding items to an existing order.
+ * Used by MenuViewModel after creating items locally.
+ *
+ * **Backend Endpoint:** PATCH /tpv/venues/{venueId}/orders/{orderId}/items
+ *
+ * **Optimistic Concurrency Control:**
+ * The version field prevents lost updates when multiple terminals modify the same order.
+ * If version mismatch occurs (409 Conflict), the ViewModel should:
+ * 1. Fetch fresh order data
+ * 2. Retry the operation with new version
+ *
+ * **Example:**
+ * ```json
+ * {
+ *   "items": [
+ *     {
+ *       "productId": "prod_123",
+ *       "quantity": 2,
+ *       "notes": "Sin cebolla"
+ *     }
+ *   ],
+ *   "version": 1
+ * }
+ * ```
+ */
+data class AddItemsRequest(
+    @SerializedName("items") val items: List<AddItemDto>,
+    @SerializedName("version") val version: Int
+)
+
+/**
+ * Add Item DTO
+ *
+ * Individual item to add to an order.
+ * Part of AddItemsRequest.
+ */
+data class AddItemDto(
+    @SerializedName("productId") val productId: String,
+    @SerializedName("quantity") val quantity: Int,
+    @SerializedName("notes") val notes: String? = null
+)

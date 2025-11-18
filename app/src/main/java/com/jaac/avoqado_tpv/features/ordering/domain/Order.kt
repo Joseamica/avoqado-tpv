@@ -1,0 +1,221 @@
+package com.jaac.avoqado_tpv.features.ordering.domain
+
+import java.math.BigDecimal
+import java.time.Instant
+
+/**
+ * Order domain model
+ *
+ * Represents a restaurant order with items, payment, and status tracking.
+ * Used across all UI states (collapsed panel, peek panel, expanded panel).
+ *
+ * Version field used for optimistic concurrency control (multi-terminal sync).
+ */
+data class Order(
+    val id: String,
+    val orderNumber: String,
+    val venueId: String,
+    val tableId: String?,
+    val tableName: String?,
+    val covers: Int,
+    val waiterId: String?,
+    val waiterName: String?,
+    val status: OrderStatus,
+    val kitchenStatus: KitchenStatus,
+    val paymentStatus: PaymentStatus,
+    val orderType: OrderType,
+    val items: List<OrderItem>,
+    val subtotal: BigDecimal,
+    val tax: BigDecimal,
+    val total: BigDecimal,
+    val notes: String?,
+    val createdAt: Instant,
+    val updatedAt: Instant,
+    val version: Int  // Optimistic concurrency control
+) {
+    /**
+     * Convenience property: Number of items in order
+     * Used in collapsed panel: "Mesa 5 • 3 items • $150.00"
+     */
+    val itemCount: Int
+        get() = items.sumOf { it.quantity }
+
+    /**
+     * Convenience property: Is order empty?
+     * Used for empty state UI
+     */
+    val isEmpty: Boolean
+        get() = items.isEmpty()
+
+    /**
+     * Convenience property: Can items be added?
+     * Only allow adding items if order is OPEN or IN_PROGRESS
+     */
+    val canAddItems: Boolean
+        get() = status == OrderStatus.OPEN || status == OrderStatus.IN_PROGRESS
+
+    /**
+     * Convenience property: Can order be sent to kitchen?
+     * Only if has items and kitchen status is PENDING
+     */
+    val canSendToKitchen: Boolean
+        get() = items.isNotEmpty() && kitchenStatus == KitchenStatus.PENDING
+
+    /**
+     * Convenience property: Can process payment?
+     * Only if has items and payment status is PENDING
+     */
+    val canProcessPayment: Boolean
+        get() = items.isNotEmpty() && paymentStatus == PaymentStatus.PENDING
+}
+
+/**
+ * Order item (product + quantity + modifications)
+ */
+data class OrderItem(
+    val id: String,
+    val orderId: String,
+    val productId: String,
+    val productName: String,
+    val productSku: String?,
+    val quantity: Int,
+    val unitPrice: BigDecimal,  // Base price + modifiers price (per unit)
+    val totalPrice: BigDecimal,  // unitPrice * quantity
+    val modifiers: List<ProductModifier> = emptyList(),  // Selected modifiers
+    val notes: String?,  // "Sin aceitunas", "Punto medio"
+    val kitchenStatus: KitchenStatus,
+    val createdAt: Instant,
+    val sentToKitchenAt: Instant?
+) {
+    /**
+     * Convenience property: Display price per unit
+     * Used in item card: "$180.00 c/u"
+     */
+    val formattedUnitPrice: String
+        get() = "$$unitPrice c/u"
+
+    /**
+     * Convenience property: Display total
+     * Used in item card: "$360.00"
+     */
+    val formattedTotalPrice: String
+        get() = "$$totalPrice"
+
+    /**
+     * Convenience property: Formatted modifiers for display
+     * Example: "Extra queso +$20, Sin cebolla"
+     */
+    val formattedModifiers: String
+        get() = modifiers.joinToString(", ") { modifier ->
+            if (modifier.priceAdjustment > BigDecimal.ZERO) {
+                "${modifier.name} ${modifier.formattedPrice}"
+            } else {
+                modifier.name
+            }
+        }
+}
+
+/**
+ * Order status (overall lifecycle)
+ */
+enum class OrderStatus {
+    DRAFT,       // Created but not confirmed (not used in MVP)
+    OPEN,        // Active order, accepting items
+    IN_PROGRESS, // Items being prepared
+    READY,       // Ready to serve
+    SERVED,      // Served to table
+    COMPLETED,   // Paid and closed
+    CANCELLED;   // Cancelled order
+
+    val displayName: String
+        get() = when (this) {
+            DRAFT -> "Borrador"
+            OPEN -> "Abierta"
+            IN_PROGRESS -> "En Progreso"
+            READY -> "Lista"
+            SERVED -> "Servida"
+            COMPLETED -> "Completada"
+            CANCELLED -> "Cancelada"
+        }
+
+    val colorHex: String
+        get() = when (this) {
+            DRAFT -> "#9E9E9E"      // Gray
+            OPEN -> "#FFC107"       // Yellow
+            IN_PROGRESS -> "#2196F3" // Blue
+            READY -> "#4CAF50"      // Green
+            SERVED -> "#00BCD4"     // Cyan
+            COMPLETED -> "#757575"  // Dark gray
+            CANCELLED -> "#F44336"  // Red
+        }
+}
+
+/**
+ * Kitchen status (preparation lifecycle)
+ */
+enum class KitchenStatus {
+    PENDING,   // Not sent to kitchen yet
+    PREPARING, // Kitchen preparing items
+    READY,     // Items ready to serve
+    SERVED;    // Items served to table
+
+    val displayName: String
+        get() = when (this) {
+            PENDING -> "Pendiente"
+            PREPARING -> "En Cocina"
+            READY -> "Lista"
+            SERVED -> "Servida"
+        }
+
+    val emoji: String
+        get() = when (this) {
+            PENDING -> "🟡"
+            PREPARING -> "🟢"
+            READY -> "✅"
+            SERVED -> "🍽️"
+        }
+}
+
+/**
+ * Payment status
+ */
+enum class PaymentStatus {
+    PENDING,        // No payment processed
+    PARTIAL,        // Partially paid (split payments)
+    PAID,           // Fully paid
+    REFUNDED;       // Refunded
+
+    val displayName: String
+        get() = when (this) {
+            PENDING -> "Pendiente"
+            PARTIAL -> "Pago Parcial"
+            PAID -> "Pagada"
+            REFUNDED -> "Reembolsada"
+        }
+}
+
+/**
+ * Order type (service model)
+ */
+enum class OrderType {
+    DINE_IN,    // Table service
+    TAKEOUT,    // Para llevar
+    DELIVERY,   // Delivery (not in MVP)
+    PICKUP;     // Pickup (not in MVP)
+
+    val displayName: String
+        get() = when (this) {
+            DINE_IN -> "Mesa"
+            TAKEOUT -> "Para Llevar"
+            DELIVERY -> "Domicilio"
+            PICKUP -> "Recoger"
+        }
+
+    val emoji: String
+        get() = when (this) {
+            DINE_IN -> "🪑"
+            TAKEOUT -> "🥡"
+            DELIVERY -> "🚗"
+            PICKUP -> "🚶"
+        }
+}

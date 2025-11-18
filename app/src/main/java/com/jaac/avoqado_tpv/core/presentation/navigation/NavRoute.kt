@@ -30,6 +30,12 @@ sealed class NavRoute(val route: String) {
     data object Home : NavRoute("home")
 
     /**
+     * Fast Payment Entry screen - Dedicated screen for entering fast payment amount
+     * Replaces modal-based amount input with full-screen navigation
+     */
+    data object FastPaymentEntry : NavRoute("fast_payment_entry")
+
+    /**
      * Shifts screen - Shift management (open/close shifts)
      */
     data object Shifts : NavRoute("shifts")
@@ -49,4 +55,38 @@ sealed class NavRoute(val route: String) {
      * Access limited to superadmin users
      */
     data object SuperAdmin : NavRoute("superadmin")
+
+    /**
+     * Ordering Welcome screen - Entry point for ordering system
+     * Shows two options: Quick Order (retail/QSR) or Table Service (restaurant)
+     */
+    data object OrderingWelcome : NavRoute("ordering_welcome")
+
+    /**
+     * Table Service screen - Floor plan with table status
+     * Allows staff to select tables to start orders
+     */
+    data object TableService : NavRoute("table_service")
+
+    /**
+     * Floor Plan Canvas screen - Visual floor plan editor
+     * Interactive canvas with zoom/pan gestures for table layout management
+     */
+    data object FloorPlan : NavRoute("floor_plan")
+
+    /**
+     * Menu screen - Product selection + Order check (Hybrid Toast + Square pattern)
+     * Shows product grid with collapsible order panel
+     *
+     * @param orderId Order unique identifier
+     */
+    data object Menu : NavRoute("menu/{orderId}") {
+        fun createRoute(orderId: String) = "menu/$orderId"
+    }
+
+    /**
+     * Order List screen - List of all orders with filters
+     * Shows all venue orders with filter chips (ALL, OPEN, IN_PROGRESS, COMPLETED)
+     */
+    data object OrderList : NavRoute("order_list")
 }

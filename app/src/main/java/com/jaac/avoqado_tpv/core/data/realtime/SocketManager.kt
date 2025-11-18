@@ -523,7 +523,7 @@ class SocketManager @Inject constructor() {
     private val onOrderUpdated = Emitter.Listener { args ->
         try {
             val data = args.getOrNull(0) as? JSONObject ?: return@Listener
-            _events.tryEmit(parseOrderEvent(data))
+            _events.tryEmit(parseOrderUpdatedEvent(data))  // ✅ FIX: Use parseOrderUpdatedEvent
         } catch (e: Exception) {
             Timber.e(e, "❌ Error parsing order_updated")
         }
@@ -566,6 +566,21 @@ class SocketManager @Inject constructor() {
 
     private fun parseOrderEvent(data: JSONObject): SocketEvent.OrderCreated {
         return SocketEvent.OrderCreated(
+            orderId = data.optString("orderId", ""),
+            venueId = data.optString("venueId", ""),
+            tableId = data.optString("tableId").takeIf { it.isNotEmpty() },
+            status = data.optString("status").takeIf { it.isNotEmpty() },
+            items = data.optJSONArray("items")?.toList(),
+            total = data.optDouble("total").takeIf { !it.isNaN() },
+            timestamp = data.optString("timestamp", "")
+        )
+    }
+
+    /**
+     * Parse order updated event (critical fix for real-time inventory sync)
+     */
+    private fun parseOrderUpdatedEvent(data: JSONObject): SocketEvent.OrderUpdated {
+        return SocketEvent.OrderUpdated(
             orderId = data.optString("orderId", ""),
             venueId = data.optString("venueId", ""),
             tableId = data.optString("tableId").takeIf { it.isNotEmpty() },

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.repository.HeartbeatRepository
 import com.jaac.avoqado_tpv.core.domain.models.Result
+import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.DeviceHealthMonitor
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
@@ -53,7 +54,8 @@ class ConnectionViewModel @Inject constructor(
     private val networkMonitor: NetworkMonitor,
     private val heartbeatRepository: HeartbeatRepository,
     private val deviceInfoManager: DeviceInfoManager,
-    private val deviceHealthMonitor: DeviceHealthMonitor
+    private val deviceHealthMonitor: DeviceHealthMonitor,
+    private val connectionEventManager: ConnectionEventManager
 ) : ViewModel() {
 
     // ══════════════════════════════════════════════════════════════════════
@@ -168,8 +170,16 @@ class ConnectionViewModel @Inject constructor(
                 is Result.Success -> {
                     Timber.i("✅ [Connection] Backend connected")
 
-                    // Show "Reconnected" banner if we were previously disconnected
+                    // 🔄 Trigger reconciliation sync if connection was restored
                     if (reconnectionAttempts > 0) {
+                        Timber.i("🔄 [Connection] Connection restored after $reconnectionAttempts attempts - triggering data sync")
+
+                        // Emit event for listeners (HomeViewModel, ShiftViewModel, etc.) via singleton manager
+                        connectionEventManager.emitConnectionRestored(
+                            attemptsBeforeReconnection = reconnectionAttempts
+                        )
+
+                        // Show "Reconnected" banner
                         _state.value = ConnectionState.Reconnected
                         // After 2 seconds, switch to Connected
                         delay(2000)

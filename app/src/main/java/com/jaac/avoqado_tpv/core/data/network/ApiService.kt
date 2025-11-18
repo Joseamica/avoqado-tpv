@@ -309,29 +309,55 @@ interface ApiService {
         @Path("orderId") orderId: String
     ): Response<Order>
 
-    // ========== Menu ==========
+    // ========== Menu / Products ==========
+
+    /**
+     * Get all products for venue
+     *
+     * GET /api/v1/dashboard/venues/{venueId}/products
+     *
+     * Returns all products with categories, modifiers, and inventory info.
+     * Backend uses productService.getProducts() with includeRecipe=true.
+     *
+     * @param venueId Venue identifier
+     * @param categoryId Optional category filter
+     * @return Response with list of products (with nested category and modifierGroups)
+     */
+    @GET("dashboard/venues/{venueId}/products")
+    suspend fun getProducts(
+        @Path("venueId") venueId: String,
+        @Query("categoryId") categoryId: String? = null
+    ): Response<com.jaac.avoqado_tpv.features.ordering.data.dto.ProductsResponse>
+
+    /**
+     * Get menu categories for venue
+     *
+     * GET /api/v1/dashboard/venues/{venueId}/categories
+     *
+     * @param venueId Venue identifier
+     * @return Response with list of categories
+     */
+    @GET("dashboard/venues/{venueId}/categories")
+    suspend fun getCategories(
+        @Path("venueId") venueId: String
+    ): Response<List<com.jaac.avoqado_tpv.features.ordering.data.dto.CategoryDto>>
+
+    // ========== Legacy Menu Endpoints (DEPRECATED - Use getProducts instead) ==========
 
     /**
      * Get menu for venue
      *
      * GET /tpv/venues/{venueId}/menu
+     *
+     * @deprecated Use getProducts() instead - returns richer data with modifiers
      */
+    @Deprecated("Use getProducts() instead")
     @GET("tpv/venues/{venueId}/menu")
     suspend fun getMenu(
         @Path("venueId") venueId: String,
         @Query("categoryId") categoryId: String? = null,
         @Query("available") available: Boolean? = true
     ): Response<List<MenuItem>>
-
-    /**
-     * Get menu categories
-     *
-     * GET /tpv/venues/{venueId}/menu/categories
-     */
-    @GET("tpv/venues/{venueId}/menu/categories")
-    suspend fun getCategories(
-        @Path("venueId") venueId: String
-    ): Response<List<Category>>
 
     // ========== Payments ==========
 

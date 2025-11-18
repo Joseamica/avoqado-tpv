@@ -15,7 +15,8 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEnvironment
  * Convert MerchantAccountDto to MerchantAccount domain model
  *
  * **Field Mapping:**
- * - DTO.id → id (backend UUID)
+ * - DTO.id → merchantAccountId (backend CUID - PRIMARY for API calls)
+ * - DTO.id → id (kept for backwards compatibility)
  * - DTO.serialNumber → serialNumber (Blumon device serial)
  * - DTO.posId → posId (Momentum API position ID - CRITICAL)
  * - DTO.displayName → displayName (user-friendly name)
@@ -36,7 +37,8 @@ fun MerchantAccountDto.toDomain(): MerchantAccount {
     }
 
     return MerchantAccount(
-        id = id,
+        id = id,  // Keep for backwards compatibility
+        merchantAccountId = id,  // ✅ FIX: Backend CUID for API payment recording
         serialNumber = serialNumber,
         posId = posId,
         displayName = displayName,

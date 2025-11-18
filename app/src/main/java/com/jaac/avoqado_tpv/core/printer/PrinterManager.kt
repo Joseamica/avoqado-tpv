@@ -78,7 +78,14 @@ class PrinterManager @Inject constructor(
      *
      * Fecha: 10/11/2025  13:03:27
      *
+     * Orden #ORD-123        (only if order payment)
+     *
+     * 2x Pizza Margherita    $360.00
+     * 1x Coca-Cola            $35.00
+     * 3x Alitas Buffalo      $270.00
+     *    Sin salsa picante
      * --------------------------------
+     *
      * Mastercard ****7182
      * Tarjeta Contactless (NFC)
      * --------------------------------
@@ -101,7 +108,7 @@ class PrinterManager @Inject constructor(
      * ================================
      * ```
      *
-     * @param receiptUrl URL of digital receipt (for QR code)
+     * @param receiptUrl URL of digital receipt (for QR code) - NULL if backend registration failed
      * @param amount Payment amount (formatted, e.g. "500.00")
      * @param authCode Authorization code from payment processor
      * @param tipAmount Optional tip amount (formatted)
@@ -109,17 +116,21 @@ class PrinterManager @Inject constructor(
      * @param referenceNumber Optional reference number
      * @param venueRfc Optional venue RFC for fiscal compliance
      * @param venueAddress Optional venue address
+     * @param orderNumber Optional order number (only for order payments)
+     * @param orderItems Optional order items list (only for Pedido Rápido or Servicio de Mesa)
      * @return Result.success if printed, Result.failure if printer unavailable/error
      */
     fun printReceipt(
-        receiptUrl: String,
+        receiptUrl: String?,  // ✅ FIX: Nullable for generic receipts when backend fails
         amount: String,
         authCode: String,
         tipAmount: String? = null,
         cardDetails: com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails? = null,
         referenceNumber: String? = null,
         venueRfc: String? = null,
-        venueAddress: String? = null
+        venueAddress: String? = null,
+        orderNumber: String? = null,  // 🆕 Order number (for display)
+        orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null  // 🆕 Order items (for itemized receipt)
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
@@ -198,6 +209,34 @@ class PrinterManager @Inject constructor(
             printerInstance.printStr("Fecha: $currentDateTime\n\n", null)
 
             // ========================================
+            // 📦 ORDER ITEMS (only for order payments - Pedido Rápido or Servicio de Mesa)
+            // ========================================
+            if (!orderItems.isNullOrEmpty()) {
+                // Order number header
+                if (!orderNumber.isNullOrBlank()) {
+                    printerInstance.printStr("Orden #$orderNumber\n\n", null)
+                }
+
+                // Print each item
+                orderItems.forEach { item ->
+                    // Product line: "2x Pizza Margherita    $360.00"
+                    val itemLine = "${item.quantity}x ${item.productName}"
+                    val itemPrice = item.formattedTotalPrice
+
+                    // Pad to align prices on the right (32 chars total width for thermal printer)
+                    val paddedLine = itemLine.padEnd(20, ' ') + itemPrice.padStart(12, ' ')
+                    printerInstance.printStr("$paddedLine\n", null)
+
+                    // Notes (if any) - indented with smaller text
+                    if (!item.notes.isNullOrBlank()) {
+                        printerInstance.printStr("   ${item.notes}\n", null)
+                    }
+                }
+
+                printerInstance.printStr("\n--------------------------------\n", null)
+            }
+
+            // ========================================
             // CARD INFORMATION (if available)
             // ========================================
             if (cardDetails != null) {
@@ -236,27 +275,35 @@ class PrinterManager @Inject constructor(
 
             // ========================================
             // QR CODE BITMAP (Centered - Clip/MercadoPago style)
+            // Only print QR code if receiptUrl exists (backend registration succeeded)
             // ========================================
-            try {
-                val qrBitmap = generateQrBitmap(receiptUrl, size = 200)
-                if (qrBitmap != null) {
-                    Timber.d("✅ [Printer] QR bitmap generated (${qrBitmap.width}x${qrBitmap.height})")
+            if (receiptUrl != null) {
+                try {
+                    val qrBitmap = generateQrBitmap(receiptUrl, size = 200)
+                    if (qrBitmap != null) {
+                        Timber.d("✅ [Printer] QR bitmap generated (${qrBitmap.width}x${qrBitmap.height})")
 
-                    // Center the QR code by adding left padding
-                    // PAX thermal printer width is typically 384px, QR is 200px
-                    // Left margin = (384 - 200) / 2 = 92px ≈ centered
-                    val centeredQr = centerBitmap(qrBitmap, targetWidth = 384)
-                    printerInstance.printBitmap(centeredQr)
-                    printerInstance.printStr("\n", null)
-                    Timber.d("✅ [Printer] Centered QR bitmap printed")
-                } else {
-                    Timber.w("⚠️ [Printer] QR bitmap generation returned null")
+                        // Center the QR code by adding left padding
+                        // PAX thermal printer width is typically 384px, QR is 200px
+                        // Left margin = (384 - 200) / 2 = 92px ≈ centered
+                        val centeredQr = centerBitmap(qrBitmap, targetWidth = 384)
+                        printerInstance.printBitmap(centeredQr)
+                        printerInstance.printStr("\n", null)
+                        Timber.d("✅ [Printer] Centered QR bitmap printed")
+                    } else {
+                        Timber.w("⚠️ [Printer] QR bitmap generation returned null")
+                    }
+                } catch (e: Exception) {
+                    Timber.w(e, "⚠️ [Printer] Could not generate/print QR bitmap")
                 }
-            } catch (e: Exception) {
-                Timber.w(e, "⚠️ [Printer] Could not generate/print QR bitmap")
-            }
 
-            printerInstance.printStr(" Escanea para ver recibo digital\n\n", null)
+                printerInstance.printStr(" Escanea para ver recibo digital\n\n", null)
+            } else {
+                // Backend registration failed - print generic message instead of QR
+                Timber.i("📄 [Printer] No receipt URL - printing generic receipt")
+                printerInstance.printStr("\n Recibo genérico\n", null)
+                printerInstance.printStr(" Pendiente de registro en sistema\n\n", null)
+            }
 
             // ========================================
             // FOOTER (Professional thank you)

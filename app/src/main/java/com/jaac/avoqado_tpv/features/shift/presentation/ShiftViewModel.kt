@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.domain.models.Result
+import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -50,7 +51,8 @@ import javax.inject.Inject
 @HiltViewModel
 class ShiftViewModel @Inject constructor(
     private val shiftRepository: ShiftRepository,
-    private val secureStorage: SecureStorage
+    private val secureStorage: SecureStorage,
+    private val connectionEventManager: ConnectionEventManager
 ) : ViewModel() {
 
     // ══════════════════════════════════════════════════════════════════════
@@ -66,6 +68,33 @@ class ShiftViewModel @Inject constructor(
 
     init {
         loadCurrentShift()
+        listenToConnectionRestored()
+    }
+
+    /**
+     * 🔄 Listen to Connection Restored Events
+     *
+     * When backend connection is restored after being offline, automatically
+     * reload shift data to sync with server state.
+     *
+     * **Pattern (Toast POS / Square POS):**
+     * - Backend goes down → App works offline with cached data
+     * - Backend comes back → Heartbeat succeeds → Trigger "reconciliation sync"
+     * - Reload: Shift status, orders, config, etc.
+     *
+     * **Critical for:**
+     * - Fixing "Sin turno activo" bug when shift was opened during offline mode
+     * - Syncing shift closures made by other terminals
+     * - Updating shift totals (sales, cash drawer)
+     */
+    private fun listenToConnectionRestored() {
+        viewModelScope.launch {
+            connectionEventManager.connectionRestoredEvents.collect { event ->
+                Timber.i("🔄 [ShiftViewModel] Connection restored - syncing shift data")
+                Timber.d("   Reconnected after ${event.attemptsBeforeReconnection} attempts at ${event.timestamp}")
+                loadCurrentShift()
+            }
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════════

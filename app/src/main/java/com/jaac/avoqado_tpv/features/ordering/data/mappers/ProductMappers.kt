@@ -43,7 +43,9 @@ fun ProductDto.toDomain(): Product {
         // Inventory tracking (Toast POS pattern - unified field)
         trackInventory = trackInventory,
         inventoryMethod = inventoryMethod,
-        availableQuantity = availableQuantity  // ✅ Backend calculates for both QUANTITY and RECIPE
+        availableQuantity = availableQuantity,  // ✅ Backend calculates for both QUANTITY and RECIPE
+        // Modifier groups (for product customization)
+        modifierGroups = modifierGroups?.map { it.group.toDomain() } ?: emptyList()
     )
 }
 
@@ -78,10 +80,10 @@ fun ModifierDto.toDomain(type: ModifierType): ProductModifier {
  * Map ModifierGroupDto to ModifierGroup domain model
  */
 fun ModifierGroupDto.toDomain(): ModifierGroup {
-    val modifierType = when (type.uppercase()) {
+    val modifierType = when (type?.uppercase()) {  // ✅ Safe null check
         "SINGLE_CHOICE" -> ModifierType.SINGLE_CHOICE
         "MULTIPLE_CHOICE" -> ModifierType.MULTIPLE_CHOICE
-        else -> ModifierType.MULTIPLE_CHOICE  // Default fallback
+        else -> ModifierType.MULTIPLE_CHOICE  // Default fallback (also handles null)
     }
 
     return ModifierGroup(

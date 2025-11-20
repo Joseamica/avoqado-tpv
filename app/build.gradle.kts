@@ -213,5 +213,8 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("com.google.dagger:hilt-android-testing:2.57")
+    androidTestImplementation("app.cash.turbine:turbine:1.0.0")  // Flow testing
+    androidTestImplementation("com.google.truth:truth:1.1.5")  // Assertions
+    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")  // Coroutine testing
     kspAndroidTest("com.google.dagger:hilt-compiler:2.57")
 }

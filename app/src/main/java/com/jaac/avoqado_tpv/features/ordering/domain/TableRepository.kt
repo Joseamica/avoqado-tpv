@@ -114,6 +114,27 @@ interface TableRepository {
         venueId: String,
         tableId: String
     ): Result<Unit>
+
+    /**
+     * Clear table after payment completion.
+     *
+     * **Behavior:**
+     * - Verifies current order is paid
+     * - Sets table status to AVAILABLE
+     * - Removes currentOrderId link
+     * - Emits Socket.IO event for real-time updates
+     *
+     * **Use Case:** After completing payment for a table order, clear the table
+     * so it becomes available for new customers (Square/Toast pattern).
+     *
+     * @param venueId ID of the venue
+     * @param tableId ID of the table to clear
+     * @return Result indicating success or failure
+     */
+    suspend fun clearTable(
+        venueId: String,
+        tableId: String
+    ): Result<Unit>
 }
 
 /**

@@ -114,7 +114,7 @@ interface TableApiService {
     /**
      * Assign a table to start a new order or return existing order.
      *
-     * **Endpoint:** POST /tpv/venues/{venueId}/tables/{tableId}/assign
+     * **Endpoint:** POST /tpv/venues/{venueId}/tables/assign
      *
      * **Backend Behavior:**
      * 1. If table has existing order → Returns that order (isNewOrder: false)
@@ -125,6 +125,7 @@ interface TableApiService {
      * **Request Body:** AssignTableRequest
      * ```json
      * {
+     *   "tableId": "table_xxx",
      *   "staffId": "staff_xxx",
      *   "covers": 2
      * }
@@ -163,14 +164,12 @@ interface TableApiService {
      * - 500: Internal server error
      *
      * @param venueId ID of the venue
-     * @param tableId ID of the table to assign
-     * @param request Assignment data (staffId, covers)
+     * @param request Assignment data (tableId, staffId, covers)
      * @return Response with order data or HTTP error
      */
-    @POST("tpv/venues/{venueId}/tables/{tableId}/assign")
+    @POST("tpv/venues/{venueId}/tables/assign")
     suspend fun assignTable(
         @Path("venueId") venueId: String,
-        @Path("tableId") tableId: String,
         @Body request: AssignTableRequest
     ): Response<ApiResponse<AssignTableResponseData>>
 
@@ -379,6 +378,43 @@ interface TableApiService {
      */
     @DELETE("tpv/venues/{venueId}/tables/{tableId}")
     suspend fun deleteTable(
+        @Path("venueId") venueId: String,
+        @Path("tableId") tableId: String
+    ): Response<ApiResponse<Unit>>
+
+    /**
+     * Clear table after payment completion.
+     *
+     * **Endpoint:** POST /tpv/venues/{venueId}/tables/{tableId}/clear
+     *
+     * **Backend Behavior:**
+     * 1. Validates table exists and belongs to venue
+     * 2. Verifies current order is paid (PaymentStatus.PAID)
+     * 3. Sets table status to AVAILABLE
+     * 4. Removes currentOrderId link
+     * 5. Emits Socket.IO event "table_status_change"
+     *
+     * **Success Response (200):**
+     * ```json
+     * {
+     *   "success": true,
+     *   "message": "Table cleared successfully"
+     * }
+     * ```
+     *
+     * **Error Responses:**
+     * - 400: Table has unpaid order
+     * - 401: Unauthorized
+     * - 403: Forbidden
+     * - 404: Table or Venue not found
+     * - 500: Internal server error
+     *
+     * @param venueId ID of the venue
+     * @param tableId ID of the table to clear
+     * @return Response indicating success or HTTP error
+     */
+    @POST("tpv/venues/{venueId}/tables/{tableId}/clear")
+    suspend fun clearTable(
         @Path("venueId") venueId: String,
         @Path("tableId") tableId: String
     ): Response<ApiResponse<Unit>>

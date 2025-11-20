@@ -118,7 +118,9 @@ class PaymentViewModel @Inject constructor(
     // 🕐 Shift Repository - Validate shift is open before processing payments (Square/Toast pattern)
     private val shiftRepository: com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository,
     // 📦 Order Repository - Load order items for displaying in success screen receipt
-    private val orderRepository: com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository
+    private val orderRepository: com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository,
+    // ⭐ OrderSyncCoordinator - Local-first order sync (ensures order synced before payment)
+    private val orderSyncCoordinator: com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentState>(PaymentState.Idle)
@@ -899,6 +901,42 @@ class PaymentViewModel @Inject constructor(
     private fun continuePaymentFlow() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                // ═══════════════════════════════════════════════════════════════════════════
+                // PASO -1: Sync order to backend (LOCAL-FIRST CRITICAL STEP)
+                // ═══════════════════════════════════════════════════════════════════════════
+
+                // ⭐ CRITICAL: If this is an order payment (not fast payment), we MUST sync
+                // the order to the backend BEFORE processing payment. This ensures:
+                // 1. Backend has the complete order with all items
+                // 2. Inventory deduction happens correctly
+                // 3. Payment can be properly linked to the order
+                // 4. Multi-terminal consistency (other terminals see synced order)
+
+                if (currentOrderId != null) {
+                    Timber.d("💾 [Local-First] Order payment detected - syncing to backend before payment")
+                    Timber.d("   📦 Order ID: $currentOrderId")
+
+                    _state.value = PaymentState.Processing("Sincronizando orden...")
+
+                    try {
+                        // Force immediate sync (bypass 5s debounce - payment can't wait)
+                        orderSyncCoordinator.syncOrderImmediately(currentOrderId!!)
+
+                        Timber.i("✅ [Local-First] Order synced successfully before payment")
+                    } catch (e: Exception) {
+                        Timber.e(e, "❌ [Local-First] Failed to sync order before payment")
+                        _state.value = PaymentState.Error(
+                            message = "Error sincronizando orden antes del pago.\n\n" +
+                                     "La orden se guardó localmente pero no se pudo enviar al servidor.\n" +
+                                     "Verifique su conexión e intente nuevamente.",
+                            context = createPaymentContext()
+                        )
+                        return@launch
+                    }
+                } else {
+                    Timber.d("⚡ [Local-First] Fast payment mode - no order sync needed")
+                }
+
                 // ═══════════════════════════════════════════════════════════════════════════
                 // PASO 0: Ensure correct merchant SDK is active (multi-merchant support)
                 // ═══════════════════════════════════════════════════════════════════════════

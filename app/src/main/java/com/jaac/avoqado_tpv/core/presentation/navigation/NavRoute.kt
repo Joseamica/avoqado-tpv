@@ -89,4 +89,10 @@ sealed class NavRoute(val route: String) {
      * Shows all venue orders with filter chips (ALL, OPEN, IN_PROGRESS, COMPLETED)
      */
     data object OrderList : NavRoute("order_list")
+
+    /**
+     * Reports screen - Sales analytics and reports dashboard
+     * Shows sales summary, payment breakdown, and shift history
+     */
+    data object Reports : NavRoute("reports")
 }

@@ -24,6 +24,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,8 +37,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jaac.avoqado_tpv.R
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dagger.hilt.android.EntryPointAccessors
+import dagger.hilt.EntryPoint
+import dagger.hilt.InstallIn
+import dagger.hilt.components.SingletonComponent
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -54,6 +60,7 @@ import com.jaac.avoqado_tpv.features.authentication.presentation.LoginScreen
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationState
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationViewModel
 import com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreen
+import com.jaac.avoqado_tpv.features.ordering.domain.TableRepository
 import com.jaac.avoqado_tpv.features.ordering.presentation.FloorPlanCanvasScreen
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderingWelcomeScreen
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderListScreen
@@ -62,6 +69,18 @@ import com.jaac.avoqado_tpv.features.ordering.presentation.menu.MenuScreen
 import androidx.navigation.NavType
 import androidx.navigation.navArgument
 import timber.log.Timber
+
+/**
+ * EntryPoint for accessing TableRepository in AppNavigation
+ *
+ * Required because AppNavigation is not a ViewModel and cannot use @Inject directly.
+ * EntryPoints allow access to Hilt-provided dependencies from non-injected classes.
+ */
+@EntryPoint
+@InstallIn(SingletonComponent::class)
+interface AppNavigationEntryPoint {
+    fun tableRepository(): TableRepository
+}
 
 /**
  * AppNavigation
@@ -247,6 +266,10 @@ fun AppNavigation(
                     // Navigate to Ordering Welcome screen
                     navController.navigate(NavRoute.OrderingWelcome.route)
                 },
+                onNavigateToReports = {
+                    // Navigate to Reports screen
+                    navController.navigate(NavRoute.Reports.route)
+                },
                 onNavigateToSuperAdmin = {
                     // Navigate to SuperAdmin screen
                     navController.navigate(NavRoute.SuperAdmin.route)
@@ -362,6 +385,7 @@ fun AppNavigation(
                         set("initialAmount", order.total.toString())
                         set("orderId", order.id)
                         set("orderNumber", order.orderNumber)
+                        set("tableId", order.tableId)  // 🆕 Pass tableId for post-payment clearing
                     }
                     navController.navigate(NavRoute.Payment.route)
                     Timber.d("💳 Navigating to payment: ${order.orderNumber} - Total: $${order.total}")
@@ -414,11 +438,24 @@ fun AppNavigation(
             // 🆕 Get order details (if coming from MenuScreen with order)
             val orderId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderId")
             val orderNumber = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderNumber")
+            val tableId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("tableId")
+
+            // 🔌 Get TableRepository via Hilt EntryPoint for clearing tables post-payment
+            val context = LocalContext.current
+            val tableRepository = remember {
+                val entryPoint = EntryPointAccessors.fromApplication(
+                    context.applicationContext,
+                    AppNavigationEntryPoint::class.java
+                )
+                entryPoint.tableRepository()
+            }
+            val coroutineScope = rememberCoroutineScope()
 
             PaymentScreen(
                 initialAmount = initialAmount,
                 orderId = orderId,
                 orderNumber = orderNumber,
+                tableId = tableId,  // 🆕 Pass tableId to determine post-payment flow
                 skipReview = skipReview,
                 onNavigateBack = {
                     navController.popBackStack()
@@ -444,6 +481,31 @@ fun AppNavigation(
                         popUpTo(NavRoute.Home.route) { inclusive = false }
                     }
                     Timber.d("🔄 [Navigation] Fast payment: Navigated to FastPaymentEntryScreen")
+                },
+                onClearTableAndReturnToFloorPlan = { clearedTableId ->
+                    // 🪑 Square Pattern: Clear table and return to floor plan
+                    // This allows table to become AVAILABLE for new customers
+                    coroutineScope.launch {
+                        val venueId = secureStorage.getVenueId()
+                        if (venueId != null) {
+                            Timber.i("🧹 [Navigation] Clearing table $clearedTableId")
+                            when (val result = tableRepository.clearTable(venueId, clearedTableId)) {
+                                is com.jaac.avoqado_tpv.core.domain.models.Result.Success -> {
+                                    Timber.i("✅ [Navigation] Table cleared successfully - navigating to floor plan")
+                                }
+                                is com.jaac.avoqado_tpv.core.domain.models.Result.Error -> {
+                                    Timber.e("❌ [Navigation] Failed to clear table: ${result.exception}")
+                                }
+                            }
+                        } else {
+                            Timber.e("❌ [Navigation] Cannot clear table - no venueId in session")
+                        }
+
+                        // Navigate to floor plan regardless of clear result
+                        navController.navigate(NavRoute.TableService.route) {
+                            popUpTo(NavRoute.OrderingWelcome.route) { inclusive = false }
+                        }
+                    }
                 }
             )
         }
@@ -479,6 +541,19 @@ fun AppNavigation(
                 onTestPayment = {
                     // Trigger test payment of $10.00
                     pendingTestPayment = true
+                }
+            )
+        }
+
+        // Reports Screen - Sales analytics and reporting dashboard
+        composable(NavRoute.Reports.route) {
+            com.jaac.avoqado_tpv.features.reports.presentation.ReportsScreen(
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onNavigateToProductPerformance = {
+                    // TODO: Implement Product Performance screen navigation
+                    Timber.d("📊 Product Performance screen not yet implemented")
                 }
             )
         }

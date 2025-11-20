@@ -4,6 +4,8 @@ import com.jaac.avoqado_tpv.core.data.repository.TerminalConfigRepositoryImpl
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
 import com.jaac.avoqado_tpv.features.payment.data.MerchantRepositoryImpl
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
+import com.jaac.avoqado_tpv.features.reports.data.repository.ReportsRepositoryImpl
+import com.jaac.avoqado_tpv.features.reports.domain.repository.ReportsRepository
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -28,6 +30,8 @@ import javax.inject.Singleton
  *   (Provides merchant account management for multi-merchant payment routing)
  * - TerminalConfigRepository → TerminalConfigRepositoryImpl
  *   (Fetches terminal configuration from backend on app startup)
+ * - ReportsRepository → ReportsRepositoryImpl
+ *   (Aggregates shift data into sales reports and analytics)
  */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -76,4 +80,26 @@ abstract class RepositoryModule {
     abstract fun bindMerchantRepository(
         impl: MerchantRepositoryImpl
     ): MerchantRepository
+
+    /**
+     * Bind ReportsRepository to its implementation
+     *
+     * **Usage:**
+     * ```kotlin
+     * @HiltViewModel
+     * class ReportsViewModel @Inject constructor(
+     *     private val reportsRepository: ReportsRepository
+     * ) : ViewModel() {
+     *     // Hilt automatically provides ReportsRepositoryImpl
+     * }
+     * ```
+     *
+     * @param impl ReportsRepositoryImpl instance (Hilt creates automatically)
+     * @return ReportsRepository interface
+     */
+    @Binds
+    @Singleton
+    abstract fun bindReportsRepository(
+        impl: ReportsRepositoryImpl
+    ): ReportsRepository
 }

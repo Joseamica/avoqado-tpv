@@ -33,7 +33,11 @@ data class Product(
     // ✅ TOAST PATTERN: availableQuantity works for both types:
     // - QUANTITY: Shows actual stock count (e.g., "10 bottles")
     // - RECIPE: Shows calculated portions (e.g., "15 burgers" from ingredients)
-    val availableQuantity: Int? = null
+    val availableQuantity: Int? = null,
+
+    // Modifier groups (for product customization)
+    // Backend returns this in ProductDto.modifierGroups
+    val modifierGroups: List<ModifierGroup> = emptyList()
 ) {
     /**
      * Convenience property: Formatted price for UI
@@ -47,6 +51,13 @@ data class Product(
      */
     val canOrder: Boolean
         get() = available
+
+    /**
+     * Convenience property: Does product have modifiers?
+     * Used to decide whether to show ProductSelectorBottomSheet or quick-add
+     */
+    val hasModifiers: Boolean
+        get() = modifierGroups.isNotEmpty()
 }
 
 /**

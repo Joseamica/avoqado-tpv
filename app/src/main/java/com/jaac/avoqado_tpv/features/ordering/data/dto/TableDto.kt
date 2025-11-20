@@ -73,11 +73,27 @@ data class OrderItemDetailDto(
  * Product Modifier DTO
  *
  * Modifier applied to an order item (e.g., "Extra cheese", "No onions").
+ *
+ * **IMPORTANT**: Backend OrderItemModifier returns nested structure:
+ * ```json
+ * {
+ *   "id": "oim_123",
+ *   "modifier": {
+ *     "id": "mod_456",
+ *     "name": "BBQ",
+ *     "price": 12.50  // ← Backend uses "price", not "priceAdjustment"
+ *   },
+ *   "price": 12.50,
+ *   "quantity": 1
+ * }
+ * ```
+ *
+ * This DTO represents the nested `modifier` object.
  */
 data class ProductModifierDto(
     @SerializedName("id") val id: String,
     @SerializedName("name") val name: String,
-    @SerializedName("priceAdjustment") val priceAdjustment: Double,
+    @SerializedName("price") val priceAdjustment: Double,  // ✅ Backend sends "price"
     @SerializedName("type") val type: String? = "MULTIPLE_CHOICE",
     @SerializedName("required") val required: Boolean? = false,
     @SerializedName("displayOrder") val displayOrder: Int? = 0
@@ -138,6 +154,7 @@ data class CreateOrderRequest(
  * Request body for assigning a table and creating/returning an order.
  */
 data class AssignTableRequest(
+    @SerializedName("tableId") val tableId: String,
     @SerializedName("staffId") val staffId: String,
     @SerializedName("covers") val covers: Int
 )
@@ -169,6 +186,9 @@ data class OrderDto(
     @SerializedName("covers") val covers: Int?,
     @SerializedName("waiterId") val waiterId: String? = null,
     @SerializedName("waiterName") val waiterName: String? = null,
+    @SerializedName("customerName") val customerName: String? = null,  // Guest name (TAKEOUT/DINE_IN)
+    @SerializedName("customerPhone") val customerPhone: String? = null,  // Guest phone (TAKEOUT)
+    @SerializedName("specialRequests") val specialRequests: String? = null,  // Allergies, dietary restrictions
     @SerializedName("status") val status: String,
     @SerializedName("paymentStatus") val paymentStatus: String,
     @SerializedName("kitchenStatus") val kitchenStatus: String? = "PENDING",  // ✅ NULLABLE with fallback
@@ -280,5 +300,136 @@ data class AddItemsRequest(
 data class AddItemDto(
     @SerializedName("productId") val productId: String,
     @SerializedName("quantity") val quantity: Int,
+    @SerializedName("notes") val notes: String? = null,
+    @SerializedName("modifierIds") val modifierIds: List<String>? = null
+)
+
+/**
+ * Update Guest Info Request
+ *
+ * Request body for updating guest information on an order.
+ * Used for both DINE_IN (covers, customer info, special requests) and TAKEOUT (customer contact info).
+ *
+ * **Backend Endpoint:** PATCH /tpv/venues/{venueId}/orders/{orderId}/guest
+ *
+ * **Example (DINE_IN):**
+ * ```json
+ * {
+ *   "covers": 4,
+ *   "customerName": "John Doe",
+ *   "customerPhone": "555-1234",
+ *   "specialRequests": "No onions, extra sauce"
+ * }
+ * ```
+ */
+data class UpdateGuestRequest(
+    @SerializedName("covers") val covers: Int? = null,
+    @SerializedName("customerName") val customerName: String? = null,
+    @SerializedName("customerPhone") val customerPhone: String? = null,
+    @SerializedName("specialRequests") val specialRequests: String? = null
+)
+
+/**
+ * Comp Items Request
+ *
+ * Request body for comping items or entire order.
+ * Empty itemIds array = comp entire order.
+ *
+ * **Backend Endpoint:** POST /tpv/venues/{venueId}/orders/{orderId}/comp
+ *
+ * **Example (comp entire order):**
+ * ```json
+ * {
+ *   "itemIds": [],
+ *   "reason": "Service recovery - food quality issue",
+ *   "staffId": "staff_123",
+ *   "notes": "Customer complained about cold food"
+ * }
+ * ```
+ *
+ * **Example (comp specific items):**
+ * ```json
+ * {
+ *   "itemIds": ["item_1", "item_2"],
+ *   "reason": "Long wait time",
+ *   "staffId": "staff_123"
+ * }
+ * ```
+ */
+data class CompItemsRequest(
+    @SerializedName("itemIds") val itemIds: List<String> = emptyList(),
+    @SerializedName("reason") val reason: String,
+    @SerializedName("staffId") val staffId: String,
     @SerializedName("notes") val notes: String? = null
+)
+
+/**
+ * Void Items Request
+ *
+ * Request body for voiding specific items (cancel/remove with audit trail).
+ * Used when customer changes mind or item was entered incorrectly.
+ *
+ * **Backend Endpoint:** POST /tpv/venues/{venueId}/orders/{orderId}/void
+ *
+ * **Optimistic Concurrency Control:**
+ * The expectedVersion field prevents lost updates.
+ *
+ * **Example:**
+ * ```json
+ * {
+ *   "itemIds": ["item_1"],
+ *   "reason": "Customer changed mind",
+ *   "staffId": "staff_123",
+ *   "expectedVersion": 2
+ * }
+ * ```
+ */
+data class VoidItemsRequest(
+    @SerializedName("itemIds") val itemIds: List<String>,
+    @SerializedName("reason") val reason: String,
+    @SerializedName("staffId") val staffId: String,
+    @SerializedName("expectedVersion") val expectedVersion: Int
+)
+
+/**
+ * Apply Discount Request
+ *
+ * Request body for applying discount to order or specific items.
+ * Supports percentage (1-100) or fixed amount discounts.
+ *
+ * **Backend Endpoint:** POST /tpv/venues/{venueId}/orders/{orderId}/discount
+ *
+ * **Optimistic Concurrency Control:**
+ * The expectedVersion field prevents lost updates.
+ *
+ * **Example (20% discount on entire order):**
+ * ```json
+ * {
+ *   "type": "PERCENTAGE",
+ *   "value": 20,
+ *   "reason": "Happy hour discount",
+ *   "staffId": "staff_123",
+ *   "itemIds": null,
+ *   "expectedVersion": 2
+ * }
+ * ```
+ *
+ * **Example ($10 fixed discount):**
+ * ```json
+ * {
+ *   "type": "FIXED_AMOUNT",
+ *   "value": 10,
+ *   "reason": "Loyalty discount",
+ *   "staffId": "staff_123",
+ *   "expectedVersion": 2
+ * }
+ * ```
+ */
+data class ApplyDiscountRequest(
+    @SerializedName("type") val type: String,  // "PERCENTAGE" or "FIXED_AMOUNT"
+    @SerializedName("value") val value: Double,  // 0-100 for percentage, dollar amount for fixed
+    @SerializedName("reason") val reason: String? = null,
+    @SerializedName("staffId") val staffId: String,
+    @SerializedName("itemIds") val itemIds: List<String>? = null,  // null = order-level discount
+    @SerializedName("expectedVersion") val expectedVersion: Int
 )

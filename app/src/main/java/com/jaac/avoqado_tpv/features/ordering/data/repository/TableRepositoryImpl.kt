@@ -216,11 +216,12 @@ class TableRepositoryImpl @Inject constructor(
             Timber.i("🪑 [TableRepository] Assigning table $tableId with $covers covers (staff: $staffId)")
 
             val request = AssignTableRequest(
+                tableId = tableId,  // ← Now in body, not path
                 staffId = staffId,
                 covers = covers
             )
 
-            val response = apiService.assignTable(venueId, tableId, request)
+            val response = apiService.assignTable(venueId, request)
 
             if (!response.isSuccessful) {
                 val errorMessage = when (response.code()) {
@@ -529,6 +530,68 @@ class TableRepositoryImpl @Inject constructor(
 
         } catch (e: Exception) {
             Timber.e(e, "❌ [TECHNICAL] Failed to delete table")
+            Result.Error(ApiException.NetworkError(e))
+        }
+    }
+
+    override suspend fun clearTable(
+        venueId: String,
+        tableId: String
+    ): Result<Unit> {
+        return try {
+            Timber.i("🧹 [TableRepository] Clearing table $tableId")
+
+            val response = apiService.clearTable(venueId, tableId)
+
+            if (!response.isSuccessful) {
+                val errorMessage = when (response.code()) {
+                    400 -> {
+                        "No se puede limpiar la mesa.\n\n" +
+                        "La orden aún no está pagada completamente."
+                    }
+                    401 -> {
+                        "Sesión expirada.\n\n" +
+                        "Por favor, inicie sesión nuevamente."
+                    }
+                    403 -> {
+                        "Sin permisos para limpiar mesas.\n\n" +
+                        "Contacte al administrador."
+                    }
+                    404 -> {
+                        "Mesa no encontrada.\n\n" +
+                        "Verifique que la mesa existe."
+                    }
+                    429 -> {
+                        "Demasiadas solicitudes.\n\n" +
+                        "Por favor, espere un momento e intente nuevamente."
+                    }
+                    500, 502, 503 -> {
+                        "Error del servidor.\n\n" +
+                        "El servidor no está disponible. Intente más tarde."
+                    }
+                    else -> {
+                        "Error al limpiar la mesa.\n\n" +
+                        "Código: ${response.code()}\n" +
+                        "Por favor, contacte a soporte."
+                    }
+                }
+
+                Timber.e("❌ [TableRepository] API error: ${response.code()} - ${response.message()}")
+                return Result.Error(
+                    ApiException.HttpError(
+                        code = response.code(),
+                        errorMessage = response.message(),
+                        customUserMessage = errorMessage
+                    )
+                )
+            }
+
+            Timber.i("✅ [TableRepository] Table cleared successfully - now AVAILABLE")
+
+            Result.Success(Unit)
+
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [TECHNICAL] Failed to clear table")
             Result.Error(ApiException.NetworkError(e))
         }
     }

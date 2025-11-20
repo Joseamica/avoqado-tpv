@@ -96,7 +96,8 @@ class FloorPlanViewModel @Inject constructor(
     private val tableRepository: TableRepository,
     private val floorElementRepository: FloorElementRepository,
     private val deviceInfoManager: DeviceInfoManager,
-    private val secureStorage: SecureStorage
+    private val secureStorage: SecureStorage,
+    private val socketManager: com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<FloorPlanState>(FloorPlanState.Idle)
@@ -105,6 +106,39 @@ class FloorPlanViewModel @Inject constructor(
     // Error events for user-friendly error messages
     private val _errorEvent = MutableSharedFlow<String>()
     val errorEvent: SharedFlow<String> = _errorEvent.asSharedFlow()
+
+    init {
+        // 🔌 Start listening to Socket.IO events for real-time table status updates
+        listenToSocketEvents()
+    }
+
+    /**
+     * Listen to Socket.IO Events
+     *
+     * Reloads floor plan when table status changes (order created/cleared).
+     * This ensures all terminals see up-to-date table availability.
+     *
+     * **Events handled:**
+     * - TableStatusChange: When table status changes (AVAILABLE ↔ OCCUPIED)
+     */
+    private fun listenToSocketEvents() {
+        viewModelScope.launch {
+            socketManager.events.collect { event ->
+                when (event) {
+                    is com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent.TableStatusChange -> {
+                        Timber.i("🔄 [FloorPlan] Table status changed - reloading floor plan")
+                        Timber.d("   TableId: ${event.tableId} | VenueId: ${event.venueId}")
+
+                        // Reload floor plan to show updated table status
+                        loadFloorPlan()
+                    }
+                    else -> {
+                        // Ignore other events
+                    }
+                }
+            }
+        }
+    }
 
     /**
      * Load Floor Plan

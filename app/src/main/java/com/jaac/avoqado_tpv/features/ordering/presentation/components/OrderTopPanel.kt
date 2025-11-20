@@ -274,18 +274,35 @@ private fun PeekContent(
                 order.items.take(3).forEach { item ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Top  // ← Align to top for multi-line content
                     ) {
+                        // Issue #6: Display modifiers in PEEK state
+                        Column(
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = "${item.quantity}x ${item.productName}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+
+                            // Show modifiers if present
+                            if (item.modifiers.isNotEmpty()) {
+                                Text(
+                                    text = item.formattedModifiers,  // "Extra queso +$20, Sin cebolla"
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
                         Text(
-                            text = "${item.quantity}x ${item.productName}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,  // ← Prevent text overflow
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "$${item.totalPrice}",  // ← Fixed double $$
+                            text = "$${item.totalPrice}",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onSurface
@@ -530,6 +547,16 @@ private fun ExpandedItemCard(
                         text = item.formattedUnitPrice,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                // Issue #6: Show modifiers in EXPANDED state
+                if (item.modifiers.isNotEmpty()) {
+                    Text(
+                        text = item.formattedModifiers,  // "Extra queso +$20, Sin cebolla"
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,  // ← Highlight modifiers
+                        modifier = Modifier.padding(top = 4.dp)
                     )
                 }
 

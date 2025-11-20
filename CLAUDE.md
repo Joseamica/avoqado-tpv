@@ -910,6 +910,161 @@ Box(modifier = Modifier.background(MaterialTheme.colorScheme.surface))
 Text(color = Color(0xFF2563EB))  // WRONG!
 ```
 
+#### Auto-Retry on Reconnection
+
+**⚠️ MANDATORY**: All screens that fetch data MUST implement auto-retry when connection is restored.
+
+**Problem:**
+User loses connection → Screen shows error → Connection restored → Screen STILL shows error (user must manually retry)
+
+**Solution:**
+Use `ConnectivityObserver` to detect reconnection and auto-retry.
+
+**Implementation:**
+
+```kotlin
+// STEP 1: Inject ConnectivityObserver
+@HiltViewModel
+class ReportsViewModel @Inject constructor(
+    private val reportsRepository: ReportsRepository,
+    private val connectivityObserver: ConnectivityObserver
+) : ViewModel() {
+
+    private val _state = MutableStateFlow<ReportsState>(ReportsState.Loading)
+    val state: StateFlow<ReportsState> = _state.asStateFlow()
+
+    private val _isOffline = MutableStateFlow(false)
+    val isOffline: StateFlow<Boolean> = _isOffline.asStateFlow()
+
+    init {
+        loadReports()
+        observeConnectivity()  // ← CRITICAL: Monitor network changes
+    }
+
+    // STEP 2: Observe connectivity and auto-retry
+    private fun observeConnectivity() {
+        viewModelScope.launch {
+            connectivityObserver.observe().collect { status ->
+                when (status) {
+                    NetworkStatus.Available -> {
+                        Timber.i("✅ [Connectivity] Connection restored")
+                        _isOffline.value = false
+
+                        // ⭐ AUTO-RETRY: If screen showed error, retry automatically
+                        if (_state.value is ReportsState.Error) {
+                            Timber.d("🔄 [Auto-Retry] Retrying failed request...")
+                            loadReports()
+                        }
+                    }
+                    NetworkStatus.Unavailable -> {
+                        Timber.w("⚠️ [Connectivity] Connection lost")
+                        _isOffline.value = true
+                    }
+                }
+            }
+        }
+    }
+
+    // STEP 3: Load data (will be auto-retried on reconnection)
+    fun loadReports() {
+        viewModelScope.launch {
+            _state.value = ReportsState.Loading
+
+            reportsRepository.getReports()
+                .onSuccess { reports ->
+                    _state.value = ReportsState.Success(reports)
+                }
+                .onFailure { error ->
+                    _state.value = ReportsState.Error(error.message ?: "Error cargando reportes")
+                }
+        }
+    }
+}
+```
+
+**UI Pattern:**
+
+```kotlin
+@Composable
+fun ReportsScreen(
+    viewModel: ReportsViewModel = hiltViewModel()
+) {
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val isOffline by viewModel.isOffline.collectAsStateWithLifecycle()
+
+    Scaffold(
+        topBar = {
+            Column {
+                AvoqadoTopBar(title = "Reportes")
+
+                // Show offline banner when connection lost
+                if (isOffline) {
+                    OfflineBanner(
+                        message = "Trabajando sin conexión - Las ventas se guardarán localmente"
+                    )
+                }
+            }
+        }
+    ) { paddingValues ->
+        when (val currentState = state) {
+            is ReportsState.Loading -> LoadingScreen()
+            is ReportsState.Success -> ReportsContent(currentState.reports)
+            is ReportsState.Error -> {
+                ErrorScreen(
+                    message = currentState.message,
+                    onRetry = { viewModel.loadReports() }  // Manual retry button
+                )
+                // Auto-retry happens automatically when connection restored!
+            }
+        }
+    }
+}
+
+@Composable
+fun OfflineBanner(message: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.error.copy(alpha = 0.9f)
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.CloudOff,
+                contentDescription = null,
+                tint = Color.White
+            )
+            Text(
+                text = message,
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium
+            )
+        }
+    }
+}
+```
+
+**Screens that MUST implement this pattern:**
+- ✅ Reports (fetches sales data from backend)
+- ✅ Shifts (fetches shift history)
+- ✅ Products/Menu (fetches catalog)
+- ✅ Orders (fetches table orders)
+- ❌ Payment (local-first, doesn't need auto-retry)
+- ❌ Login (handled separately)
+
+**Benefits:**
+- ✅ User doesn't need to manually retry after reconnection
+- ✅ Seamless UX when connection flickers
+- ✅ Offline banner clearly communicates network status
+- ✅ Auto-retry only happens if screen is in error state (doesn't spam backend)
+
+**IMPORTANT:**
+- Auto-retry ONLY triggers if `_state.value is Error` (prevents spamming backend when data already loaded)
+- Offline banner disappears when connection is restored
+- Manual retry button still available (if user wants to retry before reconnection)
+
 ---
 
 ## 🔧 Development Workflow

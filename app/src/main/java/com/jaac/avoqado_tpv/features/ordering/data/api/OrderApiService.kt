@@ -2,14 +2,20 @@ package com.jaac.avoqado_tpv.features.ordering.data.api
 
 import com.jaac.avoqado_tpv.features.ordering.data.dto.AddItemsRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.ApiResponse
+import com.jaac.avoqado_tpv.features.ordering.data.dto.ApplyDiscountRequest
+import com.jaac.avoqado_tpv.features.ordering.data.dto.CompItemsRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.CreateOrderRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.OrderDto
+import com.jaac.avoqado_tpv.features.ordering.data.dto.UpdateGuestRequest
+import com.jaac.avoqado_tpv.features.ordering.data.dto.VoidItemsRequest
 import retrofit2.Response
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 /**
  * Retrofit service interface for order management endpoints.
@@ -181,5 +187,190 @@ interface OrderApiService {
         @Path("venueId") venueId: String,
         @Path("orderId") orderId: String,
         @Body request: AddItemsRequest
+    ): Response<ApiResponse<OrderDto>>
+
+    /**
+     * Remove item from order.
+     *
+     * **Endpoint:** DELETE /tpv/venues/{venueId}/orders/{orderId}/items/{itemId}
+     *
+     * **Backend Behavior:**
+     * 1. Validates order exists and belongs to venue
+     * 2. Checks version field for optimistic concurrency control
+     * 3. Deletes the order item (cascades to modifiers)
+     * 4. Recalculates order totals
+     * 5. Increments version field
+     * 6. Emits Socket.IO event for real-time updates
+     *
+     * **Success Response (200):**
+     * Returns updated order with item removed and recalculated totals.
+     *
+     * **Error Responses:**
+     * - 400: Order already paid
+     * - 404: Order or item not found
+     * - 409: Version conflict
+     * - 500: Internal server error
+     *
+     * @param venueId ID of the venue
+     * @param orderId ID of the order
+     * @param itemId ID of the item to remove
+     * @param version Current order version for optimistic locking
+     * @return Response with updated order or HTTP error
+     */
+    @DELETE("tpv/venues/{venueId}/orders/{orderId}/items/{itemId}")
+    suspend fun removeOrderItem(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Path("itemId") itemId: String,
+        @Query("version") version: Int
+    ): Response<ApiResponse<OrderDto>>
+
+    /**
+     * Update guest information on order.
+     *
+     * **Endpoint:** PATCH /tpv/venues/{venueId}/orders/{orderId}/guest
+     *
+     * **Backend Behavior:**
+     * 1. Validates order exists and belongs to venue
+     * 2. Updates covers, customerName, customerPhone, specialRequests
+     * 3. Emits Socket.IO event for real-time updates
+     *
+     * **Use Cases:**
+     * - DINE_IN: Update covers (party size), customer name, special requests (allergies, dietary restrictions)
+     * - TAKEOUT: Update customer name and phone for order pickup/delivery
+     *
+     * **Success Response (200):**
+     * Returns updated order with guest information.
+     *
+     * **Error Responses:**
+     * - 404: Order not found
+     * - 500: Internal server error
+     *
+     * @param venueId ID of the venue
+     * @param orderId ID of the order
+     * @param request Guest information to update
+     * @return Response with updated order or HTTP error
+     */
+    @PATCH("tpv/venues/{venueId}/orders/{orderId}/guest")
+    suspend fun updateGuest(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body request: UpdateGuestRequest
+    ): Response<ApiResponse<OrderDto>>
+
+    /**
+     * Comp items or entire order.
+     *
+     * **Endpoint:** POST /tpv/venues/{venueId}/orders/{orderId}/comp
+     *
+     * **Backend Behavior:**
+     * 1. Validates order not already paid
+     * 2. Calculates comp amount (specific items or entire order)
+     * 3. Increases discountAmount on order
+     * 4. Creates OrderAction audit trail record
+     * 5. Emits Socket.IO event for real-time updates
+     *
+     * **Use Cases:**
+     * - Service recovery (food quality issues, long wait times)
+     * - Manager discretion (special occasions, loyal customers)
+     * - Compensation for mistakes
+     *
+     * **Success Response (200):**
+     * Returns updated order with increased discount amount.
+     *
+     * **Error Responses:**
+     * - 400: Order already paid
+     * - 404: Order not found
+     * - 500: Internal server error
+     *
+     * @param venueId ID of the venue
+     * @param orderId ID of the order
+     * @param request Comp details (itemIds, reason, staffId)
+     * @return Response with updated order or HTTP error
+     */
+    @POST("tpv/venues/{venueId}/orders/{orderId}/comp")
+    suspend fun compItems(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body request: CompItemsRequest
+    ): Response<ApiResponse<OrderDto>>
+
+    /**
+     * Void specific items from order.
+     *
+     * **Endpoint:** POST /tpv/venues/{venueId}/orders/{orderId}/void
+     *
+     * **Backend Behavior:**
+     * 1. Validates order not already paid
+     * 2. Checks version field for optimistic concurrency control
+     * 3. Deletes specified items
+     * 4. Recalculates order totals
+     * 5. Creates OrderAction audit trail record
+     * 6. Increments version field
+     * 7. Emits Socket.IO event for real-time updates
+     *
+     * **Use Cases:**
+     * - Customer changed mind
+     * - Item entered incorrectly
+     * - Kitchen cannot fulfill (out of stock)
+     *
+     * **Success Response (200):**
+     * Returns updated order with items removed and recalculated totals.
+     *
+     * **Error Responses:**
+     * - 400: Order already paid
+     * - 404: Order not found
+     * - 409: Version conflict
+     * - 500: Internal server error
+     *
+     * @param venueId ID of the venue
+     * @param orderId ID of the order
+     * @param request Void details (itemIds, reason, staffId, expectedVersion)
+     * @return Response with updated order or HTTP error
+     */
+    @POST("tpv/venues/{venueId}/orders/{orderId}/void")
+    suspend fun voidItems(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body request: VoidItemsRequest
+    ): Response<ApiResponse<OrderDto>>
+
+    /**
+     * Apply discount to order or specific items.
+     *
+     * **Endpoint:** POST /tpv/venues/{venueId}/orders/{orderId}/discount
+     *
+     * **Backend Behavior:**
+     * 1. Validates discount value (percentage 1-100, fixed amount > 0)
+     * 2. Checks version field for optimistic concurrency control
+     * 3. Calculates discount amount (item-level or order-level)
+     * 4. Updates order discountAmount
+     * 5. Creates OrderAction audit trail record
+     * 6. Increments version field
+     * 7. Emits Socket.IO event for real-time updates
+     *
+     * **Discount Types:**
+     * - PERCENTAGE: Value between 1-100 (e.g., 20 = 20% off)
+     * - FIXED_AMOUNT: Dollar amount (e.g., 10 = $10 off)
+     *
+     * **Success Response (200):**
+     * Returns updated order with discount applied.
+     *
+     * **Error Responses:**
+     * - 400: Invalid discount value or version conflict
+     * - 404: Order not found
+     * - 409: Version conflict
+     * - 500: Internal server error
+     *
+     * @param venueId ID of the venue
+     * @param orderId ID of the order
+     * @param request Discount details (type, value, reason, staffId, expectedVersion)
+     * @return Response with updated order or HTTP error
+     */
+    @POST("tpv/venues/{venueId}/orders/{orderId}/discount")
+    suspend fun applyDiscount(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body request: ApplyDiscountRequest
     ): Response<ApiResponse<OrderDto>>
 }

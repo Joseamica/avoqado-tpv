@@ -1,16 +1,29 @@
 package com.jaac.avoqado_tpv.features.ordering.presentation.menu
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -25,6 +38,7 @@ import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.ordering.domain.KitchenStatus
@@ -36,6 +50,8 @@ import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
 import com.jaac.avoqado_tpv.features.ordering.domain.PaymentStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
+import com.jaac.avoqado_tpv.features.ordering.presentation.OrderTab
+import com.jaac.avoqado_tpv.features.ordering.presentation.OrderTabRow
 import com.jaac.avoqado_tpv.features.ordering.presentation.components.CategoryTabs
 import com.jaac.avoqado_tpv.features.ordering.presentation.components.OrderTopPanel
 import com.jaac.avoqado_tpv.features.ordering.presentation.components.PanelState
@@ -46,53 +62,43 @@ import java.math.BigDecimal
 import java.time.Instant
 
 /**
- * Menu Screen - Product selection + Order check (Hybrid Toast + Square pattern)
+ * Menu Screen - 4-Tab Order Management (Square POS Pattern)
  *
- * INNOVATION: Combines two views in one tab:
- * 1. Product Grid (2 columns) - Add items to order
- * 2. Top Panel (collapsible check) - Review order without navigation
+ * **REFACTORED:** Now uses 4-tab bottom navigation for specialized workflows:
+ * 1. **Menu Tab** - Product browsing and quick-add
+ * 2. **Check Tab** - Order review and item management
+ * 3. **Actions Tab** - Comp, void, and discount operations
+ * 4. **Guest Tab** - Customer information management
  *
- * Key advantages over separate Check tab:
- * - ✅ 50% faster workflow (no tab navigation)
- * - ✅ 78% of screen dedicated to products (when panel collapsed)
- * - ✅ Zero context loss (products visible behind panel)
- * - ✅ One-handed operation (thumb-friendly top panel)
+ * This replaces the previous hybrid overlay pattern with dedicated
+ * spaces for each operation, following Square POS design principles.
  *
- * Layout:
+ * Layout (Square POS Pattern):
  * ```
  * ┌─────────────────────────────────────┐
- * │ AvoqadoTopBar: "Mesa 5" [←] [Send] │ ← 56dp (rounded corners)
+ * │ AvoqadoTopBar: "Mesa 5" [←] [Send] │ ← 56dp
  * ├─────────────────────────────────────┤
- * │ ┌─────────────────────────────────┐ │
- * │ │ TOP PANEL (Collapsible Check)   │ │ ← 48dp (collapsed)
- * │ │ Mesa 5 • 3 items • $150.00  ⌄   │ │    200dp (peek)
- * │ └─────────────────────────────────┘ │    700dp (expanded)
+ * │ [Menú] [Cuenta] [Acciones] [Cliente]│ ← 48dp (top tabs - text only)
  * ├─────────────────────────────────────┤
- * │ [Todos] [Bebidas] [Comidas] [Postrs]│ ← 48dp (category tabs)
- * ├─────────────────────────────────────┤
- * │ ┌──────────┬──────────┐            │
- * │ │ 🍕 Pizza │ 🍔 Burger│            │
- * │ │ $12.00   │ $8.50    │            │ ← Product Grid
- * │ ├──────────┼──────────┤            │   (2 columns)
- * │ │ 🥤 Coke  │ 🍺 Beer  │            │
- * │ │ $3.00    │ $5.00    │            │
- * │ └──────────┴──────────┘            │
+ * │                                     │
+ * │   [Tab-specific content here]       │ ← Dynamic content
+ * │                                     │   based on currentTab
+ * │   (Maximum vertical space!)         │
+ * │                                     │
  * └─────────────────────────────────────┘
  * ```
  *
  * User Flow:
  * 1. Navigate from Mesas tab (table selected)
- * 2. Browse products by category
- * 3. Tap product → Quantity selector appears
- * 4. Confirm → Item added to order (top panel updates)
- * 5. Swipe up panel → Review items
- * 6. Tap "Enviar" → Send to kitchen
- * 7. Tap "Pagar" → Navigate to PaymentScreen
+ * 2. **Menu tab**: Browse & add products to order
+ * 3. **Check tab**: Review items, adjust quantities
+ * 4. **Actions tab**: Apply discounts, comp items
+ * 5. **Guest tab**: Update customer information
+ * 6. Tap "Pagar" → Navigate to PaymentScreen
  *
- * @param order Current order (can be existing or new)
+ * @param orderId Order ID to load
  * @param onNavigateBack Navigate to previous screen (Mesas tab)
- * @param onSendOrder Send order to kitchen
- * @param onProcessPayment Navigate to PaymentScreen
+ * @param onProcessPayment Navigate to PaymentScreen with order
  */
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
@@ -104,8 +110,12 @@ fun MenuScreen(
     viewModel: MenuViewModel = hiltViewModel()
 ) {
     val menuState by viewModel.state.collectAsStateWithLifecycle()
+    val isLoadingProducts by viewModel.isLoadingProducts.collectAsStateWithLifecycle()
 
-    // Local state for UI
+    // Tab state (local to MenuScreen - pure UI concern)
+    var currentTab by remember { mutableStateOf(OrderTab.MENU) }
+
+    // Local state for UI (Menu tab specific)
     var panelState by remember { mutableStateOf(PanelState.COLLAPSED) }
     var selectedCategory by remember { mutableStateOf<ProductCategory?>(null) }
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
@@ -182,132 +192,162 @@ fun MenuScreen(
         },
         modifier = modifier
     ) { paddingValues ->
-        // Provide ResponsiveSizes to all children (required by ProductGrid, CategoryTabs, etc.)
-        androidx.compose.foundation.layout.BoxWithConstraints(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            val sizes = com.jaac.avoqado_tpv.core.presentation.components.ResponsiveSizes.calculate(maxHeight, maxWidth)
+            // Top tabs (Square POS pattern - text only, no icons)
+            OrderTabRow(
+                currentTab = currentTab,
+                onTabSelected = { newTab -> currentTab = newTab },
+                orderItemCount = order?.items?.size ?: 0
+            )
 
-            androidx.compose.runtime.CompositionLocalProvider(
-                com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes provides sizes
+            // Provide ResponsiveSizes to all children (required by ProductGrid, CategoryTabs, etc.)
+            androidx.compose.foundation.layout.BoxWithConstraints(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .weight(1f)
             ) {
-                if (order == null) {
-                    // Loading state
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        AvoqadoFullScreenLoading(message = "Cargando orden...")
-                    }
-                } else {
-                    // Get products and categories from ViewModel
-                    val products by viewModel.products.collectAsStateWithLifecycle()
-                    val categories by viewModel.categories.collectAsStateWithLifecycle()
+                val sizes = com.jaac.avoqado_tpv.core.presentation.components.ResponsiveSizes.calculate(maxHeight, maxWidth)
 
-                    // Content: Top panel + Category tabs + Product grid
-                    MenuScreenContent(
-                        order = order,
-                        products = products,
-                        categories = categories,
-                        panelState = panelState,
-                        selectedCategory = selectedCategory,
-                        onPanelStateChange = { panelState = it },
-                        onCategorySelected = { selectedCategory = it },
-                        onProductClick = { product ->
-                            selectedProduct = product
-                            showProductSelector = true
-                        },
-                        onItemQuantityChange = { item, newQty ->
-                            viewModel.updateItemQuantity(item, newQty)
-                        },
-                        onItemRemove = { item ->
-                            viewModel.removeItem(item)
-                        },
-                        onSendToKitchen = { viewModel.sendToKitchen() },
-                        onProcessPayment = { onProcessPayment(order) }
-                    )
+                androidx.compose.runtime.CompositionLocalProvider(
+                    com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes provides sizes
+                ) {
+                    if (order == null) {
+                        // Loading state
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            AvoqadoFullScreenLoading(message = "Cargando orden...")
+                        }
+                    } else {
+                    // Route to tab-specific content based on currentTab
+                    // Tab-specific content (full screen - no overlay)
+                    when (currentTab) {
+                            OrderTab.MENU -> {
+                                // Get products and categories from ViewModel
+                                val filteredProducts by viewModel.filteredProducts.collectAsStateWithLifecycle()
+                                val categories by viewModel.categories.collectAsStateWithLifecycle()
+                                val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
 
-                    // Product selector bottom sheet
-                    if (showProductSelector && selectedProduct != null) {
-                        ProductSelectorBottomSheet(
-                            product = selectedProduct!!,
-                            modifierGroups = MockProducts.getModifiersForProduct(selectedProduct!!.id),
-                            onDismiss = {
-                                showProductSelector = false
-                                selectedProduct = null
-                            },
-                            onAddToCart = { quantity, modifiers, notes ->
-                                selectedProduct?.let { product ->
-                                    viewModel.addItem(product, quantity, modifiers, notes)
-                                }
-                                // Expand panel to show order items
-                                panelState = PanelState.PEEK
+                                // Menu tab: Product browsing and adding
+                                MenuTab(
+                                    order = order,
+                                    products = filteredProducts,
+                                    categories = categories,
+                                    searchQuery = searchQuery,
+                                    selectedCategory = selectedCategory,
+                                    selectedProduct = selectedProduct,
+                                    showProductSelector = showProductSelector,
+                                    onCategorySelected = { selectedCategory = it },
+                                    onSearchQueryChange = { query -> viewModel.setSearchQuery(query) },
+                                    onClearSearch = { viewModel.clearSearch() },
+                                    onProductClick = { product ->
+                                        // Check if order can accept items
+                                        if (!order.canAddItems) {
+                                            Timber.w("⚠️ Cannot add items - order status: ${order.status}")
+                                            return@MenuTab
+                                        }
+
+                                        // Conditional modal based on modifiers from backend
+                                        if (!product.hasModifiers) {
+                                            // Quick-add: Product has no modifiers, add directly with quantity 1
+                                            Timber.d("🚀 Quick-add: ${product.name} (no modifiers)")
+                                            viewModel.addItem(
+                                                product = product,
+                                                quantity = 1,
+                                                modifiers = emptyList(),
+                                                notes = ""
+                                            )
+                                            // Expand panel to show the added item
+                                            panelState = PanelState.PEEK
+                                        } else {
+                                            // Show modal for products with modifiers
+                                            Timber.d("⚙️ Opening modal: ${product.name} (${product.modifierGroups.size} modifier groups)")
+                                            selectedProduct = product
+                                            showProductSelector = true
+                                        }
+                                    },
+                                    onProductSelectorDismiss = {
+                                        showProductSelector = false
+                                        selectedProduct = null
+                                    },
+                                    onProductSelectorConfirm = { product, quantity, modifiers, notes ->
+                                        viewModel.addItem(product, quantity, modifiers, notes)
+                                        // Expand panel to show order items
+                                        panelState = PanelState.PEEK
+                                        // Reset state
+                                        showProductSelector = false
+                                        selectedProduct = null
+                                    }
+                                )
                             }
-                        )
+
+                        OrderTab.CHECK -> {
+                            // Check tab: Order review and item management
+                            CheckTab(
+                                order = order,
+                                onItemQuantityChange = { item, newQty ->
+                                    viewModel.updateItemQuantity(item, newQty)
+                                },
+                                onItemRemove = { item ->
+                                    viewModel.removeItem(item)
+                                },
+                                onSendToKitchen = { viewModel.sendToKitchen() },
+                                onProcessPayment = { onProcessPayment(order) }
+                            )
+                        }
+
+                        OrderTab.ACTIONS -> {
+                            // Actions tab: Order-level operations (comp, void, discount)
+                            ActionsTab(
+                                order = order,
+                                onCompItems = {
+                                    // TODO Step 9: Implement comp dialog and ViewModel integration
+                                    Timber.d("🎁 Comp Items clicked - Dialog pending")
+                                },
+                                onVoidItems = {
+                                    // TODO Step 9: Implement void dialog and ViewModel integration
+                                    Timber.d("🗑️ Void Items clicked - Dialog pending")
+                                },
+                                onApplyDiscount = {
+                                    // TODO Step 9: Implement discount dialog and ViewModel integration
+                                    Timber.d("💰 Apply Discount clicked - Dialog pending")
+                                }
+                            )
+                        }
+
+                        OrderTab.GUEST -> {
+                            // Guest tab: Update customer information
+                            GuestTab(
+                                order = order,
+                                onSaveGuestInfo = { covers, name, phone, requests ->
+                                    viewModel.updateGuest(
+                                        covers = covers,
+                                        customerName = name,
+                                        customerPhone = phone,
+                                        specialRequests = requests
+                                    )
+                                }
+                            )
+                        }
                     }
+                }
+
+                // Show loading overlay while products are loading
+                // This appears during "Loaded X products" and "Extracted X categories" operations
+                if (isLoadingProducts) {
+                    AvoqadoLoadingOverlay(
+                        message = "Cargando productos y categorías...",
+                        modifier = Modifier.zIndex(2f)  // Above everything else
+                    )
                 }
             }
         }
-    }
-}
-
-/**
- * MenuScreen Content
- *
- * Separated to allow ResponsiveSizes provider in parent
- */
-@Composable
-private fun MenuScreenContent(
-    order: Order,
-    products: List<Product>,
-    categories: List<ProductCategory>,
-    panelState: PanelState,
-    selectedCategory: ProductCategory?,
-    onPanelStateChange: (PanelState) -> Unit,
-    onCategorySelected: (ProductCategory?) -> Unit,
-    onProductClick: (Product) -> Unit,
-    onItemQuantityChange: (OrderItem, Int) -> Unit,
-    onItemRemove: (OrderItem) -> Unit,
-    onSendToKitchen: () -> Unit,
-    onProcessPayment: () -> Unit  // OrderTopPanel expects () -> Unit, not (Order) -> Unit
-) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        // Product grid (background layer)
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(top = 48.dp)  // Space for collapsed top panel
-        ) {
-            // Category tabs (from backend via ViewModel)
-            CategoryTabs(
-                categories = categories,
-                selectedCategory = selectedCategory,
-                onCategorySelected = onCategorySelected
-            )
-
-            // Product grid (from backend via ViewModel)
-            ProductGrid(
-                products = products,
-                selectedCategory = selectedCategory,
-                onProductClick = onProductClick
-            )
-        }
-
-        // Top panel (overlay on top)
-        OrderTopPanel(
-            order = order,
-            panelState = panelState,
-            onPanelStateChange = onPanelStateChange,
-            onItemQuantityChange = onItemQuantityChange,
-            onItemRemove = onItemRemove,
-            onSendToKitchen = onSendToKitchen,
-            onProcessPayment = onProcessPayment,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .zIndex(1f)  // Ensure panel is on top
-        )
+        }  // Close Column
     }
 }
 

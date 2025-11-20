@@ -148,7 +148,7 @@ data class ModifierGroupDto(
     val name: String,
 
     @SerializedName("type")
-    val type: String,  // SINGLE_CHOICE, MULTIPLE_CHOICE
+    val type: String?,  // SINGLE_CHOICE, MULTIPLE_CHOICE (nullable - backend may not set this)
 
     @SerializedName("required")
     val required: Boolean,
@@ -162,6 +162,10 @@ data class ModifierGroupDto(
 
 /**
  * Modifier DTO
+ *
+ * Backend Modifier model has "price" field, not "priceAdjustment".
+ * This represents the ABSOLUTE price of the modifier (e.g., $12.50),
+ * not a relative adjustment to product price.
  */
 data class ModifierDto(
     @SerializedName("id")
@@ -170,8 +174,8 @@ data class ModifierDto(
     @SerializedName("name")
     val name: String,
 
-    @SerializedName("priceAdjustment")
-    val priceAdjustment: Double,
+    @SerializedName("price")  // ✅ FIXED: Backend sends "price", not "priceAdjustment"
+    val priceAdjustment: Double,  // Keep property name for compatibility with existing code
 
     @SerializedName("displayOrder")
     val displayOrder: Int

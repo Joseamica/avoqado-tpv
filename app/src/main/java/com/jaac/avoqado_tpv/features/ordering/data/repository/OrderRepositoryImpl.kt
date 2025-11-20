@@ -1,7 +1,11 @@
 package com.jaac.avoqado_tpv.features.ordering.data.repository
 
 import com.jaac.avoqado_tpv.features.ordering.data.api.OrderApiService
+import com.jaac.avoqado_tpv.features.ordering.data.dto.ApplyDiscountRequest
+import com.jaac.avoqado_tpv.features.ordering.data.dto.CompItemsRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.CreateOrderRequest
+import com.jaac.avoqado_tpv.features.ordering.data.dto.UpdateGuestRequest
+import com.jaac.avoqado_tpv.features.ordering.data.dto.VoidItemsRequest
 import com.jaac.avoqado_tpv.features.ordering.data.mappers.toOrder
 import com.jaac.avoqado_tpv.features.ordering.domain.AddOrderItemRequest
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
@@ -165,7 +169,8 @@ class OrderRepositoryImpl @Inject constructor(
                 com.jaac.avoqado_tpv.features.ordering.data.dto.AddItemDto(
                     productId = item.productId,
                     quantity = item.quantity,
-                    notes = item.notes
+                    notes = item.notes,
+                    modifierIds = item.modifierIds
                 )
             }
 
@@ -183,6 +188,17 @@ class OrderRepositoryImpl @Inject constructor(
                 if (body != null && body.success) {
                     val order = body.data.toOrder()
                     Timber.i("✅ Items added successfully | newVersion=${order.version} | itemCount=${order.items.size}")
+
+                    // Log modifier counts in response
+                    order.items.forEach { item ->
+                        if (item.modifiers.isNotEmpty()) {
+                            Timber.d("  📦 [RESPONSE] OrderItem ${item.productName} has ${item.modifiers.size} modifiers")
+                            item.modifiers.forEach { modifier ->
+                                Timber.d("     - ${modifier.name}: \$${modifier.priceAdjustment}")
+                            }
+                        }
+                    }
+
                     Result.success(order)
                 } else {
                     val errorMsg = "Failed to add items: Invalid response"
@@ -214,7 +230,7 @@ class OrderRepositoryImpl @Inject constructor(
     /**
      * Remove item from order.
      *
-     * NOT IMPLEMENTED - Will be added when needed.
+     * Backend: DELETE /tpv/venues/{venueId}/orders/{orderId}/items/{itemId}?version={version}
      */
     override suspend fun removeOrderItem(
         venueId: String,
@@ -222,7 +238,42 @@ class OrderRepositoryImpl @Inject constructor(
         orderItemId: String,
         currentVersion: Int
     ): Result<Order> {
-        return Result.failure(NotImplementedError("removeOrderItem not implemented yet"))
+        return try {
+            Timber.d("🗑️ Removing item from order | orderId=$orderId | itemId=$orderItemId | version=$currentVersion")
+
+            val response = apiService.removeOrderItem(venueId, orderId, orderItemId, currentVersion)
+
+            if (response.isSuccessful) {
+                val body = response.body()
+                if (body != null && body.success) {
+                    val order = body.data.toOrder()
+                    Timber.i("✅ Item removed successfully | newVersion=${order.version} | itemCount=${order.items.size}")
+                    Result.success(order)
+                } else {
+                    val errorMsg = "Failed to remove item: Invalid response"
+                    Timber.e(errorMsg)
+                    Result.failure(Exception(errorMsg))
+                }
+            } else {
+                val errorMessage = when (response.code()) {
+                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    400 -> "La orden ya está pagada y no puede modificarse."
+                    404 -> "Orden o item no encontrado."
+                    409 -> {
+                        Timber.w("⚠️ Version conflict - order was modified by another terminal")
+                        "La orden fue modificada por otra terminal.\n\n" +
+                        "Por favor, intenta nuevamente."
+                    }
+                    500 -> "Error del servidor. Por favor intenta nuevamente."
+                    else -> "Error al eliminar item: ${response.code()}"
+                }
+                Timber.e("removeOrderItem failed: $errorMessage (HTTP ${response.code()})")
+                Result.failure(Exception(errorMessage))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Exception in removeOrderItem")
+            Result.failure(e)
+        }
     }
 
     /**
@@ -265,5 +316,233 @@ class OrderRepositoryImpl @Inject constructor(
         currentVersion: Int
     ): Result<Order> {
         return Result.failure(NotImplementedError("updateOrderStatus not implemented yet"))
+    }
+
+    /**
+     * Update guest information on order.
+     *
+     * Backend: PATCH /tpv/venues/{venueId}/orders/{orderId}/guest
+     */
+    override suspend fun updateGuest(
+        venueId: String,
+        orderId: String,
+        covers: Int?,
+        customerName: String?,
+        customerPhone: String?,
+        specialRequests: String?
+    ): Result<Order> {
+        return try {
+            val request = UpdateGuestRequest(
+                covers = covers,
+                customerName = customerName,
+                customerPhone = customerPhone,
+                specialRequests = specialRequests
+            )
+
+            Timber.d("👥 Updating guest info | orderId=$orderId | covers=$covers")
+
+            val response = apiService.updateGuest(venueId, orderId, request)
+
+            if (response.isSuccessful) {
+                val body = response.body()
+                if (body != null && body.success) {
+                    val order = body.data.toOrder()
+                    Timber.i("✅ Guest info updated successfully")
+                    Result.success(order)
+                } else {
+                    val errorMsg = "Failed to update guest info: Invalid response"
+                    Timber.e(errorMsg)
+                    Result.failure(Exception(errorMsg))
+                }
+            } else {
+                val errorMessage = when (response.code()) {
+                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    404 -> "Orden no encontrada."
+                    500 -> "Error del servidor. Por favor intenta nuevamente."
+                    else -> "Error al actualizar información del cliente: ${response.code()}"
+                }
+                Timber.e("updateGuest failed: $errorMessage (HTTP ${response.code()})")
+                Result.failure(Exception(errorMessage))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Exception in updateGuest")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Comp items or entire order.
+     *
+     * Backend: POST /tpv/venues/{venueId}/orders/{orderId}/comp
+     */
+    override suspend fun compItems(
+        venueId: String,
+        orderId: String,
+        itemIds: List<String>,
+        reason: String,
+        staffId: String,
+        notes: String?
+    ): Result<Order> {
+        return try {
+            val request = CompItemsRequest(
+                itemIds = itemIds,
+                reason = reason,
+                staffId = staffId,
+                notes = notes
+            )
+
+            val compType = if (itemIds.isEmpty()) "entire order" else "${itemIds.size} items"
+            Timber.d("🎁 Comping $compType | orderId=$orderId | reason=$reason")
+
+            val response = apiService.compItems(venueId, orderId, request)
+
+            if (response.isSuccessful) {
+                val body = response.body()
+                if (body != null && body.success) {
+                    val order = body.data.toOrder()
+                    Timber.i("✅ Items comped successfully | discountAmount=${order.discountAmount}")
+                    Result.success(order)
+                } else {
+                    val errorMsg = "Failed to comp items: Invalid response"
+                    Timber.e(errorMsg)
+                    Result.failure(Exception(errorMsg))
+                }
+            } else {
+                val errorMessage = when (response.code()) {
+                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    400 -> "La orden ya está pagada y no puede modificarse."
+                    404 -> "Orden no encontrada."
+                    500 -> "Error del servidor. Por favor intenta nuevamente."
+                    else -> "Error al aplicar cortesía: ${response.code()}"
+                }
+                Timber.e("compItems failed: $errorMessage (HTTP ${response.code()})")
+                Result.failure(Exception(errorMessage))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Exception in compItems")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Void specific items from order.
+     *
+     * Backend: POST /tpv/venues/{venueId}/orders/{orderId}/void
+     */
+    override suspend fun voidItems(
+        venueId: String,
+        orderId: String,
+        itemIds: List<String>,
+        reason: String,
+        staffId: String,
+        currentVersion: Int
+    ): Result<Order> {
+        return try {
+            val request = VoidItemsRequest(
+                itemIds = itemIds,
+                reason = reason,
+                staffId = staffId,
+                expectedVersion = currentVersion
+            )
+
+            Timber.d("❌ Voiding ${itemIds.size} items | orderId=$orderId | reason=$reason | version=$currentVersion")
+
+            val response = apiService.voidItems(venueId, orderId, request)
+
+            if (response.isSuccessful) {
+                val body = response.body()
+                if (body != null && body.success) {
+                    val order = body.data.toOrder()
+                    Timber.i("✅ Items voided successfully | newVersion=${order.version} | itemCount=${order.items.size}")
+                    Result.success(order)
+                } else {
+                    val errorMsg = "Failed to void items: Invalid response"
+                    Timber.e(errorMsg)
+                    Result.failure(Exception(errorMsg))
+                }
+            } else {
+                val errorMessage = when (response.code()) {
+                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    400 -> "La orden ya está pagada y no puede modificarse."
+                    404 -> "Orden no encontrada."
+                    409 -> {
+                        Timber.w("⚠️ Version conflict - order was modified by another terminal")
+                        "La orden fue modificada por otra terminal.\n\n" +
+                        "Por favor, intenta nuevamente."
+                    }
+                    500 -> "Error del servidor. Por favor intenta nuevamente."
+                    else -> "Error al anular items: ${response.code()}"
+                }
+                Timber.e("voidItems failed: $errorMessage (HTTP ${response.code()})")
+                Result.failure(Exception(errorMessage))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Exception in voidItems")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Apply discount to order or specific items.
+     *
+     * Backend: POST /tpv/venues/{venueId}/orders/{orderId}/discount
+     */
+    override suspend fun applyDiscount(
+        venueId: String,
+        orderId: String,
+        type: String,
+        value: Double,
+        staffId: String,
+        reason: String?,
+        itemIds: List<String>?,
+        currentVersion: Int
+    ): Result<Order> {
+        return try {
+            val request = ApplyDiscountRequest(
+                type = type,
+                value = value,
+                reason = reason,
+                staffId = staffId,
+                itemIds = itemIds,
+                expectedVersion = currentVersion
+            )
+
+            val discountType = if (type == "PERCENTAGE") "$value%" else "$$value"
+            val scope = if (itemIds == null) "order" else "${itemIds.size} items"
+            Timber.d("💰 Applying $discountType discount to $scope | orderId=$orderId | version=$currentVersion")
+
+            val response = apiService.applyDiscount(venueId, orderId, request)
+
+            if (response.isSuccessful) {
+                val body = response.body()
+                if (body != null && body.success) {
+                    val order = body.data.toOrder()
+                    Timber.i("✅ Discount applied successfully | newVersion=${order.version} | discountAmount=${order.discountAmount}")
+                    Result.success(order)
+                } else {
+                    val errorMsg = "Failed to apply discount: Invalid response"
+                    Timber.e(errorMsg)
+                    Result.failure(Exception(errorMsg))
+                }
+            } else {
+                val errorMessage = when (response.code()) {
+                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    400 -> "Descuento inválido. Verifica el valor ingresado."
+                    404 -> "Orden no encontrada."
+                    409 -> {
+                        Timber.w("⚠️ Version conflict - order was modified by another terminal")
+                        "La orden fue modificada por otra terminal.\n\n" +
+                        "Por favor, intenta nuevamente."
+                    }
+                    500 -> "Error del servidor. Por favor intenta nuevamente."
+                    else -> "Error al aplicar descuento: ${response.code()}"
+                }
+                Timber.e("applyDiscount failed: $errorMessage (HTTP ${response.code()})")
+                Result.failure(Exception(errorMessage))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Exception in applyDiscount")
+            Result.failure(e)
+        }
     }
 }

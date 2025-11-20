@@ -64,6 +64,7 @@ fun WelcomeScreen(
     onStartPaymentWithAmount: (String) -> Unit = {},  // ✅ Keep modal for first-time flow
     onNavigateToShifts: () -> Unit = {},
     onNavigateToOrdering: () -> Unit = {},
+    onNavigateToReports: () -> Unit = {},
     onNavigateToSuperAdmin: () -> Unit = {},
     onLogout: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
@@ -94,6 +95,7 @@ fun WelcomeScreen(
         onStartPaymentWithAmount = onStartPaymentWithAmount,  // ✅ Modal flow for first-time
         onNavigateToShifts = onNavigateToShifts,
         onNavigateToOrdering = onNavigateToOrdering,
+        onNavigateToReports = onNavigateToReports,
         onNavigateToSuperAdmin = onNavigateToSuperAdmin,
         onLogout = {
             viewModel.logout()
@@ -124,6 +126,7 @@ private fun WelcomeScreenContent(
     onStartPaymentWithAmount: (String) -> Unit,  // ✅ Modal flow (first-time)
     onNavigateToShifts: () -> Unit,
     onNavigateToOrdering: () -> Unit,
+    onNavigateToReports: () -> Unit,
     onNavigateToSuperAdmin: () -> Unit,
     onLogout: () -> Unit
 ) {
@@ -190,9 +193,8 @@ private fun WelcomeScreenContent(
         ActionButton(
             icon = Icons.Default.BarChart,
             label = "Reportes",
-            enabled = false,
-            badge = "Próximamente",
-            onClick = { /* TODO: Navigate to reports */ }
+            enabled = true,
+            onClick = onNavigateToReports
         ),
         ActionButton(
             icon = Icons.AutoMirrored.Filled.Help,
@@ -292,6 +294,7 @@ private fun WelcomeScreenPreview() {
             onStartPaymentWithAmount = {},
             onNavigateToShifts = {},
             onNavigateToOrdering = {},
+            onNavigateToReports = {},
             onNavigateToSuperAdmin = {},
             onLogout = {}
         )
@@ -309,6 +312,7 @@ private fun WelcomeScreenPreviewLarge() {
             onStartPaymentWithAmount = {},
             onNavigateToShifts = {},
             onNavigateToOrdering = {},
+            onNavigateToReports = {},
             onNavigateToSuperAdmin = {},
             onLogout = {}
         )
@@ -345,6 +349,7 @@ private fun WelcomeScreenWithActiveShiftPreview() {
             onStartPaymentWithAmount = {},
             onNavigateToShifts = {},
             onNavigateToOrdering = {},
+            onNavigateToReports = {},
             onNavigateToSuperAdmin = {},
             onLogout = {}
         )

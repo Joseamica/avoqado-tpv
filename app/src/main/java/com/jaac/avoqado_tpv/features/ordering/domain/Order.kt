@@ -20,12 +20,16 @@ data class Order(
     val covers: Int,
     val waiterId: String?,
     val waiterName: String?,
+    val customerName: String? = null,  // Guest name (TAKEOUT/DINE_IN)
+    val customerPhone: String? = null,  // Guest phone (TAKEOUT)
+    val specialRequests: String? = null,  // Allergies, dietary restrictions
     val status: OrderStatus,
     val kitchenStatus: KitchenStatus,
     val paymentStatus: PaymentStatus,
     val orderType: OrderType,
     val items: List<OrderItem>,
     val subtotal: BigDecimal,
+    val discountAmount: BigDecimal = BigDecimal.ZERO,  // Total discounts (comps, discounts)
     val tax: BigDecimal,
     val total: BigDecimal,
     val notes: String?,

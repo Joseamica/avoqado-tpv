@@ -178,11 +178,10 @@ fun FloorPlanCanvasScreen(
         onAreaFilterChange = { areaId -> viewModel.setAreaFilter(areaId) },
         onTableClick = { table ->
             viewModel.selectTable(table)
-            // Generate mock orderId and navigate to Menu screen
-            // TODO: Replace with actual order creation from backend
-            val orderId = "order_${table.id}_${System.currentTimeMillis()}"
-            Timber.i("🪑 [FloorPlan] Table ${table.number} selected - Mock Order ID: $orderId")
-            onTableAssigned(orderId)
+            // Create order command - MenuViewModel will create the order in the backend
+            val orderCommand = "CREATE_TABLE_ORDER:${table.id}"
+            Timber.i("🪑 [FloorPlan] Table ${table.number} selected - Creating order for table: ${table.id}")
+            onTableAssigned(orderCommand)
         },
         onEditModeToggle = { viewModel.toggleEditMode() },
         onTablePositionUpdate = { tableId, x, y -> viewModel.updateTablePosition(tableId, x, y) },

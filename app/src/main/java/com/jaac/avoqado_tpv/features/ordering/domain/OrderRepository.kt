@@ -215,6 +215,185 @@ interface OrderRepository {
         newStatus: OrderStatus,
         currentVersion: Int
     ): Result<Order>
+
+    /**
+     * Update guest information on order
+     *
+     * Updates covers (party size), customer name, phone, and special requests.
+     * Used for both DINE_IN (covers, allergies) and TAKEOUT (contact info).
+     *
+     * @param venueId Tenant isolation
+     * @param orderId Order to modify
+     * @param covers Number of people (nullable - only update if provided)
+     * @param customerName Customer name (nullable)
+     * @param customerPhone Customer phone (nullable)
+     * @param specialRequests Special dietary requirements or requests (nullable)
+     * @return Result with updated Order
+     *
+     * Backend: PATCH /tpv/venues/{venueId}/orders/{orderId}/guest
+     *
+     * Request body:
+     * {
+     *   "covers": 4,
+     *   "customerName": "John Doe",
+     *   "customerPhone": "555-1234",
+     *   "specialRequests": "No onions, extra sauce"
+     * }
+     *
+     * Use cases:
+     * - DINE_IN: Update party size when guests arrive
+     * - TAKEOUT: Add customer contact for order pickup
+     * - Both: Record allergies or special requests
+     */
+    suspend fun updateGuest(
+        venueId: String,
+        orderId: String,
+        covers: Int? = null,
+        customerName: String? = null,
+        customerPhone: String? = null,
+        specialRequests: String? = null
+    ): Result<Order>
+
+    /**
+     * Comp items or entire order
+     *
+     * Complimentary (free) items or entire order for service recovery,
+     * manager discretion, or compensation.
+     * Creates audit trail record (OrderAction).
+     *
+     * @param venueId Tenant isolation
+     * @param orderId Order to comp
+     * @param itemIds Items to comp (empty list = comp entire order)
+     * @param reason Comp reason (required for audit trail)
+     * @param staffId Staff member authorizing comp
+     * @param notes Additional notes (optional)
+     * @return Result with updated Order (discountAmount increased)
+     *
+     * Backend: POST /tpv/venues/{venueId}/orders/{orderId}/comp
+     *
+     * Request body:
+     * {
+     *   "itemIds": ["item_1", "item_2"],  // Empty array = comp entire order
+     *   "reason": "Service recovery - food quality issue",
+     *   "staffId": "staff_123",
+     *   "notes": "Customer complained about cold food"
+     * }
+     *
+     * Use cases:
+     * - Service recovery (food quality, long wait times)
+     * - Manager discretion (special occasions, loyal customers)
+     * - Compensation for mistakes
+     *
+     * Error cases:
+     * - 400: Order already paid
+     * - 404: Order not found
+     */
+    suspend fun compItems(
+        venueId: String,
+        orderId: String,
+        itemIds: List<String>,
+        reason: String,
+        staffId: String,
+        notes: String? = null
+    ): Result<Order>
+
+    /**
+     * Void specific items from order
+     *
+     * Remove items with audit trail (different from removeItem - this logs reason).
+     * Used when customer changes mind, item entered incorrectly, or kitchen cannot fulfill.
+     * Uses optimistic concurrency control.
+     *
+     * @param venueId Tenant isolation
+     * @param orderId Order to modify
+     * @param itemIds Items to void
+     * @param reason Void reason (required for audit trail)
+     * @param staffId Staff member authorizing void
+     * @param currentVersion Current version for concurrency check
+     * @return Result with updated Order (items removed, totals recalculated)
+     *
+     * Backend: POST /tpv/venues/{venueId}/orders/{orderId}/void
+     *
+     * Request body:
+     * {
+     *   "itemIds": ["item_1"],
+     *   "reason": "Customer changed mind",
+     *   "staffId": "staff_123",
+     *   "expectedVersion": 2
+     * }
+     *
+     * Use cases:
+     * - Customer changed mind
+     * - Item entered incorrectly
+     * - Kitchen cannot fulfill (out of stock)
+     *
+     * Error cases:
+     * - 400: Order already paid
+     * - 409: Version conflict (order was modified)
+     * - 404: Order not found
+     */
+    suspend fun voidItems(
+        venueId: String,
+        orderId: String,
+        itemIds: List<String>,
+        reason: String,
+        staffId: String,
+        currentVersion: Int
+    ): Result<Order>
+
+    /**
+     * Apply discount to order or specific items
+     *
+     * Supports percentage (1-100) or fixed amount discounts.
+     * Uses optimistic concurrency control.
+     * Creates audit trail record (OrderAction).
+     *
+     * @param venueId Tenant isolation
+     * @param orderId Order to modify
+     * @param type Discount type ("PERCENTAGE" or "FIXED_AMOUNT")
+     * @param value Discount value (1-100 for percentage, dollar amount for fixed)
+     * @param staffId Staff member authorizing discount
+     * @param reason Discount reason (optional but recommended for audit)
+     * @param itemIds Items to discount (null = order-level discount)
+     * @param currentVersion Current version for concurrency check
+     * @return Result with updated Order (discountAmount updated)
+     *
+     * Backend: POST /tpv/venues/{venueId}/orders/{orderId}/discount
+     *
+     * Request body (20% order-level):
+     * {
+     *   "type": "PERCENTAGE",
+     *   "value": 20,
+     *   "reason": "Happy hour discount",
+     *   "staffId": "staff_123",
+     *   "itemIds": null,
+     *   "expectedVersion": 2
+     * }
+     *
+     * Request body ($10 fixed discount):
+     * {
+     *   "type": "FIXED_AMOUNT",
+     *   "value": 10,
+     *   "reason": "Loyalty discount",
+     *   "staffId": "staff_123",
+     *   "expectedVersion": 2
+     * }
+     *
+     * Error cases:
+     * - 400: Invalid discount value
+     * - 409: Version conflict
+     * - 404: Order not found
+     */
+    suspend fun applyDiscount(
+        venueId: String,
+        orderId: String,
+        type: String,
+        value: Double,
+        staffId: String,
+        reason: String? = null,
+        itemIds: List<String>? = null,
+        currentVersion: Int
+    ): Result<Order>
 }
 
 /**
@@ -225,7 +404,8 @@ interface OrderRepository {
 data class AddOrderItemRequest(
     val productId: String,
     val quantity: Int,
-    val notes: String? = null
+    val notes: String? = null,
+    val modifierIds: List<String>? = null
 ) {
     init {
         require(quantity > 0) { "Quantity must be greater than 0" }

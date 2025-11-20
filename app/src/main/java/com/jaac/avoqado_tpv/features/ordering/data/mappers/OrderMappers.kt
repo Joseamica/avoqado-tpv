@@ -26,12 +26,16 @@ fun OrderDto.toOrder(): Order {
         covers = covers ?: 0,
         waiterId = waiterId,
         waiterName = waiterName,
+        customerName = customerName,  // ✅ Guest name
+        customerPhone = customerPhone,  // ✅ Guest phone
+        specialRequests = specialRequests,  // ✅ Dietary restrictions/allergies
         status = status.toOrderStatus(),
         kitchenStatus = kitchenStatus?.toKitchenStatus() ?: KitchenStatus.PENDING,  // ✅ FALLBACK
         paymentStatus = paymentStatus.toPaymentStatus(),
         orderType = orderType.toOrderType(),
         items = items.map { it.toOrderItem() },
         subtotal = BigDecimal(subtotal.toString()),
+        discountAmount = BigDecimal((discountAmount ?: 0.0).toString()),  // ✅ Map discountAmount with fallback
         tax = BigDecimal(taxAmount.toString()),
         total = BigDecimal(total.toString()),
         notes = notes,

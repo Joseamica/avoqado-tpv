@@ -47,11 +47,13 @@ fun PaymentScreen(
     initialAmount: String? = null,
     orderId: String? = null,  // 🆕 Order ID (for order payment with inventory deduction)
     orderNumber: String? = null,  // 🆕 Order number (for display in receipt)
+    tableId: String? = null,  // 🆕 Table ID (for clearing table post-payment)
     skipReview: Boolean = false,  // 🧪 Skip rating/tip (test payment from SuperAdmin)
     onNavigateBack: () -> Unit,
     onNavigateToShifts: () -> Unit = {},  // 🆕 Navigate to Shifts screen (for "No shift open" errors)
     onNavigateToNewOrder: () -> Unit = {},  // 🆕 Navigate to new order (Toast/Square pattern)
     onNavigateToNewFastPayment: () -> Unit = {},  // 🆕 Navigate to new fast payment (open WelcomeScreen modal)
+    onClearTableAndReturnToFloorPlan: (String) -> Unit = {},  // 🆕 Clear table and return to floor plan (tableId)
     viewModel: PaymentViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -245,6 +247,7 @@ fun PaymentScreen(
                         orderId = currentState.orderId,  // 🆕 Order ID (for determining if this is an order payment)
                         orderNumber = currentState.orderNumber,  // 🆕 Order number (for display)
                         orderItems = currentState.orderItems,  // 🆕 Order items (for displaying itemized receipt)
+                        tableId = tableId,  // 🆕 Table ID (for clearing table post-payment)
                         onPrintReceipt = viewModel::printReceipt,  // 🆕 NEW: Print callback
                         onNavigateBack = onNavigateBack,  // 🆕 Navigate to WelcomeScreen (home button)
                         onNewOrder = {
@@ -254,6 +257,10 @@ fun PaymentScreen(
                         onNewFastPayment = {
                             viewModel.resetPayment()
                             onNavigateToNewFastPayment()  // 🔄 Navigate to WelcomeScreen and open fast payment modal
+                        },
+                        onClearTableAndReturnToFloorPlan = { clearedTableId ->
+                            viewModel.resetPayment()
+                            onClearTableAndReturnToFloorPlan(clearedTableId)  // 🪑 Square pattern: Clear table and return to floor plan
                         }
                     )
                 }
@@ -537,10 +544,12 @@ private fun PaymentSuccessContent(
     orderId: String? = null,  // 🆕 Order ID (for determining if this is an order payment)
     orderNumber: String? = null,  // 🆕 Order number (for display)
     orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null,  // 🆕 Order items (for displaying itemized receipt)
+    tableId: String? = null,  // 🆕 Table ID (for clearing table post-payment)
     onPrintReceipt: () -> Unit = {},
     onNavigateBack: () -> Unit,  // 🆕 Navigate to WelcomeScreen (home button)
     onNewOrder: () -> Unit,  // 🆕 Navigate to new order (for order payments)
-    onNewFastPayment: () -> Unit  // 🆕 Navigate to new fast payment (for fast payments)
+    onNewFastPayment: () -> Unit,  // 🆕 Navigate to new fast payment (for fast payments)
+    onClearTableAndReturnToFloorPlan: (String) -> Unit = {}  // 🆕 Clear table and return to floor plan
 ) {
     // Parse amounts (prefer receipt data if available)
     val totalAmount = receipt?.amount ?: (amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)
@@ -591,7 +600,17 @@ private fun PaymentSuccessContent(
                     contentAlignment = Alignment.Center
                 ) {
                     Button(
-                        onClick = if (orderId != null) onNewOrder else onNewFastPayment,  // ✅ Conditional navigation
+                        onClick = {
+                            val currentTableId = tableId
+                            when {
+                                // 🪑 Table order → Clear table and return to floor plan
+                                currentTableId != null -> onClearTableAndReturnToFloorPlan(currentTableId)
+                                // 📋 Quick order → Create new quick order
+                                orderId != null -> onNewOrder()
+                                // ⚡ Fast payment → New fast payment
+                                else -> onNewFastPayment()
+                            }
+                        },
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.surface,

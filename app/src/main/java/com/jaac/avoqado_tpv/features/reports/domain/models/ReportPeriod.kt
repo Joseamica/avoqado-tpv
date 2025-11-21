@@ -39,6 +39,7 @@ data class ReportPeriod(
      * Get human-readable label for this period
      */
     fun getLabel(): String = when (type) {
+        PeriodType.TODAY -> "Hoy"
         PeriodType.LAST_7_DAYS -> "Últimos 7 días"
         PeriodType.LAST_30_DAYS -> "Últimos 30 días"
         PeriodType.LAST_90_DAYS -> "Últimos 90 días"
@@ -49,10 +50,29 @@ data class ReportPeriod(
             val end = formatter.format(java.util.Date.from(endDate))
             "$start - $end"
         }
-        PeriodType.COMPARISON -> "Comparación"
     }
 
     companion object {
+        /**
+         * Create a period for today (current day from 00:00 to 23:59)
+         *
+         * **Default period** - Most managers check "today's sales" first thing
+         */
+        fun today(): ReportPeriod {
+            val now = Instant.now()
+            val zoneId = java.time.ZoneId.systemDefault()
+            val today = java.time.LocalDate.now(zoneId)
+
+            val startOfDay = today.atStartOfDay(zoneId).toInstant()
+            val endOfDay = today.atTime(23, 59, 59).atZone(zoneId).toInstant()
+
+            return ReportPeriod(
+                startDate = startOfDay,
+                endDate = endOfDay,
+                type = PeriodType.TODAY
+            )
+        }
+
         /**
          * Create a period for the last N days
          */
@@ -100,8 +120,16 @@ data class ReportPeriod(
         /**
          * Create a comparison period (current vs previous)
          * Example: Last 7 days vs previous 7 days
+         *
+         * @param currentStart Start of current period
+         * @param currentEnd End of current period
+         * @param periodType Type of the base period (to preserve in result)
          */
-        fun comparison(currentStart: Instant, currentEnd: Instant): ReportPeriod {
+        fun comparison(
+            currentStart: Instant,
+            currentEnd: Instant,
+            periodType: PeriodType = PeriodType.LAST_7_DAYS
+        ): ReportPeriod {
             val periodDays = ChronoUnit.DAYS.between(currentStart, currentEnd)
             val previousEnd = currentStart.minus(1, ChronoUnit.DAYS)
             val previousStart = previousEnd.minus(periodDays, ChronoUnit.DAYS)
@@ -109,7 +137,7 @@ data class ReportPeriod(
             return ReportPeriod(
                 startDate = currentStart,
                 endDate = currentEnd,
-                type = PeriodType.COMPARISON,
+                type = periodType,  // Preserve the original period type
                 previousPeriodStart = previousStart,
                 previousPeriodEnd = previousEnd
             )
@@ -119,11 +147,14 @@ data class ReportPeriod(
 
 /**
  * Types of report periods
+ *
+ * Note: Comparison is not a period type - it's a separate toggle that applies
+ * to any of these period types (handled in ReportsViewModel.isComparisonEnabled)
  */
 enum class PeriodType {
+    TODAY,           // Default: Current day (00:00 to 23:59)
     LAST_7_DAYS,
     LAST_30_DAYS,
     LAST_90_DAYS,
-    CUSTOM,
-    COMPARISON
+    CUSTOM
 }

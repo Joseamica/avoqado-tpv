@@ -95,4 +95,17 @@ sealed class NavRoute(val route: String) {
      * Shows sales summary, payment breakdown, and shift history
      */
     data object Reports : NavRoute("reports")
+
+    /**
+     * Historical Period Detail screen - Detailed view of a single historical period
+     * Shows complete metrics, comparisons, and payment method breakdown
+     *
+     * Navigation pattern: Reports → HistoricalPeriodDetail
+     *
+     * Period data is passed via ViewModel instead of navigation args to avoid:
+     * - URL encoding issues with BigDecimal/Instant
+     * - Navigation arg size limits
+     * - Complex serialization logic
+     */
+    data object HistoricalPeriodDetail : NavRoute("historical_period_detail")
 }

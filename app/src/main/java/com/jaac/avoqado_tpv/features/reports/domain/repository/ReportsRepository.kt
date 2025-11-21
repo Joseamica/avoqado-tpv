@@ -63,4 +63,32 @@ interface ReportsRepository {
         venueId: String,
         period: ReportPeriod
     ): Result<ComparisonMetrics>
+
+    /**
+     * Get historical sales summaries grouped by time period
+     *
+     * Fetches aggregated sales data for multiple periods with automatic
+     * period-over-period comparisons. Used for historical trend analysis.
+     *
+     * **Pattern**: Toast POS + Square Dashboard + Stripe Terminal
+     * - Efficient pagination with cursor
+     * - Automatic comparison calculations
+     * - Room caching for offline support
+     *
+     * @param venueId Venue ID (tenant isolation)
+     * @param grouping Time grouping (DAILY, WEEKLY, MONTHLY, QUARTERLY, YEARLY)
+     * @param startDate Start of historical range
+     * @param endDate End of historical range
+     * @param cursor Pagination cursor (timestamp-based)
+     * @param limit Number of periods to fetch (default 20)
+     * @return Paginated list of historical periods with comparisons
+     */
+    suspend fun getHistoricalSummaries(
+        venueId: String,
+        grouping: com.jaac.avoqado_tpv.features.reports.domain.models.HistoricalGrouping,
+        startDate: java.time.Instant,
+        endDate: java.time.Instant,
+        cursor: String? = null,
+        limit: Int = 20
+    ): Result<com.jaac.avoqado_tpv.features.reports.domain.models.PaginatedHistoricalData>
 }

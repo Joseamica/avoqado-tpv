@@ -6,6 +6,7 @@ import androidx.room.RoomDatabase
 import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderDao
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderItemDao
+import com.jaac.avoqado_tpv.core.data.local.dao.HistoricalPeriodDao
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import dagger.Module
 import dagger.Provides
@@ -75,7 +76,10 @@ object DatabaseModule {
             .addMigrations(
                 AvoqadoDatabase.MIGRATION_2_3,
                 AvoqadoDatabase.MIGRATION_3_4,  // Rating feature
-                AvoqadoDatabase.MIGRATION_4_5   // 🆕 Local-first order management
+                AvoqadoDatabase.MIGRATION_4_5,  // Local-first order management
+                AvoqadoDatabase.MIGRATION_5_6,  // Historical reports cache
+                AvoqadoDatabase.MIGRATION_6_7,  // Fix FOREIGN KEY with ON UPDATE CASCADE
+                AvoqadoDatabase.MIGRATION_7_8   // 🔒 Merchant account tracking (split payment validation)
             )
 
             // ⚠️ DEVELOPMENT ONLY: Destructive migration (data loss on schema change)
@@ -138,5 +142,21 @@ object DatabaseModule {
         database: AvoqadoDatabase
     ): DraftOrderItemDao {
         return database.draftOrderItemDao()
+    }
+
+    /**
+     * Provides HistoricalPeriodDao from database.
+     *
+     * **Injected Into:**
+     * - ReportsRepositoryImpl (offline caching for historical reports)
+     *
+     * @param database AvoqadoDatabase instance
+     * @return HistoricalPeriodDao for historical period cache operations
+     */
+    @Provides
+    fun provideHistoricalPeriodDao(
+        database: AvoqadoDatabase
+    ): HistoricalPeriodDao {
+        return database.historicalPeriodDao()
     }
 }

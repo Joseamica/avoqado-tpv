@@ -547,6 +547,9 @@ fun AppNavigation(
 
         // Reports Screen - Sales analytics and reporting dashboard
         composable(NavRoute.Reports.route) {
+            val reportsViewModel: com.jaac.avoqado_tpv.features.reports.presentation.ReportsViewModel =
+                hiltViewModel()
+
             com.jaac.avoqado_tpv.features.reports.presentation.ReportsScreen(
                 onNavigateBack = {
                     navController.popBackStack()
@@ -554,8 +557,41 @@ fun AppNavigation(
                 onNavigateToProductPerformance = {
                     // TODO: Implement Product Performance screen navigation
                     Timber.d("📊 Product Performance screen not yet implemented")
+                },
+                onNavigateToPeriodDetail = { period ->
+                    // Store period in ViewModel and navigate to detail screen
+                    reportsViewModel.setSelectedPeriod(period)
+                    navController.navigate(NavRoute.HistoricalPeriodDetail.route)
                 }
             )
+        }
+
+        // Historical Period Detail Screen - Detailed view of a single period
+        composable(NavRoute.HistoricalPeriodDetail.route) {
+            // Get ViewModel from parent nav graph to access selectedPeriod
+            val parentEntry = remember(navController) {
+                navController.getBackStackEntry(NavRoute.Reports.route)
+            }
+            val reportsViewModel: com.jaac.avoqado_tpv.features.reports.presentation.ReportsViewModel =
+                hiltViewModel(parentEntry)
+
+            val selectedPeriod by reportsViewModel.selectedPeriod.collectAsStateWithLifecycle()
+
+            if (selectedPeriod != null) {
+                com.jaac.avoqado_tpv.features.reports.presentation.HistoricalPeriodDetailScreen(
+                    period = selectedPeriod!!,
+                    onNavigateBack = {
+                        reportsViewModel.clearSelectedPeriod()
+                        navController.popBackStack()
+                    }
+                )
+            } else {
+                // If no period selected, navigate back to reports
+                LaunchedEffect(Unit) {
+                    Timber.w("⚠️ No period selected for detail screen, navigating back")
+                    navController.popBackStack()
+                }
+            }
         }
     }
 

@@ -52,6 +52,16 @@ interface DraftOrderItemDao {
     fun getItemsByOrderFlow(orderId: String): Flow<List<DraftOrderItemEntity>>
 
     /**
+     * Get ALL items for an order (including soft-deleted).
+     * Used for debugging "items disappeared" bug.
+     *
+     * @param orderId Order ID
+     * @return List of all items (including DELETED status)
+     */
+    @Query("SELECT * FROM draft_order_items WHERE order_id = :orderId")
+    suspend fun getAllItemsByOrderId(orderId: String): List<DraftOrderItemEntity>
+
+    /**
      * Get all items including soft-deleted.
      * Used for sync operations that need to know what to delete on server.
      *

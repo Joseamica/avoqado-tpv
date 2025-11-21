@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.ordering.domain
 
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderDao
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderItemDao
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity
@@ -17,6 +19,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
+import java.math.BigDecimal
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.min
@@ -182,13 +185,87 @@ class OrderSyncCoordinator @Inject constructor(
             val draftOrder = draftOrderDao.getOrder(orderId) ?: return@withContext null
             val draftItems = draftOrderItemDao.getItemsByOrder(orderId)
 
-            val order = draftOrder.toDomain(draftItems)
+            // 🔍 [DIAGNOSTIC] Log items loaded from database
             Timber.d("📋 [Local] Loaded order from DB | id=$orderId | items=${draftItems.size}")
+            if (draftItems.isNotEmpty()) {
+                draftItems.forEach { item ->
+                    Timber.d("   → ${item.productName} | qty=${item.quantity} | status=${item.syncStatus} | id=${item.id}")
+                }
+            }
 
+            // ⚠️ [DIAGNOSTIC] Detect "items disappeared" bug
+            // Only trigger if order was previously known to have items (version > 1)
+            // Skip false positives: empty new orders (version=1) or intentionally emptied orders
+            if (draftItems.isEmpty() && draftOrder.syncStatus == DraftOrderEntity.SYNC_STATUS_SYNCED && draftOrder.version > 1) {
+                // Query ALL items (including DELETED) for debugging
+                val allItems = draftOrderItemDao.getAllItemsByOrderId(orderId)
+
+                // Only report bug if items truly vanished (not just all deleted by user)
+                if (allItems.isEmpty()) {
+                    Timber.e("🐛 [BUG DETECTED] Order has 0 items after sync | orderId=$orderId | version=${draftOrder.version} | syncStatus=${draftOrder.syncStatus}")
+                    Timber.e("   → Total items in DB (including DELETED): ${allItems.size}")
+                    Timber.e("   → Items mysteriously disappeared! Possible FK CASCADE issue or unexpected hard-delete")
+                } else {
+                    // Items exist but all are DELETED - this is expected when user removes all items
+                    Timber.d("✅ [Valid] Order has 0 active items (${allItems.size} soft-deleted by user) | orderId=$orderId")
+                }
+            }
+
+            val order = draftOrder.toDomain(draftItems)
             order
         } catch (e: Exception) {
             Timber.e(e, "❌ Error loading order from local DB: $orderId")
             null
+        }
+    }
+
+    /**
+     * Cache backend order to local database.
+     *
+     * When an order is loaded from backend (not in local DB), we need to cache it locally
+     * so that subsequent operations (addItem, removeItem) can work without FOREIGN KEY errors.
+     *
+     * **Use Case:**
+     * 1. User opens existing order from backend (table order, previous session)
+     * 2. Order loaded from API but NOT in Room DB yet
+     * 3. User tries to add item → FOREIGN KEY constraint fails (orderId doesn't exist locally)
+     * 4. Solution: Cache backend order to Room DB first
+     *
+     * **Sync Status:**
+     * - Order is marked as SYNCED (it came from backend, so it's already in sync)
+     * - isServerCreated = true (it has a server CUID, not local UUID)
+     * - Items are also marked as SYNCED
+     *
+     * @param order Order fetched from backend
+     */
+    suspend fun cacheBackendOrder(order: Order) = withContext(Dispatchers.IO) {
+        try {
+            Timber.d("💾 [Cache] Caching backend order to local DB | id=${order.id} | items=${order.items.size}")
+
+            // Convert order to entity (marked as SYNCED since it came from backend)
+            val draftOrderEntity = order.toEntity(
+                syncStatus = DraftOrderEntity.SYNC_STATUS_SYNCED,
+                isServerCreated = true
+            )
+
+            // Convert items to entities (also marked as SYNCED)
+            val draftItemEntities = order.items.toEntities(
+                syncStatus = DraftOrderItemEntity.SYNC_STATUS_SYNCED,
+                isServerCreated = true
+            )
+
+            // Insert order first (parent)
+            draftOrderDao.insert(draftOrderEntity)
+
+            // Then insert items (children with foreign key to order)
+            draftItemEntities.forEach { item ->
+                draftOrderItemDao.insert(item)
+            }
+
+            Timber.i("✅ [Cache] Backend order cached successfully | id=${order.id}")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Cache] Failed to cache backend order: ${order.id}")
+            // Don't throw - caching is a nice-to-have, order still loaded in memory
         }
     }
 
@@ -219,6 +296,14 @@ class OrderSyncCoordinator @Inject constructor(
         val localItemId = DraftOrderItemEntity.generateLocalId()
         val totalPrice = (unitPrice.toBigDecimal() * quantity.toBigDecimal()).toString()
 
+        // 🔍 [DIAGNOSTIC] Log modifiers being stored
+        val modifiersJson = if (modifiers.isNotEmpty()) {
+            com.google.gson.Gson().toJson(modifiers)
+        } else {
+            "[]"
+        }
+        Timber.d("🔍 [addItemToLocalOrder] Storing modifiers | product=$productName | modifiers.size=${modifiers.size} | JSON=$modifiersJson")
+
         val draftItem = DraftOrderItemEntity(
             id = localItemId,
             orderId = orderId,
@@ -228,11 +313,7 @@ class OrderSyncCoordinator @Inject constructor(
             quantity = quantity,
             unitPrice = unitPrice,
             totalPrice = totalPrice,
-            modifiers = if (modifiers.isNotEmpty()) {
-                com.google.gson.Gson().toJson(modifiers)
-            } else {
-                "[]"
-            },
+            modifiers = modifiersJson,
             notes = notes,
             kitchenStatus = "PENDING",
             createdAt = System.currentTimeMillis(),
@@ -246,7 +327,7 @@ class OrderSyncCoordinator @Inject constructor(
         // Update order totals
         recalculateOrderTotals(orderId)
 
-        Timber.d("➕ [Local] Added item | order=$orderId | product=$productName | qty=$quantity")
+        Timber.d("➕ [Local] Added item | order=$orderId | product=$productName | qty=$quantity | modifiers=${modifiers.size}")
 
         localItemId
     }
@@ -270,6 +351,38 @@ class OrderSyncCoordinator @Inject constructor(
         recalculateOrderTotals(orderId)
 
         Timber.d("➖ [Local] Soft deleted item | order=$orderId | item=$itemId")
+    }
+
+    /**
+     * Update item quantity in local order (instant UI).
+     *
+     * Updates quantity and recalculates total price, marks item as PENDING for sync.
+     * If quantity is 0, removes the item (soft delete).
+     *
+     * @param orderId Local or server order ID
+     * @param itemId Item to update
+     * @param newQuantity New quantity (0 removes item)
+     * @param unitPrice Unit price for recalculating total
+     */
+    suspend fun updateItemQuantityInLocalOrder(
+        orderId: String,
+        itemId: String,
+        newQuantity: Int,
+        unitPrice: BigDecimal
+    ) = withContext(Dispatchers.IO) {
+        if (newQuantity <= 0) {
+            // Remove item if quantity is 0
+            removeItemFromLocalOrder(orderId, itemId)
+        } else {
+            // Update quantity in database
+            val newTotalPrice = (unitPrice * newQuantity.toBigDecimal()).toString()
+            draftOrderItemDao.updateQuantity(itemId, newQuantity, newTotalPrice)
+
+            // Update order totals
+            recalculateOrderTotals(orderId)
+
+            Timber.d("✏️ [Local] Updated item quantity | order=$orderId | item=$itemId | qty=$newQuantity")
+        }
     }
 
     /**
@@ -324,6 +437,58 @@ class OrderSyncCoordinator @Inject constructor(
 
         Timber.d("⚡ [Sync] Immediate sync requested | order=$orderId")
         executeSyncWithRetry(orderId)
+    }
+
+    /**
+     * Update order's merchant account information after successful payment.
+     *
+     * ⭐ P0 FIX: Track which merchant account processed the first payment on an order.
+     * This prevents split payment mismatches (mixing different merchant accounts).
+     *
+     * **Use Case:**
+     * - Order has partial payment ($500 MXN) → Lock to Merchant A
+     * - Subsequent payments MUST use Merchant A (validated in PaymentViewModel)
+     *
+     * **Sync Behavior:**
+     * - Updates local order immediately
+     * - Marks as PENDING sync
+     * - Schedules debounced sync to backend (5s delay)
+     *
+     * @param orderId Order to update
+     * @param merchantAccountId Backend merchant account CUID (e.g., "cm...")
+     * @param merchantAccountName Display name for user-friendly errors (e.g., "Cuenta BBVA")
+     */
+    suspend fun updateOrderMerchant(
+        orderId: String,
+        merchantAccountId: String?,
+        merchantAccountName: String?
+    ) = withContext(Dispatchers.IO) {
+        try {
+            val draftOrder = draftOrderDao.getOrder(orderId)
+
+            if (draftOrder == null) {
+                Timber.w("⚠️ [Merchant Update] Order not found | orderId=$orderId")
+                return@withContext
+            }
+
+            // Update merchant fields
+            val updatedOrder = draftOrder.copy(
+                merchantAccountId = merchantAccountId,
+                merchantAccountName = merchantAccountName,
+                syncStatus = DraftOrderEntity.SYNC_STATUS_PENDING,
+                updatedAt = System.currentTimeMillis()
+            )
+
+            draftOrderDao.insert(updatedOrder)
+
+            Timber.d("✅ [Merchant Update] Updated order | orderId=$orderId | merchant=$merchantAccountName ($merchantAccountId)")
+
+            // Schedule debounced sync to backend
+            scheduleSync(orderId)
+
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Merchant Update] Failed to update order merchant | orderId=$orderId")
+        }
     }
 
     // ========================================
@@ -444,14 +609,41 @@ class OrderSyncCoordinator @Inject constructor(
         // Step 2: Add all pending items to order
         val pendingItems = draftOrderItemDao.getPendingItemsByOrder(draftOrder.id)
 
+        // Track the final version after all server operations
+        var finalVersion = serverOrder.version
+        var finalOrderNumber = serverOrder.orderNumber
+
         if (pendingItems.isNotEmpty()) {
             val addItemRequests = pendingItems.map { item ->
+                // 🔍 [DIAGNOSTIC] Log raw modifiers JSON from database
+                Timber.d("🔍 [Modifier Debug] Item: ${item.productName} | Raw modifiers JSON: ${item.modifiers}")
+
+                // ⭐ P0 FIX: Parse modifiers JSON to extract IDs for backend
+                val modifiersList = try {
+                    val gson = Gson()
+                    val type = object : TypeToken<List<ProductModifier>>() {}.type
+                    gson.fromJson<List<ProductModifier>>(item.modifiers, type) ?: emptyList()
+                } catch (e: Exception) {
+                    Timber.e(e, "❌ Failed to parse modifiers JSON for item ${item.productName}: ${item.modifiers}")
+                    emptyList()
+                }
+
+                // 🔍 [DIAGNOSTIC] Log parsed modifier IDs
+                val modifierIds = modifiersList.map { it.id }
+                Timber.d("🔍 [Modifier Debug] Parsed ${modifiersList.size} modifiers → IDs: $modifierIds")
+
                 AddOrderItemRequest(
                     productId = item.productId,
                     quantity = item.quantity,
                     notes = item.notes,
-                    modifierIds = null // TODO: Parse from JSON modifiers if needed
+                    modifierIds = modifierIds  // ✅ Send modifier IDs to backend
                 )
+            }
+
+            // 🔍 [DIAGNOSTIC] Log productIds and modifierIds being sent to backend
+            Timber.d("📦 [Sync] Adding ${pendingItems.size} items to server order")
+            addItemRequests.forEachIndexed { index, request ->
+                Timber.d("   [$index] productId=${request.productId} | qty=${request.quantity} | modifierIds=${request.modifierIds?.size ?: 0} IDs: ${request.modifierIds}")
             }
 
             val addItemsResult = orderRepository.addItemsToOrder(
@@ -466,6 +658,11 @@ class OrderSyncCoordinator @Inject constructor(
             }
 
             val updatedOrder = addItemsResult.getOrThrow()
+
+            // ⭐ P0 FIX: Use updated version after adding items
+            // Backend increments version on each mutation, so we must save the latest version
+            finalVersion = updatedOrder.version
+            finalOrderNumber = updatedOrder.orderNumber
 
             Timber.i("✅ [Sync] Added ${pendingItems.size} items to server order | version=${updatedOrder.version}")
 
@@ -483,22 +680,39 @@ class OrderSyncCoordinator @Inject constructor(
             }
         }
 
-        // Step 4: Update items' orderId foreign key BEFORE replacing order ID
-        draftOrderItemDao.updateOrderId(
-            oldOrderId = draftOrder.id,
-            newOrderId = serverOrder.id
-        )
+        // Step 4: Replace local order ID with server CUID
+        // ⭐ P0 FIX: ON UPDATE CASCADE automatically updates all child items' order_id
+        // We don't need to manually call updateOrderId() anymore (it causes FK violation)
 
-        // Step 5: Replace local order ID with server CUID
+        // 🔍 [DIAGNOSTIC] Log FK update to detect orphaned items
+        val itemsBeforeFK = draftOrderItemDao.getAllItemsByOrderId(draftOrder.id)
+        Timber.d("🔑 [FK UPDATE] Before: ${itemsBeforeFK.size} items with order_id=${draftOrder.id}")
+        itemsBeforeFK.forEach { item ->
+            Timber.d("   → ${item.productName} | orderId=${item.orderId} | status=${item.syncStatus}")
+        }
+
         draftOrderDao.replaceLocalIdWithServerCuid(
             localId = draftOrder.id,
             newId = serverOrder.id,
-            orderNumber = serverOrder.orderNumber,
-            version = serverOrder.version,
+            orderNumber = finalOrderNumber,
+            version = finalVersion,  // ← Use final version (updated after adding items)
             timestamp = System.currentTimeMillis()
         )
 
-        _syncEvents.emit(SyncEvent.Synced(serverOrder.id, serverOrder.version))
+        // 🔍 [DIAGNOSTIC] Verify FK CASCADE worked correctly
+        val itemsAfterFK = draftOrderItemDao.getAllItemsByOrderId(serverOrder.id)
+        Timber.d("🔑 [FK UPDATE] After: ${itemsAfterFK.size} items with order_id=${serverOrder.id}")
+        if (itemsAfterFK.size != itemsBeforeFK.size) {
+            Timber.e("⚠️ [FK UPDATE] Item count mismatch! Before=${itemsBeforeFK.size}, After=${itemsAfterFK.size}")
+        }
+        itemsAfterFK.forEach { item ->
+            Timber.d("   → ${item.productName} | orderId=${item.orderId} | status=${item.syncStatus}")
+        }
+
+        Timber.d("✅ [Sync] Order ID replaced | oldId=${draftOrder.id} | newId=${serverOrder.id} | version=$finalVersion")
+        Timber.d("   → ON UPDATE CASCADE automatically updated ${pendingItems.size} items")
+
+        _syncEvents.emit(SyncEvent.Synced(serverOrder.id, finalVersion))
     }
 
     /**
@@ -519,24 +733,44 @@ class OrderSyncCoordinator @Inject constructor(
 
         Timber.d("🔄 [Sync] Updating order on server | id=$orderId | version=${draftOrder.version}")
 
+        // ⭐ P0 FIX: Track version across all mutations
+        // Each mutation (add/remove items) increments the version on the server
+        var currentVersion = draftOrder.version
+
         // Step 1: Add pending items
         val pendingItems = draftOrderItemDao.getPendingItemsByOrder(orderId)
 
         if (pendingItems.isNotEmpty()) {
             val addItemRequests = pendingItems.map { item ->
+                // ⭐ P0 FIX: Parse modifiers JSON to extract IDs for backend
+                val modifiersList = try {
+                    val gson = Gson()
+                    val type = object : TypeToken<List<ProductModifier>>() {}.type
+                    gson.fromJson<List<ProductModifier>>(item.modifiers, type) ?: emptyList()
+                } catch (e: Exception) {
+                    Timber.e(e, "❌ Failed to parse modifiers JSON for item ${item.productName}: ${item.modifiers}")
+                    emptyList()
+                }
+
                 AddOrderItemRequest(
                     productId = item.productId,
                     quantity = item.quantity,
                     notes = item.notes,
-                    modifierIds = null
+                    modifierIds = modifiersList.map { it.id }  // ✅ Send modifier IDs to backend
                 )
+            }
+
+            // 🔍 [DIAGNOSTIC] Log productIds being sent to backend
+            Timber.d("📦 [Sync] Adding ${pendingItems.size} items to existing order")
+            pendingItems.forEachIndexed { index, item ->
+                Timber.d("   [$index] productId=${item.productId} | name=${item.productName} | qty=${item.quantity}")
             }
 
             val result = orderRepository.addItemsToOrder(
                 venueId = venueId,
                 orderId = orderId,
                 items = addItemRequests,
-                currentVersion = draftOrder.version
+                currentVersion = currentVersion  // Use tracked version
             )
 
             if (result.isFailure) {
@@ -549,12 +783,15 @@ class OrderSyncCoordinator @Inject constructor(
 
             val updatedOrder = result.getOrThrow()
 
+            // ⭐ Update tracked version after adding items
+            currentVersion = updatedOrder.version
+
             // Mark items as SYNCED
             pendingItems.forEach { item ->
                 draftOrderItemDao.updateSyncStatus(item.id, DraftOrderItemEntity.SYNC_STATUS_SYNCED)
             }
 
-            Timber.i("✅ [Sync] Added ${pendingItems.size} items | version=${updatedOrder.version}")
+            Timber.i("✅ [Sync] Added ${pendingItems.size} items | version=$currentVersion")
         }
 
         // Step 2: Remove deleted items
@@ -566,7 +803,7 @@ class OrderSyncCoordinator @Inject constructor(
                     venueId = venueId,
                     orderId = orderId,
                     orderItemId = deletedItem.id,
-                    currentVersion = draftOrder.version
+                    currentVersion = currentVersion  // Use tracked version (updated after add)
                 )
 
                 if (result.isFailure) {
@@ -576,6 +813,11 @@ class OrderSyncCoordinator @Inject constructor(
                     }
                     throw exception ?: Exception("Failed to remove item")
                 }
+
+                val updatedOrder = result.getOrThrow()
+
+                // ⭐ Update tracked version after removing item
+                currentVersion = updatedOrder.version
             }
 
             // Hard delete from local DB after successful server deletion
@@ -583,18 +825,32 @@ class OrderSyncCoordinator @Inject constructor(
         }
 
         if (deletedItems.isNotEmpty()) {
-            Timber.i("✅ [Sync] Removed ${deletedItems.size} items")
+            Timber.i("✅ [Sync] Removed ${deletedItems.size} items | version=$currentVersion")
         }
 
-        // Step 3: Mark order as SYNCED
-        draftOrderDao.updateSyncStatus(orderId, DraftOrderEntity.SYNC_STATUS_SYNCED, System.currentTimeMillis())
-        _syncEvents.emit(SyncEvent.Synced(orderId, draftOrder.version))
+        // Step 3: Update local order version and mark as SYNCED
+        // ⭐ P0 FIX: Save the latest version from server
+        val order = draftOrderDao.getOrder(orderId)
+        if (order != null) {
+            // ✅ FIX: Use update() instead of insert() to prevent CASCADE DELETE
+            // insert() with REPLACE strategy DELETEs order row, triggering FK CASCADE on all items
+            // update() modifies existing row without DELETE, preserving all child items
+            draftOrderDao.update(
+                order.copy(
+                    version = currentVersion,  // ← Save latest version
+                    syncStatus = DraftOrderEntity.SYNC_STATUS_SYNCED,
+                    lastSyncAt = System.currentTimeMillis()
+                )
+            )
+        }
+
+        _syncEvents.emit(SyncEvent.Synced(orderId, currentVersion))
     }
 
     /**
      * Recalculate order totals (subtotal, tax, total).
      *
-     * Sums all non-deleted items, calculates tax (10% for now).
+     * Sums all non-deleted items. Tax is 0% (backend handles tax separately).
      *
      * @param orderId Order to recalculate
      */
@@ -602,8 +858,8 @@ class OrderSyncCoordinator @Inject constructor(
         val items = draftOrderItemDao.getItemsByOrder(orderId)
 
         val subtotal = items.sumOf { it.totalPrice.toBigDecimal() }
-        val tax = subtotal * 0.10.toBigDecimal() // 10% tax
-        val total = subtotal + tax
+        val tax = BigDecimal.ZERO  // ✅ FIX: Backend handles tax (currently 0% for new orders)
+        val total = subtotal  // ✅ FIX: Total = subtotal (no tax added)
 
         val order = draftOrderDao.getOrder(orderId) ?: return
 

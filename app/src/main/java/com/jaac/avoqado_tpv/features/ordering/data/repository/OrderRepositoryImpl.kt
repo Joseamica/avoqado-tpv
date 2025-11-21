@@ -115,7 +115,8 @@ class OrderRepositoryImpl @Inject constructor(
                 }
             )
 
-            Timber.d("🆕 Creating order | venue=$venueId | type=$orderType | table=$tableId")
+            // 🔍 [DIAGNOSTIC] Log venueId used to create order
+            Timber.i("🔍 [Order] Creating for venueId=$venueId | type=$orderType | table=$tableId")
 
             val response = apiService.createOrder(venueId, request)
 
@@ -179,7 +180,11 @@ class OrderRepositoryImpl @Inject constructor(
                 version = currentVersion
             )
 
-            Timber.d("🛒 Adding ${items.size} items to order | orderId=$orderId | version=$currentVersion")
+            // 🔍 [DIAGNOSTIC] Log request details for backend validation
+            Timber.i("🔍 [addItemsToOrder] venueId=$venueId | orderId=$orderId | version=$currentVersion | itemCount=${items.size}")
+            items.forEachIndexed { index, item ->
+                Timber.d("   [$index] productId=${item.productId} | qty=${item.quantity} | notes=${item.notes} | modifierIds=${item.modifierIds}")
+            }
 
             val response = apiService.addItemsToOrder(venueId, orderId, request)
 

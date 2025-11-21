@@ -126,7 +126,13 @@ data class DraftOrderEntity(
     val lastSyncAt: Long? = null, // Last successful sync timestamp
 
     @ColumnInfo(name = "conflict_data")
-    val conflictData: String? = null // JSON of server state on 409 conflict
+    val conflictData: String? = null, // JSON of server state on 409 conflict
+
+    @ColumnInfo(name = "merchant_account_id")
+    val merchantAccountId: String? = null, // Locked merchant for this order (P0 fix - split payment validation)
+
+    @ColumnInfo(name = "merchant_account_name")
+    val merchantAccountName: String? = null // Merchant display name (for user-friendly error messages)
 ) {
     companion object {
         const val SYNC_STATUS_SYNCED = "SYNCED"

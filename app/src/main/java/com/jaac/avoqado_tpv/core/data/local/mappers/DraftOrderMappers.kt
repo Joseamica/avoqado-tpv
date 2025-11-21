@@ -81,7 +81,9 @@ fun DraftOrderEntity.toDomain(items: List<DraftOrderItemEntity>): Order {
         notes = notes,
         createdAt = Instant.ofEpochMilli(createdAt),
         updatedAt = Instant.ofEpochMilli(updatedAt),
-        version = version
+        version = version,
+        merchantAccountId = merchantAccountId,
+        merchantAccountName = merchantAccountName
     )
 }
 
@@ -130,7 +132,9 @@ fun Order.toEntity(
         syncStatus = syncStatus,
         isServerCreated = isServerCreated,
         lastSyncAt = System.currentTimeMillis(),
-        conflictData = null
+        conflictData = null,
+        merchantAccountId = merchantAccountId,
+        merchantAccountName = merchantAccountName
     )
 }
 

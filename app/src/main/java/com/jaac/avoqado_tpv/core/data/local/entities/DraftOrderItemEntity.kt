@@ -10,7 +10,7 @@ import androidx.room.PrimaryKey
  * DraftOrderItemEntity - Local-first order item storage
  *
  * Room entity for storing order items with hybrid sync strategy.
- * Each item belongs to a DraftOrderEntity via foreign key with CASCADE DELETE.
+ * Each item belongs to a DraftOrderEntity via foreign key with CASCADE DELETE and CASCADE UPDATE.
  *
  * ## Sync States
  * - **SYNCED**: Item exists on server with matching data
@@ -34,7 +34,7 @@ import androidx.room.PrimaryKey
  * Deserialized to List<ProductModifier> when converting to domain model.
  *
  * @property id Local UUID initially, replaced with backend CUID
- * @property orderId Foreign key to DraftOrderEntity (CASCADE DELETE)
+ * @property orderId Foreign key to DraftOrderEntity (CASCADE DELETE, CASCADE UPDATE)
  * @property syncStatus Current sync state (SYNCED, PENDING, SYNCING, DELETED)
  * @property isServerCreated False = local-only, True = has backend CUID
  * @property modifiers JSON serialized List<ProductModifier>
@@ -46,7 +46,8 @@ import androidx.room.PrimaryKey
             entity = DraftOrderEntity::class,
             parentColumns = ["id"],
             childColumns = ["order_id"],
-            onDelete = ForeignKey.CASCADE
+            onDelete = ForeignKey.CASCADE,
+            onUpdate = ForeignKey.CASCADE
         )
     ],
     indices = [

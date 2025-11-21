@@ -875,8 +875,27 @@ private fun PaymentSuccessContent(
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
+
+                            // Modifiers (if any)
+                            if (item.modifiers.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Column(
+                                    modifier = Modifier.padding(start = 8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    item.modifiers.forEach { modifier ->
+                                        Text(
+                                            text = "• ${modifier.name}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+
                             // Notes (if any)
                             if (!item.notes.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = item.notes,
                                     style = MaterialTheme.typography.bodySmall,

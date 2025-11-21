@@ -375,8 +375,8 @@ private fun createMockOrder(itemCount: Int, tableName: String): Order {
     }
 
     val subtotal = items.sumOf { it.totalPrice }
-    val tax = subtotal * BigDecimal("0.16")
-    val total = subtotal + tax
+    val tax = BigDecimal.ZERO  // ✅ FIX: No tax (0%)
+    val total = subtotal  // ✅ FIX: Total = subtotal
 
     return Order(
         id = "order_123",

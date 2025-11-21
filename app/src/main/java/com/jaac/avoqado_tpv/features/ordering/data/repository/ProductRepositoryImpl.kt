@@ -40,7 +40,8 @@ class ProductRepositoryImpl @Inject constructor(
         categoryId: String?
     ): Result<List<Product>> = withContext(Dispatchers.IO) {
         try {
-            Timber.d("📦 Fetching products for venue: $venueId, category: ${categoryId ?: "all"}")
+            // 🔍 [DIAGNOSTIC] Log venueId used to fetch products
+            Timber.i("🔍 [Products] Fetching for venueId=$venueId | category=${categoryId ?: "all"}")
 
             val response = apiService.getProducts(venueId, categoryId)
 

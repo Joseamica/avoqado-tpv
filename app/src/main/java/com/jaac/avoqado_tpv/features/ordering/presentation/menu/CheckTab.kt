@@ -32,8 +32,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.features.ordering.domain.KitchenStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderItem
+import com.jaac.avoqado_tpv.features.ordering.domain.OrderStatus
+import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
+import com.jaac.avoqado_tpv.features.ordering.domain.PaymentStatus
+import com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -65,8 +70,6 @@ import java.util.Locale
  * │ └─────────────────────────────────┘ │
  * │                                     │
  * ├─────────────────────────────────────┤
- * │ Subtotal: $150.00                   │
- * │ Tax: $12.00                         │
  * │ Total: $162.00                      │
  * ├─────────────────────────────────────┤
  * │ [Send to Kitchen]  [Process Payment]│ ← Action buttons
@@ -77,7 +80,7 @@ import java.util.Locale
  * - **Item List**: All order items with modifiers and notes
  * - **Quantity Controls**: +/- buttons to adjust item quantity
  * - **Remove Item**: Trash icon to remove item from order
- * - **Totals**: Subtotal, tax, and total displayed at bottom
+ * - **Totals**: Total (with IVA included) displayed at bottom
  * - **Actions**: Send to Kitchen and Process Payment buttons
  *
  * @param order Current order with items
@@ -97,6 +100,10 @@ fun CheckTab(
     modifier: Modifier = Modifier
 ) {
     val currencyFormatter = NumberFormat.getCurrencyInstance(Locale("es", "MX"))
+
+    // ✅ FIX: Calculate total from items (don't trust order.total from backend)
+    // Backend sometimes includes tax or calculates incorrectly
+    val calculatedTotal = order.items.sumOf { it.totalPrice }
 
     Column(
         modifier = modifier
@@ -119,13 +126,13 @@ fun CheckTab(
             ) {
                 Text(
                     text = "Resumen de Orden",
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "${order.items.size} items • ${currencyFormatter.format(order.total)}",
-                    style = MaterialTheme.typography.bodyMedium,
+                    text = "${order.items.size} items • ${currencyFormatter.format(calculatedTotal)}",
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -187,13 +194,7 @@ fun CheckTab(
                         .fillMaxWidth()
                         .padding(12.dp)
                 ) {
-                    TotalRow(label = "Subtotal:", amount = order.subtotal, isBold = false)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    TotalRow(label = "IVA:", amount = order.tax, isBold = false)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    HorizontalDivider()
-                    Spacer(modifier = Modifier.height(8.dp))
-                    TotalRow(label = "Total:", amount = order.total, isBold = true)
+                    TotalRow(label = "Total:", amount = calculatedTotal, isBold = true)
                 }
             }
 
@@ -257,17 +258,51 @@ private fun OrderItemCard(
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.Top
             ) {
-                Text(
-                    text = item.productName,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold,
+                Column(
                     modifier = Modifier.weight(1f)
-                )
+                ) {
+                    // Product name
+                    Text(
+                        text = item.productName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    // Modifiers (if any) - RIGHT AFTER product name
+                    if (item.modifiers.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Column(
+                            modifier = Modifier.padding(start = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(1.dp)
+                        ) {
+                            item.modifiers.forEach { modifier ->
+                                Text(
+                                    text = modifier.name,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    // Notes (if any)
+                    if (!item.notes.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Nota: ${item.notes}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                        )
+                    }
+                }
+
+                // Price (aligned to top-right)
                 Text(
                     text = currencyFormatter.format(item.totalPrice),
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -275,12 +310,13 @@ private fun OrderItemCard(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Quantity controls
+            // Quantity controls + Delete button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Quantity controls
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -332,34 +368,6 @@ private fun OrderItemCard(
                     )
                 }
             }
-
-            // Modifiers (if any)
-            if (item.modifiers.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Column(
-                    modifier = Modifier.padding(start = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    item.modifiers.forEach { modifier ->
-                        Text(
-                            text = "• ${modifier.name}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-
-            // Notes (if any)
-            if (!item.notes.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "Nota: ${item.notes}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
-                )
-            }
         }
     }
 }
@@ -384,12 +392,12 @@ private fun TotalRow(
     ) {
         Text(
             text = label,
-            style = MaterialTheme.typography.bodyLarge,
+            style = MaterialTheme.typography.bodyMedium,
             fontWeight = if (isBold) FontWeight.Bold else FontWeight.Normal
         )
         Text(
             text = currencyFormatter.format(amount),
-            style = MaterialTheme.typography.bodyLarge,
+            style = MaterialTheme.typography.bodyMedium,
             fontWeight = if (isBold) FontWeight.Bold else FontWeight.Normal
         )
     }
@@ -403,7 +411,64 @@ private fun TotalRow(
 @Composable
 private fun CheckTabPreview() {
     AvoqadoTheme {
-        // Preview requires mock data - simplified for now
-        Text("CheckTab Preview\n(Requires mock Order data)")
+        val mockOrder = Order(
+            id = "order_123",
+            orderNumber = "ORD-001",
+            venueId = "venue_1",
+            tableId = "table_1",
+            tableName = "Mesa 5",
+            covers = 2,
+            waiterId = "waiter_1",
+            waiterName = "Juan Pérez",
+            customerName = null,
+            customerPhone = null,
+            specialRequests = null,
+            status = OrderStatus.OPEN,
+            kitchenStatus = KitchenStatus.PENDING,
+            paymentStatus = PaymentStatus.PENDING,
+            orderType = OrderType.DINE_IN,
+            items = listOf(
+                OrderItem(
+                    id = "item_1",
+                    orderId = "order_123",
+                    productId = "prod_1",
+                    productName = "Hamburguesa de Pollo",
+                    productSku = "HAM-001",
+                    quantity = 1,
+                    unitPrice = java.math.BigDecimal("139.00"),
+                    totalPrice = java.math.BigDecimal("139.00"),
+                    modifiers = listOf(
+                        ProductModifier(
+                            id = "mod_1",
+                            name = "Tocino",
+                            priceAdjustment = java.math.BigDecimal("0.00"),
+                            type = com.jaac.avoqado_tpv.features.ordering.domain.ModifierType.MULTIPLE_CHOICE,
+                            required = false,
+                            displayOrder = 0
+                        )
+                    ),
+                    notes = null,
+                    kitchenStatus = KitchenStatus.PENDING,
+                    createdAt = java.time.Instant.now(),
+                    sentToKitchenAt = null
+                )
+            ),
+            subtotal = java.math.BigDecimal("139.00"),
+            discountAmount = java.math.BigDecimal.ZERO,
+            tax = java.math.BigDecimal.ZERO,
+            total = java.math.BigDecimal("139.00"),
+            notes = null,
+            createdAt = java.time.Instant.now(),
+            updatedAt = java.time.Instant.now(),
+            version = 1
+        )
+
+        CheckTab(
+            order = mockOrder,
+            onItemQuantityChange = { _, _ -> },
+            onItemRemove = { },
+            onSendToKitchen = { },
+            onProcessPayment = { }
+        )
     }
 }

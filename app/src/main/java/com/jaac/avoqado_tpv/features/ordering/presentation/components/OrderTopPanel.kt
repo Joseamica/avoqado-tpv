@@ -359,7 +359,7 @@ private fun PeekContent(
  * Shows:
  * - All items with edit controls (quantity +/-, remove)
  * - Item notes if present
- * - Order summary (subtotal, tax, total)
+ * - Order summary (total with IVA included)
  * - Action buttons (Send to Kitchen, Process Payment)
  */
 @Composable
@@ -436,21 +436,6 @@ private fun ExpandedContent(
                 .fillMaxWidth()
                 .padding(sizes.paddingScreen)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("Subtotal", style = MaterialTheme.typography.bodyLarge)
-                Text("$${order.subtotal}", style = MaterialTheme.typography.bodyLarge)  // ← Fixed double $$
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("IVA (16%)", style = MaterialTheme.typography.bodyLarge)
-                Text("$${order.tax}", style = MaterialTheme.typography.bodyLarge)  // ← Fixed double $$
-            }
-            HorizontalDivider(modifier = Modifier.padding(vertical = sizes.spacingSmall))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -619,8 +604,8 @@ private fun createMockOrder(itemCount: Int): Order {
     }
 
     val subtotal = items.sumOf { it.totalPrice }
-    val tax = subtotal * BigDecimal("0.16")
-    val total = subtotal + tax
+    val tax = BigDecimal.ZERO  // ✅ FIX: No tax (0%)
+    val total = subtotal  // ✅ FIX: Total = subtotal
 
     return Order(
         id = "order_123",

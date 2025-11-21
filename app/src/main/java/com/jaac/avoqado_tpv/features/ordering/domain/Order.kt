@@ -35,7 +35,9 @@ data class Order(
     val notes: String?,
     val createdAt: Instant,
     val updatedAt: Instant,
-    val version: Int  // Optimistic concurrency control
+    val version: Int,  // Optimistic concurrency control
+    val merchantAccountId: String? = null,  // ⭐ P0 FIX: Merchant account used for first payment (locks order to merchant)
+    val merchantAccountName: String? = null  // Display name for user-friendly split payment errors
 ) {
     /**
      * Convenience property: Number of items in order
@@ -96,14 +98,14 @@ data class OrderItem(
      * Used in item card: "$180.00 c/u"
      */
     val formattedUnitPrice: String
-        get() = "$$unitPrice c/u"
+        get() = String.format("$%.2f c/u", unitPrice)
 
     /**
      * Convenience property: Display total
      * Used in item card: "$360.00"
      */
     val formattedTotalPrice: String
-        get() = "$$totalPrice"
+        get() = String.format("$%.2f", totalPrice)
 
     /**
      * Convenience property: Formatted modifiers for display

@@ -8,8 +8,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -37,11 +37,12 @@ fun OrderTabRow(
     orderItemCount: Int = 0,
     modifier: Modifier = Modifier
 ) {
-    TabRow(
+    ScrollableTabRow(
         selectedTabIndex = currentTab.ordinal,
         modifier = modifier,
         containerColor = MaterialTheme.colorScheme.surface,
-        contentColor = MaterialTheme.colorScheme.onSurface
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        edgePadding = 0.dp
     ) {
         OrderTab.entries.forEach { tab ->
             Tab(
@@ -51,7 +52,7 @@ fun OrderTabRow(
                     // Show badge for CHECK tab when there are items
                     if (tab == OrderTab.CHECK && orderItemCount > 0) {
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
@@ -66,13 +67,13 @@ fun OrderTabRow(
                                         color = MaterialTheme.colorScheme.primary,
                                         shape = CircleShape
                                     )
-                                    .padding(horizontal = 5.dp, vertical = 2.dp),
+                                    .padding(horizontal = 7.dp, vertical = 4.dp),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
                                     text = orderItemCount.toString(),
                                     style = MaterialTheme.typography.labelSmall.copy(
-                                        fontSize = 10.sp,
+                                        fontSize = 12.sp,
                                         fontWeight = FontWeight.Bold
                                     ),
                                     color = MaterialTheme.colorScheme.onPrimary

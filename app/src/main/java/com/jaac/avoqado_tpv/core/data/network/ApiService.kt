@@ -78,11 +78,13 @@ interface ApiService {
      * 5. If activated → proceed to login check
      *
      * @param serialNumber Device serial number (e.g., AVQD-2841548417)
+     * @param environment Blumon environment ("PROD" or "SAND") - differentiates same serial in different environments
      * @return Activation status with venueId if activated
      */
     @GET("tpv/terminals/{serialNumber}/activation-status")
     suspend fun checkActivationStatus(
-        @Path("serialNumber") serialNumber: String
+        @Path("serialNumber") serialNumber: String,
+        @Query("environment") environment: String
     ): Response<com.jaac.avoqado_tpv.core.data.network.dto.ActivationStatusResponse>
 
     // ========== Health Monitoring (Public Endpoint) ==========
@@ -488,6 +490,40 @@ interface ApiService {
         @Query("pageSize") pageSize: Int = 10,
         @Query("pageNumber") pageNumber: Int = 1
     ): Response<com.jaac.avoqado_tpv.features.shift.data.dto.ShiftHistoryResponse>
+
+    // ========== Reports (Analytics) ==========
+
+    /**
+     * Get historical sales summaries grouped by time period
+     *
+     * GET /tpv/venues/{venueId}/reports/historical
+     *
+     * Retrieves aggregated sales data for multiple time periods with automatic
+     * period-over-period comparisons for trend analysis.
+     *
+     * **World-Class Pattern (Toast POS + Square + Stripe)**:
+     * - Efficient SQL aggregation with DATE_TRUNC
+     * - Automatic previous period calculation
+     * - Cursor-based pagination
+     * - Timezone-aware grouping
+     *
+     * @param venueId Venue identifier
+     * @param grouping Time grouping (DAILY, WEEKLY, MONTHLY, QUARTERLY, YEARLY)
+     * @param startDate Start of historical range (ISO 8601)
+     * @param endDate End of historical range (ISO 8601)
+     * @param cursor Pagination cursor (timestamp)
+     * @param limit Number of periods to fetch (default 20)
+     * @return Paginated historical periods with comparisons
+     */
+    @GET("tpv/venues/{venueId}/reports/historical")
+    suspend fun getHistoricalReports(
+        @Path("venueId") venueId: String,
+        @Query("grouping") grouping: String,
+        @Query("startDate") startDate: String,
+        @Query("endDate") endDate: String,
+        @Query("cursor") cursor: String? = null,
+        @Query("limit") limit: Int = 20
+    ): Response<com.jaac.avoqado_tpv.features.reports.data.dto.HistoricalReportsResponse>
 
     // ========== Shifts (Timeclock) - DEPRECATED ==========
     // TODO: Remove these after shift management migration complete

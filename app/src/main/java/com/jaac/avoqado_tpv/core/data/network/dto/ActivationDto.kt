@@ -15,13 +15,17 @@ import com.google.gson.annotations.SerializedName
  *
  * @param serialNumber Device serial number (format: AVQD-{androidId})
  * @param activationCode 6-character alphanumeric code (case-insensitive)
+ * @param environment Blumon environment: "PROD" or "SAND" (requires backend schema update)
  */
 data class ActivateTerminalRequest(
     @SerializedName("serialNumber")
     val serialNumber: String,
 
     @SerializedName("activationCode")
-    val activationCode: String
+    val activationCode: String,
+
+    @SerializedName("environment")
+    val environment: String  // "PROD" or "SAND"
 )
 
 /**

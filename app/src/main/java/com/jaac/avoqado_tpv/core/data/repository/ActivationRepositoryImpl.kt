@@ -44,7 +44,8 @@ class ActivationRepositoryImpl @Inject constructor(
             // Call API
             val request = ActivateTerminalRequest(
                 serialNumber = serialNumber,
-                activationCode = activationCode
+                activationCode = activationCode,
+                environment = com.jaac.avoqado_tpv.BuildConfig.BLUMON_ENV  // "PROD" or "SAND"
             )
 
             val response = apiService.activateTerminal(request)

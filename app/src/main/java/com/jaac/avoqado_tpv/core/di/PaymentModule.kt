@@ -22,10 +22,20 @@ import javax.inject.Singleton
 /**
  * PaymentModule - Hilt DI module for Blumon OAuth authentication
  *
+ * ⭐ PRODUCTION MIGRATION (2025-11-19): Now supports Sandbox + Production via build variants
+ *
  * **Provides:**
- * - TokenServer: Handles OAuth token requests (sandbox-tokener.blumonpay.net)
- * - CoreServer: Handles RSA + DUKPT key requests (sandbox-core.blumonpay.net)
+ * - TokenServer: Handles OAuth token requests
+ *   - Sandbox: sandbox-tokener.blumonpay.net (via sandbox SDK)
+ *   - Production: tokener.blumonpay.net (via production SDK)
+ * - CoreServer: Handles RSA + DUKPT key requests
+ *   - Sandbox: sandbox-core.blumonpay.net (via sandbox SDK)
+ *   - Production: core.blumonpay.net (via production SDK)
  * - BlumonAuthManager: Orchestrates complete OAuth flow (3 steps)
+ *
+ * **Endpoints configured by SDK variant:**
+ * - sandboxDebug/sandboxRelease: Uses blumon_sdk-debug.aar + lib-services-BP-SAND_1601.aar
+ * - productionDebug/productionRelease: Uses blumon_sdk-prod.aar + lib_services-1.2.0.0-PROD.aar
  *
  * **Singleton Scope**: All dependencies are application-scoped
  */

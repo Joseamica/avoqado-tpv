@@ -406,6 +406,157 @@ class PrinterManager @Inject constructor(
     }
 
     /**
+     * Print sales report receipt (Toast/Square POS style).
+     *
+     * Prints a compact, professional summary of sales data optimized for thermal printers.
+     * Follows Toast POS receipt formatting standards.
+     *
+     * **Receipt Layout:**
+     * ```
+     * ================================
+     *     REPORTE DE VENTAS
+     * ================================
+     * Venue Name
+     * 12 Nov - 19 Nov 2024
+     * (Últimos 7 días)
+     *
+     * Impreso: 19 Nov 2024, 14:30
+     * --------------------------------
+     *
+     * RESUMEN DE VENTAS
+     * Total Ventas:      $8,228.28
+     * Total Órdenes:           145
+     * ...
+     * ================================
+     * ```
+     *
+     * @param periodLabel Human-readable period label (e.g., "Últimos 7 días")
+     * @param dateRange Date range string (e.g., "12 Nov - 19 Nov 2024")
+     * @param totalSales Total sales amount formatted
+     * @param totalOrders Total number of orders
+     * @param totalProducts Total products sold
+     * @param avgOrderValue Average order value formatted
+     * @param avgProductsPerOrder Average products per order
+     * @param cashAmount Cash payment amount
+     * @param cardAmount Card payment amount
+     * @param voucherAmount Voucher payment amount
+     * @param cashPercentage Cash percentage
+     * @param cardPercentage Card percentage
+     * @param voucherPercentage Voucher percentage
+     * @param comparisonText Optional comparison text (e.g., "Ventas: +12.5% ↑")
+     * @param venueName Optional venue name for header
+     * @return Result.success if printed, Result.failure if printer unavailable/error
+     */
+    fun printReport(
+        periodLabel: String,
+        dateRange: String,
+        totalSales: String,
+        totalOrders: Int,
+        totalProducts: Int,
+        avgOrderValue: String,
+        avgProductsPerOrder: String,
+        cashAmount: String,
+        cardAmount: String,
+        voucherAmount: String,
+        cashPercentage: String,
+        cardPercentage: String,
+        voucherPercentage: String,
+        comparisonText: String? = null,
+        venueName: String? = null
+    ): Result<Unit> {
+        return try {
+            val printerInstance = printer ?: return Result.failure(
+                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+            )
+
+            Timber.i("🖨️ [Printer] Starting sales report print")
+
+            // Reset printer state
+            printerInstance.init()
+
+            // ========================================
+            // HEADER
+            // ========================================
+            printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("    REPORTE DE VENTAS\n", null)
+            printerInstance.printStr("================================\n", null)
+
+            if (venueName != null) {
+                printerInstance.printStr("$venueName\n", null)
+            }
+
+            printerInstance.printStr("$dateRange\n", null)
+            printerInstance.printStr("($periodLabel)\n\n", null)
+
+            // Print timestamp
+            val dateFormat = java.text.SimpleDateFormat("dd MMM yyyy, HH:mm", java.util.Locale("es", "ES"))
+            val now = dateFormat.format(java.util.Date())
+            printerInstance.printStr("Impreso: $now\n", null)
+            printerInstance.printStr("--------------------------------\n\n", null)
+
+            // ========================================
+            // SALES SUMMARY
+            // ========================================
+            printerInstance.printStr("RESUMEN DE VENTAS\n", null)
+            printerInstance.printStr(String.format("%-18s %12s\n", "Total Ventas:", "$$totalSales"), null)
+            printerInstance.printStr(String.format("%-18s %12d\n", "Total Ordenes:", totalOrders), null)
+            printerInstance.printStr(String.format("%-18s %12d\n", "Total Productos:", totalProducts), null)
+            printerInstance.printStr(String.format("%-18s %12s\n", "Ticket Promedio:", "$$avgOrderValue"), null)
+            printerInstance.printStr(String.format("%-18s %12s\n\n", "Productos/Orden:", avgProductsPerOrder), null)
+
+            // ========================================
+            // PAYMENT METHODS
+            // ========================================
+            printerInstance.printStr("--------------------------------\n", null)
+            printerInstance.printStr("METODOS DE PAGO\n\n", null)
+
+            if (cashAmount != "0.00") {
+                printerInstance.printStr(String.format("%-20s %9s %3s%%\n", "Efectivo:", "$$cashAmount", cashPercentage), null)
+            }
+            if (cardAmount != "0.00") {
+                printerInstance.printStr(String.format("%-20s %9s %3s%%\n", "Tarjeta:", "$$cardAmount", cardPercentage), null)
+            }
+            if (voucherAmount != "0.00") {
+                printerInstance.printStr(String.format("%-20s %9s %3s%%\n", "Voucher:", "$$voucherAmount", voucherPercentage), null)
+            }
+
+            printerInstance.printStr(String.format("%20s -----------\n", ""), null)
+            printerInstance.printStr(String.format("%-20s %9s\n\n", "Total:", "$$totalSales"), null)
+
+            // ========================================
+            // COMPARISON (if enabled)
+            // ========================================
+            if (comparisonText != null && comparisonText.isNotBlank()) {
+                printerInstance.printStr("--------------------------------\n", null)
+                printerInstance.printStr("COMPARACION\n", null)
+                printerInstance.printStr("(vs periodo anterior)\n\n", null)
+                printerInstance.printStr("$comparisonText\n\n", null)
+            }
+
+            // ========================================
+            // FOOTER
+            // ========================================
+            printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("Generado por Avoqado TPV\n", null)
+            printerInstance.printStr("================================\n\n\n", null)
+
+            // Send to printer
+            val result = printerInstance.start()
+
+            if (result == 0) {
+                Timber.i("✅ [Printer] Sales report printed successfully")
+                Result.success(Unit)
+            } else {
+                Timber.e("❌ [Printer] Print failed with code: $result")
+                Result.failure(Exception("Error al imprimir reporte (código: $result)"))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Printer] Failed to print report")
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Print a test receipt to verify printer functionality.
      *
      * @return Result.success if test print succeeded, Result.failure otherwise
@@ -434,6 +585,247 @@ class PrinterManager @Inject constructor(
             }
         } catch (e: Exception) {
             Timber.e(e, "❌ [Printer] Test print failed")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Print a single historical period report
+     *
+     * Prints metrics for one historical period (day/week/month/quarter/year).
+     * Used when printing periods individually (INDIVIDUAL mode).
+     *
+     * **Receipt format:**
+     * - Header with venue name and period label
+     * - Sales metrics (total sales, orders, products, averages)
+     * - Period-over-period comparison (if enabled)
+     * - Timestamp
+     *
+     * @param period Historical period to print
+     * @param includeComparison Whether to print comparison metrics
+     * @param venueId Venue ID for audit trail
+     * @param venueName Optional venue name for header
+     * @return Result.success if printed, Result.failure if error
+     */
+    fun printHistoricalPeriod(
+        period: com.jaac.avoqado_tpv.features.reports.domain.models.HistoricalPeriod,
+        includeComparison: Boolean = true,
+        venueId: String,
+        venueName: String? = null
+    ): Result<Unit> {
+        return try {
+            val printerInstance = printer ?: return Result.failure(
+                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+            )
+
+            Timber.i("🖨️ [Printer] Printing historical period: ${period.label}")
+
+            // Reset printer state
+            printerInstance.init()
+
+            // ========================================
+            // HEADER
+            // ========================================
+            printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("  REPORTE HISTORICO\n", null)
+            printerInstance.printStr("================================\n", null)
+
+            if (venueName != null) {
+                printerInstance.printStr("$venueName\n", null)
+            }
+
+            printerInstance.printStr("\n${period.label}\n", null)
+            printerInstance.printStr("${period.subtitle}\n\n", null)
+
+            // Print timestamp
+            val dateFormat = java.text.SimpleDateFormat("dd MMM yyyy, HH:mm", java.util.Locale("es", "ES"))
+            val now = dateFormat.format(java.util.Date())
+            printerInstance.printStr("Impreso: $now\n", null)
+            printerInstance.printStr("--------------------------------\n\n", null)
+
+            // ========================================
+            // METRICS
+            // ========================================
+            printerInstance.printStr("METRICAS\n", null)
+            printerInstance.printStr("--------------------------------\n", null)
+
+            // Total sales
+            printerInstance.printStr("Ventas Totales:\n", null)
+            printerInstance.printStr("  $${period.formatTotalSales()}\n", null)
+
+            // Comparison for sales
+            if (includeComparison && period.salesChange != null) {
+                val salesChange = period.formatSalesChange()
+                printerInstance.printStr("  $salesChange\n", null)
+            }
+            printerInstance.printStr("\n", null)
+
+            // Total orders
+            printerInstance.printStr("Ordenes:    ${period.totalOrders}\n", null)
+            if (includeComparison && period.ordersChange != null) {
+                val ordersChange = period.formatOrdersChange()
+                printerInstance.printStr("  $ordersChange\n", null)
+            }
+            printerInstance.printStr("\n", null)
+
+            // Total products
+            printerInstance.printStr("Productos:  ${period.totalProducts}\n", null)
+            printerInstance.printStr("\n", null)
+
+            // Average order value
+            printerInstance.printStr("Ticket Promedio:\n", null)
+            printerInstance.printStr("  $${period.formatAverageOrderValue()}\n\n", null)
+
+            printerInstance.printStr("--------------------------------\n\n\n", null)
+
+            // Execute print
+            val result = printerInstance.start()
+
+            if (result == 0) {
+                Timber.i("✅ [Printer] Historical period printed successfully")
+                Result.success(Unit)
+            } else {
+                Timber.e("❌ [Printer] Print failed with code: $result")
+                Result.failure(Exception("Error al imprimir período (código: $result)"))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Printer] Failed to print historical period")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Print multiple historical periods in batch
+     *
+     * Prints summary table of multiple periods in one receipt.
+     * Used when printing periods in batch (BATCH mode).
+     *
+     * **Receipt format:**
+     * - Header with venue name and date range
+     * - Summary table (all periods in chronological order)
+     * - Totals and averages across all periods
+     * - Timestamp
+     *
+     * **Performance safeguards:**
+     * - Max 20 periods per batch (memory safety)
+     * - Truncates long labels to fit receipt width
+     *
+     * @param periods List of historical periods to print
+     * @param includeComparisons Whether to print comparison metrics
+     * @param venueId Venue ID for audit trail
+     * @param venueName Optional venue name for header
+     * @return Result.success if printed, Result.failure if error
+     */
+    fun printHistoricalReport(
+        periods: List<com.jaac.avoqado_tpv.features.reports.domain.models.HistoricalPeriod>,
+        includeComparisons: Boolean = true,
+        venueId: String,
+        venueName: String? = null
+    ): Result<Unit> {
+        return try {
+            val printerInstance = printer ?: return Result.failure(
+                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+            )
+
+            if (periods.isEmpty()) {
+                return Result.failure(Exception("No hay períodos para imprimir"))
+            }
+
+            Timber.i("🖨️ [Printer] Printing ${periods.size} historical periods in batch")
+
+            // Reset printer state
+            printerInstance.init()
+
+            // ========================================
+            // HEADER
+            // ========================================
+            printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("  REPORTE HISTORICO\n", null)
+            printerInstance.printStr("================================\n", null)
+
+            if (venueName != null) {
+                printerInstance.printStr("$venueName\n", null)
+            }
+
+            // Date range (first to last period)
+            val firstPeriod = periods.first()
+            val lastPeriod = periods.last()
+            printerInstance.printStr("\n${firstPeriod.label} - ${lastPeriod.label}\n", null)
+            printerInstance.printStr("${periods.size} períodos\n\n", null)
+
+            // Print timestamp
+            val dateFormat = java.text.SimpleDateFormat("dd MMM yyyy, HH:mm", java.util.Locale("es", "ES"))
+            val now = dateFormat.format(java.util.Date())
+            printerInstance.printStr("Impreso: $now\n", null)
+            printerInstance.printStr("--------------------------------\n\n", null)
+
+            // ========================================
+            // PERIODS TABLE
+            // ========================================
+            printerInstance.printStr("PERIODOS\n", null)
+            printerInstance.printStr("--------------------------------\n", null)
+
+            periods.forEach { period ->
+                // Truncate label if too long (receipt is 32 chars wide)
+                val label = if (period.label.length > 18) {
+                    period.label.take(15) + "..."
+                } else {
+                    period.label.padEnd(18)
+                }
+
+                // Format sales
+                val sales = period.formatTotalSales().padStart(10)
+
+                printerInstance.printStr("$label $sales\n", null)
+
+                // Print comparison if enabled
+                if (includeComparisons && period.salesChange != null) {
+                    val change = period.formatSalesChange().padStart(28)
+                    printerInstance.printStr("$change\n", null)
+                }
+            }
+
+            printerInstance.printStr("--------------------------------\n\n", null)
+
+            // ========================================
+            // TOTALS
+            // ========================================
+            printerInstance.printStr("TOTALES\n", null)
+            printerInstance.printStr("--------------------------------\n", null)
+
+            // Calculate totals across all periods
+            val totalSales = periods.sumOf { it.totalSales }
+            val totalOrders = periods.sumOf { it.totalOrders }
+            val totalProducts = periods.sumOf { it.totalProducts }
+            val avgOrderValue = if (totalOrders > 0) {
+                totalSales.divide(
+                    java.math.BigDecimal(totalOrders),
+                    2,
+                    java.math.RoundingMode.HALF_UP
+                )
+            } else {
+                java.math.BigDecimal.ZERO
+            }
+
+            printerInstance.printStr("Ventas:    $$totalSales\n", null)
+            printerInstance.printStr("Ordenes:   $totalOrders\n", null)
+            printerInstance.printStr("Productos: $totalProducts\n", null)
+            printerInstance.printStr("Ticket Promedio: $$avgOrderValue\n", null)
+
+            printerInstance.printStr("\n--------------------------------\n\n\n", null)
+
+            // Execute print
+            val result = printerInstance.start()
+
+            if (result == 0) {
+                Timber.i("✅ [Printer] Historical report printed successfully")
+                Result.success(Unit)
+            } else {
+                Timber.e("❌ [Printer] Print failed with code: $result")
+                Result.failure(Exception("Error al imprimir reporte histórico (código: $result)"))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Printer] Failed to print historical report")
             Result.failure(e)
         }
     }

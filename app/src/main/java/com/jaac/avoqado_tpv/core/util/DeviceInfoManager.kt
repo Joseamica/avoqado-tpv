@@ -165,7 +165,10 @@ class DeviceInfoManager @Inject constructor(
             val serialNumber = getSerialNumber()
             Timber.d("🔍 Checking activation status with backend for serial: $serialNumber")
 
-            val response = apiService.checkActivationStatus(serialNumber)
+            val response = apiService.checkActivationStatus(
+                serialNumber = serialNumber,
+                environment = com.jaac.avoqado_tpv.BuildConfig.BLUMON_ENV
+            )
 
             if (response.isSuccessful && response.body() != null) {
                 val status = response.body()!!

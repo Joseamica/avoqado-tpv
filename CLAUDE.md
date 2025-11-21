@@ -15,6 +15,7 @@
 - 🌐 **Backend:** Production: `https://api.avoqado.io/api/v1/` | Dev: `https://humane-immortal-pika.ngrok-free.app`
 - 🔌 **Real-time:** Socket.IO (room-based events)
 - 💳 **Payments:** Blumon PAX SDK (multi-merchant support)
+- ⚡ **Performance:** 1GB RAM target (PAX A80) - ALWAYS paginate, cleanup cache, avoid heavy animations
 
 ### Specialized Guides (Deep Dives)
 - 🚀 **[GREENFIELD_BLUEPRINT.md](./GREENFIELD_BLUEPRINT.md)** - Complete architecture & 28-day implementation plan
@@ -184,6 +185,256 @@ class PaymentRepositoryImpl @Inject constructor(
     }
 }
 ```
+
+---
+
+## ⚡ Performance Guidelines (1GB RAM Devices)
+
+> **CRITICAL**: Target devices (PAX A80, A920, Sunmi T2s) have **1GB RAM**. ALWAYS optimize for low memory footprint.
+
+### 🎯 Mandatory Performance Rules
+
+#### 1. **Pagination ALWAYS (Never load all data at once)**
+
+```kotlin
+// ❌ WRONG: Loads all orders in memory (OOM risk on 1GB RAM)
+val orders = orderRepository.getAllOrders(venueId)  // Could be 10,000+ orders!
+
+// ✅ CORRECT: Pagination with reasonable limits
+val orders = orderRepository.getOrders(
+    venueId = venueId,
+    limit = 20,  // ← Limit per page
+    cursor = cursor  // ← Cursor-based pagination
+)
+```
+
+**Pagination Limits**:
+- **Lists**: 20 items per page (max 50)
+- **Historical data**: 20 periods per page
+- **Images**: 10 items per page (heavy memory)
+- **Search results**: 15 items per page
+
+#### 2. **Cache Cleanup (Prevent memory leaks)**
+
+```kotlin
+// ✅ CORRECT: Auto-cleanup old cache
+suspend fun cleanupOldCache() {
+    val cutoffTime = System.currentTimeMillis() - CACHE_TTL_MILLIS
+    historicalPeriodDao.deleteOldPeriods(cutoffTime)  // Delete stale data
+
+    Timber.d("🧹 [Cache Cleanup] Freed memory from old cache")
+}
+```
+
+**Cleanup Rules**:
+- **TTL-based**: Delete data older than 24h (historical cache)
+- **Size-based**: Limit cache to max 500 entries
+- **On logout**: Clear all venue-specific cache
+- **On low memory**: Android system triggers `onTrimMemory()`
+
+#### 3. **Lazy Loading (Load data only when needed)**
+
+```kotlin
+// ❌ WRONG: Loads all data upfront
+LaunchedEffect(Unit) {
+    val allProducts = productRepository.getAllProducts()  // 1000+ products!
+    val allOrders = orderRepository.getAllOrders()        // 5000+ orders!
+}
+
+// ✅ CORRECT: Lazy load on demand
+LaunchedEffect(selectedCategory) {
+    val products = productRepository.getProductsByCategory(
+        categoryId = selectedCategory,
+        limit = 20
+    )
+}
+```
+
+#### 4. **StateFlow Instead of State (Memory efficient)**
+
+```kotlin
+// ❌ WRONG: State creates recomposition for every field change
+data class UiState(
+    val orders: List<Order> = emptyList(),  // Entire list recomposed on change
+    val isLoading: Boolean = false,
+    val error: String? = null
+)
+
+// ✅ CORRECT: StateFlow with immutable data
+private val _orders = MutableStateFlow<List<Order>>(emptyList())
+val orders: StateFlow<List<Order>> = _orders.asStateFlow()
+
+private val _isLoading = MutableStateFlow(false)
+val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+```
+
+#### 5. **Avoid Heavy Composables (No complex animations)**
+
+```kotlin
+// ❌ WRONG: Heavy animation on 1GB RAM device
+AnimatedVisibility(
+    visible = isVisible,
+    enter = slideInVertically() + fadeIn() + scaleIn(),  // ← Too heavy!
+    exit = slideOutVertically() + fadeOut() + scaleOut()
+) {
+    ComplexContent()
+}
+
+// ✅ CORRECT: Simple fade (lightweight)
+AnimatedVisibility(
+    visible = isVisible,
+    enter = fadeIn(),  // ← Simple, performant
+    exit = fadeOut()
+) {
+    Content()
+}
+
+// ✅ BETTER: No animation (instant)
+if (isVisible) {
+    Content()
+}
+```
+
+**Animation Rules**:
+- **Avoid**: slideIn, scaleIn, expandVertically (allocate memory for transitions)
+- **Use sparingly**: fadeIn, fadeOut (lightweight)
+- **Prefer**: Instant show/hide (no memory overhead)
+
+#### 6. **Efficient Data Structures**
+
+```kotlin
+// ❌ WRONG: Stores entire order object in map (high memory)
+val orderMap = mutableMapOf<String, Order>()  // Order has 20+ fields!
+
+// ✅ CORRECT: Store only IDs, fetch on demand
+val selectedOrderIds = mutableSetOf<String>()  // Just strings
+
+// When needed:
+val order = orderRepository.getOrder(selectedOrderIds.first())
+```
+
+#### 7. **Image Loading (CRITICAL for 1GB RAM)**
+
+```kotlin
+// ❌ WRONG: Load full-size images (OOM risk)
+Image(
+    painter = rememberImagePainter(imageUrl),  // ← Loads full resolution!
+    modifier = Modifier.size(100.dp)
+)
+
+// ✅ CORRECT: Request thumbnail/scaled version from backend
+Image(
+    painter = rememberImagePainter("$imageUrl?size=thumbnail"),  // ← Scaled
+    modifier = Modifier.size(100.dp)
+)
+```
+
+**Image Rules**:
+- **Never** load images larger than display size
+- **Always** request thumbnails from backend (query param: `?size=thumbnail`)
+- **Limit** concurrent image loads to 3-5 at once
+- **Use** Coil's built-in memory cache (max 50 images)
+
+#### 8. **Room Database Queries (Index everything)**
+
+```kotlin
+// ❌ WRONG: No index (slow query on large tables)
+@Entity(tableName = "orders")
+data class OrderEntity(
+    @PrimaryKey val id: String,
+    val venueId: String,  // ← Queried often, but NO INDEX!
+    val status: String
+)
+
+// ✅ CORRECT: Indexed columns for fast queries
+@Entity(
+    tableName = "orders",
+    indices = [
+        Index(value = ["venue_id"]),      // ← Fast venue filtering
+        Index(value = ["status"]),        // ← Fast status filtering
+        Index(value = ["created_at"])     // ← Fast time-based queries
+    ]
+)
+data class OrderEntity(...)
+```
+
+**Indexing Rules**:
+- **Index ALL** columns used in WHERE clauses
+- **Composite index** for multi-column queries (venue_id, status)
+- **Unique index** to prevent duplicates
+
+#### 9. **Background Work (Dispatcher.IO)**
+
+```kotlin
+// ❌ WRONG: Blocking main thread (UI freeze)
+fun loadData() {
+    val data = database.query()  // ← Blocks UI thread!
+    _state.value = State.Success(data)
+}
+
+// ✅ CORRECT: Background thread
+suspend fun loadData() = withContext(Dispatchers.IO) {
+    val data = database.query()  // ← Background thread
+    withContext(Dispatchers.Main) {
+        _state.value = State.Success(data)
+    }
+}
+```
+
+#### 10. **Avoid toString() on Large Objects**
+
+```kotlin
+// ❌ WRONG: Logs entire order object (memory + performance hit)
+Timber.d("Order: $order")  // ← Creates string representation of entire object!
+
+// ✅ CORRECT: Log only relevant fields
+Timber.d("Order: id=${order.id}, total=${order.total}, status=${order.status}")
+```
+
+### 📊 Memory Budget Guidelines
+
+| Feature | Max Memory | Notes |
+|---------|-----------|-------|
+| **Cached Orders** | 100 entries | ~2MB (20KB per order) |
+| **Cached Products** | 500 entries | ~5MB (10KB per product) |
+| **Cached Images** | 50 images | ~20MB (400KB per image) |
+| **Historical Cache** | 200 periods | ~200KB (1KB per period) |
+| **ViewModel State** | <5MB | Entire app state |
+| **Total App RAM** | <200MB | Peak memory usage |
+
+### 🧪 Performance Testing Checklist
+
+Before committing, verify:
+
+- [ ] **No unbounded lists** (all lists paginated with limit)
+- [ ] **No memory leaks** (ViewModels cleared on destroy)
+- [ ] **No blocking calls** on main thread (use `withContext(Dispatchers.IO)`)
+- [ ] **Cache cleanup** implemented (TTL or size-based)
+- [ ] **Indexes** on all queried columns
+- [ ] **Images** scaled to display size
+- [ ] **No heavy animations** (prefer instant or fade)
+- [ ] **StateFlow** instead of mutable State
+- [ ] **toString()** only on small objects
+
+### 🐛 Common Performance Issues
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| **App crashes after 10 min** | Memory leak (cache not cleaned) | Add TTL-based cache cleanup |
+| **Slow scrolling** | Loading all data at once | Implement pagination (limit 20) |
+| **UI freezes on tap** | Blocking main thread | Move to `Dispatchers.IO` |
+| **OutOfMemoryError** | Large images or unbounded lists | Scale images, paginate lists |
+| **Slow database queries** | Missing indexes | Add `@Index` to queried columns |
+
+### 📱 Target Device Specs
+
+| Device | RAM | Storage | CPU | Screen |
+|--------|-----|---------|-----|--------|
+| **PAX A80** | 1GB | 8GB | Quad-core 1.4GHz | 1024x600 (small) |
+| **PAX A920** | 1GB | 16GB | Quad-core 1.5GHz | 1280x720 (medium) |
+| **Sunmi T2s** | 2GB | 16GB | Octa-core 2.0GHz | 1280x800 (large) |
+
+**Optimization Priority**: PAX A80 (smallest RAM/CPU) → If it works on A80, it works on all devices.
 
 ---
 
@@ -1069,6 +1320,267 @@ fun OfflineBanner(message: String) {
 
 ## 🔧 Development Workflow
 
+### Build Variants: Sandbox vs Production
+
+**⚠️ CRITICAL**: This project uses Android build variants for sandbox and production environments.
+
+**Structure**:
+```
+app/src/
+├── main/                    ← 99% of code (SHARED by both environments)
+│   ├── MenuViewModel.kt              ✅ Applies to both
+│   ├── FloorPlanCanvasScreen.kt      ✅ Applies to both
+│   ├── ReportsViewModel.kt           ✅ Applies to both
+│   ├── AmountInputBottomSheet.kt     ✅ Applies to both
+│   └── ... all other files           ✅ Applies to both
+│
+├── sandbox/                 ← ONLY 3 files (Blumon SDK config)
+│   ├── PaymentViewModel.kt           ⚠️ Sandbox-specific
+│   ├── InitializationManager.kt      ⚠️ Sandbox-specific
+│   └── BlumonInitializer.kt          ⚠️ Sandbox-specific
+│
+└── production/              ← ONLY 3 files (Blumon SDK config)
+    ├── PaymentViewModel.kt           ⚠️ Production-specific
+    ├── InitializationManager.kt      ⚠️ Production-specific
+    └── BlumonInitializer.kt          ⚠️ Production-specific
+```
+
+**Key Rules**:
+- ✅ **Changes in `app/src/main/`** → Apply to BOTH sandbox and production automatically
+- ⚠️ **Changes in `app/src/sandbox/`** → Only sandbox (must also edit `app/src/production/` manually)
+- ⚠️ **Changes in `app/src/production/`** → Only production (must also edit `app/src/sandbox/` manually)
+
+**Why Separate Files?**
+- PaymentViewModel, InitializationManager, BlumonInitializer differ only in Blumon SDK configuration:
+  - Sandbox: `https://sandbox-tokener.blumonpay.net`
+  - Production: `https://tokener.blumonpay.net`
+
+**Build Commands**:
+```bash
+# Sandbox (development/testing)
+export JAVA_HOME=$(/usr/libexec/java_home -v 23)
+./gradlew installSandboxDebug
+
+# Production (final release for real terminals)
+export JAVA_HOME=$(/usr/libexec/java_home -v 23)
+./gradlew assembleProductionRelease
+```
+
+**Build Configuration**:
+
+| Variant | Package ID | Blumon Server | Blumon Env | AAR Files |
+|---------|-----------|---------------|------------|-----------|
+| **Sandbox** | `com.jaac.avoqado_tpv.sandbox` | `sandbox-tokener.blumonpay.net` | `SAND` | `blumon_sdk-debug.aar` |
+| **Production** | `com.jaac.avoqado_tpv` | `tokener.blumonpay.net` | `PROD` | `blumon_sdk-prod.aar` |
+
+---
+
+### 🚀 Production APK Build Guide
+
+**When to build production APK:**
+- Deploying to real PAX terminals (not test devices)
+- Terminal serial numbers are registered in Blumon PRODUCTION server
+- Ready for real customer payments
+
+**Step-by-Step Process:**
+
+#### 1. Pre-Build Verification
+```bash
+# Check current git status
+git status
+
+# Ensure all changes are committed
+git add .
+git commit -m "feat: prepare production build"
+
+# Verify production BuildConfig
+cat app/build.gradle.kts | grep -A 10 'create("production")'
+```
+
+**Expected output:**
+```kotlin
+create("production") {
+    buildConfigField("String", "BLUMON_ENV", "\"PROD\"")
+    buildConfigField("String", "TOKEN_SERVER_URL", "\"https://tokener.blumonpay.net\"")
+    buildConfigField("String", "CORE_SERVER_URL", "\"https://core.blumonpay.net\"")
+}
+```
+
+#### 2. Clean Build Environment
+```bash
+# Uninstall any test variants from device
+adb uninstall com.jaac.avoqado_tpv.sandbox
+adb uninstall com.jaac.avoqado_tpv
+
+# Clean all build artifacts
+./gradlew clean
+rm -rf app/build app/.cxx .gradle build
+```
+
+#### 3. Build Production APK
+```bash
+# Set Java 23 (required for build compatibility)
+export JAVA_HOME=$(/usr/libexec/java_home -v 23)
+
+# Build RELEASE variant (signed, optimized)
+./gradlew assembleProductionRelease
+
+# OR for testing: Build DEBUG variant
+./gradlew assembleProductionDebug
+```
+
+**Build output location:**
+- **Release**: `app/build/outputs/apk/production/release/app-production-release.apk`
+- **Debug**: `app/build/outputs/apk/production/debug/app-production-debug.apk`
+
+#### 4. Verify Production APK
+```bash
+# Check APK exists
+ls -lh app/build/outputs/apk/production/release/
+
+# Verify package name and version
+aapt dump badging app/build/outputs/apk/production/release/app-production-release.apk | grep -E "package:|versionName"
+```
+
+**Expected output:**
+```
+package: name='com.jaac.avoqado_tpv' versionCode='1' versionName='1.0.0'
+```
+
+**⚠️ CRITICAL CHECKS:**
+- ✅ Package name is `com.jaac.avoqado_tpv` (NO `.sandbox` suffix)
+- ✅ Version name is correct (e.g., `1.0.0`)
+- ✅ APK size is ~25-30 MB
+
+#### 5. Test Production APK (Optional - if you have a production-registered terminal)
+```bash
+# Install on device
+adb install app/build/outputs/apk/production/release/app-production-release.apk
+
+# Verify correct variant installed
+adb shell pm list packages | grep avoqado
+# Should show: package:com.jaac.avoqado_tpv
+
+# Check app version
+adb shell dumpsys package com.jaac.avoqado_tpv | grep versionName
+# Should show: versionName=1.0.0
+```
+
+#### 6. Deploy to Production Terminals
+
+**Option A: Manual Installation (USB)**
+```bash
+# Connect PAX terminal via USB
+adb devices
+
+# Install APK
+adb install -r app/build/outputs/apk/production/release/app-production-release.apk
+```
+
+**Option B: Remote Distribution**
+```bash
+# Upload to server/CDN
+scp app/build/outputs/apk/production/release/app-production-release.apk user@server:/path/
+
+# Or use MDM (Mobile Device Management) system
+# Follow your company's MDM deployment process
+```
+
+---
+
+### ⚠️ Common Production Build Issues
+
+#### Issue 1: Wrong Variant Installed During Testing
+**Symptom:** 401 "Usuario no encontrado" when testing with sandbox serial numbers
+
+**Cause:** Production variant installed, but using sandbox serial (2841548417) which only exists in sandbox Blumon server
+
+**Solution:**
+```bash
+# Uninstall production variant
+adb uninstall com.jaac.avoqado_tpv
+
+# Install sandbox variant for testing
+export JAVA_HOME=$(/usr/libexec/java_home -v 23)
+./gradlew installSandboxDebug
+
+# Verify sandbox installed
+adb shell pm list packages | grep avoqado
+# Should show: package:com.jaac.avoqado_tpv.sandbox
+```
+
+#### Issue 2: Java Version Mismatch
+**Symptom:** `Unsupported class file major version 68`
+
+**Solution:**
+```bash
+# Check current Java version
+java -version
+
+# List available Java versions
+/usr/libexec/java_home -V
+
+# Set Java 23 (recommended)
+export JAVA_HOME=$(/usr/libexec/java_home -v 23)
+
+# Verify
+echo $JAVA_HOME
+java -version
+```
+
+#### Issue 3: Build Cache Corruption
+**Symptom:** Build fails with `NoSuchFileException` or Hilt errors
+
+**Solution:**
+```bash
+# Stop Gradle daemon
+./gradlew --stop
+
+# Clean everything
+rm -rf app/build app/.cxx .gradle build
+
+# Rebuild
+export JAVA_HOME=$(/usr/libexec/java_home -v 23)
+./gradlew assembleProductionRelease
+```
+
+---
+
+### 📋 Production Deployment Checklist
+
+Before deploying production APK to real terminals:
+
+**Pre-Deployment:**
+- [ ] All code changes committed to git
+- [ ] CHANGELOG.md updated with version changes
+- [ ] Terminal serial numbers provisioned in Blumon PRODUCTION server
+- [ ] Backend API endpoints configured for production (`https://api.avoqado.io`)
+- [ ] Production merchant accounts configured in backend
+
+**Build Verification:**
+- [ ] Clean build environment (no cache corruption)
+- [ ] Java 23 set: `export JAVA_HOME=$(/usr/libexec/java_home -v 23)`
+- [ ] Build successful: `./gradlew assembleProductionRelease`
+- [ ] APK package name verified: `com.jaac.avoqado_tpv` (no `.sandbox`)
+- [ ] APK version correct
+
+**Post-Deployment:**
+- [ ] Test payment with real production terminal
+- [ ] Verify Blumon authentication succeeds (no 401 errors)
+- [ ] Test multi-merchant switching
+- [ ] Verify payments sync to backend
+- [ ] Test offline mode and sync recovery
+
+---
+
+**Before Committing**:
+- [ ] If you modified PaymentViewModel/InitializationManager/BlumonInitializer:
+  - [ ] Update BOTH `sandbox/` and `production/` versions
+  - [ ] Verify changes are environment-appropriate (URLs, keys, configs)
+- [ ] All other files: No special action needed (automatically shared)
+
+---
+
 ### Before Starting a Feature
 
 - [ ] Read feature requirements
@@ -1227,12 +1739,16 @@ adb shell am start -n com.jaac.avoqado_tpv/.MainActivity
 | UI freezes during payment | Blocking on main thread | Use `withContext(Dispatchers.IO)` |
 | Socket events not received | Not joined to room | Join room before listening |
 | Flash screens | Instant navigation without loading | Use `AvoqadoLoadingOverlay` |
+| App crashes after 10 min | Memory leak (no cache cleanup) | Add TTL-based cache cleanup (1GB RAM!) |
+| OutOfMemoryError | Loading all data at once | Implement pagination (limit 20) |
+| Slow scrolling | No pagination | Paginate lists (max 50 items per page) |
 
 ---
 
 ## 🎯 Before Ending Work
 
 - [ ] Try to compile: `./gradlew compileDebugKotlin`
+- [ ] **Performance check**: Verify no unbounded lists, pagination limits, cache cleanup (1GB RAM!)
 - [ ] Check if changes impact Blumon integration (it should work always)
 - [ ] Delete orphaned files (prevent accumulation)
 - [ ] Update CHANGELOG.md with changes
@@ -1240,6 +1756,6 @@ adb shell am start -n com.jaac.avoqado_tpv/.MainActivity
 
 ---
 
-**Last Updated:** 2025-01-15
+**Last Updated:** 2025-01-19
 **Maintainer:** Development Team
-**Version:** 2.1 (Added: Socket.IO integration guidelines & decision tree)
+**Version:** 2.2 (Added: Performance guidelines for 1GB RAM devices + Historical reports offline cache)

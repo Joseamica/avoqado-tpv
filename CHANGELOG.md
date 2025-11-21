@@ -6,7 +6,71 @@
 
 ## [Unreleased]
 
+### **Changed**
+
+- **Order UI**: Improved order summary layout following Mexico UX patterns and Square POS design (CheckTab.kt, OrderTopPanel.kt)
+  - **Font Size Reduction**: Made all text in "Resumen de Orden" section smaller for better screen space usage
+    - Header: `titleMedium` → `titleSmall`
+    - Subtitle: `bodyMedium` → `bodySmall`
+    - Totals: `bodyLarge` → `bodyMedium`
+  - **Simplified Totals**: Removed "Subtotal:" and "IVA:" rows, showing only "Total:"
+    - **Affected Components**: CheckTab.kt (order review), OrderTopPanel.kt (FloorPlanScreen side panel)
+    - **Rationale**: In Mexico, prices always include IVA (unlike US where sales tax is added separately)
+    - Users expect to see final price directly, not breakdown
+  - **Modifier Display**: Changed to Square POS style (clean, no bullet points)
+    - **Before**: `• Tocino` (with bullet point, 8dp spacing)
+    - **After**: `Tocino` (clean, simple, 4dp spacing)
+    - Reduced spacing from 8dp → 4dp to bring modifiers closer to product name
+    - Maintains readability while reducing visual noise
+  - **Impact**: More compact UI, follows regional UX expectations, cleaner modifier presentation
+
+- **OrderSyncCoordinator**: Added comprehensive diagnostic logging for modifier sync debugging (OrderSyncCoordinator.kt:305, 615-643)
+  - **Purpose**: Trace modifier flow from database → parsing → backend API to identify sync failures
+  - **Logs Added**:
+    - Storage: Log modifiers JSON when saving to database (`addItemToLocalOrder`)
+    - Parsing: Log raw JSON from DB and parsed modifier IDs (`syncNewOrderToBackend`)
+    - API Request: Log modifier IDs being sent to backend (`OrderRepositoryImpl.addItemsToOrder`)
+  - **Context**: Investigating bug where products with modifiers show incorrect price in backend
+    - Example: Product with modifier = $155.44 (local) but $119.00 in backend (missing modifiers)
+  - **Expected Diagnostics**:
+    ```
+    🔍 [addItemToLocalOrder] Storing modifiers | product=UltraThink | modifiers.size=2 | JSON=[...]
+    🔍 [Modifier Debug] Item: UltraThink | Raw modifiers JSON: [...]
+    🔍 [Modifier Debug] Parsed 2 modifiers → IDs: [mod_123, mod_456]
+    [0] productId=... | qty=1 | notes=null | modifierIds=[mod_123, mod_456]
+    ```
+
+### **Fixed**
+
+- **Build System**: Fixed Blumon SDK authentication failure caused by wrong build variant (2025-11-20)
+  - **Issue**: Production variant (`com.jaac.avoqado_tpv`) was running with sandbox serial numbers
+  - Production variant tried to authenticate sandbox serials (2841548417) with production Blumon server
+  - **Result**: 401 "Usuario no encontrado" - serial doesn't exist in production database
+  - **Root Cause**: Both variants installed on device, Android Studio defaulted to production variant for testing
+  - **Solution**: Properly separate sandbox and production builds
+    - Testing: `export JAVA_HOME=$(/usr/libexec/java_home -v 23) && ./gradlew installSandboxDebug`
+    - Production: `export JAVA_HOME=$(/usr/libexec/java_home -v 23) && ./gradlew assembleProductionRelease`
+  - **Build Configuration**:
+    - Sandbox: `com.jaac.avoqado_tpv.sandbox` → `sandbox-tokener.blumonpay.net` → `blumon_sdk-debug.aar`
+    - Production: `com.jaac.avoqado_tpv` → `tokener.blumonpay.net` → `blumon_sdk-prod.aar`
+  - **Java Version**: Requires Java 23 (fixes "Unsupported class file major version 68")
+  - Added comprehensive production APK build guide to CLAUDE.md:1378-1574
+
 ### **Added**
+
+- **Documentation**: Production APK Build Guide (CLAUDE.md:1378-1574)
+  - **Purpose**: Complete guide for building production APKs for real PAX terminals
+  - **Sections**:
+    - Step-by-step production APK build process (pre-build verification, clean build, assemble, verify)
+    - Build variant configuration reference table (package ID, Blumon server, environment, AAR files)
+    - Common production build issues and solutions (wrong variant, Java version mismatch, cache corruption)
+    - Production deployment checklist (pre-deployment, build verification, post-deployment)
+  - **Key Commands**:
+    - Clean: `./gradlew clean && rm -rf app/build app/.cxx .gradle build`
+    - Build: `export JAVA_HOME=$(/usr/libexec/java_home -v 23) && ./gradlew assembleProductionRelease`
+    - Verify: `aapt dump badging app/build/outputs/apk/production/release/app-production-release.apk`
+  - **Critical Checks**: Package name, version, APK size, environment configuration
+  - **Deployment Options**: Manual USB installation, remote distribution via server/MDM
 
 - **ConnectivityObserver**: Network connectivity monitoring for auto-retry pattern (ConnectivityObserver.kt:1-164)
   - **Purpose**: Detect network state changes and auto-retry failed requests when connection is restored
@@ -145,6 +209,24 @@
     - Error handling: Returns null on exception with logging
 
 ### **Changed**
+
+- **CLAUDE.md: Document build variants structure** (CLAUDE.md:1323-1373)
+  - Added new section "Build Variants: Sandbox vs Production" in Development Workflow
+  - **Structure documentation**:
+    - 99% of code in `app/src/main/` → Applies to BOTH environments automatically
+    - Only 3 files in `app/src/sandbox/` and `app/src/production/` (Blumon SDK config)
+  - **Critical files with environment-specific versions**:
+    - `PaymentViewModel.kt` - Different Blumon SDK URLs (sandbox vs production)
+    - `InitializationManager.kt` - Different SDK initialization configs
+    - `BlumonInitializer.kt` - Different credentials and certificates
+  - **Before committing checklist**:
+    - If modified PaymentViewModel/InitializationManager/BlumonInitializer → Update BOTH versions
+    - All other files → No special action needed (automatically shared)
+  - **Build commands**:
+    - Sandbox: `./gradlew installSandboxDebug`
+    - Production: `./gradlew assembleProductionRelease`
+  - **Purpose**: Prevent confusion about which code applies to which environment
+  - **Impact**: Developers now have clear guidance on multi-environment development
 
 - **MenuViewModel: Complete local-first transformation** (MenuViewModel.kt:52,77-78,107,160-200,294-424,598-677)
   - **Injection & State Management** (lines 52, 77-78, 107, 160-200)
@@ -488,6 +570,132 @@
   - **Testing**: Click "Alitas Buffalo" → Select "BBQ + Ranch" → Modifiers appear below product in order
 
 ### **Fixed**
+
+- **MenuViewModel: CRITICAL - Quick Order reuses paid order instead of creating new one** (MenuViewModel.kt:336-344)
+  - **Problem**: After completing payment, clicking "Quick Order" again reuses the PAID order instead of creating a new one
+  - **User Impact**:
+    - Items from previous paid order remain visible in new order
+    - Backend rejects new items with HTTP 400: "Solicitud inválida. Verifica los productos seleccionados."
+    - Sync fails repeatedly (attempt 1, 2, 3...) because adding items to paid orders is forbidden
+  - **Root Cause**: `loadOrder()` check at line 335 prevents reloading if order already exists, but doesn't check if order is PAID
+  - **Code Pattern**:
+    ```kotlin
+    // ❌ BEFORE (line 335-338)
+    if (currentState is MenuState.Success) {
+        Timber.d("📋 Order already loaded: ${currentState.order.id} - Skipping loadOrder()")
+        return@launch  // ← ALWAYS skipped, even if order is PAID!
+    }
+
+    // ✅ AFTER (line 336-344)
+    if (currentState is MenuState.Success) {
+        if (orderId == "CREATE_QUICK_ORDER" && currentState.order.paymentStatus == PaymentStatus.PAID) {
+            Timber.w("⚠️ Current order is PAID, creating NEW order instead of reusing")
+            // Continue to create new order (don't return early)
+        } else {
+            Timber.d("📋 Order already loaded: ${currentState.order.id} - Skipping loadOrder()")
+            return@launch
+        }
+    }
+    ```
+  - **Fix**: Check if current order `paymentStatus == PAID` when `orderId == "CREATE_QUICK_ORDER"`
+  - **Behavior After Fix**:
+    - User completes payment → PaymentStatus = PAID
+    - User clicks "Quick Order" again → Detects order is PAID → Creates NEW order
+    - New order has fresh ID, empty items list
+    - Backend accepts new items because order is not paid yet
+  - **Testing Scenario**:
+    1. Quick Order → Add French Fries + Soda → Pay cash → ✅ Success
+    2. Quick Order again → Add Hamburguesa with modifiers
+    3. **Before fix**: Items still show (French Fries, Soda), sync fails HTTP 400
+    4. **After fix**: Clean new order, items sync successfully
+  - **Related**: This complements the modifier sync fix (lines 510-544) which ensures modifiers are sent to backend
+
+- **OrderSyncCoordinator: CRITICAL - Modifier prices not synced to backend** (OrderSyncCoordinator.kt:3-4,613-629,733-749)
+  - **Problem**: Payment captured correct total ($147.40 with modifiers) but order list showed incorrect total ($119.00 base price only)
+  - **User Impact**: Customer paid $147.40 but order record showed $119.00, causing accounting discrepancies
+  - **Root Cause**: Modifiers stored locally as JSON string but never parsed and sent to backend during sync
+    - Line 616/726: `modifierIds = null` with TODO comment
+    - Backend recalculated prices using ONLY base product price
+    - Backend response with incorrect total overwrote local correct prices
+  - **Solution**: Parse modifier JSON and extract IDs before backend sync
+    - Added Gson import for JSON parsing (lines 3-4)
+    - Parse `item.modifiers` JSON to List<ProductModifier> (lines 615-622, 735-742)
+    - Extract modifier IDs: `modifierIds = modifiersList.map { it.id }` (lines 628, 748)
+    - Applied in both `createOrderOnServer()` and `updateOrderOnServer()` methods
+  - **Code Pattern**:
+    ```kotlin
+    val modifiersList = try {
+        val gson = Gson()
+        val type = object : TypeToken<List<ProductModifier>>() {}.type
+        gson.fromJson<List<ProductModifier>>(item.modifiers, type) ?: emptyList()
+    } catch (e: Exception) {
+        Timber.e(e, "Failed to parse modifiers JSON")
+        emptyList()
+    }
+    AddOrderItemRequest(
+        productId = item.productId,
+        quantity = item.quantity,
+        notes = item.notes,
+        modifierIds = modifiersList.map { it.id }  // ✅ Now sent to backend
+    )
+    ```
+  - **Impact**: Order totals now match across entire system (payment, order list, backend)
+  - **Testing**:
+    - Add item with modifiers (Hamburguesa + BBQ + Ranch) → Total: $147.40
+    - Process payment → Payment shows: $147.40 ✅
+    - Check order list → Order shows: $147.40 ✅
+    - Verify backend has modifiers associated with order items
+
+- **PaymentScreen: Missing modifiers display in payment success modal** (PaymentScreen.kt:879-894)
+  - **Problem**: Order details modal on payment success screen showed item names and notes but NO modifiers
+  - **Example**: "1x Hamburguesa de Pollo" displayed without showing selected modifiers (BBQ, Chipotle Mayo, Ranch)
+  - **Root Cause**: PaymentSuccessContent modal was only rendering item name, quantity, and notes - modifiers were in OrderItem data but not displayed
+  - **Solution**: Added modifier display logic matching CheckTab pattern
+    - Shows bullet list of modifiers below item name (e.g., "• BBQ", "• Ranch")
+    - Uses bodySmall typography with onSurfaceVariant color (consistent with CheckTab)
+    - Proper spacing with 4dp gaps between sections
+  - **Code Pattern**:
+    ```kotlin
+    if (item.modifiers.isNotEmpty()) {
+        item.modifiers.forEach { modifier ->
+            Text(text = "• ${modifier.name}", ...)
+        }
+    }
+    ```
+  - **Impact**: Users can now see complete item details including modifiers in payment confirmation modal
+  - **Testing**: Complete payment → Tap receipt icon → Modal shows "1x Hamburguesa de Pollo" with "• BBQ", "• Chipotle Mayo" below
+
+- **OrderSyncCoordinator: CRITICAL - Order items disappearing after sync (CASCADE DELETE bug)** (OrderSyncCoordinator.kt:20,197-210,803)
+  - **Problem**: All order items would mysteriously disappear after successful sync, showing "0 items • $275.00" (total preserved but items gone)
+  - **Root Cause**: Line 800 used `draftOrderDao.insert()` with `OnConflictStrategy.REPLACE`
+    - REPLACE strategy = DELETE old row + INSERT new row
+    - DELETE operation triggered `onDelete = ForeignKey.CASCADE` constraint
+    - CASCADE automatically deleted ALL child items from `draft_order_items` table
+  - **Solution**: Changed `insert()` to `update()` at line 803
+    ```kotlin
+    // Before (BROKEN):
+    draftOrderDao.insert(order.copy(...))  // ⚠️ Triggers CASCADE DELETE
+
+    // After (FIXED):
+    draftOrderDao.update(order.copy(...))  // ✅ Modifies in-place, no DELETE
+    ```
+  - **Additional Improvements**:
+    - Added missing `import java.math.BigDecimal` at line 20 (compilation fix)
+    - Improved diagnostic logging (lines 197-210) to eliminate false positives:
+      - Only alerts if order version > 1 (not new empty orders)
+      - Only alerts if ALL items (including DELETED) are gone from database
+      - Provides user-friendly messages for intentional deletions
+  - **Testing Results**: Verified with comprehensive test cases
+    - ✅ Add 4 items → Sync → 4 items persist
+    - ✅ Add 1 more item → Sync → 5 items persist
+    - ✅ Remove 2 items → Sync → 3 items remain
+    - ✅ Race condition handling via retry mechanism (JobCancellationException)
+    - ✅ NO `🐛 [BUG DETECTED]` false positives
+  - **Impact**: CRITICAL fix - prevents data loss in local-first order management system
+  - **Related Files**:
+    - DraftOrderDao.kt (REPLACE strategy definition - unchanged, now avoided)
+    - DraftOrderItemEntity.kt (CASCADE constraint definition - unchanged, no longer triggered incorrectly)
+  - **Note**: Version conflict handling (HTTP 400 from backend) is a separate issue requiring future enhancement
 
 0. **ModifierDto + ProductModifierDto: Modifier prices showing as "-$0.0" in ProductSelectorBottomSheet** (ProductDto.kt:177, TableDto.kt:96)
    - **Problem**: Modifier prices displayed as "-$0.0" instead of actual prices like "$12.50", "$10.00"

@@ -257,8 +257,8 @@ class OrderListViewModel @Inject constructor(
             )
         }
 
-        val subtotal = total / BigDecimal("1.16") // Remove 16% tax
-        val tax = total - subtotal
+        val subtotal = total  // ✅ FIX: Total = subtotal (no tax)
+        val tax = BigDecimal.ZERO  // ✅ FIX: No tax (0%)
 
         return Order(
             id = id,

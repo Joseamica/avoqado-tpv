@@ -169,8 +169,23 @@ class MenuViewModel @Inject constructor(
                         Timber.i("✅ [Sync] Order synced successfully | id=${event.orderId} | version=${event.version}")
                         _isSyncing.value = false
 
-                        // TODO: Reload order from Room DB to get updated server ID/version
-                        // For now, we rely on optimistic updates
+                        // ⭐ P0 FIX: Reload order from Room DB to get updated server ID/version
+                        // When local UUID is replaced with server CUID, we need to update the state
+                        // with the new ID so subsequent operations (add item) use the correct ID
+                        val currentState = _state.value
+                        if (currentState is MenuState.Success) {
+                            try {
+                                val updatedOrder = orderSyncCoordinator.getLocalOrder(event.orderId)
+                                if (updatedOrder != null) {
+                                    Timber.d("🔄 [Sync] Reloading order after sync | oldId=${currentState.order.id} | newId=${updatedOrder.id}")
+                                    _state.value = currentState.copy(order = updatedOrder)
+                                } else {
+                                    Timber.w("⚠️ [Sync] Order not found after sync | id=${event.orderId}")
+                                }
+                            } catch (e: Exception) {
+                                Timber.e(e, "❌ [Sync] Error reloading order after sync")
+                            }
+                        }
                     }
                     is com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator.SyncEvent.Error -> {
                         Timber.e("❌ [Sync] Sync error | order=${event.orderId} | error=${event.message}")
@@ -318,8 +333,15 @@ class MenuViewModel @Inject constructor(
                 // Each MenuScreen instance = one order (no state reuse)
                 val currentState = _state.value
                 if (currentState is MenuState.Success) {
-                    Timber.d("📋 Order already loaded: ${currentState.order.id} - Skipping loadOrder()")
-                    return@launch
+                    // ⚠️ P0 FIX: If trying to create a NEW quick order, check if current order is PAID
+                    // If it's paid, we need to create a new order (don't reuse paid orders)
+                    if (orderId == "CREATE_QUICK_ORDER" && currentState.order.paymentStatus == PaymentStatus.PAID) {
+                        Timber.w("⚠️ Current order is PAID, creating NEW order instead of reusing | currentId=${currentState.order.id}")
+                        // Continue to create new order (don't return early)
+                    } else {
+                        Timber.d("📋 Order already loaded: ${currentState.order.id} - Skipping loadOrder()")
+                        return@launch
+                    }
                 }
 
                 _state.value = MenuState.Loading
@@ -417,7 +439,7 @@ class MenuViewModel @Inject constructor(
                             // STEP 2: Not in local DB - fallback to backend (300ms+)
                             Timber.d("⚠️ [Fallback] Order not in local DB, fetching from backend: $orderId")
 
-                            orderRepository.getOrder(
+                            val backendOrder = orderRepository.getOrder(
                                 venueId = venueId,
                                 orderId = orderId
                             ).getOrElse { error ->
@@ -425,6 +447,12 @@ class MenuViewModel @Inject constructor(
                                 _state.value = MenuState.Error("Error cargando orden: ${error.message}")
                                 return@launch
                             }
+
+                            // Cache to local DB to prevent FOREIGN KEY errors when adding items
+                            orderSyncCoordinator.cacheBackendOrder(backendOrder)
+                            Timber.d("💾 [Cache] Backend order cached to local DB | id=$orderId")
+
+                            backendOrder
                         }
                     }
                 }
@@ -534,7 +562,19 @@ class MenuViewModel @Inject constructor(
     }
 
     /**
-     * Update item quantity
+     * Update item quantity (LOCAL-FIRST with database persistence)
+     *
+     * **🆕 Local-First Flow:**
+     * 1. Update quantity in Room DB → Marks as PENDING
+     * 2. Update UI state (optimistic)
+     * 3. Recalculate totals
+     * 4. Schedule debounced sync (5s delay)
+     * 5. (Eventually) Sync to backend
+     *
+     * **Key Fix (Issue #XXX):**
+     * - Previously ONLY updated UI state, never persisted to database
+     * - Caused items to disappear after sync (stale database data)
+     * - Now persists to database FIRST, then updates UI
      */
     fun updateItemQuantity(item: OrderItem, newQuantity: Int) {
         viewModelScope.launch {
@@ -544,6 +584,15 @@ class MenuViewModel @Inject constructor(
             try {
                 val order = currentState.order
 
+                // ✅ FIX: Persist quantity update to database (marks as PENDING for sync)
+                orderSyncCoordinator.updateItemQuantityInLocalOrder(
+                    orderId = order.id,
+                    itemId = item.id,
+                    newQuantity = newQuantity,
+                    unitPrice = item.unitPrice
+                )
+
+                // Update UI state (optimistic)
                 val updatedItems = if (newQuantity <= 0) {
                     // Remove item if quantity is 0
                     order.items.filter { it.id != item.id }
@@ -564,6 +613,9 @@ class MenuViewModel @Inject constructor(
                 val updatedOrder = recalculateOrder(order.copy(items = updatedItems))
                 _state.value = MenuState.Success(updatedOrder)
                 Timber.d("✏️ Item quantity updated: ${item.productName} → $newQuantity")
+
+                // ✅ FIX: Schedule sync to send updated quantity to backend
+                orderSyncCoordinator.scheduleSync(order.id)
             } catch (e: Exception) {
                 Timber.e(e, "❌ Error updating item quantity")
             }
@@ -968,13 +1020,13 @@ class MenuViewModel @Inject constructor(
     /**
      * Recalculate order totals
      * Subtotal = sum of all item totals
-     * Tax = subtotal * 0.16 (Mexico VAT)
-     * Total = subtotal + tax
+     * Tax = 0% (backend handles tax separately)
+     * Total = subtotal (no tax added)
      */
     private fun recalculateOrder(order: Order): Order {
         val subtotal = order.items.sumOf { it.totalPrice }
-        val tax = subtotal * BigDecimal("0.16")  // 16% IVA
-        val total = subtotal + tax
+        val tax = BigDecimal.ZERO  // ✅ FIX: Backend handles tax (currently 0% for new orders)
+        val total = subtotal  // ✅ FIX: Total = subtotal (no tax added)
 
         return order.copy(
             subtotal = subtotal,

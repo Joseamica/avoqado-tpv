@@ -17,8 +17,10 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 
 /**
@@ -50,6 +52,24 @@ fun AvoqadoTopBar(
         bottomEnd = 20.dp
     )
 
+    // ⭐ PRODUCTION MIGRATION (2025-11-19): Environment border color
+    val borderColor = if (BuildConfig.DEBUG) {
+        when (BuildConfig.BLUMON_ENV) {
+            "PROD" -> Color(0xFFEF5350)  // Red 400 - Production (danger)
+            "SAND" -> Color(0xFFFFA726)  // Amber 400 - Sandbox (warning)
+            else -> MaterialTheme.colorScheme.outline
+        }
+    } else {
+        // Release builds: No environment indicator
+        MaterialTheme.colorScheme.outline
+    }
+
+    val borderWidth = if (BuildConfig.DEBUG && BuildConfig.BLUMON_ENV in listOf("PROD", "SAND")) {
+        3.dp  // Thicker border for debug builds to make environment obvious
+    } else {
+        1.dp
+    }
+
     CenterAlignedTopAppBar(
         title = {
             if (subtitle != null) {
@@ -78,8 +98,8 @@ fun AvoqadoTopBar(
         modifier = modifier
             .clip(shape)
             .border(
-                width = 1.dp,
-                color = MaterialTheme.colorScheme.outline,
+                width = borderWidth,
+                color = borderColor,
                 shape = shape
             ),
         navigationIcon = {
@@ -93,6 +113,8 @@ fun AvoqadoTopBar(
             }
         },
         actions = {
+            // ⭐ PRODUCTION MIGRATION (2025-11-19): Environment indicated by border color (not badge)
+
             // Settings button (if provided)
             if (onSettingsClick != null) {
                 IconButton(onClick = onSettingsClick) {

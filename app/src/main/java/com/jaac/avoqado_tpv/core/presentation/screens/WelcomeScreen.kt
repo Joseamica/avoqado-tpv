@@ -183,13 +183,13 @@ private fun WelcomeScreenContent(
             badge = if (!hasOpenShift) "Abre el turno primero" else null,
             onClick = onNavigateToOrdering
         ),
-        ActionButton(
-            icon = Icons.Default.History,
-            label = "Historial",
-            enabled = false,
-            badge = "Próximamente",
-            onClick = { /* TODO: Navigate to transaction history */ }
-        ),
+        // ActionButton(
+        //     icon = Icons.Default.History,
+        //     label = "Historial",
+        //     enabled = false,
+        //     badge = "Próximamente",
+        //     onClick = { /* TODO: Navigate to transaction history */ }
+        // ),
         ActionButton(
             icon = Icons.Default.BarChart,
             label = "Reportes",

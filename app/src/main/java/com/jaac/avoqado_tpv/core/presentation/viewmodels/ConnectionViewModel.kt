@@ -68,6 +68,7 @@ class ConnectionViewModel @Inject constructor(
     private var monitoringJob: Job? = null
     private var reconnectionAttempts = 0
     private val maxReconnectionAttempts = Int.MAX_VALUE // Keep trying forever
+    private var isDismissed = false  // User manually dismissed banner
 
     // ══════════════════════════════════════════════════════════════════════
     // INITIALIZATION
@@ -126,8 +127,21 @@ class ConnectionViewModel @Inject constructor(
      */
     fun forceCheck() {
         viewModelScope.launch {
+            isDismissed = false  // Clear dismissed state when manually retrying
             checkConnection()
         }
+    }
+
+    /**
+     * Dismiss the connection banner temporarily
+     *
+     * User can dismiss the offline banner if they want to work without distractions.
+     * Banner will reappear if connection state changes again.
+     */
+    fun dismissBanner() {
+        Timber.d("🌐 [Connection] User dismissed banner")
+        isDismissed = true
+        _state.value = ConnectionState.Dismissed
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -147,7 +161,10 @@ class ConnectionViewModel @Inject constructor(
         val networkInfo = networkMonitor.getCurrentNetworkInfo()
         if (!networkInfo.isConnected) {
             Timber.w("⚠️ [Connection] No network connection")
-            _state.value = ConnectionState.Disconnected
+            // Don't override Dismissed state - user dismissed banner
+            if (!isDismissed) {
+                _state.value = ConnectionState.Disconnected
+            }
             reconnectionAttempts++
             return
         }
@@ -190,13 +207,19 @@ class ConnectionViewModel @Inject constructor(
                 }
                 is Result.Error -> {
                     Timber.w("⚠️ [Connection] Backend unreachable: ${result.exception?.message}")
-                    _state.value = ConnectionState.Disconnected
+                    // Don't override Dismissed state - user dismissed banner
+                    if (!isDismissed) {
+                        _state.value = ConnectionState.Disconnected
+                    }
                     reconnectionAttempts++
                 }
             }
         } catch (e: Exception) {
             Timber.e(e, "❌ [Connection] Check failed")
-            _state.value = ConnectionState.Disconnected
+            // Don't override Dismissed state - user dismissed banner
+            if (!isDismissed) {
+                _state.value = ConnectionState.Disconnected
+            }
             reconnectionAttempts++
         }
     }
@@ -281,4 +304,9 @@ sealed class ConnectionState {
      * Successfully reconnected - Show success banner briefly
      */
     data object Reconnected : ConnectionState()
+
+    /**
+     * User dismissed the banner - Hide it temporarily
+     */
+    data object Dismissed : ConnectionState()
 }

@@ -166,7 +166,7 @@ class InitializationManager @Inject constructor(
                 manual = false,
                 q6 = false,
                 qps = false,
-                qpsAmount = 0.0,
+                qpsAmount = 0.0,      // QPS amount (sandbox requires this parameter)
                 cashback = false,
                 partialCancellation = false,
                 ticketPromotions = false,

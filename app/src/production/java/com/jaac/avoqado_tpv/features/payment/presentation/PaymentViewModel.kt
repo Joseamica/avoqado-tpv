@@ -887,6 +887,55 @@ class PaymentViewModel @Inject constructor(
             currentShiftId = currentShift.id
             Timber.d("✅ [Payment] Shift validation passed: ${currentShift.id} (${currentShift.staffName})")
 
+            // ⭐ P0 FIX: Merchant Account Validation (Split Payment Protection)
+            // Validates that split payments use the same merchant account to avoid reconciliation issues
+            if (currentOrderId != null) {
+                try {
+                    val order = orderSyncCoordinator.getLocalOrder(currentOrderId!!)
+
+                    if (order == null) {
+                        Timber.e("❌ [Merchant Validation] Order not found: $currentOrderId")
+                        _state.value = PaymentState.Error(
+                            message = "Orden no encontrada.\n\nVerifica que la orden exists e intenta nuevamente.",
+                            context = null
+                        )
+                        return@launch
+                    }
+
+                    // Check if order has partial payment with different merchant
+                    if (order.merchantAccountId != null && order.paymentStatus == com.jaac.avoqado_tpv.features.ordering.domain.PaymentStatus.PARTIAL) {
+                        val currentMerchantId = _currentMerchant.value?.merchantAccountId
+                        val orderMerchantId = order.merchantAccountId
+
+                        if (currentMerchantId != orderMerchantId) {
+                            Timber.w("⚠️ [Merchant Validation] Split payment merchant mismatch")
+                            Timber.w("   Order merchant: $orderMerchantId (${order.merchantAccountName})")
+                            Timber.w("   Current merchant: $currentMerchantId (${_currentMerchant.value?.displayName})")
+
+                            _state.value = PaymentState.Error(
+                                message = "Esta orden tiene un pago parcial con otra cuenta (${order.merchantAccountName}).\n\n" +
+                                         "Debes continuar pagando con la misma cuenta para evitar problemas de reconciliación.\n\n" +
+                                         "Cuenta actual: ${_currentMerchant.value?.displayName ?: "Ninguna"}\n" +
+                                         "Cuenta requerida: ${order.merchantAccountName ?: "Desconocida"}",
+                                context = null
+                            )
+                            return@launch
+                        }
+
+                        Timber.d("✅ [Merchant Validation] Split payment merchant matches: $currentMerchantId")
+                    } else {
+                        Timber.d("✅ [Merchant Validation] No merchant lock (first payment or full payment)")
+                    }
+                } catch (e: Exception) {
+                    Timber.e(e, "❌ [Merchant Validation] Error validating merchant")
+                    _state.value = PaymentState.Error(
+                        message = "Error validando cuenta de pago.\n\nIntenta nuevamente.",
+                        context = null
+                    )
+                    return@launch
+                }
+            }
+
             // Continue with payment flow
             _state.value = PaymentState.ConfiguringKernel
             continuePaymentFlow()
@@ -1194,8 +1243,7 @@ class PaymentViewModel @Inject constructor(
                         emvResponseCode = saleData.emvResponseCode ?: "00",
                         authorization = saleData.authorization ?: "",
                         arpc = saleData.arpc ?: "",
-                        script7172 = saleData.script ?: "",
-                        arpcResponseCode = "00"
+                        script7172 = saleData.script ?: ""
                     )
 
                     val completeResult = completeEmvTransUseCase.run(completeParams)
@@ -2250,6 +2298,18 @@ class PaymentViewModel @Inject constructor(
                     Timber.i("✅ [Backend Recording] Payment recorded successfully | paymentId=${receipt.paymentId}")
                     Timber.i("📄 [Backend Recording] Receipt URL: ${receipt.receiptUrl}")
 
+                    // ⭐ P0 FIX: Update order's merchant account after successful payment
+                    // This locks the order to the merchant used for the first payment, preventing split payment mismatches
+                    val orderId = currentOrderId  // Local immutable copy to avoid smart cast issues
+                    if (orderId != null && _currentMerchant.value != null) {
+                        Timber.d("🔒 [Merchant Lock] Updating order merchant | orderId=$orderId | merchant=${_currentMerchant.value?.displayName}")
+                        orderSyncCoordinator.updateOrderMerchant(
+                            orderId = orderId,
+                            merchantAccountId = _currentMerchant.value?.merchantAccountId,
+                            merchantAccountName = _currentMerchant.value?.displayName
+                        )
+                    }
+
                     // 📦 Load order items if this is an order payment (Pedido Rápido or Servicio de Mesa)
                     val orderItems = loadOrderItems(currentOrderId)
 
@@ -2505,6 +2565,14 @@ class PaymentViewModel @Inject constructor(
                 Timber.d("✅ [Order Items] Loaded ${order.items.size} items for order $orderId")
                 order.items.forEach { item ->
                     Timber.d("   - ${item.quantity}x ${item.productName} @ ${item.formattedTotalPrice}")
+
+                    // ✅ FIX: Log modifiers to debug payment success modal display
+                    if (item.modifiers.isNotEmpty()) {
+                        Timber.d("      Modifiers (${item.modifiers.size}):")
+                        item.modifiers.forEach { modifier ->
+                            Timber.d("         • ${modifier.name} (${modifier.formattedPrice})")
+                        }
+                    }
                 }
             }.onFailure { error ->
                 Timber.e(error, "❌ [Order Items] Failed to load items for order $orderId")

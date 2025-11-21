@@ -42,6 +42,41 @@ android {
         // buildConfigField("String", "BLUMON_ENV", "\"SAND\"")            // ← REMOVED
     }
 
+    // ⭐ PRODUCTION MIGRATION (2025-11-19): Build Variants for Sandbox + Production
+    flavorDimensions += "environment"
+
+    productFlavors {
+        create("sandbox") {
+            dimension = "environment"
+            applicationIdSuffix = ".sandbox"
+            versionNameSuffix = "-sandbox"
+
+            // Blumon Sandbox Environment
+            buildConfigField("String", "BLUMON_ENV", "\"SAND\"")
+            buildConfigField("String", "TOKEN_SERVER_URL", "\"https://sandbox-tokener.blumonpay.net\"")
+            buildConfigField("String", "CORE_SERVER_URL", "\"https://sandbox-core.blumonpay.net\"")
+
+            // Default terminal config (for fallback - will be fetched from backend)
+            buildConfigField("String", "DEFAULT_TERMINAL_SERIAL", "\"2841548417\"")
+            buildConfigField("String", "DEFAULT_TERMINAL_BRAND", "\"PAX\"")
+            buildConfigField("String", "DEFAULT_TERMINAL_MODEL", "\"A910S\"")
+        }
+
+        create("production") {
+            dimension = "environment"
+
+            // Blumon Production Environment
+            buildConfigField("String", "BLUMON_ENV", "\"PROD\"")
+            buildConfigField("String", "TOKEN_SERVER_URL", "\"https://tokener.blumonpay.net\"")
+            buildConfigField("String", "CORE_SERVER_URL", "\"https://core.blumonpay.net\"")
+
+            // Default terminal config (for fallback - will be fetched from backend)
+            buildConfigField("String", "DEFAULT_TERMINAL_SERIAL", "\"2841548417\"")
+            buildConfigField("String", "DEFAULT_TERMINAL_BRAND", "\"PAX\"")
+            buildConfigField("String", "DEFAULT_TERMINAL_MODEL", "\"A910S\"")
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -115,14 +150,20 @@ android {
 }
 
 dependencies {
-    // BlumonPay SDK Modules (project dependencies)
+    // BlumonPay SDK Modules (project dependencies - common to all flavors)
     implementation(project(":sdk"))  // PAX SDK (PosApi) + Neptune API
     implementation(project(":commonlib"))  // Common utilities
     implementation(project(":emv"))  // EMV kernel logic
 
-    // BlumonPay SDK Modules (as AAR files directly)
-    implementation(files("libs/blumon_sdk-debug.aar"))
-    implementation(files("libs/lib-services-BP-SAND_1601.aar"))  // Blumon Services (Sandbox) - Online authorization
+    // ⭐ SANDBOX FLAVOR: Blumon SDK AAR files (Sandbox environment)
+    "sandboxImplementation"(files("libs/blumon_sdk-debug.aar"))
+    "sandboxImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
+
+    // ⭐ PRODUCTION FLAVOR: Blumon SDK AAR files (Production environment)
+    "productionImplementation"(files("libs/blumon_sdk-prod.aar"))
+    "productionImplementation"(files("libs/lib_services-1.2.0.0-PROD.aar"))
+
+    // Common AAR (both flavors)
     implementation(files("libs/nativetouchevent-release.aar"))  // Native touch event library (moved from sdk module)
 
     // AndroidX Core

@@ -17,15 +17,15 @@ import javax.inject.Singleton
 /**
  * Blumon environment constant
  *
- * TODO: Fetch dynamically from backend via TerminalConfigRepository
- * For now, hardcoded to "SAND" (Sandbox) for development
+ * ⭐ PRODUCTION MIGRATION (2025-11-19): Now uses BuildConfig.BLUMON_ENV
+ * - Sandbox builds: BLUMON_ENV = "SAND"
+ * - Production builds: BLUMON_ENV = "PROD"
  *
- * When implementing dynamic config:
- * - Fetch from GET /api/v1/tpv/terminals/:serial/config
- * - Store in TerminalConfig.environment
- * - Replace references to BLUMON_ENV with TerminalConfig.environment
+ * Configured via build variants in app/build.gradle.kts:
+ * - sandbox flavor → BuildConfig.BLUMON_ENV = "SAND"
+ * - production flavor → BuildConfig.BLUMON_ENV = "PROD"
  */
-private const val BLUMON_ENV = "SAND"  // "SAND" or "PROD"
+private val BLUMON_ENV = BuildConfig.BLUMON_ENV
 
 /**
  * BlumonInitializer - Configures Blumon SDK credentials for Momentum Sandbox
@@ -404,7 +404,6 @@ class BlumonInitializer @Inject constructor(
             manual = false,       // ❌ Manual entry disabled
             q6 = false,           // ❌ Q6 not used
             qps = false,          // ❌ QPS (Quick Payment Service) not used
-            qpsAmount = 0.0,      // QPS amount limit (not applicable)
             cashback = false,     // ❌ Cashback not used
             partialCancellation = false, // ❌ Partial cancellation not used
             ticketPromotions = false,    // ❌ Ticket promotions not used

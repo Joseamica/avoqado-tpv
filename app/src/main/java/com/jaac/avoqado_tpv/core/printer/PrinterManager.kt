@@ -227,6 +227,16 @@ class PrinterManager @Inject constructor(
                     val paddedLine = itemLine.padEnd(20, ' ') + itemPrice.padStart(12, ' ')
                     printerInstance.printStr("$paddedLine\n", null)
 
+                    // Modifiers (if any) - indented with price
+                    if (item.modifiers.isNotEmpty()) {
+                        item.modifiers.forEach { modifier ->
+                            val modLine = "   • ${modifier.name}"
+                            val modPrice = modifier.formattedPrice
+                            val paddedModLine = modLine.padEnd(20, ' ') + modPrice.padStart(12, ' ')
+                            printerInstance.printStr("$paddedModLine\n", null)
+                        }
+                    }
+
                     // Notes (if any) - indented with smaller text
                     if (!item.notes.isNullOrBlank()) {
                         printerInstance.printStr("   ${item.notes}\n", null)

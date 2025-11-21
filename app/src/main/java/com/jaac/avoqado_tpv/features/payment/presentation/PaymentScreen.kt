@@ -859,59 +859,79 @@ private fun PaymentSuccessContent(
 
                 // Items list
                 orderItems.forEach { item ->
-                    Row(
+                    // Calculate base product price (without modifiers)
+                    val modifiersUnitPrice = item.modifiers.sumOf { it.priceAdjustment }
+                    val baseUnitPrice = item.unitPrice - modifiersUnitPrice
+                    val baseTotalPrice = baseUnitPrice * item.quantity.toBigDecimal()
+
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = androidx.compose.ui.Alignment.Top
+                            .padding(vertical = 8.dp)
                     ) {
-                        // Product name + quantity
-                        Column(
-                            modifier = Modifier.weight(1f)
+                        // Product name + quantity + base price
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = androidx.compose.ui.Alignment.Top
                         ) {
                             Text(
                                 text = "${item.quantity}x ${item.productName}",
                                 style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.weight(1f)
                             )
 
-                            // Modifiers (if any)
-                            if (item.modifiers.isNotEmpty()) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Column(
-                                    modifier = Modifier.padding(start = 8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                                ) {
-                                    item.modifiers.forEach { modifier ->
+                            Text(
+                                text = String.format(java.util.Locale.US, "$%.2f", baseTotalPrice),
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+
+                        // Modifiers (if any) - with individual prices
+                        if (item.modifiers.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Column(
+                                modifier = Modifier.padding(start = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                item.modifiers.forEach { modifier ->
+                                    val modifierTotalPrice = modifier.priceAdjustment * item.quantity.toBigDecimal()
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
                                         Text(
-                                            text = "• ${modifier.name}",
+                                            text = "  • ${modifier.name}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.weight(1f)
+                                        )
+
+                                        Text(
+                                            text = String.format(java.util.Locale.US, "+$%.2f", modifierTotalPrice),
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                 }
                             }
-
-                            // Notes (if any)
-                            if (!item.notes.isNullOrBlank()) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = item.notes,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
-                                )
-                            }
                         }
 
-                        // Price
-                        Text(
-                            text = item.formattedTotalPrice,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontWeight = FontWeight.Medium
-                        )
+                        // Notes (if any)
+                        if (!item.notes.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = item.notes,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                                modifier = Modifier.padding(start = 8.dp)
+                            )
+                        }
                     }
                 }
 

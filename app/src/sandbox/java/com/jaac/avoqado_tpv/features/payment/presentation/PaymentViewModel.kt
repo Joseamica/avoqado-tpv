@@ -163,6 +163,10 @@ class PaymentViewModel @Inject constructor(
     private var currentOrderId: String? = null  // Order ID (null = fast payment, non-null = order payment)
     private var currentOrderNumber: String? = null  // Order number (for display in receipt)
 
+    // ⚡ Performance optimization flags (1GB RAM devices)
+    private var pinDialogFlowsStarted = false  // Track if PIN dialog collectors are running
+    private var merchantsLoaded = false  // Track if merchants have been loaded
+
     // ═══════════════════════════════════════════════════════════════════════════
     // EMV TAG EXTRACTION USE CASES
     // ═══════════════════════════════════════════════════════════════════════════
@@ -216,45 +220,17 @@ class PaymentViewModel @Inject constructor(
     }
 
     init {
-        Timber.d("🎬 [PaymentViewModel] Initialized - Starting PIN listeners")
-        Timber.d("🔍 [DIAGNOSTIC] TransProcessRepository instance: ${System.identityHashCode(transProcessRepository)}")
-        Timber.d("🔍 [DIAGNOSTIC] StartEmvTransUseCase instance: ${System.identityHashCode(startEmvTransUseCase)}")
-        Timber.d("🔍 [DIAGNOSTIC] PreTransUseCase instance: ${System.identityHashCode(preTransUseCase)}")
-
-        // Try to get repository from UseCase using reflection to verify instance
-        try {
-            val field = startEmvTransUseCase.javaClass.getDeclaredField("repository")
-            field.isAccessible = true
-            val useCaseRepo = field.get(startEmvTransUseCase)
-            Timber.d("🔍 [DIAGNOSTIC] Repository inside StartEmvTransUseCase: ${System.identityHashCode(useCaseRepo)}")
-            Timber.d("🔍 [DIAGNOSTIC] Same instance? ${useCaseRepo === transProcessRepository}")
-        } catch (e: Exception) {
-            Timber.e(e, "Failed to access UseCase repository via reflection")
-        }
+        Timber.d("🎬 [PaymentViewModel] Initialized")
 
         // 🔧 Initialize Blumon SDK (once every 24 hours per Edgardo's recommendation)
         // This replaces the duplicate init logic that was being called on EVERY payment
-        viewModelScope.launch {
+        // ⚡ Performance: Use Dispatchers.IO to avoid blocking main thread (network + database operations)
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             initializationManager.ensureInitialized().onFailure { error ->
                 Timber.e(error, "❌ Failed to initialize Blumon SDK")
             }
         }
 
-        // 🏪 Load available merchant accounts
-        viewModelScope.launch {
-            getMerchantsUseCase().collect { merchantList ->
-                _merchants.value = merchantList
-                Timber.d("🏪 [Merchants] Loaded ${merchantList.size} accounts: ${merchantList.map { it.displayName }}")
-            }
-        }
-
-        // 🏪 Track current merchant from SDK manager
-        viewModelScope.launch {
-            _currentMerchant.value = multiMerchantSDKManager.getCurrentMerchant()
-            Timber.d("🏪 [Merchants] Current account: ${_currentMerchant.value?.displayName ?: "Default (${com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber})"}")
-        }
-
-        collectPinDialogFlows()
         collectSocketEvents()  // 🔌 Listen to real-time Socket.IO events
     }
 
@@ -273,13 +249,20 @@ class PaymentViewModel @Inject constructor(
      * 6. getPinResultFlow() emits result (0 = success)
      *
      * Pattern: Square Terminal, Toast POS - Hardware manages PIN, app observes events
+     *
+     * ⚡ Performance: Only started when payment begins (not in init block)
      */
     private fun collectPinDialogFlows() {
+        // Prevent multiple executions (performance optimization for 1GB RAM)
+        if (pinDialogFlowsStarted) {
+            Timber.d("📟 [PIN Dialog] Collectors already running, skipping...")
+            return
+        }
+        pinDialogFlowsStarted = true
+        Timber.d("📟 [PIN Dialog] Starting collectors...")
         // 1️⃣ PIN Dialog State - When SDK needs to show PIN pad
         viewModelScope.launch {
-            val flow = transProcessRepository.getEventPinDialogStateFlow()
-            Timber.d("🔍 [DIAGNOSTIC] EventPinDialogStateFlow instance: ${System.identityHashCode(flow)}")
-            flow.collect { state ->
+            transProcessRepository.getEventPinDialogStateFlow().collect { state ->
                 Timber.d("📟 [PIN Dialog] State changed: $state")
                 // PAX A910S physical keyboard activates automatically
                 // No UI action needed - hardware handles it
@@ -507,6 +490,33 @@ class PaymentViewModel @Inject constructor(
         _merchantSwitchMessage.value = null
     }
 
+    /**
+     * ⚡ Performance: Lazy-load merchants only when needed
+     * Called before showing merchant selection or auto-selecting merchant
+     */
+    private fun ensureMerchantsLoaded() {
+        if (merchantsLoaded) {
+            Timber.d("🏪 [Merchants] Already loaded, skipping...")
+            return
+        }
+        merchantsLoaded = true
+        Timber.d("🏪 [Merchants] Loading merchant accounts...")
+
+        // 🏪 Load available merchant accounts
+        viewModelScope.launch {
+            getMerchantsUseCase().collect { merchantList ->
+                _merchants.value = merchantList
+                Timber.d("🏪 [Merchants] Loaded ${merchantList.size} accounts")
+            }
+        }
+
+        // 🏪 Track current merchant from SDK manager
+        viewModelScope.launch {
+            _currentMerchant.value = multiMerchantSDKManager.getCurrentMerchant()
+            Timber.d("🏪 [Merchants] Current account: ${_currentMerchant.value?.displayName ?: "Default"}")
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // NEW PAYMENT FLOW: Rating → Tip → Merchant → Payment
     // ═══════════════════════════════════════════════════════════════════════════
@@ -539,6 +549,11 @@ class PaymentViewModel @Inject constructor(
         } else {
             Timber.d("⚡ [Payment Flow] Fast payment mode (no order)")
         }
+
+        // ⚡ Performance: Pre-load merchants early so they're ready when needed
+        // This runs async but gives time for merchants to load before submitTip() needs them
+        ensureMerchantsLoaded()
+
         _state.value = PaymentState.CollectingRating(amount = amount)
     }
 
@@ -635,6 +650,9 @@ class PaymentViewModel @Inject constructor(
         currentTip = "0.00"
         currentRating = null
 
+        // ⚡ Performance: Load merchants only when needed (lazy-load)
+        ensureMerchantsLoaded()
+
         // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
         val merchants = _merchants.value
         if (merchants.size == 1) {
@@ -677,6 +695,9 @@ class PaymentViewModel @Inject constructor(
         currentTip = tipAmount
         currentRating = rating
 
+        // ⚡ Performance: Load merchants only when needed (lazy-load)
+        ensureMerchantsLoaded()
+
         // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
         val merchants = _merchants.value
         if (merchants.size == 1) {
@@ -716,6 +737,9 @@ class PaymentViewModel @Inject constructor(
         // ⭐ NEW: Save zero tip and rating for backend recording
         currentTip = "0.00"
         currentRating = rating
+
+        // ⚡ Performance: Load merchants only when needed (lazy-load)
+        ensureMerchantsLoaded()
 
         // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
         val merchants = _merchants.value
@@ -860,6 +884,9 @@ class PaymentViewModel @Inject constructor(
         // ⭐ NEW: Get venue and staff context for backend recording
         currentVenueId = authRepository.getVenueId() ?: ""
         currentStaffId = authRepository.getStaffId() ?: ""
+
+        // ⚡ Performance: Start PIN dialog collectors only when payment begins
+        collectPinDialogFlows()
 
         Timber.d("🎯 [BlumonPayment] Starting ONLINE chip payment flow: $$amount")
         Timber.d("   💰 Amount: $$amount → $currentAmountInCents centavos")

@@ -61,6 +61,9 @@ class LoginViewModel @Inject constructor(
                     // 🔌 Connect Socket.IO with JWT token
                     connectSocketIO(result.data)
 
+                    // NOTE: Blumon SDK init moved to HomeViewModel
+                    // (LoginViewModel gets destroyed on navigation, cancelling coroutines)
+
                     LoginState.Success(result.data)
                 }
                 is Result.Error -> {

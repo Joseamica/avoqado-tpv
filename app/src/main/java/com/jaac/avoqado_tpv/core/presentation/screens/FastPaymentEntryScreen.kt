@@ -45,10 +45,9 @@ fun FastPaymentEntryScreen(
     var amount by remember { mutableStateOf("0") }
     var showError by remember { mutableStateOf(false) }
 
-    // Format amount as currency ($X.XX)
+    // Display amount as typed (no forced decimals while typing)
     val formattedAmount = remember(amount) {
-        val decimal = amount.toBigDecimalOrNull() ?: BigDecimal.ZERO
-        "$${String.format(java.util.Locale.US, "%,.2f", decimal)}"
+        "$$amount"
     }
 
     // Check if amount is valid (> 0)
@@ -110,12 +109,20 @@ fun FastPaymentEntryScreen(
                 CustomKeyboard(
                     onNumberClick = { digit ->
                         showError = false
-                        if (amount.length < 8) {
+                        // Limit to 8 chars total, max 2 decimal places
+                        val decimalIndex = amount.indexOf('.')
+                        val canAddDigit = amount.length < 8 &&
+                            (decimalIndex == -1 || amount.length - decimalIndex <= 2)
+                        if (canAddDigit) {
                             amount = if (amount == "0") digit.toString() else amount + digit.toString()
                         }
                     },
                     onDecimalClick = {
-                        // Decimal point not needed - treating input as whole dollars
+                        showError = false
+                        // Only add decimal if not already present
+                        if (!amount.contains('.')) {
+                            amount = "$amount."
+                        }
                     },
                     onClearClick = {
                         showError = false

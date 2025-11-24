@@ -1,5 +1,12 @@
 package com.jaac.avoqado_tpv.features.ordering.presentation.components
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -7,31 +14,28 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SheetState
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -40,11 +44,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.ordering.domain.MockProducts
 import com.jaac.avoqado_tpv.features.ordering.domain.ModifierGroup
@@ -56,45 +64,94 @@ import java.math.BigDecimal
 /**
  * Product Selector Bottom Sheet
  *
+ * ⚡ Performance: Changed from ModalBottomSheet to In-Composition Overlay
+ * ModalBottomSheet creates a new Window causing 101 frames skipped (~1.8s delay) on 1GB RAM devices.
+ * In-composition overlay stays in the same Window hierarchy - much faster.
+ *
  * Compact bottom sheet for PAX A910S (720x1280) that allows:
  * 1. Quantity selection (with +/- buttons)
  * 2. Modifier selection (grouped, single/multiple choice)
  * 3. Optional notes (free text, 2-3 lines)
  * 4. Live price calculation (base + modifiers × quantity)
  *
- * Design: Hybrid Toast/Square pattern
- * - Draggable handle
- * - Scrollable content (if many modifiers)
- * - Large "Add to cart" button with live price
- *
- * @param product Product to customize
+ * @param visible Whether the sheet is visible
+ * @param product Product to customize (nullable when not visible)
  * @param modifierGroups Available modifier groups for this product
  * @param onDismiss Close bottom sheet
  * @param onAddToCart Callback with quantity, selected modifiers, and notes
  */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ProductSelectorBottomSheet(
-    product: Product,
+    visible: Boolean,
+    product: Product?,
     modifierGroups: List<ModifierGroup>,
     onDismiss: () -> Unit,
     onAddToCart: (quantity: Int, selectedModifiers: List<ProductModifier>, notes: String) -> Unit,
-    modifier: Modifier = Modifier,
-    sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    modifier: Modifier = Modifier
 ) {
-    var quantity by remember { mutableIntStateOf(1) }
-    var notes by remember { mutableStateOf("") }
-    var selectedModifiers by remember { mutableStateOf<Map<String, ProductModifier>>(emptyMap()) }
+    // Early return if no product
+    if (product == null) return
+
+    var quantity by remember(product.id) { mutableIntStateOf(1) }
+    var notes by remember(product.id) { mutableStateOf("") }
+    var selectedModifiers by remember(product.id) { mutableStateOf<Map<String, ProductModifier>>(emptyMap()) }
 
     // Calculate total price (base + modifiers) × quantity
     val modifiersTotal = selectedModifiers.values.sumOf { it.priceAdjustment }
     val totalPrice = (product.price + modifiersTotal) * BigDecimal(quantity.toString())
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
+    // Handle back button press
+    BackHandler(enabled = visible) {
+        onDismiss()
+    }
+
+    // ⚡ Performance: Animated values for smooth transitions (no new Window)
+    val scrimAlpha by animateFloatAsState(
+        targetValue = if (visible) 0.6f else 0f,
+        animationSpec = tween(200),
+        label = "scrimAlpha"
+    )
+
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    val sheetOffsetY by animateDpAsState(
+        targetValue = if (visible) 0.dp else screenHeight,
+        animationSpec = tween(250),
+        label = "sheetOffset"
+    )
+
+    // Overlay container
+    Box(
         modifier = modifier
+            .fillMaxSize()
+            .zIndex(if (visible || scrimAlpha > 0f) 10f else -1f),
+        contentAlignment = Alignment.BottomCenter
     ) {
+        // Scrim
+        if (scrimAlpha > 0f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .alpha(scrimAlpha / 0.6f)
+                    .background(Color.Black.copy(alpha = 0.6f))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { onDismiss() }
+            )
+        }
+
+        // Sheet content
+        val sheetShape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .offset(y = sheetOffsetY)
+                .background(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = sheetShape
+                )
+        ) {
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
@@ -321,23 +378,24 @@ fun ProductSelectorBottomSheet(
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
-    }
+        }  // Close Box (sheet)
+    }  // Close Box (outer)
 }
 
 // ============================================================================
 // Previews
 // ============================================================================
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Preview(name = "Pizza with Modifiers", showBackground = true, heightDp = 800, widthDp = 400)
 @Composable
 private fun ProductSelectorPizzaPreview() {
     AvoqadoTheme {
-        Box(modifier = Modifier.padding(16.dp)) {
+        Box(modifier = Modifier.fillMaxSize()) {
             val product = MockProducts.getProductById("prod_comida_1")!!
             val modifiers = MockProducts.getModifiersForProduct(product.id)
 
             ProductSelectorBottomSheet(
+                visible = true,
                 product = product,
                 modifierGroups = modifiers,
                 onDismiss = {},
@@ -347,16 +405,16 @@ private fun ProductSelectorPizzaPreview() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Preview(name = "Burger with Término", showBackground = true, heightDp = 800, widthDp = 400)
 @Composable
 private fun ProductSelectorBurgerPreview() {
     AvoqadoTheme {
-        Box(modifier = Modifier.padding(16.dp)) {
+        Box(modifier = Modifier.fillMaxSize()) {
             val product = MockProducts.getProductById("prod_comida_2")!!
             val modifiers = MockProducts.getModifiersForProduct(product.id)
 
             ProductSelectorBottomSheet(
+                visible = true,
                 product = product,
                 modifierGroups = modifiers,
                 onDismiss = {},
@@ -366,16 +424,16 @@ private fun ProductSelectorBurgerPreview() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Preview(name = "Bebida No Modifiers", showBackground = true, heightDp = 600, widthDp = 400)
 @Composable
 private fun ProductSelectorNoModifiersPreview() {
     AvoqadoTheme {
-        Box(modifier = Modifier.padding(16.dp)) {
+        Box(modifier = Modifier.fillMaxSize()) {
             val product = MockProducts.getProductById("prod_bebida_2")!!  // Agua Natural (no modifiers)
             val modifiers = MockProducts.getModifiersForProduct(product.id)
 
             ProductSelectorBottomSheet(
+                visible = true,
                 product = product,
                 modifierGroups = modifiers,
                 onDismiss = {},

@@ -115,16 +115,23 @@ fun AppNavigation(
                     navController.navigate(NavRoute.Login.route) {
                         popUpTo(0) { inclusive = true } // Clear entire back stack
                     }
+                    // Reset the expiring state after navigation completes
+                    sessionManager.resetSessionExpiringState()
                 }
                 is SessionEvent.TerminalDeactivated -> {
                     Timber.e("🔐 [AppNavigation] Terminal deactivated - navigating to Activation")
                     navController.navigate(NavRoute.Activation.route) {
                         popUpTo(0) { inclusive = true } // Clear entire back stack
                     }
+                    // Reset the expiring state after navigation completes
+                    sessionManager.resetSessionExpiringState()
                 }
             }
         }
     }
+
+    // 📺 Observe session expiring state for loading overlay
+    val isSessionExpiring by sessionManager.isSessionExpiring.collectAsStateWithLifecycle()
 
     // 🌐 CONNECTION MONITORING (Square/Toast pattern)
     // Shows discrete banner when backend is unreachable, doesn't block operations
@@ -601,6 +608,13 @@ fun AppNavigation(
             state = connectionState,
             modifier = Modifier.align(Alignment.TopCenter)
         )
+
+        // 🔄 SESSION EXPIRING OVERLAY
+        // Shows loading overlay when session is being verified/refreshed
+        // Prevents jarring transition from current screen to Login
+        if (isSessionExpiring) {
+            SessionExpiringOverlay()
+        }
     }
 }
 
@@ -761,6 +775,61 @@ private fun SplashScreenContent() {
             CircularProgressIndicator(
                 color = MaterialTheme.colorScheme.primary
             )
+        }
+    }
+}
+
+/**
+ * Session Expiring Overlay
+ *
+ * Full-screen overlay shown when session is being verified/refreshed.
+ * This provides visual feedback during the 401 → refresh → login flow.
+ *
+ * **Design:**
+ * - Semi-transparent dark background (blocks user interaction)
+ * - Card with loading indicator and message
+ * - Message: "Verificando sesión..." (user-friendly)
+ *
+ * **UX Improvement:**
+ * Before: User sees abrupt transition from any screen to Login
+ * After: User sees "Verificando sesión..." → Login screen appears
+ */
+@Composable
+private fun SessionExpiringOverlay() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.6f)),  // Semi-transparent overlay
+        contentAlignment = Alignment.Center
+    ) {
+        androidx.compose.material3.Card(
+            modifier = Modifier
+                .padding(32.dp),
+            colors = androidx.compose.material3.CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            elevation = androidx.compose.material3.CardDefaults.cardElevation(
+                defaultElevation = 8.dp
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                CircularProgressIndicator(
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(48.dp)
+                )
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                Text(
+                    text = "Verificando sesión...",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
         }
     }
 }

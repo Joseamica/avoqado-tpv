@@ -1,8 +1,11 @@
 package com.jaac.avoqado_tpv.core.session
 
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -54,6 +57,42 @@ class SessionManager @Inject constructor() {
      * Subscribe to this flow in AppNavigation or ViewModels
      */
     val sessionEvents: SharedFlow<SessionEvent> = _sessionEvents.asSharedFlow()
+
+    /**
+     * Session expiring state
+     *
+     * Used to show a loading overlay while session is being verified/refreshed/expired.
+     * This provides visual feedback to the user instead of an abrupt transition.
+     *
+     * **Flow:**
+     * 1. TokenAuthenticator detects 401 → sets isSessionExpiring = true
+     * 2. User sees loading overlay ("Verificando sesión...")
+     * 3. Token refresh completes (success or failure)
+     * 4. If failure → SessionEvent.Expired emitted → navigate to Login
+     * 5. isSessionExpiring reset to false after navigation
+     */
+    private val _isSessionExpiring = MutableStateFlow(false)
+    val isSessionExpiring: StateFlow<Boolean> = _isSessionExpiring.asStateFlow()
+
+    /**
+     * Notify that session verification is in progress
+     *
+     * Called by TokenAuthenticator when 401 is detected, BEFORE attempting token refresh.
+     * This shows a loading overlay to the user so they know something is happening.
+     */
+    fun notifySessionVerifying() {
+        Timber.d("🔄 [SessionManager] Session verification in progress...")
+        _isSessionExpiring.value = true
+    }
+
+    /**
+     * Reset session expiring state
+     *
+     * Called after navigation to Login completes to hide the loading overlay.
+     */
+    fun resetSessionExpiringState() {
+        _isSessionExpiring.value = false
+    }
 
     /**
      * Notify that the session has expired

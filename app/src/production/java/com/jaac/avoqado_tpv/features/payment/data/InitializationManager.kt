@@ -11,6 +11,12 @@ import com.example.clean_lib_services.shared.initializer.domain.use_case.insert_
 import com.example.clean_lib_services.shared.initializer.domain.use_case.insert_init.InsertInitUseCase
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -51,6 +57,29 @@ class InitializationManager @Inject constructor(
         private const val TWENTY_FOUR_HOURS_MS = 86_400_000L  // 24 hours in milliseconds
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PUBLIC STATE - Expose initialization status for other components
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Whether SDK is initialized and ready for payments
+     * Used by PaymentViewModel to check if SDK is ready before starting payment
+     */
+    private val _isInitialized = MutableStateFlow(false)
+    val isInitialized: StateFlow<Boolean> = _isInitialized.asStateFlow()
+
+    /**
+     * Mutex to prevent concurrent initialization attempts
+     * Ensures only one init runs at a time even if called from multiple places
+     */
+    private val initMutex = Mutex()
+
+    /**
+     * Deferred to allow awaiting ongoing initialization
+     * If init is in progress, new callers can await this instead of starting new init
+     */
+    private var initializationDeferred: CompletableDeferred<Result<Unit>>? = null
+
     /**
      * Ensure Blumon SDK is initialized
      *
@@ -60,21 +89,75 @@ class InitializationManager @Inject constructor(
      *
      * Otherwise skips init (reuses existing configuration)
      *
+     * **Thread-safe:** Uses mutex to prevent concurrent initialization attempts.
+     * If called while init is in progress, awaits the ongoing init instead.
+     *
      * @return Result.success(Unit) if initialized or already valid
      * @return Result.failure if initialization fails
      */
     suspend fun ensureInitialized(): Result<Unit> {
-        val lastInit = secureStorage.getLastBlumonInitTimestamp()
-        val now = System.currentTimeMillis()
-
-        return if (shouldInitialize(lastInit, now)) {
-            Timber.i("🔧 [InitializationManager] Running Blumon SDK initialization...")
-            executeInitialization(now)
-        } else {
-            val hoursSinceInit = ((now - (lastInit ?: 0)) / (1000 * 60 * 60)).toInt()
-            Timber.d("✅ [InitializationManager] SDK already initialized ($hoursSinceInit hours ago) - skipping init")
-            Result.success(Unit)
+        // Fast path: already initialized
+        if (_isInitialized.value) {
+            Timber.d("✅ [InitializationManager] Already initialized (fast path)")
+            return Result.success(Unit)
         }
+
+        // Check if initialization is in progress - await it instead of starting new
+        initializationDeferred?.let { deferred ->
+            if (!deferred.isCompleted) {
+                Timber.d("⏳ [InitializationManager] Awaiting ongoing initialization...")
+                return deferred.await()
+            }
+        }
+
+        // Use mutex to ensure only one init runs at a time
+        return initMutex.withLock {
+            // Double-check after acquiring lock
+            if (_isInitialized.value) {
+                Timber.d("✅ [InitializationManager] Already initialized (after lock)")
+                return@withLock Result.success(Unit)
+            }
+
+            val lastInit = secureStorage.getLastBlumonInitTimestamp()
+            val now = System.currentTimeMillis()
+
+            if (shouldInitialize(lastInit, now)) {
+                // Create deferred so other callers can await
+                val deferred = CompletableDeferred<Result<Unit>>()
+                initializationDeferred = deferred
+
+                Timber.i("🔧 [InitializationManager] Running Blumon SDK initialization...")
+                val result = executeInitialization(now)
+
+                // Mark as initialized on success
+                if (result.isSuccess) {
+                    _isInitialized.value = true
+                }
+
+                deferred.complete(result)
+                result
+            } else {
+                val hoursSinceInit = ((now - (lastInit ?: 0)) / (1000 * 60 * 60)).toInt()
+                Timber.d("✅ [InitializationManager] SDK already initialized ($hoursSinceInit hours ago) - skipping init")
+                _isInitialized.value = true  // Mark as initialized (cached)
+                Result.success(Unit)
+            }
+        }
+    }
+
+    /**
+     * Await initialization if in progress, or return immediately if ready
+     *
+     * Use this when you need to ensure SDK is ready before proceeding.
+     * - If already initialized: returns immediately
+     * - If init in progress: awaits completion
+     * - If not started: starts initialization and awaits
+     *
+     * @return Result.success(Unit) when SDK is ready
+     * @return Result.failure if initialization fails
+     */
+    suspend fun awaitInitialization(): Result<Unit> {
+        return ensureInitialized()
     }
 
     /**
@@ -219,6 +302,22 @@ class InitializationManager @Inject constructor(
      */
     suspend fun forceReinitialize(): Result<Unit> {
         Timber.w("⚠️ [InitializationManager] Force re-initialization requested")
-        return executeInitialization(System.currentTimeMillis())
+
+        return initMutex.withLock {
+            // Reset state before re-initializing
+            _isInitialized.value = false
+
+            val deferred = CompletableDeferred<Result<Unit>>()
+            initializationDeferred = deferred
+
+            val result = executeInitialization(System.currentTimeMillis())
+
+            if (result.isSuccess) {
+                _isInitialized.value = true
+            }
+
+            deferred.complete(result)
+            result
+        }
     }
 }

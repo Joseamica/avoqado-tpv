@@ -163,16 +163,18 @@ fun MenuTab(
     }
 
     // Product selector bottom sheet
-    if (showProductSelector && selectedProduct != null) {
-        ProductSelectorBottomSheet(
-            product = selectedProduct,
-            modifierGroups = selectedProduct.modifierGroups,  // Use backend modifiers
-            onDismiss = onProductSelectorDismiss,
-            onAddToCart = { quantity, modifiers, notes ->
-                onProductSelectorConfirm(selectedProduct, quantity, modifiers, notes)
+    // ⚡ Performance: Uses in-composition overlay instead of ModalBottomSheet
+    ProductSelectorBottomSheet(
+        visible = showProductSelector,
+        product = selectedProduct,
+        modifierGroups = selectedProduct?.modifierGroups ?: emptyList(),
+        onDismiss = onProductSelectorDismiss,
+        onAddToCart = { quantity, modifiers, notes ->
+            selectedProduct?.let { product ->
+                onProductSelectorConfirm(product, quantity, modifiers, notes)
             }
-        )
-    }
+        }
+    )
 }
 
 /**

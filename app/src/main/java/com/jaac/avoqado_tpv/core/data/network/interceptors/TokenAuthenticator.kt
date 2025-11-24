@@ -80,6 +80,9 @@ class TokenAuthenticator @Inject constructor(
     override fun authenticate(route: Route?, response: Response): Request? {
         Timber.w("⚠️ [Auth] Received 401 Unauthorized - Token expired, attempting refresh...")
 
+        // 📺 Show loading overlay immediately so user knows something is happening
+        sessionManager.notifySessionVerifying()
+
         // Prevent multiple simultaneous refreshes (thread-safe)
         synchronized(refreshLock) {
             // Get current token from storage
@@ -90,6 +93,7 @@ class TokenAuthenticator @Inject constructor(
             val requestToken = response.request.header("Authorization")?.removePrefix("Bearer ")
             if (currentToken != null && currentToken != requestToken) {
                 Timber.d("✅ [Auth] Token already refreshed by another thread, retrying request")
+                sessionManager.resetSessionExpiringState()  // Hide loading overlay
                 return buildRequestWithNewToken(response.request, currentToken)
             }
 
@@ -105,9 +109,11 @@ class TokenAuthenticator @Inject constructor(
                 val refreshedToken = secureStorage.getToken()
                 if (refreshedToken != null && refreshedToken != requestToken) {
                     Timber.d("✅ [Auth] Refresh completed, retrying request")
+                    sessionManager.resetSessionExpiringState()  // Hide loading overlay
                     return buildRequestWithNewToken(response.request, refreshedToken)
                 } else {
                     Timber.w("❌ [Auth] Refresh failed or timed out")
+                    // Keep isSessionExpiring = true - will be reset after Login navigation
                     return null // Give up
                 }
             }
@@ -123,6 +129,9 @@ class TokenAuthenticator @Inject constructor(
 
                 if (refreshResult is com.jaac.avoqado_tpv.core.domain.models.Result.Success) {
                     Timber.i("✅ [Auth] Token refreshed successfully, retrying original request")
+
+                    // ✅ Hide loading overlay - refresh succeeded, no need to show "verifying" anymore
+                    sessionManager.resetSessionExpiringState()
 
                     // Get new token and retry
                     val newToken = secureStorage.getToken()

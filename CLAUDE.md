@@ -28,6 +28,70 @@
 
 ---
 
+## 🚨 CRITICAL: Blumon SDK & Multi-Merchant - HANDLE WITH EXTREME CARE
+
+> **⚠️ WARNING**: The Blumon PAX SDK and multi-merchant functionality are the MOST CRITICAL parts of this application. ANY changes to payment-related code can result in **failed transactions, lost revenue, or corrupted payment data**.
+
+### Before Modifying Payment Code:
+
+1. **UNDERSTAND THE FULL FLOW** - Read [PAYMENT_RECONCILIATION.md](./PAYMENT_RECONCILIATION.md) completely
+2. **NEVER modify without testing** - Test BOTH sandbox AND production variants
+3. **Multi-merchant switching takes ~8 seconds** - This is EXPECTED behavior (OAuth + DUKPT keys download)
+4. **SDK can only have ONE merchant active** - Switching requires full re-initialization
+
+### Files Requiring Extra Caution:
+
+| File | Risk Level | Why |
+|------|-----------|-----|
+| `PaymentViewModel.kt` (sandbox/production) | 🔴 CRITICAL | Core payment flow, SDK integration |
+| `InitializationManager.kt` (sandbox/production) | 🔴 CRITICAL | Blumon SDK initialization (OAuth, DUKPT) |
+| `MultiMerchantSDKManager.kt` | 🔴 CRITICAL | Merchant switching logic |
+| `BlumonInitializer.kt` (sandbox/production) | 🔴 CRITICAL | SDK credential setup |
+| `RecordPaymentUseCase.kt` | 🟠 HIGH | Backend payment recording |
+
+### SDK Initialization Flow (DO NOT BREAK):
+
+```
+Login Success
+    │
+    └─► InitializationManager.ensureInitialized() [BACKGROUND]
+            │
+            ├─► Step 1: OAuth authentication (sandbox-tokener.blumonpay.net)
+            ├─► Step 2: DUKPT key download
+            ├─► Step 3: posId verification via backend
+            └─► Step 4: Store last init timestamp (24h cache)
+```
+
+### Multi-Merchant Switch Flow (DO NOT BREAK):
+
+```
+User selects different merchant
+    │
+    └─► MultiMerchantSDKManager.switchMerchant()
+            │
+            ├─► Update TerminalConfig.serialNumber
+            ├─► Force SDK re-initialization (~8 seconds)
+            └─► Update _currentMerchant StateFlow
+```
+
+### Race Condition Prevention:
+
+- **ALWAYS await merchants** before reading `_merchants.value`
+- **ALWAYS check SDK ready** before starting payment
+- **NEVER assume merchants are loaded** - they load asynchronously
+
+### Testing Checklist for Payment Changes:
+
+- [ ] Test with sandbox variant (`./gradlew installSandboxDebug`)
+- [ ] Test with production variant (if you have production terminal)
+- [ ] Test merchant switching (A → B → A)
+- [ ] Test fast user flow (rating → tip → pay in <5 seconds)
+- [ ] Test payment after app restart
+- [ ] Verify backend receives correct `merchantAccountId`
+- [ ] Verify cash payments have `merchantAccountId: null`
+
+---
+
 ## 🎯 Core Principles: Anti-Hallucination Protocol
 
 > **MANDATORY**: All code MUST follow world-class Kotlin/Android best practices. NO exceptions unless explicitly documented.

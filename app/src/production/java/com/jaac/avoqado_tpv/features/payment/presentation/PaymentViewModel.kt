@@ -62,6 +62,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
@@ -167,6 +168,10 @@ class PaymentViewModel @Inject constructor(
     private var pinDialogFlowsStarted = false  // Track if PIN dialog collectors are running
     private var merchantsLoaded = false  // Track if merchants have been loaded
 
+    // 🔒 CRITICAL: Signal when merchants are fully loaded (prevents race condition)
+    // Used by skipTip()/submitTip() to await merchants before reading _merchants.value
+    private var merchantsLoadingDeferred = kotlinx.coroutines.CompletableDeferred<Unit>()
+
     // ═══════════════════════════════════════════════════════════════════════════
     // EMV TAG EXTRACTION USE CASES
     // ═══════════════════════════════════════════════════════════════════════════
@@ -222,14 +227,9 @@ class PaymentViewModel @Inject constructor(
     init {
         Timber.d("🎬 [PaymentViewModel] Initialized")
 
-        // 🔧 Initialize Blumon SDK (once every 24 hours per Edgardo's recommendation)
-        // This replaces the duplicate init logic that was being called on EVERY payment
-        // ⚡ Performance: Use Dispatchers.IO to avoid blocking main thread (network + database operations)
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            initializationManager.ensureInitialized().onFailure { error ->
-                Timber.e(error, "❌ Failed to initialize Blumon SDK")
-            }
-        }
+        // 🔧 Blumon SDK init is now triggered after login (see LoginViewModel.initializeBlumonSDK)
+        // This gives ~10-15 seconds head start before user opens payment screen
+        // If SDK is not ready when user starts payment, we await it in startPayment()
 
         collectSocketEvents()  // 🔌 Listen to real-time Socket.IO events
     }
@@ -493,6 +493,9 @@ class PaymentViewModel @Inject constructor(
     /**
      * ⚡ Performance: Lazy-load merchants only when needed
      * Called before showing merchant selection or auto-selecting merchant
+     *
+     * 🔒 THREAD-SAFE: Uses CompletableDeferred to signal completion.
+     * Callers can await merchantsLoadingDeferred to ensure merchants are loaded.
      */
     private fun ensureMerchantsLoaded() {
         if (merchantsLoaded) {
@@ -502,19 +505,39 @@ class PaymentViewModel @Inject constructor(
         merchantsLoaded = true
         Timber.d("🏪 [Merchants] Loading merchant accounts...")
 
-        // 🏪 Load available merchant accounts
+        // 🏪 Load merchants and current merchant, then signal completion
         viewModelScope.launch {
-            getMerchantsUseCase().collect { merchantList ->
+            try {
+                // Load available merchant accounts (first emission only)
+                val merchantList = getMerchantsUseCase().first()
                 _merchants.value = merchantList
                 Timber.d("🏪 [Merchants] Loaded ${merchantList.size} accounts")
+
+                // Track current merchant from SDK manager
+                _currentMerchant.value = multiMerchantSDKManager.getCurrentMerchant()
+                Timber.d("🏪 [Merchants] Current account: ${_currentMerchant.value?.displayName ?: "Default"}")
+
+                // 🔒 Signal that merchants are fully loaded
+                if (!merchantsLoadingDeferred.isCompleted) {
+                    merchantsLoadingDeferred.complete(Unit)
+                    Timber.d("✅ [Merchants] Loading complete - deferred signaled")
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Merchants] Failed to load merchants")
+                // Complete anyway to avoid blocking forever
+                if (!merchantsLoadingDeferred.isCompleted) {
+                    merchantsLoadingDeferred.complete(Unit)
+                }
             }
         }
+    }
 
-        // 🏪 Track current merchant from SDK manager
-        viewModelScope.launch {
-            _currentMerchant.value = multiMerchantSDKManager.getCurrentMerchant()
-            Timber.d("🏪 [Merchants] Current account: ${_currentMerchant.value?.displayName ?: "Default"}")
-        }
+    /**
+     * Await merchants to be fully loaded (suspend function)
+     */
+    private suspend fun awaitMerchantsLoaded() {
+        ensureMerchantsLoaded()
+        merchantsLoadingDeferred.await()
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -695,41 +718,47 @@ class PaymentViewModel @Inject constructor(
         currentTip = tipAmount
         currentRating = rating
 
-        // ⚡ Performance: Load merchants only when needed (lazy-load)
-        ensureMerchantsLoaded()
+        // 🔒 CRITICAL: Await merchants to be fully loaded before using them
+        // This prevents race condition where _merchants.value is empty
+        viewModelScope.launch {
+            awaitMerchantsLoaded()
 
-        // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
-        val merchants = _merchants.value
-        if (merchants.size == 1) {
-            val onlyMerchant = merchants.first()
-            Timber.d("🏪 [Payment Flow] Only 1 merchant available (${onlyMerchant.displayName}) → Auto-selecting and skipping merchant selection screen")
-            updateSelectedMerchant(onlyMerchant)
+            // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
+            val merchants = _merchants.value
+            if (merchants.size == 1) {
+                val onlyMerchant = merchants.first()
+                Timber.d("🏪 [Payment Flow] Only 1 merchant available (${onlyMerchant.displayName}) → Auto-selecting and skipping merchant selection screen")
+                updateSelectedMerchant(onlyMerchant)
 
-            // Go directly to payment processing (skip SelectingMerchant screen)
-            startPayment(totalAmount)
-            return
+                // Go directly to payment processing (skip SelectingMerchant screen)
+                startPayment(totalAmount)
+                return@launch
+            }
+
+            // Multiple merchants → Show selection screen
+            _state.value = PaymentState.SelectingMerchant(
+                subtotal = subtotal,
+                tipAmount = tipAmount,
+                totalAmount = totalAmount,
+                rating = rating
+            )
+
+            // Auto-select first merchant if none selected
+            if (_currentMerchant.value == null && merchants.isNotEmpty()) {
+                val defaultMerchant = merchants.first()
+                Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
+                updateSelectedMerchant(defaultMerchant)
+            }
+
+            Timber.d("💵 [Payment Flow] SelectingMerchant state created: subtotal='$subtotal', tipAmount='$tipAmount', totalAmount='$totalAmount'")
         }
-
-        // Multiple merchants → Show selection screen
-        _state.value = PaymentState.SelectingMerchant(
-            subtotal = subtotal,
-            tipAmount = tipAmount,
-            totalAmount = totalAmount,
-            rating = rating
-        )
-
-        // Auto-select first merchant if none selected
-        if (_currentMerchant.value == null && merchants.isNotEmpty()) {
-            val defaultMerchant = merchants.first()
-            Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
-            updateSelectedMerchant(defaultMerchant)
-        }
-
-        Timber.d("💵 [Payment Flow] SelectingMerchant state created: subtotal='$subtotal', tipAmount='$tipAmount', totalAmount='$totalAmount'")
     }
 
     /**
      * Skip tip (no tip) and proceed to merchant selection
+     *
+     * 🔒 RACE CONDITION FIX: Now awaits merchants to be fully loaded before reading them.
+     * Previously, ensureMerchantsLoaded() was async and _merchants.value could be empty.
      */
     fun skipTip(subtotal: String, rating: Int?) {
         Timber.d("⏭️  [Payment Flow] Tip skipped")
@@ -738,34 +767,37 @@ class PaymentViewModel @Inject constructor(
         currentTip = "0.00"
         currentRating = rating
 
-        // ⚡ Performance: Load merchants only when needed (lazy-load)
-        ensureMerchantsLoaded()
+        // 🔒 CRITICAL: Await merchants to be fully loaded before using them
+        // This prevents race condition where _merchants.value is empty
+        viewModelScope.launch {
+            awaitMerchantsLoaded()
 
-        // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
-        val merchants = _merchants.value
-        if (merchants.size == 1) {
-            val onlyMerchant = merchants.first()
-            Timber.d("🏪 [Payment Flow] Only 1 merchant available (${onlyMerchant.displayName}) → Auto-selecting and skipping merchant selection screen")
-            updateSelectedMerchant(onlyMerchant)
+            // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
+            val merchants = _merchants.value
+            if (merchants.size == 1) {
+                val onlyMerchant = merchants.first()
+                Timber.d("🏪 [Payment Flow] Only 1 merchant available (${onlyMerchant.displayName}) → Auto-selecting and skipping merchant selection screen")
+                updateSelectedMerchant(onlyMerchant)
 
-            // Go directly to payment processing (skip SelectingMerchant screen)
-            startPayment(subtotal)  // Total = subtotal (no tip)
-            return
-        }
+                // Go directly to payment processing (skip SelectingMerchant screen)
+                startPayment(subtotal)  // Total = subtotal (no tip)
+                return@launch
+            }
 
-        // Multiple merchants → Show selection screen
-        _state.value = PaymentState.SelectingMerchant(
-            subtotal = subtotal,
-            tipAmount = "0",
-            totalAmount = subtotal,
-            rating = rating
-        )
+            // Multiple merchants → Show selection screen
+            _state.value = PaymentState.SelectingMerchant(
+                subtotal = subtotal,
+                tipAmount = "0",
+                totalAmount = subtotal,
+                rating = rating
+            )
 
-        // Auto-select first merchant if none selected
-        if (_currentMerchant.value == null && merchants.isNotEmpty()) {
-            val defaultMerchant = merchants.first()
-            Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
-            updateSelectedMerchant(defaultMerchant)
+            // Auto-select first merchant if none selected
+            if (_currentMerchant.value == null && merchants.isNotEmpty()) {
+                val defaultMerchant = merchants.first()
+                Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
+                updateSelectedMerchant(defaultMerchant)
+            }
         }
     }
 
@@ -857,14 +889,33 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
-     * Convert decimal amount to cents
-     * Example: "30.00" → "3000"
+     * Convert decimal amount to cents for PreTrans (EMV kernel)
+     *
+     * PreTrans/EMV kernel expects INTEGER cents (Long.parseLong compatible).
+     * - Input: "10.00" → Output: "1000" (cents)
+     * - Input: "10.50" → Output: "1050" (cents)
+     *
+     * ⚠️ IMPORTANT: This is ONLY for PreTrans. SaleIcc uses formatAmountDecimal() instead.
      */
     private fun convertToCents(amount: String): String {
         val amountDecimal = amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
         val cents = amountDecimal.multiply(java.math.BigDecimal(100))
             .setScale(0, java.math.RoundingMode.HALF_UP)
         return cents.toLong().toString()
+    }
+
+    /**
+     * Format amount as decimal string for SaleIcc (Blumon API)
+     *
+     * SaleIcc/Blumon API expects DECIMAL format with 2 decimal places.
+     * - Input: "10" → Output: "10.00"
+     * - Input: "10.5" → Output: "10.50"
+     *
+     * Per Edgardo Olvera (2025-01-21): "Es float... Si tienes que poner un decimal"
+     */
+    private fun formatAmountDecimal(amount: String): String {
+        val amountDecimal = amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+        return String.format(java.util.Locale.US, "%.2f", amountDecimal)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -879,7 +930,7 @@ class PaymentViewModel @Inject constructor(
      */
     fun startPayment(amount: String) {
         currentAmount = amount  // Save for UI display
-        currentAmountInCents = convertToCents(amount)  // Save for SDK calls
+        currentAmountInCents = convertToCents(amount)  // Save for SDK calls (cents as integer string)
 
         // ⭐ NEW: Get venue and staff context for backend recording
         currentVenueId = authRepository.getVenueId() ?: ""
@@ -895,6 +946,26 @@ class PaymentViewModel @Inject constructor(
         // ⭐ CRITICAL: Validate shift is open before processing payment (Square/Toast pattern)
         // Without an open shift, cash reconciliation is impossible and payments can't be properly tracked
         viewModelScope.launch {
+            // 🔧 CRITICAL: Await SDK initialization before proceeding with payment
+            // SDK init is triggered after login (LoginViewModel.initializeBlumonSDK)
+            // This ensures SDK is ready even if user navigates quickly to payment screen
+
+            // 📺 Show loading if SDK needs initialization (prevents 7s of no feedback)
+            if (!initializationManager.isInitialized.value) {
+                _state.value = PaymentState.Processing("Configurando sistema de pago...")
+                Timber.d("⏳ [Payment] SDK not ready - showing loading indicator")
+            }
+
+            initializationManager.awaitInitialization().onFailure { error ->
+                Timber.e(error, "❌ [Payment] SDK initialization failed")
+                _state.value = PaymentState.Error(
+                    message = "Error inicializando sistema de pago.\n\n" +
+                             "Por favor, cierra sesión e intenta nuevamente.",
+                    context = null
+                )
+                return@launch
+            }
+
             val currentShift = shiftRepository.getCurrentShift(currentVenueId).getOrNull()
 
             if (currentShift == null || currentShift.status != com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN) {
@@ -1216,8 +1287,9 @@ class PaymentViewModel @Inject constructor(
                 // PASO 4: ⭐ SaleIcc - ONLINE AUTHORIZATION ⭐
                 _state.value = PaymentState.Processing("Autorizando con banco...")
                 Timber.i("[PHASE 4] SaleIcc - Sending to Momentum for ONLINE authorization...")
+                val amountForSaleIcc = formatAmountDecimal(currentAmount)
                 val authResult = performOnlineAuthorization(
-                    amount = currentAmountInCents,  // ✅ Pass cents format to SDK
+                    amount = amountForSaleIcc,  // ✅ Decimal format for Blumon API (e.g., "10.00")
                     track2 = currentTrack2,  // Extracted from emvTagListStr above
                     cardHolderName = "CARDHOLDER",  // TODO: Extract from tag 5F20 if available
                     emvTagList = emvTagListStr
@@ -1630,7 +1702,7 @@ class PaymentViewModel @Inject constructor(
                 TransResultEnum.RESULT_REQ_ONLINE -> {
                     // Card requires online authorization with bank
                     Timber.i("[CONTACTLESS PHASE 3] RESULT_REQ_ONLINE → Extracting EMV tags and calling SaleIcc...")
-                    processContactlessOnlineAuthorization(currentAmountInCents)  // ✅ Pass cents format
+                    processContactlessOnlineAuthorization(formatAmountDecimal(currentAmount))  // ✅ Decimal format for SaleIcc
                 }
 
                 TransResultEnum.RESULT_OFFLINE_APPROVED -> {

@@ -50,6 +50,7 @@ android {
             dimension = "environment"
             applicationIdSuffix = ".sandbox"
             versionNameSuffix = "-sandbox"
+            isDefault = true  // Make sandboxDebug the default variant in IDE
 
             // Blumon Sandbox Environment
             buildConfigField("String", "BLUMON_ENV", "\"SAND\"")

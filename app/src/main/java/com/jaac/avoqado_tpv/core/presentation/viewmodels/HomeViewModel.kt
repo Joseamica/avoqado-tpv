@@ -4,9 +4,15 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
+import com.jaac.avoqado_tpv.core.domain.TerminalConfig
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
+import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
+import com.jaac.avoqado_tpv.features.payment.domain.use_case.GetMerchantsUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -26,7 +32,11 @@ import javax.inject.Inject
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val authRepository: AuthRepository,
-    private val socketManager: SocketManager
+    private val socketManager: SocketManager,
+    // 🔧 Blumon SDK Initialization - Triggered after login for early payment readiness
+    private val initializationManager: InitializationManager,
+    // 🏪 Get merchants from backend to use correct serial for SDK init
+    private val getMerchantsUseCase: GetMerchantsUseCase
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -64,6 +74,8 @@ class HomeViewModel @Inject constructor(
     init {
         loadStaffInfo()
         collectSocketEvents()
+        // 🔧 Initialize Blumon SDK in background (so it's ready when user opens payment)
+        initializeBlumonSDK()
     }
 
     /**
@@ -81,6 +93,67 @@ class HomeViewModel @Inject constructor(
             // Clock-in time - placeholder for now
             // TODO: Implement clock-in feature and load actual clock-in time
             _clockInTime.value = null
+        }
+    }
+
+    /**
+     * 🔧 Initialize Blumon SDK after successful login
+     *
+     * Starts SDK initialization in background so it's ready when user opens payment screen.
+     * Uses 3 second delay to let other operations (Socket.IO, ShiftRepository) settle first.
+     *
+     * **Why in HomeViewModel (not LoginViewModel)?**
+     * - LoginViewModel gets destroyed when navigating to HomeScreen
+     * - HomeViewModel persists throughout the logged-in session
+     * - No risk of coroutine cancellation due to navigation
+     *
+     * **Flow:**
+     * 1. Wait 3 seconds for other operations to settle
+     * 2. Fetch merchants from backend (to get real serial numbers)
+     * 3. Use first merchant's serial for TerminalConfig
+     * 4. Initialize SDK with correct serial
+     *
+     * Benefits:
+     * - SDK ready before user opens payment (no loading delay)
+     * - OAuth + DUKPT keys downloaded in advance
+     * - Uses real merchant serial (not hardcoded default)
+     * - If initialization fails, payment screen will retry (graceful fallback)
+     */
+    private fun initializeBlumonSDK() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // ⏳ Wait 3 seconds for other operations to settle
+                // (Socket.IO, HeartbeatScheduler, ShiftRepository all start on login)
+                // This prevents resource contention that causes GenericFailure
+                delay(3000)
+
+                Timber.i("🔧 [Blumon] Starting SDK initialization after login...")
+
+                // Step 1: Fetch merchants from backend to get real serial numbers
+                val merchants = getMerchantsUseCase().firstOrNull()
+                if (merchants.isNullOrEmpty()) {
+                    Timber.w("⚠️ [Blumon] No merchants found - SDK init will use default serial")
+                } else {
+                    // Step 2: Use first merchant's serial for TerminalConfig
+                    val defaultMerchant = merchants.first()
+                    Timber.i("🏪 [Blumon] Using merchant for SDK init: ${defaultMerchant.displayName} (${defaultMerchant.serialNumber})")
+                    TerminalConfig.updateSerial(defaultMerchant.serialNumber)
+                }
+
+                // Step 3: Initialize SDK with correct serial
+                initializationManager.ensureInitialized()
+                    .onSuccess {
+                        Timber.i("✅ [Blumon] SDK initialized successfully - ready for payments")
+                    }
+                    .onFailure { error ->
+                        Timber.w(error, "⚠️ [Blumon] SDK initialization failed - will retry when opening payment")
+                        // Don't block home screen - payment screen will retry if needed
+                    }
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Blumon] Unexpected error during SDK initialization")
+                // Don't block home screen on SDK failure - app can work, payment will retry
+            }
         }
     }
 

@@ -3,8 +3,12 @@ package com.jaac.avoqado_tpv.features.shift.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.local.dao.CachedShiftDao
+import com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity
 import com.jaac.avoqado_tpv.core.domain.models.Result
+import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
+import com.jaac.avoqado_tpv.core.util.NetworkStatus
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -52,7 +56,9 @@ import javax.inject.Inject
 class ShiftViewModel @Inject constructor(
     private val shiftRepository: ShiftRepository,
     private val secureStorage: SecureStorage,
-    private val connectionEventManager: ConnectionEventManager
+    private val connectionEventManager: ConnectionEventManager,
+    private val cachedShiftDao: CachedShiftDao,
+    private val connectivityObserver: ConnectivityObserver
 ) : ViewModel() {
 
     // ══════════════════════════════════════════════════════════════════════
@@ -62,6 +68,18 @@ class ShiftViewModel @Inject constructor(
     private val _state = MutableStateFlow<ShiftState>(ShiftState.Idle)
     val state: StateFlow<ShiftState> = _state.asStateFlow()
 
+    // Pull-to-refresh state
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
+    // Offline state (Square/Toast prevention pattern)
+    private val _isOffline = MutableStateFlow(false)
+    val isOffline: StateFlow<Boolean> = _isOffline.asStateFlow()
+
+    // Cached shift info for offline display
+    private val _cachedShiftInfo = MutableStateFlow<CachedShiftInfo?>(null)
+    val cachedShiftInfo: StateFlow<CachedShiftInfo?> = _cachedShiftInfo.asStateFlow()
+
     // ══════════════════════════════════════════════════════════════════════
     // INITIALIZATION
     // ══════════════════════════════════════════════════════════════════════
@@ -69,6 +87,87 @@ class ShiftViewModel @Inject constructor(
     init {
         loadCurrentShift()
         listenToConnectionRestored()
+        observeConnectivity()
+    }
+
+    /**
+     * 🌐 Observe Network Connectivity Changes
+     *
+     * Monitors network status to update offline state and load cached data
+     * when connection is lost.
+     *
+     * **Pattern (Square/Toast POS - Prevention):**
+     * - Connection lost → Show cached shift state with "Último estado conocido"
+     * - Connection restored → ConnectionEventManager handles auto-sync
+     * - Shift operations blocked when offline
+     */
+    private fun observeConnectivity() {
+        viewModelScope.launch {
+            connectivityObserver.observe().collect { status ->
+                val wasOffline = _isOffline.value
+                _isOffline.value = status == NetworkStatus.Unavailable
+
+                when (status) {
+                    NetworkStatus.Unavailable -> {
+                        Timber.w("⚠️ [ShiftViewModel] Network lost - loading cached shift state")
+                        loadCachedShiftInfo()
+                    }
+                    NetworkStatus.Available -> {
+                        if (wasOffline) {
+                            Timber.i("✅ [ShiftViewModel] Network restored - clearing cached info")
+                            _cachedShiftInfo.value = null
+                            // Note: ConnectionEventManager handles auto-sync via listenToConnectionRestored()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 📦 Load Cached Shift Info
+     *
+     * Loads last known shift state from Room database when offline.
+     * Used to display "Último estado conocido (hace X min)" instead of
+     * misleading "Sin turno activo".
+     */
+    private fun loadCachedShiftInfo() {
+        viewModelScope.launch {
+            val venueId = secureStorage.getVenueId() ?: return@launch
+            val cached = cachedShiftDao.getCachedShift(venueId)
+
+            if (cached != null) {
+                _cachedShiftInfo.value = CachedShiftInfo(
+                    isOpen = cached.isOpen(),
+                    staffName = cached.staffName,
+                    cachedMinutesAgo = cached.minutesSinceCached()
+                )
+                Timber.d("📦 [ShiftViewModel] Loaded cached shift: isOpen=${cached.isOpen()}, cached ${cached.minutesSinceCached()}min ago")
+            } else {
+                Timber.d("📦 [ShiftViewModel] No cached shift data available")
+                _cachedShiftInfo.value = null
+            }
+        }
+    }
+
+    /**
+     * 💾 Cache Shift State
+     *
+     * Saves current shift state to Room database for offline access.
+     * Called after every successful network fetch.
+     *
+     * @param shift Shift to cache (null clears cache for "no active shift")
+     * @param venueId Current venue ID
+     */
+    private suspend fun cacheShiftState(shift: Shift?, venueId: String) {
+        if (shift != null) {
+            cachedShiftDao.cacheShift(CachedShiftEntity.fromDomain(shift, venueId))
+            Timber.d("💾 [ShiftViewModel] Cached shift state: ${shift.staffName}, status=${shift.status}")
+        } else {
+            // No active shift - clear cache
+            cachedShiftDao.clearCache(venueId)
+            Timber.d("💾 [ShiftViewModel] Cleared shift cache (no active shift)")
+        }
     }
 
     /**
@@ -152,6 +251,9 @@ class ShiftViewModel @Inject constructor(
             when (currentShiftResult) {
                 is Result.Success -> {
                     val shift = currentShiftResult.data
+                    // 💾 Cache shift state for offline access
+                    cacheShiftState(shift, venueId)
+
                     if (shift != null) {
                         Timber.i("✅ Active shift loaded: ${shift.id}")
                         _state.value = ShiftState.ShiftActive(shift, shiftHistory)
@@ -165,6 +267,45 @@ class ShiftViewModel @Inject constructor(
                     Timber.e("❌ Failed to load shift: $errorMessage")
                     _state.value = ShiftState.Error(errorMessage)
                 }
+            }
+        }
+    }
+
+    /**
+     * Refresh shift data (Pull-to-refresh)
+     *
+     * Reloads shift data without showing full-screen loading.
+     */
+    fun refresh() {
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            try {
+                val venueId = secureStorage.getVenueId() ?: return@launch
+
+                // Load current shift
+                val currentShiftResult = shiftRepository.getCurrentShift(venueId)
+                val historyResult = shiftRepository.getShiftHistory(venueId, limit = 10)
+
+                val shiftHistory = when (historyResult) {
+                    is Result.Success -> historyResult.data
+                    is Result.Error -> emptyList()
+                }
+
+                when (currentShiftResult) {
+                    is Result.Success -> {
+                        val shift = currentShiftResult.data
+                        _state.value = if (shift != null) {
+                            ShiftState.ShiftActive(shift, shiftHistory)
+                        } else {
+                            ShiftState.NoActiveShift(shiftHistory)
+                        }
+                    }
+                    is Result.Error -> {
+                        Timber.e("❌ Refresh failed: ${currentShiftResult.exception}")
+                    }
+                }
+            } finally {
+                _isRefreshing.value = false
             }
         }
     }
@@ -368,3 +509,32 @@ sealed class ShiftState {
      */
     data class Error(val message: String) : ShiftState()
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// CACHED SHIFT INFO (For offline display)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Cached Shift Info
+ *
+ * Lightweight data class for offline shift display.
+ * Contains only the information needed for "Último estado conocido" UI.
+ *
+ * **Usage in ShiftStatusBanner:**
+ * ```
+ * ┌───────────────────────────────────┐
+ * │ ☁️ Turno abierto                 │
+ * │    Último estado conocido (5 min)│
+ * │    [Cerrar turno] ← disabled     │
+ * └───────────────────────────────────┘
+ * ```
+ *
+ * @property isOpen Whether the cached shift was open
+ * @property staffName Staff member who opened the shift
+ * @property cachedMinutesAgo Minutes since the data was cached
+ */
+data class CachedShiftInfo(
+    val isOpen: Boolean,
+    val staffName: String,
+    val cachedMinutesAgo: Int
+)

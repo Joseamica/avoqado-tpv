@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoPullToRefresh
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
@@ -96,6 +97,7 @@ fun ShiftScreen(
     viewModel: ShiftViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
 
     // Dialog states
     var showOpenDialog by remember { mutableStateOf(false) }
@@ -111,10 +113,15 @@ fun ShiftScreen(
         }
     ) { paddingValues ->
         ResponsiveScaffold(
-            scrollable = true,
+            scrollable = false,  // Pull-to-refresh handles scrolling
             modifier = Modifier.padding(paddingValues)
         ) {
-            when (val currentState = state) {
+            AvoqadoPullToRefresh(
+                isRefreshing = isRefreshing,
+                onRefresh = { viewModel.refresh() },
+                enabled = state !is ShiftState.Loading
+            ) {
+                when (val currentState = state) {
                 is ShiftState.Loading -> {
                     AvoqadoLoadingOverlay(message = "Cargando turno...")
                 }
@@ -171,6 +178,7 @@ fun ShiftScreen(
 
                 is ShiftState.Idle -> {
                     // Initial state - loading will happen automatically
+                }
                 }
             }
         }

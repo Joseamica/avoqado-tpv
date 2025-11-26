@@ -77,7 +77,8 @@ class TerminalConfigRepositoryImpl @Inject constructor(
                 brand = terminal.brand ?: "PAX",  // Default to PAX if not set
                 model = terminal.model ?: "A910S",  // Default to A910S if not set
                 venueId = terminal.venueId,
-                venueName = venue?.name ?: "Unknown Venue"
+                venueName = venue?.name ?: "Unknown Venue",
+                venueType = venue?.type  // RESTAURANT, BAR, CAFE, FAST_FOOD, RETAIL_STORE, etc.
             )
 
             // Map merchant account DTOs to domain models
@@ -88,6 +89,7 @@ class TerminalConfigRepositoryImpl @Inject constructor(
             Timber.i("   Brand: ${terminalInfo.brand}")
             Timber.i("   Model: ${terminalInfo.model}")
             Timber.i("   Venue: ${terminalInfo.venueName} (${terminalInfo.venueId})")
+            Timber.i("   VenueType: ${terminalInfo.venueType ?: "N/A"}")
             Timber.i("   Merchant Accounts: ${merchantAccounts.size}")
             merchantAccounts.forEach { merchant ->
                 Timber.i("      - ${merchant.displayName} (${merchant.serialNumber}, posId: ${merchant.posId})")

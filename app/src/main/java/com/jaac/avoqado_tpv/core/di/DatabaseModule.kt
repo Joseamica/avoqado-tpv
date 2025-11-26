@@ -4,10 +4,13 @@ import android.content.Context
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
+import com.jaac.avoqado_tpv.core.data.local.dao.CachedShiftDao
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderDao
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderItemDao
 import com.jaac.avoqado_tpv.core.data.local.dao.HistoricalPeriodDao
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
+import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
+import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -79,7 +82,9 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_4_5,  // Local-first order management
                 AvoqadoDatabase.MIGRATION_5_6,  // Historical reports cache
                 AvoqadoDatabase.MIGRATION_6_7,  // Fix FOREIGN KEY with ON UPDATE CASCADE
-                AvoqadoDatabase.MIGRATION_7_8   // 🔒 Merchant account tracking (split payment validation)
+                AvoqadoDatabase.MIGRATION_7_8,  // 🔒 Merchant account tracking (split payment validation)
+                AvoqadoDatabase.MIGRATION_8_9,  // ⚡ Product cache (cache-first loading - 500ms → 10ms)
+                AvoqadoDatabase.MIGRATION_9_10  // 📶 Cached shift (offline status display - Square/Toast pattern)
             )
 
             // ⚠️ DEVELOPMENT ONLY: Destructive migration (data loss on schema change)
@@ -158,5 +163,60 @@ object DatabaseModule {
         database: AvoqadoDatabase
     ): HistoricalPeriodDao {
         return database.historicalPeriodDao()
+    }
+
+    /**
+     * Provides ProductDao from database.
+     *
+     * **Injected Into:**
+     * - MenuViewModel (cache-first product loading)
+     * - ProductRepository (offline caching for products)
+     *
+     * @param database AvoqadoDatabase instance
+     * @return ProductDao for product cache operations
+     */
+    @Provides
+    fun provideProductDao(
+        database: AvoqadoDatabase
+    ): ProductDao {
+        return database.productDao()
+    }
+
+    /**
+     * Provides ProductCategoryDao from database.
+     *
+     * **Injected Into:**
+     * - MenuViewModel (cache-first category loading)
+     * - ProductRepository (offline caching for categories)
+     *
+     * @param database AvoqadoDatabase instance
+     * @return ProductCategoryDao for product category cache operations
+     */
+    @Provides
+    fun provideProductCategoryDao(
+        database: AvoqadoDatabase
+    ): ProductCategoryDao {
+        return database.productCategoryDao()
+    }
+
+    /**
+     * Provides CachedShiftDao from database.
+     *
+     * **Injected Into:**
+     * - ShiftViewModel (offline shift status display)
+     *
+     * **Pattern (Square/Toast POS - Prevention):**
+     * - Cache shift state when online
+     * - Display cached state when offline with "Último estado conocido"
+     * - Block shift operations when offline
+     *
+     * @param database AvoqadoDatabase instance
+     * @return CachedShiftDao for cached shift operations
+     */
+    @Provides
+    fun provideCachedShiftDao(
+        database: AvoqadoDatabase
+    ): CachedShiftDao {
+        return database.cachedShiftDao()
     }
 }

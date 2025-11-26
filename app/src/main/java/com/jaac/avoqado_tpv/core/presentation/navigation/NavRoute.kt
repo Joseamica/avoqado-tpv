@@ -108,4 +108,27 @@ sealed class NavRoute(val route: String) {
      * - Complex serialization logic
      */
     data object HistoricalPeriodDetail : NavRoute("historical_period_detail")
+
+    /**
+     * Payments screen - Payment history with pagination and filters
+     * Shows complete payment transaction history with date range and method filters
+     *
+     * Pattern: Toast POS + Square Terminal
+     * - Paginated list (20 items per page)
+     * - Date range filter (7d, 30d, 90d, all time)
+     * - Payment method filter (CASH, CARD, all)
+     */
+    data object Payments : NavRoute("payments")
+
+    /**
+     * Support screen - Help and support resources
+     * Provides contact information, FAQs, documentation links, and app info
+     *
+     * Pattern: Toast POS + Square Terminal help screens
+     * - Contact options (email, phone, WhatsApp)
+     * - Quick actions (report bug, request feature)
+     * - FAQ section
+     * - App version and device information
+     */
+    data object Support : NavRoute("support")
 }

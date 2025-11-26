@@ -1,6 +1,5 @@
 package com.jaac.avoqado_tpv.core.presentation.navigation
 
-import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -138,12 +137,21 @@ fun AppNavigation(
     val connectionViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.ConnectionViewModel = hiltViewModel()
     val connectionState by connectionViewModel.state.collectAsStateWithLifecycle()
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        // Main navigation content
-        NavHost(
-            navController = navController,
-            startDestination = startDestination
-        ) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        // 🌐 CONNECTION BANNER (pushes content down when visible)
+        // Thin bar at top - doesn't overlay, pushes content down
+        // No dismiss button - stays until connection is restored
+        com.jaac.avoqado_tpv.core.presentation.components.ConnectionBanner(
+            state = connectionState,
+            onRetry = { connectionViewModel.forceCheck() }
+        )
+
+        // Main navigation content (takes remaining space)
+        Box(modifier = Modifier.weight(1f)) {
+            NavHost(
+                navController = navController,
+                startDestination = startDestination
+            ) {
         // Splash Screen - Determines initial route based on activation status
         composable(NavRoute.Splash.route) {
             SplashScreen(
@@ -240,7 +248,6 @@ fun AppNavigation(
 
         // Home Screen - Main dashboard
         composable(NavRoute.Home.route) {
-            val context = LocalContext.current
             val homeViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel = hiltViewModel()
 
             // 🚨 SECURITY: Monitor activation status (Square/Toast pattern)
@@ -276,6 +283,14 @@ fun AppNavigation(
                 onNavigateToReports = {
                     // Navigate to Reports screen
                     navController.navigate(NavRoute.Reports.route)
+                },
+                onNavigateToPayments = {
+                    // ⭐ Navigate to Payments screen
+                    navController.navigate(NavRoute.Payments.route)
+                },
+                onNavigateToSupport = {
+                    // Navigate to Support screen
+                    navController.navigate(NavRoute.Support.route)
                 },
                 onNavigateToSuperAdmin = {
                     // Navigate to SuperAdmin screen
@@ -325,6 +340,7 @@ fun AppNavigation(
         // Ordering Welcome Screen - Entry point for ordering system
         composable(NavRoute.OrderingWelcome.route) {
             OrderingWelcomeScreen(
+                showTableService = secureStorage.supportsTableService(),
                 onQuickOrderClick = {
                     // Quick Order flow (retail/QSR) - No table assignment
                     // MenuViewModel will create order via backend and get CUID
@@ -574,13 +590,14 @@ fun AppNavigation(
         }
 
         // Historical Period Detail Screen - Detailed view of a single period
-        composable(NavRoute.HistoricalPeriodDetail.route) {
+        composable(NavRoute.HistoricalPeriodDetail.route) { navBackStackEntry ->
             // Get ViewModel from parent nav graph to access selectedPeriod
-            val parentEntry = remember(navController) {
+            // Using navBackStackEntry as key ensures we don't recreate during recomposition
+            val parentEntry = remember(navBackStackEntry) {
                 navController.getBackStackEntry(NavRoute.Reports.route)
             }
             val reportsViewModel: com.jaac.avoqado_tpv.features.reports.presentation.ReportsViewModel =
-                hiltViewModel(parentEntry)
+                hiltViewModel(viewModelStoreOwner = parentEntry)
 
             val selectedPeriod by reportsViewModel.selectedPeriod.collectAsStateWithLifecycle()
 
@@ -600,22 +617,34 @@ fun AppNavigation(
                 }
             }
         }
-    }
 
-        // 🌐 CONNECTION BANNER (overlay on top of all screens)
-        // Square/Toast pattern: Discrete warning banner that doesn't block operations
-        com.jaac.avoqado_tpv.core.presentation.components.ConnectionBanner(
-            state = connectionState,
-            modifier = Modifier.align(Alignment.TopCenter)
-        )
+        // Payments Screen - Payment history with pagination and filters
+        composable(NavRoute.Payments.route) {
+            com.jaac.avoqado_tpv.features.payments.presentation.PaymentsScreen(
+                onBack = {
+                    navController.popBackStack()
+                }
+            )
+        }
 
-        // 🔄 SESSION EXPIRING OVERLAY
-        // Shows loading overlay when session is being verified/refreshed
-        // Prevents jarring transition from current screen to Login
-        if (isSessionExpiring) {
-            SessionExpiringOverlay()
+        // Support Screen - Help and support resources
+        composable(NavRoute.Support.route) {
+            com.jaac.avoqado_tpv.features.support.presentation.SupportScreen(
+                onBack = {
+                    navController.popBackStack()
+                }
+            )
         }
     }
+
+            // 🔄 SESSION EXPIRING OVERLAY
+            // Shows loading overlay when session is being verified/refreshed
+            // Prevents jarring transition from current screen to Login
+            if (isSessionExpiring) {
+                SessionExpiringOverlay()
+            }
+        }  // Close Box
+    }  // Close Column
 }
 
 /**

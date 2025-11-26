@@ -560,6 +560,49 @@ interface ApiService {
     suspend fun getActiveShift(
         @Path("venueId") venueId: String
     ): Response<Shift>
+
+    // ========== Payment History ==========
+
+    /**
+     * Get payment history for a venue
+     *
+     * POST /tpv/venues/{venueId}/payments
+     *
+     * Retrieves paginated payment history with filtering options.
+     * Used by PaymentsScreen for displaying transaction history.
+     *
+     * **Pagination** (1GB RAM optimization):
+     * - pageSize: 20 items per page (default) - QUERY PARAM
+     * - pageNumber: 1-indexed page number - QUERY PARAM
+     *
+     * **Filters** (in request body):
+     * - fromDate: ISO 8601 start date (optional)
+     * - toDate: ISO 8601 end date (optional)
+     * - staffId: Filter by staff member (optional)
+     *
+     * **Response includes**:
+     * - Payment details (amount, tip, method, status)
+     * - Processed by staff info
+     * - Order details (orderNumber, table)
+     * - Pagination metadata (total, pageSize, pageNumber)
+     *
+     * **Backend expects**:
+     * - Query params: pageSize, pageNumber
+     * - Body: fromDate, toDate, staffId
+     *
+     * @param venueId Venue identifier
+     * @param pageSize Number of payments per page (default: 20)
+     * @param pageNumber Page number (default: 1)
+     * @param request Filter parameters in body
+     * @return Paginated response with payments list and metadata
+     */
+    @POST("tpv/venues/{venueId}/payments")
+    suspend fun getPaymentHistory(
+        @Path("venueId") venueId: String,
+        @Query("pageSize") pageSize: Int,
+        @Query("pageNumber") pageNumber: Int,
+        @Body request: com.jaac.avoqado_tpv.features.payments.data.dto.PaymentHistoryRequestBody
+    ): Response<com.jaac.avoqado_tpv.features.payments.data.dto.PaymentHistoryResponse>
 }
 
 // ========== Request/Response DTOs ==========

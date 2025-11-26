@@ -45,11 +45,13 @@ interface TerminalConfigRepository {
  * @property model Terminal model (e.g., "A910S")
  * @property venueId Venue ID this terminal belongs to
  * @property venueName Venue name
+ * @property venueType Venue type (RESTAURANT, BAR, CAFE, FAST_FOOD, RETAIL_STORE, etc.)
  */
 data class TerminalInfo(
     val serialNumber: String,
     val brand: String,
     val model: String,
     val venueId: String,
-    val venueName: String
+    val venueName: String,
+    val venueType: String?
 )

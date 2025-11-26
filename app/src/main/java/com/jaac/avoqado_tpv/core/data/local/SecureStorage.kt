@@ -54,6 +54,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_PERMISSIONS = "permissions"
         private const val KEY_VENUE_LOGO = "venue_logo"
         private const val KEY_VENUE_NAME = "venue_name"
+        private const val KEY_VENUE_TYPE = "venue_type"
 
         // Blumon keys
         private const val KEY_BLUMON_MERCHANT_ID = "blumon_merchant_id"
@@ -283,6 +284,50 @@ class SecureStorage @Inject constructor(
      */
     fun getVenueName(): String? {
         return encryptedPrefs.getString(KEY_VENUE_NAME, null)
+    }
+
+    /**
+     * Save venue type
+     * @param type Venue type (RESTAURANT, BAR, CAFE, FAST_FOOD, RETAIL_STORE, etc.)
+     */
+    fun saveVenueType(type: String?) {
+        if (type != null) {
+            encryptedPrefs.edit().putString(KEY_VENUE_TYPE, type).apply()
+        } else {
+            encryptedPrefs.edit().remove(KEY_VENUE_TYPE).apply()
+        }
+    }
+
+    /**
+     * Get venue type
+     * @return Venue type or null if not set
+     */
+    fun getVenueType(): String? {
+        return encryptedPrefs.getString(KEY_VENUE_TYPE, null)
+    }
+
+    /**
+     * Check if venue supports table service
+     *
+     * Table service is available for:
+     * - RESTAURANT
+     * - BAR
+     * - CAFE
+     * - FAST_FOOD
+     *
+     * NOT available for:
+     * - FOOD_TRUCK
+     * - RETAIL_STORE
+     * - HOTEL_RESTAURANT (uses room service instead)
+     * - FITNESS_STUDIO
+     * - SPA
+     * - OTHER
+     *
+     * @return true if venue supports table service
+     */
+    fun supportsTableService(): Boolean {
+        val type = getVenueType() ?: return true  // Default to true if not set
+        return type in listOf("RESTAURANT", "BAR", "CAFE", "FAST_FOOD")
     }
 
     /**

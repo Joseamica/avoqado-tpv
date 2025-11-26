@@ -264,9 +264,13 @@ class MainActivity : ComponentActivity() {
                     Timber.i("✅ [TerminalConfig] Fetched ${merchantAccounts.size} merchant accounts")
                     Timber.d("   📋 Terminal: ${terminalInfo.brand} ${terminalInfo.model}")
                     Timber.d("   🏢 Venue: ${terminalInfo.venueName}")
+                    Timber.d("   🏷️ VenueType: ${terminalInfo.venueType ?: "N/A"}")
 
                     // Replace MerchantRepository fallback accounts with fetched merchants from backend
                     merchantRepository.updateMerchants(merchantAccounts)
+
+                    // Save venue type for conditional UI (table service visibility)
+                    secureStorage.saveVenueType(terminalInfo.venueType)
 
                     Timber.i("✅ [TerminalConfig] Successfully loaded dynamic config from backend")
                 }

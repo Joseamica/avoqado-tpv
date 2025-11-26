@@ -5,12 +5,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -31,46 +29,42 @@ import com.jaac.avoqado_tpv.core.presentation.viewmodels.ConnectionState
  * Follows Square POS and Toast POS patterns for offline-first operation.
  *
  * **Design Principles:**
- * - Discrete and non-intrusive (appears at bottom, not top)
- * - Warning color (yellow/orange, NOT error red)
+ * - Discrete and non-intrusive (thin bar at top)
+ * - Warning color (orange, NOT error red)
  * - Doesn't block operations (user can continue working)
  * - Auto-hides when connected
- * - Smooth animations (slide in/out from bottom)
- * - User can dismiss or manually retry
+ * - Smooth animations (slide in/out)
+ * - User can manually retry (no dismiss - stays until reconnected)
  *
  * **States:**
  * - Connected: Banner hidden
- * - Disconnected: Yellow banner "Trabajando sin conexión" + Suprimir/Reintentar buttons
- * - Reconnecting: Yellow banner with spinner "Reconectando..."
- * - Reconnected: Green banner briefly "Conectado al servidor"
- * - Dismissed: Banner hidden (user dismissed it)
+ * - Disconnected: Orange banner "Sin conexión" + Reintentar button
+ * - Reconnecting: Orange banner "Reconectando..."
+ * - Reconnected: Green banner briefly "Conectado"
  *
  * @param state Current connection state
- * @param onDismiss Callback when user taps "Suprimir" button
  * @param onRetry Callback when user taps "Reintentar" button
  * @param modifier Modifier for customization
  */
 @Composable
 fun ConnectionBanner(
     state: ConnectionState,
-    onDismiss: () -> Unit = {},
     onRetry: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    // Only show banner when NOT connected and NOT dismissed
+    // Only show banner when NOT connected and NOT checking
     val showBanner = state !is ConnectionState.Connected &&
                      state !is ConnectionState.Checking &&
                      state !is ConnectionState.Dismissed
 
     AnimatedVisibility(
         visible = showBanner,
-        enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),  // ⭐ From bottom (positive offset)
-        exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),  // ⭐ To bottom (positive offset)
+        enter = slideInVertically(initialOffsetY = { -it }) + fadeIn(),
+        exit = slideOutVertically(targetOffsetY = { -it }) + fadeOut(),
         modifier = modifier
     ) {
         when (state) {
             is ConnectionState.Disconnected -> DisconnectedBanner(
-                onDismiss = onDismiss,
                 onRetry = onRetry
             )
             is ConnectionState.Reconnecting -> ReconnectingBanner()
@@ -81,93 +75,78 @@ fun ConnectionBanner(
 }
 
 /**
- * Disconnected Banner - Yellow warning with action buttons
+ * Disconnected Banner - Thin elegant bar (Slack/WhatsApp pattern)
+ *
+ * Height: ~36dp (non-intrusive)
+ * Pattern: Icon + Short text + Retry button
+ * Note: No dismiss button - banner stays until connection is restored
  */
 @Composable
 private fun DisconnectedBanner(
-    onDismiss: () -> Unit = {},
     onRetry: () -> Unit = {}
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFFFFA500)) // Orange/Yellow (warning)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .background(Color(0xFFE65100)) // Darker orange (more elegant)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Left: Icon + Message
+        // Left: Icon + Short message
         Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.weight(1f)
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 imageVector = Icons.Default.CloudOff,
                 contentDescription = null,
                 tint = Color.White,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(16.dp)
             )
 
             Spacer(modifier = Modifier.width(8.dp))
 
             Text(
-                text = "Trabajando sin conexión - Las ventas se guardarán localmente",
-                style = MaterialTheme.typography.bodyMedium,
+                text = "Sin conexión",
+                style = MaterialTheme.typography.labelMedium,
                 color = Color.White,
                 fontWeight = FontWeight.Medium
             )
         }
 
-        // Right: Action Buttons
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        // Right: Retry button only
+        TextButton(
+            onClick = onRetry,
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+            modifier = Modifier.height(28.dp)
         ) {
-            // Reintentar button
-            TextButton(
-                onClick = onRetry,
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Refresh,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = "Reintentar",
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            // Suprimir button
-            IconButton(
-                onClick = onDismiss,
-                modifier = Modifier.size(32.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Close,
-                    contentDescription = "Suprimir",
-                    tint = Color.White,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
+            Icon(
+                imageVector = Icons.Default.Refresh,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.9f),
+                modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = "Reintentar",
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }
 
 /**
- * Reconnecting Banner - Yellow with spinner
+ * Reconnecting Banner - Thin bar with sync icon
  */
 @Composable
 private fun ReconnectingBanner() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFFFFA500)) // Orange/Yellow (warning)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .background(Color(0xFFE65100))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -175,14 +154,14 @@ private fun ReconnectingBanner() {
             imageVector = Icons.Default.Sync,
             contentDescription = null,
             tint = Color.White,
-            modifier = Modifier.size(20.dp)
+            modifier = Modifier.size(14.dp)
         )
 
-        Spacer(modifier = Modifier.width(8.dp))
+        Spacer(modifier = Modifier.width(6.dp))
 
         Text(
-            text = "Reconectando al servidor...",
-            style = MaterialTheme.typography.bodyMedium,
+            text = "Reconectando...",
+            style = MaterialTheme.typography.labelMedium,
             color = Color.White,
             fontWeight = FontWeight.Medium
         )
@@ -190,15 +169,15 @@ private fun ReconnectingBanner() {
 }
 
 /**
- * Reconnected Banner - Green success (brief)
+ * Reconnected Banner - Thin green success bar (brief)
  */
 @Composable
 private fun ReconnectedBanner() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF4CAF50)) // Green (success)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .background(Color(0xFF2E7D32)) // Darker green (elegant)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -206,14 +185,14 @@ private fun ReconnectedBanner() {
             imageVector = Icons.Default.CheckCircle,
             contentDescription = null,
             tint = Color.White,
-            modifier = Modifier.size(20.dp)
+            modifier = Modifier.size(14.dp)
         )
 
-        Spacer(modifier = Modifier.width(8.dp))
+        Spacer(modifier = Modifier.width(6.dp))
 
         Text(
-            text = "Conectado al servidor",
-            style = MaterialTheme.typography.bodyMedium,
+            text = "Conectado",
+            style = MaterialTheme.typography.labelMedium,
             color = Color.White,
             fontWeight = FontWeight.Medium
         )
@@ -230,7 +209,6 @@ private fun ConnectionBannerDisconnectedPreview() {
     AvoqadoTheme {
         ConnectionBanner(
             state = ConnectionState.Disconnected,
-            onDismiss = {},
             onRetry = {}
         )
     }

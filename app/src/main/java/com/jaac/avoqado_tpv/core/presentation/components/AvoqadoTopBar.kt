@@ -18,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.BuildConfig
@@ -30,6 +31,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
  *
  * @param title Bar title
  * @param modifier Modifier for customization
+ * @param titleStyle Optional custom title style (defaults to titleLarge)
  * @param subtitle Optional subtitle for context (e.g., "$125.50 · 5 items")
  * @param onNavigationClick Optional back button click handler
  * @param onSettingsClick Optional settings button click handler
@@ -40,6 +42,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 fun AvoqadoTopBar(
     title: String,
     modifier: Modifier = Modifier,
+    titleStyle: TextStyle? = null,
     subtitle: String? = null,
     onNavigationClick: (() -> Unit)? = null,
     onSettingsClick: (() -> Unit)? = null,
@@ -56,7 +59,7 @@ fun AvoqadoTopBar(
     val borderColor = if (BuildConfig.DEBUG) {
         when (BuildConfig.BLUMON_ENV) {
             "PROD" -> Color(0xFFEF5350)  // Red 400 - Production (danger)
-            "SAND" -> Color(0xFFFFA726)  // Amber 400 - Sandbox (warning)
+//            "SAND" -> Color(0xFFFFA726)  // Amber 400 - Sandbox (warning)
             else -> MaterialTheme.colorScheme.outline
         }
     } else {
@@ -70,6 +73,8 @@ fun AvoqadoTopBar(
         1.dp
     }
 
+    val resolvedTitleStyle = titleStyle ?: MaterialTheme.typography.titleLarge
+
     CenterAlignedTopAppBar(
         title = {
             if (subtitle != null) {
@@ -79,7 +84,7 @@ fun AvoqadoTopBar(
                 ) {
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.titleLarge
+                        style = resolvedTitleStyle
                     )
                     Text(
                         text = subtitle,
@@ -91,7 +96,7 @@ fun AvoqadoTopBar(
                 // Title only
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.titleLarge
+                    style = resolvedTitleStyle
                 )
             }
         },

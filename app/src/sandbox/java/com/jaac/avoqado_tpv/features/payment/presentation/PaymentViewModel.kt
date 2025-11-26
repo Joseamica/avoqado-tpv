@@ -2779,6 +2779,66 @@ class PaymentViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Print kitchen ticket (comanda) for food preparation.
+     *
+     * **Purpose:** Informative ticket for kitchen staff - NO prices, NO payment info.
+     * Focus on products, modifiers, and special instructions.
+     *
+     * **Called from:** Order details modal in PaymentSuccessContent
+     *
+     * @param orderNumber Order number for identification
+     * @param tableName Optional table name
+     * @param orderItems List of order items with modifiers and notes
+     */
+    fun printKitchenTicket(
+        orderNumber: String?,
+        tableName: String? = null,
+        orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>
+    ) {
+        val currentState = _state.value
+        if (currentState !is PaymentState.Success) {
+            Timber.w("⚠️ [Print] Cannot print kitchen ticket: Not in Success state")
+            return
+        }
+
+        if (orderItems.isEmpty()) {
+            Timber.w("⚠️ [Print] Cannot print kitchen ticket: No order items")
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                Timber.i("🖨️ [Print] Starting kitchen ticket print")
+                _state.value = PaymentState.Printing
+
+                val result = printerManager.printKitchenTicket(
+                    orderNumber = orderNumber,
+                    tableName = tableName,
+                    orderItems = orderItems,
+                    staffName = null  // TODO: Get from auth context if needed
+                )
+
+                result.onSuccess {
+                    Timber.i("✅ [Print] Kitchen ticket printed successfully")
+                    _state.value = currentState
+                }.onFailure { error ->
+                    Timber.e(error, "❌ [Print] Failed to print kitchen ticket")
+                    _state.value = PaymentState.PrintError(
+                        message = error.message ?: "Error al imprimir comanda",
+                        previousState = currentState
+                    )
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Print] Unexpected error during kitchen ticket print")
+                _state.value = PaymentState.PrintError(
+                    message = "Error inesperado al imprimir: ${e.message}",
+                    previousState = currentState
+                )
+            }
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // CARD DETAIL HELPERS
     // ═══════════════════════════════════════════════════════════════════════════

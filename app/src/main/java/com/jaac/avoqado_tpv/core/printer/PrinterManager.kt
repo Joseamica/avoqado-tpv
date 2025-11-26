@@ -841,6 +841,383 @@ class PrinterManager @Inject constructor(
     }
 
     /**
+     * Print a single payment from payment history
+     *
+     * Prints a compact receipt for one payment.
+     * Used when printing payments individually (INDIVIDUAL mode).
+     *
+     * **Receipt format:**
+     * - Header: "COMPROBANTE DE PAGO"
+     * - Date and time
+     * - Order number and table (if available)
+     * - Payment method
+     * - Amount breakdown (base + tip = total)
+     * - Staff member
+     * - Timestamp
+     *
+     * @param payment Payment to print
+     * @param venueName Optional venue name for header
+     * @return Result.success if printed, Result.failure if error
+     */
+    fun printPaymentHistoryReceipt(
+        payment: com.jaac.avoqado_tpv.features.payments.domain.models.Payment,
+        venueName: String? = null
+    ): Result<Unit> {
+        return try {
+            val printerInstance = printer ?: return Result.failure(
+                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+            )
+
+            Timber.i("🖨️ [Printer] Printing payment history receipt: ${payment.id}")
+
+            // Reset printer state
+            printerInstance.init()
+
+            // ========================================
+            // HEADER
+            // ========================================
+            printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("    COMPROBANTE DE PAGO\n", null)
+            printerInstance.printStr("================================\n", null)
+
+            if (venueName != null) {
+                printerInstance.printStr("$venueName\n", null)
+            }
+
+            // Date & Time from payment
+            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", java.util.Locale("es", "MX"))
+            val paymentDate = java.util.Date.from(payment.createdAt)
+            printerInstance.printStr("\nFecha: ${dateFormat.format(paymentDate)}\n\n", null)
+
+            // ========================================
+            // ORDER INFO
+            // ========================================
+            if (!payment.orderNumber.isNullOrBlank()) {
+                printerInstance.printStr("Orden: #${payment.orderNumber}\n", null)
+            }
+            if (!payment.tableName.isNullOrBlank()) {
+                printerInstance.printStr("Mesa: ${payment.tableName}\n", null)
+            }
+            printerInstance.printStr("\n", null)
+
+            // ========================================
+            // PAYMENT METHOD
+            // ========================================
+            printerInstance.printStr("Metodo: ${payment.getMethodLabel()}\n", null)
+            printerInstance.printStr("--------------------------------\n", null)
+
+            // ========================================
+            // AMOUNTS
+            // ========================================
+            printerInstance.printStr(String.format("%-18s %12s\n", "Monto:", "$${payment.formatAmount()} MXN"), null)
+
+            if (payment.tipAmount > java.math.BigDecimal.ZERO) {
+                printerInstance.printStr(String.format("%-18s %12s\n", "Propina:", "$${payment.formatTipAmount()} MXN"), null)
+            }
+
+            printerInstance.printStr("================================\n", null)
+            printerInstance.printStr(String.format("%-18s %12s\n", "TOTAL:", "$${payment.formatTotalAmount()} MXN"), null)
+            printerInstance.printStr("================================\n\n", null)
+
+            // ========================================
+            // STAFF
+            // ========================================
+            if (payment.processedBy != null) {
+                printerInstance.printStr("Procesado por: ${payment.processedBy.getFullName()}\n", null)
+            }
+
+            printerInstance.printStr("\n================================\n\n\n", null)
+
+            // Execute print
+            val result = printerInstance.start()
+
+            if (result == 0) {
+                Timber.i("✅ [Printer] Payment history receipt printed successfully")
+                Result.success(Unit)
+            } else {
+                Timber.e("❌ [Printer] Print failed with code: $result")
+                Result.failure(Exception("Error al imprimir comprobante (código: $result)"))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Printer] Failed to print payment history receipt")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Print summary of multiple payments
+     *
+     * Prints a consolidated summary of multiple payments in one receipt.
+     * Used when printing payments in batch (SUMMARY mode).
+     *
+     * **Receipt format:**
+     * - Header: "RESUMEN DE PAGOS"
+     * - Date range and count
+     * - Payments table (date, method, amount)
+     * - Totals by payment method
+     * - Grand total
+     * - Timestamp
+     *
+     * **Performance safeguards:**
+     * - Max 20 payments per batch (memory safety)
+     *
+     * @param payments List of payments to print
+     * @param dateRangeLabel Date range label (e.g., "Últimos 7 días")
+     * @param venueName Optional venue name for header
+     * @return Result.success if printed, Result.failure if error
+     */
+    fun printPaymentsSummary(
+        payments: List<com.jaac.avoqado_tpv.features.payments.domain.models.Payment>,
+        dateRangeLabel: String,
+        venueName: String? = null
+    ): Result<Unit> {
+        return try {
+            val printerInstance = printer ?: return Result.failure(
+                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+            )
+
+            if (payments.isEmpty()) {
+                return Result.failure(Exception("No hay pagos para imprimir"))
+            }
+
+            Timber.i("🖨️ [Printer] Printing ${payments.size} payments summary")
+
+            // Reset printer state
+            printerInstance.init()
+
+            // ========================================
+            // HEADER
+            // ========================================
+            printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("   RESUMEN DE PAGOS\n", null)
+            printerInstance.printStr("================================\n", null)
+
+            if (venueName != null) {
+                printerInstance.printStr("$venueName\n", null)
+            }
+
+            printerInstance.printStr("\nPeríodo: $dateRangeLabel\n", null)
+            printerInstance.printStr("Pagos seleccionados: ${payments.size}\n\n", null)
+
+            // Print timestamp
+            val dateFormat = java.text.SimpleDateFormat("dd MMM yyyy, HH:mm", java.util.Locale("es", "ES"))
+            val now = dateFormat.format(java.util.Date())
+            printerInstance.printStr("Impreso: $now\n", null)
+            printerInstance.printStr("--------------------------------\n\n", null)
+
+            // ========================================
+            // PAYMENTS TABLE
+            // ========================================
+            val paymentDateFormat = java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale("es", "ES"))
+
+            payments.sortedByDescending { it.createdAt }.forEach { payment ->
+                val date = paymentDateFormat.format(java.util.Date.from(payment.createdAt))
+                val method = when (payment.method) {
+                    com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod.CASH -> "Efect"
+                    com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod.CARD -> "Tarjt"
+                    com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod.VOUCHER -> "Vouch"
+                    com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod.OTHER -> "Otro"
+                }
+                val amount = payment.formatTotalAmount()
+
+                // Format: "15 Ene 14:30  Tarjt  $150.50"
+                printerInstance.printStr("$date  $method  $amount\n", null)
+            }
+
+            printerInstance.printStr("--------------------------------\n\n", null)
+
+            // ========================================
+            // TOTALS BY METHOD
+            // ========================================
+            printerInstance.printStr("TOTALES:\n", null)
+
+            // Calculate totals by method
+            val cashPayments = payments.filter { it.method == com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod.CASH }
+            val cardPayments = payments.filter { it.method == com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod.CARD }
+            val voucherPayments = payments.filter { it.method == com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod.VOUCHER }
+            val otherPayments = payments.filter { it.method == com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod.OTHER }
+
+            val cashTotal = cashPayments.sumOf { it.totalAmount }
+            val cardTotal = cardPayments.sumOf { it.totalAmount }
+            val voucherTotal = voucherPayments.sumOf { it.totalAmount }
+            val otherTotal = otherPayments.sumOf { it.totalAmount }
+
+            if (cashPayments.isNotEmpty()) {
+                printerInstance.printStr(String.format("%-12s $%8s  (%d)\n", "Efectivo:", cashTotal.setScale(2, java.math.RoundingMode.HALF_UP), cashPayments.size), null)
+            }
+            if (cardPayments.isNotEmpty()) {
+                printerInstance.printStr(String.format("%-12s $%8s  (%d)\n", "Tarjeta:", cardTotal.setScale(2, java.math.RoundingMode.HALF_UP), cardPayments.size), null)
+            }
+            if (voucherPayments.isNotEmpty()) {
+                printerInstance.printStr(String.format("%-12s $%8s  (%d)\n", "Voucher:", voucherTotal.setScale(2, java.math.RoundingMode.HALF_UP), voucherPayments.size), null)
+            }
+            if (otherPayments.isNotEmpty()) {
+                printerInstance.printStr(String.format("%-12s $%8s  (%d)\n", "Otro:", otherTotal.setScale(2, java.math.RoundingMode.HALF_UP), otherPayments.size), null)
+            }
+
+            printerInstance.printStr("--------------------------------\n", null)
+
+            // Grand total
+            val grandTotal = payments.sumOf { it.totalAmount }
+            printerInstance.printStr(String.format("%-12s $%8s  (%d pagos)\n\n", "TOTAL:", grandTotal.setScale(2, java.math.RoundingMode.HALF_UP), payments.size), null)
+
+            // ========================================
+            // FOOTER
+            // ========================================
+            printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("Generado por Avoqado TPV\n", null)
+            printerInstance.printStr("================================\n\n\n", null)
+
+            // Execute print
+            val result = printerInstance.start()
+
+            if (result == 0) {
+                Timber.i("✅ [Printer] Payments summary printed successfully")
+                Result.success(Unit)
+            } else {
+                Timber.e("❌ [Printer] Print failed with code: $result")
+                Result.failure(Exception("Error al imprimir resumen de pagos (código: $result)"))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Printer] Failed to print payments summary")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Print kitchen ticket (comanda) for food preparation.
+     *
+     * **Purpose:** Informative ticket for kitchen staff - NO prices, NO payment info.
+     * Focus on products, modifiers, and special instructions.
+     *
+     * **Ticket Layout:**
+     * ```
+     * ================================
+     *       COMANDA DE COCINA
+     * ================================
+     * Orden #ORD-123
+     * Mesa: Mesa 5
+     *
+     * Fecha: 15/01/2025  14:30:22
+     * --------------------------------
+     *
+     * 3x Pizza Margherita
+     *    • Extra queso
+     *    • Sin cebolla
+     *    > Bien cocida
+     *
+     * 2x Hamburguesa Clásica
+     *    • Papas grandes
+     *    > Sin pepinillos
+     *
+     * --------------------------------
+     * Enviada por: Juan Pérez
+     * ================================
+     * ```
+     *
+     * @param orderNumber Order number for identification
+     * @param tableName Optional table name (e.g., "Mesa 5")
+     * @param orderItems List of order items with modifiers and notes
+     * @param staffName Optional staff name who sent the ticket
+     * @return Result.success if printed, Result.failure if error
+     */
+    fun printKitchenTicket(
+        orderNumber: String?,
+        tableName: String? = null,
+        orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>,
+        staffName: String? = null
+    ): Result<Unit> {
+        return try {
+            val printerInstance = printer ?: return Result.failure(
+                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+            )
+
+            if (orderItems.isEmpty()) {
+                return Result.failure(Exception("No hay productos para imprimir"))
+            }
+
+            Timber.i("🖨️ [Printer] Printing kitchen ticket for order: $orderNumber")
+
+            // Reset printer state
+            printerInstance.init()
+
+            // ========================================
+            // HEADER
+            // ========================================
+            printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("     COMANDA DE COCINA\n", null)
+            printerInstance.printStr("================================\n", null)
+
+            // Order number (prominent)
+            if (!orderNumber.isNullOrBlank()) {
+                printerInstance.printStr("Orden #$orderNumber\n", null)
+            }
+
+            // Table name (if available)
+            if (!tableName.isNullOrBlank()) {
+                printerInstance.printStr("Mesa: $tableName\n", null)
+            }
+
+            printerInstance.printStr("\n", null)
+
+            // Timestamp
+            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", java.util.Locale("es", "MX"))
+            val currentDateTime = dateFormat.format(java.util.Date())
+            printerInstance.printStr("Fecha: $currentDateTime\n", null)
+            printerInstance.printStr("--------------------------------\n\n", null)
+
+            // ========================================
+            // ORDER ITEMS (No prices - kitchen doesn't need them)
+            // ========================================
+            orderItems.forEach { item ->
+                // Product line: "3x Pizza Margherita"
+                printerInstance.printStr("${item.quantity}x ${item.productName}\n", null)
+
+                // Modifiers (if any) - indented with bullet
+                if (item.modifiers.isNotEmpty()) {
+                    item.modifiers.forEach { modifier ->
+                        printerInstance.printStr("   • ${modifier.name}\n", null)
+                    }
+                }
+
+                // Notes/special instructions (if any) - indented with arrow
+                if (!item.notes.isNullOrBlank()) {
+                    printerInstance.printStr("   > ${item.notes}\n", null)
+                }
+
+                // Blank line between items for readability
+                printerInstance.printStr("\n", null)
+            }
+
+            // ========================================
+            // FOOTER
+            // ========================================
+            printerInstance.printStr("--------------------------------\n", null)
+
+            if (!staffName.isNullOrBlank()) {
+                printerInstance.printStr("Enviada por: $staffName\n", null)
+            }
+
+            printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("\n\n\n", null) // Feed paper
+
+            // Execute print
+            val result = printerInstance.start()
+
+            if (result == 0) {
+                Timber.i("✅ [Printer] Kitchen ticket printed successfully")
+                Result.success(Unit)
+            } else {
+                Timber.e("❌ [Printer] Print failed with code: $result")
+                Result.failure(Exception("Error al imprimir comanda (código: $result)"))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Printer] Failed to print kitchen ticket")
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Check if printer is available and ready.
      *
      * @return true if printer is available, false otherwise

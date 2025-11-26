@@ -249,6 +249,16 @@ fun PaymentScreen(
                         orderItems = currentState.orderItems,  // 🆕 Order items (for displaying itemized receipt)
                         tableId = tableId,  // 🆕 Table ID (for clearing table post-payment)
                         onPrintReceipt = viewModel::printReceipt,  // 🆕 NEW: Print callback
+                        onPrintKitchenTicket = {
+                            // 🍳 Print kitchen ticket (comanda) with order items
+                            currentState.orderItems?.let { items ->
+                                viewModel.printKitchenTicket(
+                                    orderNumber = currentState.orderNumber,
+                                    tableName = null,  // TODO: Pass table name when available in state
+                                    orderItems = items
+                                )
+                            }
+                        },
                         onNavigateBack = onNavigateBack,  // 🆕 Navigate to WelcomeScreen (home button)
                         onNewOrder = {
                             viewModel.resetPayment()
@@ -546,6 +556,7 @@ private fun PaymentSuccessContent(
     orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null,  // 🆕 Order items (for displaying itemized receipt)
     tableId: String? = null,  // 🆕 Table ID (for clearing table post-payment)
     onPrintReceipt: () -> Unit = {},
+    onPrintKitchenTicket: () -> Unit = {},  // 🆕 Print kitchen ticket (comanda)
     onNavigateBack: () -> Unit,  // 🆕 Navigate to WelcomeScreen (home button)
     onNewOrder: () -> Unit,  // 🆕 Navigate to new order (for order payments)
     onNewFastPayment: () -> Unit,  // 🆕 Navigate to new fast payment (for fast payments)
@@ -936,6 +947,30 @@ private fun PaymentSuccessContent(
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
+
+                // Print kitchen ticket button (comanda para cocina)
+                Button(
+                    onClick = {
+                        showOrderDetailsModal = false
+                        onPrintKitchenTicket()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_contact_payment),
+                        contentDescription = "Imprimir",
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Imprimir Comanda")
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
 
                 // Close button
                 AvoqadoButton(

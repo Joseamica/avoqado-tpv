@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FilterList
@@ -35,6 +36,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
+import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderStatus
@@ -78,13 +80,17 @@ fun OrderListScreen(
         },
         modifier = modifier
     ) { paddingValues ->
-        OrderListContent(
-            state = state,
-            selectedFilter = selectedFilter,
-            onFilterChange = { viewModel.selectFilter(it) },
-            onOrderClick = onOrderClick,
-            modifier = Modifier.padding(paddingValues)
-        )
+        ResponsiveScaffold(
+            modifier = Modifier.padding(paddingValues),
+            scrollable = false
+        ) {
+            OrderListContent(
+                state = state,
+                selectedFilter = selectedFilter,
+                onFilterChange = { viewModel.selectFilter(it) },
+                onOrderClick = onOrderClick
+            )
+        }
     }
 }
 
@@ -96,15 +102,12 @@ private fun OrderListContent(
     state: OrderListState,
     selectedFilter: OrderStatusFilter,
     onFilterChange: (OrderStatusFilter) -> Unit,
-    onOrderClick: (Order) -> Unit,
-    modifier: Modifier = Modifier
+    onOrderClick: (Order) -> Unit
 ) {
     val sizes = LocalResponsiveSizes.current
 
     Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(sizes.paddingScreen)
+        modifier = Modifier.fillMaxSize()
     ) {
         // Filter chips
         FilterChipsRow(
@@ -161,11 +164,12 @@ private fun FilterChipsRow(
     onFilterChange: (OrderStatusFilter) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Row(
+    LazyRow(
         modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(horizontal = 4.dp)
     ) {
-        OrderStatusFilter.values().forEach { filter ->
+        items(OrderStatusFilter.entries.toTypedArray()) { filter ->
             FilterChip(
                 selected = selectedFilter == filter,
                 onClick = { onFilterChange(filter) },
@@ -287,12 +291,14 @@ enum class OrderStatusFilter(val label: String) {
 @Composable
 private fun OrderListScreenPreview() {
     AvoqadoTheme {
-        OrderListContent(
-            state = OrderListState.Success(emptyList()),
-            selectedFilter = OrderStatusFilter.ALL,
-            onFilterChange = {},
-            onOrderClick = {}
-        )
+        ResponsiveScaffold {
+            OrderListContent(
+                state = OrderListState.Success(emptyList()),
+                selectedFilter = OrderStatusFilter.ALL,
+                onFilterChange = {},
+                onOrderClick = {}
+            )
+        }
     }
 }
 
@@ -300,11 +306,13 @@ private fun OrderListScreenPreview() {
 @Composable
 private fun OrderListScreenLoadingPreview() {
     AvoqadoTheme {
-        OrderListContent(
-            state = OrderListState.Loading,
-            selectedFilter = OrderStatusFilter.ALL,
-            onFilterChange = {},
-            onOrderClick = {}
-        )
+        ResponsiveScaffold {
+            OrderListContent(
+                state = OrderListState.Loading,
+                selectedFilter = OrderStatusFilter.ALL,
+                onFilterChange = {},
+                onOrderClick = {}
+            )
+        }
     }
 }

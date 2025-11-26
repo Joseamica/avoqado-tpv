@@ -36,14 +36,16 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
  * Ordering Welcome Screen
  *
  * Entry point for the ordering system.
- * Shows three options:
- * - Quick Order: For retail/QSR without table assignment
+ * Shows options based on venue type:
+ * - Quick Order: For retail/QSR without table assignment (always visible)
  * - Table Service: For restaurant with floor plan and table management
- * - View Orders: See list of all orders with filters
+ *   (only visible for RESTAURANT, BAR, CAFE, FAST_FOOD venues)
+ * - View Orders: See list of all orders with filters (always visible)
  *
  * Similar to Square POS ordering entry screen.
  *
  * @param modifier Modifier for customization
+ * @param showTableService Whether to show table service option (based on venue type)
  * @param onQuickOrderClick Navigate to quick order flow (no table)
  * @param onTableServiceClick Navigate to table service flow (floor plan)
  * @param onViewOrdersClick Navigate to order list screen
@@ -52,6 +54,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 @Composable
 fun OrderingWelcomeScreen(
     modifier: Modifier = Modifier,
+    showTableService: Boolean = true,
     onQuickOrderClick: () -> Unit = {},
     onTableServiceClick: () -> Unit = {},
     onViewOrdersClick: () -> Unit = {},
@@ -69,11 +72,12 @@ fun OrderingWelcomeScreen(
         ResponsiveScaffold(
             modifier = Modifier.padding(paddingValues),
             scrollable = false,
-            horizontalAlignment = Alignment.CenterHorizontally
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Top
         ) {
             val sizes = LocalResponsiveSizes.current
 
-            Spacer(modifier = Modifier.height(sizes.spacingLarge))
+            Spacer(modifier = Modifier.height(sizes.spacingMedium))
 
             // Quick Order Button
             OrderingOptionCard(
@@ -91,23 +95,25 @@ fun OrderingWelcomeScreen(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            Spacer(modifier = Modifier.height(sizes.spacingMedium))
+            // Table Service Button (only for RESTAURANT, BAR, CAFE, FAST_FOOD venues)
+            if (showTableService) {
+                Spacer(modifier = Modifier.height(sizes.spacingMedium))
 
-            // Table Service Button
-            OrderingOptionCard(
-                icon = {
-                    Icon(
-                        imageVector = Icons.Default.Restaurant,
-                        contentDescription = stringResource(R.string.ordering_table_service_title),
-                        modifier = Modifier.size(sizes.iconSizeLarge),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                },
-                title = stringResource(R.string.ordering_table_service_title),
-                subtitle = stringResource(R.string.ordering_table_service_subtitle),
-                onClick = onTableServiceClick,
-                modifier = Modifier.fillMaxWidth()
-            )
+                OrderingOptionCard(
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Default.Restaurant,
+                            contentDescription = stringResource(R.string.ordering_table_service_title),
+                            modifier = Modifier.size(sizes.iconSizeLarge),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    },
+                    title = stringResource(R.string.ordering_table_service_title),
+                    subtitle = stringResource(R.string.ordering_table_service_subtitle),
+                    onClick = onTableServiceClick,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             Spacer(modifier = Modifier.height(sizes.spacingMedium))
 

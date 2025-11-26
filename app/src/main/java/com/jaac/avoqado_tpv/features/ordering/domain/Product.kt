@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.ordering.domain
 
+import androidx.compose.runtime.Immutable
 import java.math.BigDecimal
 
 /**
@@ -12,7 +13,12 @@ import java.math.BigDecimal
  * - trackInventory = false → No tracking (unlimited stock)
  * - trackInventory = true, inventoryMethod = QUANTITY → Simple count (e.g., wine bottles)
  * - trackInventory = true, inventoryMethod = RECIPE → Recipe-based (e.g., burgers with ingredients)
+ *
+ * **Performance Optimization (2025-11-24):**
+ * - @Immutable annotation tells Compose to skip recomposition when data hasn't changed
+ * - Reduces unnecessary recompositions in ProductGrid
  */
+@Immutable
 data class Product(
     val id: String,
     val name: String,

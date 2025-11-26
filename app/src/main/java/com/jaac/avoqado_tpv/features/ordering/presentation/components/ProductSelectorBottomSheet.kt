@@ -1,12 +1,7 @@
 package com.jaac.avoqado_tpv.features.ordering.presentation.components
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,7 +12,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -25,7 +19,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddShoppingCart
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
@@ -44,11 +41,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -62,25 +57,44 @@ import com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier
 import java.math.BigDecimal
 
 /**
- * Product Selector Bottom Sheet
+ * Product Customization Screen (Full-Screen)
  *
- * ⚡ Performance: Changed from ModalBottomSheet to In-Composition Overlay
- * ModalBottomSheet creates a new Window causing 101 frames skipped (~1.8s delay) on 1GB RAM devices.
- * In-composition overlay stays in the same Window hierarchy - much faster.
+ * ⚡ Performance: Full-screen overlay (no animations, no ModalBottomSheet window)
+ * - Instant show/hide (0ms overhead for 1GB RAM devices)
+ * - TopBar with close button (left) and add button (right)
+ * - Same content as previous bottom sheet (quantity, modifiers, notes)
  *
- * Compact bottom sheet for PAX A910S (720x1280) that allows:
- * 1. Quantity selection (with +/- buttons)
- * 2. Modifier selection (grouped, single/multiple choice)
- * 3. Optional notes (free text, 2-3 lines)
- * 4. Live price calculation (base + modifiers × quantity)
+ * Layout:
+ * ```
+ * ┌─────────────────────────────────────┐
+ * │ [✕]  Pizza Margherita      [✓]      │ ← TopBar
+ * ├─────────────────────────────────────┤
+ * │ 🍕 (emoji, 40sp)                    │
+ * │ Pizza Margherita                    │
+ * │ Base: $15.00                        │
+ * │                                     │
+ * │ Cantidad: [-] 1 [+]                 │
+ * │                                     │
+ * │ Tamaño *                            │
+ * │ [Chica] [Mediana] [Grande]          │
+ * │                                     │
+ * │ Extras (opcional)                   │
+ * │ [Queso +$2] [Tocino +$3]            │
+ * │                                     │
+ * │ Notas (opcional)                    │
+ * │ [TextField]                         │
+ * │                                     │
+ * │ Total: $17.00                       │
+ * └─────────────────────────────────────┘
+ * ```
  *
- * @param visible Whether the sheet is visible
+ * @param visible Whether the screen is visible
  * @param product Product to customize (nullable when not visible)
  * @param modifierGroups Available modifier groups for this product
- * @param onDismiss Close bottom sheet
+ * @param onDismiss Close screen without adding
  * @param onAddToCart Callback with quantity, selected modifiers, and notes
  */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun ProductSelectorBottomSheet(
     visible: Boolean,
@@ -90,8 +104,8 @@ fun ProductSelectorBottomSheet(
     onAddToCart: (quantity: Int, selectedModifiers: List<ProductModifier>, notes: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Early return if no product
-    if (product == null) return
+    // Early return if not visible or no product
+    if (!visible || product == null) return
 
     var quantity by remember(product.id) { mutableIntStateOf(1) }
     var notes by remember(product.id) { mutableStateOf("") }
@@ -101,285 +115,378 @@ fun ProductSelectorBottomSheet(
     val modifiersTotal = selectedModifiers.values.sumOf { it.priceAdjustment }
     val totalPrice = (product.price + modifiersTotal) * BigDecimal(quantity.toString())
 
+    // ✅ VALIDATION: Check if all required modifier groups are selected (Toast POS pattern)
+    val allRequiredGroupsFilled = modifierGroups
+        .filter { it.required }
+        .all { group ->
+            when (group.type) {
+                ModifierType.SINGLE_CHOICE -> {
+                    // For single choice: must have exactly one selection with group.id as key
+                    selectedModifiers.containsKey(group.id)
+                }
+                ModifierType.MULTIPLE_CHOICE -> {
+                    // For multiple choice: must have at least one selection with group.id prefix
+                    selectedModifiers.keys.any { it.startsWith("${group.id}_") }
+                }
+            }
+        }
+
     // Handle back button press
-    BackHandler(enabled = visible) {
+    BackHandler(enabled = true) {
         onDismiss()
     }
 
-    // ⚡ Performance: Animated values for smooth transitions (no new Window)
-    val scrimAlpha by animateFloatAsState(
-        targetValue = if (visible) 0.6f else 0f,
-        animationSpec = tween(200),
-        label = "scrimAlpha"
-    )
-
-    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
-    val sheetOffsetY by animateDpAsState(
-        targetValue = if (visible) 0.dp else screenHeight,
-        animationSpec = tween(250),
-        label = "sheetOffset"
-    )
-
-    // Overlay container
+    // Full-screen overlay (covers EVERYTHING including TopBar and tabs)
     Box(
         modifier = modifier
             .fillMaxSize()
-            .zIndex(if (visible || scrimAlpha > 0f) 10f else -1f),
-        contentAlignment = Alignment.BottomCenter
+            .zIndex(100f)
+            .background(MaterialTheme.colorScheme.background)
     ) {
-        // Scrim
-        if (scrimAlpha > 0f) {
-            Box(
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            // Header bar with close and add buttons
+            Row(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .alpha(scrimAlpha / 0.6f)
-                    .background(Color.Black.copy(alpha = 0.6f))
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) { onDismiss() }
-            )
-        }
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(horizontal = 8.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Cerrar",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
 
-        // Sheet content
-        val sheetShape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .offset(y = sheetOffsetY)
-                .background(
-                    color = MaterialTheme.colorScheme.surface,
-                    shape = sheetShape
+                Text(
+                    text = product.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurface
                 )
-        ) {
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            // Product header
-            item {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally
+
+                // Add to cart button (enabled only when all required modifiers selected)
+                IconButton(
+                    onClick = {
+                        if (allRequiredGroupsFilled) {
+                            onAddToCart(quantity, selectedModifiers.values.toList(), notes)
+                            onDismiss()
+                        }
+                    },
+                    enabled = allRequiredGroupsFilled
                 ) {
-                    Text(
-                        text = product.emoji,
-                        style = MaterialTheme.typography.displayLarge,
-                        fontSize = 40.sp
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = product.name,
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
-                    )
-                    Text(
-                        text = "Base: ${product.formattedPrice}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Icon(
+                        imageVector = Icons.Default.AddShoppingCart,
+                        contentDescription = "Agregar al pedido",
+                        tint = if (allRequiredGroupsFilled) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                        }
                     )
                 }
             }
 
-            item {
-                HorizontalDivider()
-            }
+            HorizontalDivider()
 
-            // Quantity selector
-            item {
+            // Scrollable content
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .weight(1f)
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Product header (emoji + base price)
+                item {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = product.emoji,
+                            style = MaterialTheme.typography.displayLarge,
+                            fontSize = 40.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Base: ${product.formattedPrice}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                item {
+                    HorizontalDivider()
+                }
+
+                // Quantity selector
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Cantidad",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            IconButton(
+                                onClick = { if (quantity > 1) quantity-- },
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Remove,
+                                    contentDescription = "Disminuir cantidad",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+
+                            Text(
+                                text = quantity.toString(),
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.width(40.dp),
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+
+                            IconButton(
+                                onClick = { if (quantity < 99) quantity++ },
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = "Aumentar cantidad",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Modifier groups
+                modifierGroups.forEach { group ->
+                    item {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = group.name + if (group.required) " *" else "",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+
+                            when (group.type) {
+                                ModifierType.SINGLE_CHOICE -> {
+                                    // Chips for single choice (radio button behavior)
+                                    FlowRow(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        group.modifiers.forEach { modifier ->
+                                            FilterChip(
+                                                selected = selectedModifiers[group.id]?.id == modifier.id,
+                                                onClick = {
+                                                    selectedModifiers = selectedModifiers.toMutableMap().apply {
+                                                        put(group.id, modifier)
+                                                    }
+                                                },
+                                                label = {
+                                                    Column {
+                                                        Text(
+                                                            text = modifier.name,
+                                                            fontSize = 12.sp,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                        if (modifier.priceAdjustment != BigDecimal.ZERO) {
+                                                            Text(
+                                                                text = modifier.formattedPrice,
+                                                                fontSize = 10.sp,
+                                                                color = MaterialTheme.colorScheme.primary,
+                                                                maxLines = 1
+                                                            )
+                                                        }
+                                                    }
+                                                },
+                                                colors = FilterChipDefaults.filterChipColors(
+                                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                    labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                                ModifierType.MULTIPLE_CHOICE -> {
+                                    // Chips for multiple choice (checkbox behavior)
+                                    FlowRow(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        group.modifiers.forEach { modifier ->
+                                            FilterChip(
+                                                selected = selectedModifiers.values.any { it.id == modifier.id },
+                                                onClick = {
+                                                    selectedModifiers = selectedModifiers.toMutableMap().apply {
+                                                        val key = "${group.id}_${modifier.id}"
+                                                        if (containsKey(key)) {
+                                                            remove(key)
+                                                        } else {
+                                                            put(key, modifier)
+                                                        }
+                                                    }
+                                                },
+                                                label = {
+                                                    Column {
+                                                        Text(
+                                                            text = modifier.name,
+                                                            fontSize = 12.sp,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                        if (modifier.priceAdjustment != BigDecimal.ZERO) {
+                                                            Text(
+                                                                text = modifier.formattedPrice,
+                                                                fontSize = 10.sp,
+                                                                color = MaterialTheme.colorScheme.primary,
+                                                                maxLines = 1
+                                                            )
+                                                        }
+                                                    }
+                                                },
+                                                colors = FilterChipDefaults.filterChipColors(
+                                                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                                    selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                    labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Notes field
+                item {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Notas (opcional)",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        OutlinedTextField(
+                            value = notes,
+                            onValueChange = { notes = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("Ej: Sin aceitunas, para llevar") },
+                            maxLines = 2,
+                            textStyle = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+
+                // Bottom spacing for scroll
+                item {
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+            }  // Close LazyColumn
+
+            // STICKY FOOTER - Total y botón Agregar (siempre visible)
+            HorizontalDivider()
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.background)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // ⚠️ Warning message when required modifiers are missing
+                if (!allRequiredGroupsFilled) {
+                    Text(
+                        text = "⚠️ Selecciona todos los modificadores obligatorios (*)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                // Total price display
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Cantidad",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
+                        text = "Total:",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
                     )
-
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        IconButton(
-                            onClick = { if (quantity > 1) quantity-- },
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(Icons.Default.Remove, contentDescription = "Disminuir cantidad")
-                        }
-
-                        Text(
-                            text = quantity.toString(),
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.width(40.dp),
-                            textAlign = TextAlign.Center
-                        )
-
-                        IconButton(
-                            onClick = { if (quantity < 99) quantity++ },
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = "Aumentar cantidad")
-                        }
-                    }
-                }
-            }
-
-            // Modifier groups
-            modifierGroups.forEach { group ->
-                item {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = group.name + if (group.required) " *" else "",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-
-                        when (group.type) {
-                            ModifierType.SINGLE_CHOICE -> {
-                                // Chips for single choice (radio button behavior)
-                                FlowRow(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    group.modifiers.forEach { modifier ->
-                                        FilterChip(
-                                            selected = selectedModifiers[group.id]?.id == modifier.id,
-                                            onClick = {
-                                                selectedModifiers = selectedModifiers.toMutableMap().apply {
-                                                    put(group.id, modifier)
-                                                }
-                                            },
-                                            label = {
-                                                Column {
-                                                    Text(
-                                                        text = modifier.name,
-                                                        fontSize = 12.sp
-                                                    )
-                                                    if (modifier.priceAdjustment != BigDecimal.ZERO) {
-                                                        Text(
-                                                            text = modifier.formattedPrice,
-                                                            fontSize = 10.sp,
-                                                            color = MaterialTheme.colorScheme.primary
-                                                        )
-                                                    }
-                                                }
-                                            },
-                                            colors = FilterChipDefaults.filterChipColors(
-                                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer
-                                            )
-                                        )
-                                    }
-                                }
-                            }
-                            ModifierType.MULTIPLE_CHOICE -> {
-                                // Chips for multiple choice (checkbox behavior)
-                                FlowRow(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    group.modifiers.forEach { modifier ->
-                                        FilterChip(
-                                            selected = selectedModifiers.values.any { it.id == modifier.id },
-                                            onClick = {
-                                                selectedModifiers = selectedModifiers.toMutableMap().apply {
-                                                    val key = "${group.id}_${modifier.id}"
-                                                    if (containsKey(key)) {
-                                                        remove(key)
-                                                    } else {
-                                                        put(key, modifier)
-                                                    }
-                                                }
-                                            },
-                                            label = {
-                                                Column {
-                                                    Text(
-                                                        text = modifier.name,
-                                                        fontSize = 12.sp
-                                                    )
-                                                    if (modifier.priceAdjustment != BigDecimal.ZERO) {
-                                                        Text(
-                                                            text = modifier.formattedPrice,
-                                                            fontSize = 10.sp,
-                                                            color = MaterialTheme.colorScheme.primary
-                                                        )
-                                                    }
-                                                }
-                                            },
-                                            colors = FilterChipDefaults.filterChipColors(
-                                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer
-                                            )
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Notes field
-            item {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
                     Text(
-                        text = "Notas (opcional)",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    OutlinedTextField(
-                        value = notes,
-                        onValueChange = { notes = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("Ej: Sin aceitunas, para llevar") },
-                        maxLines = 2,
-                        textStyle = MaterialTheme.typography.bodyMedium
+                        text = "$$totalPrice",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
                     )
                 }
-            }
 
-            // Add to cart button
-            item {
+                // Botón Agregar
                 Button(
                     onClick = {
-                        onAddToCart(quantity, selectedModifiers.values.toList(), notes)
-                        onDismiss()
+                        if (allRequiredGroupsFilled) {
+                            onAddToCart(quantity, selectedModifiers.values.toList(), notes)
+                            onDismiss()
+                        }
                     },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
+                    enabled = allRequiredGroupsFilled,
+                    modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
                     )
                 ) {
                     Text(
-                        text = "Agregar al carrito • $$totalPrice",
+                        text = "Agregar",
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
-
-            // Bottom spacing
-            item {
-                Spacer(modifier = Modifier.height(16.dp))
-            }
-        }
-        }  // Close Box (sheet)
-    }  // Close Box (outer)
+        }  // Close Column
+    }  // Close Box
 }
 
 // ============================================================================
@@ -390,18 +497,16 @@ fun ProductSelectorBottomSheet(
 @Composable
 private fun ProductSelectorPizzaPreview() {
     AvoqadoTheme {
-        Box(modifier = Modifier.fillMaxSize()) {
-            val product = MockProducts.getProductById("prod_comida_1")!!
-            val modifiers = MockProducts.getModifiersForProduct(product.id)
+        val product = MockProducts.getProductById("prod_comida_1")!!
+        val modifiers = MockProducts.getModifiersForProduct(product.id)
 
-            ProductSelectorBottomSheet(
-                visible = true,
-                product = product,
-                modifierGroups = modifiers,
-                onDismiss = {},
-                onAddToCart = { _, _, _ -> }
-            )
-        }
+        ProductSelectorBottomSheet(
+            visible = true,
+            product = product,
+            modifierGroups = modifiers,
+            onDismiss = {},
+            onAddToCart = { _, _, _ -> }
+        )
     }
 }
 
@@ -409,18 +514,16 @@ private fun ProductSelectorPizzaPreview() {
 @Composable
 private fun ProductSelectorBurgerPreview() {
     AvoqadoTheme {
-        Box(modifier = Modifier.fillMaxSize()) {
-            val product = MockProducts.getProductById("prod_comida_2")!!
-            val modifiers = MockProducts.getModifiersForProduct(product.id)
+        val product = MockProducts.getProductById("prod_comida_2")!!
+        val modifiers = MockProducts.getModifiersForProduct(product.id)
 
-            ProductSelectorBottomSheet(
-                visible = true,
-                product = product,
-                modifierGroups = modifiers,
-                onDismiss = {},
-                onAddToCart = { _, _, _ -> }
-            )
-        }
+        ProductSelectorBottomSheet(
+            visible = true,
+            product = product,
+            modifierGroups = modifiers,
+            onDismiss = {},
+            onAddToCart = { _, _, _ -> }
+        )
     }
 }
 
@@ -428,17 +531,15 @@ private fun ProductSelectorBurgerPreview() {
 @Composable
 private fun ProductSelectorNoModifiersPreview() {
     AvoqadoTheme {
-        Box(modifier = Modifier.fillMaxSize()) {
-            val product = MockProducts.getProductById("prod_bebida_2")!!  // Agua Natural (no modifiers)
-            val modifiers = MockProducts.getModifiersForProduct(product.id)
+        val product = MockProducts.getProductById("prod_bebida_2")!!  // Agua Natural (no modifiers)
+        val modifiers = MockProducts.getModifiersForProduct(product.id)
 
-            ProductSelectorBottomSheet(
-                visible = true,
-                product = product,
-                modifierGroups = modifiers,
-                onDismiss = {},
-                onAddToCart = { _, _, _ -> }
-            )
-        }
+        ProductSelectorBottomSheet(
+            visible = true,
+            product = product,
+            modifierGroups = modifiers,
+            onDismiss = {},
+            onAddToCart = { _, _, _ -> }
+        )
     }
 }

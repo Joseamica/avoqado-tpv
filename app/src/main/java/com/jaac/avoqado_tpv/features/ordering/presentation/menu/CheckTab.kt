@@ -207,16 +207,19 @@ fun CheckTab(
                     .padding(horizontal = 12.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Send to Kitchen button
-                Button(
-                    onClick = onSendToKitchen,
-                    modifier = Modifier.weight(1f),
-                    enabled = order.canSendToKitchen
-                ) {
-                    Text("Enviar a Cocina")
+                // Send to Kitchen button - ONLY for DINE_IN (servicio de mesa)
+                // Pedido Rápido (TAKEOUT) skips kitchen and goes directly to payment
+                if (order.orderType == OrderType.DINE_IN) {
+                    Button(
+                        onClick = onSendToKitchen,
+                        modifier = Modifier.weight(1f),
+                        enabled = order.canSendToKitchen
+                    ) {
+                        Text("Enviar a Cocina")
+                    }
                 }
 
-                // Process Payment button
+                // Process Payment button - ALWAYS shown
                 Button(
                     onClick = onProcessPayment,
                     modifier = Modifier.weight(1f),

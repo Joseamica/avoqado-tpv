@@ -72,6 +72,10 @@ class ReportsViewModel @Inject constructor(
     private val _state = MutableStateFlow<ReportsState>(ReportsState.Loading)
     val state: StateFlow<ReportsState> = _state.asStateFlow()
 
+    // Pull-to-refresh state
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
     private val _isComparisonEnabled = MutableStateFlow(false)
     val isComparisonEnabled: StateFlow<Boolean> = _isComparisonEnabled.asStateFlow()
 
@@ -370,15 +374,30 @@ class ReportsViewModel @Inject constructor(
     }
 
     /**
-     * Refresh reports
+     * Refresh reports (Pull-to-refresh)
      *
      * Called by pull-to-refresh or manually by user.
      * Reloads current period data and clears cache for fresh data.
      */
     fun refresh() {
-        // Clear cache to force fresh fetch
-        reportsCache.remove(currentPeriod.type)
-        loadReports(currentPeriod)
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            try {
+                // Clear cache to force fresh fetch
+                reportsCache.remove(currentPeriod.type)
+                loadReportsInternal(currentPeriod)
+            } finally {
+                _isRefreshing.value = false
+            }
+        }
+    }
+
+    /**
+     * Internal method to load reports (can be called from coroutine)
+     */
+    private suspend fun loadReportsInternal(period: ReportPeriod) {
+        // Call the loadReports logic directly
+        loadReports(period)
     }
 
     // ══════════════════════════════════════════════════════════════════════

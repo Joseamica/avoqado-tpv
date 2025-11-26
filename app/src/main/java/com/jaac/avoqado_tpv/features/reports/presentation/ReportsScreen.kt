@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoPullToRefresh
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
@@ -115,6 +116,7 @@ fun ReportsScreen(
 ) {
     // Summary tab state
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val isComparisonEnabled by viewModel.isComparisonEnabled.collectAsStateWithLifecycle()
     var showDatePicker by remember { mutableStateOf(false) }
 

@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.core.presentation.screens
 
+import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
@@ -7,13 +9,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Help
 import androidx.compose.material.icons.filled.AdminPanelSettings
-import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.CreditCard
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
@@ -22,6 +23,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -29,6 +31,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.core.presentation.components.ActionButton
 import com.jaac.avoqado_tpv.core.presentation.components.ActionButtonGrid
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoDialog
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.components.SettingsBottomSheet
@@ -37,6 +40,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
+import com.jaac.avoqado_tpv.features.shift.presentation.CachedShiftInfo
 import java.math.BigDecimal
 
 /**
@@ -65,6 +69,8 @@ fun WelcomeScreen(
     onNavigateToShifts: () -> Unit = {},
     onNavigateToOrdering: () -> Unit = {},
     onNavigateToReports: () -> Unit = {},
+    onNavigateToPayments: () -> Unit = {},  // ⭐ NEW: Navigate to Payments screen
+    onNavigateToSupport: () -> Unit = {},  // ⭐ NEW: Navigate to Support screen
     onNavigateToSuperAdmin: () -> Unit = {},
     onLogout: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
@@ -81,6 +87,10 @@ fun WelcomeScreen(
         else -> null
     }
 
+    // Offline state for shift status banner (Square/Toast prevention pattern)
+    val isOffline by shiftViewModel.isOffline.collectAsStateWithLifecycle()
+    val cachedShiftInfo by shiftViewModel.cachedShiftInfo.collectAsStateWithLifecycle()
+
     // ⭐ FIX: Reload shift status whenever WelcomeScreen becomes visible
     // This ensures shift status is updated when returning from ShiftScreen
     androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -92,10 +102,14 @@ fun WelcomeScreen(
         staffName = staffName,
         clockInTime = clockInTime,
         currentShift = currentShift,
+        isOffline = isOffline,
+        cachedShiftInfo = cachedShiftInfo,
         onStartPaymentWithAmount = onStartPaymentWithAmount,  // ✅ Modal flow for first-time
         onNavigateToShifts = onNavigateToShifts,
         onNavigateToOrdering = onNavigateToOrdering,
         onNavigateToReports = onNavigateToReports,
+        onNavigateToPayments = onNavigateToPayments,  // ⭐ NEW: Pass payments navigation
+        onNavigateToSupport = onNavigateToSupport,  // ⭐ NEW: Pass support navigation
         onNavigateToSuperAdmin = onNavigateToSuperAdmin,
         onLogout = {
             viewModel.logout()
@@ -113,6 +127,8 @@ fun WelcomeScreen(
  * @param staffName Staff member's name for greeting
  * @param clockInTime Clock-in time or null if not clocked in
  * @param currentShift Current active shift (null if no shift open)
+ * @param isOffline Whether device is offline
+ * @param cachedShiftInfo Cached shift info for offline display
  * @param onStartPaymentWithAmount Navigate to payment with amount
  * @param onNavigateToShifts Navigate to Shifts screen
  * @param onLogout Logout callback
@@ -123,10 +139,14 @@ private fun WelcomeScreenContent(
     staffName: String,
     clockInTime: String?,
     currentShift: Shift?,
+    isOffline: Boolean = false,
+    cachedShiftInfo: CachedShiftInfo? = null,
     onStartPaymentWithAmount: (String) -> Unit,  // ✅ Modal flow (first-time)
     onNavigateToShifts: () -> Unit,
     onNavigateToOrdering: () -> Unit,
     onNavigateToReports: () -> Unit,
+    onNavigateToPayments: () -> Unit,  // ⭐ NEW: Navigate to Payments screen
+    onNavigateToSupport: () -> Unit,  // ⭐ NEW: Navigate to Support screen
     onNavigateToSuperAdmin: () -> Unit,
     onLogout: () -> Unit
 ) {
@@ -137,6 +157,7 @@ private fun WelcomeScreenContent(
     // Modal states
     var showAmountBottomSheet by remember { mutableStateOf(false) }
     var showSettingsModal by remember { mutableStateOf(false) }
+    var showRestartConfirmDialog by remember { mutableStateOf(false) }
 
     // ══════════════════════════════════════════════════════════════════════
     // ACTION BUTTONS CONFIGURATION
@@ -155,11 +176,10 @@ private fun WelcomeScreenContent(
             onClick = { showAmountBottomSheet = true }  // ✅ Open modal (first-time flow)
         ),
         ActionButton(
-            icon = Icons.Default.Assessment,
-            label = "Resumen",
-            enabled = false,
-            badge = "Próximamente",
-            onClick = { /* TODO: Navigate to daily summary */ }
+            icon = Icons.Default.BarChart,
+            label = "Reportes",
+            enabled = true,
+            onClick = onNavigateToReports
         ),
         ActionButton(
             icon = Icons.Default.Schedule,
@@ -170,9 +190,8 @@ private fun WelcomeScreenContent(
         ActionButton(
             icon = Icons.Default.Receipt,
             label = "Pagos",
-            enabled = false,
-            badge = "Próximamente",
-            onClick = { /* TODO: Navigate to payment history */ }
+            enabled = true,  // ⭐ ENABLED: Payment history is now implemented
+            onClick = onNavigateToPayments  // ⭐ Navigate to Payments screen
         ),
 
         // ⏳ FUTURE FEATURES
@@ -190,18 +209,12 @@ private fun WelcomeScreenContent(
         //     badge = "Próximamente",
         //     onClick = { /* TODO: Navigate to transaction history */ }
         // ),
-        ActionButton(
-            icon = Icons.Default.BarChart,
-            label = "Reportes",
-            enabled = true,
-            onClick = onNavigateToReports
-        ),
+
         ActionButton(
             icon = Icons.AutoMirrored.Filled.Help,
             label = "Soporte",
-            enabled = false,
-            badge = "Próximamente",
-            onClick = { /* TODO: Navigate to help/support */ }
+            enabled = true,
+            onClick = onNavigateToSupport
         ),
 
         // 🔧 SUPERADMIN TOOLS
@@ -234,9 +247,11 @@ private fun WelcomeScreenContent(
             // Top spacing
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Shift status banner
+            // Shift status banner (with offline state support)
             ShiftStatusBanner(
                 shift = currentShift,
+                isOffline = isOffline,
+                cachedInfo = cachedShiftInfo,
                 onClick = onNavigateToShifts
             )
 
@@ -273,10 +288,55 @@ private fun WelcomeScreenContent(
                 showSettingsModal = false
                 onLogout()
             },
+            onRestartApp = {
+                showSettingsModal = false
+                showRestartConfirmDialog = true  // Show confirmation dialog
+            },
             onSettings = null, // Disabled - future feature
             onHelp = null // Disabled - future feature
         )
     }
+
+    // Restart app confirmation dialog
+    if (showRestartConfirmDialog) {
+        val context = LocalContext.current
+
+        AvoqadoDialog(
+            title = "Reiniciar Aplicación",
+            message = "¿Estás seguro de que deseas reiniciar la aplicación?\n\n" +
+                    "La app se cerrará y volverá a abrir desde el inicio.",
+            icon = Icons.Outlined.RestartAlt,
+            confirmText = "Reiniciar",
+            dismissText = "Cancelar",
+            onDismiss = { showRestartConfirmDialog = false },
+            onConfirm = {
+                showRestartConfirmDialog = false
+                restartApp(context)
+            }
+        )
+    }
+}
+
+/**
+ * Restart the app completely (Toast/Square pattern)
+ *
+ * This kills the current process and restarts the app from scratch.
+ * - Clears all in-memory state (ViewModels, Singletons, caches)
+ * - Preserves persistent storage (Room DB, SecureStorage)
+ * - User will go through Splash → Login (if token expired) → Home
+ *
+ * @param context Android context to get package manager
+ */
+private fun restartApp(context: Context) {
+    val packageManager = context.packageManager
+    val intent = packageManager.getLaunchIntentForPackage(context.packageName)
+    val componentName = intent?.component
+
+    val mainIntent = Intent.makeRestartActivityTask(componentName)
+    context.startActivity(mainIntent)
+
+    // Kill the current process
+    Runtime.getRuntime().exit(0)
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -295,6 +355,8 @@ private fun WelcomeScreenPreview() {
             onNavigateToShifts = {},
             onNavigateToOrdering = {},
             onNavigateToReports = {},
+            onNavigateToPayments = {},
+            onNavigateToSupport = {},
             onNavigateToSuperAdmin = {},
             onLogout = {}
         )
@@ -313,6 +375,8 @@ private fun WelcomeScreenPreviewLarge() {
             onNavigateToShifts = {},
             onNavigateToOrdering = {},
             onNavigateToReports = {},
+            onNavigateToPayments = {},
+            onNavigateToSupport = {},
             onNavigateToSuperAdmin = {},
             onLogout = {}
         )
@@ -350,6 +414,8 @@ private fun WelcomeScreenWithActiveShiftPreview() {
             onNavigateToShifts = {},
             onNavigateToOrdering = {},
             onNavigateToReports = {},
+            onNavigateToPayments = {},
+            onNavigateToSupport = {},
             onNavigateToSuperAdmin = {},
             onLogout = {}
         )

@@ -7,6 +7,7 @@ import androidx.compose.material.icons.automirrored.filled.Help
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -21,6 +22,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
  *
  * Displays user management and settings options:
  * - Cambiar usuario (Logout)
+ * - Reiniciar App (Process restart - Toast/Square pattern)
  * - Configuración (Future: Settings screen)
  * - Ayuda (Future: Help/Support)
  *
@@ -41,6 +43,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
  *
  * @param onDismiss Callback when sheet is dismissed
  * @param onLogout Callback when "Cambiar usuario" is clicked
+ * @param onRestartApp Callback when "Reiniciar App" is clicked
  * @param onSettings Callback when "Configuración" is clicked (optional, disabled if null)
  * @param onHelp Callback when "Ayuda" is clicked (optional, disabled if null)
  */
@@ -49,6 +52,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 fun SettingsBottomSheet(
     onDismiss: () -> Unit,
     onLogout: () -> Unit,
+    onRestartApp: () -> Unit,
     onSettings: (() -> Unit)? = null,
     onHelp: (() -> Unit)? = null
 ) {
@@ -85,7 +89,16 @@ fun SettingsBottomSheet(
                 onClick = onLogout
             )
 
-            // Option 2: Configuración (Future)
+            // Option 2: Reiniciar App (Toast/Square pattern)
+            SettingsOption(
+                icon = Icons.Outlined.RestartAlt,
+                label = "Reiniciar App",
+                description = "Reinicia la aplicación completamente",
+                enabled = true,
+                onClick = onRestartApp
+            )
+
+            // Option 3: Configuración (Future)
             SettingsOption(
                 icon = Icons.Default.Settings,
                 label = "Configuración",
@@ -94,7 +107,7 @@ fun SettingsBottomSheet(
                 onClick = { onSettings?.invoke() }
             )
 
-            // Option 3: Ayuda (Future)
+            // Option 4: Ayuda (Future)
             SettingsOption(
                 icon = Icons.AutoMirrored.Filled.Help,
                 label = "Ayuda",
@@ -191,6 +204,7 @@ private fun SettingsBottomSheetPreview() {
                 SettingsBottomSheet(
                     onDismiss = {},
                     onLogout = {},
+                    onRestartApp = {},
                     onSettings = null, // Disabled
                     onHelp = null // Disabled
                 )

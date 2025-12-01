@@ -2,12 +2,16 @@ package com.jaac.avoqado_tpv.core.presentation.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.core.data.network.dto.PendingCommandDto
+import com.jaac.avoqado_tpv.core.data.network.dto.toTpvCommand
 import com.jaac.avoqado_tpv.core.data.repository.HeartbeatRepository
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.DeviceHealthMonitor
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
+import com.jaac.avoqado_tpv.features.remote_command.data.model.CommandResult
+import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -55,7 +59,8 @@ class ConnectionViewModel @Inject constructor(
     private val heartbeatRepository: HeartbeatRepository,
     private val deviceInfoManager: DeviceInfoManager,
     private val deviceHealthMonitor: DeviceHealthMonitor,
-    private val connectionEventManager: ConnectionEventManager
+    private val connectionEventManager: ConnectionEventManager,
+    private val commandExecutor: CommandExecutor
 ) : ViewModel() {
 
     // ══════════════════════════════════════════════════════════════════════
@@ -187,6 +192,15 @@ class ConnectionViewModel @Inject constructor(
                 is Result.Success -> {
                     Timber.i("✅ [Connection] Backend connected")
 
+                    // 🎯 Square Terminal API Pattern: Process pending commands from heartbeat response
+                    // Commands are delivered via HTTP polling instead of socket push
+                    // This runs every 30 seconds (more reliable than WorkManager's 15-min minimum)
+                    val pendingCommands = result.data.pendingCommands
+                    if (!pendingCommands.isNullOrEmpty()) {
+                        Timber.i("📥 [Connection] Received ${pendingCommands.size} pending command(s)")
+                        processPendingCommands(pendingCommands)
+                    }
+
                     // 🔄 Trigger reconciliation sync if connection was restored
                     if (reconnectionAttempts > 0) {
                         Timber.i("🔄 [Connection] Connection restored after $reconnectionAttempts attempts - triggering data sync")
@@ -241,6 +255,68 @@ class ConnectionViewModel @Inject constructor(
         val delay = (baseDelay * (1 shl minOf(reconnectionAttempts, 4))).coerceAtMost(maxDelay)
         Timber.d("⏱️ [Connection] Retry in ${delay / 1000}s (attempt #${reconnectionAttempts + 1})")
         return delay
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Square Terminal API Polling Pattern
+    // ══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Process pending commands received via heartbeat response
+     *
+     * **Square Terminal API Pattern:**
+     * Commands are delivered via HTTP polling (heartbeat response) instead of socket push.
+     * This ensures commands reach the terminal even when:
+     * - Socket is not connected (user on login screen)
+     * - Socket connection dropped temporarily
+     * - Network is unstable
+     *
+     * **Note:** This is the primary command delivery mechanism since WorkManager's
+     * PeriodicWorkRequest has a 15-minute minimum interval. ConnectionViewModel
+     * checks every 30 seconds, making it more reliable for command delivery.
+     *
+     * @param pendingCommands List of commands from heartbeat response
+     */
+    private suspend fun processPendingCommands(pendingCommands: List<PendingCommandDto>) {
+        // Get terminal serial number for security validation in ACKs
+        val terminalId = deviceInfoManager.getSerialNumber()
+
+        for (commandDto in pendingCommands) {
+            try {
+                Timber.i("🔄 [Connection] Processing command: ${commandDto.type} (id=${commandDto.commandId})")
+
+                // 1. Convert DTO to domain model
+                val command = commandDto.toTpvCommand()
+                if (command == null) {
+                    Timber.w("⚠️ [Connection] Unknown command type: ${commandDto.type}, skipping")
+                    // Send REJECTED ACK for unknown command (with terminalId for security)
+                    val rejectResult = CommandResult.rejected("Unknown command type: ${commandDto.type}")
+                    heartbeatRepository.sendCommandAck(commandDto.commandId, terminalId, rejectResult)
+                    continue
+                }
+
+                // 2. Execute command via CommandExecutor
+                val result = commandExecutor.execute(command)
+
+                // 3. Send HTTP ACK to backend (primary acknowledgment for polling pattern)
+                val ackResult = heartbeatRepository.sendCommandAck(command.commandId, terminalId, result)
+                if (ackResult is Result.Success) {
+                    Timber.i("✅ [Connection] Command completed and ACK sent: ${command.type.name} → ${result.status.name}")
+                } else {
+                    Timber.w("⚠️ [Connection] Command executed but ACK failed: ${command.commandId}")
+                }
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Connection] Failed to process command: ${commandDto.commandId}")
+                // Try to send FAILED ACK (with terminalId for security)
+                try {
+                    val failResult = CommandResult.failed("Execution error: ${e.message}")
+                    heartbeatRepository.sendCommandAck(commandDto.commandId, terminalId, failResult)
+                } catch (ackError: Exception) {
+                    Timber.e(ackError, "❌ [Connection] Failed to send FAILED ACK: ${commandDto.commandId}")
+                }
+            }
+        }
     }
 
     /**

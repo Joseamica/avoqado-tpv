@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     id("com.google.devtools.ksp")  // KSP instead of kapt (2x faster) - version managed in root
     id("com.google.dagger.hilt.android")
+    id("com.google.gms.google-services")  // Firebase
 }
 
 android {
@@ -28,9 +29,9 @@ android {
 
         // Environment variables (NEVER hardcode secrets in code)
         buildConfigField("String", "API_BASE_URL", "\"https://api.avoqado.io/api/v1/\"")
-        buildConfigField("String", "API_BASE_URL_DEV", "\"https://humane-immortal-pika.ngrok-free.app/api/v1/\"")
+        buildConfigField("String", "API_BASE_URL_DEV", "\"https://unmistrustful-marla-unvermiculated.ngrok-free.dev/api/v1/\"")
         buildConfigField("String", "SOCKET_URL", "\"https://api.avoqado.io\"")
-        buildConfigField("String", "SOCKET_URL_DEV", "\"https://humane-immortal-pika.ngrok-free.app\"")
+        buildConfigField("String", "SOCKET_URL_DEV", "\"https://unmistrustful-marla-unvermiculated.ngrok-free.dev\"")
 
         // ⚠️ REMOVED: Hardcoded terminal configuration (2025-11-05)
         // Serial numbers and merchant accounts now fetched dynamically from backend
@@ -236,6 +237,11 @@ dependencies {
 
     // QR Code
     implementation("com.google.zxing:core:3.5.3")
+
+    // Firebase (App Distribution for OTA updates)
+    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
+    implementation("com.google.firebase:firebase-appdistribution-api:16.0.0-beta14")
+    implementation("com.google.firebase:firebase-appdistribution:16.0.0-beta14")
 
     // Room (para gestión de transacciones local)
     implementation("androidx.room:room-runtime:2.6.1")

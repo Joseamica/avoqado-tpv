@@ -198,11 +198,15 @@ data class OrderDto(
     @SerializedName("discountAmount") val discountAmount: Double? = 0.0,
     @SerializedName("taxAmount") val taxAmount: Double,
     @SerializedName("total") val total: Double,
+    @SerializedName("paidAmount") val paidAmount: Double? = 0.0,  // ⭐ Partial payment tracking
+    @SerializedName("remainingBalance") val remainingBalance: Double? = null,  // ⭐ Amount left to pay (null = total)
     @SerializedName("notes") val notes: String? = null,
     @SerializedName("servedById") val servedById: String?,
     @SerializedName("createdAt") val createdAt: String,
     @SerializedName("updatedAt") val updatedAt: String,
-    @SerializedName("version") val version: Int = 1
+    @SerializedName("version") val version: Int = 1,
+    @SerializedName("lastSplitType") val lastSplitType: String? = null,  // ⭐ Split type restriction (PERPRODUCT, EQUALPARTS, etc.)
+    @SerializedName("paidItemIds") val paidItemIds: List<String>? = null  // ⭐ Items already paid (for SplitByProduct)
 )
 
 /**

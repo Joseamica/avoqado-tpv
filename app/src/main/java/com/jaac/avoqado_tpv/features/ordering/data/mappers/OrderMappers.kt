@@ -5,6 +5,7 @@ import com.jaac.avoqado_tpv.features.ordering.data.dto.OrderItemDetailDto
 import com.jaac.avoqado_tpv.features.ordering.data.dto.ProductModifierDto
 import com.jaac.avoqado_tpv.features.ordering.domain.KitchenStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
+import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderItem
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
@@ -38,10 +39,14 @@ fun OrderDto.toOrder(): Order {
         discountAmount = BigDecimal((discountAmount ?: 0.0).toString()),  // ✅ Map discountAmount with fallback
         tax = BigDecimal(taxAmount.toString()),
         total = BigDecimal(total.toString()),
+        paidAmount = BigDecimal((paidAmount ?: 0.0).toString()),  // ⭐ Partial payment tracking
+        remainingBalance = BigDecimal((remainingBalance ?: total).toString()),  // ⭐ Fallback to total if not set
         notes = notes,
         createdAt = Instant.parse(createdAt),
         updatedAt = Instant.parse(updatedAt),
-        version = version
+        version = version,
+        lastSplitType = lastSplitType?.toSplitType(),  // ⭐ Split type restriction (nullable for graceful degradation)
+        paidItemIds = paidItemIds ?: emptyList()  // ⭐ Items already paid (for SplitByProduct screen)
     )
 }
 
@@ -132,5 +137,17 @@ fun String.toOrderType(): OrderType {
         OrderType.valueOf(this.uppercase())
     } catch (e: IllegalArgumentException) {
         OrderType.DINE_IN  // Default fallback
+    }
+}
+
+/**
+ * Convert string to SplitType enum.
+ * Returns null if invalid (graceful degradation - shows all options)
+ */
+fun String.toSplitType(): SplitType? {
+    return try {
+        SplitType.valueOf(this.uppercase())
+    } catch (e: IllegalArgumentException) {
+        null  // Return null to allow all split options (graceful degradation)
     }
 }

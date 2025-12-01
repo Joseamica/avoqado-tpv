@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
+import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryDomain
 import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryEntities
 import com.jaac.avoqado_tpv.core.data.local.mappers.toDomain
@@ -63,7 +64,8 @@ class MenuViewModel @Inject constructor(
     private val socketManager: com.jaac.avoqado_tpv.core.data.realtime.SocketManager,
     private val orderSyncCoordinator: com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator,
     private val productDao: ProductDao,  // ⚡ Cache-first product loading
-    private val productCategoryDao: ProductCategoryDao  // ⚡ Cache-first category loading
+    private val productCategoryDao: ProductCategoryDao,  // ⚡ Cache-first category loading
+    private val printerManager: PrinterManager  // 🖨️ Kitchen ticket printing
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<MenuState>(MenuState.Loading)
@@ -161,6 +163,7 @@ class MenuViewModel @Inject constructor(
      * - Reload data: Sync with server state (inventory, prices, etc.)
      */
     private fun listenToSocketEvents() {
+        // Listen for ORDER_UPDATED events (inventory sync)
         viewModelScope.launch {
             socketManager.events
                 .filter { it is com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent.OrderUpdated }
@@ -173,6 +176,94 @@ class MenuViewModel @Inject constructor(
                     // Reload products to get updated inventory counts
                     loadProducts()
                 }
+        }
+
+        // ⭐ Listen for PAYMENT_COMPLETED events to refresh order with lastSplitType
+        // Bug fix: After payment, order needs to be refreshed from backend to get updated lastSplitType
+        // This is critical for split payment restrictions (EQUALPARTS should hide PERPRODUCT option)
+        viewModelScope.launch {
+            socketManager.events
+                .filter { it is com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent.PaymentCompleted }
+                .collect { event ->
+                    val paymentEvent = event as com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent.PaymentCompleted
+                    val currentState = _state.value
+                    val eventOrderId = paymentEvent.orderId
+
+                    // Only refresh if this payment is for our current order (and orderId is not null)
+                    if (currentState is MenuState.Success &&
+                        eventOrderId != null &&
+                        eventOrderId == currentState.order.id) {
+                        Timber.i("💳 [MenuViewModel] Payment completed for current order - refreshing to get lastSplitType")
+                        Timber.d("   PaymentId: ${paymentEvent.paymentId} | OrderId: $eventOrderId | Amount: ${paymentEvent.amount}")
+
+                        // Refresh order from backend to get updated lastSplitType, paidAmount, remainingBalance
+                        refreshOrderFromBackend(eventOrderId)
+                    }
+                }
+        }
+    }
+
+    /**
+     * Refresh order from backend (force reload, bypassing cache)
+     *
+     * Used after payment completes to get updated fields like:
+     * - lastSplitType (for split payment restrictions)
+     * - paidAmount (for partial payment banner)
+     * - remainingBalance (for payment calculations)
+     * - paymentStatus (may change to PAID if fully paid)
+     */
+    private fun refreshOrderFromBackend(orderId: String) {
+        viewModelScope.launch {
+            try {
+                val venueId = deviceInfoManager.getVenueId() ?: return@launch
+
+                val backendOrder = orderRepository.getOrder(
+                    venueId = venueId,
+                    orderId = orderId
+                ).getOrElse { error ->
+                    Timber.e(error, "❌ Failed to refresh order after payment")
+                    return@launch
+                }
+
+                // Cache to local DB (preserves local-only fields like sentToKitchenAt)
+                orderSyncCoordinator.cacheBackendOrder(backendOrder)
+
+                // Load from local DB to get merged data (backend + local fields)
+                val mergedOrder = orderSyncCoordinator.getLocalOrder(orderId) ?: backendOrder
+
+                // Update state with refreshed order
+                val currentState = _state.value
+                if (currentState is MenuState.Success) {
+                    _state.value = currentState.copy(order = mergedOrder)
+
+                    // 🔍 DEBUG: Detailed order state after payment
+                    Timber.i("✅ [MenuViewModel] Order refreshed after payment")
+                    Timber.i("═══════════════════════════════════════════════════════════")
+                    Timber.i("📋 ORDER STATE AFTER PAYMENT:")
+                    Timber.i("   orderId: ${mergedOrder.id}")
+                    Timber.i("   orderNumber: ${mergedOrder.orderNumber}")
+                    Timber.i("   status: ${mergedOrder.status}")
+                    Timber.i("   paymentStatus: ${mergedOrder.paymentStatus}")
+                    Timber.i("   ─────────────────────────────────────────────────────")
+                    Timber.i("   💰 AMOUNTS:")
+                    Timber.i("      subtotal: ${mergedOrder.subtotal}")
+                    Timber.i("      total: ${mergedOrder.total}")
+                    Timber.i("      paidAmount: ${mergedOrder.paidAmount}")
+                    Timber.i("      remainingBalance: ${mergedOrder.remainingBalance}")
+                    Timber.i("   ─────────────────────────────────────────────────────")
+                    Timber.i("   🔀 SPLIT PAYMENT:")
+                    Timber.i("      lastSplitType: ${mergedOrder.lastSplitType}")
+                    Timber.i("      hasRemainingBalance: ${mergedOrder.hasRemainingBalance}")
+                    Timber.i("   ─────────────────────────────────────────────────────")
+                    Timber.i("   📦 ITEMS (${mergedOrder.items.size}):")
+                    mergedOrder.items.forEach { item ->
+                        Timber.i("      - ${item.productName} x${item.quantity} = ${item.totalPrice}")
+                    }
+                    Timber.i("═══════════════════════════════════════════════════════════")
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "❌ Error refreshing order after payment")
+            }
         }
     }
 
@@ -195,7 +286,9 @@ class MenuViewModel @Inject constructor(
                         _isSyncing.value = true
                     }
                     is com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator.SyncEvent.Synced -> {
+                        val receivedAt = System.currentTimeMillis()
                         Timber.i("✅ [Sync] Order synced successfully | id=${event.orderId} | version=${event.version}")
+                        Timber.i("📬 [VM-DEBUG] SyncEvent.Synced RECEIVED | serverId=${event.orderId} | timestamp=$receivedAt")
                         _isSyncing.value = false
 
                         // ⭐ P0 FIX: Reload order from Room DB to get updated server ID/version
@@ -203,11 +296,13 @@ class MenuViewModel @Inject constructor(
                         // with the new ID so subsequent operations (add item) use the correct ID
                         val currentState = _state.value
                         if (currentState is MenuState.Success) {
+                            Timber.d("📬 [VM-DEBUG] BEFORE STATE UPDATE | currentStateOrderId=${currentState.order.id} | timestamp=${System.currentTimeMillis()}")
                             try {
                                 val updatedOrder = orderSyncCoordinator.getLocalOrder(event.orderId)
                                 if (updatedOrder != null) {
                                     Timber.d("🔄 [Sync] Reloading order after sync | oldId=${currentState.order.id} | newId=${updatedOrder.id}")
                                     _state.value = currentState.copy(order = updatedOrder)
+                                    Timber.i("✅ [VM-DEBUG] _state UPDATED with new order | newOrderId=${updatedOrder.id} | timestamp=${System.currentTimeMillis()} | totalDelay=${System.currentTimeMillis() - receivedAt}ms")
                                 } else {
                                     Timber.w("⚠️ [Sync] Order not found after sync | id=${event.orderId}")
                                 }
@@ -220,23 +315,44 @@ class MenuViewModel @Inject constructor(
                         Timber.e("❌ [Sync] Sync error | order=${event.orderId} | error=${event.message}")
                         _isSyncing.value = false
 
-                        // Show error to user
-                        _state.value = MenuState.Error(
-                            "Error sincronizando orden.\n\n" +
-                            "Los cambios se guardarán cuando la conexión se restablezca.\n\n" +
-                            "${event.message}"
-                        )
+                        // ✅ P0 FIX: Don't replace Success state with Error (user loses order!)
+                        // Instead, preserve the order and show error via syncError field
+                        val currentState = _state.value
+                        if (currentState is MenuState.Success) {
+                            val errorMessage = "Error sincronizando: ${event.message}\n" +
+                                "Los cambios se guardarán cuando la conexión se restablezca."
+                            _state.value = currentState.copy(syncError = errorMessage)
+                            Timber.d("🔄 [Sync] Preserved Success state with syncError banner")
+                        } else {
+                            // Only set full Error state if we're not in Success (e.g., still Loading)
+                            _state.value = MenuState.Error(
+                                "Error sincronizando orden.\n\n" +
+                                "Los cambios se guardarán cuando la conexión se restablezca.\n\n" +
+                                "${event.message}"
+                            )
+                        }
                     }
                     is com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator.SyncEvent.Conflict -> {
                         Timber.w("⚠️ [Sync] Conflict detected | order=${event.orderId}")
                         _isSyncing.value = false
 
-                        // Show conflict resolution dialog
-                        _state.value = MenuState.Error(
-                            "Conflicto de versión detectado.\n\n" +
-                            "Esta orden fue modificada por otra terminal.\n\n" +
-                            "Por favor, recarga la orden para ver los últimos cambios."
-                        )
+                        // ✅ P0 FIX: Don't replace Success state with Error (user loses order!)
+                        // Preserve the order and show conflict via syncError field
+                        val currentState = _state.value
+                        if (currentState is MenuState.Success) {
+                            val conflictMessage = "Conflicto de versión detectado.\n" +
+                                "Esta orden fue modificada por otra terminal.\n" +
+                                "Por favor, recarga la orden para ver los últimos cambios."
+                            _state.value = currentState.copy(syncError = conflictMessage)
+                            Timber.d("🔄 [Sync] Preserved Success state with conflict banner")
+                        } else {
+                            // Only set full Error state if we're not in Success
+                            _state.value = MenuState.Error(
+                                "Conflicto de versión detectado.\n\n" +
+                                "Esta orden fue modificada por otra terminal.\n\n" +
+                                "Por favor, recarga la orden para ver los últimos cambios."
+                            )
+                        }
                     }
                 }
             }
@@ -310,6 +426,16 @@ class MenuViewModel @Inject constructor(
                     _products.value = cachedProducts
                     _categories.value = listOf(com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory.ALL) + cachedCategories
                     Timber.i("⚡ [Cache Hit] Loaded ${cachedProducts.size} products from cache (~10ms)")
+
+                    // 🔍 DEBUG: Log inventory for each product
+                    Timber.i("═══════════════════════════════════════════════════════════")
+                    Timber.i("📦 CACHED PRODUCT INVENTORY (${cachedProducts.size} products)")
+                    cachedProducts.forEach { product ->
+                        if (product.trackInventory && product.availableQuantity != null) {
+                            Timber.i("   - ${product.name}: availableQty=${product.availableQuantity} | method=${product.inventoryMethod}")
+                        }
+                    }
+                    Timber.i("═══════════════════════════════════════════════════════════")
                 } else {
                     Timber.d("💾 [Cache Miss] No cached products found, fetching from backend...")
                     _isLoadingProducts.value = true
@@ -327,6 +453,16 @@ class MenuViewModel @Inject constructor(
                     }
                     _products.value = freshProducts
                     Timber.i("✅ [Backend] Loaded ${freshProducts.size} products and updated cache")
+
+                    // 🔍 DEBUG: Log inventory for each product from backend
+                    Timber.i("═══════════════════════════════════════════════════════════")
+                    Timber.i("📦 FRESH PRODUCT INVENTORY FROM BACKEND (${freshProducts.size} products)")
+                    freshProducts.forEach { product ->
+                        if (product.trackInventory && product.availableQuantity != null) {
+                            Timber.i("   - ${product.name}: availableQty=${product.availableQuantity} | method=${product.inventoryMethod}")
+                        }
+                    }
+                    Timber.i("═══════════════════════════════════════════════════════════")
                 },
                 onFailure = { error ->
                     Timber.e(error, "❌ [Backend] Failed to load products (using cached data)")
@@ -374,6 +510,20 @@ class MenuViewModel @Inject constructor(
     }
 
     /**
+     * Clear sync error banner from UI.
+     *
+     * Called when user dismisses the sync error/conflict notification.
+     * Preserves order data, only clears the error message.
+     */
+    fun clearSyncError() {
+        val currentState = _state.value
+        if (currentState is MenuState.Success && currentState.syncError != null) {
+            _state.value = currentState.copy(syncError = null)
+            Timber.d("🔄 [Sync] Error banner dismissed by user")
+        }
+    }
+
+    /**
      * Load order for a table or create quick order (LOCAL-FIRST)
      *
      * ⚠️ LOCAL-FIRST TRANSFORMATION ⚠️
@@ -394,6 +544,7 @@ class MenuViewModel @Inject constructor(
      * @param orderId "CREATE_QUICK_ORDER", "CREATE_TABLE_ORDER:tableId", or existing CUID
      */
     fun loadOrder(orderId: String) {
+        Timber.d("📖 [VM-DEBUG] loadOrder() START | orderId=$orderId | timestamp=${System.currentTimeMillis()}")
         viewModelScope.launch {
             try {
                 // 🔄 Toast/Square Pattern: Don't reload if order already loaded
@@ -495,7 +646,9 @@ class MenuViewModel @Inject constructor(
                         orderSyncCoordinator.cacheBackendOrder(backendOrder)
                         Timber.d("💾 [Cache] Table order cached to local DB | id=${assignResult.orderId}")
 
-                        backendOrder
+                        // ⭐ FIX: Load from local DB to get preserved sentToKitchenAt timestamps
+                        // Backend doesn't have this field, so we must use local DB which preserves it
+                        orderSyncCoordinator.getLocalOrder(assignResult.orderId) ?: backendOrder
                     }
 
                     // ✅ LOCAL-FIRST: Load existing order from Room DB first, fallback to backend
@@ -526,13 +679,38 @@ class MenuViewModel @Inject constructor(
                             orderSyncCoordinator.cacheBackendOrder(backendOrder)
                             Timber.d("💾 [Cache] Backend order cached to local DB | id=$orderId")
 
-                            backendOrder
+                            // ⭐ FIX: Load from local DB to get preserved sentToKitchenAt timestamps
+                            orderSyncCoordinator.getLocalOrder(orderId) ?: backendOrder
                         }
                     }
                 }
 
                 _state.value = MenuState.Success(order)
-                Timber.i("✅ Order ready | id=${order.id} | number=${order.orderNumber} | type=${order.orderType}")
+
+                // 🔍 DEBUG: Detailed order state on load
+                Timber.i("═══════════════════════════════════════════════════════════")
+                Timber.i("✅ ORDER LOADED SUCCESSFULLY")
+                Timber.i("   orderId: ${order.id}")
+                Timber.i("   orderNumber: ${order.orderNumber}")
+                Timber.i("   orderType: ${order.orderType}")
+                Timber.i("   status: ${order.status}")
+                Timber.i("   paymentStatus: ${order.paymentStatus}")
+                Timber.i("   ─────────────────────────────────────────────────────")
+                Timber.i("   💰 AMOUNTS ON LOAD:")
+                Timber.i("      subtotal: ${order.subtotal}")
+                Timber.i("      total: ${order.total}")
+                Timber.i("      paidAmount: ${order.paidAmount}")
+                Timber.i("      remainingBalance: ${order.remainingBalance}")
+                Timber.i("   ─────────────────────────────────────────────────────")
+                Timber.i("   🔀 SPLIT PAYMENT STATE:")
+                Timber.i("      lastSplitType: ${order.lastSplitType}")
+                Timber.i("      hasRemainingBalance: ${order.hasRemainingBalance}")
+                Timber.i("   ─────────────────────────────────────────────────────")
+                Timber.i("   📦 ITEMS (${order.items.size}):")
+                order.items.forEach { item ->
+                    Timber.i("      - ${item.productName} x${item.quantity} = ${item.totalPrice} | kitchenStatus=${item.kitchenStatus}")
+                }
+                Timber.i("═══════════════════════════════════════════════════════════")
             } catch (e: Exception) {
                 Timber.e(e, "❌ Error in loadOrder")
                 _state.value = MenuState.Error("Error: ${e.message}")
@@ -571,6 +749,7 @@ class MenuViewModel @Inject constructor(
 
             // Check if order can accept items
             val order = currentState.order
+            Timber.d("➕ [VM-DEBUG] addItem() START | stateOrderId=${order.id} | product=${product.name} | timestamp=${System.currentTimeMillis()}")
             if (!order.canAddItems) {
                 Timber.w("⚠️ Cannot add items to order in status: ${order.status}")
                 _state.value = MenuState.Error(
@@ -587,6 +766,7 @@ class MenuViewModel @Inject constructor(
                 val totalPrice = unitPrice * BigDecimal(quantity.toString())
 
                 Timber.d("🛒 [Local-First] Adding item to Room DB: ${product.name} x$quantity")
+                Timber.d("➕ [VM-DEBUG] addItem() CALLING addItemToLocalOrder | orderId=${order.id} | timestamp=${System.currentTimeMillis()}")
 
                 // ✅ STEP 2: Add to Room DB (INSTANT - 0ms latency)
                 val localItemId = orderSyncCoordinator.addItemToLocalOrder(
@@ -619,7 +799,23 @@ class MenuViewModel @Inject constructor(
                 val updatedOrder = recalculateOrder(order.copy(items = order.items + newItem))
                 _state.value = MenuState.Success(updatedOrder)
 
-                Timber.i("✅ [Local-First] Item added to UI instantly | id=$localItemId")
+                // 🔍 DEBUG: Item added details
+                Timber.i("═══════════════════════════════════════════════════════════")
+                Timber.i("✅ ITEM ADDED TO ORDER")
+                Timber.i("   localItemId: $localItemId")
+                Timber.i("   productId: ${product.id}")
+                Timber.i("   productName: ${product.name}")
+                Timber.i("   quantity: $quantity")
+                Timber.i("   unitPrice: $unitPrice")
+                Timber.i("   totalPrice: $totalPrice")
+                Timber.i("   modifiers: ${modifiers.size}")
+                Timber.i("   notes: ${notes.ifBlank { "none" }}")
+                Timber.i("   ─────────────────────────────────────────────────────")
+                Timber.i("   📊 ORDER TOTALS AFTER ADD:")
+                Timber.i("      items count: ${updatedOrder.items.size}")
+                Timber.i("      subtotal: ${updatedOrder.subtotal}")
+                Timber.i("      total: ${updatedOrder.total}")
+                Timber.i("═══════════════════════════════════════════════════════════")
 
                 // ✅ STEP 4: Schedule debounced sync (5 seconds)
                 orderSyncCoordinator.scheduleSync(order.id)
@@ -657,6 +853,7 @@ class MenuViewModel @Inject constructor(
 
             try {
                 val order = currentState.order
+                Timber.d("📝 [VM-DEBUG] updateItemQuantity() | stateOrderId=${order.id} | itemId=${item.id} | newQty=$newQuantity | timestamp=${System.currentTimeMillis()}")
 
                 // ✅ FIX: Persist quantity update to database (marks as PENDING for sync)
                 orderSyncCoordinator.updateItemQuantityInLocalOrder(
@@ -721,6 +918,7 @@ class MenuViewModel @Inject constructor(
 
             try {
                 val order = currentState.order
+                Timber.d("🗑️ [VM-DEBUG] removeItem() | stateOrderId=${order.id} | itemId=${item.id} | product=${item.productName} | timestamp=${System.currentTimeMillis()}")
 
                 Timber.d("🗑️ [Local-First] Soft deleting item from Room DB: ${item.productName}")
 
@@ -795,33 +993,67 @@ class MenuViewModel @Inject constructor(
                     return@launch
                 }
 
-                // ✅ STEP 1: Force immediate sync (CRITICAL - kitchen cannot wait)
-                Timber.d("🍳 [SendToKitchen] Forcing immediate sync for order: ${order.id}")
-                orderSyncCoordinator.syncOrderImmediately(order.id)
-                Timber.i("✅ [SendToKitchen] Order synced to backend successfully")
+                // 🖨️ STEP 0: Print ONLY pending items (incremental printing - Toast/Square pattern)
+                val pendingItems = order.pendingKitchenItems
+                val now = Instant.now()
 
-                // ✅ STEP 2: Update kitchen status on backend
-                Timber.d("🍳 [SendToKitchen] Calling backend API to update kitchen status...")
-                val result = orderRepository.sendToKitchen(
-                    venueId = venueId,
-                    orderId = order.id,
-                    currentVersion = order.version
-                )
-
-                // ✅ STEP 3: Handle result and update UI
-                result.fold(
-                    onSuccess = { updatedOrder ->
-                        _state.value = MenuState.Success(updatedOrder)
-                        Timber.i("✅ [SendToKitchen] Order sent to kitchen successfully | orderId=${order.id}")
-                    },
-                    onFailure = { error ->
-                        Timber.e(error, "❌ [SendToKitchen] Backend API failed")
-                        _state.value = MenuState.Error(
-                            "Error enviando a cocina: ${error.message}\n\n" +
-                            "La orden se guardó localmente. Intente nuevamente."
+                if (pendingItems.isNotEmpty()) {
+                    Timber.d("🖨️ [SendToKitchen] Printing ${pendingItems.size} pending items (incremental)")
+                    try {
+                        printerManager.printKitchenTicket(
+                            orderNumber = order.orderNumber,
+                            tableName = order.tableName,
+                            orderItems = pendingItems,  // ← Only pending items!
+                            staffName = secureStorage.getStaffName()
                         )
+                        Timber.i("✅ [SendToKitchen] Kitchen ticket printed for pending items")
+
+                        // ✅ STEP 1a: Persist sentToKitchenAt to Room DB
+                        // CRITICAL: Must persist BEFORE sync event reloads from DB!
+                        val pendingItemIds = pendingItems.map { it.id }
+                        orderSyncCoordinator.markItemsAsSentToKitchen(
+                            orderId = order.id,
+                            itemIds = pendingItemIds,
+                            sentAt = now.toEpochMilli()
+                        )
+
+                        // ✅ STEP 1b: Update local state to mark items as sent
+                        // This makes UI show correct status immediately
+                        val updatedItems = order.items.map { item ->
+                            if (item.isPendingKitchen) {
+                                item.copy(sentToKitchenAt = now)
+                            } else {
+                                item
+                            }
+                        }
+                        val updatedOrder = order.copy(
+                            items = updatedItems,
+                            kitchenStatus = KitchenStatus.PREPARING
+                        )
+                        _state.value = MenuState.Success(updatedOrder)
+                        Timber.i("✅ [SendToKitchen] Local state updated - ${pendingItems.size} items marked as sent")
+
+                    } catch (e: Exception) {
+                        Timber.e(e, "⚠️ [SendToKitchen] Printer failed")
+                        _state.value = MenuState.Error(
+                            "Error imprimiendo comanda.\n\n" +
+                            "Verifique que la impresora esté conectada."
+                        )
+                        return@launch
                     }
-                )
+                } else {
+                    Timber.d("📋 [SendToKitchen] No pending items to print")
+                }
+
+                // ✅ STEP 2: Force immediate sync (background - don't block UI)
+                Timber.d("🍳 [SendToKitchen] Syncing order to backend...")
+                try {
+                    orderSyncCoordinator.syncOrderImmediately(order.id)
+                    Timber.i("✅ [SendToKitchen] Order synced to backend")
+                } catch (e: Exception) {
+                    Timber.w(e, "⚠️ [SendToKitchen] Backend sync failed (will retry)")
+                    // Don't error out - items are already printed and UI updated
+                }
 
             } catch (e: Exception) {
                 Timber.e(e, "❌ Error in sendToKitchen")
@@ -829,6 +1061,128 @@ class MenuViewModel @Inject constructor(
                     "Error enviando a cocina: ${e.message}\n\n" +
                     "Verifique su conexión e intente nuevamente."
                 )
+            }
+        }
+    }
+
+    // ============================================================================
+    // Kitchen Printing
+    // ============================================================================
+
+    /**
+     * Print a single item (for reprinting or incremental sending).
+     * Prints ONLY this specific item and marks it as sent.
+     *
+     * Use case: User taps printer icon on specific item to print just that one.
+     */
+    fun printSingleItem(item: OrderItem) {
+        viewModelScope.launch {
+            val currentState = _state.value
+            if (currentState !is MenuState.Success) {
+                Timber.w("📋 Cannot print - no order loaded")
+                return@launch
+            }
+
+            val order = currentState.order
+
+            Timber.d("🖨️ Printing single item: ${item.productName}")
+
+            try {
+                // Print kitchen ticket with just this item
+                printerManager.printKitchenTicket(
+                    orderNumber = order.orderNumber,
+                    tableName = order.tableName,
+                    orderItems = listOf(item),  // ← Only this item!
+                    staffName = secureStorage.getStaffName()
+                )
+                Timber.i("✅ Single item printed successfully: ${item.productName}")
+
+                // Persist sentToKitchenAt to Room DB
+                val now = Instant.now()
+                orderSyncCoordinator.markItemAsSentToKitchen(
+                    itemId = item.id,
+                    sentAt = now.toEpochMilli()
+                )
+
+                // Update local state
+                val updatedItems = order.items.map { existingItem ->
+                    if (existingItem.id == item.id) {
+                        existingItem.copy(sentToKitchenAt = now)
+                    } else {
+                        existingItem
+                    }
+                }
+                val updatedOrder = order.copy(items = updatedItems)
+                _state.value = MenuState.Success(updatedOrder)
+                Timber.i("✅ Item marked as sent: ${item.productName}")
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ Failed to print single item: ${item.productName}")
+            }
+        }
+    }
+
+    /**
+     * Print pending items comanda (Toast/Square pattern)
+     *
+     * Prints ONLY items NOT yet sent to kitchen (sentToKitchenAt == null)
+     * and marks them as sent after printing.
+     *
+     * Use case: Header [🖨️] button in "Resumen de Orden"
+     */
+    fun printFullComanda() {
+        viewModelScope.launch {
+            val currentState = _state.value
+            if (currentState !is MenuState.Success) {
+                Timber.w("📋 Cannot print - no order loaded")
+                return@launch
+            }
+
+            val order = currentState.order
+
+            // 1. Filter ONLY pending items (not yet printed)
+            val pendingItems = order.pendingKitchenItems
+
+            if (pendingItems.isEmpty()) {
+                Timber.d("🖨️ No pending items to print - all items already sent to kitchen")
+                return@launch
+            }
+
+            val now = Instant.now()
+            Timber.d("🖨️ [PrintComanda] Printing ${pendingItems.size} pending items")
+
+            try {
+                // 2. Print ONLY pending items
+                printerManager.printKitchenTicket(
+                    orderNumber = order.orderNumber,
+                    tableName = order.tableName,
+                    orderItems = pendingItems,  // ← Only pending items!
+                    staffName = secureStorage.getStaffName()
+                )
+                Timber.i("✅ [PrintComanda] Kitchen ticket printed for ${pendingItems.size} pending items")
+
+                // 3. Persist sentToKitchenAt to Room DB
+                val pendingItemIds = pendingItems.map { it.id }
+                orderSyncCoordinator.markItemsAsSentToKitchen(
+                    orderId = order.id,
+                    itemIds = pendingItemIds,
+                    sentAt = now.toEpochMilli()
+                )
+
+                // 4. Update UI state to mark items as sent
+                val updatedItems = order.items.map { item ->
+                    if (item.isPendingKitchen) {
+                        item.copy(sentToKitchenAt = now)
+                    } else {
+                        item
+                    }
+                }
+                val updatedOrder = order.copy(items = updatedItems)
+                _state.value = MenuState.Success(updatedOrder)
+                Timber.i("✅ [PrintComanda] Local state updated - ${pendingItems.size} items marked as sent")
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [PrintComanda] Failed to print comanda")
             }
         }
     }
@@ -1088,6 +1442,61 @@ class MenuViewModel @Inject constructor(
     }
 
     // ============================================================================
+    // Split Payment Support
+    // ============================================================================
+
+    /**
+     * Force sync before navigating to split payment screens.
+     *
+     * **Why This Is Needed:**
+     * Split screens (SplitByProduct, SplitByPerson) fetch order from BACKEND.
+     * If items haven't been synced yet (5s debounce), backend returns 0 items.
+     *
+     * **Solution:**
+     * Force immediate sync before navigation to ensure backend has all items.
+     *
+     * @param onComplete Callback with synced order ID (may be different from local ID)
+     */
+    fun syncBeforeNavigate(onComplete: (String) -> Unit) {
+        viewModelScope.launch {
+            val currentState = _state.value
+            if (currentState !is MenuState.Success) {
+                // ✅ FIX: Still allow navigation when state is Error/Loading
+                // User shouldn't be stuck - just navigate without sync
+                Timber.w("⚠️ [syncBeforeNavigate] No order loaded (state=${currentState::class.simpleName}) - navigating anyway")
+                onComplete("")  // Empty ID signals to navigate back without specific order
+                return@launch
+            }
+
+            val order = currentState.order
+            Timber.d("🔄 [syncBeforeNavigate] Forcing sync before navigation | orderId=${order.id}")
+
+            try {
+                // Force immediate sync (bypass 5s debounce) - returns synced order ID
+                val syncedOrderId = orderSyncCoordinator.syncOrderImmediately(order.id)
+                Timber.i("✅ [syncBeforeNavigate] Sync completed | original=${order.id} | synced=$syncedOrderId")
+
+                // Update state if ID changed (local_ → CUID)
+                if (syncedOrderId != order.id) {
+                    val syncedOrder = orderSyncCoordinator.getLocalOrder(syncedOrderId)
+                    if (syncedOrder != null) {
+                        _state.value = MenuState.Success(syncedOrder)
+                        Timber.d("🔄 [syncBeforeNavigate] State updated with new ID | old=${order.id} | new=$syncedOrderId")
+                    }
+                }
+
+                // Navigate with synced order ID (CUID)
+                onComplete(syncedOrderId)
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [syncBeforeNavigate] Sync failed, navigating anyway")
+                // Navigate anyway - split screen will show current backend state
+                onComplete(order.id)
+            }
+        }
+    }
+
+    // ============================================================================
     // Private Helpers
     // ============================================================================
 
@@ -1102,10 +1511,16 @@ class MenuViewModel @Inject constructor(
         val tax = BigDecimal.ZERO  // ✅ FIX: Backend handles tax (currently 0% for new orders)
         val total = subtotal  // ✅ FIX: Total = subtotal (no tax added)
 
+        // ✅ FIX: Recalculate remainingBalance for split payments
+        // Fresh order: paidAmount=0 → remainingBalance = total
+        // Partial payment: paidAmount=50 → remainingBalance = total - 50
+        val remainingBalance = total - order.paidAmount
+
         return order.copy(
             subtotal = subtotal,
             tax = tax,
             total = total,
+            remainingBalance = remainingBalance,
             updatedAt = Instant.now()
         )
     }
@@ -1116,6 +1531,9 @@ class MenuViewModel @Inject constructor(
  */
 sealed interface MenuState {
     data object Loading : MenuState
-    data class Success(val order: Order) : MenuState
+    data class Success(
+        val order: Order,
+        val syncError: String? = null  // ✅ FIX: Sync errors don't replace state, just show warning
+    ) : MenuState
     data class Error(val message: String) : MenuState
 }

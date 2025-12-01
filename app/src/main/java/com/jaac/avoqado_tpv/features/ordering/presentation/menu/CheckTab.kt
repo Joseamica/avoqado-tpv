@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.ordering.presentation.menu
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,12 +11,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -23,6 +30,8 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -39,6 +48,7 @@ import com.jaac.avoqado_tpv.features.ordering.domain.OrderStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
 import com.jaac.avoqado_tpv.features.ordering.domain.PaymentStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier
+import java.math.BigDecimal
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -97,6 +107,9 @@ fun CheckTab(
     onItemRemove: (OrderItem) -> Unit,
     onSendToKitchen: () -> Unit,
     onProcessPayment: () -> Unit,
+    onSplitPayment: () -> Unit,
+    onPrintComanda: () -> Unit,
+    onPrintItem: (OrderItem) -> Unit,  // 🖨️ Print single item
     modifier: Modifier = Modifier
 ) {
     val currencyFormatter = NumberFormat.getCurrencyInstance(Locale("es", "MX"))
@@ -110,7 +123,7 @@ fun CheckTab(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // Header with order summary
+        // Header with order summary and print button
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -119,23 +132,100 @@ fun CheckTab(
                 containerColor = MaterialTheme.colorScheme.surfaceVariant
             )
         ) {
-            Column(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(12.dp)
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "Resumen de Orden",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "${order.items.size} items • ${currencyFormatter.format(calculatedTotal)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Column {
+                    Text(
+                        text = "Resumen de Orden",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "${order.items.size} items • ${currencyFormatter.format(calculatedTotal)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                // Print comanda button
+                if (order.items.isNotEmpty()) {
+                    IconButton(onClick = onPrintComanda) {
+                        Icon(
+                            imageVector = Icons.Default.Print,
+                            contentDescription = "Imprimir comanda",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
             }
+        }
+
+        // ⭐ Partial Payment Banner - Shows ONLY when there's a partial payment made
+        // Bug fix: Don't show banner if paidAmount = $0 (no payment yet)
+        if (order.hasRemainingBalance && order.paidAmount > BigDecimal.ZERO) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        text = "⚠️ Pago Parcial",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Pagado:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                        Text(
+                            text = currencyFormatter.format(order.paidAmount),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Por pagar:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Text(
+                            text = currencyFormatter.format(order.remainingBalance),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
         }
 
         // Empty state
@@ -173,6 +263,9 @@ fun CheckTab(
                         },
                         onRemove = {
                             onItemRemove(item)
+                        },
+                        onPrintItem = {
+                            onPrintItem(item)
                         }
                     )
                 }
@@ -194,7 +287,12 @@ fun CheckTab(
                         .fillMaxWidth()
                         .padding(12.dp)
                 ) {
-                    TotalRow(label = "Total:", amount = calculatedTotal, isBold = true)
+                    // ⭐ Show "Por pagar" with remainingBalance when there's partial payment
+                    if (order.hasRemainingBalance) {
+                        TotalRow(label = "Por pagar:", amount = order.remainingBalance, isBold = true)
+                    } else {
+                        TotalRow(label = "Total:", amount = calculatedTotal, isBold = true)
+                    }
                 }
             }
 
@@ -215,17 +313,26 @@ fun CheckTab(
                         modifier = Modifier.weight(1f),
                         enabled = order.canSendToKitchen
                     ) {
-                        Text("Enviar a Cocina")
+                        Text("Cocina")
                     }
                 }
 
-                // Process Payment button - ALWAYS shown
+                // Split Payment button - Show options for dividing payment
+                OutlinedButton(
+                    onClick = onSplitPayment,
+                    modifier = Modifier.weight(1f),
+                    enabled = order.items.isNotEmpty() && order.canProcessPayment
+                ) {
+                    Text("Dividir")
+                }
+
+                // Process Payment button - Full payment (FULLPAYMENT)
                 Button(
                     onClick = onProcessPayment,
                     modifier = Modifier.weight(1f),
                     enabled = order.canProcessPayment
                 ) {
-                    Text("Procesar Pago")
+                    Text("Pagar")
                 }
             }
         }
@@ -236,12 +343,14 @@ fun CheckTab(
  * Order Item Card
  *
  * Shows a single order item with quantity controls, modifiers, and remove button.
+ * Tap on printer icon to print just this item.
  */
 @Composable
 private fun OrderItemCard(
     item: OrderItem,
     onQuantityChange: (Int) -> Unit,
     onRemove: () -> Unit,
+    onPrintItem: () -> Unit,  // 🖨️ Print this single item
     modifier: Modifier = Modifier
 ) {
     val currencyFormatter = NumberFormat.getCurrencyInstance(Locale("es", "MX"))
@@ -266,12 +375,21 @@ private fun OrderItemCard(
                 Column(
                     modifier = Modifier.weight(1f)
                 ) {
-                    // Product name
-                    Text(
-                        text = item.productName,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    // Product name with kitchen status badge
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = item.productName,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        KitchenStatusBadge(
+                            item = item,
+                            onPrint = onPrintItem  // 🖨️ Tap to print this item
+                        )
+                    }
 
                     // Modifiers (if any) - RIGHT AFTER product name
                     if (item.modifiers.isNotEmpty()) {
@@ -376,6 +494,71 @@ private fun OrderItemCard(
 }
 
 /**
+ * Kitchen Status Badge
+ *
+ * Visual indicator showing if item was sent to kitchen.
+ * - Printer with small red X - Item not yet sent
+ * - Printer with small green check - Item already sent
+ *
+ * **TAP TO PRINT**: Clicking this badge prints JUST THIS ITEM.
+ */
+@Composable
+private fun KitchenStatusBadge(
+    item: OrderItem,
+    onPrint: () -> Unit,  // 🖨️ Tap to print this single item
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .size(24.dp)
+            .clickable(onClick = onPrint),  // 🖨️ Tap to print
+        contentAlignment = Alignment.Center
+    ) {
+        // Main printer icon
+        Icon(
+            imageVector = Icons.Default.Print,
+            contentDescription = if (item.wasSentToKitchen) "Enviado a cocina" else "Pendiente de envío",
+            modifier = Modifier.size(18.dp),
+            tint = if (item.wasSentToKitchen) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            }
+        )
+
+        // Small status indicator in top-right corner
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .size(10.dp)
+                .background(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(50)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            if (item.wasSentToKitchen) {
+                // ✅ Green check
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = null,
+                    modifier = Modifier.size(8.dp),
+                    tint = Color(0xFF4CAF50)  // Green
+                )
+            } else {
+                // ❌ Red X
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = null,
+                    modifier = Modifier.size(8.dp),
+                    tint = Color(0xFFE53935)  // Red
+                )
+            }
+        }
+    }
+}
+
+/**
  * Total Row
  *
  * Shows a label and amount row for the totals section.
@@ -471,7 +654,10 @@ private fun CheckTabPreview() {
             onItemQuantityChange = { _, _ -> },
             onItemRemove = { },
             onSendToKitchen = { },
-            onProcessPayment = { }
+            onProcessPayment = { },
+            onSplitPayment = { },
+            onPrintComanda = { },
+            onPrintItem = { }
         )
     }
 }

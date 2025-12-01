@@ -2,11 +2,21 @@ package com.jaac.avoqado_tpv.features.ordering.presentation.menu
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -35,7 +45,11 @@ import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderTab
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderTabRow
 import com.jaac.avoqado_tpv.features.ordering.presentation.components.ProductSelectorBottomSheet
+import com.jaac.avoqado_tpv.core.presentation.components.AmountInputBottomSheet
+import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
+import com.jaac.avoqado_tpv.features.payment.presentation.split.SplitOptionsOverlay
 import timber.log.Timber
+import java.math.BigDecimal
 
 /**
  * Menu Screen - 4-Tab Order Management (Square POS Pattern)
@@ -82,6 +96,9 @@ fun MenuScreen(
     orderId: String,
     onNavigateBack: () -> Unit,
     onProcessPayment: (Order) -> Unit,
+    onProcessPaymentWithAmount: (Order, BigDecimal, SplitType) -> Unit = { order, _, _ -> onProcessPayment(order) },
+    onNavigateToSplitByProduct: (String) -> Unit = {},
+    onNavigateToSplitByPerson: (String) -> Unit = {},
     modifier: Modifier = Modifier,
     viewModel: MenuViewModel = hiltViewModel()
 ) {
@@ -96,16 +113,21 @@ fun MenuScreen(
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
     var showProductSelector by remember { mutableStateOf(false) }
 
+    // Split payment overlay state
+    var showSplitOptions by remember { mutableStateOf(false) }
+
+    // Custom amount modal state (for CUSTOMAMOUNT split type)
+    var showCustomAmountModal by remember { mutableStateOf(false) }
+
     // Load order on first composition
     LaunchedEffect(orderId) {
         viewModel.loadOrder(orderId)
     }
 
-    // Extract order from state
-    val order = when (menuState) {
-        is MenuState.Success -> (menuState as MenuState.Success).order
-        else -> null
-    }
+    // Extract order and syncError from state (simplified smart cast)
+    val successState = menuState as? MenuState.Success
+    val order = successState?.order
+    val syncError = successState?.syncError
 
     // Conditional rendering: Full-screen ProductSelector OR normal Scaffold with tabs
     if (showProductSelector && selectedProduct != null) {
@@ -135,7 +157,11 @@ fun MenuScreen(
                     // Show table name for table service, "Pedido Rápido" for quick orders
                     it.tableName ?: "Pedido Rápido #${it.orderNumber.takeLast(4)}"
                 } ?: "Nueva Orden",
-                onNavigationClick = onNavigateBack,
+                onNavigationClick = {
+                    // ⭐ Bug fix: Force sync before navigating back to ensure items are saved
+                    // Prevents race condition with 5-second debounce
+                    viewModel.syncBeforeNavigate { _ -> onNavigateBack() }
+                },
                 actions = {
                     // 🎯 Dynamic header action based on order type (Toast/Square pattern)
                     if (order != null) {
@@ -172,6 +198,15 @@ fun MenuScreen(
         },
         modifier = modifier
     ) { paddingValues ->
+        // Calculate ResponsiveSizes early for use in all children (including error banner)
+        val configuration = LocalConfiguration.current
+        val sizes = remember(configuration.screenHeightDp, configuration.screenWidthDp) {
+            ResponsiveSizes.calculate(
+                configuration.screenHeightDp.dp,
+                configuration.screenWidthDp.dp
+            )
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -184,15 +219,44 @@ fun MenuScreen(
                 orderItemCount = order?.items?.size ?: 0
             )
 
-            // Provide ResponsiveSizes to all children (required by ProductGrid, CategoryTabs, etc.)
-            val configuration = LocalConfiguration.current
-            val sizes = remember(configuration.screenHeightDp, configuration.screenWidthDp) {
-                ResponsiveSizes.calculate(
-                    configuration.screenHeightDp.dp,
-                    configuration.screenWidthDp.dp
-                )
+            // Sync error/conflict banner (dismissible warning)
+            syncError?.let { errorMessage ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = sizes.paddingScreen, vertical = sizes.spacingSmall),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(sizes.spacingSmall),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(modifier = Modifier.width(sizes.spacingSmall))
+                        Text(
+                            text = errorMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = { viewModel.clearSyncError() }) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Cerrar",
+                                tint = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                    }
+                }
             }
 
+            // Main content area with ResponsiveSizes provided to all children
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -270,7 +334,10 @@ fun MenuScreen(
                                     viewModel.removeItem(item)
                                 },
                                 onSendToKitchen = { viewModel.sendToKitchen() },
-                                onProcessPayment = { onProcessPayment(order) }
+                                onProcessPayment = { onProcessPayment(order) },
+                                onSplitPayment = { showSplitOptions = true },
+                                onPrintComanda = { viewModel.printFullComanda() },
+                                onPrintItem = { item -> viewModel.printSingleItem(item) }  // 🖨️ Print single item
                             )
                         }
 
@@ -316,6 +383,73 @@ fun MenuScreen(
                     AvoqadoLoadingOverlay(
                         message = "Cargando productos y categorías...",
                         modifier = Modifier.zIndex(2f)  // Above everything else
+                    )
+                }
+
+                // Split options overlay (shows when user taps "Dividir" button)
+                if (order != null) {
+                    SplitOptionsOverlay(
+                        visible = showSplitOptions,
+                        hasPartialPayment = order.hasRemainingBalance,
+                        paidAmount = order.paidAmount,
+                        remainingBalance = order.remainingBalance,
+                        lastSplitType = order.lastSplitType,  // ⭐ Restricts incompatible split options
+                        onDismiss = { showSplitOptions = false },
+                        onProductsSplit = {
+                            // ⭐ FIX: Force sync before navigation to ensure backend has all items
+                            showSplitOptions = false
+                            Timber.d("📦 Split by products selected - syncing before navigation | orderId=${order.id}")
+                            viewModel.syncBeforeNavigate { syncedOrderId ->
+                                Timber.d("📦 Sync complete, navigating to SplitByProduct | orderId=$syncedOrderId")
+                                onNavigateToSplitByProduct(syncedOrderId)
+                            }
+                        },
+                        onPersonsSplit = {
+                            // ⭐ FIX: Force sync before navigation to ensure backend has all items
+                            showSplitOptions = false
+                            Timber.d("👥 Split by persons selected - syncing before navigation | orderId=${order.id}")
+                            viewModel.syncBeforeNavigate { syncedOrderId ->
+                                Timber.d("👥 Sync complete, navigating to SplitByPerson | orderId=$syncedOrderId")
+                                onNavigateToSplitByPerson(syncedOrderId)
+                            }
+                        },
+                        onCustomAmount = {
+                            // Close split options overlay and show custom amount modal
+                            showSplitOptions = false
+                            showCustomAmountModal = true
+                            Timber.d("💰 Custom amount selected - showing amount input modal")
+                        },
+                        onFullPayment = {
+                            // Navigate to payment with FULLPAYMENT
+                            Timber.d("💳 Full payment selected")
+                            onProcessPayment(order)
+                        }
+                    )
+                }
+
+                // Custom amount modal (for CUSTOMAMOUNT split type)
+                if (order != null && showCustomAmountModal) {
+                    AmountInputBottomSheet(
+                        visible = true,
+                        onDismiss = { showCustomAmountModal = false },
+                        onConfirm = { customAmountString ->
+                            showCustomAmountModal = false
+
+                            val customAmount = customAmountString.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                            val remainingBalance = order.remainingBalance  // ✅ FIX: Use actual remaining balance for split payments
+
+                            // Validate: amount <= remaining balance
+                            if (customAmount > remainingBalance) {
+                                Timber.w("⚠️ Custom amount $customAmount exceeds remaining $remainingBalance")
+                                // TODO: Show error toast/snackbar
+                                return@AmountInputBottomSheet
+                            }
+
+                            if (customAmount > BigDecimal.ZERO) {
+                                Timber.d("💰 Processing custom amount: $customAmount with CUSTOMAMOUNT split")
+                                onProcessPaymentWithAmount(order, customAmount, SplitType.CUSTOMAMOUNT)
+                            }
+                        }
                     )
                 }
             }

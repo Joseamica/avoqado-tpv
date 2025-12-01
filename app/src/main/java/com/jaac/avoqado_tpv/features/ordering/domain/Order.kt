@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.ordering.domain
 
+import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import java.math.BigDecimal
 import java.time.Instant
 
@@ -32,12 +33,16 @@ data class Order(
     val discountAmount: BigDecimal = BigDecimal.ZERO,  // Total discounts (comps, discounts)
     val tax: BigDecimal,
     val total: BigDecimal,
+    val paidAmount: BigDecimal = BigDecimal.ZERO,  // ⭐ Amount already paid (partial payment tracking)
+    val remainingBalance: BigDecimal = BigDecimal.ZERO,  // ⭐ Amount left to pay (total - paidAmount)
     val notes: String?,
     val createdAt: Instant,
     val updatedAt: Instant,
     val version: Int,  // Optimistic concurrency control
     val merchantAccountId: String? = null,  // ⭐ P0 FIX: Merchant account used for first payment (locks order to merchant)
-    val merchantAccountName: String? = null  // Display name for user-friendly split payment errors
+    val merchantAccountName: String? = null,  // Display name for user-friendly split payment errors
+    val lastSplitType: SplitType? = null,  // ⭐ Split type of last payment (restricts future split options)
+    val paidItemIds: List<String> = emptyList()  // ⭐ Items already paid (for SplitByProduct screen)
 ) {
     /**
      * Convenience property: Number of items in order
@@ -69,10 +74,34 @@ data class Order(
 
     /**
      * Convenience property: Can process payment?
-     * Only if has items and payment status is PENDING
+     * Allow payments if has items, payment status is PENDING or PARTIAL, AND remainingBalance > 0
+     * ✅ FIX: Added remainingBalance check to prevent paying with amount 0 during sync
      */
     val canProcessPayment: Boolean
-        get() = items.isNotEmpty() && paymentStatus == PaymentStatus.PENDING
+        get() = items.isNotEmpty() &&
+                paymentStatus in listOf(PaymentStatus.PENDING, PaymentStatus.PARTIAL) &&
+                remainingBalance > BigDecimal.ZERO
+
+    /**
+     * Convenience property: Has remaining balance to pay?
+     * True if there's still money to collect (partial payment scenario)
+     */
+    val hasRemainingBalance: Boolean
+        get() = remainingBalance > BigDecimal.ZERO
+
+    /**
+     * Convenience property: Items that haven't been sent to kitchen yet.
+     * Used for incremental kitchen ticket printing (only print new items).
+     */
+    val pendingKitchenItems: List<OrderItem>
+        get() = items.filter { it.isPendingKitchen }
+
+    /**
+     * Convenience property: Are there any items pending to send to kitchen?
+     * Used to enable/disable "Send to Kitchen" button.
+     */
+    val hasPendingKitchenItems: Boolean
+        get() = pendingKitchenItems.isNotEmpty()
 }
 
 /**
@@ -119,6 +148,20 @@ data class OrderItem(
                 modifier.name
             }
         }
+
+    /**
+     * Convenience property: Was this item already sent to kitchen?
+     * Used for visual indicators and incremental printing.
+     */
+    val wasSentToKitchen: Boolean
+        get() = sentToKitchenAt != null
+
+    /**
+     * Convenience property: Is this item pending kitchen send?
+     * True = needs to be printed on next "Send to Kitchen"
+     */
+    val isPendingKitchen: Boolean
+        get() = sentToKitchenAt == null
 }
 
 /**

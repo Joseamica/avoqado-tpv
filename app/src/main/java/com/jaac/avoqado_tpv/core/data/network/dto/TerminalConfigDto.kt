@@ -46,13 +46,17 @@ data class TerminalConfigResponse(
  *
  * @param terminal Terminal information
  * @param merchantAccounts List of merchant accounts assigned to this terminal
+ * @param tpvSettings TPV screen configuration settings (per-terminal)
  */
 data class TerminalConfigData(
     @SerializedName("terminal")
     val terminal: TerminalDto,
 
     @SerializedName("merchantAccounts")
-    val merchantAccounts: List<MerchantAccountDto>
+    val merchantAccounts: List<MerchantAccountDto>,
+
+    @SerializedName("tpvSettings")
+    val tpvSettings: TpvSettingsDto?
 )
 
 /**

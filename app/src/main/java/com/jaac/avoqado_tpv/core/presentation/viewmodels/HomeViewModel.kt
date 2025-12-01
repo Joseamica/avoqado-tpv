@@ -2,6 +2,10 @@ package com.jaac.avoqado_tpv.core.presentation.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.BuildConfig
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
+import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
@@ -9,6 +13,10 @@ import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
 import com.jaac.avoqado_tpv.features.payment.domain.use_case.GetMerchantsUseCase
+import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommand
+import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandPriority
+import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandType
+import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -21,6 +29,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import java.time.Instant
 import javax.inject.Inject
 
 /**
@@ -33,10 +42,15 @@ import javax.inject.Inject
 class HomeViewModel @Inject constructor(
     private val authRepository: AuthRepository,
     private val socketManager: SocketManager,
+    private val secureStorage: SecureStorage,
     // 🔧 Blumon SDK Initialization - Triggered after login for early payment readiness
     private val initializationManager: InitializationManager,
     // 🏪 Get merchants from backend to use correct serial for SDK init
-    private val getMerchantsUseCase: GetMerchantsUseCase
+    private val getMerchantsUseCase: GetMerchantsUseCase,
+    // 🎮 Remote Command System
+    private val commandExecutor: CommandExecutor,
+    val lockScreenManager: LockScreenManager,
+    val maintenanceManager: MaintenanceManager
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -73,6 +87,8 @@ class HomeViewModel @Inject constructor(
 
     init {
         loadStaffInfo()
+        // 🔌 Connect Socket.IO if session was restored (app restart)
+        connectSocketIfNeeded()
         collectSocketEvents()
         // 🔧 Initialize Blumon SDK in background (so it's ready when user opens payment)
         initializeBlumonSDK()
@@ -93,6 +109,73 @@ class HomeViewModel @Inject constructor(
             // Clock-in time - placeholder for now
             // TODO: Implement clock-in feature and load actual clock-in time
             _clockInTime.value = null
+        }
+    }
+
+    /**
+     * 🔌 Connect Socket.IO if session was restored
+     *
+     * When the app restarts with a valid session, LoginViewModel is bypassed,
+     * so we need to connect to Socket.IO from HomeViewModel.
+     *
+     * This ensures:
+     * - Real-time events work after app restart
+     * - TPV commands are received from dashboard
+     * - System alerts are delivered
+     *
+     * Pattern: Check if already connected, if not, connect using stored credentials.
+     */
+    private fun connectSocketIfNeeded() {
+        viewModelScope.launch {
+            try {
+                // Check if socket is already connected (e.g., from LoginViewModel)
+                if (socketManager.isConnected()) {
+                    Timber.d("🔌 [Socket.IO] Already connected - skipping")
+                    return@launch
+                }
+
+                // Get stored credentials
+                val jwtToken = secureStorage.getToken()
+                val venueId = secureStorage.getVenueId()
+
+                if (jwtToken == null || venueId == null) {
+                    Timber.w("⚠️ [Socket.IO] No credentials found - cannot connect")
+                    return@launch
+                }
+
+                val socketUrl = if (BuildConfig.DEBUG) {
+                    BuildConfig.SOCKET_URL_DEV  // Development: ngrok URL
+                } else {
+                    BuildConfig.SOCKET_URL  // Production: https://api.avoqado.io
+                }
+
+                Timber.d("🔌 [Socket.IO] Connecting on session restore...")
+                Timber.d("🔌 [Socket.IO] URL: $socketUrl")
+                Timber.d("🔌 [Socket.IO] Venue ID: $venueId")
+
+                // Connect with JWT authentication
+                socketManager.connect(
+                    url = socketUrl,
+                    token = jwtToken,
+                    reconnection = true,
+                    reconnectionAttempts = 5
+                )
+
+                // Wait for connection and join venue room
+                viewModelScope.launch {
+                    socketManager.isConnected.collect { connected ->
+                        if (connected) {
+                            Timber.i("✅ [Socket.IO] Connected on session restore")
+                            socketManager.joinVenueRoom(venueId)
+                            Timber.i("✅ [Socket.IO] Joined venue room: $venueId")
+                        }
+                    }
+                }
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Socket.IO] Connection failed on session restore")
+                // Don't block home screen on socket failure - app can work without real-time events
+            }
         }
     }
 
@@ -195,29 +278,14 @@ class HomeViewModel @Inject constructor(
                         Timber.w("⚙️ [Socket] TPV Command received: ${event.commandType} (requested by: ${event.requestedBy})")
                         _adminCommands.tryEmit(event)
 
-                        // Handle specific commands
-                        when (event.commandType) {
-                            "MAINTENANCE_MODE" -> {
-                                Timber.w("🛠️ [TPV Command] Entering maintenance mode...")
-                                // TODO: Show maintenance UI, disable payment processing
-                            }
-                            "RELOAD" -> {
-                                Timber.w("🔄 [TPV Command] Reloading app configuration...")
-                                // TODO: Reload terminal config, refresh merchant accounts
-                            }
-                            "DISABLE" -> {
-                                Timber.e("🚫 [TPV Command] Disabling terminal...")
-                                // TODO: Lock UI, show "Terminal Disabled" screen
-                            }
-                            "SHUTDOWN" -> {
-                                Timber.e("⛔ [TPV Command] Shutdown requested...")
-                                // TODO: Close app gracefully
-                            }
-                            "RESTART" -> {
-                                Timber.w("🔁 [TPV Command] Restart requested...")
-                                // TODO: Restart app
-                            }
-                        }
+                        // Execute command via CommandExecutor
+                        executeRemoteCommand(event)
+                    }
+
+                    // TPV COMMAND CANCELLED (command cancelled before execution)
+                    is SocketEvent.TPVCommandCancelled -> {
+                        Timber.w("🚫 [Socket] Command cancelled: ${event.commandId} by ${event.cancelledBy}")
+                        // Command was cancelled - no action needed, just log
                     }
 
                     // ═══════════════════════════════════════════════════════════
@@ -272,6 +340,71 @@ class HomeViewModel @Inject constructor(
             }
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REMOTE COMMAND EXECUTION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * 🎮 Execute Remote Command
+     *
+     * Converts Socket.IO event to TpvCommand and executes via CommandExecutor.
+     * Handles full lifecycle: ACK → STARTED → EXECUTE → RESULT
+     *
+     * @param event The TPVCommand socket event received from server
+     */
+    private fun executeRemoteCommand(event: SocketEvent.TPVCommand) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // Parse command type
+                val commandType = TpvCommandType.fromString(event.commandType)
+                if (commandType == null) {
+                    Timber.e("❌ [Command] Unknown command type: ${event.commandType}")
+                    return@launch
+                }
+
+                // Convert SocketEvent to TpvCommand
+                val command = TpvCommand(
+                    commandId = event.commandId,
+                    correlationId = event.correlationId,
+                    type = commandType,
+                    payload = event.payload,
+                    requiresPin = event.requiresPin,
+                    priority = TpvCommandPriority.fromString(event.priority),
+                    expiresAt = try {
+                        Instant.parse(event.expiresAt)
+                    } catch (e: Exception) {
+                        Instant.now().plusSeconds(3600) // Default 1 hour if parse fails
+                    },
+                    requestedBy = event.requestedBy,
+                    requestedByName = event.requestedByName
+                )
+
+                // Execute via CommandExecutor
+                val result = commandExecutor.execute(command)
+
+                Timber.i("✅ [Command] Executed ${command.type.name}: ${result.status.name} - ${result.message}")
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Command] Failed to execute command: ${event.commandType}")
+            }
+        }
+    }
+
+    /**
+     * 🛠️ Exit Maintenance Mode (Local Action)
+     *
+     * Called when staff clicks "Exit Maintenance" button on overlay.
+     * Staff can exit maintenance mode locally without admin intervention.
+     */
+    fun exitMaintenance() {
+        Timber.i("🛠️ [Maintenance] Staff exiting maintenance mode locally")
+        maintenanceManager.exitMaintenance()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // LOGOUT
+    // ═══════════════════════════════════════════════════════════════════════════
 
     /**
      * Logout user

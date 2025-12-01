@@ -32,12 +32,15 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.core.presentation.components.ActionButton
 import com.jaac.avoqado_tpv.core.presentation.components.ActionButtonGrid
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoDialog
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.components.SettingsBottomSheet
 import com.jaac.avoqado_tpv.core.presentation.components.ShiftStatusBanner
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel
+import com.jaac.avoqado_tpv.features.remote_command.presentation.LockScreenOverlay
+import com.jaac.avoqado_tpv.features.remote_command.presentation.MaintenanceOverlay
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import com.jaac.avoqado_tpv.features.shift.presentation.CachedShiftInfo
@@ -71,6 +74,7 @@ fun WelcomeScreen(
     onNavigateToReports: () -> Unit = {},
     onNavigateToPayments: () -> Unit = {},  // ⭐ NEW: Navigate to Payments screen
     onNavigateToSupport: () -> Unit = {},  // ⭐ NEW: Navigate to Support screen
+    onNavigateToSettings: () -> Unit = {},  // ⚙️ Navigate to Settings screen
     onNavigateToSuperAdmin: () -> Unit = {},
     onLogout: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
@@ -91,12 +95,28 @@ fun WelcomeScreen(
     val isOffline by shiftViewModel.isOffline.collectAsStateWithLifecycle()
     val cachedShiftInfo by shiftViewModel.cachedShiftInfo.collectAsStateWithLifecycle()
 
+    // Initial loading state (shows overlay during post-login sync)
+    val isInitialLoading by shiftViewModel.isInitialLoading.collectAsStateWithLifecycle()
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REMOTE COMMAND STATE (Lock & Maintenance)
+    // ═══════════════════════════════════════════════════════════════════════════
+    val isLocked by viewModel.lockScreenManager.isLocked.collectAsStateWithLifecycle()
+    val lockReason by viewModel.lockScreenManager.lockReason.collectAsStateWithLifecycle()
+    val lockMessage by viewModel.lockScreenManager.lockMessage.collectAsStateWithLifecycle()
+    val lockedBy by viewModel.lockScreenManager.lockedBy.collectAsStateWithLifecycle()
+
+    val isInMaintenance by viewModel.maintenanceManager.isInMaintenance.collectAsStateWithLifecycle()
+    val maintenanceReason by viewModel.maintenanceManager.maintenanceReason.collectAsStateWithLifecycle()
+    val maintenanceInitiatedBy by viewModel.maintenanceManager.initiatedBy.collectAsStateWithLifecycle()
+
     // ⭐ FIX: Reload shift status whenever WelcomeScreen becomes visible
     // This ensures shift status is updated when returning from ShiftScreen
     androidx.compose.runtime.LaunchedEffect(Unit) {
         shiftViewModel.loadCurrentShift()
     }
 
+    // Main content
     WelcomeScreenContent(
         modifier = modifier,
         staffName = staffName,
@@ -110,11 +130,43 @@ fun WelcomeScreen(
         onNavigateToReports = onNavigateToReports,
         onNavigateToPayments = onNavigateToPayments,  // ⭐ NEW: Pass payments navigation
         onNavigateToSupport = onNavigateToSupport,  // ⭐ NEW: Pass support navigation
+        onNavigateToSettings = onNavigateToSettings,  // ⚙️ Pass settings navigation
         onNavigateToSuperAdmin = onNavigateToSuperAdmin,
         onLogout = {
             viewModel.logout()
             onLogout()
         }
+    )
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INITIAL SYNC LOADING OVERLAY
+    // Shows during post-login sync to prevent user from seeing intermediate states
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (isInitialLoading) {
+        AvoqadoLoadingOverlay(message = "Sincronizando terminal...")
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // REMOTE COMMAND OVERLAYS
+    // Full-screen overlays for Lock and Maintenance modes
+    // These have high zIndex and block all user interactions when active
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Maintenance Overlay (zIndex 90) - Staff can exit locally
+    MaintenanceOverlay(
+        visible = isInMaintenance,
+        maintenanceReason = maintenanceReason,
+        initiatedBy = maintenanceInitiatedBy,
+        onExitMaintenance = { viewModel.exitMaintenance() }
+    )
+
+    // Lock Screen Overlay (zIndex 100) - Highest priority, blocks everything
+    // Must be unlocked remotely by admin - no local exit option
+    LockScreenOverlay(
+        visible = isLocked,
+        lockReason = lockReason,
+        lockMessage = lockMessage,
+        lockedBy = lockedBy
     )
 }
 
@@ -147,6 +199,7 @@ private fun WelcomeScreenContent(
     onNavigateToReports: () -> Unit,
     onNavigateToPayments: () -> Unit,  // ⭐ NEW: Navigate to Payments screen
     onNavigateToSupport: () -> Unit,  // ⭐ NEW: Navigate to Support screen
+    onNavigateToSettings: () -> Unit,  // ⚙️ Navigate to Settings screen
     onNavigateToSuperAdmin: () -> Unit,
     onLogout: () -> Unit
 ) {
@@ -176,6 +229,13 @@ private fun WelcomeScreenContent(
             onClick = { showAmountBottomSheet = true }  // ✅ Open modal (first-time flow)
         ),
         ActionButton(
+            icon = Icons.Default.Restaurant,
+            label = "Órdenes",
+            enabled = hasOpenShift,  // ⭐ Only enabled when shift is open
+            badge = if (!hasOpenShift) "Abre el turno primero" else null,
+            onClick = onNavigateToOrdering
+        ),
+        ActionButton(
             icon = Icons.Default.BarChart,
             label = "Reportes",
             enabled = true,
@@ -194,14 +254,6 @@ private fun WelcomeScreenContent(
             onClick = onNavigateToPayments  // ⭐ Navigate to Payments screen
         ),
 
-        // ⏳ FUTURE FEATURES
-        ActionButton(
-            icon = Icons.Default.Restaurant,
-            label = "Órdenes",
-            enabled = hasOpenShift,  // ⭐ Only enabled when shift is open
-            badge = if (!hasOpenShift) "Abre el turno primero" else null,
-            onClick = onNavigateToOrdering
-        ),
         // ActionButton(
         //     icon = Icons.Default.History,
         //     label = "Historial",
@@ -292,7 +344,10 @@ private fun WelcomeScreenContent(
                 showSettingsModal = false
                 showRestartConfirmDialog = true  // Show confirmation dialog
             },
-            onSettings = null, // Disabled - future feature
+            onSettings = {
+                showSettingsModal = false
+                onNavigateToSettings()
+            },
             onHelp = null // Disabled - future feature
         )
     }
@@ -357,6 +412,7 @@ private fun WelcomeScreenPreview() {
             onNavigateToReports = {},
             onNavigateToPayments = {},
             onNavigateToSupport = {},
+            onNavigateToSettings = {},
             onNavigateToSuperAdmin = {},
             onLogout = {}
         )
@@ -377,6 +433,7 @@ private fun WelcomeScreenPreviewLarge() {
             onNavigateToReports = {},
             onNavigateToPayments = {},
             onNavigateToSupport = {},
+            onNavigateToSettings = {},
             onNavigateToSuperAdmin = {},
             onLogout = {}
         )
@@ -416,6 +473,7 @@ private fun WelcomeScreenWithActiveShiftPreview() {
             onNavigateToReports = {},
             onNavigateToPayments = {},
             onNavigateToSupport = {},
+            onNavigateToSettings = {},
             onNavigateToSuperAdmin = {},
             onLogout = {}
         )

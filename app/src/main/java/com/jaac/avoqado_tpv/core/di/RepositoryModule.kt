@@ -6,6 +6,8 @@ import com.jaac.avoqado_tpv.features.payment.data.MerchantRepositoryImpl
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import com.jaac.avoqado_tpv.features.reports.data.repository.ReportsRepositoryImpl
 import com.jaac.avoqado_tpv.features.reports.domain.repository.ReportsRepository
+import com.jaac.avoqado_tpv.features.timeclock.data.repository.TimeEntryRepositoryImpl
+import com.jaac.avoqado_tpv.features.timeclock.domain.repository.TimeEntryRepository
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -102,4 +104,26 @@ abstract class RepositoryModule {
     abstract fun bindReportsRepository(
         impl: ReportsRepositoryImpl
     ): ReportsRepository
+
+    /**
+     * Bind TimeEntryRepository to its implementation
+     *
+     * **Usage:**
+     * ```kotlin
+     * @HiltViewModel
+     * class TimeclockViewModel @Inject constructor(
+     *     private val timeEntryRepository: TimeEntryRepository
+     * ) : ViewModel() {
+     *     // Hilt automatically provides TimeEntryRepositoryImpl
+     * }
+     * ```
+     *
+     * @param impl TimeEntryRepositoryImpl instance (Hilt creates automatically)
+     * @return TimeEntryRepository interface
+     */
+    @Binds
+    @Singleton
+    abstract fun bindTimeEntryRepository(
+        impl: TimeEntryRepositoryImpl
+    ): TimeEntryRepository
 }

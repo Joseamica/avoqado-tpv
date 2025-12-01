@@ -25,6 +25,17 @@ sealed class NavRoute(val route: String) {
     data object Login : NavRoute("login")
 
     /**
+     * Timeclock screen - Employee clock in/out and breaks
+     * Accessed from Login screen with PIN (without creating full session)
+     *
+     * @param venueId Venue identifier
+     * @param pin Staff PIN for verification
+     */
+    data object Timeclock : NavRoute("timeclock/{venueId}/{pin}") {
+        fun createRoute(venueId: String, pin: String) = "timeclock/$venueId/$pin"
+    }
+
+    /**
      * Home screen - Main dashboard after login
      */
     data object Home : NavRoute("home")
@@ -61,12 +72,6 @@ sealed class NavRoute(val route: String) {
      * Shows two options: Quick Order (retail/QSR) or Table Service (restaurant)
      */
     data object OrderingWelcome : NavRoute("ordering_welcome")
-
-    /**
-     * Table Service screen - Floor plan with table status
-     * Allows staff to select tables to start orders
-     */
-    data object TableService : NavRoute("table_service")
 
     /**
      * Floor Plan Canvas screen - Visual floor plan editor
@@ -131,4 +136,24 @@ sealed class NavRoute(val route: String) {
      * - App version and device information
      */
     data object Support : NavRoute("support")
+
+    /**
+     * Split by Product screen - Select specific products to pay
+     * Used when splitting payment by selecting individual items
+     *
+     * @param orderId Order unique identifier
+     */
+    data object SplitByProduct : NavRoute("split_by_product/{orderId}") {
+        fun createRoute(orderId: String) = "split_by_product/$orderId"
+    }
+
+    /**
+     * Split by Person screen - Split order equally among N people
+     * Used when splitting payment evenly among party members
+     *
+     * @param orderId Order unique identifier
+     */
+    data object SplitByPerson : NavRoute("split_by_person/{orderId}") {
+        fun createRoute(orderId: String) = "split_by_person/$orderId"
+    }
 }

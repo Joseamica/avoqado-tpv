@@ -63,8 +63,11 @@ import com.jaac.avoqado_tpv.features.ordering.domain.TableRepository
 import com.jaac.avoqado_tpv.features.ordering.presentation.FloorPlanCanvasScreen
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderingWelcomeScreen
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderListScreen
-import com.jaac.avoqado_tpv.features.ordering.presentation.TableServiceScreen
 import com.jaac.avoqado_tpv.features.ordering.presentation.menu.MenuScreen
+import com.jaac.avoqado_tpv.features.timeclock.presentation.TimeclockScreen
+import com.jaac.avoqado_tpv.features.payment.presentation.split.SplitByProductScreen
+import com.jaac.avoqado_tpv.features.payment.presentation.split.SplitByPersonScreen
+import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import androidx.navigation.NavType
 import androidx.navigation.navArgument
 import timber.log.Timber
@@ -242,6 +245,11 @@ fun AppNavigation(
                     navController.navigate(NavRoute.Activation.route) {
                         popUpTo(NavRoute.Login.route) { inclusive = true }
                     }
+                },
+                onTimeclockClick = { pin ->
+                    // Navigate to Timeclock screen with venueId and PIN
+                    Timber.d("⏱ Timeclock button clicked - Navigating to Timeclock screen")
+                    navController.navigate(NavRoute.Timeclock.createRoute(venueId, pin))
                 }
             )
         }
@@ -291,6 +299,10 @@ fun AppNavigation(
                 onNavigateToSupport = {
                     // Navigate to Support screen
                     navController.navigate(NavRoute.Support.route)
+                },
+                onNavigateToSettings = {
+                    // Navigate to Settings screen
+                    navController.navigate(NavRoute.Settings.route)
                 },
                 onNavigateToSuperAdmin = {
                     // Navigate to SuperAdmin screen
@@ -362,20 +374,6 @@ fun AppNavigation(
             )
         }
 
-        // Table Service Screen - Floor plan with table status
-        composable(NavRoute.TableService.route) {
-            TableServiceScreen(
-                onNavigateBack = {
-                    navController.popBackStack()
-                },
-                onTableAssigned = { orderId ->
-                    // Navigate to Menu screen with orderId
-                    Timber.d("🍽️ Table assigned - Navigating to Menu with Order ID: $orderId")
-                    navController.navigate(NavRoute.Menu.createRoute(orderId))
-                }
-            )
-        }
-
         // Floor Plan Canvas Screen - Visual floor plan editor with zoom/pan
         composable(NavRoute.FloorPlan.route) {
             FloorPlanCanvasScreen(
@@ -403,15 +401,38 @@ fun AppNavigation(
                     navController.popBackStack()
                 },
                 onProcessPayment = { order ->
-                    // Pass order total and orderId to PaymentScreen via savedStateHandle
+                    // ✅ FIX: Pass remainingBalance instead of total for split payments
+                    // If order is fresh: remainingBalance = total (correct)
+                    // If order has partial payment: remainingBalance = total - paidAmount (correct)
                     navController.currentBackStackEntry?.savedStateHandle?.apply {
-                        set("initialAmount", order.total.toString())
+                        set("initialAmount", order.remainingBalance.toString())
                         set("orderId", order.id)
                         set("orderNumber", order.orderNumber)
                         set("tableId", order.tableId)  // 🆕 Pass tableId for post-payment clearing
+                        set("splitType", SplitType.FULLPAYMENT.value)
                     }
                     navController.navigate(NavRoute.Payment.route)
-                    Timber.d("💳 Navigating to payment: ${order.orderNumber} - Total: $${order.total}")
+                    Timber.d("💳 Navigating to payment: ${order.orderNumber} - Remaining: $${order.remainingBalance} (Total: $${order.total})")
+                },
+                onProcessPaymentWithAmount = { order, customAmount, splitType ->
+                    // Custom amount payment with split type (CUSTOMAMOUNT)
+                    navController.currentBackStackEntry?.savedStateHandle?.apply {
+                        set("initialAmount", customAmount.toString())
+                        set("orderId", order.id)
+                        set("orderNumber", order.orderNumber)
+                        set("tableId", order.tableId)
+                        set("splitType", splitType.value)
+                    }
+                    navController.navigate(NavRoute.Payment.route)
+                    Timber.d("💰 Navigating to custom amount payment: $customAmount with splitType=${splitType.value}")
+                },
+                onNavigateToSplitByProduct = { splitOrderId ->
+                    navController.navigate(NavRoute.SplitByProduct.createRoute(splitOrderId))
+                    Timber.d("📦 Navigating to SplitByProduct: $splitOrderId")
+                },
+                onNavigateToSplitByPerson = { splitOrderId ->
+                    navController.navigate(NavRoute.SplitByPerson.createRoute(splitOrderId))
+                    Timber.d("👥 Navigating to SplitByPerson: $splitOrderId")
                 }
             )
         }
@@ -463,6 +484,12 @@ fun AppNavigation(
             val orderNumber = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderNumber")
             val tableId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("tableId")
 
+            // ⭐ Split payment params (from SplitByPersonScreen or SplitByProductScreen)
+            val splitType = navController.previousBackStackEntry?.savedStateHandle?.get<String>("splitType")
+            val equalPartsPartySize = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("equalPartsPartySize")
+            val equalPartsPayedFor = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("equalPartsPayedFor")
+            val paidProductIds = navController.previousBackStackEntry?.savedStateHandle?.get<List<String>>("paidProductIds") ?: emptyList()
+
             // 🔌 Get TableRepository via Hilt EntryPoint for clearing tables post-payment
             val context = LocalContext.current
             val tableRepository = remember {
@@ -480,8 +507,14 @@ fun AppNavigation(
                 orderNumber = orderNumber,
                 tableId = tableId,  // 🆕 Pass tableId to determine post-payment flow
                 skipReview = skipReview,
+                // ⭐ Split payment params
+                splitType = splitType,
+                equalPartsPartySize = equalPartsPartySize,
+                equalPartsPayedFor = equalPartsPayedFor,
+                paidProductIds = paidProductIds,
                 onNavigateBack = {
-                    navController.popBackStack()
+                    // 🏠 Navigate directly to WelcomeScreen (clearing payment stack)
+                    navController.popBackStack(NavRoute.Home.route, inclusive = false)
                 },
                 onNavigateToShifts = {
                     // 🆕 Navigate to Shifts screen (for "No shift open" errors)
@@ -525,9 +558,19 @@ fun AppNavigation(
                         }
 
                         // Navigate to floor plan regardless of clear result
-                        navController.navigate(NavRoute.TableService.route) {
+                        // ✅ FIX: Navigate to FloorPlan (visual canvas) not TableService (old grid)
+                        navController.navigate(NavRoute.FloorPlan.route) {
                             popUpTo(NavRoute.OrderingWelcome.route) { inclusive = false }
                         }
+                    }
+                },
+                onNavigateToOrder = { continueOrderId, continueTableId ->
+                    // ⭐ Split Payment: Navigate back to order to continue paying remaining balance
+                    // This is called when user taps "Continuar pagando" button after partial payment
+                    Timber.i("💰 [Navigation] Continue payment - navigating back to order: $continueOrderId")
+                    navController.navigate(NavRoute.Menu.createRoute(continueOrderId)) {
+                        // Pop payment screen and return to menu with same order
+                        popUpTo(NavRoute.Payment.route) { inclusive = true }
                     }
                 }
             )
@@ -535,8 +578,9 @@ fun AppNavigation(
 
         // Settings Screen
         composable(NavRoute.Settings.route) {
-            // Placeholder for settings
-            WelcomeScreen()
+            com.jaac.avoqado_tpv.features.settings.presentation.SettingsScreen(
+                onBack = { navController.popBackStack() }
+            )
         }
 
         // SuperAdmin Screen - Testing and debugging tools
@@ -632,6 +676,98 @@ fun AppNavigation(
             com.jaac.avoqado_tpv.features.support.presentation.SupportScreen(
                 onBack = {
                     navController.popBackStack()
+                }
+            )
+        }
+
+        // Split by Product Screen - Select specific products to pay
+        composable(
+            route = NavRoute.SplitByProduct.route,
+            arguments = listOf(navArgument("orderId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val orderId = backStackEntry.arguments?.getString("orderId") ?: ""
+
+            SplitByProductScreen(
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onProceedToPayment = { amount, productIds ->
+                    // Navigate to PaymentScreen with PERPRODUCT split params
+                    navController.currentBackStackEntry?.savedStateHandle?.apply {
+                        set("initialAmount", amount.toString())
+                        set("orderId", orderId)
+                        set("splitType", SplitType.PERPRODUCT.value)
+                        set("paidProductIds", productIds)
+                    }
+                    navController.navigate(NavRoute.Payment.route)
+                    Timber.d("💳 Split PERPRODUCT: ${productIds.size} products, amount=$amount")
+                }
+            )
+        }
+
+        // Split by Person Screen - Split order equally among N people
+        composable(
+            route = NavRoute.SplitByPerson.route,
+            arguments = listOf(navArgument("orderId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val orderId = backStackEntry.arguments?.getString("orderId") ?: ""
+
+            SplitByPersonScreen(
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onProceedToPayment = { amount, partySize, payingFor ->
+                    // Navigate to PaymentScreen with EQUALPARTS split params
+                    navController.currentBackStackEntry?.savedStateHandle?.apply {
+                        set("initialAmount", amount.toString())
+                        set("orderId", orderId)
+                        set("splitType", SplitType.EQUALPARTS.value)
+                        set("equalPartsPartySize", partySize)
+                        set("equalPartsPayedFor", payingFor)
+                    }
+                    navController.navigate(NavRoute.Payment.route)
+                    Timber.d("💳 Split EQUALPARTS: $payingFor/$partySize parts, amount=$amount")
+                }
+            )
+        }
+
+        // Timeclock Screen - Employee clock in/out and breaks
+        composable(
+            route = NavRoute.Timeclock.route,
+            arguments = listOf(
+                navArgument("venueId") { type = NavType.StringType },
+                navArgument("pin") { type = NavType.StringType }
+            )
+        ) {
+            val context = LocalContext.current
+
+            TimeclockScreen(
+                onNavigateBack = {
+                    // Clear session when going back (user didn't complete timeclock flow)
+                    Timber.d("🚪 Timeclock back pressed - Clearing session")
+                    secureStorage.clearSession()
+                    navController.popBackStack()
+                },
+                onNavigateToLogin = {
+                    // After timeclock action, navigate back to login (session already cleared)
+                    navController.navigate(NavRoute.Login.route) {
+                        popUpTo(NavRoute.Timeclock.route) { inclusive = true }
+                    }
+                },
+                onAutoLogin = {
+                    // Automatic login after timeclock action (Done button)
+                    // Session already saved during PIN verification, just start workers
+                    Timber.d("🔑 Auto-login after timeclock - Starting heartbeat")
+                    HeartbeatScheduler.start(context)
+
+                    // Start payment sync worker (offline payment queue)
+                    Timber.d("💾 Auto-login after timeclock - Starting payment sync")
+                    PaymentSyncScheduler.start(context)
+
+                    // Navigate to home
+                    navController.navigate(NavRoute.Home.route) {
+                        popUpTo(NavRoute.Timeclock.route) { inclusive = true }
+                    }
                 }
             )
         }

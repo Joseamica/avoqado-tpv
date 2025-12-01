@@ -24,6 +24,7 @@
 - 📱 **[UI_RESPONSIVE_GUIDE.md](./UI_RESPONSIVE_GUIDE.md)** - Responsive patterns for TPV devices (PAX A80, A920)
 - 🔌 **[SOCKET_IO_IMPLEMENTATION.md](./SOCKET_IO_IMPLEMENTATION.md)** - Real-time events architecture & integration
 - 🔄 **[LOCAL_FIRST_SYNC_PATTERNS.md](./LOCAL_FIRST_SYNC_PATTERNS.md)** - **CRITICAL: Avoid losing local-only fields when syncing with backend**
+- 📡 **[docs/TPV_COMMAND_FLOW.md](./docs/TPV_COMMAND_FLOW.md)** - Remote command system (lock, maintenance, heartbeat ACK flow)
 - 🧪 **[TESTING_GUIDE.md](./TESTING_GUIDE.md)** - Unit tests, integration tests, debugging tools
 - 🧪 **[SOCKET_IO_TESTING.md](./SOCKET_IO_TESTING.md)** - Socket.IO testing strategies & examples
 - 🔐 **[SECURITY_CHECKLIST.md](./SECURITY_CHECKLIST.md)** - Encryption, tenant isolation, certificate pinning

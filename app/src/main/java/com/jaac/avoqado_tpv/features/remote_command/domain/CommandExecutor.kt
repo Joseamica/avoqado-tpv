@@ -7,7 +7,6 @@ import com.google.firebase.appdistribution.FirebaseAppDistributionException
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
 import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
-import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.features.remote_command.data.model.CommandResult
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommand
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandType
@@ -24,21 +23,19 @@ import kotlin.coroutines.resume
  * Command Executor - Core Logic for Remote Command Execution
  *
  * **WHY**: Central orchestrator for executing remote commands from dashboard.
- * Handles the complete command lifecycle:
- * 1. Receive command → ACK immediately
- * 2. Start execution → STARTED event
- * 3. Execute command logic
- * 4. Report result → RESULT event
+ * Handles the command execution logic only - ACKs are handled by ConnectionViewModel.
  *
- * **Design Pattern**: Similar to Stripe Terminal's fleet command system
+ * **Design Pattern**: Similar to Square Terminal API's polling pattern
  * and enterprise MDM (Mobile Device Management) patterns.
  *
- * **ACK Flow**:
+ * **ACK Flow (HTTP via ConnectionViewModel)**:
  * ```
- * Server → Terminal: tpv_command (socket)
- * Terminal → Server: tpv_command_ack (RECEIVED)
- * Terminal → Server: tpv_command_started
- * Terminal → Server: tpv_command_result (SUCCESS/FAILED)
+ * Server → Terminal: heartbeat response with pendingCommands
+ * Terminal: ConnectionViewModel.processPendingCommands()
+ *   ├── commandExecutor.execute(command)
+ *   └── heartbeatRepository.sendCommandAck(commandId, terminalId, result)
+ * Server: Updates command status in database
+ * Dashboard: Receives status via Socket.IO or polling
  * ```
  *
  * **Command Categories**:
@@ -48,12 +45,12 @@ import kotlin.coroutines.resume
  * - Configuration: UPDATE_CONFIG, REFRESH_MENU, UPDATE_MERCHANT
  *
  * @see TpvCommand Data model for commands
+ * @see ConnectionViewModel.processPendingCommands() HTTP ACK flow
  * @see avoqado-server/src/services/tpv/command-execution.service.ts Server implementation
  */
 @Singleton
 class CommandExecutor @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val socketManager: SocketManager,
     private val lockScreenManager: LockScreenManager,
     private val maintenanceManager: MaintenanceManager,
     private val secureStorage: SecureStorage
@@ -76,34 +73,23 @@ class CommandExecutor @Inject constructor(
      * @return CommandResult with status and message
      */
     suspend fun execute(command: TpvCommand): CommandResult {
-        val terminalId = getTerminalId()
-
         Timber.i("📥 [$TAG] Executing command: ${command.type.name} (id=${command.commandId})")
 
         // 1. Check if command has expired
         if (Instant.now().isAfter(command.expiresAt)) {
             Timber.w("⏰ [$TAG] Command expired: ${command.commandId}")
-            val result = CommandResult.rejected("Command expired before execution")
-            emitResult(command.commandId, terminalId, result)
-            return result
+            return CommandResult.rejected("Command expired before execution")
         }
 
-        // 2. Send ACK immediately (command received)
-        socketManager.emitCommandAck(command.commandId, terminalId)
-
-        // 3. Send STARTED (execution beginning)
-        socketManager.emitCommandStarted(command.commandId, terminalId)
-
-        // 4. Execute command logic
+        // 2. Execute command logic
+        // Note: ACKs are sent via HTTP by ConnectionViewModel after execute() returns
+        // This avoids race conditions between Socket.IO and HTTP ACK paths
         val result = try {
             executeCommand(command)
         } catch (e: Exception) {
             Timber.e(e, "❌ [$TAG] Command execution failed: ${command.type.name}")
             CommandResult.failed("Execution error: ${e.message}")
         }
-
-        // 5. Send RESULT
-        emitResult(command.commandId, terminalId, result)
 
         Timber.i("✅ [$TAG] Command completed: ${command.type.name} → ${result.status.name}")
         return result
@@ -200,40 +186,45 @@ class CommandExecutor @Inject constructor(
      *
      * Shows maintenance overlay, but staff can exit locally.
      * Payments are blocked during maintenance.
+     *
+     * **IDEMPOTENT (2025-12-01):** Always succeeds, like LOCK command.
+     * This ensures server and TPV state are always in sync.
      */
     private fun executeMaintenanceMode(payload: Map<String, Any>?, requestedByName: String?): CommandResult {
-        if (maintenanceManager.isCurrentlyInMaintenance()) {
-            return CommandResult.rejected("Terminal is already in maintenance mode")
-        }
-
         val reason = payload?.get("reason") as? String
+        val wasAlreadyInMaintenance = maintenanceManager.isCurrentlyInMaintenance()
 
-        Timber.w("🛠️ [$TAG] Executing MAINTENANCE_MODE command")
+        Timber.w("🛠️ [$TAG] Executing MAINTENANCE_MODE command (wasAlready=$wasAlreadyInMaintenance)")
         maintenanceManager.enterMaintenance(reason, requestedByName)
 
         return CommandResult.success(
-            message = "Maintenance mode enabled",
+            message = if (wasAlreadyInMaintenance) "Terminal already in maintenance mode" else "Maintenance mode enabled",
             data = mapOf(
                 "reason" to (reason ?: "Remote maintenance"),
-                "enabledAt" to Instant.now().toString()
+                "enabledAt" to Instant.now().toString(),
+                "wasAlreadyInMaintenance" to wasAlreadyInMaintenance
             )
         )
     }
 
     /**
      * EXIT_MAINTENANCE - Exit maintenance mode
+     *
+     * **IDEMPOTENT (2025-12-01):** Always succeeds, like UNLOCK command pattern.
+     * This ensures server and TPV state are always in sync.
      */
     private fun executeExitMaintenance(): CommandResult {
-        if (!maintenanceManager.isCurrentlyInMaintenance()) {
-            return CommandResult.rejected("Terminal is not in maintenance mode")
-        }
+        val wasInMaintenance = maintenanceManager.isCurrentlyInMaintenance()
 
-        Timber.i("✅ [$TAG] Executing EXIT_MAINTENANCE command")
+        Timber.i("✅ [$TAG] Executing EXIT_MAINTENANCE command (wasInMaintenance=$wasInMaintenance)")
         maintenanceManager.exitMaintenance()
 
         return CommandResult.success(
-            message = "Maintenance mode disabled",
-            data = mapOf("exitedAt" to Instant.now().toString())
+            message = if (wasInMaintenance) "Maintenance mode disabled" else "Terminal was not in maintenance mode",
+            data = mapOf(
+                "exitedAt" to Instant.now().toString(),
+                "wasInMaintenance" to wasInMaintenance
+            )
         )
     }
 
@@ -642,16 +633,7 @@ class CommandExecutor @Inject constructor(
         }
     }
 
-    /**
-     * Emit command result to server
-     */
-    private fun emitResult(commandId: String, terminalId: String, result: CommandResult) {
-        socketManager.emitCommandResult(
-            commandId = commandId,
-            terminalId = terminalId,
-            resultStatus = result.status.name,
-            message = result.message,
-            resultData = result.data
-        )
-    }
+    // Note: Socket.IO ACK methods (emitResult, emitCommandAck, emitCommandStarted) removed
+    // ACKs are now sent exclusively via HTTP by ConnectionViewModel.processPendingCommands()
+    // This eliminates race conditions between Socket.IO and HTTP ACK paths
 }

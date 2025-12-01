@@ -8,10 +8,10 @@
             <InsightsFilterSettings>
               <option name="connection">
                 <ConnectionSetting>
-                  <option name="appId" value="PLACEHOLDER" />
-                  <option name="mobileSdkAppId" value="" />
-                  <option name="projectId" value="" />
-                  <option name="projectNumber" value="" />
+                  <option name="appId" value="com.jaac.avoqado_tpv.sandbox" />
+                  <option name="mobileSdkAppId" value="1:219752736783:android:aa8d57cc3022eb9c52db7a" />
+                  <option name="projectId" value="avoqado-d0a24" />
+                  <option name="projectNumber" value="219752736783" />
                 </ConnectionSetting>
               </option>
               <option name="signal" value="SIGNAL_UNSPECIFIED" />

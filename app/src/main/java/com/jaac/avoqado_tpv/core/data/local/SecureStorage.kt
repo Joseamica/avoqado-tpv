@@ -79,6 +79,15 @@ class SecureStorage @Inject constructor(
         private const val KEY_TPV_DEFAULT_TIP = "tpv_default_tip"
         private const val KEY_TPV_TIP_SUGGESTIONS = "tpv_tip_suggestions"
         private const val KEY_TPV_REQUIRE_PIN = "tpv_require_pin"
+
+        // Terminal state keys (persisted across app restarts)
+        private const val KEY_IS_LOCKED = "is_locked"
+        private const val KEY_LOCK_REASON = "lock_reason"
+        private const val KEY_LOCK_MESSAGE = "lock_message"
+        private const val KEY_LOCKED_BY = "locked_by"
+        private const val KEY_IS_IN_MAINTENANCE = "is_in_maintenance"
+        private const val KEY_MAINTENANCE_REASON = "maintenance_reason"
+        private const val KEY_MAINTENANCE_INITIATED_BY = "maintenance_initiated_by"
     }
 
     /**
@@ -719,5 +728,141 @@ class SecureStorage @Inject constructor(
             remove(KEY_TPV_REQUIRE_PIN)
         }.apply()
         Timber.d("TPV settings cleared")
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TERMINAL LOCK STATE (Persisted across app restarts)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Save lock state to persist across app restarts
+     *
+     * When terminal is locked remotely from dashboard, state must survive:
+     * - App restart
+     * - Device reboot
+     * - App reinstall (until factory reset or storage clear)
+     *
+     * @param isLocked Whether terminal is locked
+     * @param reason Optional reason for lock
+     * @param message Optional custom message
+     * @param lockedBy Who locked the terminal
+     */
+    fun saveLockState(isLocked: Boolean, reason: String?, message: String?, lockedBy: String?) {
+        encryptedPrefs.edit().apply {
+            putBoolean(KEY_IS_LOCKED, isLocked)
+            if (isLocked) {
+                reason?.let { putString(KEY_LOCK_REASON, it) }
+                message?.let { putString(KEY_LOCK_MESSAGE, it) }
+                lockedBy?.let { putString(KEY_LOCKED_BY, it) }
+            } else {
+                remove(KEY_LOCK_REASON)
+                remove(KEY_LOCK_MESSAGE)
+                remove(KEY_LOCKED_BY)
+            }
+        }.apply()
+        Timber.d("🔒 Lock state persisted: isLocked=$isLocked, by=$lockedBy")
+    }
+
+    /**
+     * Get persisted lock state
+     * @return true if terminal is locked
+     */
+    fun getIsLocked(): Boolean {
+        return encryptedPrefs.getBoolean(KEY_IS_LOCKED, false)
+    }
+
+    /**
+     * Get lock reason
+     * @return Reason for lock or null
+     */
+    fun getLockReason(): String? {
+        return encryptedPrefs.getString(KEY_LOCK_REASON, null)
+    }
+
+    /**
+     * Get lock message
+     * @return Custom lock message or null
+     */
+    fun getLockMessage(): String? {
+        return encryptedPrefs.getString(KEY_LOCK_MESSAGE, null)
+    }
+
+    /**
+     * Get who locked the terminal
+     * @return Name/ID of locker or null
+     */
+    fun getLockedBy(): String? {
+        return encryptedPrefs.getString(KEY_LOCKED_BY, null)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MAINTENANCE MODE STATE (Persisted across app restarts)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Save maintenance mode state to persist across app restarts
+     *
+     * When terminal enters maintenance from dashboard, state must survive:
+     * - App restart
+     * - Device reboot
+     * - App reinstall (until factory reset or storage clear)
+     *
+     * @param isInMaintenance Whether terminal is in maintenance mode
+     * @param reason Optional reason for maintenance
+     * @param initiatedBy Who initiated maintenance mode
+     */
+    fun saveMaintenanceState(isInMaintenance: Boolean, reason: String?, initiatedBy: String?) {
+        encryptedPrefs.edit().apply {
+            putBoolean(KEY_IS_IN_MAINTENANCE, isInMaintenance)
+            if (isInMaintenance) {
+                reason?.let { putString(KEY_MAINTENANCE_REASON, it) }
+                initiatedBy?.let { putString(KEY_MAINTENANCE_INITIATED_BY, it) }
+            } else {
+                remove(KEY_MAINTENANCE_REASON)
+                remove(KEY_MAINTENANCE_INITIATED_BY)
+            }
+        }.apply()
+        Timber.d("🛠️ Maintenance state persisted: isInMaintenance=$isInMaintenance, by=$initiatedBy")
+    }
+
+    /**
+     * Get persisted maintenance state
+     * @return true if terminal is in maintenance mode
+     */
+    fun getIsInMaintenance(): Boolean {
+        return encryptedPrefs.getBoolean(KEY_IS_IN_MAINTENANCE, false)
+    }
+
+    /**
+     * Get maintenance reason
+     * @return Reason for maintenance or null
+     */
+    fun getMaintenanceReason(): String? {
+        return encryptedPrefs.getString(KEY_MAINTENANCE_REASON, null)
+    }
+
+    /**
+     * Get who initiated maintenance
+     * @return Name/ID of initiator or null
+     */
+    fun getMaintenanceInitiatedBy(): String? {
+        return encryptedPrefs.getString(KEY_MAINTENANCE_INITIATED_BY, null)
+    }
+
+    /**
+     * Clear all terminal state (lock + maintenance)
+     * Called during factory reset or venue change
+     */
+    fun clearTerminalState() {
+        encryptedPrefs.edit().apply {
+            remove(KEY_IS_LOCKED)
+            remove(KEY_LOCK_REASON)
+            remove(KEY_LOCK_MESSAGE)
+            remove(KEY_LOCKED_BY)
+            remove(KEY_IS_IN_MAINTENANCE)
+            remove(KEY_MAINTENANCE_REASON)
+            remove(KEY_MAINTENANCE_INITIATED_BY)
+        }.apply()
+        Timber.d("Terminal state cleared (lock + maintenance)")
     }
 }

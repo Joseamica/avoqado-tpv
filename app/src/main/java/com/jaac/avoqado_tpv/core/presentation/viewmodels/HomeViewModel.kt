@@ -17,6 +17,8 @@ import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommand
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandPriority
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandType
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
+import com.jaac.avoqado_tpv.core.data.repository.HeartbeatRepository
+import com.jaac.avoqado_tpv.core.domain.models.Result
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -49,6 +51,8 @@ class HomeViewModel @Inject constructor(
     private val getMerchantsUseCase: GetMerchantsUseCase,
     // 🎮 Remote Command System
     private val commandExecutor: CommandExecutor,
+    // 📡 HTTP ACK for commands received via Socket.IO
+    private val heartbeatRepository: HeartbeatRepository,
     val lockScreenManager: LockScreenManager,
     val maintenanceManager: MaintenanceManager
 ) : ViewModel() {
@@ -384,6 +388,22 @@ class HomeViewModel @Inject constructor(
                 val result = commandExecutor.execute(command)
 
                 Timber.i("✅ [Command] Executed ${command.type.name}: ${result.status.name} - ${result.message}")
+
+                // **CRITICAL FIX (2025-12-01):**
+                // Send HTTP ACK to server so it can update command status and sync terminal state.
+                // Without this, commands received via Socket.IO would execute locally but server
+                // would never know the result, causing dashboard/TPV state desync.
+                val terminalId = secureStorage.getSerialNumber() ?: run {
+                    Timber.e("❌ [Command] Cannot send ACK - no terminal serial number")
+                    return@launch
+                }
+
+                val ackResult = heartbeatRepository.sendCommandAck(command.commandId, terminalId, result)
+                ackResult.onSuccess {
+                    Timber.i("✅ [Command] ACK sent for ${command.type.name}")
+                }.onError { exception ->
+                    Timber.w("⚠️ [Command] ACK failed for ${command.commandId}: ${exception.message}")
+                }
 
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Command] Failed to execute command: ${event.commandType}")

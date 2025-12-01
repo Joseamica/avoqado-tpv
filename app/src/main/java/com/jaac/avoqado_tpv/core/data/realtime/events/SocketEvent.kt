@@ -208,19 +208,46 @@ sealed interface SocketEvent {
     ) : SocketEvent
 
     // ========================================
-    // TPV Admin Commands (NEW)
+    // TPV Admin Commands (Enterprise Command System)
     // ========================================
 
+    /**
+     * Remote command sent from dashboard to this terminal
+     * @see avoqado-server/src/services/tpv/command-execution.service.ts:CommandPayload
+     */
     data class TPVCommand(
         val terminalId: String,
-        val commandType: String, // 'MAINTENANCE_MODE' | 'RELOAD' | 'DISABLE' | 'ENABLE' | 'SHUTDOWN' | 'RESTART'
+        val commandId: String, // Unique command ID for ACK tracking
+        val correlationId: String, // For linking request/response
+        val commandType: String, // TpvCommandType enum value
         val payload: Map<String, Any>?,
-        val requestedBy: String,
+        val requiresPin: Boolean, // Whether PIN verification is needed
+        val priority: String, // LOW | NORMAL | HIGH | CRITICAL
+        val expiresAt: String, // ISO 8601 - Command expiration time
+        val requestedBy: String, // User ID who sent the command
+        val requestedByName: String?, // Display name of requester
         val venueId: String,
         val timestamp: String,
         val metadata: Map<String, Any>? = null
     ) : SocketEvent
 
+    /**
+     * Command cancelled by admin before execution
+     * @see avoqado-server event: tpv_command_cancelled
+     */
+    data class TPVCommandCancelled(
+        val terminalId: String,
+        val commandId: String,
+        val correlationId: String,
+        val cancelledBy: String, // User ID who cancelled
+        val reason: String?, // Cancellation reason
+        val venueId: String,
+        val timestamp: String
+    ) : SocketEvent
+
+    /**
+     * Response to a command (legacy - kept for backwards compatibility)
+     */
     data class TPVCommandResponse(
         val terminalId: String,
         val commandType: String,

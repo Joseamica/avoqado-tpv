@@ -307,10 +307,11 @@ class SocketManager @Inject constructor() {
         on("notification_count_updated", onNotificationCountUpdated)
 
         // ========================================
-        // TPV Admin Commands (NEW)
+        // TPV Admin Commands (Enterprise Command System)
         // ========================================
 
         on("tpv_command", onTPVCommand)
+        on("tpv_command_cancelled", onTPVCommandCancelled)
         on("tpv_command_response", onTPVCommandResponse)
         on("tpv_status_update", onTPVStatusUpdate)
 
@@ -725,19 +726,25 @@ class SocketManager @Inject constructor() {
     }
 
     // ========================================
-    // Event Handlers - TPV Commands (NEW)
+    // Event Handlers - TPV Commands (Enterprise Command System)
     // ========================================
 
     private val onTPVCommand = Emitter.Listener { args ->
         try {
             val data = args.getOrNull(0) as? JSONObject ?: return@Listener
-            val command = data.optJSONObject("command")
+            Timber.d("📡 [TPV Command] Received: ${data.optString("type")}")
             _events.tryEmit(
                 SocketEvent.TPVCommand(
                     terminalId = data.optString("terminalId", ""),
-                    commandType = command?.optString("type") ?: "",
-                    payload = command?.optJSONObject("payload")?.toMap(),
-                    requestedBy = command?.optString("requestedBy") ?: "",
+                    commandId = data.optString("commandId", ""),
+                    correlationId = data.optString("correlationId", ""),
+                    commandType = data.optString("type", ""),
+                    payload = data.optJSONObject("payload")?.toMap(),
+                    requiresPin = data.optBoolean("requiresPin", false),
+                    priority = data.optString("priority", "NORMAL"),
+                    expiresAt = data.optString("expiresAt", ""),
+                    requestedBy = data.optString("requestedBy", ""),
+                    requestedByName = data.optString("requestedByName").takeIf { it.isNotEmpty() },
                     venueId = data.optString("venueId", ""),
                     timestamp = data.optString("timestamp", ""),
                     metadata = data.optJSONObject("metadata")?.toMap()
@@ -745,6 +752,26 @@ class SocketManager @Inject constructor() {
             )
         } catch (e: Exception) {
             Timber.e(e, "❌ Error parsing tpv_command")
+        }
+    }
+
+    private val onTPVCommandCancelled = Emitter.Listener { args ->
+        try {
+            val data = args.getOrNull(0) as? JSONObject ?: return@Listener
+            Timber.d("🚫 [TPV Command] Cancelled: ${data.optString("commandId")}")
+            _events.tryEmit(
+                SocketEvent.TPVCommandCancelled(
+                    terminalId = data.optString("terminalId", ""),
+                    commandId = data.optString("commandId", ""),
+                    correlationId = data.optString("correlationId", ""),
+                    cancelledBy = data.optString("cancelledBy", ""),
+                    reason = data.optString("reason").takeIf { it.isNotEmpty() },
+                    venueId = data.optString("venueId", ""),
+                    timestamp = data.optString("timestamp", "")
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error parsing tpv_command_cancelled")
         }
     }
 
@@ -1126,6 +1153,76 @@ class SocketManager @Inject constructor() {
             )
         } catch (e: Exception) {
             Timber.e(e, "❌ Error parsing rate_limit_exceeded")
+        }
+    }
+
+    // ========================================
+    // TPV Command ACK Emissions
+    // ========================================
+
+    /**
+     * Send acknowledgment that command was received
+     * Called immediately when tpv_command event arrives
+     */
+    fun emitCommandAck(commandId: String, terminalId: String) {
+        try {
+            socket?.emit("tpv_command_ack", JSONObject().apply {
+                put("commandId", commandId)
+                put("terminalId", terminalId)
+                put("receivedAt", java.time.Instant.now().toString())
+            })
+            Timber.d("✅ [ACK] Command received: $commandId")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Failed to emit command ACK")
+        }
+    }
+
+    /**
+     * Notify server that command execution has started
+     * Called after ACK, before actual execution
+     */
+    fun emitCommandStarted(commandId: String, terminalId: String) {
+        try {
+            socket?.emit("tpv_command_started", JSONObject().apply {
+                put("commandId", commandId)
+                put("terminalId", terminalId)
+                put("startedAt", java.time.Instant.now().toString())
+            })
+            Timber.d("🚀 [STARTED] Command executing: $commandId")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Failed to emit command started")
+        }
+    }
+
+    /**
+     * Send command execution result to server
+     * Called after command completes (success or failure)
+     *
+     * @param commandId Unique command ID
+     * @param terminalId This terminal's ID
+     * @param resultStatus SUCCESS, FAILED, TIMEOUT, REJECTED
+     * @param message Human-readable result message
+     * @param resultData Optional result data (e.g., exported log URL)
+     */
+    fun emitCommandResult(
+        commandId: String,
+        terminalId: String,
+        resultStatus: String,
+        message: String?,
+        resultData: Map<String, Any>? = null
+    ) {
+        try {
+            socket?.emit("tpv_command_result", JSONObject().apply {
+                put("commandId", commandId)
+                put("terminalId", terminalId)
+                put("resultStatus", resultStatus)
+                put("message", message ?: JSONObject.NULL)
+                put("resultData", resultData?.let { JSONObject(it) } ?: JSONObject.NULL)
+                put("completedAt", java.time.Instant.now().toString())
+            })
+            Timber.d("📊 [RESULT] Command $commandId: $resultStatus")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Failed to emit command result")
         }
     }
 

@@ -207,4 +207,29 @@ interface DraftOrderDao {
         staleThresholdMs: Long,
         currentTime: Long = System.currentTimeMillis()
     ): List<DraftOrderEntity>
+
+    /**
+     * Update only the version field atomically.
+     *
+     * ⭐ CRITICAL: This prevents version mismatch on sync retry.
+     * Must be called immediately after each successful API response to persist
+     * the new version before any retry logic kicks in.
+     *
+     * Uses UPDATE (not INSERT/REPLACE) to avoid CASCADE DELETE on child items.
+     *
+     * @param orderId Order ID
+     * @param version New version from server response
+     * @param updatedAt Timestamp (defaults to current time)
+     */
+    @Query("""
+        UPDATE draft_orders
+        SET version = :version,
+            updated_at = :updatedAt
+        WHERE id = :orderId
+    """)
+    suspend fun updateVersion(
+        orderId: String,
+        version: Int,
+        updatedAt: Long = System.currentTimeMillis()
+    )
 }

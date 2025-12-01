@@ -241,4 +241,24 @@ interface DraftOrderItemDao {
      */
     @Query("SELECT * FROM draft_order_items WHERE product_id = :productId AND sync_status != 'DELETED'")
     suspend fun getItemsByProduct(productId: String): List<DraftOrderItemEntity>
+
+    /**
+     * Mark item as sent to kitchen by setting sentToKitchenAt timestamp.
+     * Used after printing kitchen ticket.
+     *
+     * @param itemId Item ID
+     * @param sentAt Unix timestamp (milliseconds) when sent to kitchen
+     */
+    @Query("UPDATE draft_order_items SET sent_to_kitchen_at = :sentAt WHERE id = :itemId")
+    suspend fun markAsSentToKitchen(itemId: String, sentAt: Long)
+
+    /**
+     * Mark multiple items as sent to kitchen in a single transaction.
+     * Used after printing incremental kitchen ticket (only pending items).
+     *
+     * @param itemIds List of item IDs to mark
+     * @param sentAt Unix timestamp (milliseconds) when sent to kitchen
+     */
+    @Query("UPDATE draft_order_items SET sent_to_kitchen_at = :sentAt WHERE id IN (:itemIds)")
+    suspend fun markItemsAsSentToKitchen(itemIds: List<String>, sentAt: Long)
 }

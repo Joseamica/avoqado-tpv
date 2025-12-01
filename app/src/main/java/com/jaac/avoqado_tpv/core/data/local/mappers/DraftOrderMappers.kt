@@ -4,6 +4,7 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity
+import com.jaac.avoqado_tpv.features.ordering.data.mappers.toSplitType
 import com.jaac.avoqado_tpv.features.ordering.domain.KitchenStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderItem
@@ -78,12 +79,15 @@ fun DraftOrderEntity.toDomain(items: List<DraftOrderItemEntity>): Order {
         discountAmount = BigDecimal(discountAmount),
         tax = BigDecimal(tax),
         total = BigDecimal(total),
+        paidAmount = BigDecimal(paidAmount),  // ⭐ Split payments: amount already paid
+        remainingBalance = BigDecimal(remainingBalance),  // ⭐ Split payments: amount left to pay
         notes = notes,
         createdAt = Instant.ofEpochMilli(createdAt),
         updatedAt = Instant.ofEpochMilli(updatedAt),
         version = version,
         merchantAccountId = merchantAccountId,
-        merchantAccountName = merchantAccountName
+        merchantAccountName = merchantAccountName,
+        lastSplitType = lastSplitType?.toSplitType()  // ⭐ Split payment restriction tracking
     )
 }
 
@@ -125,6 +129,8 @@ fun Order.toEntity(
         discountAmount = discountAmount.toString(),
         tax = tax.toString(),
         total = total.toString(),
+        paidAmount = paidAmount.toString(),  // ⭐ Split payments: amount already paid
+        remainingBalance = remainingBalance.toString(),  // ⭐ Split payments: amount left to pay
         notes = notes,
         createdAt = createdAt.toEpochMilli(),
         updatedAt = updatedAt.toEpochMilli(),
@@ -134,7 +140,8 @@ fun Order.toEntity(
         lastSyncAt = System.currentTimeMillis(),
         conflictData = null,
         merchantAccountId = merchantAccountId,
-        merchantAccountName = merchantAccountName
+        merchantAccountName = merchantAccountName,
+        lastSplitType = lastSplitType?.name  // ⭐ Split payment restriction tracking
     )
 }
 

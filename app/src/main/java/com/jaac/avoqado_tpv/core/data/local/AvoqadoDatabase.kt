@@ -24,7 +24,7 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
 /**
  * Room database for Avoqado TPV local data persistence.
  *
- * **Current Version:** 10
+ * **Current Version:** 12
  * - v1 → v2: Added blumonSerialNumber to PendingPaymentEntity for merchant account tracking
  * - v2 → v3: Added merchantAccountId to PendingPaymentEntity (provider-agnostic migration)
  * - v3 → v4: Added rating to PendingPaymentEntity (user rating feature - 2025-01-11)
@@ -34,6 +34,8 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
  * - v7 → v8: Added merchant account tracking to DraftOrderEntity (split payment validation - 2025-11-20)
  * - v8 → v9: Added ProductEntity + ProductCategoryEntity (cache-first product loading - 2025-11-24)
  * - v9 → v10: Added CachedShiftEntity (offline shift status display - Square/Toast prevention pattern - 2025-11-25)
+ * - v10 → v11: Added paidAmount/remainingBalance for split payments (2025-11-26)
+ * - v11 → v12: Added lastSplitType for split payment type restriction (2025-11-28)
  *
  * **Entities:**
  * - PendingPaymentEntity: Offline queue for failed payment recordings
@@ -83,7 +85,7 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
         ProductCategoryEntity::class,
         CachedShiftEntity::class
     ],
-    version = 10, // ⭐ Version 10: Added CachedShiftEntity for offline shift status (Square/Toast prevention pattern)
+    version = 12, // ⭐ Version 12: Added lastSplitType for split payment type restriction
     exportSchema = false // Set to true when adding migrations for production
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -747,6 +749,73 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                 // Create unique index for venue_id (only one cached shift per venue)
                 database.execSQL(
                     "CREATE UNIQUE INDEX IF NOT EXISTS index_cached_shift_venue_id ON cached_shift(venue_id)"
+                )
+            }
+        }
+
+        /**
+         * Migration from version 10 to version 11: Add partial payment tracking to orders.
+         *
+         * **Split Payments - Partial Payment Tracking (2025-11-26)**
+         * - Adds paid_amount column (BigDecimal as String - amount already paid)
+         * - Adds remaining_balance column (BigDecimal as String - amount left to pay)
+         * - Enables split payment UI to show correct remaining balance
+         *
+         * **Why This Migration:**
+         * - After partial payment, UI should show remaining balance (not total)
+         * - Enables "Continuar pagando" flow to display correct amount
+         * - Fixes issue: CheckTab/MenuScreen showing total ($168) instead of remaining ($89)
+         *
+         * **SQL:**
+         * ```sql
+         * ALTER TABLE draft_orders ADD COLUMN paid_amount TEXT NOT NULL DEFAULT '0';
+         * ALTER TABLE draft_orders ADD COLUMN remaining_balance TEXT NOT NULL DEFAULT '0';
+         * ```
+         */
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Add paid_amount column (BigDecimal stored as String)
+                database.execSQL(
+                    "ALTER TABLE draft_orders ADD COLUMN paid_amount TEXT NOT NULL DEFAULT '0'"
+                )
+
+                // Add remaining_balance column (BigDecimal stored as String)
+                database.execSQL(
+                    "ALTER TABLE draft_orders ADD COLUMN remaining_balance TEXT NOT NULL DEFAULT '0'"
+                )
+            }
+        }
+
+        /**
+         * Migration from version 11 to version 12: Add split payment type restriction tracking.
+         *
+         * **Split Payment Type Restriction (2025-11-28)**
+         * - Adds last_split_type column (stores SplitType enum as String: PERPRODUCT, EQUALPARTS, CUSTOMAMOUNT, FULLPAYMENT)
+         * - Enables restricting incompatible split options after partial payment
+         * - E.g., if first payment was EQUALPARTS, user cannot switch to PERPRODUCT
+         *
+         * **Why This Migration:**
+         * - Bug fix: After EQUALPARTS payment, "Por Productos" option should be hidden
+         * - Business logic: Can't mix split methods (causes reconciliation chaos)
+         * - UI enforcement: SplitOptionsOverlay filters options based on lastSplitType
+         *
+         * **Usage:**
+         * ```
+         * Order with no payments → lastSplitType = null → All options available
+         * First payment with EQUALPARTS → lastSplitType = "EQUALPARTS" → Only EQUALPARTS/CUSTOMAMOUNT allowed
+         * First payment with PERPRODUCT → lastSplitType = "PERPRODUCT" → Only PERPRODUCT/CUSTOMAMOUNT allowed
+         * ```
+         *
+         * **SQL:**
+         * ```sql
+         * ALTER TABLE draft_orders ADD COLUMN last_split_type TEXT DEFAULT NULL;
+         * ```
+         */
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Add last_split_type column (nullable - null means no restriction yet)
+                database.execSQL(
+                    "ALTER TABLE draft_orders ADD COLUMN last_split_type TEXT DEFAULT NULL"
                 )
             }
         }

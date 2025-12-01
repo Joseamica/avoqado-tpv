@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import timber.log.Timber
 import javax.inject.Inject
@@ -70,6 +71,14 @@ class SecureStorage @Inject constructor(
 
         // Terminal activation keys
         private const val KEY_SERIAL_NUMBER = "serial_number"
+
+        // TPV Settings keys (configurable payment flow screens)
+        private const val KEY_TPV_SHOW_REVIEW = "tpv_show_review"
+        private const val KEY_TPV_SHOW_TIP = "tpv_show_tip"
+        private const val KEY_TPV_SHOW_RECEIPT = "tpv_show_receipt"
+        private const val KEY_TPV_DEFAULT_TIP = "tpv_default_tip"
+        private const val KEY_TPV_TIP_SUGGESTIONS = "tpv_tip_suggestions"
+        private const val KEY_TPV_REQUIRE_PIN = "tpv_require_pin"
     }
 
     /**
@@ -635,5 +644,80 @@ class SecureStorage @Inject constructor(
         } else {
             null
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // TPV SETTINGS (Configurable Payment Flow Screens)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Save TPV screen configuration settings
+     *
+     * Caches venue-specific payment flow settings for offline access.
+     * Settings control which screens are shown during the payment process.
+     *
+     * @param settings TpvSettings domain model
+     */
+    fun saveTpvSettings(settings: TpvSettings) {
+        encryptedPrefs.edit().apply {
+            putBoolean(KEY_TPV_SHOW_REVIEW, settings.showReviewScreen)
+            putBoolean(KEY_TPV_SHOW_TIP, settings.showTipScreen)
+            putBoolean(KEY_TPV_SHOW_RECEIPT, settings.showReceiptScreen)
+            if (settings.defaultTipPercentage != null) {
+                putInt(KEY_TPV_DEFAULT_TIP, settings.defaultTipPercentage)
+            } else {
+                remove(KEY_TPV_DEFAULT_TIP)
+            }
+            putString(KEY_TPV_TIP_SUGGESTIONS, settings.tipSuggestions.joinToString(","))
+            putBoolean(KEY_TPV_REQUIRE_PIN, settings.requirePinLogin)
+        }.apply()
+        Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}")
+    }
+
+    /**
+     * Get TPV screen configuration settings
+     *
+     * Returns cached settings or defaults if not configured.
+     * Defaults enable all screens for maximum compatibility.
+     *
+     * @return TpvSettings domain model
+     */
+    fun getTpvSettings(): TpvSettings {
+        val tipSuggestionsStr = encryptedPrefs.getString(KEY_TPV_TIP_SUGGESTIONS, null)
+        val tipSuggestions = tipSuggestionsStr
+            ?.split(",")
+            ?.mapNotNull { it.trim().toIntOrNull() }
+            ?.takeIf { it.isNotEmpty() }
+            ?: listOf(10, 15, 20)
+
+        val defaultTip = if (encryptedPrefs.contains(KEY_TPV_DEFAULT_TIP)) {
+            encryptedPrefs.getInt(KEY_TPV_DEFAULT_TIP, 15)
+        } else {
+            null
+        }
+
+        return TpvSettings(
+            showReviewScreen = encryptedPrefs.getBoolean(KEY_TPV_SHOW_REVIEW, true),
+            showTipScreen = encryptedPrefs.getBoolean(KEY_TPV_SHOW_TIP, true),
+            showReceiptScreen = encryptedPrefs.getBoolean(KEY_TPV_SHOW_RECEIPT, true),
+            defaultTipPercentage = defaultTip,
+            tipSuggestions = tipSuggestions,
+            requirePinLogin = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_PIN, true)
+        )
+    }
+
+    /**
+     * Clear TPV settings (useful when switching venues)
+     */
+    fun clearTpvSettings() {
+        encryptedPrefs.edit().apply {
+            remove(KEY_TPV_SHOW_REVIEW)
+            remove(KEY_TPV_SHOW_TIP)
+            remove(KEY_TPV_SHOW_RECEIPT)
+            remove(KEY_TPV_DEFAULT_TIP)
+            remove(KEY_TPV_TIP_SUGGESTIONS)
+            remove(KEY_TPV_REQUIRE_PIN)
+        }.apply()
+        Timber.d("TPV settings cleared")
     }
 }

@@ -104,6 +104,13 @@ data class DraftOrderEntity(
     @ColumnInfo(name = "total")
     val total: String,
 
+    // ⭐ Partial payment tracking (Split Payments feature)
+    @ColumnInfo(name = "paid_amount")
+    val paidAmount: String = "0",  // BigDecimal as String - amount already paid
+
+    @ColumnInfo(name = "remaining_balance")
+    val remainingBalance: String = "0",  // BigDecimal as String - amount left to pay
+
     @ColumnInfo(name = "notes")
     val notes: String?,
 
@@ -132,7 +139,13 @@ data class DraftOrderEntity(
     val merchantAccountId: String? = null, // Locked merchant for this order (P0 fix - split payment validation)
 
     @ColumnInfo(name = "merchant_account_name")
-    val merchantAccountName: String? = null // Merchant display name (for user-friendly error messages)
+    val merchantAccountName: String? = null, // Merchant display name (for user-friendly error messages)
+
+    // ⭐ Split payment restriction tracking
+    // Stores the split type of the last payment to restrict incompatible options
+    // e.g., if EQUALPARTS payment made, cannot do PERPRODUCT payment later
+    @ColumnInfo(name = "last_split_type")
+    val lastSplitType: String? = null // SplitType enum as string (PERPRODUCT, EQUALPARTS, CUSTOMAMOUNT, FULLPAYMENT)
 ) {
     companion object {
         const val SYNC_STATUS_SYNCED = "SYNCED"

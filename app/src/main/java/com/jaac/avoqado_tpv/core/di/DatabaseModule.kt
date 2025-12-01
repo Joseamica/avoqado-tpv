@@ -84,7 +84,9 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_6_7,  // Fix FOREIGN KEY with ON UPDATE CASCADE
                 AvoqadoDatabase.MIGRATION_7_8,  // 🔒 Merchant account tracking (split payment validation)
                 AvoqadoDatabase.MIGRATION_8_9,  // ⚡ Product cache (cache-first loading - 500ms → 10ms)
-                AvoqadoDatabase.MIGRATION_9_10  // 📶 Cached shift (offline status display - Square/Toast pattern)
+                AvoqadoDatabase.MIGRATION_9_10,  // 📶 Cached shift (offline status display - Square/Toast pattern)
+                AvoqadoDatabase.MIGRATION_10_11, // 💰 Split payments (paidAmount/remainingBalance tracking)
+                AvoqadoDatabase.MIGRATION_11_12  // 🔀 Split type restriction (lastSplitType)
             )
 
             // ⚠️ DEVELOPMENT ONLY: Destructive migration (data loss on schema change)

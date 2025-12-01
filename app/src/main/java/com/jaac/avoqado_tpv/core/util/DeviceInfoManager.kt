@@ -178,6 +178,17 @@ class DeviceInfoManager @Inject constructor(
                 if (!status.isActivated || status.status == "RETIRED") {
                     Timber.w("⚠️ Terminal not activated or RETIRED on backend - clearing local data")
                     secureStorage.clearAll()
+                } else {
+                    // ✅ Square/Toast pattern: Restore local cache from backend if missing
+                    // This handles: app reinstall, cache clear, data migration, variant switch
+                    val localVenueId = secureStorage.getVenueId()
+                    if (localVenueId == null && status.venueId != null) {
+                        Timber.w("🔄 Restoring activation data from backend (local cache was empty)")
+                        Timber.d("   → venueId: ${status.venueId}")
+                        Timber.d("   → serialNumber: $serialNumber")
+                        secureStorage.saveVenueId(status.venueId)
+                        secureStorage.saveSerialNumber(serialNumber)
+                    }
                 }
 
                 Result.Success(status)

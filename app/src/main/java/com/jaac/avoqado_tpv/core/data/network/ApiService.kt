@@ -14,7 +14,7 @@ import retrofit2.http.*
  *
  * **Base URL:**
  * - PROD: https://api.avoqado.io/api/v1/
- * - DEV: https://humane-immortal-pika.ngrok-free.app/api/v1/
+ * - DEV: https://unmistrustful-marla-unvermiculated.ngrok-free.dev/api/v1/
  *
  * **Response Handling:**
  * Use Result<T> wrapper in repositories:
@@ -97,20 +97,48 @@ interface ApiService {
      * **PUBLIC ENDPOINT** - No authentication required
      * - Allows terminals to report health even when auth fails
      * - Returns server status for synchronization
+     * - **Square Terminal API Pattern**: Returns pending commands in response
      *
      * Flow:
      * 1. Worker collects device health metrics every 30s
      * 2. Sends heartbeat with terminal ID, status, system info
      * 3. Backend updates Terminal.lastHeartbeat and status
      * 4. Returns server's view of terminal status for sync
+     * 5. **NEW**: Returns pending commands for polling-based delivery
      *
      * @param request Heartbeat data with health metrics
-     * @return Heartbeat response with server status
+     * @return Heartbeat response with server status and pending commands
      */
     @POST("tpv/heartbeat")
     suspend fun sendHeartbeat(
         @Body request: com.jaac.avoqado_tpv.core.data.network.dto.HeartbeatRequestDto
     ): Response<com.jaac.avoqado_tpv.core.data.network.dto.HeartbeatResponseDto>
+
+    /**
+     * Acknowledge command execution
+     *
+     * POST /tpv/command-ack
+     *
+     * **PUBLIC ENDPOINT** - No authentication required
+     * - Allows terminals to report command execution results
+     * - Called after processing commands received via heartbeat
+     *
+     * **Square Terminal API Pattern**: Commands are delivered via heartbeat
+     * response (polling), terminal sends ACK after execution via this endpoint.
+     *
+     * Flow:
+     * 1. Heartbeat response includes pending commands
+     * 2. Terminal executes command via CommandExecutor
+     * 3. Terminal sends ACK with result (SUCCESS/FAILED/REJECTED/TIMEOUT)
+     * 4. Backend updates TpvCommandQueue status and broadcasts to dashboard
+     *
+     * @param request Command acknowledgment with result
+     * @return ACK response confirming receipt
+     */
+    @POST("tpv/command-ack")
+    suspend fun sendCommandAck(
+        @Body request: com.jaac.avoqado_tpv.core.data.network.dto.CommandAckRequestDto
+    ): Response<com.jaac.avoqado_tpv.core.data.network.dto.CommandAckResponseDto>
 
     // ========== Terminal Configuration (Public Endpoint) ==========
 
@@ -164,6 +192,26 @@ interface ApiService {
     suspend fun getTerminalConfig(
         @Path("serialNumber") serialNumber: String
     ): Response<com.jaac.avoqado_tpv.core.data.network.dto.TerminalConfigResponse>
+
+    /**
+     * Update TPV Settings for a specific terminal
+     *
+     * PUT /tpv/terminals/{serialNumber}/settings
+     *
+     * **AUTHENTICATED ENDPOINT** - Requires valid JWT token
+     *
+     * Updates the TPV screen configuration settings for this terminal.
+     * Each terminal can have individual settings (different from other terminals in the same venue).
+     *
+     * @param serialNumber Terminal serial number
+     * @param settings Updated TPV settings
+     * @return Updated settings response
+     */
+    @PUT("tpv/terminals/{serialNumber}/settings")
+    suspend fun updateTpvSettings(
+        @Path("serialNumber") serialNumber: String,
+        @Body settings: com.jaac.avoqado_tpv.core.data.network.dto.TpvSettingsDto
+    ): Response<com.jaac.avoqado_tpv.core.data.network.dto.TpvSettingsUpdateResponse>
 
     // ========== Authentication ==========
 
@@ -235,6 +283,29 @@ interface ApiService {
     suspend fun getCurrentUser(
         @Path("venueId") venueId: String
     ): Response<StaffMember>
+
+    // ========== Venue Settings ==========
+
+    /**
+     * Get venue details with TPV settings
+     *
+     * GET /tpv/venues/{venueId}
+     *
+     * Returns venue info and tpvSettings object containing:
+     * - showReviewScreen: Whether to show star rating screen
+     * - showTipScreen: Whether to show tip selection screen
+     * - showReceiptScreen: Whether to show receipt options
+     * - defaultTipPercentage: Pre-selected tip percentage (optional)
+     * - tipSuggestions: List of tip percentage options
+     * - requirePinLogin: Whether PIN is required for login
+     *
+     * @param venueId Venue identifier
+     * @return VenueWithSettingsResponse containing venue and tpvSettings
+     */
+    @GET("tpv/venues/{venueId}")
+    suspend fun getVenueWithSettings(
+        @Path("venueId") venueId: String
+    ): Response<com.jaac.avoqado_tpv.core.data.network.dto.VenueWithSettingsResponse>
 
     // ========== Orders ==========
 
@@ -525,6 +596,118 @@ interface ApiService {
         @Query("limit") limit: Int = 20
     ): Response<com.jaac.avoqado_tpv.features.reports.data.dto.HistoricalReportsResponse>
 
+    // ========== Time Entries (Employee Timeclock) ==========
+
+    /**
+     * Clock in a staff member
+     *
+     * POST /tpv/venues/{venueId}/time-entries/clock-in
+     *
+     * Creates a new time entry for the staff member.
+     * Requires PIN verification.
+     *
+     * @param venueId Venue identifier
+     * @param request Clock in request with staffId, pin, optional jobRole
+     * @return Created time entry
+     */
+    @POST("tpv/venues/{venueId}/time-entries/clock-in")
+    suspend fun timeEntryClockIn(
+        @Path("venueId") venueId: String,
+        @Body request: com.jaac.avoqado_tpv.features.timeclock.data.dto.ClockInRequestDto
+    ): Response<com.jaac.avoqado_tpv.features.timeclock.data.dto.TimeEntryResponseDto>
+
+    /**
+     * Clock out a staff member
+     *
+     * POST /tpv/venues/{venueId}/time-entries/clock-out
+     *
+     * Closes the active time entry for the staff member.
+     * Automatically calculates total hours worked minus breaks.
+     *
+     * @param venueId Venue identifier
+     * @param request Clock out request with staffId, pin
+     * @return Updated time entry with totalHours
+     */
+    @POST("tpv/venues/{venueId}/time-entries/clock-out")
+    suspend fun timeEntryClockOut(
+        @Path("venueId") venueId: String,
+        @Body request: com.jaac.avoqado_tpv.features.timeclock.data.dto.ClockOutRequestDto
+    ): Response<com.jaac.avoqado_tpv.features.timeclock.data.dto.TimeEntryResponseDto>
+
+    /**
+     * Start a break
+     *
+     * POST /tpv/time-entries/{timeEntryId}/break/start
+     *
+     * Creates a new break record for the active time entry.
+     *
+     * @param timeEntryId Time entry identifier
+     * @return Updated time entry with active break
+     */
+    @POST("tpv/time-entries/{timeEntryId}/break/start")
+    suspend fun timeEntryStartBreak(
+        @Path("timeEntryId") timeEntryId: String
+    ): Response<com.jaac.avoqado_tpv.features.timeclock.data.dto.TimeEntryResponseDto>
+
+    /**
+     * End a break
+     *
+     * POST /tpv/time-entries/{timeEntryId}/break/end
+     *
+     * Ends the active break for the time entry.
+     * Automatically calculates break duration.
+     *
+     * @param timeEntryId Time entry identifier
+     * @return Updated time entry with ended break
+     */
+    @POST("tpv/time-entries/{timeEntryId}/break/end")
+    suspend fun timeEntryEndBreak(
+        @Path("timeEntryId") timeEntryId: String
+    ): Response<com.jaac.avoqado_tpv.features.timeclock.data.dto.TimeEntryResponseDto>
+
+    /**
+     * Get time entries for venue
+     *
+     * GET /tpv/venues/{venueId}/time-entries
+     *
+     * Returns paginated list of time entries.
+     * Can filter by staffId, date range, status.
+     *
+     * @param venueId Venue identifier
+     * @param staffId Optional staff filter
+     * @param startDate Optional start date (ISO 8601)
+     * @param endDate Optional end date (ISO 8601)
+     * @param status Optional status filter (CLOCKED_IN, ON_BREAK, CLOCKED_OUT)
+     * @param limit Number of entries (default 20)
+     * @param offset Pagination offset (default 0)
+     * @return Paginated time entries list
+     */
+    @GET("tpv/venues/{venueId}/time-entries")
+    suspend fun getTimeEntries(
+        @Path("venueId") venueId: String,
+        @Query("staffId") staffId: String? = null,
+        @Query("startDate") startDate: String? = null,
+        @Query("endDate") endDate: String? = null,
+        @Query("status") status: String? = null,
+        @Query("limit") limit: Int = 20,
+        @Query("offset") offset: Int = 0
+    ): Response<com.jaac.avoqado_tpv.features.timeclock.data.dto.TimeEntriesListResponseDto>
+
+    /**
+     * Get currently clocked-in staff
+     *
+     * GET /tpv/venues/{venueId}/time-entries/active
+     *
+     * Returns list of staff members currently clocked in.
+     *
+     * @param venueId Venue identifier
+     * @return List of active time entries
+     */
+    @GET("tpv/venues/{venueId}/time-entries/active")
+    suspend fun getActiveTimeEntries(
+        @Path("venueId") venueId: String
+    ): Response<com.jaac.avoqado_tpv.features.timeclock.data.dto.TimeEntriesListResponseDto>
+
     // ========== Shifts (Timeclock) - DEPRECATED ==========
     // TODO: Remove these after shift management migration complete
 
@@ -533,9 +716,9 @@ interface ApiService {
      *
      * POST /tpv/venues/{venueId}/shifts/clock-in
      *
-     * @deprecated Use openShift() instead
+     * @deprecated Use timeEntryClockIn() instead
      */
-    @Deprecated("Use openShift() instead")
+    @Deprecated("Use timeEntryClockIn() instead")
     @POST("tpv/venues/{venueId}/shifts/clock-in")
     suspend fun clockIn(
         @Path("venueId") venueId: String

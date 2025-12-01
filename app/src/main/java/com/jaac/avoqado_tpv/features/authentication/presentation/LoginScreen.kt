@@ -12,9 +12,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -35,18 +37,20 @@ import com.jaac.avoqado_tpv.features.authentication.presentation.components.PinP
  * **Features:**
  * - Custom numeric PIN pad (no system keyboard)
  * - Visual PIN indicator (4 filled circles)
- * - Auto-submit on 4 digits (Square/Toast standard)
+ * - Two action buttons: Timeclock (⏱) and Ir (Login)
  * - Large touch targets for busy environments
  *
  * @param venueId Venue ID from activation
  * @param onLoginSuccess Callback when login succeeds
  * @param onNavigateToActivation Callback when terminal is deactivated (requires re-activation)
+ * @param onTimeclockClick Callback when Timeclock button is pressed with the entered PIN
  */
 @Composable
 fun LoginScreen(
     venueId: String,
     onLoginSuccess: () -> Unit,
     onNavigateToActivation: () -> Unit,
+    onTimeclockClick: (String) -> Unit,
     viewModel: LoginViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -65,6 +69,7 @@ fun LoginScreen(
         state = state,
         venueLogo = venueLogo,
         onPinEntered = { pin -> viewModel.loginWithPin(pin, venueId) },
+        onTimeclockClick = onTimeclockClick,
         onDismissError = { viewModel.resetState() }
     )
 }
@@ -74,17 +79,12 @@ private fun LoginContent(
     state: LoginState,
     venueLogo: String?,
     onPinEntered: (String) -> Unit,
+    onTimeclockClick: (String) -> Unit,
     onDismissError: () -> Unit
 ) {
     var pin by remember { mutableStateOf("") }
-
-    // Auto-submit when PIN length is 4 digits (Square/Toast standard)
-    LaunchedEffect(pin) {
-        if (pin.length == 4 && state !is LoginState.Loading && state !is LoginState.Success) {
-            onPinEntered(pin)
-            pin = "" // Clear after submit
-        }
-    }
+    val isPinComplete = pin.length == 4
+    val isInteractionEnabled = state !is LoginState.Loading && state !is LoginState.Success
 
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
@@ -101,20 +101,6 @@ private fun LoginContent(
                     verticalArrangement = Arrangement.Center
                 ) {
                     val sizes = LocalResponsiveSizes.current
-
-                    // Venue Logo (circular) - Dynamic size
-                    AsyncImage(
-                        model = venueLogo,
-                        contentDescription = "Logo del venue",
-                        modifier = Modifier
-                            .size(sizes.logoSize)
-                            .clip(CircleShape),
-                        contentScale = ContentScale.Fit,
-                        error = painterResource(R.drawable.isotipo),
-                        placeholder = painterResource(R.drawable.isotipo)
-                    )
-
-                    Spacer(modifier = Modifier.height(sizes.spacingSmall))
 
                     // Title
                     Text(
@@ -136,24 +122,87 @@ private fun LoginContent(
                     // Custom PIN Pad (Square/Toast style)
                     PinPad(
                         onNumberClick = { digit ->
-                            if (pin.length < 4 && state !is LoginState.Loading && state !is LoginState.Success) {
+                            if (pin.length < 4 && isInteractionEnabled) {
                                 pin += digit
                             }
                         },
                         onBackspace = {
-                            if (pin.isNotEmpty() && state !is LoginState.Loading && state !is LoginState.Success) {
+                            if (pin.isNotEmpty() && isInteractionEnabled) {
                                 pin = pin.dropLast(1)
                             }
                         },
                         onClear = {
-                            if (state !is LoginState.Loading && state !is LoginState.Success) {
+                            if (isInteractionEnabled) {
                                 pin = ""
                             }
                         },
-                        enabled = state !is LoginState.Loading && state !is LoginState.Success
+                        enabled = isInteractionEnabled
                     )
 
-                    Spacer(modifier = Modifier.height(sizes.spacingSmall))
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Action buttons: Timeclock and Ir (Login) - Same style as PinPad
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Timeclock button
+                        ElevatedButton(
+                            onClick = {
+                                if (isPinComplete) {
+                                    val currentPin = pin
+                                    pin = ""
+                                    onTimeclockClick(currentPin)
+                                }
+                            },
+                            enabled = isPinComplete && isInteractionEnabled,
+                            modifier = Modifier.size(80.dp),
+                            shape = CircleShape,
+                            colors = ButtonDefaults.elevatedButtonColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            ),
+                            elevation = ButtonDefaults.elevatedButtonElevation(
+                                defaultElevation = 2.dp,
+                                pressedElevation = 6.dp,
+                                disabledElevation = 0.dp
+                            )
+                        ) {
+                            Text(
+                                text = "⏱",
+                                fontSize = 28.sp
+                            )
+                        }
+
+                        // Login button (Ir)
+                        ElevatedButton(
+                            onClick = {
+                                if (isPinComplete) {
+                                    val currentPin = pin
+                                    pin = ""
+                                    onPinEntered(currentPin)
+                                }
+                            },
+                            enabled = isPinComplete && isInteractionEnabled,
+                            modifier = Modifier.size(80.dp),
+                            shape = CircleShape,
+                            colors = ButtonDefaults.elevatedButtonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            ),
+                            elevation = ButtonDefaults.elevatedButtonElevation(
+                                defaultElevation = 2.dp,
+                                pressedElevation = 6.dp,
+                                disabledElevation = 0.dp
+                            )
+                        ) {
+                            Text(
+                                text = "Ir",
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
                 }
 
                 // Terminal deactivated message
@@ -250,6 +299,7 @@ private fun LoginScreenIdlePreview() {
             state = LoginState.Idle,
             venueLogo = null,
             onPinEntered = {},
+            onTimeclockClick = {},
             onDismissError = {}
         )
     }
@@ -267,6 +317,7 @@ private fun LoginScreenIdleDarkPreview() {
             state = LoginState.Idle,
             venueLogo = null,
             onPinEntered = {},
+            onTimeclockClick = {},
             onDismissError = {}
         )
     }
@@ -284,6 +335,7 @@ private fun LoginScreenLoadingPreview() {
             state = LoginState.Loading,
             venueLogo = null,
             onPinEntered = {},
+            onTimeclockClick = {},
             onDismissError = {}
         )
     }
@@ -301,6 +353,7 @@ private fun LoginScreenLoadingDarkPreview() {
             state = LoginState.Loading,
             venueLogo = null,
             onPinEntered = {},
+            onTimeclockClick = {},
             onDismissError = {}
         )
     }
@@ -318,6 +371,7 @@ private fun LoginScreenErrorPreview() {
             state = LoginState.Error("PIN incorrecto. Intenta de nuevo."),
             venueLogo = null,
             onPinEntered = {},
+            onTimeclockClick = {},
             onDismissError = {}
         )
     }
@@ -335,6 +389,7 @@ private fun LoginScreenErrorDarkPreview() {
             state = LoginState.Error("PIN incorrecto. Intenta de nuevo."),
             venueLogo = null,
             onPinEntered = {},
+            onTimeclockClick = {},
             onDismissError = {}
         )
     }
@@ -355,6 +410,7 @@ private fun LoginScreenRateLimitErrorDarkPreview() {
             ),
             venueLogo = null,
             onPinEntered = {},
+            onTimeclockClick = {},
             onDismissError = {}
         )
     }

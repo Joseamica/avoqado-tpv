@@ -9,6 +9,7 @@ import com.jaac.avoqado_tpv.features.authentication.data.dto.toDto
 import com.jaac.avoqado_tpv.features.authentication.domain.models.AuthResponse
 import com.jaac.avoqado_tpv.features.authentication.domain.models.PinLoginRequest
 import com.jaac.avoqado_tpv.features.authentication.domain.models.RefreshTokenResponse
+import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import org.json.JSONObject
 import timber.log.Timber
 import javax.inject.Inject
@@ -49,7 +50,8 @@ import javax.inject.Singleton
 @Singleton
 class AuthRepository @Inject constructor(
     private val apiService: ApiService,
-    private val secureStorage: SecureStorage
+    private val secureStorage: SecureStorage,
+    private val tpvSettingsRepository: TpvSettingsRepository
 ) {
 
     /**
@@ -100,6 +102,10 @@ class AuthRepository @Inject constructor(
 
                 // Save session to SecureStorage
                 saveSession(authResponse)
+
+                // Refresh TPV settings from backend (Square/Toast pattern)
+                // Settings control payment flow screens (tip, review, receipt options)
+                tpvSettingsRepository.refreshSettings(authResponse.venueId)
 
                 Timber.d("✅ Login successful: ${authResponse.staff.displayName}")
                 Result.Success(authResponse)
@@ -182,6 +188,71 @@ class AuthRepository @Inject constructor(
         secureStorage.saveVenueName(authResponse.venue.name)
 
         Timber.d("✅ Session saved: venueId=${authResponse.venueId}, staffId=${authResponse.staffId}")
+    }
+
+    /**
+     * Verify PIN and create session for Timeclock
+     *
+     * Used by Timeclock feature to verify employee identity and create
+     * a session so that subsequent API calls (getTimeEntries, clockIn, etc.) work.
+     *
+     * Flow:
+     * 1. Send PIN to backend
+     * 2. Receive tokens + staff info
+     * 3. Save session to SecureStorage (required for API calls)
+     * 4. Return staff info for Timeclock UI
+     *
+     * Note: Session is created here. When user presses "Done" on Timeclock screen,
+     * heartbeat/payment sync are started and user navigates to Home.
+     * If user presses "Back", the session should be cleared via logout().
+     *
+     * @param venueId Venue identifier
+     * @param pin 4-6 digit numeric PIN
+     * @return Result with staff info or error
+     */
+    suspend fun verifyPinOnly(venueId: String, pin: String): kotlin.Result<com.jaac.avoqado_tpv.features.timeclock.presentation.StaffInfo> {
+        return try {
+            Timber.d("📡 Verifying PIN for timeclock at venue $venueId")
+
+            val serialNumber = secureStorage.getSerialNumber()
+                ?: return kotlin.Result.failure(Exception("El dispositivo debe activarse primero"))
+
+            val request = PinLoginRequest(
+                pin = pin,
+                serialNumber = serialNumber
+            ).toDto()
+            val response = apiService.loginWithPin(venueId, request)
+
+            if (response.isSuccessful && response.body() != null) {
+                val authDto = response.body()!!
+                val authResponse = authDto.toDomain()
+
+                // Save session so API calls work (getTimeEntries, clockIn, etc.)
+                saveSession(authResponse)
+                Timber.d("✅ PIN verified and session saved for: ${authResponse.staff.displayName}")
+
+                kotlin.Result.success(
+                    com.jaac.avoqado_tpv.features.timeclock.presentation.StaffInfo(
+                        id = authResponse.staffId,
+                        name = authResponse.staff.displayName
+                    )
+                )
+            } else {
+                Timber.w("⚠️ PIN verification failed: HTTP ${response.code()}")
+
+                val errorMessage = when (response.code()) {
+                    401 -> "PIN incorrecto"
+                    404 -> "Usuario no encontrado"
+                    429 -> "Demasiados intentos. Espera un momento."
+                    else -> "Error de verificación"
+                }
+
+                kotlin.Result.failure(Exception(errorMessage))
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "❌ PIN verification failed")
+            kotlin.Result.failure(Exception("Error de conexión"))
+        }
     }
 
     /**

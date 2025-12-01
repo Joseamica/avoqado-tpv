@@ -1,14 +1,20 @@
 package com.jaac.avoqado_tpv.features.activation.presentation
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -48,11 +54,14 @@ fun ActivationScreen(
 ) {
     var activationCode by remember { mutableStateOf("") }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     val focusRequester = remember { FocusRequester() }
+    val scrollState = rememberScrollState()
 
-    // Auto-focus input field on first composition
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
+    // Helper to dismiss keyboard
+    val dismissKeyboard: () -> Unit = {
+        keyboardController?.hide()
+        focusManager.clearFocus()
     }
 
     Scaffold(
@@ -62,6 +71,12 @@ fun ActivationScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .imePadding()  // Handle keyboard
+                .verticalScroll(scrollState)  // Make scrollable
+                .clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() }
+                ) { dismissKeyboard() }  // Tap outside to dismiss keyboard
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
@@ -87,21 +102,25 @@ fun ActivationScreen(
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            // Device Serial Number
+            // Device Serial Number - Pill shaped card
             Card(
                 modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(50),  // Pill shape
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant
                 )
             ) {
                 Column(
-                    modifier = Modifier.padding(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
                         text = "Número de Serie",
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
                     )
 
                     Spacer(modifier = Modifier.height(4.dp))
@@ -110,14 +129,15 @@ fun ActivationScreen(
                         text = serialNumber,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center
                     )
                 }
             }
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            // Activation Code Input
+            // Activation Code Input - Pill shaped
             OutlinedTextField(
                 value = activationCode,
                 onValueChange = { newValue ->
@@ -154,6 +174,7 @@ fun ActivationScreen(
                         }
                     }
                 ),
+                shape = RoundedCornerShape(50),  // Pill shape
                 modifier = Modifier
                     .fillMaxWidth()
                     .focusRequester(focusRequester),
@@ -165,13 +186,14 @@ fun ActivationScreen(
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            // Activate Button
+            // Activate Button - Pill shaped
             Button(
                 onClick = {
                     keyboardController?.hide()
                     onActivate(activationCode)
                 },
                 enabled = activationCode.length == 6 && !isLoading,
+                shape = RoundedCornerShape(50),  // Pill shape
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp)

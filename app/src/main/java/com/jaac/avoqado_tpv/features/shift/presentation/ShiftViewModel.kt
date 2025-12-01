@@ -72,6 +72,11 @@ class ShiftViewModel @Inject constructor(
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
+    // Initial loading state (true until first data load completes)
+    // Used to show loading overlay on WelcomeScreen during post-login sync
+    private val _isInitialLoading = MutableStateFlow(true)
+    val isInitialLoading: StateFlow<Boolean> = _isInitialLoading.asStateFlow()
+
     // Offline state (Square/Toast prevention pattern)
     private val _isOffline = MutableStateFlow(false)
     val isOffline: StateFlow<Boolean> = _isOffline.asStateFlow()
@@ -267,6 +272,12 @@ class ShiftViewModel @Inject constructor(
                     Timber.e("❌ Failed to load shift: $errorMessage")
                     _state.value = ShiftState.Error(errorMessage)
                 }
+            }
+
+            // ✅ Mark initial loading complete (hides loading overlay on WelcomeScreen)
+            if (_isInitialLoading.value) {
+                _isInitialLoading.value = false
+                Timber.d("✅ [ShiftViewModel] Initial loading complete")
             }
         }
     }

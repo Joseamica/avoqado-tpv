@@ -157,19 +157,45 @@ fun OpenShiftDialog(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                Row(
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    listOf(0.0, 500.0, 1000.0, 2000.0).forEach { amount ->
+                    // Primera fila: $0 y $500
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         OutlinedButton(
-                            onClick = { startingCashText = amount.toInt().toString() },
+                            onClick = { startingCashText = "0" },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text(
-                                text = if (amount == 0.0) "$0" else "$${amount.toInt()}",
-                                fontSize = 12.sp
-                            )
+                            Text(text = "$0", fontSize = 14.sp)
+                        }
+                        OutlinedButton(
+                            onClick = { startingCashText = "500" },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(text = "$500", fontSize = 14.sp)
+                        }
+                    }
+
+                    // Segunda fila: $1000 y $2000
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { startingCashText = "1000" },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(text = "$1000", fontSize = 14.sp)
+                        }
+                        OutlinedButton(
+                            onClick = { startingCashText = "2000" },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(text = "$2000", fontSize = 14.sp)
                         }
                     }
                 }

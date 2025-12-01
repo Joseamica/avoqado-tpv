@@ -94,21 +94,22 @@ class SocketManagerTest {
         // Given
         val url = "https://test.socket.io"
         val token = "test-jwt-token"
+        val capturedOptions = slot<IO.Options>()
 
-        // Mock IO.socket() to return our mock socket
+        // Mock IO.socket() to return our mock socket and capture options
         mockkStatic(IO::class)
-        every { IO.socket(any(), any<IO.Options>()) } returns mockSocket
+        every { IO.socket(any<String>(), capture(capturedOptions)) } returns mockSocket
 
         // When
         socketManager.connect(url, token)
 
         // Then - Verify socket was created with correct options
-        verify {
-            IO.socket(any(), match<IO.Options> { options ->
-                options.auth is Map<*, *> &&
-                (options.auth as Map<*, *>)["token"] == token
-            })
-        }
+        verify { IO.socket(any<String>(), any<IO.Options>()) }
+
+        // Verify auth token was set correctly
+        val authMap = capturedOptions.captured.auth as? Map<*, *>
+        assertThat(authMap).isNotNull()
+        assertThat(authMap?.get("token")).isEqualTo(token)
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.core.data.network.interceptors
 
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.session.SessionManager
 import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
@@ -38,6 +39,7 @@ class TokenAuthenticatorTest {
     private lateinit var secureStorage: SecureStorage
     private lateinit var authRepository: AuthRepository
     private lateinit var authRepositoryLazy: Lazy<AuthRepository>
+    private lateinit var sessionManager: SessionManager
     private lateinit var authenticator: TokenAuthenticator
 
     // Test data
@@ -51,12 +53,13 @@ class TokenAuthenticatorTest {
         secureStorage = mockk(relaxed = true)
         authRepository = mockk(relaxed = true)
         authRepositoryLazy = mockk(relaxed = true)
+        sessionManager = mockk(relaxed = true)
 
         // Configure lazy to return mocked repository
         every { authRepositoryLazy.get() } returns authRepository
 
         // Create authenticator
-        authenticator = TokenAuthenticator(secureStorage, authRepositoryLazy)
+        authenticator = TokenAuthenticator(secureStorage, authRepositoryLazy, sessionManager)
     }
 
     @After

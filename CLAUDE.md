@@ -12,7 +12,7 @@
 - 🎨 **UI:** 100% Jetpack Compose (NO XML)
 - 💉 **DI:** Hilt 2.57
 - 🔐 **Security:** EncryptedSharedPreferences, Certificate Pinning
-- 🌐 **Backend:** Production: `https://api.avoqado.io/api/v1/` | Dev: `https://humane-immortal-pika.ngrok-free.app`
+- 🌐 **Backend:** Production: `https://api.avoqado.io/api/v1/` | Dev: `https://unmistrustful-marla-unvermiculated.ngrok-free.dev`
 - 🔌 **Real-time:** Socket.IO (room-based events)
 - 💳 **Payments:** Blumon PAX SDK (multi-merchant support)
 - ⚡ **Performance:** 1GB RAM target (PAX A80) - ALWAYS paginate, cleanup cache, avoid heavy animations
@@ -20,11 +20,14 @@
 ### Specialized Guides (Deep Dives)
 - 🚀 **[GREENFIELD_BLUEPRINT.md](./GREENFIELD_BLUEPRINT.md)** - Complete architecture & 28-day implementation plan
 - 💰 **[PAYMENT_RECONCILIATION.md](./PAYMENT_RECONCILIATION.md)** - Payment logic + Blumon multi-merchant system
+- ⚡ **[PERFORMANCE_GUIDE.md](./PERFORMANCE_GUIDE.md)** - 1GB RAM optimization, pagination, caching
 - 📱 **[UI_RESPONSIVE_GUIDE.md](./UI_RESPONSIVE_GUIDE.md)** - Responsive patterns for TPV devices (PAX A80, A920)
 - 🔌 **[SOCKET_IO_IMPLEMENTATION.md](./SOCKET_IO_IMPLEMENTATION.md)** - Real-time events architecture & integration
+- 🔄 **[LOCAL_FIRST_SYNC_PATTERNS.md](./LOCAL_FIRST_SYNC_PATTERNS.md)** - **CRITICAL: Avoid losing local-only fields when syncing with backend**
 - 🧪 **[TESTING_GUIDE.md](./TESTING_GUIDE.md)** - Unit tests, integration tests, debugging tools
 - 🧪 **[SOCKET_IO_TESTING.md](./SOCKET_IO_TESTING.md)** - Socket.IO testing strategies & examples
 - 🔐 **[SECURITY_CHECKLIST.md](./SECURITY_CHECKLIST.md)** - Encryption, tenant isolation, certificate pinning
+- 🏗️ **[PRODUCTION_BUILD_GUIDE.md](./PRODUCTION_BUILD_GUIDE.md)** - Build variants, deployment, troubleshooting
 
 ---
 
@@ -89,6 +92,48 @@ User selects different merchant
 - [ ] Test payment after app restart
 - [ ] Verify backend receives correct `merchantAccountId`
 - [ ] Verify cash payments have `merchantAccountId: null`
+
+---
+
+## 🚨 CRITICAL: Local-First Sync - PRESERVE LOCAL-ONLY FIELDS
+
+> **⚠️ WARNING**: When loading data from backend, LOCAL-ONLY fields like `sentToKitchenAt` get LOST if not handled correctly. This causes bugs where items lose their "printed" status.
+
+### The Problem
+
+Some fields exist ONLY in Room DB, NOT in backend:
+- `sentToKitchenAt` - Kitchen print timestamp
+- `syncStatus` - Local sync state
+- `isServerCreated` - Whether item has server CUID
+
+**When backend returns data, these fields are `null`!**
+
+### Before Modifying Sync/Cache/Load Code:
+
+1. **READ** [LOCAL_FIRST_SYNC_PATTERNS.md](./LOCAL_FIRST_SYNC_PATTERNS.md) completely
+2. **CHECK** if the code handles local-only fields
+3. **NEVER** use backend data directly for state - always load from local DB after caching
+
+### Quick Pattern
+
+```kotlin
+// ❌ WRONG: Backend data loses local fields
+val backendOrder = orderRepository.getOrder(orderId)
+_state.value = MenuState.Success(backendOrder)  // sentToKitchenAt = null!
+
+// ✅ CORRECT: Cache first (preserves local), then load from DB
+orderSyncCoordinator.cacheBackendOrder(backendOrder)
+val mergedOrder = orderSyncCoordinator.getLocalOrder(orderId) ?: backendOrder
+_state.value = MenuState.Success(mergedOrder)  // sentToKitchenAt preserved!
+```
+
+### Files Requiring This Check
+
+| File | Risk | What to check |
+|------|------|---------------|
+| `MenuViewModel.kt` | 🔴 HIGH | `loadOrder()`, sync event handlers |
+| `OrderSyncCoordinator.kt` | 🔴 HIGH | `cacheBackendOrder()`, any cache updates |
+| `OrderListViewModel.kt` | 🟠 MEDIUM | Order list loading |
 
 ---
 
@@ -254,251 +299,28 @@ class PaymentRepositoryImpl @Inject constructor(
 
 ## ⚡ Performance Guidelines (1GB RAM Devices)
 
-> **CRITICAL**: Target devices (PAX A80, A920, Sunmi T2s) have **1GB RAM**. ALWAYS optimize for low memory footprint.
+> **Complete guide:** [PERFORMANCE_GUIDE.md](./PERFORMANCE_GUIDE.md)
 
-### 🎯 Mandatory Performance Rules
+**Critical Rules (memorize these):**
 
-#### 1. **Pagination ALWAYS (Never load all data at once)**
+| Rule | Limit | Why |
+|------|-------|-----|
+| Pagination | 20 items/page (max 50) | Prevents OOM on large datasets |
+| Cache TTL | 24h, cleanup on logout | Prevents memory leaks |
+| Images | Always request thumbnails | Full-size images cause OOM |
+| Animations | Prefer instant, max fadeIn/fadeOut | Heavy animations lag on 1GB RAM |
+| Database | Index ALL queried columns | Unindexed queries are slow |
+| Memory | Total app RAM < 200MB | PAX A80 has only 1GB total |
+| Background | Always use `Dispatchers.IO` | Main thread blocks = UI freeze |
 
+**Quick Examples:**
 ```kotlin
-// ❌ WRONG: Loads all orders in memory (OOM risk on 1GB RAM)
-val orders = orderRepository.getAllOrders(venueId)  // Could be 10,000+ orders!
+// ❌ val orders = orderRepository.getAllOrders()  // OOM risk!
+// ✅ val orders = orderRepository.getOrders(limit = 20, cursor = cursor)
 
-// ✅ CORRECT: Pagination with reasonable limits
-val orders = orderRepository.getOrders(
-    venueId = venueId,
-    limit = 20,  // ← Limit per page
-    cursor = cursor  // ← Cursor-based pagination
-)
+// ❌ Timber.d("Order: $order")  // Creates huge string!
+// ✅ Timber.d("Order: id=${order.id}, status=${order.status}")
 ```
-
-**Pagination Limits**:
-- **Lists**: 20 items per page (max 50)
-- **Historical data**: 20 periods per page
-- **Images**: 10 items per page (heavy memory)
-- **Search results**: 15 items per page
-
-#### 2. **Cache Cleanup (Prevent memory leaks)**
-
-```kotlin
-// ✅ CORRECT: Auto-cleanup old cache
-suspend fun cleanupOldCache() {
-    val cutoffTime = System.currentTimeMillis() - CACHE_TTL_MILLIS
-    historicalPeriodDao.deleteOldPeriods(cutoffTime)  // Delete stale data
-
-    Timber.d("🧹 [Cache Cleanup] Freed memory from old cache")
-}
-```
-
-**Cleanup Rules**:
-- **TTL-based**: Delete data older than 24h (historical cache)
-- **Size-based**: Limit cache to max 500 entries
-- **On logout**: Clear all venue-specific cache
-- **On low memory**: Android system triggers `onTrimMemory()`
-
-#### 3. **Lazy Loading (Load data only when needed)**
-
-```kotlin
-// ❌ WRONG: Loads all data upfront
-LaunchedEffect(Unit) {
-    val allProducts = productRepository.getAllProducts()  // 1000+ products!
-    val allOrders = orderRepository.getAllOrders()        // 5000+ orders!
-}
-
-// ✅ CORRECT: Lazy load on demand
-LaunchedEffect(selectedCategory) {
-    val products = productRepository.getProductsByCategory(
-        categoryId = selectedCategory,
-        limit = 20
-    )
-}
-```
-
-#### 4. **StateFlow Instead of State (Memory efficient)**
-
-```kotlin
-// ❌ WRONG: State creates recomposition for every field change
-data class UiState(
-    val orders: List<Order> = emptyList(),  // Entire list recomposed on change
-    val isLoading: Boolean = false,
-    val error: String? = null
-)
-
-// ✅ CORRECT: StateFlow with immutable data
-private val _orders = MutableStateFlow<List<Order>>(emptyList())
-val orders: StateFlow<List<Order>> = _orders.asStateFlow()
-
-private val _isLoading = MutableStateFlow(false)
-val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
-```
-
-#### 5. **Avoid Heavy Composables (No complex animations)**
-
-```kotlin
-// ❌ WRONG: Heavy animation on 1GB RAM device
-AnimatedVisibility(
-    visible = isVisible,
-    enter = slideInVertically() + fadeIn() + scaleIn(),  // ← Too heavy!
-    exit = slideOutVertically() + fadeOut() + scaleOut()
-) {
-    ComplexContent()
-}
-
-// ✅ CORRECT: Simple fade (lightweight)
-AnimatedVisibility(
-    visible = isVisible,
-    enter = fadeIn(),  // ← Simple, performant
-    exit = fadeOut()
-) {
-    Content()
-}
-
-// ✅ BETTER: No animation (instant)
-if (isVisible) {
-    Content()
-}
-```
-
-**Animation Rules**:
-- **Avoid**: slideIn, scaleIn, expandVertically (allocate memory for transitions)
-- **Use sparingly**: fadeIn, fadeOut (lightweight)
-- **Prefer**: Instant show/hide (no memory overhead)
-
-#### 6. **Efficient Data Structures**
-
-```kotlin
-// ❌ WRONG: Stores entire order object in map (high memory)
-val orderMap = mutableMapOf<String, Order>()  // Order has 20+ fields!
-
-// ✅ CORRECT: Store only IDs, fetch on demand
-val selectedOrderIds = mutableSetOf<String>()  // Just strings
-
-// When needed:
-val order = orderRepository.getOrder(selectedOrderIds.first())
-```
-
-#### 7. **Image Loading (CRITICAL for 1GB RAM)**
-
-```kotlin
-// ❌ WRONG: Load full-size images (OOM risk)
-Image(
-    painter = rememberImagePainter(imageUrl),  // ← Loads full resolution!
-    modifier = Modifier.size(100.dp)
-)
-
-// ✅ CORRECT: Request thumbnail/scaled version from backend
-Image(
-    painter = rememberImagePainter("$imageUrl?size=thumbnail"),  // ← Scaled
-    modifier = Modifier.size(100.dp)
-)
-```
-
-**Image Rules**:
-- **Never** load images larger than display size
-- **Always** request thumbnails from backend (query param: `?size=thumbnail`)
-- **Limit** concurrent image loads to 3-5 at once
-- **Use** Coil's built-in memory cache (max 50 images)
-
-#### 8. **Room Database Queries (Index everything)**
-
-```kotlin
-// ❌ WRONG: No index (slow query on large tables)
-@Entity(tableName = "orders")
-data class OrderEntity(
-    @PrimaryKey val id: String,
-    val venueId: String,  // ← Queried often, but NO INDEX!
-    val status: String
-)
-
-// ✅ CORRECT: Indexed columns for fast queries
-@Entity(
-    tableName = "orders",
-    indices = [
-        Index(value = ["venue_id"]),      // ← Fast venue filtering
-        Index(value = ["status"]),        // ← Fast status filtering
-        Index(value = ["created_at"])     // ← Fast time-based queries
-    ]
-)
-data class OrderEntity(...)
-```
-
-**Indexing Rules**:
-- **Index ALL** columns used in WHERE clauses
-- **Composite index** for multi-column queries (venue_id, status)
-- **Unique index** to prevent duplicates
-
-#### 9. **Background Work (Dispatcher.IO)**
-
-```kotlin
-// ❌ WRONG: Blocking main thread (UI freeze)
-fun loadData() {
-    val data = database.query()  // ← Blocks UI thread!
-    _state.value = State.Success(data)
-}
-
-// ✅ CORRECT: Background thread
-suspend fun loadData() = withContext(Dispatchers.IO) {
-    val data = database.query()  // ← Background thread
-    withContext(Dispatchers.Main) {
-        _state.value = State.Success(data)
-    }
-}
-```
-
-#### 10. **Avoid toString() on Large Objects**
-
-```kotlin
-// ❌ WRONG: Logs entire order object (memory + performance hit)
-Timber.d("Order: $order")  // ← Creates string representation of entire object!
-
-// ✅ CORRECT: Log only relevant fields
-Timber.d("Order: id=${order.id}, total=${order.total}, status=${order.status}")
-```
-
-### 📊 Memory Budget Guidelines
-
-| Feature | Max Memory | Notes |
-|---------|-----------|-------|
-| **Cached Orders** | 100 entries | ~2MB (20KB per order) |
-| **Cached Products** | 500 entries | ~5MB (10KB per product) |
-| **Cached Images** | 50 images | ~20MB (400KB per image) |
-| **Historical Cache** | 200 periods | ~200KB (1KB per period) |
-| **ViewModel State** | <5MB | Entire app state |
-| **Total App RAM** | <200MB | Peak memory usage |
-
-### 🧪 Performance Testing Checklist
-
-Before committing, verify:
-
-- [ ] **No unbounded lists** (all lists paginated with limit)
-- [ ] **No memory leaks** (ViewModels cleared on destroy)
-- [ ] **No blocking calls** on main thread (use `withContext(Dispatchers.IO)`)
-- [ ] **Cache cleanup** implemented (TTL or size-based)
-- [ ] **Indexes** on all queried columns
-- [ ] **Images** scaled to display size
-- [ ] **No heavy animations** (prefer instant or fade)
-- [ ] **StateFlow** instead of mutable State
-- [ ] **toString()** only on small objects
-
-### 🐛 Common Performance Issues
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| **App crashes after 10 min** | Memory leak (cache not cleaned) | Add TTL-based cache cleanup |
-| **Slow scrolling** | Loading all data at once | Implement pagination (limit 20) |
-| **UI freezes on tap** | Blocking main thread | Move to `Dispatchers.IO` |
-| **OutOfMemoryError** | Large images or unbounded lists | Scale images, paginate lists |
-| **Slow database queries** | Missing indexes | Add `@Index` to queried columns |
-
-### 📱 Target Device Specs
-
-| Device | RAM | Storage | CPU | Screen |
-|--------|-----|---------|-----|--------|
-| **PAX A80** | 1GB | 8GB | Quad-core 1.4GHz | 1024x600 (small) |
-| **PAX A920** | 1GB | 16GB | Quad-core 1.5GHz | 1280x720 (medium) |
-| **Sunmi T2s** | 2GB | 16GB | Octa-core 2.0GHz | 1280x800 (large) |
-
-**Optimization Priority**: PAX A80 (smallest RAM/CPU) → If it works on A80, it works on all devices.
 
 ---
 
@@ -893,151 +715,17 @@ class PaymentViewModel @Inject constructor(
 | **Historical Reports** | ❌ NO | ❌ NO | ❌ NO | Static data, fetch on demand |
 | **Table Reservation** | ✅ YES | ✅ YES | ⚠️ ASK | Depends on use case (ask user) |
 
-##### ✅ ALWAYS Use Socket.IO For:
+**Quick Reference:**
+| Use Socket? | Scenario | Events |
+|-------------|----------|--------|
+| ✅ YES | Multi-terminal payments | `payment_completed`, `payment_failed` |
+| ✅ YES | Order status changes | `order_updated`, `order_status_changed` |
+| ✅ YES | System alerts | `system_alert` |
+| ✅ YES | Admin commands | `tpv_command` |
+| ❌ NO | Historical data, auth, static menus | Use REST API |
+| ⚠️ ASK | Table reservations, shift changes | Depends on use case |
 
-1. **Multi-terminal payment coordination** (CRITICAL)
-   - Scenario: Terminal A processes payment → Terminal B shows order as paid
-   - Event: `payment_completed`, `payment_failed`
-
-2. **Order status changes** (HIGH PRIORITY)
-   - Scenario: Kitchen marks order ready → Waiter notified
-   - Event: `order_updated`, `order_status_changed`
-
-3. **System alerts** (CRITICAL)
-   - Scenario: Backend detects issue → All terminals show warning
-   - Event: `system_alert` (levels: info, warning, error, critical)
-
-4. **Admin remote control** (SECURITY)
-   - Scenario: Admin puts terminal in maintenance mode from dashboard
-   - Event: `tpv_command` (MAINTENANCE_MODE, RELOAD, DISABLE, SHUTDOWN)
-
-5. **Inventory stock alerts** (BUSINESS LOGIC)
-   - Scenario: Ingredient runs low → Kitchen and cashiers notified
-   - Event: `inventory_low_stock`, `inventory_out_of_stock`
-
-6. **Hardware status updates** (OPERATIONAL)
-   - Scenario: Printer runs out of paper → Terminal shows alert
-   - Event: `printer_status`, `card_reader_status`, `peripheral_error`
-
-##### ❌ DON'T Use Socket.IO For:
-
-1. **Historical data fetching** → Use REST API
-2. **One-time authentication** → Use REST API
-3. **Static menu/product lists** → Use REST API with cache
-4. **Report generation** → Use REST API polling
-5. **File uploads/downloads** → Use REST API with progress tracking
-6. **Search queries** → Use REST API with debouncing
-
-##### ⚠️ ASK USER Before Adding Socket.IO For:
-
-1. **Table reservations** (depends on restaurant workflow)
-2. **Customer notifications** (might use push notifications instead)
-3. **Employee shift changes** (might not need instant updates)
-4. **Menu item price changes** (depends on how often prices change)
-
-##### How to Add a New Socket.IO Event
-
-**Step 1: Define Event in Server** (`avoqado-server/src/communication/sockets/types/index.ts`)
-```typescript
-export enum SocketEventType {
-  // ... existing events
-  NEW_FEATURE_EVENT = 'new_feature_event',
-}
-
-export interface NewFeatureEventPayload extends BaseEventPayload {
-  featureId: string
-  data: any
-  venueId: string
-}
-```
-
-**Step 2: Add Broadcasting Method** (`avoqado-server/src/communication/sockets/services/broadcasting.service.ts`)
-```typescript
-public broadcastNewFeatureEvent(
-  venueId: string,
-  data: Omit<NewFeatureEventPayload, 'correlationId' | 'timestamp' | 'venueId'>,
-  options?: BroadcastOptions,
-): void {
-  this.broadcastToVenue(venueId, SocketEventType.NEW_FEATURE_EVENT, {
-    ...data,
-    venueId,
-    correlationId: randomUUID(),
-    timestamp: new Date().toISOString(),
-  }, options)
-}
-```
-
-**Step 3: Add Event to Android** (`avoqado-tpv/app/src/main/java/com/jaac/avoqado_tpv/core/data/realtime/events/SocketEvent.kt`)
-```kotlin
-sealed interface SocketEvent {
-    // ... existing events
-
-    data class NewFeature(
-        val featureId: String,
-        val data: Map<String, Any>,
-        val venueId: String,
-        val timestamp: String,
-        val metadata: Map<String, Any>? = null
-    ) : SocketEvent
-}
-```
-
-**Step 4: Add Event Listener** (`SocketManager.kt`)
-```kotlin
-socket.on("new_feature_event") { args ->
-    try {
-        val json = args[0] as JSONObject
-        val event = SocketEvent.NewFeature(
-            featureId = json.getString("featureId"),
-            data = json.getJSONObject("data").toMap(),
-            venueId = json.getString("venueId"),
-            timestamp = json.getString("timestamp"),
-            metadata = json.optJSONObject("metadata")?.toMap()
-        )
-        emitEvent(event)
-    } catch (e: Exception) {
-        Timber.e(e, "Error parsing new_feature_event")
-    }
-}
-```
-
-**Step 5: Handle in ViewModel**
-```kotlin
-private fun collectSocketEvents() {
-    viewModelScope.launch {
-        socketManager.events.collect { event ->
-            when (event) {
-                is SocketEvent.NewFeature -> {
-                    Timber.i("✅ New feature event: ${event.featureId}")
-                    handleNewFeature(event)
-                }
-                else -> {}
-            }
-        }
-    }
-}
-```
-
-**Step 6: Add Unit Tests** (see [SOCKET_IO_TESTING.md](./SOCKET_IO_TESTING.md))
-```kotlin
-@Test
-fun `should parse new_feature_event correctly`() = runTest(testDispatcher) {
-    val json = JSONObject().apply {
-        put("featureId", "feature_123")
-        put("data", JSONObject().apply { put("key", "value") })
-        put("venueId", "venue_789")
-        put("timestamp", "2025-01-15T10:30:00Z")
-    }
-
-    capturedListeners["new_feature_event"]?.call(json)
-
-    socketManager.events.test {
-        val event = awaitItem()
-        assertThat(event).isInstanceOf(SocketEvent.NewFeature::class.java)
-        cancelAndIgnoreRemainingEvents()
-    }
-}
-```
+> **How to add new events:** See [SOCKET_IO_IMPLEMENTATION.md](./SOCKET_IO_IMPLEMENTATION.md) → "How to Add a New Socket.IO Event"
 
 #### Rate Limiting
 
@@ -1229,156 +917,36 @@ Text(color = Color(0xFF2563EB))  // WRONG!
 
 **⚠️ MANDATORY**: All screens that fetch data MUST implement auto-retry when connection is restored.
 
-**Problem:**
-User loses connection → Screen shows error → Connection restored → Screen STILL shows error (user must manually retry)
-
-**Solution:**
-Use `ConnectivityObserver` to detect reconnection and auto-retry.
-
-**Implementation:**
+**Pattern:**
+1. Inject `ConnectivityObserver` in ViewModel
+2. Observe `NetworkStatus.Available` events
+3. If current state is `Error`, auto-retry the failed request
+4. Show `OfflineBanner` in UI when `isOffline = true`
 
 ```kotlin
-// STEP 1: Inject ConnectivityObserver
-@HiltViewModel
-class ReportsViewModel @Inject constructor(
-    private val reportsRepository: ReportsRepository,
-    private val connectivityObserver: ConnectivityObserver
-) : ViewModel() {
-
-    private val _state = MutableStateFlow<ReportsState>(ReportsState.Loading)
-    val state: StateFlow<ReportsState> = _state.asStateFlow()
-
-    private val _isOffline = MutableStateFlow(false)
-    val isOffline: StateFlow<Boolean> = _isOffline.asStateFlow()
-
-    init {
-        loadReports()
-        observeConnectivity()  // ← CRITICAL: Monitor network changes
-    }
-
-    // STEP 2: Observe connectivity and auto-retry
-    private fun observeConnectivity() {
-        viewModelScope.launch {
-            connectivityObserver.observe().collect { status ->
-                when (status) {
-                    NetworkStatus.Available -> {
-                        Timber.i("✅ [Connectivity] Connection restored")
-                        _isOffline.value = false
-
-                        // ⭐ AUTO-RETRY: If screen showed error, retry automatically
-                        if (_state.value is ReportsState.Error) {
-                            Timber.d("🔄 [Auto-Retry] Retrying failed request...")
-                            loadReports()
-                        }
-                    }
-                    NetworkStatus.Unavailable -> {
-                        Timber.w("⚠️ [Connectivity] Connection lost")
-                        _isOffline.value = true
-                    }
-                }
-            }
+// Key logic in ViewModel:
+connectivityObserver.observe().collect { status ->
+    when (status) {
+        NetworkStatus.Available -> {
+            _isOffline.value = false
+            if (_state.value is State.Error) loadData()  // ← Auto-retry!
         }
-    }
-
-    // STEP 3: Load data (will be auto-retried on reconnection)
-    fun loadReports() {
-        viewModelScope.launch {
-            _state.value = ReportsState.Loading
-
-            reportsRepository.getReports()
-                .onSuccess { reports ->
-                    _state.value = ReportsState.Success(reports)
-                }
-                .onFailure { error ->
-                    _state.value = ReportsState.Error(error.message ?: "Error cargando reportes")
-                }
-        }
+        NetworkStatus.Unavailable -> _isOffline.value = true
     }
 }
 ```
 
-**UI Pattern:**
+**Screens that MUST implement:**
+| Screen | Needs Auto-Retry | Reason |
+|--------|------------------|--------|
+| Reports | ✅ YES | Fetches sales data |
+| Shifts | ✅ YES | Fetches shift history |
+| Products/Menu | ✅ YES | Fetches catalog |
+| Orders | ✅ YES | Fetches table orders |
+| Payment | ❌ NO | Local-first |
+| Login | ❌ NO | Handled separately |
 
-```kotlin
-@Composable
-fun ReportsScreen(
-    viewModel: ReportsViewModel = hiltViewModel()
-) {
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    val isOffline by viewModel.isOffline.collectAsStateWithLifecycle()
-
-    Scaffold(
-        topBar = {
-            Column {
-                AvoqadoTopBar(title = "Reportes")
-
-                // Show offline banner when connection lost
-                if (isOffline) {
-                    OfflineBanner(
-                        message = "Trabajando sin conexión - Las ventas se guardarán localmente"
-                    )
-                }
-            }
-        }
-    ) { paddingValues ->
-        when (val currentState = state) {
-            is ReportsState.Loading -> LoadingScreen()
-            is ReportsState.Success -> ReportsContent(currentState.reports)
-            is ReportsState.Error -> {
-                ErrorScreen(
-                    message = currentState.message,
-                    onRetry = { viewModel.loadReports() }  // Manual retry button
-                )
-                // Auto-retry happens automatically when connection restored!
-            }
-        }
-    }
-}
-
-@Composable
-fun OfflineBanner(message: String) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.error.copy(alpha = 0.9f)
-    ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = Icons.Default.CloudOff,
-                contentDescription = null,
-                tint = Color.White
-            )
-            Text(
-                text = message,
-                color = Color.White,
-                style = MaterialTheme.typography.labelMedium
-            )
-        }
-    }
-}
-```
-
-**Screens that MUST implement this pattern:**
-- ✅ Reports (fetches sales data from backend)
-- ✅ Shifts (fetches shift history)
-- ✅ Products/Menu (fetches catalog)
-- ✅ Orders (fetches table orders)
-- ❌ Payment (local-first, doesn't need auto-retry)
-- ❌ Login (handled separately)
-
-**Benefits:**
-- ✅ User doesn't need to manually retry after reconnection
-- ✅ Seamless UX when connection flickers
-- ✅ Offline banner clearly communicates network status
-- ✅ Auto-retry only happens if screen is in error state (doesn't spam backend)
-
-**IMPORTANT:**
-- Auto-retry ONLY triggers if `_state.value is Error` (prevents spamming backend when data already loaded)
-- Offline banner disappears when connection is restored
-- Manual retry button still available (if user wants to retry before reconnection)
+**Key Rule:** Auto-retry ONLY triggers if `_state.value is Error` (prevents spamming backend)
 
 ---
 
@@ -1439,209 +1007,27 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 23)
 
 ---
 
-### 🚀 Production APK Build Guide
+### 🚀 Production APK Build
 
-**When to build production APK:**
-- Deploying to real PAX terminals (not test devices)
-- Terminal serial numbers are registered in Blumon PRODUCTION server
-- Ready for real customer payments
+> **Complete guide:** [PRODUCTION_BUILD_GUIDE.md](./PRODUCTION_BUILD_GUIDE.md)
 
-**Step-by-Step Process:**
-
-#### 1. Pre-Build Verification
+**Quick Commands:**
 ```bash
-# Check current git status
-git status
-
-# Ensure all changes are committed
-git add .
-git commit -m "feat: prepare production build"
-
-# Verify production BuildConfig
-cat app/build.gradle.kts | grep -A 10 'create("production")'
-```
-
-**Expected output:**
-```kotlin
-create("production") {
-    buildConfigField("String", "BLUMON_ENV", "\"PROD\"")
-    buildConfigField("String", "TOKEN_SERVER_URL", "\"https://tokener.blumonpay.net\"")
-    buildConfigField("String", "CORE_SERVER_URL", "\"https://core.blumonpay.net\"")
-}
-```
-
-#### 2. Clean Build Environment
-```bash
-# Uninstall any test variants from device
-adb uninstall com.jaac.avoqado_tpv.sandbox
-adb uninstall com.jaac.avoqado_tpv
-
-# Clean all build artifacts
-./gradlew clean
-rm -rf app/build app/.cxx .gradle build
-```
-
-#### 3. Build Production APK
-```bash
-# Set Java 23 (required for build compatibility)
-export JAVA_HOME=$(/usr/libexec/java_home -v 23)
-
-# Build RELEASE variant (signed, optimized)
-./gradlew assembleProductionRelease
-
-# OR for testing: Build DEBUG variant
-./gradlew assembleProductionDebug
-```
-
-**Build output location:**
-- **Release**: `app/build/outputs/apk/production/release/app-production-release.apk`
-- **Debug**: `app/build/outputs/apk/production/debug/app-production-debug.apk`
-
-#### 4. Verify Production APK
-```bash
-# Check APK exists
-ls -lh app/build/outputs/apk/production/release/
-
-# Verify package name and version
-aapt dump badging app/build/outputs/apk/production/release/app-production-release.apk | grep -E "package:|versionName"
-```
-
-**Expected output:**
-```
-package: name='com.jaac.avoqado_tpv' versionCode='1' versionName='1.0.0'
-```
-
-**⚠️ CRITICAL CHECKS:**
-- ✅ Package name is `com.jaac.avoqado_tpv` (NO `.sandbox` suffix)
-- ✅ Version name is correct (e.g., `1.0.0`)
-- ✅ APK size is ~25-30 MB
-
-#### 5. Test Production APK (Optional - if you have a production-registered terminal)
-```bash
-# Install on device
-adb install app/build/outputs/apk/production/release/app-production-release.apk
-
-# Verify correct variant installed
-adb shell pm list packages | grep avoqado
-# Should show: package:com.jaac.avoqado_tpv
-
-# Check app version
-adb shell dumpsys package com.jaac.avoqado_tpv | grep versionName
-# Should show: versionName=1.0.0
-```
-
-#### 6. Deploy to Production Terminals
-
-**Option A: Manual Installation (USB)**
-```bash
-# Connect PAX terminal via USB
-adb devices
-
-# Install APK
-adb install -r app/build/outputs/apk/production/release/app-production-release.apk
-```
-
-**Option B: Remote Distribution**
-```bash
-# Upload to server/CDN
-scp app/build/outputs/apk/production/release/app-production-release.apk user@server:/path/
-
-# Or use MDM (Mobile Device Management) system
-# Follow your company's MDM deployment process
-```
-
----
-
-### ⚠️ Common Production Build Issues
-
-#### Issue 1: Wrong Variant Installed During Testing
-**Symptom:** 401 "Usuario no encontrado" when testing with sandbox serial numbers
-
-**Cause:** Production variant installed, but using sandbox serial (2841548417) which only exists in sandbox Blumon server
-
-**Solution:**
-```bash
-# Uninstall production variant
-adb uninstall com.jaac.avoqado_tpv
-
-# Install sandbox variant for testing
+# Sandbox (development/testing)
 export JAVA_HOME=$(/usr/libexec/java_home -v 23)
 ./gradlew installSandboxDebug
 
-# Verify sandbox installed
-adb shell pm list packages | grep avoqado
-# Should show: package:com.jaac.avoqado_tpv.sandbox
-```
-
-#### Issue 2: Java Version Mismatch
-**Symptom:** `Unsupported class file major version 68`
-
-**Solution:**
-```bash
-# Check current Java version
-java -version
-
-# List available Java versions
-/usr/libexec/java_home -V
-
-# Set Java 23 (recommended)
-export JAVA_HOME=$(/usr/libexec/java_home -v 23)
-
-# Verify
-echo $JAVA_HOME
-java -version
-```
-
-#### Issue 3: Build Cache Corruption
-**Symptom:** Build fails with `NoSuchFileException` or Hilt errors
-
-**Solution:**
-```bash
-# Stop Gradle daemon
-./gradlew --stop
-
-# Clean everything
-rm -rf app/build app/.cxx .gradle build
-
-# Rebuild
-export JAVA_HOME=$(/usr/libexec/java_home -v 23)
+# Production (real terminals)
 ./gradlew assembleProductionRelease
+# Output: app/build/outputs/apk/production/release/app-production-release.apk
 ```
 
----
-
-### 📋 Production Deployment Checklist
-
-Before deploying production APK to real terminals:
-
-**Pre-Deployment:**
-- [ ] All code changes committed to git
-- [ ] CHANGELOG.md updated with version changes
-- [ ] Terminal serial numbers provisioned in Blumon PRODUCTION server
-- [ ] Backend API endpoints configured for production (`https://api.avoqado.io`)
-- [ ] Production merchant accounts configured in backend
-
-**Build Verification:**
-- [ ] Clean build environment (no cache corruption)
-- [ ] Java 23 set: `export JAVA_HOME=$(/usr/libexec/java_home -v 23)`
-- [ ] Build successful: `./gradlew assembleProductionRelease`
-- [ ] APK package name verified: `com.jaac.avoqado_tpv` (no `.sandbox`)
-- [ ] APK version correct
-
-**Post-Deployment:**
-- [ ] Test payment with real production terminal
-- [ ] Verify Blumon authentication succeeds (no 401 errors)
-- [ ] Test multi-merchant switching
-- [ ] Verify payments sync to backend
-- [ ] Test offline mode and sync recovery
-
----
-
-**Before Committing**:
-- [ ] If you modified PaymentViewModel/InitializationManager/BlumonInitializer:
-  - [ ] Update BOTH `sandbox/` and `production/` versions
-  - [ ] Verify changes are environment-appropriate (URLs, keys, configs)
-- [ ] All other files: No special action needed (automatically shared)
+**Common Issues:**
+| Issue | Fix |
+|-------|-----|
+| 401 "Usuario no encontrado" | Wrong variant - use sandbox for testing |
+| `Unsupported class file major version 68` | Set Java 23: `export JAVA_HOME=$(/usr/libexec/java_home -v 23)` |
+| Hilt/NoSuchFile errors | Clean: `rm -rf app/build .gradle build && ./gradlew clean` |
 
 ---
 
@@ -1757,11 +1143,13 @@ fun `should process payment successfully`() = runTest {
 ### Documentation Guides
 - **[GREENFIELD_BLUEPRINT.md](./GREENFIELD_BLUEPRINT.md)** - Complete architecture & implementation plan
 - **[PAYMENT_RECONCILIATION.md](./PAYMENT_RECONCILIATION.md)** - Payment logic + Blumon multi-merchant
+- **[PERFORMANCE_GUIDE.md](./PERFORMANCE_GUIDE.md)** - 1GB RAM optimization, pagination, caching
 - **[UI_RESPONSIVE_GUIDE.md](./UI_RESPONSIVE_GUIDE.md)** - Responsive patterns for TPV devices
 - **[SOCKET_IO_IMPLEMENTATION.md](./SOCKET_IO_IMPLEMENTATION.md)** - Real-time events architecture & integration
 - **[SOCKET_IO_TESTING.md](./SOCKET_IO_TESTING.md)** - Socket.IO testing strategies & examples
 - **[TESTING_GUIDE.md](./TESTING_GUIDE.md)** - Unit tests, integration tests, debugging
 - **[SECURITY_CHECKLIST.md](./SECURITY_CHECKLIST.md)** - Encryption, tenant isolation, certificate pinning
+- **[PRODUCTION_BUILD_GUIDE.md](./PRODUCTION_BUILD_GUIDE.md)** - Build variants, deployment, troubleshooting
 
 ### External References
 - [Jetpack Compose Docs](https://developer.android.com/jetpack/compose)
@@ -1806,6 +1194,7 @@ adb shell am start -n com.jaac.avoqado_tpv/.MainActivity
 | App crashes after 10 min | Memory leak (no cache cleanup) | Add TTL-based cache cleanup (1GB RAM!) |
 | OutOfMemoryError | Loading all data at once | Implement pagination (limit 20) |
 | Slow scrolling | No pagination | Paginate lists (max 50 items per page) |
+| Items lose "printed" status | Backend overwrites local fields | Load from local DB after cache (see [LOCAL_FIRST_SYNC_PATTERNS.md](./LOCAL_FIRST_SYNC_PATTERNS.md)) |
 
 ---
 
@@ -1813,6 +1202,7 @@ adb shell am start -n com.jaac.avoqado_tpv/.MainActivity
 
 - [ ] Try to compile: `./gradlew compileDebugKotlin`
 - [ ] **Performance check**: Verify no unbounded lists, pagination limits, cache cleanup (1GB RAM!)
+- [ ] **Local-First check**: If touching sync/cache/load code, verify local-only fields are preserved (see [LOCAL_FIRST_SYNC_PATTERNS.md](./LOCAL_FIRST_SYNC_PATTERNS.md))
 - [ ] Check if changes impact Blumon integration (it should work always)
 - [ ] Delete orphaned files (prevent accumulation)
 - [ ] Update CHANGELOG.md with changes
@@ -1820,6 +1210,6 @@ adb shell am start -n com.jaac.avoqado_tpv/.MainActivity
 
 ---
 
-**Last Updated:** 2025-01-19
+**Last Updated:** 2025-11-25
 **Maintainer:** Development Team
-**Version:** 2.2 (Added: Performance guidelines for 1GB RAM devices + Historical reports offline cache)
+**Version:** 2.3 (Optimized: Extracted PERFORMANCE_GUIDE.md, removed duplicates, ~30% size reduction)

@@ -12,6 +12,7 @@
 4. [Loading States & Flash Screens](#loading-states--flash-screens)
 5. [Testing Checklist](#testing-checklist)
 6. [Common Patterns](#common-patterns)
+7. [Component Styling (Design System)](#component-styling-design-system)
 
 ---
 
@@ -596,6 +597,307 @@ LazyColumn {
 
 ---
 
+## Component Styling (Design System)
+
+### Philosophy
+
+> **CRITICAL**: All inputs, buttons, and interactive cards should use **pill shape** (`RoundedCornerShape(50)`) for a modern, consistent appearance across the app.
+
+This design language matches modern POS systems and provides:
+- ✅ Friendly, approachable feel
+- ✅ Clear interactive affordance
+- ✅ Consistent brand identity
+- ✅ Better touch targets on POS devices
+
+---
+
+### Pill Shape Constant
+
+**File**: `core/presentation/components/AvoqadoTextField.kt`
+
+```kotlin
+/**
+ * Default pill shape for all Avoqado components
+ * Provides consistent, modern appearance across the app
+ */
+val AvoqadoPillShape: Shape = RoundedCornerShape(50)
+```
+
+Use this constant for consistency:
+
+```kotlin
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoPillShape
+
+// In any composable
+OutlinedTextField(
+    shape = AvoqadoPillShape,
+    // ...
+)
+
+Button(
+    shape = AvoqadoPillShape,
+    // ...
+)
+
+Card(
+    shape = AvoqadoPillShape,
+    // ...
+)
+```
+
+---
+
+### Text Inputs
+
+#### ✅ ALWAYS Use AvoqadoTextField
+
+**File**: `core/presentation/components/AvoqadoTextField.kt`
+
+```kotlin
+// ✅ CORRECT: Use AvoqadoTextField (pill shape by default)
+AvoqadoTextField(
+    value = text,
+    onValueChange = { text = it },
+    label = "Email",
+    placeholder = "user@example.com",
+    leadingIcon = Icons.Default.Email,
+    showClearButton = true
+)
+```
+
+#### If Using OutlinedTextField Directly
+
+```kotlin
+// ✅ CORRECT: Add pill shape
+OutlinedTextField(
+    value = text,
+    onValueChange = { text = it },
+    label = { Text("Código de Activación") },
+    shape = RoundedCornerShape(50),  // Pill shape
+    // ...
+)
+
+// ❌ WRONG: Default rectangular shape
+OutlinedTextField(
+    value = text,
+    onValueChange = { text = it },
+    label = { Text("Código de Activación") },
+    // Missing shape = pill shape!
+)
+```
+
+---
+
+### Buttons
+
+```kotlin
+// ✅ CORRECT: Pill-shaped button
+Button(
+    onClick = { /* ... */ },
+    shape = RoundedCornerShape(50),  // Pill shape
+    modifier = Modifier
+        .fillMaxWidth()
+        .height(56.dp)
+) {
+    Text("Activar Terminal")
+}
+
+// ❌ WRONG: Default rectangular button
+Button(
+    onClick = { /* ... */ },
+    modifier = Modifier.fillMaxWidth()
+) {
+    Text("Activar Terminal")
+}
+```
+
+---
+
+### Cards (Info Display)
+
+```kotlin
+// ✅ CORRECT: Pill-shaped card for info display
+Card(
+    modifier = Modifier.fillMaxWidth(),
+    shape = RoundedCornerShape(50),  // Pill shape
+    colors = CardDefaults.cardColors(
+        containerColor = MaterialTheme.colorScheme.surfaceVariant
+    )
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = "Número de Serie",
+            style = MaterialTheme.typography.labelMedium,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            text = "AVQD-2841548417",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+```
+
+---
+
+### Keyboard Dismissal Pattern
+
+> **MANDATORY**: All screens with text inputs MUST allow dismissing the keyboard by tapping outside.
+
+```kotlin
+@Composable
+fun ScreenWithInput() {
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+
+    // Helper to dismiss keyboard
+    val dismissKeyboard: () -> Unit = {
+        keyboardController?.hide()
+        focusManager.clearFocus()
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding()  // Adjust for keyboard
+            .verticalScroll(rememberScrollState())  // Allow scroll when keyboard open
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() }
+            ) { dismissKeyboard() }  // Tap outside to dismiss
+            .padding(24.dp)
+    ) {
+        // Your content with text fields...
+    }
+}
+```
+
+**Required imports:**
+```kotlin
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+```
+
+---
+
+### Complete Example: Activation Screen Pattern
+
+```kotlin
+@Composable
+fun ActivationScreen() {
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    val scrollState = rememberScrollState()
+
+    val dismissKeyboard: () -> Unit = {
+        keyboardController?.hide()
+        focusManager.clearFocus()
+    }
+
+    Scaffold { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .imePadding()
+                .verticalScroll(scrollState)
+                .clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() }
+                ) { dismissKeyboard() }
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            // Title
+            Text(
+                text = "Activar Terminal",
+                style = MaterialTheme.typography.headlineLarge
+            )
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            // Info Card - Pill shaped
+            Card(
+                shape = RoundedCornerShape(50),
+                // ...
+            ) {
+                // Serial number display
+            }
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            // Input - Pill shaped
+            OutlinedTextField(
+                shape = RoundedCornerShape(50),
+                // ...
+            )
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            // Button - Pill shaped
+            Button(
+                shape = RoundedCornerShape(50),
+                modifier = Modifier.fillMaxWidth().height(56.dp)
+            ) {
+                Text("Activar Terminal")
+            }
+        }
+    }
+}
+```
+
+---
+
+### Visual Reference
+
+```
+┌────────────────────────────────────────────┐
+│                                            │
+│         Activar Terminal                   │  ← Title
+│                                            │
+│  ╭────────────────────────────────────╮    │
+│  │     Número de Serie                │    │  ← Pill Card
+│  │     AVQD-2841548417                │    │
+│  ╰────────────────────────────────────╯    │
+│                                            │
+│  ╭────────────────────────────────────╮    │
+│  │ Código de Activación               │    │  ← Pill Input
+│  │ A3F9K2                             │    │
+│  ╰────────────────────────────────────╯    │
+│                                            │
+│  ╭────────────────────────────────────╮    │
+│  │        Activar Terminal            │    │  ← Pill Button
+│  ╰────────────────────────────────────╯    │
+│                                            │
+└────────────────────────────────────────────┘
+```
+
+---
+
+### Component Styling Checklist
+
+Before committing any screen with inputs:
+
+- [ ] All `OutlinedTextField` use `shape = RoundedCornerShape(50)` or `AvoqadoTextField`
+- [ ] All `Button` use `shape = RoundedCornerShape(50)`
+- [ ] Info display `Card` use `shape = RoundedCornerShape(50)`
+- [ ] Screen uses `imePadding()` for keyboard handling
+- [ ] Screen uses `verticalScroll()` if content may be hidden by keyboard
+- [ ] Tapping outside input dismisses keyboard (clickable + clearFocus)
+- [ ] Text in cards/inputs is centered where appropriate
+
+---
+
 ## Key Takeaways
 
 1. **ALWAYS** use `ResponsiveScaffold` for all screens
@@ -626,5 +928,5 @@ LazyColumn {
 
 ---
 
-**Last Updated:** 2025-01-11
+**Last Updated:** 2025-11-26
 **Maintainer:** Development Team

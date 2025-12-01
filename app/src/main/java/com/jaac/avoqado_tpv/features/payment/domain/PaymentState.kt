@@ -111,7 +111,8 @@ sealed class PaymentState {
         val referenceNumber: String? = null,  // Reference number for receipt
         val orderId: String? = null,  // 🆕 Order ID (for loading order items in success screen)
         val orderNumber: String? = null,  // 🆕 Order number (for display)
-        val orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null  // 🆕 Order items (for displaying itemized receipt)
+        val orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null,  // 🆕 Order items (for displaying itemized receipt)
+        val remainingBalance: java.math.BigDecimal? = null  // ⭐ NEW: Amount left to pay (for split payments - shows "Continuar pagando" button)
     ) : PaymentState()
     /**
      * Payment error with preserved context for smart retry.

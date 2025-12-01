@@ -49,11 +49,17 @@ fun PaymentScreen(
     orderNumber: String? = null,  // 🆕 Order number (for display in receipt)
     tableId: String? = null,  // 🆕 Table ID (for clearing table post-payment)
     skipReview: Boolean = false,  // 🧪 Skip rating/tip (test payment from SuperAdmin)
+    // ⭐ Split payment params (from SplitByPersonScreen or SplitByProductScreen)
+    splitType: String? = null,  // EQUALPARTS, PERPRODUCT, CUSTOMAMOUNT, FULLPAYMENT
+    equalPartsPartySize: Int? = null,  // Total people for EQUALPARTS mode
+    equalPartsPayedFor: Int? = null,  // How many parts being paid now
+    paidProductIds: List<String> = emptyList(),  // Product IDs for PERPRODUCT mode
     onNavigateBack: () -> Unit,
     onNavigateToShifts: () -> Unit = {},  // 🆕 Navigate to Shifts screen (for "No shift open" errors)
     onNavigateToNewOrder: () -> Unit = {},  // 🆕 Navigate to new order (Toast/Square pattern)
     onNavigateToNewFastPayment: () -> Unit = {},  // 🆕 Navigate to new fast payment (open WelcomeScreen modal)
     onClearTableAndReturnToFloorPlan: (String) -> Unit = {},  // 🆕 Clear table and return to floor plan (tableId)
+    onNavigateToOrder: (String, String?) -> Unit = { _, _ -> },  // ⭐ NEW: Navigate to order for split payment (orderId, tableId)
     viewModel: PaymentViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -205,14 +211,30 @@ fun PaymentScreen(
 
                 // LEGACY: Old idle state (redirect to new flow)
                 is PaymentState.Idle -> {
-                    LaunchedEffect(initialAmount, skipReview, orderId, orderNumber) {
+                    LaunchedEffect(initialAmount, skipReview, orderId, orderNumber, splitType) {
                         if (initialAmount != null) {
                             if (skipReview) {
                                 // 🧪 Test payment from SuperAdmin → skip rating/tip, go directly to merchant selection
-                                viewModel.submitAmountDirectToMerchant(initialAmount, orderId, orderNumber)
+                                viewModel.submitAmountDirectToMerchant(
+                                    amount = initialAmount,
+                                    orderId = orderId,
+                                    orderNumber = orderNumber,
+                                    splitType = splitType,
+                                    equalPartsPartySize = equalPartsPartySize,
+                                    equalPartsPayedFor = equalPartsPayedFor,
+                                    paidProductIds = paidProductIds
+                                )
                             } else {
                                 // ✅ Coming from WelcomeScreen/MenuScreen with amount → start payment flow
-                                viewModel.submitAmount(initialAmount, orderId, orderNumber)
+                                viewModel.submitAmount(
+                                    amount = initialAmount,
+                                    orderId = orderId,
+                                    orderNumber = orderNumber,
+                                    splitType = splitType,
+                                    equalPartsPartySize = equalPartsPartySize,
+                                    equalPartsPayedFor = equalPartsPayedFor,
+                                    paidProductIds = paidProductIds
+                                )
                             }
                         } else {
                             // ✅ NO initialAmount → This flow REQUIRES amount from WelcomeScreen
@@ -248,6 +270,8 @@ fun PaymentScreen(
                         orderNumber = currentState.orderNumber,  // 🆕 Order number (for display)
                         orderItems = currentState.orderItems,  // 🆕 Order items (for displaying itemized receipt)
                         tableId = tableId,  // 🆕 Table ID (for clearing table post-payment)
+                        remainingBalance = currentState.remainingBalance,  // ⭐ NEW: For split payment "Continuar pagando"
+                        showReceiptOptions = viewModel.showReceiptScreen,  // ⚙️ TPV Settings: Show/hide QR code & print button
                         onPrintReceipt = viewModel::printReceipt,  // 🆕 NEW: Print callback
                         onPrintKitchenTicket = {
                             // 🍳 Print kitchen ticket (comanda) with order items
@@ -271,6 +295,13 @@ fun PaymentScreen(
                         onClearTableAndReturnToFloorPlan = { clearedTableId ->
                             viewModel.resetPayment()
                             onClearTableAndReturnToFloorPlan(clearedTableId)  // 🪑 Square pattern: Clear table and return to floor plan
+                        },
+                        onContinuePayment = {
+                            // ⭐ NEW: Navigate to order to continue paying remaining balance
+                            currentState.orderId?.let { orderIdValue ->
+                                viewModel.resetPayment()
+                                onNavigateToOrder(orderIdValue, tableId)
+                            }
                         }
                     )
                 }
@@ -555,17 +586,23 @@ private fun PaymentSuccessContent(
     orderNumber: String? = null,  // 🆕 Order number (for display)
     orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null,  // 🆕 Order items (for displaying itemized receipt)
     tableId: String? = null,  // 🆕 Table ID (for clearing table post-payment)
+    remainingBalance: java.math.BigDecimal? = null,  // ⭐ NEW: Amount left to pay (for split payments)
+    showReceiptOptions: Boolean = true,  // ⚙️ TPV Settings: Show/hide QR code & print button
     onPrintReceipt: () -> Unit = {},
     onPrintKitchenTicket: () -> Unit = {},  // 🆕 Print kitchen ticket (comanda)
     onNavigateBack: () -> Unit,  // 🆕 Navigate to WelcomeScreen (home button)
     onNewOrder: () -> Unit,  // 🆕 Navigate to new order (for order payments)
     onNewFastPayment: () -> Unit,  // 🆕 Navigate to new fast payment (for fast payments)
-    onClearTableAndReturnToFloorPlan: (String) -> Unit = {}  // 🆕 Clear table and return to floor plan
+    onClearTableAndReturnToFloorPlan: (String) -> Unit = {},  // 🆕 Clear table and return to floor plan
+    onContinuePayment: () -> Unit = {}  // ⭐ NEW: Continue paying remaining balance
 ) {
     // Parse amounts (prefer receipt data if available)
     val totalAmount = receipt?.amount ?: (amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)
     val tipAmount = receipt?.tipAmount ?: java.math.BigDecimal.ZERO
     val subtotalAmount = receipt?.baseAmount ?: totalAmount
+
+    // ⭐ Check if there's remaining balance (split payment scenario)
+    val hasRemainingBalance = remainingBalance != null && remainingBalance > java.math.BigDecimal.ZERO
 
     // State for order details modal
     var showOrderDetailsModal by remember { mutableStateOf(false) }
@@ -604,35 +641,53 @@ private fun PaymentSuccessContent(
                     )
                 }
 
-                // Center button - "Nueva Orden" or "Nuevo Pago"
+                // Center button - "Continuar pagando" (if remaining balance) or "Nueva Orden"/"Nuevo Pago"
                 // ✅ Centered using Box alignment
                 Box(
                     modifier = Modifier.weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
-                    Button(
-                        onClick = {
-                            val currentTableId = tableId
-                            when {
-                                // 🪑 Table order → Clear table and return to floor plan
-                                currentTableId != null -> onClearTableAndReturnToFloorPlan(currentTableId)
-                                // 📋 Quick order → Create new quick order
-                                orderId != null -> onNewOrder()
-                                // ⚡ Fast payment → New fast payment
-                                else -> onNewFastPayment()
-                            }
-                        },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            contentColor = MaterialTheme.colorScheme.onSurface
-                        ),
-                        modifier = Modifier.height(48.dp)
-                    ) {
-                        Text(
-                            // ✅ Dynamic text based on payment type
-                            if (orderId != null) "Nueva Orden" else "Nuevo Pago"
-                        )
+                    if (hasRemainingBalance) {
+                        // ⭐ Split payment: Show "Continuar pagando" button with remaining amount
+                        Button(
+                            onClick = onContinuePayment,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,  // Highlighted color
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            ),
+                            modifier = Modifier.height(48.dp)
+                        ) {
+                            Text(
+                                text = "Continuar pagando $${String.format(java.util.Locale.US, "%.2f", remainingBalance)}"
+                            )
+                        }
+                    } else {
+                        // Normal flow: "Nueva Orden" or "Nuevo Pago"
+                        Button(
+                            onClick = {
+                                val currentTableId = tableId
+                                when {
+                                    // 🪑 Table order → Clear table and return to floor plan
+                                    currentTableId != null -> onClearTableAndReturnToFloorPlan(currentTableId)
+                                    // 📋 Quick order → Create new quick order
+                                    orderId != null -> onNewOrder()
+                                    // ⚡ Fast payment → New fast payment
+                                    else -> onNewFastPayment()
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                                contentColor = MaterialTheme.colorScheme.onSurface
+                            ),
+                            modifier = Modifier.height(48.dp)
+                        ) {
+                            Text(
+                                // ✅ Dynamic text based on payment type
+                                if (orderId != null) "Nueva Orden" else "Nuevo Pago"
+                            )
+                        }
                     }
                 }
 
@@ -684,8 +739,9 @@ private fun PaymentSuccessContent(
                     colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.surface)
                 )
 
-                // QR Code (centered on top) - Shows shimmer while loading
+                // QR Code (centered on top) - ALWAYS shown
                 // ✅ UX: Shimmer loader while waiting for backend receipt (1-2s delay on card payments)
+                // Note: showReceiptOptions only controls the print button below, NOT the QR code
                 Box(
                     modifier = Modifier
                         .size(180.dp)
@@ -729,7 +785,7 @@ private fun PaymentSuccessContent(
                         .padding(horizontal = 40.dp)
                         .align(Alignment.BottomCenter)
                 ) {
-                    // Instruction text
+                    // Instruction text - QR is always shown
                     Text(
                         text = "Escanea el código QR para descargar el recibo y dejar una calificación",
                         textAlign = TextAlign.Center,
@@ -765,6 +821,28 @@ private fun PaymentSuccessContent(
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurface
                         )
+                    }
+
+                    // ⭐ Queda por pagar (only shown when there's remaining balance)
+                    if (hasRemainingBalance) {
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Queda por pagar",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.error  // Red to highlight pending
+                            )
+                            Text(
+                                text = "$${String.format(java.util.Locale.US, "%.2f", remainingBalance)}",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))  // Reduced from 16dp to 12dp
@@ -818,35 +896,37 @@ private fun PaymentSuccessContent(
             }
         }
 
-        // Print button (ALWAYS visible - prints generic receipt if backend failed)
-        Button(
-            onClick = onPrintReceipt,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-                .padding(horizontal = 16.dp),
-            shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.surface,
-                contentColor = MaterialTheme.colorScheme.onSurface
-            )
-        ) {
-            Icon(
-                painter = painterResource(R.drawable.ic_contact_payment), // Placeholder - ideally use print icon
-                contentDescription = "Imprimir",
-                tint = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.size(20.dp)
-            )
+        // ⚙️ TPV Settings: Only show print button if showReceiptOptions is enabled
+        if (showReceiptOptions) {
+            Button(
+                onClick = onPrintReceipt,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .padding(horizontal = 16.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.onSurface
+                )
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_contact_payment), // Placeholder - ideally use print icon
+                    contentDescription = "Imprimir",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(20.dp)
+                )
 
-            Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(8.dp))
 
-            Text(
-                text = "O imprime el recibo",
-                fontSize = 16.sp
-            )
+                Text(
+                    text = "O imprime el recibo",
+                    fontSize = 16.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
         }
-
-        Spacer(modifier = Modifier.height(24.dp))
     }
 
     // Order details modal (bottom sheet)

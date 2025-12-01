@@ -100,5 +100,10 @@ sealed class PaymentContext {
         override val rating: Int? = null, // 🆕 Optional rating (1-5 stars, null if skipped)
         override val merchantAccountId: String?, // ✅ NULLABLE: null for cash (no processor, proper reconciliation)
         override val blumonSerialNumber: String = "", // ⚠️ LEGACY: Blumon serial (deprecated)
+        // ⭐ SPLIT PAYMENT FIELDS
+        val splitType: SplitType = SplitType.FULLPAYMENT,
+        val paidProductIds: List<String> = emptyList(), // Product IDs for PERPRODUCT mode
+        val equalPartsPartySize: Int? = null, // Total people for EQUALPARTS mode
+        val equalPartsPayedFor: Int? = null, // How many parts being paid now
     ) : PaymentContext()
 }

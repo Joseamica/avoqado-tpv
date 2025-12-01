@@ -47,6 +47,7 @@ import com.example.clean_lib_services.shared.core.domain.entity.init.KushkiData
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
 import com.jaac.avoqado_tpv.features.payment.domain.RetryContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
+import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 // 🔌 Socket.IO Events
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 // ⭐ NEW: Backend payment recording
@@ -55,6 +56,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode
+import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import com.pax.dal.entity.EReaderType
 import com.paxsz.module.emv.process.enums.TransResultEnum
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -121,7 +123,9 @@ class PaymentViewModel @Inject constructor(
     // 📦 Order Repository - Load order items for displaying in success screen receipt
     private val orderRepository: com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository,
     // ⭐ OrderSyncCoordinator - Local-first order sync (ensures order synced before payment)
-    private val orderSyncCoordinator: com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator
+    private val orderSyncCoordinator: com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator,
+    // ⚙️ TPV Settings - Configurable payment flow screens (tip, review, receipt)
+    private val tpvSettingsRepository: TpvSettingsRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentState>(PaymentState.Idle)
@@ -164,6 +168,12 @@ class PaymentViewModel @Inject constructor(
     private var currentOrderId: String? = null  // Order ID (null = fast payment, non-null = order payment)
     private var currentOrderNumber: String? = null  // Order number (for display in receipt)
 
+    // ⭐ Split payment params (from SplitByPersonScreen or SplitByProductScreen)
+    private var currentSplitType: String? = null  // EQUALPARTS, PERPRODUCT, CUSTOMAMOUNT, FULLPAYMENT
+    private var currentEqualPartsPartySize: Int? = null  // Total people for EQUALPARTS mode
+    private var currentEqualPartsPayedFor: Int? = null  // How many parts being paid now
+    private var currentPaidProductIds: List<String> = emptyList()  // Product IDs for PERPRODUCT mode
+
     // ⚡ Performance optimization flags (1GB RAM devices)
     private var pinDialogFlowsStarted = false  // Track if PIN dialog collectors are running
     private var merchantsLoaded = false  // Track if merchants have been loaded
@@ -171,6 +181,10 @@ class PaymentViewModel @Inject constructor(
     // 🔒 CRITICAL: Signal when merchants are fully loaded (prevents race condition)
     // Used by skipTip()/submitTip() to await merchants before reading _merchants.value
     private var merchantsLoadingDeferred = kotlinx.coroutines.CompletableDeferred<Unit>()
+
+    // ⚙️ TPV Settings: Expose showReceiptScreen for PaymentSuccessContent
+    val showReceiptScreen: Boolean
+        get() = tpvSettingsRepository.getCurrentSettings().showReceiptScreen
 
     // ═══════════════════════════════════════════════════════════════════════════
     // EMV TAG EXTRACTION USE CASES
@@ -561,14 +575,33 @@ class PaymentViewModel @Inject constructor(
      * @param amount Payment amount (e.g., "10.00")
      * @param orderId Order ID (null = fast payment, non-null = order payment with inventory deduction)
      * @param orderNumber Order number (for display in receipt)
+     * @param splitType Split type (EQUALPARTS, PERPRODUCT, CUSTOMAMOUNT, FULLPAYMENT)
+     * @param equalPartsPartySize Total people for EQUALPARTS mode
+     * @param equalPartsPayedFor How many parts being paid now
+     * @param paidProductIds Product IDs for PERPRODUCT mode
      */
-    fun submitAmount(amount: String, orderId: String? = null, orderNumber: String? = null) {
+    fun submitAmount(
+        amount: String,
+        orderId: String? = null,
+        orderNumber: String? = null,
+        splitType: String? = null,
+        equalPartsPartySize: Int? = null,
+        equalPartsPayedFor: Int? = null,
+        paidProductIds: List<String> = emptyList()
+    ) {
         Timber.d("💰 [Payment Flow] Amount entered: $$amount")
         // Save order context
         currentOrderId = orderId
         currentOrderNumber = orderNumber
+
+        // ⭐ Save split payment params
+        currentSplitType = splitType
+        currentEqualPartsPartySize = equalPartsPartySize
+        currentEqualPartsPayedFor = equalPartsPayedFor
+        currentPaidProductIds = paidProductIds
+
         if (orderId != null) {
-            Timber.d("📦 [Payment Flow] Order payment mode: orderId=$orderId, orderNumber=$orderNumber")
+            Timber.d("📦 [Payment Flow] Order payment mode: orderId=$orderId, orderNumber=$orderNumber, splitType=$splitType")
         } else {
             Timber.d("⚡ [Payment Flow] Fast payment mode (no order)")
         }
@@ -577,7 +610,69 @@ class PaymentViewModel @Inject constructor(
         // This runs async but gives time for merchants to load before submitTip() needs them
         ensureMerchantsLoaded()
 
-        _state.value = PaymentState.CollectingRating(amount = amount)
+        // ⚙️ TPV Settings: Check which screens to show in payment flow
+        val tpvSettings = tpvSettingsRepository.getCurrentSettings()
+        Timber.d("⚙️ [TPV Settings] showReviewScreen=${tpvSettings.showReviewScreen}, showTipScreen=${tpvSettings.showTipScreen}")
+
+        when {
+            tpvSettings.showReviewScreen -> {
+                // Show rating screen first
+                _state.value = PaymentState.CollectingRating(amount = amount)
+            }
+            tpvSettings.showTipScreen -> {
+                // Skip rating, go directly to tip screen
+                Timber.d("⏭️ [Payment Flow] Skipping review screen (disabled in TPV settings)")
+                val defaultTipPercentage = tpvSettings.defaultTipPercentage ?: 15
+                val defaultTipAmount = calculateTipAmount(amount, defaultTipPercentage)
+                _state.value = PaymentState.CollectingTip(
+                    amount = amount,
+                    rating = null,
+                    selectedTipPercentage = defaultTipPercentage,
+                    tipAmount = defaultTipAmount
+                )
+            }
+            else -> {
+                // Skip both rating and tip, go directly to merchant selection
+                Timber.d("⏭️ [Payment Flow] Skipping review and tip screens (disabled in TPV settings)")
+                currentTip = "0.00"
+                currentRating = null
+                proceedToMerchantSelection(amount, "0", amount, null)
+            }
+        }
+    }
+
+    /**
+     * Helper function to proceed to merchant selection (handles auto-skip for single merchant)
+     */
+    private fun proceedToMerchantSelection(subtotal: String, tipAmount: String, totalAmount: String, rating: Int?) {
+        viewModelScope.launch {
+            awaitMerchantsLoaded()
+
+            // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
+            val merchants = _merchants.value
+            if (merchants.size == 1) {
+                val onlyMerchant = merchants.first()
+                Timber.d("🏪 [Payment Flow] Only 1 merchant available (${onlyMerchant.displayName}) → Auto-selecting and skipping merchant selection screen")
+                updateSelectedMerchant(onlyMerchant)
+                startPayment(totalAmount)
+                return@launch
+            }
+
+            // Multiple merchants → Show selection screen
+            _state.value = PaymentState.SelectingMerchant(
+                subtotal = subtotal,
+                tipAmount = tipAmount,
+                totalAmount = totalAmount,
+                rating = rating
+            )
+
+            // Auto-select first merchant if none selected
+            if (_currentMerchant.value == null && merchants.isNotEmpty()) {
+                val defaultMerchant = merchants.first()
+                Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
+                updateSelectedMerchant(defaultMerchant)
+            }
+        }
     }
 
     /**
@@ -601,33 +696,57 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
-     * Submit rating and proceed to tip screen (auto-select 15% tip)
+     * Submit rating and proceed to tip screen (or skip if disabled)
      */
     fun submitRating(amount: String, rating: Int) {
         Timber.d("⭐ [Payment Flow] Rating submitted: $rating stars")
-        val defaultTipPercentage = 15
-        val defaultTipAmount = calculateTipAmount(amount, defaultTipPercentage)
-        _state.value = PaymentState.CollectingTip(
-            amount = amount,
-            rating = rating,
-            selectedTipPercentage = defaultTipPercentage,
-            tipAmount = defaultTipAmount
-        )
+
+        // ⚙️ TPV Settings: Check if tip screen should be shown
+        val tpvSettings = tpvSettingsRepository.getCurrentSettings()
+
+        if (tpvSettings.showTipScreen) {
+            val defaultTipPercentage = tpvSettings.defaultTipPercentage ?: 15
+            val defaultTipAmount = calculateTipAmount(amount, defaultTipPercentage)
+            _state.value = PaymentState.CollectingTip(
+                amount = amount,
+                rating = rating,
+                selectedTipPercentage = defaultTipPercentage,
+                tipAmount = defaultTipAmount
+            )
+        } else {
+            // Skip tip screen, go directly to merchant selection
+            Timber.d("⏭️ [Payment Flow] Skipping tip screen (disabled in TPV settings)")
+            currentTip = "0.00"
+            currentRating = rating
+            proceedToMerchantSelection(amount, "0", amount, rating)
+        }
     }
 
     /**
-     * Skip rating and proceed to tip screen (auto-select 15% tip)
+     * Skip rating and proceed to tip screen (or skip if disabled)
      */
     fun skipRating(amount: String) {
         Timber.d("⏭️  [Payment Flow] Rating skipped")
-        val defaultTipPercentage = 15
-        val defaultTipAmount = calculateTipAmount(amount, defaultTipPercentage)
-        _state.value = PaymentState.CollectingTip(
-            amount = amount,
-            rating = null,
-            selectedTipPercentage = defaultTipPercentage,
-            tipAmount = defaultTipAmount
-        )
+
+        // ⚙️ TPV Settings: Check if tip screen should be shown
+        val tpvSettings = tpvSettingsRepository.getCurrentSettings()
+
+        if (tpvSettings.showTipScreen) {
+            val defaultTipPercentage = tpvSettings.defaultTipPercentage ?: 15
+            val defaultTipAmount = calculateTipAmount(amount, defaultTipPercentage)
+            _state.value = PaymentState.CollectingTip(
+                amount = amount,
+                rating = null,
+                selectedTipPercentage = defaultTipPercentage,
+                tipAmount = defaultTipAmount
+            )
+        } else {
+            // Skip tip screen, go directly to merchant selection
+            Timber.d("⏭️ [Payment Flow] Skipping tip screen (disabled in TPV settings)")
+            currentTip = "0.00"
+            currentRating = null
+            proceedToMerchantSelection(amount, "0", amount, null)
+        }
     }
 
     /**
@@ -656,15 +775,34 @@ class PaymentViewModel @Inject constructor(
      * @param amount Payment amount (e.g., "10.00")
      * @param orderId Order ID (null = fast payment, non-null = order payment with inventory deduction)
      * @param orderNumber Order number (for display in receipt)
+     * @param splitType Split type (EQUALPARTS, PERPRODUCT, CUSTOMAMOUNT, FULLPAYMENT)
+     * @param equalPartsPartySize Total people for EQUALPARTS mode
+     * @param equalPartsPayedFor How many parts being paid now
+     * @param paidProductIds Product IDs for PERPRODUCT mode
      */
-    fun submitAmountDirectToMerchant(amount: String, orderId: String? = null, orderNumber: String? = null) {
+    fun submitAmountDirectToMerchant(
+        amount: String,
+        orderId: String? = null,
+        orderNumber: String? = null,
+        splitType: String? = null,
+        equalPartsPartySize: Int? = null,
+        equalPartsPayedFor: Int? = null,
+        paidProductIds: List<String> = emptyList()
+    ) {
         Timber.d("🧪 [Test Payment] Skipping rating/tip, going directly to merchant selection: $$amount")
 
         // Save order context
         currentOrderId = orderId
         currentOrderNumber = orderNumber
+
+        // ⭐ Save split payment params
+        currentSplitType = splitType
+        currentEqualPartsPartySize = equalPartsPartySize
+        currentEqualPartsPayedFor = equalPartsPayedFor
+        currentPaidProductIds = paidProductIds
+
         if (orderId != null) {
-            Timber.d("📦 [Test Payment] Order payment mode: orderId=$orderId, orderNumber=$orderNumber")
+            Timber.d("📦 [Test Payment] Order payment mode: orderId=$orderId, orderNumber=$orderNumber, splitType=$splitType")
         } else {
             Timber.d("⚡ [Test Payment] Fast payment mode (no order)")
         }
@@ -1921,6 +2059,11 @@ class PaymentViewModel @Inject constructor(
                 // Create payment context for cash
                 // ✅ RECONCILIATION: null merchantAccountId = proper separation (cash has no processor cost)
                 // 🆕 Order vs Fast: If orderId present, create OrderPayment (triggers inventory deduction)
+                // ⭐ Split payment params: Convert string to SplitType enum
+                val splitTypeEnum = currentSplitType?.let {
+                    try { SplitType.valueOf(it.uppercase()) } catch (e: Exception) { SplitType.FULLPAYMENT }
+                } ?: SplitType.FULLPAYMENT
+
                 val context = if (currentOrderId != null) {
                     PaymentContext.OrderPayment(
                         venueId = currentVenueId!!,
@@ -1931,7 +2074,12 @@ class PaymentViewModel @Inject constructor(
                         tip = currentState.tipAmount.toBigDecimal(),
                         rating = currentState.rating,
                         merchantAccountId = null,  // ✅ null = cash (no processor, no commission)
-                        blumonSerialNumber = ""   // No Blumon SDK for cash payments
+                        blumonSerialNumber = "",   // No Blumon SDK for cash payments
+                        // ⭐ Split payment params - CRITICAL for restricting split options after partial payment
+                        splitType = splitTypeEnum,
+                        paidProductIds = currentPaidProductIds,
+                        equalPartsPartySize = currentEqualPartsPartySize,
+                        equalPartsPayedFor = currentEqualPartsPayedFor
                     )
                 } else {
                     PaymentContext.FastPayment(
@@ -1965,8 +2113,9 @@ class PaymentViewModel @Inject constructor(
                     Timber.d("✅ [Cash Payment] Successfully recorded to backend")
                     Timber.d("   🧾 Payment ID: ${receipt.paymentId} | Receipt URL: ${receipt.receiptUrl}")
 
-                    // 📦 Load order items if this is an order payment (Pedido Rápido or Servicio de Mesa)
-                    val orderItems = loadOrderItems(currentOrderId)
+                    // 📦 Load order data if this is an order payment (Pedido Rápido or Servicio de Mesa)
+                    // ⭐ NEW: Also loads remainingBalance for split payment UI
+                    val orderData = loadOrderData(currentOrderId)
 
                     _state.value = PaymentState.Success(
                         authCode = "EFECTIVO",
@@ -1978,7 +2127,8 @@ class PaymentViewModel @Inject constructor(
                         referenceNumber = cashReference,
                         orderId = currentOrderId,  // 🆕 Order ID (for loading order items in success screen)
                         orderNumber = currentOrderNumber,  // 🆕 Order number (for display)
-                        orderItems = orderItems  // 🆕 Order items (for displaying itemized receipt)
+                        orderItems = orderData?.items,  // 🆕 Order items (for displaying itemized receipt)
+                        remainingBalance = orderData?.remainingBalance  // ⭐ NEW: For split payment "Continuar pagando" button
                     )
 
                     Timber.d("💚 [Cash Payment] Payment completed successfully")
@@ -2156,24 +2306,54 @@ class PaymentViewModel @Inject constructor(
             }
 
             is PaymentState.CollectingTip -> {
-                // Go back to rating
-                Timber.d("⬅️  [Payment Flow] Back from CollectingTip → CollectingRating")
-                _state.value = PaymentState.CollectingRating(
-                    amount = currentState.amount,
-                    rating = currentState.rating ?: 0
-                )
-                true
+                // ⚙️ TPV Settings: Check if review screen is enabled
+                val tpvSettings = tpvSettingsRepository.getCurrentSettings()
+
+                if (tpvSettings.showReviewScreen) {
+                    // Go back to rating
+                    Timber.d("⬅️  [Payment Flow] Back from CollectingTip → CollectingRating")
+                    _state.value = PaymentState.CollectingRating(
+                        amount = currentState.amount,
+                        rating = currentState.rating ?: 0
+                    )
+                    true
+                } else {
+                    // Review screen disabled - go back to home
+                    Timber.d("⬅️  [Payment Flow] Back from CollectingTip → Home (review disabled)")
+                    false
+                }
             }
 
             is PaymentState.SelectingMerchant -> {
-                // Go back to tip
-                Timber.d("⬅️  [Payment Flow] Back from SelectingMerchant → CollectingTip")
-                _state.value = PaymentState.CollectingTip(
-                    amount = currentState.subtotal,
-                    rating = currentState.rating,
-                    tipAmount = currentState.tipAmount
-                )
-                true
+                // ⚙️ TPV Settings: Check which screen to go back to
+                val tpvSettings = tpvSettingsRepository.getCurrentSettings()
+
+                when {
+                    tpvSettings.showTipScreen -> {
+                        // Go back to tip
+                        Timber.d("⬅️  [Payment Flow] Back from SelectingMerchant → CollectingTip")
+                        _state.value = PaymentState.CollectingTip(
+                            amount = currentState.subtotal,
+                            rating = currentState.rating,
+                            tipAmount = currentState.tipAmount
+                        )
+                        true
+                    }
+                    tpvSettings.showReviewScreen -> {
+                        // Tip disabled, go back to rating
+                        Timber.d("⬅️  [Payment Flow] Back from SelectingMerchant → CollectingRating (tip disabled)")
+                        _state.value = PaymentState.CollectingRating(
+                            amount = currentState.subtotal,
+                            rating = currentState.rating ?: 0
+                        )
+                        true
+                    }
+                    else -> {
+                        // Both disabled - go back to home
+                        Timber.d("⬅️  [Payment Flow] Back from SelectingMerchant → Home (tip & review disabled)")
+                        false
+                    }
+                }
             }
 
             // During payment processing - no back allowed
@@ -2357,6 +2537,12 @@ class PaymentViewModel @Inject constructor(
                 }
 
                 val blumonSerial = _currentMerchant.value?.serialNumber ?: "" // ✅ CRITICAL FIX: Use VIRTUAL serial (e.g., "2841548417"), not physical terminal serial
+
+                // ⭐ Split payment params: Convert string to SplitType enum (for card payments)
+                val splitTypeEnumCard = currentSplitType?.let {
+                    try { SplitType.valueOf(it.uppercase()) } catch (e: Exception) { SplitType.FULLPAYMENT }
+                } ?: SplitType.FULLPAYMENT
+
                 val context = if (currentOrderId != null) {
                     PaymentContext.OrderPayment(
                         venueId = currentVenueId,
@@ -2368,6 +2554,11 @@ class PaymentViewModel @Inject constructor(
                         rating = currentRating, // 🆕 NEW: Include user rating (1-5 stars or null)
                         merchantAccountId = merchantAccountId, // 🆕 PRIMARY: Merchant account ID
                         blumonSerialNumber = blumonSerial, // ⚠️ LEGACY: Fallback (FIXED: virtual serial)
+                        // ⭐ Split payment params - CRITICAL for restricting split options after partial payment
+                        splitType = splitTypeEnumCard,
+                        paidProductIds = currentPaidProductIds,
+                        equalPartsPartySize = currentEqualPartsPartySize,
+                        equalPartsPayedFor = currentEqualPartsPayedFor
                     )
                 } else {
                     PaymentContext.FastPayment(
@@ -2409,8 +2600,9 @@ class PaymentViewModel @Inject constructor(
                         )
                     }
 
-                    // 📦 Load order items if this is an order payment (Pedido Rápido or Servicio de Mesa)
-                    val orderItems = loadOrderItems(currentOrderId)
+                    // 📦 Load order data if this is an order payment (Pedido Rápido or Servicio de Mesa)
+                    // ⭐ NEW: Also loads remainingBalance for split payment UI
+                    val orderData = loadOrderData(currentOrderId)
 
                     // 🆕 NEW: Update Success state with receipt + card details for QR code display and printing
                     val currentState = _state.value
@@ -2421,7 +2613,8 @@ class PaymentViewModel @Inject constructor(
                             referenceNumber = referenceNumber,  // 🎫 Include reference for receipts
                             orderId = currentOrderId,  // 🆕 Order ID (for loading order items in success screen)
                             orderNumber = currentOrderNumber,  // 🆕 Order number (for display)
-                            orderItems = orderItems  // 🆕 Order items (for displaying itemized receipt)
+                            orderItems = orderData?.items,  // 🆕 Order items (for displaying itemized receipt)
+                            remainingBalance = orderData?.remainingBalance  // ⭐ NEW: For split payment "Continuar pagando" button
                         )
                         Timber.d("🎫 [Receipt] Updated Success state with receipt | URL=${receipt.receiptUrl}")
                         Timber.d("🎫 [Receipt] Card: ${cardDetails.cardBrand} ${cardDetails.maskedPan} | Entry: ${cardDetails.entryMode}")
@@ -2645,15 +2838,20 @@ class PaymentViewModel @Inject constructor(
      * - handlePaymentSuccess (after card payment recorded successfully)
      *
      * @param orderId Order ID to load items for (null = fast payment, skip loading)
-     * @return List of OrderItem or null if error/not applicable
+     * @return OrderData with items and remainingBalance, or null if error/not applicable
      */
-    private suspend fun loadOrderItems(orderId: String?): List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? {
+    private data class OrderData(
+        val items: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>,
+        val remainingBalance: java.math.BigDecimal
+    )
+
+    private suspend fun loadOrderData(orderId: String?): OrderData? {
         if (orderId == null) {
-            Timber.d("📦 [Order Items] Skipping load - Fast payment (no order)")
+            Timber.d("📦 [Order Data] Skipping load - Fast payment (no order)")
             return null
         }
 
-        Timber.d("📦 [Order Items] Loading items for order: $orderId")
+        Timber.d("📦 [Order Data] Loading data for order: $orderId")
         return try {
             val result = orderRepository.getOrder(
                 venueId = currentVenueId,
@@ -2661,7 +2859,7 @@ class PaymentViewModel @Inject constructor(
             )
 
             result.onSuccess { order ->
-                Timber.d("✅ [Order Items] Loaded ${order.items.size} items for order $orderId")
+                Timber.d("✅ [Order Data] Loaded ${order.items.size} items | remainingBalance=${order.remainingBalance} | paidAmount=${order.paidAmount}")
                 order.items.forEach { item ->
                     Timber.d("   - ${item.quantity}x ${item.productName} @ ${item.formattedTotalPrice}")
 
@@ -2673,13 +2871,27 @@ class PaymentViewModel @Inject constructor(
                         }
                     }
                 }
+
+                // ⭐ FIX: Update Room with fresh order data (paidAmount, remainingBalance)
+                // This ensures MenuScreen shows correct remaining balance after split payment
+                try {
+                    orderSyncCoordinator.cacheBackendOrder(order)
+                    Timber.d("💾 [Order Data] Updated Room with fresh payment data | paidAmount=${order.paidAmount} | remainingBalance=${order.remainingBalance}")
+                } catch (e: Exception) {
+                    Timber.w(e, "⚠️ [Order Data] Failed to cache order to Room (non-blocking)")
+                }
             }.onFailure { error ->
-                Timber.e(error, "❌ [Order Items] Failed to load items for order $orderId")
+                Timber.e(error, "❌ [Order Data] Failed to load data for order $orderId")
             }
 
-            result.getOrNull()?.items
+            result.getOrNull()?.let { order ->
+                OrderData(
+                    items = order.items,
+                    remainingBalance = order.remainingBalance
+                )
+            }
         } catch (e: Exception) {
-            Timber.e(e, "❌ [Order Items] Exception loading items for order $orderId")
+            Timber.e(e, "❌ [Order Data] Exception loading data for order $orderId")
             null
         }
     }

@@ -80,13 +80,39 @@ class OrderPaymentRecorder @Inject constructor(
                 "OrderPaymentRecorder only handles OrderPayment context, got: ${context::class.simpleName}"
             }
 
-            Timber.d(
-                "🚀 Recording order payment | venue=${context.venueId} | order=${context.orderId} | " +
-                        "amount=${context.amount} | tip=${context.tip} | card=${cardDetails.cardBrand}"
-            )
+            // 🔍 DEBUG: Full payment context
+            Timber.i("═══════════════════════════════════════════════════════════")
+            Timber.i("🚀 RECORDING ORDER PAYMENT - START")
+            Timber.i("   venueId: ${context.venueId}")
+            Timber.i("   orderId: ${context.orderId}")
+            Timber.i("   staffId: ${context.staffId}")
+            Timber.i("   ─────────────────────────────────────────────────────")
+            Timber.i("   💰 PAYMENT AMOUNTS:")
+            Timber.i("      amount (pesos): ${context.amount}")
+            Timber.i("      tip (pesos): ${context.tip}")
+            Timber.i("      total (pesos): ${context.amount + context.tip}")
+            Timber.i("   ─────────────────────────────────────────────────────")
+            Timber.i("   🔀 SPLIT PAYMENT INFO:")
+            Timber.i("      splitType: ${context.splitType}")
+            Timber.i("      paidProductIds: ${context.paidProductIds}")
+            Timber.i("      merchantAccountId: ${context.merchantAccountId}")
+            Timber.i("   ─────────────────────────────────────────────────────")
+            Timber.i("   💳 CARD DETAILS:")
+            Timber.i("      cardBrand: ${cardDetails.cardBrand}")
+            Timber.i("      maskedPan: ${cardDetails.maskedPan}")
+            Timber.i("      entryMode: ${cardDetails.entryMode}")
+            Timber.i("      isInternational: ${cardDetails.isInternational}")
+            Timber.i("   ─────────────────────────────────────────────────────")
+            Timber.i("   🔐 AUTHORIZATION:")
+            Timber.i("      authorizationNumber: $authorizationNumber")
+            Timber.i("      referenceNumber: $referenceNumber")
+            Timber.i("═══════════════════════════════════════════════════════════")
 
             // 2. Construir request DTO
             val request = buildOrderPaymentRequest(context, cardDetails, authorizationNumber, referenceNumber)
+
+            // 🔍 DEBUG: Request to send
+            Timber.d("📤 OrderPaymentRequest: amount=${request.amount}cents, tip=${request.tip}cents, method=${request.method}, splitType=${request.splitType}")
 
             // 3. Llamar al backend (diferente endpoint que fast payment)
             val response = apiService.recordOrderPayment(
@@ -107,10 +133,21 @@ class OrderPaymentRecorder @Inject constructor(
                         tipAmount = body.data.tipAmount,
                     )
 
-                    Timber.i(
-                        "✅ Order payment recorded | paymentId=${receipt.paymentId} | " +
-                                "orderId=${context.orderId} | receiptUrl=${receipt.receiptUrl}"
-                    )
+                    // 🔍 DEBUG: Payment success details
+                    Timber.i("═══════════════════════════════════════════════════════════")
+                    Timber.i("✅ ORDER PAYMENT RECORDED SUCCESSFULLY")
+                    Timber.i("   paymentId: ${receipt.paymentId}")
+                    Timber.i("   orderId: ${context.orderId}")
+                    Timber.i("   ─────────────────────────────────────────────────────")
+                    Timber.i("   💰 RECORDED AMOUNTS:")
+                    Timber.i("      amount: ${receipt.amount}")
+                    Timber.i("      tipAmount: ${receipt.tipAmount}")
+                    Timber.i("   ─────────────────────────────────────────────────────")
+                    Timber.i("   🧾 RECEIPT:")
+                    Timber.i("      receiptUrl: ${receipt.receiptUrl}")
+                    Timber.i("      accessKey: ${receipt.accessKey}")
+                    Timber.i("═══════════════════════════════════════════════════════════")
+                    Timber.i("📝 NOTE: Backend should have deducted inventory if order is now PAID")
 
                     Result.success(receipt)
                 }
@@ -232,12 +269,11 @@ class OrderPaymentRecorder @Inject constructor(
                 }
             },
             source = "AVOQADO_TPV",
-            splitType = "FULLPAYMENT",
+            splitType = context.splitType.value,
             staffId = context.staffId,
 
-            // Paid products (empty for full payment)
-            // TODO: Get from order items when split payments are implemented
-            paidProductsId = emptyList(),
+            // ⭐ SPLIT PAYMENT: Product IDs for PERPRODUCT mode
+            paidProductsId = context.paidProductIds,
 
             // Card details from Blumon SDK
             authorizationNumber = authorizationNumber,

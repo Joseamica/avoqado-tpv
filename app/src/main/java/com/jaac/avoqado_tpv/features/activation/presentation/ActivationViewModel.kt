@@ -4,8 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result
+import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
 import com.jaac.avoqado_tpv.core.domain.usecase.ActivateTerminalUseCase
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -55,7 +57,9 @@ import javax.inject.Inject
 @HiltViewModel
 class ActivationViewModel @Inject constructor(
     private val activateTerminalUseCase: ActivateTerminalUseCase,
-    private val deviceInfoManager: DeviceInfoManager
+    private val deviceInfoManager: DeviceInfoManager,
+    private val terminalConfigRepository: TerminalConfigRepository,
+    private val merchantRepository: MerchantRepository
 ) : ViewModel() {
 
     // ========== State ==========
@@ -108,10 +112,32 @@ class ActivationViewModel @Inject constructor(
             when (val result = activateTerminalUseCase(serialNumber, activationCode)) {
                 is Result.Success -> {
                     Timber.i("✅ Terminal activated successfully: venueId=${result.data.venueId}")
-                    _state.value = ActivationState.Success(
-                        venueId = result.data.venueId,
-                        venueName = result.data.venueName
-                    )
+
+                    // CRITICAL: Fetch terminal config BEFORE allowing navigation to login
+                    // This loads merchant accounts with proper CUIDs for payment recording
+                    // Without this, payments will fail with 400 error (missing merchantAccountId)
+                    // Note: State is already Loading from line 109, no need to set again
+                    Timber.d("🔧 [Activation] Fetching terminal config...")
+
+                    val configResult = fetchTerminalConfigAfterActivation()
+
+                    if (configResult.isSuccess) {
+                        _state.value = ActivationState.Success(
+                            venueId = result.data.venueId,
+                            venueName = result.data.venueName
+                        )
+                    } else {
+                        // Config fetch failed - show error with retry option
+                        // User cannot proceed until config is loaded (payments would fail)
+                        Timber.e("❌ [Activation] Config fetch failed - blocking navigation")
+                        _state.value = ActivationState.ConfigError(
+                            venueId = result.data.venueId,
+                            venueName = result.data.venueName,
+                            message = "Terminal activado, pero no se pudo cargar la configuración.\n\n" +
+                                    "Los pagos con tarjeta no funcionarán sin esta configuración.\n\n" +
+                                    "Verifique su conexión a internet e intente nuevamente."
+                        )
+                    }
                 }
 
                 is Result.Error -> {
@@ -131,7 +157,153 @@ class ActivationViewModel @Inject constructor(
         _state.value = ActivationState.Idle
     }
 
+    /**
+     * Check if terminal is already activated on backend
+     *
+     * **Auto-Retry Pattern:**
+     * This is called periodically (every 10 seconds) from the ActivationScreen
+     * to detect when the server comes back online and the terminal is already activated.
+     *
+     * **Why needed:**
+     * User may arrive at ActivationScreen because:
+     * 1. Server was down when app checked activation status → Error fallback sent them here
+     * 2. Terminal IS activated on backend, just couldn't reach it
+     *
+     * This auto-retry allows the user to automatically navigate to Login
+     * when the server comes back and confirms activation, without needing to:
+     * - Close and reopen the app
+     * - Enter an activation code they don't have
+     *
+     * **Flow:**
+     * 1. Check backend activation status
+     * 2. If activated → Update state to AlreadyActivated (triggers navigation)
+     * 3. If not activated or error → Do nothing (stay on screen)
+     *
+     * @return true if terminal is activated on backend, false otherwise
+     */
+    suspend fun checkAlreadyActivatedOnBackend(): Boolean {
+        // Don't check if we're already in Loading, Success, or ConfigError state
+        val currentState = _state.value
+        if (currentState is ActivationState.Loading ||
+            currentState is ActivationState.Success ||
+            currentState is ActivationState.ConfigError) {
+            return false
+        }
+
+        return try {
+            val result = deviceInfoManager.checkActivationStatusWithBackend()
+            when (result) {
+                is Result.Success -> {
+                    val status = result.data
+                    if (status.isActivated) {
+                        Timber.i("🔄 [Activation] Auto-retry detected terminal is already activated!")
+                        Timber.d("   → venueId: ${status.venueId}")
+                        Timber.d("   → venueName: ${status.venueName}")
+
+                        // Update state to trigger navigation
+                        _state.value = ActivationState.AlreadyActivated(
+                            venueId = status.venueId ?: "",
+                            venueName = status.venueName ?: ""
+                        )
+                        true
+                    } else {
+                        Timber.d("🔄 [Activation] Auto-retry: terminal not activated yet")
+                        false
+                    }
+                }
+                is Result.Error -> {
+                    // Server still unreachable - silently ignore (we're already on this screen)
+                    Timber.d("🔄 [Activation] Auto-retry: server unreachable (${result.exception?.message})")
+                    false
+                }
+            }
+        } catch (e: Exception) {
+            Timber.d("🔄 [Activation] Auto-retry error: ${e.message}")
+            false
+        }
+    }
+
     // ========== Private Methods ==========
+
+    /**
+     * Fetch terminal configuration immediately after successful activation
+     *
+     * **Why this is critical:**
+     * - At app startup, terminal was NOT activated → config fetch was skipped
+     * - MerchantRepository still has hardcoded fallback accounts
+     * - Fallback accounts lack `merchantAccountId` (backend CUID)
+     * - Without CUID, backend rejects payment recording with 400 error
+     *
+     * **What this does:**
+     * 1. Fetch terminal config from backend (includes merchant accounts)
+     * 2. Replace MerchantRepository fallback accounts with backend data
+     * 3. Now merchant accounts have proper CUIDs for payment recording
+     *
+     * **Error handling:**
+     * Returns Result to allow caller to handle success/failure appropriately.
+     * Navigation to login is BLOCKED until config is loaded successfully.
+     *
+     * @return Result.success if config loaded, Result.failure otherwise
+     */
+    private suspend fun fetchTerminalConfigAfterActivation(): kotlin.Result<Unit> {
+        Timber.d("🔧 [Activation] Fetching terminal config after successful activation...")
+
+        // Note: terminalConfigRepository returns kotlin.Result, not our custom Result
+        val configResult = terminalConfigRepository.fetchConfig(serialNumber)
+
+        return configResult.fold(
+            onSuccess = { (terminalInfo, merchantAccounts) ->
+                Timber.i("✅ [Activation] Terminal config loaded successfully")
+                Timber.d("   📋 Terminal: ${terminalInfo.brand} ${terminalInfo.model}")
+                Timber.d("   🏢 Venue: ${terminalInfo.venueName}")
+                Timber.i("   🏪 Merchant accounts: ${merchantAccounts.size}")
+                merchantAccounts.forEach { merchant ->
+                    Timber.d("      ✅ ${merchant.displayName} (id=${merchant.merchantAccountId}, serial=${merchant.serialNumber})")
+                }
+
+                // Replace fallback accounts with backend data (includes merchantAccountId CUIDs)
+                merchantRepository.updateMerchants(merchantAccounts)
+
+                kotlin.Result.success(Unit)
+            },
+            onFailure = { error ->
+                Timber.e(error, "❌ [Activation] Failed to load terminal config")
+                Timber.d("   ⚠️ User will see error with retry option")
+                kotlin.Result.failure(error)
+            }
+        )
+    }
+
+    /**
+     * Retry fetching terminal config after a failure
+     *
+     * Called when user taps "Reintentar" on ConfigError state.
+     * Preserves venueId/venueName from previous successful activation.
+     */
+    fun retryConfigFetch() {
+        val currentState = _state.value
+        if (currentState !is ActivationState.ConfigError) {
+            Timber.w("⚠️ [Activation] retryConfigFetch called in wrong state: $currentState")
+            return
+        }
+
+        viewModelScope.launch {
+            _state.value = ActivationState.Loading
+            Timber.d("🔄 [Activation] Retrying config fetch...")
+
+            val configResult = fetchTerminalConfigAfterActivation()
+
+            if (configResult.isSuccess) {
+                _state.value = ActivationState.Success(
+                    venueId = currentState.venueId,
+                    venueName = currentState.venueName
+                )
+            } else {
+                // Still failed - show error again
+                _state.value = currentState // Restore ConfigError state
+            }
+        }
+    }
 
     /**
      * Map API exceptions to user-friendly error messages
@@ -224,6 +396,45 @@ sealed class ActivationState {
      * @param venueName Human-readable venue name
      */
     data class Success(
+        val venueId: String,
+        val venueName: String
+    ) : ActivationState()
+
+    /**
+     * Config error state - Terminal activated but config fetch failed
+     *
+     * Terminal IS activated (stored in SecureStorage), but merchant accounts
+     * with backend CUIDs couldn't be loaded. Payments will fail without this.
+     *
+     * User must retry config fetch before proceeding to login.
+     *
+     * @param venueId Venue UUID (from successful activation)
+     * @param venueName Human-readable venue name
+     * @param message User-friendly error message with retry instructions
+     */
+    data class ConfigError(
+        val venueId: String,
+        val venueName: String,
+        val message: String
+    ) : ActivationState()
+
+    /**
+     * Already activated state - Backend confirmed terminal is already activated
+     *
+     * This state is triggered by the auto-retry mechanism when the backend
+     * becomes reachable and confirms the terminal is already activated.
+     *
+     * This handles the case where:
+     * 1. Server was down when app started
+     * 2. App sent user to Activation screen as fallback
+     * 3. Server came back online
+     * 4. Auto-retry detected terminal is already activated
+     * 5. Navigate to Login without requiring activation code
+     *
+     * @param venueId Venue UUID (from backend status response)
+     * @param venueName Human-readable venue name
+     */
+    data class AlreadyActivated(
         val venueId: String,
         val venueName: String
     ) : ActivationState()

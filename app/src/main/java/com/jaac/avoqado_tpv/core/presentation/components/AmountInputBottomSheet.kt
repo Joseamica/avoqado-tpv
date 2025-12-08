@@ -124,6 +124,11 @@ fun AmountInputBottomSheet(
                     color = MaterialTheme.colorScheme.surface,
                     shape = modalShape
                 )
+                // 🆕 FIX: Consume clicks inside modal to prevent closing when tapping empty space
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) { /* Consume click - prevent propagation to scrim */ }
         ) {
             Column(
                 modifier = Modifier

@@ -1070,9 +1070,24 @@ class PaymentViewModel @Inject constructor(
         currentAmount = amount  // Save for UI display
         currentAmountInCents = convertToCents(amount)  // Save for SDK calls (cents as integer string)
 
-        // ⭐ NEW: Get venue and staff context for backend recording
-        currentVenueId = authRepository.getVenueId() ?: ""
-        currentStaffId = authRepository.getStaffId() ?: ""
+        // ⭐ Get venue and staff context for backend recording
+        val venueId = authRepository.getVenueId()
+        val staffId = authRepository.getStaffId()
+
+        // 🔐 SESSION VALIDATION: Prevent payment if session expired
+        // Bug fix: User was kicked to login MID-PAYMENT because session expired
+        // Now we catch this BEFORE starting, showing a clear error
+        if (venueId.isNullOrBlank() || staffId.isNullOrBlank()) {
+            Timber.w("⚠️ [Payment] No session - venueId=$venueId, staffId=$staffId")
+            _state.value = PaymentState.Error(
+                message = "Tu sesión expiró.\n\nPor favor inicia sesión de nuevo.",
+                canRetry = false
+            )
+            return
+        }
+
+        currentVenueId = venueId
+        currentStaffId = staffId
 
         // ⚡ Performance: Start PIN dialog collectors only when payment begins
         collectPinDialogFlows()
@@ -1132,7 +1147,7 @@ class PaymentViewModel @Inject constructor(
                     if (order == null) {
                         Timber.e("❌ [Merchant Validation] Order not found: $currentOrderId")
                         _state.value = PaymentState.Error(
-                            message = "Orden no encontrada.\n\nVerifica que la orden exists e intenta nuevamente.",
+                            message = "Orden no encontrada.\n\nVerifica que la orden existe e intenta nuevamente.",
                             context = null
                         )
                         return@launch
@@ -2024,11 +2039,21 @@ class PaymentViewModel @Inject constructor(
                 val currentState = _state.value as? PaymentState.SelectingMerchant
                     ?: throw IllegalStateException("Invalid state for cash payment. Expected SelectingMerchant, got: ${_state.value}")
 
-                // Get venue and staff context for backend recording
-                currentVenueId = authRepository.getVenueId()
-                    ?: throw IllegalStateException("No venue ID found. Cannot process payment.")
-                currentStaffId = authRepository.getStaffId()
-                    ?: throw IllegalStateException("No staff ID found. Cannot process payment.")
+                // 🔐 SESSION VALIDATION: Prevent payment if session expired
+                val venueId = authRepository.getVenueId()
+                val staffId = authRepository.getStaffId()
+
+                if (venueId.isNullOrBlank() || staffId.isNullOrBlank()) {
+                    Timber.w("⚠️ [Cash Payment] No session - venueId=$venueId, staffId=$staffId")
+                    _state.value = PaymentState.Error(
+                        message = "Tu sesión expiró.\n\nPor favor inicia sesión de nuevo.",
+                        canRetry = false
+                    )
+                    return@launch
+                }
+
+                currentVenueId = venueId
+                currentStaffId = staffId
 
                 // ⭐ CRITICAL: Validate shift is open before processing payment (Square/Toast pattern)
                 // Without an open shift, cash reconciliation is impossible
@@ -2198,17 +2223,26 @@ class PaymentViewModel @Inject constructor(
      * Snapshot the current transaction data to enable smart retry.
      * If payment fails, context can be restored without losing user input.
      *
-     * @return RetryContext with amount, tip, rating, merchant
+     * @return RetryContext with amount, tip, rating, merchant, and order context
      */
     private fun createPaymentContext(): RetryContext {
         val context = RetryContext(
             amount = currentAmount,
             tipAmount = currentTip,
             rating = currentRating,
-            merchantAccountId = _currentMerchant.value?.merchantAccountId  // ✅ FIX: Use backend CUID, not local ID
+            merchantAccountId = _currentMerchant.value?.merchantAccountId,  // Backend CUID (may be null for fallback)
+            merchantLocalId = _currentMerchant.value?.id,  // 🆕 Local ID fallback for merchants without backend CUID
+            // 🆕 Order context (FIX: preserve order data for retry)
+            orderId = currentOrderId,
+            orderNumber = currentOrderNumber,
+            splitType = currentSplitType,
+            equalPartsPartySize = currentEqualPartsPartySize,
+            equalPartsPayedFor = currentEqualPartsPayedFor,
+            paidProductIds = currentPaidProductIds
         )
         Timber.d("📸 [Context Snapshot] amount=$currentAmount | tip=$currentTip | rating=$currentRating | merchant_cuid=${_currentMerchant.value?.merchantAccountId ?: "NULL"} | local_id=${_currentMerchant.value?.id}")
-        Timber.d("📸 [Context Snapshot] isValid=${context.isValid()}")
+        Timber.d("📸 [Context Snapshot] orderId=$currentOrderId | orderNumber=$currentOrderNumber | splitType=$currentSplitType")
+        Timber.d("📸 [Context Snapshot] isValid=${context.isValid()} | isOrderPayment=${context.isOrderPayment()}")
         return context
     }
 
@@ -2256,21 +2290,43 @@ class PaymentViewModel @Inject constructor(
         currentTip = context.tipAmount
         currentRating = context.rating
 
+        // 🆕 FIX: Restore order context from RetryContext (prevents "order not found" error)
+        currentOrderId = context.orderId
+        currentOrderNumber = context.orderNumber
+        currentSplitType = context.splitType
+        currentEqualPartsPartySize = context.equalPartsPartySize
+        currentEqualPartsPayedFor = context.equalPartsPayedFor
+        currentPaidProductIds = context.paidProductIds ?: emptyList()
+
+        Timber.d("🔄 [Smart Retry] Order context restored: orderId=${context.orderId} | orderNumber=${context.orderNumber} | splitType=${context.splitType}")
+
         // Restore merchant selection (if not cash payment)
         // ✅ CASH HANDLING: null merchantAccountId = cash payment (no merchant to restore)
-        val merchant = context.merchantAccountId?.let { merchantId ->
-            _merchants.value.firstOrNull { it.id == merchantId }
-        }
-        if (merchant != null) {
-            _currentMerchant.value = merchant
-            Timber.d("🔄 [Smart Retry] Merchant restored: ${merchant.displayName}")
-        } else if (context.merchantAccountId == null) {
-            Timber.d("🔄 [Smart Retry] Cash payment - no merchant to restore")
-        } else {
-            Timber.w("🔄 [Smart Retry] Merchant not found: ${context.merchantAccountId}")
+        // 🆕 FIX: Try merchantAccountId first (backend CUID), fallback to merchantLocalId
+        val merchant = context.merchantAccountId?.let { merchantCuid ->
+            // Try to find by backend CUID
+            _merchants.value.firstOrNull { it.merchantAccountId == merchantCuid }
+        } ?: context.merchantLocalId?.let { localId ->
+            // Fallback: Try to find by local ID (for fallback merchants without backend CUID)
+            _merchants.value.firstOrNull { it.id == localId }
         }
 
-        Timber.i("🔄 [Smart Retry] Restored context | amount=${context.amount} | tip=${context.tipAmount} | rating=${context.rating} | merchant=${context.merchantAccountId ?: "CASH"}")
+        if (merchant != null) {
+            _currentMerchant.value = merchant
+            Timber.d("🔄 [Smart Retry] Merchant restored: ${merchant.displayName} (id=${merchant.id}, cuid=${merchant.merchantAccountId})")
+        } else if (context.merchantAccountId == null && context.merchantLocalId == null) {
+            Timber.d("🔄 [Smart Retry] Cash payment - no merchant to restore")
+        } else {
+            Timber.w("🔄 [Smart Retry] Merchant not found | cuid=${context.merchantAccountId} | localId=${context.merchantLocalId}")
+            // 🆕 FIX: If merchant not found but we have merchants loaded, use first one as fallback
+            if (_merchants.value.isNotEmpty()) {
+                val fallbackMerchant = _merchants.value.first()
+                _currentMerchant.value = fallbackMerchant
+                Timber.w("🔄 [Smart Retry] Using fallback merchant: ${fallbackMerchant.displayName}")
+            }
+        }
+
+        Timber.i("🔄 [Smart Retry] Restored context | amount=${context.amount} | tip=${context.tipAmount} | rating=${context.rating} | merchant=${_currentMerchant.value?.displayName ?: "NONE"} | orderId=${context.orderId ?: "null"}")
 
         // ✅ Go directly to payment processing (skip amount/tip/rating steps)
         startPayment(context.amount)
@@ -2538,8 +2594,8 @@ class PaymentViewModel @Inject constructor(
 
                 val blumonSerial = _currentMerchant.value?.serialNumber ?: "" // ✅ CRITICAL FIX: Use VIRTUAL serial (e.g., "2841548417"), not physical terminal serial
 
-                // ⭐ Split payment params: Convert string to SplitType enum (for card payments)
-                val splitTypeEnumCard = currentSplitType?.let {
+                // ⭐ Split payment params: Convert string to SplitType enum
+                val splitTypeEnum = currentSplitType?.let {
                     try { SplitType.valueOf(it.uppercase()) } catch (e: Exception) { SplitType.FULLPAYMENT }
                 } ?: SplitType.FULLPAYMENT
 
@@ -2555,7 +2611,7 @@ class PaymentViewModel @Inject constructor(
                         merchantAccountId = merchantAccountId, // 🆕 PRIMARY: Merchant account ID
                         blumonSerialNumber = blumonSerial, // ⚠️ LEGACY: Fallback (FIXED: virtual serial)
                         // ⭐ Split payment params - CRITICAL for restricting split options after partial payment
-                        splitType = splitTypeEnumCard,
+                        splitType = splitTypeEnum,
                         paidProductIds = currentPaidProductIds,
                         equalPartsPartySize = currentEqualPartsPartySize,
                         equalPartsPayedFor = currentEqualPartsPayedFor

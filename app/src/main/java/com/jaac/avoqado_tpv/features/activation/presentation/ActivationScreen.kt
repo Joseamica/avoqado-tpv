@@ -50,6 +50,8 @@ fun ActivationScreen(
     onActivate: (String) -> Unit,
     isLoading: Boolean = false,
     errorMessage: String? = null,
+    configErrorMessage: String? = null,
+    onRetryConfig: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var activationCode by remember { mutableStateOf("") }
@@ -62,6 +64,33 @@ fun ActivationScreen(
     val dismissKeyboard: () -> Unit = {
         keyboardController?.hide()
         focusManager.clearFocus()
+    }
+
+    // Config Error Dialog - shown when terminal is activated but config fetch failed
+    if (configErrorMessage != null && onRetryConfig != null) {
+        AlertDialog(
+            onDismissRequest = { /* Non-dismissible - user must retry */ },
+            title = {
+                Text(
+                    text = "⚠️ Configuración Pendiente",
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = configErrorMessage,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = onRetryConfig,
+                    shape = RoundedCornerShape(50)
+                ) {
+                    Text("Reintentar")
+                }
+            }
+        )
     }
 
     Scaffold(
@@ -263,6 +292,23 @@ private fun ActivationScreenErrorPreview() {
             onActivate = {},
             isLoading = false,
             errorMessage = "Código incorrecto. 3 intento(s) restantes"
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun ActivationScreenConfigErrorPreview() {
+    AvoqadoTheme {
+        ActivationScreen(
+            serialNumber = "AVQD-1A2B3C4D5E6F",
+            onActivate = {},
+            isLoading = false,
+            errorMessage = null,
+            configErrorMessage = "Terminal activado, pero no se pudo cargar la configuración.\n\n" +
+                    "Los pagos con tarjeta no funcionarán sin esta configuración.\n\n" +
+                    "Verifique su conexión a internet e intente nuevamente.",
+            onRetryConfig = {}
         )
     }
 }

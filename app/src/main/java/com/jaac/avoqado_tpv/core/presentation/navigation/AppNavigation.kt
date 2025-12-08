@@ -183,11 +183,29 @@ fun AppNavigation(
             val viewModel: ActivationViewModel = hiltViewModel()
             val state by viewModel.state.collectAsStateWithLifecycle()
 
-            // Navigate to Login after successful activation
+            // Navigate to Login after successful activation or auto-detected activation
             LaunchedEffect(state) {
-                if (state is ActivationState.Success) {
-                    navController.navigate(NavRoute.Login.route) {
-                        popUpTo(NavRoute.Activation.route) { inclusive = true }
+                when (state) {
+                    is ActivationState.Success,
+                    is ActivationState.AlreadyActivated -> {
+                        navController.navigate(NavRoute.Login.route) {
+                            popUpTo(NavRoute.Activation.route) { inclusive = true }
+                        }
+                    }
+                    else -> { /* Stay on activation screen */ }
+                }
+            }
+
+            // Auto-retry: Check if terminal is already activated on backend every 10 seconds
+            // This handles the case where user arrives here because server was down,
+            // but the terminal IS activated. When server comes back, auto-navigate to Login.
+            LaunchedEffect(Unit) {
+                while (true) {
+                    delay(10_000) // 10 seconds
+                    val isActivated = viewModel.checkAlreadyActivatedOnBackend()
+                    if (isActivated) {
+                        Timber.i("🔄 [Activation] Auto-retry detected activation - stopping loop")
+                        break // Terminal activated, navigation will happen via state change
                     }
                 }
             }
@@ -197,7 +215,9 @@ fun AppNavigation(
                 serialNumber = viewModel.serialNumber,
                 onActivate = viewModel::activate,
                 isLoading = state is ActivationState.Loading,
-                errorMessage = (state as? ActivationState.Error)?.message
+                errorMessage = (state as? ActivationState.Error)?.message,
+                configErrorMessage = (state as? ActivationState.ConfigError)?.message,
+                onRetryConfig = if (state is ActivationState.ConfigError) viewModel::retryConfigFetch else null
             )
         }
 

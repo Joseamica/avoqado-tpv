@@ -75,8 +75,12 @@ class HeartbeatWorker @AssistedInject constructor(
         /**
          * Number of consecutive 404 "not found" errors required before clearing activation.
          * This protects against temporary issues or code bugs causing false 404s.
+         *
+         * Set to 10 to be more tolerant of temporary server issues:
+         * - At 30s heartbeat interval, this means ~5 minutes of sustained 404s
+         * - Prevents false deactivation when server is restarting or temporarily unreachable
          */
-        private const val MAX_NOT_FOUND_BEFORE_CLEAR = 3
+        private const val MAX_NOT_FOUND_BEFORE_CLEAR = 10
 
         /**
          * SharedPreferences key for tracking consecutive 404 errors.

@@ -174,10 +174,17 @@ class DeviceInfoManager @Inject constructor(
                 val status = response.body()!!
                 Timber.d("✅ Backend activation check: isActivated=${status.isActivated}, status=${status.status}")
 
-                // 🚨 SECURITY: Clear local data if backend says not activated or RETIRED
-                if (!status.isActivated || status.status == "RETIRED") {
-                    Timber.w("⚠️ Terminal not activated or RETIRED on backend - clearing local data")
+                // 🚨 SECURITY: Only clear local data if terminal is RETIRED (stolen/revoked)
+                // DO NOT clear on !isActivated - could be temporary server issue
+                // This prevents losing venueId when server is down and comes back up
+                if (status.status == "RETIRED") {
+                    Timber.w("🚨 Terminal RETIRED by administrator - clearing all local data")
                     secureStorage.clearAll()
+                } else if (!status.isActivated) {
+                    // Terminal not activated but NOT retired - preserve venueId for recovery
+                    // User will be sent to Activation screen but can recover when server confirms
+                    Timber.w("⚠️ Backend says terminal not activated - preserving venueId for recovery")
+                    // NOTE: Do NOT clear secureStorage here - allows recovery when server confirms
                 } else {
                     // ✅ Square/Toast pattern: Restore local cache from backend if missing
                     // This handles: app reinstall, cache clear, data migration, variant switch

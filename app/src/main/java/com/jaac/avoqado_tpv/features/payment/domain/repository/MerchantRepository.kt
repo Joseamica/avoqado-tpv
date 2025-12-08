@@ -83,4 +83,15 @@ interface MerchantRepository {
      * @return Result.success if refresh succeeded
      */
     suspend fun refreshMerchants(): Result<Unit>
+
+    /**
+     * Update merchants with list from backend
+     *
+     * Replaces all current merchant accounts with the provided list.
+     * Called after terminal activation or config refresh to load
+     * merchant accounts with proper backend CUIDs.
+     *
+     * @param merchants List of merchant accounts with backend CUIDs (merchantAccountId)
+     */
+    fun updateMerchants(merchants: List<MerchantAccount>)
 }

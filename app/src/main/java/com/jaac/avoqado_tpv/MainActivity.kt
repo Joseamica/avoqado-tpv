@@ -25,7 +25,7 @@ import com.jaac.avoqado_tpv.core.presentation.navigation.AppNavigation
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
-import com.jaac.avoqado_tpv.features.payment.data.MerchantRepositoryImpl
+import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -67,7 +67,7 @@ class MainActivity : ComponentActivity() {
     lateinit var terminalConfigRepository: TerminalConfigRepository
 
     @Inject
-    lateinit var merchantRepository: MerchantRepositoryImpl
+    lateinit var merchantRepository: MerchantRepository
 
     /**
      * State to track permission status

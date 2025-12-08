@@ -21,13 +21,28 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
  * @param amount Payment amount in decimal format (e.g., "500.00")
  * @param tipAmount Tip amount in decimal format (e.g., "50.00", "0" if no tip)
  * @param rating User rating (1-5 stars, null if skipped)
- * @param merchantAccountId Selected merchant account ID
+ * @param merchantAccountId Selected merchant account ID (backend CUID)
+ * @param merchantLocalId Local merchant ID (for fallback merchants without CUID)
+ * @param orderId Order ID (null = fast payment, non-null = order payment)
+ * @param orderNumber Order number for display
+ * @param splitType Split payment type (EQUALPARTS, PERPRODUCT, CUSTOMAMOUNT, FULLPAYMENT)
+ * @param equalPartsPartySize Total people for EQUALPARTS mode
+ * @param equalPartsPayedFor People already paid for in EQUALPARTS mode
+ * @param paidProductIds Product IDs already paid for in PERPRODUCT mode
  */
 data class RetryContext(
     val amount: String,
     val tipAmount: String,
     val rating: Int?,
-    val merchantAccountId: String?  // ✅ NULLABLE: null for cash payments
+    val merchantAccountId: String?,  // ✅ NULLABLE: null for cash payments
+    val merchantLocalId: String? = null,  // 🆕 Fallback for merchants without backend CUID
+    // 🆕 Order context fields (FIX: preserve order data for retry)
+    val orderId: String? = null,
+    val orderNumber: String? = null,
+    val splitType: String? = null,
+    val equalPartsPartySize: Int? = null,
+    val equalPartsPayedFor: Int? = null,
+    val paidProductIds: List<String>? = null
 ) {
     /**
      * Calculate total amount (amount + tip).
@@ -48,6 +63,11 @@ data class RetryContext(
         return amount.toBigDecimalOrNull()?.let { it > java.math.BigDecimal.ZERO } == true
         // ✅ Removed: merchantAccountId.isNotBlank() check (cash has null merchant)
     }
+
+    /**
+     * Check if this is an order payment (vs fast payment)
+     */
+    fun isOrderPayment(): Boolean = orderId != null
 }
 
 /**

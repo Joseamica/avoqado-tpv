@@ -194,6 +194,66 @@ try {
 viewModelScope.launch { doWork() }
 ```
 
+### ⚠️ Anti-Overengineering Protocol (MANDATORY)
+
+> **CRITICAL**: Before implementing any solution, ALWAYS verify it's the MINIMUM necessary code. Review TWICE to prevent overengineering.
+
+#### The 3-Question Test (Ask Before Every Implementation)
+
+1. **"Does this already work?"** → Check existing code first. 99% of cases may already be handled.
+2. **"Is this the simplest solution?"** → Can I achieve the same with fewer files/lines?
+3. **"Am I solving a real problem?"** → Is this fixing an actual bug or a hypothetical one?
+
+#### Red Flags 🚩 (STOP and Reconsider)
+
+```kotlin
+// 🚩 RED FLAG: Modifying 7+ files for a "simple" fix
+// Ask: Can I do this with 3 files or less?
+
+// 🚩 RED FLAG: Adding JWT decoding, proactive token refresh, new managers
+// Ask: Does TokenAuthenticator already handle 401s automatically?
+
+// 🚩 RED FLAG: Creating new abstractions "for future flexibility"
+// Ask: Do I need this NOW or am I guessing future requirements?
+
+// 🚩 RED FLAG: Adding validation that duplicates existing validation
+// Ask: Is this already validated elsewhere in the flow?
+```
+
+#### Minimal Solution Pattern
+
+```kotlin
+// ❌ OVERENGINEERED: 7 files, JWT decoding, proactive refresh, new managers
+// "What if the token expires mid-payment? Let me decode JWT, track expiry,
+//  add proactive refresh, create a SessionHealthChecker..."
+
+// ✅ MINIMAL: 3 files, simple null check
+// "If venueId/staffId are null, show error + login button. Done."
+fun startPayment(amount: String) {
+    val venueId = authRepository.getVenueId()
+    val staffId = authRepository.getStaffId()
+
+    if (venueId.isNullOrBlank() || staffId.isNullOrBlank()) {
+        _state.value = PaymentState.Error(
+            message = "Tu sesión expiró.\n\nPor favor inicia sesión de nuevo.",
+            showLoginButton = true
+        )
+        return
+    }
+    // Continue with existing flow...
+}
+```
+
+#### Before Implementing, Check:
+
+- [ ] **Existing handlers**: Does TokenAuthenticator/SessionManager already cover this?
+- [ ] **Scope creep**: Am I adding features nobody asked for?
+- [ ] **Hypothetical bugs**: Am I fixing a bug that hasn't happened?
+- [ ] **File count**: Can I reduce the number of modified files?
+- [ ] **Line count**: Can I achieve the same with less code?
+
+**Rule of Thumb**: If your "fix" touches more than 3-4 files, STOP and ask yourself if you're overengineering.
+
 ### Naming Conventions
 
 ```kotlin
@@ -983,6 +1043,36 @@ app/src/
 - ⚠️ **Changes in `app/src/sandbox/`** → Only sandbox (must also edit `app/src/production/` manually)
 - ⚠️ **Changes in `app/src/production/`** → Only production (must also edit `app/src/sandbox/` manually)
 
+> ### 🚨 MANDATORY: Sync Changes Between Sandbox and Production
+>
+> **When you modify `PaymentViewModel.kt` in sandbox, you MUST apply the same changes to production (and vice versa).**
+>
+> **Why?** These files share 99% of the same code. Only the Blumon SDK URLs differ:
+> - Sandbox: `sandbox-tokener.blumonpay.net`
+> - Production: `tokener.blumonpay.net`
+>
+> **What to sync:**
+> - ✅ Bug fixes (Smart Retry, order context, merchant lookup)
+> - ✅ New features (split payments, error handling)
+> - ✅ Refactoring (function signatures, state management)
+> - ❌ SDK-specific config (URLs, AAR files, `arpcResponseCode` parameter)
+>
+> **How to sync:**
+> ```bash
+> # After modifying sandbox PaymentViewModel:
+> diff app/src/sandbox/.../PaymentViewModel.kt app/src/production/.../PaymentViewModel.kt
+> # Apply relevant changes to production (NOT the SDK URLs)
+>
+> # After modifying production PaymentViewModel:
+> diff app/src/production/.../PaymentViewModel.kt app/src/sandbox/.../PaymentViewModel.kt
+> # Apply relevant changes to sandbox
+> ```
+>
+> **Recent example (2025-12-03):**
+> Smart Retry improvements (preserving order context for retry) were added to sandbox but NOT production.
+> This caused production to lose order context on payment retry → "order not found" errors.
+> **Fix:** Manually synced `createPaymentContext()` and `retryPayment()` to production.
+
 **Why Separate Files?**
 - PaymentViewModel, InitializationManager, BlumonInitializer differ only in Blumon SDK configuration:
   - Sandbox: `https://sandbox-tokener.blumonpay.net`
@@ -1029,6 +1119,181 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 23)
 | 401 "Usuario no encontrado" | Wrong variant - use sandbox for testing |
 | `Unsupported class file major version 68` | Set Java 23: `export JAVA_HOME=$(/usr/libexec/java_home -v 23)` |
 | Hilt/NoSuchFile errors | Clean: `rm -rf app/build .gradle build && ./gradlew clean` |
+
+---
+
+### 🏭 FLUJO COMPLETO: Lanzamiento a Producción con Blumon
+
+> **⚠️ CRÍTICO**: El SDK de Blumon **NO detecta automáticamente** si es producción o sandbox.
+> El ambiente se determina por el **build variant** que compiles.
+
+#### ¿Cómo funciona la detección de ambiente?
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ APK Sandbox (assembleSandboxRelease)                            │
+│ └── Hardcodeado para usar: sandbox-tokener.blumonpay.net        │
+│ └── Siempre usará sandbox, SIN IMPORTAR en qué terminal         │
+├─────────────────────────────────────────────────────────────────┤
+│ APK Producción (assembleProductionRelease)                      │
+│ └── Hardcodeado para usar: tokener.blumonpay.net                │
+│ └── Siempre usará producción, SIN IMPORTAR en qué terminal      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### ¿Cómo obtiene la app el serial de la terminal?
+
+La app lee **automáticamente** el serial del hardware de la terminal PAX:
+
+```
+Terminal PAX (hardware)
+    │
+    └─► Build.getSerial() → "2841548417"
+            │
+            └─► App formatea: "AVQD-2841548417"
+                    │
+                    └─► App llama al backend: GET /tpv/terminals/AVQD-2841548417/config
+                            │
+                            └─► Backend responde: MerchantAccounts, posId, venueId, etc.
+```
+
+**Archivos clave:**
+- `DeviceInfoManager.kt` (línea 77-97): Lee `Build.getSerial()` del hardware
+- `MainActivity.kt` (línea 257-262): Obtiene config del backend usando el serial
+
+#### Flujo de Deployment a Producción
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ PASO 1: Compilar APK de Producción                              │
+├─────────────────────────────────────────────────────────────────┤
+│ ./gradlew assembleProductionRelease                             │
+│ Output: app/build/outputs/apk/production/release/               │
+│         app-production-release.apk                              │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ PASO 2: Enviar APK a Blumon                                     │
+├─────────────────────────────────────────────────────────────────┤
+│ Blumon instala remotamente el APK en las terminales de          │
+│ producción que te asignarán.                                    │
+│                                                                 │
+│ ⚠️ IMPORTANTE: Solicitar a Blumon los SERIAL NUMBERS de las     │
+│ terminales ANTES de que instalen el APK.                        │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ PASO 3: Configurar Backend (ANTES de que instalen)              │
+├─────────────────────────────────────────────────────────────────┤
+│ En avoqado-server, crear en la BD:                              │
+│                                                                 │
+│ 1. PaymentProvider (si no existe):                              │
+│    - code: "BLUMON"                                             │
+│    - active: true                                               │
+│                                                                 │
+│ 2. MerchantAccount (por cada terminal):                         │
+│    - blumonSerialNumber: "SERIAL_DE_BLUMON" (sin prefijo AVQD)  │
+│    - blumonEnvironment: "PRODUCTION"                            │
+│    - blumonPosId: (proporcionado por Blumon)                    │
+│    - active: true                                               │
+│                                                                 │
+│ 3. ProviderCostStructure:                                       │
+│    - debitRate, creditRate, amexRate (tasas acordadas)          │
+│    - effectiveFrom: fecha actual                                │
+│    - effectiveTo: null (vigente)                                │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ PASO 4: Blumon instala APK en terminal                          │
+├─────────────────────────────────────────────────────────────────┤
+│ La terminal ya está activada en el sistema de Blumon.           │
+│ El APK se instala remotamente.                                  │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│ PASO 5: App se inicializa automáticamente                       │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. App lee serial del hardware: Build.getSerial()               │
+│ 2. App llama a tu backend: "Dame config para AVQD-{serial}"     │
+│ 3. Backend responde con MerchantAccount de producción           │
+│ 4. App inicializa SDK con tokener.blumonpay.net (PROD)          │
+│ 5. App obtiene OAuth token + RSA keys + DUKPT keys              │
+│ 6. ✅ Terminal lista para procesar pagos REALES                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### ⚠️ DISTINCIÓN CRÍTICA: TPV vs E-commerce
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ BLUMON SDK ANDROID (TPV) - Este proyecto                       │
+├─────────────────────────────────────────────────────────────────┤
+│ • El AMBIENTE se determina por el BUILD VARIANT del APK        │
+│ • El APK se conecta DIRECTO a Blumon (sandbox o producción)    │
+│ • El backend SOLO provee configuración (MerchantAccount, etc.) │
+│ • NO usa USE_BLUMON_MOCK - esa variable NO APLICA aquí         │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│ BLUMON E-COMMERCE (Links de pago) - Otro proyecto              │
+├─────────────────────────────────────────────────────────────────┤
+│ • SDK JavaScript para páginas web de clientes                  │
+│ • El BACKEND hace las llamadas a Blumon API                    │
+│ • USE_BLUMON_MOCK controla si usa mock o API real              │
+│ • Completamente separado del SDK Android                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Variables de Entorno del Backend para Producción
+
+| Variable | Aplica a TPV? | Valor Producción | Descripción |
+|----------|---------------|------------------|-------------|
+| `NODE_ENV` | ✅ Sí | `production` | Modo producción general |
+| `USE_BLUMON_MOCK` | ❌ NO | `false` | Solo para E-commerce, no TPV |
+| `MERCHANT_CREDENTIALS_ENCRYPTION_KEY` | ✅ Sí | (clave segura) | Encriptación de credenciales |
+| `BLUMON_KYC_EMAILS` | ✅ Sí | emails de Blumon | Para documentos KYC |
+
+#### Checklist Pre-Producción
+
+**Antes de enviar APK a Blumon:**
+- [ ] Compilar con `./gradlew assembleProductionRelease`
+- [ ] Verificar que usa `blumon_sdk-prod.aar` (no debug)
+- [ ] Solicitar serial numbers de terminales a Blumon
+
+**Antes de que Blumon instale:**
+- [ ] Crear PaymentProvider "BLUMON" en BD (si no existe)
+- [ ] Crear MerchantAccount con cada serial y `blumonEnvironment: "PRODUCTION"`
+- [ ] Crear ProviderCostStructure con tasas acordadas
+- [ ] Verificar `USE_BLUMON_MOCK=false` en backend
+
+**Después de instalación:**
+- [ ] Verificar que terminal se conecta al backend
+- [ ] Verificar que OAuth funciona con tokener.blumonpay.net
+- [ ] Hacer transacción de prueba (monto pequeño) para validar
+- [ ] Verificar que el pago se registra en el backend correctamente
+
+#### Diferencias Técnicas: Sandbox vs Production
+
+| Aspecto | Sandbox | Production |
+|---------|---------|------------|
+| **Build Variant** | `sandboxDebug/Release` | `productionRelease` |
+| **Package ID** | `com.jaac.avoqado_tpv.sandbox` | `com.jaac.avoqado_tpv` |
+| **Token Server** | `sandbox-tokener.blumonpay.net` | `tokener.blumonpay.net` |
+| **Core Server** | `sandbox-core.blumonpay.net` | `core.blumonpay.net` |
+| **SDK AAR** | `blumon_sdk-debug.aar` | `blumon_sdk-prod.aar` |
+| **BLUMON_ENV** | `"SAND"` | `"PROD"` |
+| **Keys** | Solo OAuth token | OAuth + RSA + DUKPT keys |
+| **Dinero** | Simulado | **REAL** |
+
+#### Troubleshooting Producción
+
+| Problema | Causa Probable | Solución |
+|----------|----------------|----------|
+| "Terminal no encontrada" | Serial no configurado en backend | Crear MerchantAccount con el serial correcto |
+| OAuth 401 | Terminal no activada en Blumon | Contactar a Blumon para verificar activación |
+| SDK no inicializa | APK incorrecto (sandbox en vez de prod) | Recompilar con `assembleProductionRelease` |
+| Pago rechazado | Keys incorrectas o expiradas | Verificar RSA/DUKPT keys, reinicializar SDK |
+| Backend no registra pago | `USE_BLUMON_MOCK=true` | Cambiar a `false` en variables de entorno |
 
 ---
 

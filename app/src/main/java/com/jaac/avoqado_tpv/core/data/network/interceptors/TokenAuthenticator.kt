@@ -63,6 +63,28 @@ class TokenAuthenticator @Inject constructor(
     private var isRefreshing = false
 
     /**
+     * Endpoints that should NOT trigger token refresh on 401.
+     * These endpoints use credentials (PIN, activation code) - NOT tokens.
+     * A 401 here means "bad credentials" or "venue suspended", NOT "token expired".
+     */
+    private val authEndpoints = listOf(
+        "/auth/login",
+        "/auth/",
+        "/login-pin",
+        "/activate",
+        "/refresh"  // Don't retry refresh if refresh itself fails
+    )
+
+    /**
+     * Check if this request is an authentication endpoint.
+     * Auth endpoints should not trigger token refresh on 401.
+     */
+    private fun isAuthEndpoint(request: Request): Boolean {
+        val path = request.url.encodedPath
+        return authEndpoints.any { path.contains(it, ignoreCase = true) }
+    }
+
+    /**
      * Called by OkHttp when a request receives 401 Unauthorized.
      *
      * **Return values:**
@@ -78,6 +100,14 @@ class TokenAuthenticator @Inject constructor(
      * @return Updated request with new token, or null if refresh failed
      */
     override fun authenticate(route: Route?, response: Response): Request? {
+        // ✅ CRITICAL: Skip token refresh for authentication endpoints
+        // A 401 on login/activate means "bad credentials" or "venue suspended"
+        // NOT "token expired" - let the calling code handle the error
+        if (isAuthEndpoint(response.request)) {
+            Timber.d("🔐 [Auth] 401 on auth endpoint (${response.request.url.encodedPath}) - skipping token refresh")
+            return null  // Let the error propagate to LoginViewModel
+        }
+
         Timber.w("⚠️ [Auth] Received 401 Unauthorized - Token expired, attempting refresh...")
 
         // 📺 Show loading overlay immediately so user knows something is happening

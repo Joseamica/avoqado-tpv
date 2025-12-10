@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">avoqado-tpv</string>
+    <string name="app_name">Avoqado</string>
 
     <!-- Payment Screen -->
     <string name="payment_title">Procesar Pago</string>

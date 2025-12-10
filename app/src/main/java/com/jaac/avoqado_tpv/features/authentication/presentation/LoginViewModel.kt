@@ -57,6 +57,10 @@ class LoginViewModel @Inject constructor(
             _state.value = when (result) {
                 is Result.Success -> {
                     Timber.d("✅ Login successful: ${result.data.staff.displayName}")
+                    Timber.d("📊 Venue status: ${result.data.venue.status}")
+
+                    // Save venue status for mid-session checks
+                    secureStorage.saveVenueStatus(result.data.venue.status)
 
                     // 🔌 Connect Socket.IO with JWT token
                     connectSocketIO(result.data)
@@ -72,15 +76,42 @@ class LoginViewModel @Inject constructor(
                     val technicalMessage = result.exception.message ?: "Error desconocido"
 
                     Timber.w("❌ Login failed: $technicalMessage")
+                    Timber.d("📝 User message: $userFriendlyMessage")
 
-                    // Check for terminal activation errors (client-side or server-side)
+                    // Helper to check keywords in both messages
+                    fun containsAny(vararg keywords: String): Boolean {
+                        return keywords.any { keyword ->
+                            technicalMessage.contains(keyword, ignoreCase = true) ||
+                            userFriendlyMessage.contains(keyword, ignoreCase = true)
+                        }
+                    }
+
+                    // Check for specific error types
                     when {
-                        technicalMessage.contains("TERMINAL_NOT_ACTIVATED", ignoreCase = true) ||
-                        technicalMessage.contains("Serial number not found", ignoreCase = true) ||
-                        technicalMessage.contains("must be activated", ignoreCase = true) -> {
+                        // Terminal activation errors
+                        containsAny("TERMINAL_NOT_ACTIVATED", "Serial number not found", "must be activated") -> {
                             Timber.w("⚠️ Terminal not activated - requires activation")
                             LoginState.TerminalNotActivated
                         }
+
+                        // Venue status errors (SUSPENDED, CLOSED, etc.)
+                        // Check both Spanish and English keywords in BOTH messages
+                        containsAny("not operational", "suspended", "suspendido", "cerrado permanentemente") -> {
+                            Timber.w("⚠️ Venue not operational: $userFriendlyMessage")
+                            LoginState.VenueNotOperational(
+                                message = userFriendlyMessage
+                            )
+                        }
+
+                        // Staff inactive/not found
+                        containsAny("no longer active", "ya no está activo") -> {
+                            Timber.w("⚠️ Staff no longer active")
+                            LoginState.Error(
+                                "Tu cuenta ya no está activa en este establecimiento.\n\n" +
+                                    "Contacta al administrador."
+                            )
+                        }
+
                         else -> {
                             // ✅ Show backend message to user (e.g., "PIN incorrecto, 3 intentos restantes")
                             LoginState.Error(userFriendlyMessage)
@@ -109,10 +140,11 @@ class LoginViewModel @Inject constructor(
     private fun connectSocketIO(authResponse: AuthResponse) {
         viewModelScope.launch {
             try {
-                val socketUrl = if (BuildConfig.DEBUG) {
-                    BuildConfig.SOCKET_URL_DEV  // Development: ngrok URL
-                } else {
+                // Use BLUMON_ENV to determine URL (matches NetworkModule logic)
+                val socketUrl = if (BuildConfig.BLUMON_ENV == "PROD") {
                     BuildConfig.SOCKET_URL  // Production: https://api.avoqado.io
+                } else {
+                    BuildConfig.SOCKET_URL_DEV  // Sandbox: ngrok URL
                 }
 
                 val jwtToken = authResponse.accessToken
@@ -173,4 +205,19 @@ sealed class LoginState {
      * - Clear any partial session data
      */
     data object TerminalNotActivated : LoginState()
+
+    /**
+     * Venue Not Operational State
+     *
+     * This state occurs when:
+     * - Venue is SUSPENDED (payment issues, policy violations)
+     * - Venue is ADMIN_SUSPENDED (suspended by Avoqado admin)
+     * - Venue is CLOSED (permanently closed)
+     *
+     * UI should:
+     * - Show informative message explaining the venue is not operational
+     * - Suggest contacting administrator
+     * - NOT allow login until venue status changes
+     */
+    data class VenueNotOperational(val message: String) : LoginState()
 }

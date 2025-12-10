@@ -9,6 +9,8 @@ import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
+import com.jaac.avoqado_tpv.core.domain.events.VenueStatusEvent
+import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
@@ -89,6 +91,18 @@ class HomeViewModel @Inject constructor(
     private val _hardwareStatus = MutableSharedFlow<SocketEvent>(replay = 0, extraBufferCapacity = 10)
     val hardwareStatus: SharedFlow<SocketEvent> = _hardwareStatus.asSharedFlow()
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // VENUE STATUS (for mid-session detection)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Current venue status from SecureStorage
+    private val _venueStatus = MutableStateFlow(secureStorage.getVenueStatus())
+    val venueStatus: StateFlow<VenueStatus> = _venueStatus.asStateFlow()
+
+    // Venue status change events (for UI reactions like forced logout)
+    private val _venueStatusEvents = MutableSharedFlow<VenueStatusEvent>(replay = 0, extraBufferCapacity = 5)
+    val venueStatusEvents: SharedFlow<VenueStatusEvent> = _venueStatusEvents.asSharedFlow()
+
     init {
         loadStaffInfo()
         // 🔌 Connect Socket.IO if session was restored (app restart)
@@ -147,10 +161,11 @@ class HomeViewModel @Inject constructor(
                     return@launch
                 }
 
-                val socketUrl = if (BuildConfig.DEBUG) {
-                    BuildConfig.SOCKET_URL_DEV  // Development: ngrok URL
-                } else {
+                // Use BLUMON_ENV to determine URL (matches NetworkModule logic)
+                val socketUrl = if (BuildConfig.BLUMON_ENV == "PROD") {
                     BuildConfig.SOCKET_URL  // Production: https://api.avoqado.io
+                } else {
+                    BuildConfig.SOCKET_URL_DEV  // Sandbox: ngrok URL
                 }
 
                 Timber.d("🔌 [Socket.IO] Connecting on session restore...")
@@ -420,6 +435,69 @@ class HomeViewModel @Inject constructor(
     fun exitMaintenance() {
         Timber.i("🛠️ [Maintenance] Staff exiting maintenance mode locally")
         maintenanceManager.exitMaintenance()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // VENUE STATUS CHANGE DETECTION
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * 📊 Check for Venue Status Changes
+     *
+     * Called after token refresh to detect if venue status changed mid-session.
+     * Emits appropriate VenueStatusEvent based on the change.
+     *
+     * @param newStatus The new venue status from server response
+     */
+    fun checkVenueStatusChange(newStatus: VenueStatus) {
+        viewModelScope.launch {
+            val oldStatus = secureStorage.getVenueStatus()
+
+            if (oldStatus != newStatus) {
+                Timber.w("📊 [VenueStatus] Status changed: $oldStatus → $newStatus")
+
+                // Update storage and state
+                secureStorage.saveVenueStatus(newStatus)
+                _venueStatus.value = newStatus
+
+                // Emit appropriate event based on new status
+                when {
+                    // Venue suspended - force logout
+                    newStatus == VenueStatus.SUSPENDED || newStatus == VenueStatus.ADMIN_SUSPENDED -> {
+                        Timber.e("🚫 [VenueStatus] Venue suspended - forcing logout")
+                        _venueStatusEvents.emit(VenueStatusEvent.VenueSuspended)
+                    }
+
+                    // Venue closed - force logout
+                    newStatus == VenueStatus.CLOSED -> {
+                        Timber.e("🚫 [VenueStatus] Venue closed - forcing logout")
+                        _venueStatusEvents.emit(VenueStatusEvent.VenueClosed)
+                    }
+
+                    // Venue activated - show success
+                    newStatus == VenueStatus.ACTIVE && oldStatus != VenueStatus.ACTIVE -> {
+                        Timber.i("✅ [VenueStatus] Venue activated!")
+                        _venueStatusEvents.emit(VenueStatusEvent.VenueActivated)
+                    }
+
+                    // Other status changes - just notify
+                    else -> {
+                        Timber.i("📊 [VenueStatus] Status changed: $oldStatus → $newStatus")
+                        _venueStatusEvents.emit(VenueStatusEvent.StatusChanged(oldStatus, newStatus))
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Force logout due to venue status change
+     *
+     * Called when venue becomes SUSPENDED or CLOSED mid-session.
+     */
+    fun forceLogoutDueToVenueStatus() {
+        Timber.w("🚫 [VenueStatus] Force logout triggered")
+        logout()
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

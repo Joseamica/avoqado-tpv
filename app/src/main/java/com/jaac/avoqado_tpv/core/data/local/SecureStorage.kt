@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import timber.log.Timber
@@ -56,6 +57,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_VENUE_LOGO = "venue_logo"
         private const val KEY_VENUE_NAME = "venue_name"
         private const val KEY_VENUE_TYPE = "venue_type"
+        private const val KEY_VENUE_STATUS = "venue_status"
 
         // Blumon keys
         private const val KEY_BLUMON_MERCHANT_ID = "blumon_merchant_id"
@@ -202,7 +204,7 @@ class SecureStorage @Inject constructor(
      * Clear authentication session
      * Removes token and auth context
      *
-     * ⚠️ IMPORTANT: venueId is NOT cleared because it's part of device activation,
+     * ⚠️ IMPORTANT: venueId and venueStatus are NOT cleared because they're part of device activation,
      * not user session. The device remains activated to the venue even after logout.
      * Only the staff member's session (token, refreshToken, staffId, name, permissions) is cleared.
      */
@@ -210,12 +212,12 @@ class SecureStorage @Inject constructor(
         encryptedPrefs.edit().apply {
             remove(KEY_SESSION_TOKEN)
             remove(KEY_REFRESH_TOKEN)
-            // DO NOT remove KEY_VENUE_ID - device activation persists across logout!
+            // DO NOT remove KEY_VENUE_ID or KEY_VENUE_STATUS - device activation persists across logout!
             remove(KEY_STAFF_ID)
             remove(KEY_STAFF_NAME)
             remove(KEY_PERMISSIONS)
         }.apply()
-        Timber.d("Session cleared (venueId preserved for device activation)")
+        Timber.d("Session cleared (venueId and venueStatus preserved for device activation)")
     }
 
     // ========== Auth Context ==========
@@ -322,6 +324,42 @@ class SecureStorage @Inject constructor(
      */
     fun getVenueType(): String? {
         return encryptedPrefs.getString(KEY_VENUE_TYPE, null)
+    }
+
+    // ========== Venue Status ==========
+
+    /**
+     * Save venue status
+     * @param status VenueStatus enum value
+     */
+    fun saveVenueStatus(status: VenueStatus) {
+        encryptedPrefs.edit().putString(KEY_VENUE_STATUS, status.name).apply()
+        Timber.d("Venue status saved: ${status.name}")
+    }
+
+    /**
+     * Get venue status
+     * @return VenueStatus enum (defaults to ACTIVE if not set)
+     */
+    fun getVenueStatus(): VenueStatus {
+        val statusStr = encryptedPrefs.getString(KEY_VENUE_STATUS, null)
+        return VenueStatus.fromString(statusStr)
+    }
+
+    /**
+     * Check if venue is operational (can process payments)
+     * @return true if venue status allows operations
+     */
+    fun isVenueOperational(): Boolean {
+        return VenueStatus.isOperational(getVenueStatus())
+    }
+
+    /**
+     * Check if venue is in demo/trial mode
+     * @return true if venue is LIVE_DEMO or TRIAL
+     */
+    fun isVenueDemo(): Boolean {
+        return VenueStatus.isDemo(getVenueStatus())
     }
 
     /**

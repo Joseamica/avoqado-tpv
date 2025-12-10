@@ -76,13 +76,15 @@ data class StaffMember(
  * Venue Information
  *
  * Basic venue details for context.
+ * Includes operational status for UI feedback.
  */
 data class VenueInfo(
     val id: String,
     val name: String,
     val posType: String?,
     val posStatus: String?,
-    val logo: String?
+    val logo: String?,
+    val status: VenueStatus = VenueStatus.ACTIVE
 )
 
 /**

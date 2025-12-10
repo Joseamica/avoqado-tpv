@@ -45,15 +45,16 @@ object NetworkModule {
     /**
      * Base URL for API
      *
-     * Uses DEV URL in debug builds, PROD URL in release
+     * Uses PROD URL for production flavor, DEV URL for sandbox flavor.
+     * This allows productionDebug to use the real API while sandboxDebug uses ngrok.
      */
     @Provides
     @Singleton
     fun provideBaseUrl(): String {
-        return if (BuildConfig.DEBUG) {
-            BuildConfig.API_BASE_URL_DEV
+        return if (BuildConfig.BLUMON_ENV == "PROD") {
+            BuildConfig.API_BASE_URL  // Production: api.avoqado.io
         } else {
-            BuildConfig.API_BASE_URL
+            BuildConfig.API_BASE_URL_DEV  // Sandbox: ngrok dev server
         }
     }
 

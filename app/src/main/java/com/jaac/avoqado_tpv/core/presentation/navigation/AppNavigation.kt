@@ -113,9 +113,17 @@ fun AppNavigation(
         sessionManager.sessionEvents.collect { event ->
             when (event) {
                 is SessionEvent.Expired -> {
-                    Timber.w("🚪 [AppNavigation] Session expired - navigating to Login")
-                    navController.navigate(NavRoute.Login.route) {
-                        popUpTo(0) { inclusive = true } // Clear entire back stack
+                    // ✅ Guard: Don't navigate if already on Login screen
+                    // This prevents race condition where LoginViewModel is recreated
+                    // and loses VenueNotOperational state (e.g., venue suspended error)
+                    val currentRoute = navController.currentBackStackEntry?.destination?.route
+                    if (currentRoute != NavRoute.Login.route) {
+                        Timber.w("🚪 [AppNavigation] Session expired - navigating to Login")
+                        navController.navigate(NavRoute.Login.route) {
+                            popUpTo(0) { inclusive = true } // Clear entire back stack
+                        }
+                    } else {
+                        Timber.d("🔐 [AppNavigation] Already on Login screen - ignoring SessionEvent.Expired")
                     }
                     // Reset the expiring state after navigation completes
                     sessionManager.resetSessionExpiringState()

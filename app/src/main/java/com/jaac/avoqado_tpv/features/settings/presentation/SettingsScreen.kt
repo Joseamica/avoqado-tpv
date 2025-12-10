@@ -21,6 +21,7 @@ import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
+import com.jaac.avoqado_tpv.core.presentation.components.VenueStatusRow
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 
 /**
@@ -107,6 +108,11 @@ fun SettingsScreen(
                         SettingsRow(
                             label = "Android",
                             value = "API ${Build.VERSION.SDK_INT} (${Build.VERSION.RELEASE})"
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        VenueStatusRow(
+                            status = state.venueStatus,
+                            modifier = Modifier.padding(horizontal = 0.dp, vertical = 4.dp)
                         )
                     }
                 }

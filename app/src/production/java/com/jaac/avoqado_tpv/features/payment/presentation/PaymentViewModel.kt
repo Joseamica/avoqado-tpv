@@ -60,6 +60,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import com.pax.dal.entity.EReaderType
 import com.paxsz.module.emv.process.enums.TransResultEnum
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -513,31 +514,47 @@ class PaymentViewModel @Inject constructor(
      */
     private fun ensureMerchantsLoaded() {
         if (merchantsLoaded) {
-            Timber.d("🏪 [Merchants] Already loaded, skipping...")
+            Timber.d("🏪 [Merchants] Already observing, skipping...")
             return
         }
         merchantsLoaded = true
-        Timber.d("🏪 [Merchants] Loading merchant accounts...")
+        Timber.d("🏪 [Merchants] Starting merchant flow observation...")
 
-        // 🏪 Load merchants and current merchant, then signal completion
+        // 🏪 OBSERVE merchants continuously (NOT .first() snapshot!)
+        // This fixes race condition where backend fetch completes AFTER ViewModel loads
+        // When MerchantRepository.updateMerchants() is called, this collector receives update
         viewModelScope.launch {
             try {
-                // Load available merchant accounts (first emission only)
-                val merchantList = getMerchantsUseCase().first()
-                _merchants.value = merchantList
-                Timber.d("🏪 [Merchants] Loaded ${merchantList.size} accounts")
+                getMerchantsUseCase().collect { merchantList ->
+                    val previousCount = _merchants.value.size
+                    _merchants.value = merchantList
 
-                // Track current merchant from SDK manager
-                _currentMerchant.value = multiMerchantSDKManager.getCurrentMerchant()
-                Timber.d("🏪 [Merchants] Current account: ${_currentMerchant.value?.displayName ?: "Default"}")
+                    // Log changes for debugging
+                    if (previousCount != merchantList.size || previousCount == 0) {
+                        Timber.i("🏪 [Merchants] Updated: ${merchantList.size} accounts")
+                        merchantList.forEach { merchant ->
+                            Timber.d("   📦 ${merchant.displayName} (${merchant.serialNumber}, posId: ${merchant.posId}, env: ${merchant.environment})")
+                        }
+                    }
 
-                // 🔒 Signal that merchants are fully loaded
-                if (!merchantsLoadingDeferred.isCompleted) {
-                    merchantsLoadingDeferred.complete(Unit)
-                    Timber.d("✅ [Merchants] Loading complete - deferred signaled")
+                    // Track current merchant from SDK manager (only on first emission)
+                    if (_currentMerchant.value == null) {
+                        _currentMerchant.value = multiMerchantSDKManager.getCurrentMerchant()
+                        Timber.d("🏪 [Merchants] Current account: ${_currentMerchant.value?.displayName ?: "Default"}")
+                    }
+
+                    // 🔒 Signal that merchants are loaded (first emission)
+                    if (!merchantsLoadingDeferred.isCompleted) {
+                        merchantsLoadingDeferred.complete(Unit)
+                        Timber.d("✅ [Merchants] Initial load complete - deferred signaled")
+                    }
                 }
+            } catch (e: CancellationException) {
+                // Expected when ViewModel is destroyed during navigation - rethrow per coroutines best practice
+                Timber.d("🏪 [Merchants] Observation cancelled (navigation)")
+                throw e
             } catch (e: Exception) {
-                Timber.e(e, "❌ [Merchants] Failed to load merchants")
+                Timber.e(e, "❌ [Merchants] Failed to observe merchants")
                 // Complete anyway to avoid blocking forever
                 if (!merchantsLoadingDeferred.isCompleted) {
                     merchantsLoadingDeferred.complete(Unit)
@@ -648,30 +665,38 @@ class PaymentViewModel @Inject constructor(
         viewModelScope.launch {
             awaitMerchantsLoaded()
 
-            // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
             val merchants = _merchants.value
-            if (merchants.size == 1) {
-                val onlyMerchant = merchants.first()
-                Timber.d("🏪 [Payment Flow] Only 1 merchant available (${onlyMerchant.displayName}) → Auto-selecting and skipping merchant selection screen")
-                updateSelectedMerchant(onlyMerchant)
-                startPayment(totalAmount)
+
+            // ❌ NO MERCHANTS: Show error and block payment
+            if (merchants.isEmpty()) {
+                Timber.e("❌ [Payment Flow] No merchants available - cannot proceed with payment")
+                _state.value = PaymentState.Error(
+                    message = "No hay cuentas de pago configuradas.\n\n" +
+                            "Contacta al administrador para agregar una cuenta de procesador de pagos.",
+                    context = createPaymentContext()
+                )
                 return@launch
             }
 
-            // Multiple merchants → Show selection screen
+            // Pre-select if only 1 merchant (but still show Step 3 for user confirmation)
+            if (merchants.size == 1) {
+                val onlyMerchant = merchants.first()
+                Timber.d("🏪 [Payment Flow] Only 1 merchant (${onlyMerchant.displayName}) → Pre-selecting")
+                _currentMerchant.value = onlyMerchant
+            } else if (_currentMerchant.value == null && merchants.isNotEmpty()) {
+                // Multiple merchants: auto-select first as default
+                val defaultMerchant = merchants.first()
+                Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
+                _currentMerchant.value = defaultMerchant
+            }
+
+            // ✅ ALWAYS show Step 3 (SelectingMerchant) - user must see summary & confirm payment method
             _state.value = PaymentState.SelectingMerchant(
                 subtotal = subtotal,
                 tipAmount = tipAmount,
                 totalAmount = totalAmount,
                 rating = rating
             )
-
-            // Auto-select first merchant if none selected
-            if (_currentMerchant.value == null && merchants.isNotEmpty()) {
-                val defaultMerchant = merchants.first()
-                Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
-                updateSelectedMerchant(defaultMerchant)
-            }
         }
     }
 
@@ -811,34 +836,31 @@ class PaymentViewModel @Inject constructor(
         currentTip = "0.00"
         currentRating = null
 
-        // ⚡ Performance: Load merchants only when needed (lazy-load)
-        ensureMerchantsLoaded()
+        // 🔒 CRITICAL: Await merchants to be fully loaded before using them
+        viewModelScope.launch {
+            awaitMerchantsLoaded()
 
-        // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
-        val merchants = _merchants.value
-        if (merchants.size == 1) {
-            val onlyMerchant = merchants.first()
-            Timber.d("🏪 [Test Payment] Only 1 merchant available (${onlyMerchant.displayName}) → Auto-selecting and starting payment")
-            updateSelectedMerchant(onlyMerchant)
+            // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
+            val merchants = _merchants.value
+            // Pre-select if only 1 merchant (but still show Step 3 for user confirmation)
+            if (merchants.size == 1) {
+                val onlyMerchant = merchants.first()
+                Timber.d("🏪 [Test Payment] Only 1 merchant (${onlyMerchant.displayName}) → Pre-selecting")
+                _currentMerchant.value = onlyMerchant
+            } else if (_currentMerchant.value == null && merchants.isNotEmpty()) {
+                // Multiple merchants: auto-select first as default
+                val defaultMerchant = merchants.first()
+                Timber.d("🏪 [Test Payment] Auto-selecting default merchant: ${defaultMerchant.displayName}")
+                _currentMerchant.value = defaultMerchant
+            }
 
-            // Go directly to payment processing (skip SelectingMerchant screen)
-            startPayment(amount)
-            return
-        }
-
-        // Multiple merchants → Show selection screen
-        _state.value = PaymentState.SelectingMerchant(
-            subtotal = amount,
-            tipAmount = "0",
-            totalAmount = amount,
-            rating = null
-        )
-
-        // Auto-select first merchant if none selected
-        if (_currentMerchant.value == null && merchants.isNotEmpty()) {
-            val defaultMerchant = merchants.first()
-            Timber.d("🏪 [Test Payment] Auto-selecting default merchant: ${defaultMerchant.displayName}")
-            updateSelectedMerchant(defaultMerchant)
+            // ✅ ALWAYS show Step 3 (SelectingMerchant) - user must see summary & confirm payment method
+            _state.value = PaymentState.SelectingMerchant(
+                subtotal = amount,
+                tipAmount = "0",
+                totalAmount = amount,
+                rating = null
+            )
         }
     }
 
@@ -861,32 +883,26 @@ class PaymentViewModel @Inject constructor(
         viewModelScope.launch {
             awaitMerchantsLoaded()
 
-            // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
+            // Pre-select if only 1 merchant (but still show Step 3 for user confirmation)
             val merchants = _merchants.value
             if (merchants.size == 1) {
                 val onlyMerchant = merchants.first()
-                Timber.d("🏪 [Payment Flow] Only 1 merchant available (${onlyMerchant.displayName}) → Auto-selecting and skipping merchant selection screen")
-                updateSelectedMerchant(onlyMerchant)
-
-                // Go directly to payment processing (skip SelectingMerchant screen)
-                startPayment(totalAmount)
-                return@launch
+                Timber.d("🏪 [Payment Flow] Only 1 merchant (${onlyMerchant.displayName}) → Pre-selecting")
+                _currentMerchant.value = onlyMerchant
+            } else if (_currentMerchant.value == null && merchants.isNotEmpty()) {
+                // Multiple merchants: auto-select first as default
+                val defaultMerchant = merchants.first()
+                Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
+                _currentMerchant.value = defaultMerchant
             }
 
-            // Multiple merchants → Show selection screen
+            // ✅ ALWAYS show Step 3 (SelectingMerchant) - user must see summary & confirm payment method
             _state.value = PaymentState.SelectingMerchant(
                 subtotal = subtotal,
                 tipAmount = tipAmount,
                 totalAmount = totalAmount,
                 rating = rating
             )
-
-            // Auto-select first merchant if none selected
-            if (_currentMerchant.value == null && merchants.isNotEmpty()) {
-                val defaultMerchant = merchants.first()
-                Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
-                updateSelectedMerchant(defaultMerchant)
-            }
 
             Timber.d("💵 [Payment Flow] SelectingMerchant state created: subtotal='$subtotal', tipAmount='$tipAmount', totalAmount='$totalAmount'")
         }
@@ -910,32 +926,26 @@ class PaymentViewModel @Inject constructor(
         viewModelScope.launch {
             awaitMerchantsLoaded()
 
-            // ⭐ AUTO-SKIP: If only 1 merchant, select it and skip merchant selection screen
+            // Pre-select if only 1 merchant (but still show Step 3 for user confirmation)
             val merchants = _merchants.value
             if (merchants.size == 1) {
                 val onlyMerchant = merchants.first()
-                Timber.d("🏪 [Payment Flow] Only 1 merchant available (${onlyMerchant.displayName}) → Auto-selecting and skipping merchant selection screen")
-                updateSelectedMerchant(onlyMerchant)
-
-                // Go directly to payment processing (skip SelectingMerchant screen)
-                startPayment(subtotal)  // Total = subtotal (no tip)
-                return@launch
+                Timber.d("🏪 [Payment Flow] Only 1 merchant (${onlyMerchant.displayName}) → Pre-selecting")
+                _currentMerchant.value = onlyMerchant
+            } else if (_currentMerchant.value == null && merchants.isNotEmpty()) {
+                // Multiple merchants: auto-select first as default
+                val defaultMerchant = merchants.first()
+                Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
+                _currentMerchant.value = defaultMerchant
             }
 
-            // Multiple merchants → Show selection screen
+            // ✅ ALWAYS show Step 3 (SelectingMerchant) - user must see summary & confirm payment method
             _state.value = PaymentState.SelectingMerchant(
                 subtotal = subtotal,
                 tipAmount = "0",
                 totalAmount = subtotal,
                 rating = rating
             )
-
-            // Auto-select first merchant if none selected
-            if (_currentMerchant.value == null && merchants.isNotEmpty()) {
-                val defaultMerchant = merchants.first()
-                Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
-                updateSelectedMerchant(defaultMerchant)
-            }
         }
     }
 

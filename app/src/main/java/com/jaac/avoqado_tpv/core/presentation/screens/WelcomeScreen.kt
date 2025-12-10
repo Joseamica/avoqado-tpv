@@ -10,10 +10,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Help
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -29,6 +31,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jaac.avoqado_tpv.core.domain.events.VenueStatusEvent
 import com.jaac.avoqado_tpv.core.presentation.components.ActionButton
 import com.jaac.avoqado_tpv.core.presentation.components.ActionButtonGrid
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoDialog
@@ -37,8 +40,10 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.components.SettingsBottomSheet
 import com.jaac.avoqado_tpv.core.presentation.components.ShiftStatusBanner
+import com.jaac.avoqado_tpv.core.presentation.components.VenueStatusBanner
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel
+import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.features.remote_command.presentation.LockScreenOverlay
 import com.jaac.avoqado_tpv.features.remote_command.presentation.MaintenanceOverlay
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
@@ -110,6 +115,35 @@ fun WelcomeScreen(
     val maintenanceReason by viewModel.maintenanceManager.maintenanceReason.collectAsStateWithLifecycle()
     val maintenanceInitiatedBy by viewModel.maintenanceManager.initiatedBy.collectAsStateWithLifecycle()
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // VENUE STATUS (for mid-session detection)
+    // ═══════════════════════════════════════════════════════════════════════════
+    val venueStatus by viewModel.venueStatus.collectAsStateWithLifecycle()
+
+    // State for venue status dialogs
+    var showVenueSuspendedDialog by remember { mutableStateOf(false) }
+    var showVenueClosedDialog by remember { mutableStateOf(false) }
+
+    // Observe venue status events
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        viewModel.venueStatusEvents.collect { event ->
+            when (event) {
+                is VenueStatusEvent.VenueSuspended -> {
+                    showVenueSuspendedDialog = true
+                }
+                is VenueStatusEvent.VenueClosed -> {
+                    showVenueClosedDialog = true
+                }
+                is VenueStatusEvent.VenueActivated -> {
+                    // Could show a success toast/snackbar
+                }
+                is VenueStatusEvent.StatusChanged -> {
+                    // Status changed but still operational - no action needed
+                }
+            }
+        }
+    }
+
     // ⭐ FIX: Reload shift status whenever WelcomeScreen becomes visible
     // This ensures shift status is updated when returning from ShiftScreen
     androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -124,6 +158,7 @@ fun WelcomeScreen(
         currentShift = currentShift,
         isOffline = isOffline,
         cachedShiftInfo = cachedShiftInfo,
+        venueStatus = venueStatus,  // 📊 Pass venue status for banner
         onStartPaymentWithAmount = onStartPaymentWithAmount,  // ✅ Modal flow for first-time
         onNavigateToShifts = onNavigateToShifts,
         onNavigateToOrdering = onNavigateToOrdering,
@@ -168,6 +203,47 @@ fun WelcomeScreen(
         lockMessage = lockMessage,
         lockedBy = lockedBy
     )
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // VENUE STATUS DIALOGS
+    // Shown when venue becomes suspended or closed mid-session
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Venue Suspended Dialog
+    if (showVenueSuspendedDialog) {
+        AvoqadoDialog(
+            title = "Establecimiento Suspendido",
+            message = "Este establecimiento ha sido suspendido.\n\n" +
+                "No es posible continuar operando hasta que se resuelva la situación.\n\n" +
+                "Contacta al administrador para más información.",
+            icon = Icons.Default.Warning,
+            confirmText = "Entendido",
+            onDismiss = { },  // Cannot dismiss
+            onConfirm = {
+                showVenueSuspendedDialog = false
+                viewModel.forceLogoutDueToVenueStatus()
+                onLogout()
+            }
+        )
+    }
+
+    // Venue Closed Dialog
+    if (showVenueClosedDialog) {
+        AvoqadoDialog(
+            title = "Establecimiento Cerrado",
+            message = "Este establecimiento ha sido cerrado permanentemente.\n\n" +
+                "No es posible continuar operando.\n\n" +
+                "Contacta al administrador para más información.",
+            icon = Icons.Default.Block,
+            confirmText = "Entendido",
+            onDismiss = { },  // Cannot dismiss
+            onConfirm = {
+                showVenueClosedDialog = false
+                viewModel.forceLogoutDueToVenueStatus()
+                onLogout()
+            }
+        )
+    }
 }
 
 /**
@@ -193,6 +269,7 @@ private fun WelcomeScreenContent(
     currentShift: Shift?,
     isOffline: Boolean = false,
     cachedShiftInfo: CachedShiftInfo? = null,
+    venueStatus: VenueStatus = VenueStatus.ACTIVE,  // 📊 Venue status for banner
     onStartPaymentWithAmount: (String) -> Unit,  // ✅ Modal flow (first-time)
     onNavigateToShifts: () -> Unit,
     onNavigateToOrdering: () -> Unit,
@@ -296,6 +373,11 @@ private fun WelcomeScreenContent(
             scrollable = false,  // LazyVerticalGrid handles scrolling internally
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // ═══════════════════════════════════════════════════════════════
+            // VENUE STATUS BANNER (shows only for non-ACTIVE statuses)
+            // ═══════════════════════════════════════════════════════════════
+            VenueStatusBanner(status = venueStatus)
+
             // Top spacing
             Spacer(modifier = Modifier.height(16.dp))
 

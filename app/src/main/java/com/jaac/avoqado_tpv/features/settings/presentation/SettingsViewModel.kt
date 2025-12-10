@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
+import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -57,6 +58,7 @@ class SettingsViewModel @Inject constructor(
                 val serialNumber = secureStorage.getSerialNumber()
                 val venueName = secureStorage.getVenueName()
                 val venueId = secureStorage.getVenueId()
+                val venueStatus = secureStorage.getVenueStatus()
 
                 // Load TPV settings from repository
                 val tpvSettings = tpvSettingsRepository.getCurrentSettings()
@@ -66,11 +68,12 @@ class SettingsViewModel @Inject constructor(
                         serialNumber = serialNumber,
                         venueName = venueName,
                         venueId = venueId,
+                        venueStatus = venueStatus,
                         tpvSettings = tpvSettings
                     )
                 }
 
-                Timber.d("⚙️ Settings loaded: serial=$serialNumber, venue=$venueName")
+                Timber.d("⚙️ Settings loaded: serial=$serialNumber, venue=$venueName, status=$venueStatus")
             } catch (e: Exception) {
                 Timber.e(e, "Failed to load settings")
                 _state.update {
@@ -275,6 +278,7 @@ data class SettingsState(
     val serialNumber: String? = null,
     val venueName: String? = null,
     val venueId: String? = null,
+    val venueStatus: VenueStatus = VenueStatus.ACTIVE,
 
     // TPV Settings (from backend, editable)
     val tpvSettings: TpvSettings = TpvSettings.DEFAULT,

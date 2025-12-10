@@ -66,13 +66,15 @@ data class StaffMemberDto(
  * Venue Info DTO
  *
  * Venue context from backend.
+ * Includes status field for operational state tracking.
  */
 data class VenueInfoDto(
     @SerializedName("id") val id: String,
     @SerializedName("name") val name: String,
     @SerializedName("posType") val posType: String?,
     @SerializedName("posStatus") val posStatus: String?,
-    @SerializedName("logo") val logo: String?
+    @SerializedName("logo") val logo: String?,
+    @SerializedName("status") val status: String? = null
 )
 
 /**
@@ -157,7 +159,8 @@ fun VenueInfoDto.toDomain(): VenueInfo {
         name = name,
         posType = posType,
         posStatus = posStatus,
-        logo = logo
+        logo = logo,
+        status = VenueStatus.fromString(status)
     )
 }
 

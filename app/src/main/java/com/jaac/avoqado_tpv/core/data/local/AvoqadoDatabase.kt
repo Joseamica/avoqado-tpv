@@ -14,6 +14,8 @@ import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
 import com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity
+import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueDao
+import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.HistoricalPeriodEntity
@@ -36,6 +38,8 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
  * - v9 → v10: Added CachedShiftEntity (offline shift status display - Square/Toast prevention pattern - 2025-11-25)
  * - v10 → v11: Added paidAmount/remainingBalance for split payments (2025-11-26)
  * - v11 → v12: Added lastSplitType for split payment type restriction (2025-11-28)
+ * - v12 → v13: Added color fields to ProductCategoryEntity and ProductEntity (2025-12-01)
+ * - v13 → v14: Added VerificationQueueEntity for Step 4 sale verification queue (2025-12-11)
  *
  * **Entities:**
  * - PendingPaymentEntity: Offline queue for failed payment recordings
@@ -45,6 +49,7 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
  * - ProductEntity: Cache products for instant offline access (Toast POS pattern)
  * - ProductCategoryEntity: Cache product categories for instant offline access
  * - CachedShiftEntity: Offline cache for shift status (prevention pattern - shows last known state)
+ * - VerificationQueueEntity: Offline queue for Step 4 sale verification (photos, barcodes)
  *
  * **Future Entities:**
  * - PaymentHistoryEntity: Local cache of successful payments for offline access
@@ -68,6 +73,7 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
  * val productDao = database.productDao()
  * val productCategoryDao = database.productCategoryDao()
  * val cachedShiftDao = database.cachedShiftDao()
+ * val verificationQueueDao = database.verificationQueueDao()
  * ```
  *
  * **World-Class Examples:**
@@ -83,9 +89,10 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
         HistoricalPeriodEntity::class,
         ProductEntity::class,
         ProductCategoryEntity::class,
-        CachedShiftEntity::class
+        CachedShiftEntity::class,
+        VerificationQueueEntity::class
     ],
-    version = 12, // ⭐ Version 12: Added lastSplitType for split payment type restriction
+    version = 14, // ⭐ Version 14: Added VerificationQueueEntity for Step 4 sale verification
     exportSchema = false // Set to true when adding migrations for production
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -171,6 +178,23 @@ abstract class AvoqadoDatabase : RoomDatabase() {
      * - Reconnection: Auto-sync via ConnectionEventManager
      */
     abstract fun cachedShiftDao(): CachedShiftDao
+
+    /**
+     * DAO for verification queue (Step 4 sale verification).
+     *
+     * **Use Cases:**
+     * - Store verification photos and scanned barcodes locally
+     * - Queue verifications for upload when offline
+     * - Sync photos to Firebase Storage, metadata to backend
+     * - Track sync status (PENDING, UPLOADING_PHOTOS, SYNCING, SYNCED, FAILED)
+     *
+     * **Pattern (Offline-First):**
+     * - Capture: Save photos locally + barcode data
+     * - Upload: Photos → Firebase Storage, get URLs
+     * - Sync: Send metadata + URLs to backend API
+     * - Cleanup: Delete synced records after confirmation
+     */
+    abstract fun verificationQueueDao(): VerificationQueueDao
 
     companion object {
         const val DATABASE_NAME = "avoqado_database"
@@ -816,6 +840,119 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                 // Add last_split_type column (nullable - null means no restriction yet)
                 database.execSQL(
                     "ALTER TABLE draft_orders ADD COLUMN last_split_type TEXT DEFAULT NULL"
+                )
+            }
+        }
+
+        /**
+         * Migration from version 12 to version 13: Add color fields to products and categories.
+         *
+         * **Color Support for Products/Categories (2025-12-01)**
+         * - Adds color column to products table
+         * - Adds color column to product_categories table
+         * - Enables visual distinction in product catalog
+         *
+         * **SQL:**
+         * ```sql
+         * ALTER TABLE products ADD COLUMN color TEXT DEFAULT NULL;
+         * ALTER TABLE product_categories ADD COLUMN color TEXT DEFAULT NULL;
+         * ```
+         */
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Add color column to products (nullable)
+                database.execSQL(
+                    "ALTER TABLE products ADD COLUMN color TEXT DEFAULT NULL"
+                )
+                // Add color column to product_categories (nullable)
+                database.execSQL(
+                    "ALTER TABLE product_categories ADD COLUMN color TEXT DEFAULT NULL"
+                )
+            }
+        }
+
+        /**
+         * Migration from version 13 to version 14: Add verification queue table.
+         *
+         * **Step 4 Sale Verification (2025-12-11)**
+         * - Creates verification_queue table for offline verification storage
+         * - Stores captured photos (local paths + Firebase URLs) and scanned barcodes
+         * - Tracks sync status: PENDING → UPLOADING_PHOTOS → SYNCING → SYNCED | FAILED
+         *
+         * **Why This Migration:**
+         * - Enables retail/telecomunicaciones venues to capture sale evidence
+         * - Offline-first: Photos stored locally, synced when connection available
+         * - Automatic inventory deduction when verification syncs
+         *
+         * **Table Created:**
+         * **verification_queue**: Offline queue for sale verifications
+         * - Primary key: UUID (local generation)
+         * - Indexes: venueId, paymentId, syncStatus for efficient queries
+         * - Supports PENDING, UPLOADING_PHOTOS, SYNCING, SYNCED, FAILED states
+         *
+         * **Sync Flow:**
+         * 1. User captures photo/barcode → saved locally (PENDING)
+         * 2. Upload photos to Firebase Storage → (UPLOADING_PHOTOS)
+         * 3. Send metadata to backend API → (SYNCING)
+         * 4. Backend confirms + deducts inventory → (SYNCED)
+         * 5. WorkManager retries failed items periodically
+         *
+         * **SQL:**
+         * ```sql
+         * CREATE TABLE verification_queue (
+         *   id TEXT PRIMARY KEY NOT NULL,
+         *   venueId TEXT NOT NULL,
+         *   staffId TEXT NOT NULL,
+         *   paymentId TEXT NOT NULL,
+         *   orderId TEXT,
+         *   photoLocalPaths TEXT NOT NULL,
+         *   photoUrls TEXT NOT NULL,
+         *   scannedBarcodes TEXT NOT NULL,
+         *   syncStatus TEXT NOT NULL,
+         *   createdAt INTEGER NOT NULL,
+         *   syncAttempts INTEGER NOT NULL DEFAULT 0,
+         *   lastSyncError TEXT
+         * );
+         * CREATE INDEX idx_verification_venue ON verification_queue(venueId);
+         * CREATE INDEX idx_verification_payment ON verification_queue(paymentId);
+         * CREATE INDEX idx_verification_status ON verification_queue(syncStatus);
+         * ```
+         */
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Create verification_queue table
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS verification_queue (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        venueId TEXT NOT NULL,
+                        staffId TEXT NOT NULL,
+                        paymentId TEXT NOT NULL,
+                        orderId TEXT,
+                        photoLocalPaths TEXT NOT NULL,
+                        photoUrls TEXT NOT NULL,
+                        scannedBarcodes TEXT NOT NULL,
+                        syncStatus TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        syncAttempts INTEGER NOT NULL DEFAULT 0,
+                        lastSyncError TEXT
+                    )
+                    """.trimIndent()
+                )
+
+                // Create index for venue queries
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_verification_queue_venueId ON verification_queue(venueId)"
+                )
+
+                // Create index for payment lookups
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_verification_queue_paymentId ON verification_queue(paymentId)"
+                )
+
+                // Create index for sync status queries (find pending items)
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_verification_queue_syncStatus ON verification_queue(syncStatus)"
                 )
             }
         }

@@ -11,6 +11,7 @@ import com.jaac.avoqado_tpv.core.data.local.dao.HistoricalPeriodDao
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
+import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -86,7 +87,9 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_8_9,  // ⚡ Product cache (cache-first loading - 500ms → 10ms)
                 AvoqadoDatabase.MIGRATION_9_10,  // 📶 Cached shift (offline status display - Square/Toast pattern)
                 AvoqadoDatabase.MIGRATION_10_11, // 💰 Split payments (paidAmount/remainingBalance tracking)
-                AvoqadoDatabase.MIGRATION_11_12  // 🔀 Split type restriction (lastSplitType)
+                AvoqadoDatabase.MIGRATION_11_12, // 🔀 Split type restriction (lastSplitType)
+                AvoqadoDatabase.MIGRATION_12_13, // 🎨 Color fields for products/categories
+                AvoqadoDatabase.MIGRATION_13_14  // 📸 Step 4 verification queue (photos + barcodes)
             )
 
             // ⚠️ DEVELOPMENT ONLY: Destructive migration (data loss on schema change)
@@ -220,5 +223,28 @@ object DatabaseModule {
         database: AvoqadoDatabase
     ): CachedShiftDao {
         return database.cachedShiftDao()
+    }
+
+    /**
+     * Provides VerificationQueueDao from database.
+     *
+     * **Injected Into:**
+     * - VerificationRepository (Step 4 sale verification queue)
+     * - VerificationSyncWorker (background photo upload + sync)
+     *
+     * **Pattern (Offline-First):**
+     * - Capture photos + barcodes locally
+     * - Upload to Firebase Storage (UPLOADING_PHOTOS)
+     * - Sync metadata to backend API (SYNCING)
+     * - Cleanup after success (SYNCED)
+     *
+     * @param database AvoqadoDatabase instance
+     * @return VerificationQueueDao for verification queue operations
+     */
+    @Provides
+    fun provideVerificationQueueDao(
+        database: AvoqadoDatabase
+    ): VerificationQueueDao {
+        return database.verificationQueueDao()
     }
 }

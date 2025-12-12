@@ -1,13 +1,19 @@
 package com.jaac.avoqado_tpv.core.di
 
 import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.features.ordering.data.api.CustomerApiService
+import com.jaac.avoqado_tpv.features.ordering.data.api.DiscountApiService
 import com.jaac.avoqado_tpv.features.ordering.data.api.FloorElementApiService
 import com.jaac.avoqado_tpv.features.ordering.data.api.OrderApiService
 import com.jaac.avoqado_tpv.features.ordering.data.api.TableApiService
+import com.jaac.avoqado_tpv.features.ordering.data.repository.CustomerRepositoryImpl
+import com.jaac.avoqado_tpv.features.ordering.data.repository.DiscountRepositoryImpl
 import com.jaac.avoqado_tpv.features.ordering.data.repository.FloorElementRepositoryImpl
 import com.jaac.avoqado_tpv.features.ordering.data.repository.OrderRepositoryImpl
 import com.jaac.avoqado_tpv.features.ordering.data.repository.ProductRepositoryImpl
 import com.jaac.avoqado_tpv.features.ordering.data.repository.TableRepositoryImpl
+import com.jaac.avoqado_tpv.features.ordering.domain.CustomerRepository
+import com.jaac.avoqado_tpv.features.ordering.domain.DiscountRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.FloorElementRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
@@ -131,8 +137,82 @@ object OrderingModule {
     @Provides
     @Singleton
     fun provideOrderRepository(
-        apiService: OrderApiService
+        apiService: OrderApiService,
+        customerApiService: CustomerApiService
     ): OrderRepository {
-        return OrderRepositoryImpl(apiService)
+        return OrderRepositoryImpl(apiService, customerApiService)
+    }
+
+    // ==========================================
+    // CUSTOMER MANAGEMENT
+    // ==========================================
+
+    /**
+     * Provide CustomerApiService
+     *
+     * Creates Retrofit service for customer management endpoints.
+     * Handles customer search, lookup, and quick create operations.
+     * Uses shared Retrofit instance from NetworkModule.
+     */
+    @Provides
+    @Singleton
+    fun provideCustomerApiService(retrofit: Retrofit): CustomerApiService {
+        return retrofit.create(CustomerApiService::class.java)
+    }
+
+    /**
+     * Provide CustomerRepository
+     *
+     * Binds CustomerRepositoryImpl to CustomerRepository interface.
+     * Repository handles customer search and creation operations.
+     *
+     * Backend endpoints:
+     * - GET /api/v1/tpv/venues/{venueId}/customers/search
+     * - GET /api/v1/tpv/venues/{venueId}/customers/search/phone
+     * - POST /api/v1/tpv/venues/{venueId}/customers/quick
+     */
+    @Provides
+    @Singleton
+    fun provideCustomerRepository(
+        apiService: CustomerApiService
+    ): CustomerRepository {
+        return CustomerRepositoryImpl(apiService)
+    }
+
+    // ==========================================
+    // DISCOUNT & COUPON MANAGEMENT
+    // ==========================================
+
+    /**
+     * Provide DiscountApiService
+     *
+     * Creates Retrofit service for discount and coupon endpoints.
+     * Handles predefined discounts, manual discounts, and coupon operations.
+     * Uses shared Retrofit instance from NetworkModule.
+     */
+    @Provides
+    @Singleton
+    fun provideDiscountApiService(retrofit: Retrofit): DiscountApiService {
+        return retrofit.create(DiscountApiService::class.java)
+    }
+
+    /**
+     * Provide DiscountRepository
+     *
+     * Binds DiscountRepositoryImpl to DiscountRepository interface.
+     * Repository handles discount and coupon operations.
+     *
+     * Backend endpoints:
+     * - GET /api/v1/tpv/venues/{venueId}/discounts
+     * - POST /api/v1/tpv/venues/{venueId}/orders/{orderId}/discounts/predefined
+     * - POST /api/v1/tpv/venues/{venueId}/orders/{orderId}/discounts/manual
+     * - POST /api/v1/tpv/venues/{venueId}/coupons/validate
+     */
+    @Provides
+    @Singleton
+    fun provideDiscountRepository(
+        apiService: DiscountApiService
+    ): DiscountRepository {
+        return DiscountRepositoryImpl(apiService)
     }
 }

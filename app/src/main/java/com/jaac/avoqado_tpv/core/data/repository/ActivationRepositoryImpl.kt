@@ -55,10 +55,11 @@ class ActivationRepositoryImpl @Inject constructor(
                 val dto = response.body()!!
                 Timber.i("✅ Terminal activated successfully: venueId=${dto.venueId}")
 
-                // Store venueId AND serialNumber permanently in SecureStorage
+                // Store venueId, venueSlug AND serialNumber permanently in SecureStorage
                 secureStorage.saveVenueId(dto.venueId)
+                secureStorage.saveVenueSlug(dto.venueSlug)  // 📸 For Firebase Storage path
                 secureStorage.saveSerialNumber(serialNumber)
-                Timber.d("VenueId and SerialNumber stored in SecureStorage")
+                Timber.d("VenueId, VenueSlug, and SerialNumber stored in SecureStorage")
 
                 // Map DTO to domain model
                 val result = ActivationResult(

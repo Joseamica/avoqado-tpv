@@ -130,7 +130,8 @@ class PrinterManager @Inject constructor(
         venueRfc: String? = null,
         venueAddress: String? = null,
         orderNumber: String? = null,  // 🆕 Order number (for display)
-        orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null  // 🆕 Order items (for itemized receipt)
+        orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null,  // 🆕 Order items (for itemized receipt)
+        discountAmount: String? = null  // 🆕 Discount applied to order
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
@@ -264,6 +265,11 @@ class PrinterManager @Inject constructor(
             val totalValue = amountValue + tipValue
 
             printerInstance.printStr("Monto:         \$${amount} MXN\n", null)
+
+            // 🆕 Descuento (si aplica)
+            if (!discountAmount.isNullOrEmpty() && discountAmount != "0" && discountAmount != "0.00") {
+                printerInstance.printStr("Descuento:     -\$${discountAmount} MXN\n", null)
+            }
 
             if (tipValue > java.math.BigDecimal.ZERO) {
                 printerInstance.printStr("Propina:        \$${tipAmount} MXN\n", null)

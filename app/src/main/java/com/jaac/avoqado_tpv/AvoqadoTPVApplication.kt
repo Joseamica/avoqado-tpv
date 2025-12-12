@@ -1,6 +1,9 @@
 package com.jaac.avoqado_tpv
 
 import android.app.Application
+import androidx.camera.camera2.Camera2Config
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.CameraXConfig
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.blumonpay.pax.utils.AppManager
@@ -25,7 +28,7 @@ import javax.inject.Inject
  * - Optimización de startup (< 2 segundos)
  */
 @HiltAndroidApp
-class AvoqadoTPVApplication : Application(), Configuration.Provider {
+class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConfig.Provider {
 
     // Application-wide coroutine scope
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -56,6 +59,25 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider {
         get() = Configuration.Builder()
             .setWorkerFactory(workerFactory)
             .build()
+
+    /**
+     * Provide CameraX configuration optimized for PAX devices
+     *
+     * ⚠️ CRITICAL FIX: PAX A910S only has ONE camera (back camera, id=0).
+     * CameraX by default validates that both front and back cameras exist,
+     * which causes 6-8 second delays due to retry loops.
+     *
+     * This configuration:
+     * 1. Uses Camera2 implementation
+     * 2. Limits available cameras to BACK camera only (skips front camera validation)
+     * 3. Reduces camera initialization from ~8 seconds to ~1 second
+     */
+    override fun getCameraXConfig(): CameraXConfig {
+        return CameraXConfig.Builder.fromConfig(Camera2Config.defaultConfig())
+            .setAvailableCamerasLimiter(CameraSelector.DEFAULT_BACK_CAMERA)
+            .setMinimumLoggingLevel(android.util.Log.ERROR)  // Reduce log spam
+            .build()
+    }
 
     /**
      * Initialize Timber logging (DEBUG only)

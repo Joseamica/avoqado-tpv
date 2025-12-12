@@ -47,7 +47,10 @@ data class AuthResponse(
 
     // Metadata
     val correlationId: String,
-    val issuedAt: String
+    val issuedAt: String,
+
+    // 🎁 Loyalty program status (Toast/Square pattern: hide UI if inactive)
+    val loyaltyActive: Boolean = false
 )
 
 /**
@@ -77,10 +80,15 @@ data class StaffMember(
  *
  * Basic venue details for context.
  * Includes operational status for UI feedback.
+ *
+ * **📸 Firebase Storage Path:**
+ * The `slug` field is used for organizing uploads:
+ * `venues/{slug}/verifications/{date}/{filename}.jpg`
  */
 data class VenueInfo(
     val id: String,
     val name: String,
+    val slug: String?,  // 📸 For Firebase Storage path organization
     val posType: String?,
     val posStatus: String?,
     val logo: String?,

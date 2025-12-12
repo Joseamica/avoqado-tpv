@@ -43,7 +43,10 @@ data class AuthResponseDto(
 
     // Metadata
     @SerializedName("correlationId") val correlationId: String,
-    @SerializedName("issuedAt") val issuedAt: String
+    @SerializedName("issuedAt") val issuedAt: String,
+
+    // 🎁 Loyalty program status (Toast/Square pattern: hide UI if inactive)
+    @SerializedName("loyaltyActive") val loyaltyActive: Boolean? = false
 )
 
 /**
@@ -71,6 +74,7 @@ data class StaffMemberDto(
 data class VenueInfoDto(
     @SerializedName("id") val id: String,
     @SerializedName("name") val name: String,
+    @SerializedName("slug") val slug: String?,  // 📸 For Firebase Storage path: venues/{slug}/verifications/
     @SerializedName("posType") val posType: String?,
     @SerializedName("posStatus") val posStatus: String?,
     @SerializedName("logo") val logo: String?,
@@ -130,7 +134,8 @@ fun AuthResponseDto.toDomain(): AuthResponse {
         staff = staff.toDomain(),
         venue = venue.toDomain(),
         correlationId = correlationId,
-        issuedAt = issuedAt
+        issuedAt = issuedAt,
+        loyaltyActive = loyaltyActive ?: false
     )
 }
 
@@ -157,6 +162,7 @@ fun VenueInfoDto.toDomain(): VenueInfo {
     return VenueInfo(
         id = id,
         name = name,
+        slug = slug,  // 📸 For Firebase Storage path
         posType = posType,
         posStatus = posStatus,
         logo = logo,

@@ -164,6 +164,37 @@ class SettingsViewModel @Inject constructor(
         updateSetting { it.copy(requirePinLogin = newValue) }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // VERIFICATION SETTINGS (Step 4: Sale Verification)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Toggle show verification screen setting
+     * When enabled, shows photo/barcode capture screen after payment success
+     */
+    fun toggleShowVerificationScreen() {
+        val newValue = !_state.value.tpvSettings.showVerificationScreen
+        updateSetting { it.copy(showVerificationScreen = newValue) }
+    }
+
+    /**
+     * Toggle require verification photo setting
+     * When enabled, at least one photo is required to confirm verification
+     */
+    fun toggleRequireVerificationPhoto() {
+        val newValue = !_state.value.tpvSettings.requireVerificationPhoto
+        updateSetting { it.copy(requireVerificationPhoto = newValue) }
+    }
+
+    /**
+     * Toggle require verification barcode setting
+     * When enabled, at least one barcode scan is required to confirm verification
+     */
+    fun toggleRequireVerificationBarcode() {
+        val newValue = !_state.value.tpvSettings.requireVerificationBarcode
+        updateSetting { it.copy(requireVerificationBarcode = newValue) }
+    }
+
     /**
      * Update default tip percentage
      */

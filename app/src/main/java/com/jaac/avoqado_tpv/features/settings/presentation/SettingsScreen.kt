@@ -176,6 +176,46 @@ fun SettingsScreen(
                 }
 
                 // ═══════════════════════════════════════════════════════════════
+                // VERIFICATION SETTINGS (Step 4: Sale Verification)
+                // ═══════════════════════════════════════════════════════════════
+                item {
+                    Spacer(modifier = Modifier.height(sizes.spacingMedium))
+                    SectionHeader(
+                        title = "Verificación de Venta",
+                        icon = Icons.Outlined.CameraAlt,
+                        subtitle = "Captura de evidencia post-pago (retail/telecomunicaciones)"
+                    )
+                }
+
+                item {
+                    SettingsCard {
+                        SettingsToggleRow(
+                            label = "Pantalla de Verificación",
+                            description = "Mostrar captura de fotos/códigos después del pago",
+                            enabled = state.tpvSettings.showVerificationScreen,
+                            isSaving = state.isSaving,
+                            onToggle = { viewModel.toggleShowVerificationScreen() }
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        SettingsToggleRow(
+                            label = "Requiere Foto",
+                            description = "Foto obligatoria para confirmar venta",
+                            enabled = state.tpvSettings.requireVerificationPhoto,
+                            isSaving = state.isSaving,
+                            onToggle = { viewModel.toggleRequireVerificationPhoto() }
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        SettingsToggleRow(
+                            label = "Requiere Código de Barras",
+                            description = "Escaneo de código obligatorio para confirmar venta",
+                            enabled = state.tpvSettings.requireVerificationBarcode,
+                            isSaving = state.isSaving,
+                            onToggle = { viewModel.toggleRequireVerificationBarcode() }
+                        )
+                    }
+                }
+
+                // ═══════════════════════════════════════════════════════════════
                 // ACTIONS
                 // ═══════════════════════════════════════════════════════════════
                 item {

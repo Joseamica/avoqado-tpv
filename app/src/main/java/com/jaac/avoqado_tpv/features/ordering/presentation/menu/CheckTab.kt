@@ -273,7 +273,7 @@ fun CheckTab(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Totals section
+            // Totals section - Shows Subtotal → Descuento → Total breakdown
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -285,13 +285,22 @@ fun CheckTab(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(12.dp)
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
+                    // ✅ FIX: Only show Subtotal → Descuento breakdown when discount exists
+                    // If no discount, just show "Por Pagar" total (cleaner UX)
+                    if (order.discountAmount > BigDecimal.ZERO) {
+                        TotalRow(label = "Subtotal:", amount = order.subtotal, isBold = false)
+                        DiscountRow(label = "Descuento:", amount = order.discountAmount)
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    }
+
                     // ⭐ Show "Por pagar" with remainingBalance when there's partial payment
                     if (order.hasRemainingBalance) {
                         TotalRow(label = "Por pagar:", amount = order.remainingBalance, isBold = true)
                     } else {
-                        TotalRow(label = "Total:", amount = calculatedTotal, isBold = true)
+                        TotalRow(label = "Total:", amount = order.total, isBold = true)
                     }
                 }
             }
@@ -585,6 +594,37 @@ private fun TotalRow(
             text = currencyFormatter.format(amount),
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = if (isBold) FontWeight.Bold else FontWeight.Normal
+        )
+    }
+}
+
+/**
+ * Discount Row
+ *
+ * Shows discount amount in a distinct color (primary/green to indicate savings).
+ */
+@Composable
+private fun DiscountRow(
+    label: String,
+    amount: java.math.BigDecimal,
+    modifier: Modifier = Modifier
+) {
+    val currencyFormatter = NumberFormat.getCurrencyInstance(Locale("es", "MX"))
+
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            text = "-${currencyFormatter.format(amount)}",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.primary
         )
     }
 }

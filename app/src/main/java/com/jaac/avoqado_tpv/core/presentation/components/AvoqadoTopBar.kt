@@ -46,13 +46,15 @@ fun AvoqadoTopBar(
     subtitle: String? = null,
     onNavigationClick: (() -> Unit)? = null,
     onSettingsClick: (() -> Unit)? = null,
+    flatBottom: Boolean = false,
     actions: @Composable RowScope.() -> Unit = {}
 ) {
+    val bottomRadius = if (flatBottom) 0.dp else 20.dp
     val shape = RoundedCornerShape(
         topStart = 0.dp,
         topEnd = 0.dp,
-        bottomStart = 20.dp,  // Rounded bottom corners (increased for modern look)
-        bottomEnd = 20.dp
+        bottomStart = bottomRadius,
+        bottomEnd = bottomRadius
     )
 
     // ⭐ PRODUCTION MIGRATION (2025-11-19): Environment border color

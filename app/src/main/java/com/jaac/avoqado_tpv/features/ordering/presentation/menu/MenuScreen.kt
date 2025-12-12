@@ -1,24 +1,38 @@
 package com.jaac.avoqado_tpv.features.ordering.presentation.menu
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import com.jaac.avoqado_tpv.R
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -38,7 +52,9 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveSizes
+import com.jaac.avoqado_tpv.features.ordering.domain.DiscountType
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
+import com.jaac.avoqado_tpv.features.ordering.domain.OrderItem
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
@@ -72,7 +88,8 @@ import java.math.BigDecimal
  * ├─────────────────────────────────────┤
  * │                                     │
  * │   [Tab-specific content here]       │ ← Dynamic content
- * │                                     │   based on currentTab
+ * │                                     │   based on a given `MenuScreen` file, I will change the hardcoded title "Pedido Rápido" to use the string resource `R.string.ordering_quick_order_title` and apply a smaller text style, `MaterialTheme.typography.titleMedium`, to the `titleStyle` parameter to make the font smaller as requested by the user. I'll also add the necessary imports for `stringResource` and the `R` class.
+ * │                                     │
  * │   (Maximum vertical space!)         │
  * │                                     │
  * └─────────────────────────────────────┘
@@ -105,6 +122,15 @@ fun MenuScreen(
     val menuState by viewModel.state.collectAsStateWithLifecycle()
     val isLoadingProducts by viewModel.isLoadingProducts.collectAsStateWithLifecycle()
 
+    // 🎟️ Discount & Coupon state
+    val availableDiscounts by viewModel.availableDiscounts.collectAsStateWithLifecycle()
+    val appliedDiscounts by viewModel.appliedDiscounts.collectAsStateWithLifecycle()
+    val isLoadingDiscounts by viewModel.isLoadingDiscounts.collectAsStateWithLifecycle()
+    val couponValidationState by viewModel.couponValidationState.collectAsStateWithLifecycle()
+
+    // 💳 Payment preparation state (force sync before navigating to payment)
+    val isPreparingPayment by viewModel.isPreparingPayment.collectAsStateWithLifecycle()
+
     // Tab state (local to MenuScreen - pure UI concern)
     var currentTab by remember { mutableStateOf(OrderTab.MENU) }
 
@@ -118,6 +144,10 @@ fun MenuScreen(
 
     // Custom amount modal state (for CUSTOMAMOUNT split type)
     var showCustomAmountModal by remember { mutableStateOf(false) }
+
+    // Comp/Void dialog state
+    var showCompDialog by remember { mutableStateOf(false) }
+    var showVoidDialog by remember { mutableStateOf(false) }
 
     // Load order on first composition
     LaunchedEffect(orderId) {
@@ -152,50 +182,60 @@ fun MenuScreen(
         // NORMAL MODE: Show Scaffold with TopBar + Tabs
         Scaffold(
             topBar = {
-            AvoqadoTopBar(
-                title = order?.let {
+                val titleText = order?.let {
                     // Show table name for table service, "Pedido Rápido" for quick orders
-                    it.tableName ?: "Pedido Rápido #${it.orderNumber.takeLast(4)}"
-                } ?: "Nueva Orden",
-                onNavigationClick = {
-                    // ⭐ Bug fix: Force sync before navigating back to ensure items are saved
-                    // Prevents race condition with 5-second debounce
-                    viewModel.syncBeforeNavigate { _ -> onNavigateBack() }
-                },
-                actions = {
-                    // 🎯 Dynamic header action based on order type (Toast/Square pattern)
-                    if (order != null) {
-                        when (order.orderType) {
-                            OrderType.TAKEOUT -> {
-                                // Pedido Rápido: Primary action = PAY IMMEDIATELY
-                                // Show "Pagar" button for quick checkout
-                                if (order.canProcessPayment) {
-                                    androidx.compose.material3.TextButton(
-                                        onClick = { onProcessPayment(order) }
-                                    ) {
-                                        Text("Pagar")
+                    it.tableName ?: "${stringResource(R.string.ordering_quick_order_title)} #${it.orderNumber.takeLast(4)}"
+                } ?: "Nueva Orden"
+                AvoqadoTopBar(
+                    title = titleText,
+                    titleStyle = MaterialTheme.typography.titleMedium,
+                    flatBottom = true,
+                    onNavigationClick = {
+                        // ⭐ Bug fix: Force sync before navigating back to ensure items are saved
+                        // Prevents race condition with 5-second debounce
+                        viewModel.syncBeforeNavigate { _ -> onNavigateBack() }
+                    },
+                    actions = {
+                        // 🎯 Dynamic header action based on order type (Toast/Square pattern)
+                        if (order != null) {
+                            when (order.orderType) {
+                                OrderType.TAKEOUT -> {
+                                    // Pedido Rápido: Primary action = PAY IMMEDIATELY
+                                    // Show "Pagar" button for quick checkout
+                                    if (order.canProcessPayment) {
+                                        androidx.compose.material3.TextButton(
+                                            onClick = {
+                                                // ⚠️ CRITICAL: Force sync and fetch recalculated discounts
+                                                // before navigating to payment (prevents charging wrong amounts)
+                                                viewModel.onPaymentRequested(
+                                                    onReady = { preparedOrder -> onProcessPayment(preparedOrder) },
+                                                    onError = { error -> /* TODO: show toast */ }
+                                                )
+                                            }
+                                        ) {
+                                            Text("Pagar")
+                                        }
                                     }
                                 }
-                            }
-                            OrderType.DINE_IN -> {
-                                // Servicio de Mesa: Primary action = SEND TO KITCHEN
-                                // Show send icon for kitchen workflow
-                                if (order.canSendToKitchen) {
-                                    IconButton(onClick = { viewModel.sendToKitchen() }) {
-                                        Icon(
-                                            imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.Send,
-                                            contentDescription = "Enviar a cocina"
-                                        )
+                                OrderType.DINE_IN -> {
+                                    // Servicio de Mesa: Primary action = SEND TO KITCHEN
+                                    // Show send icon for kitchen workflow
+                                    if (order.canSendToKitchen) {
+                                        IconButton(onClick = { viewModel.sendToKitchen() }) {
+                                            Icon(
+                                                imageVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.Send,
+                                                contentDescription = "Enviar a cocina"
+                                            )
+                                        }
                                     }
                                 }
+                                // Other order types (DELIVERY, PICKUP) - no top-right action for now
+                                else -> { /* No action */ }
                             }
-                            // Other order types (DELIVERY, PICKUP) - no top-right action for now
-                            else -> { /* No action */ }
                         }
                     }
-                }
-            )
-        },
+                )
+            },
         modifier = modifier
     ) { paddingValues ->
         // Calculate ResponsiveSizes early for use in all children (including error banner)
@@ -334,7 +374,13 @@ fun MenuScreen(
                                     viewModel.removeItem(item)
                                 },
                                 onSendToKitchen = { viewModel.sendToKitchen() },
-                                onProcessPayment = { onProcessPayment(order) },
+                                onProcessPayment = {
+                                    // ⚠️ CRITICAL: Force sync and fetch recalculated discounts
+                                    viewModel.onPaymentRequested(
+                                        onReady = { preparedOrder -> onProcessPayment(preparedOrder) },
+                                        onError = { error -> Timber.e("❌ Payment prep failed: $error") }
+                                    )
+                                },
                                 onSplitPayment = { showSplitOptions = true },
                                 onPrintComanda = { viewModel.printFullComanda() },
                                 onPrintItem = { item -> viewModel.printSingleItem(item) }  // 🖨️ Print single item
@@ -345,25 +391,73 @@ fun MenuScreen(
                             // Actions tab: Order-level operations (comp, void, discount)
                             ActionsTab(
                                 order = order,
+                                availableDiscounts = availableDiscounts,
+                                appliedDiscounts = appliedDiscounts,
+                                isLoadingDiscounts = isLoadingDiscounts,
+                                couponValidationState = couponValidationState,
+                                onApplyPredefinedDiscount = { discountId, itemIds, reason ->
+                                    viewModel.applyPredefinedDiscount(
+                                        discountId = discountId,
+                                        itemIds = itemIds,
+                                        reason = reason
+                                    )
+                                },
+                                onApplyManualDiscount = { type, value, reason, itemIds ->
+                                    viewModel.applyManualDiscount(
+                                        type = type,
+                                        value = value,
+                                        reason = reason,
+                                        itemIds = itemIds
+                                    )
+                                },
+                                onRemoveDiscount = { orderDiscountId ->
+                                    viewModel.removeDiscount(orderDiscountId)
+                                },
+                                onValidateCoupon = { code ->
+                                    viewModel.validateCoupon(code)
+                                },
+                                onApplyCoupon = { code ->
+                                    viewModel.applyCoupon(code)
+                                },
                                 onCompItems = {
-                                    // TODO Step 9: Implement comp dialog and ViewModel integration
-                                    Timber.d("🎁 Comp Items clicked - Dialog pending")
+                                    showCompDialog = true
                                 },
                                 onVoidItems = {
-                                    // TODO Step 9: Implement void dialog and ViewModel integration
-                                    Timber.d("🗑️ Void Items clicked - Dialog pending")
-                                },
-                                onApplyDiscount = {
-                                    // TODO Step 9: Implement discount dialog and ViewModel integration
-                                    Timber.d("💰 Apply Discount clicked - Dialog pending")
+                                    showVoidDialog = true
                                 }
                             )
                         }
 
                         OrderTab.GUEST -> {
-                            // Guest tab: Update customer information
+                            // Guest tab: Customer search modal (Toast/Square pattern)
+                            // NEW: Multi-customer support - customers accumulate in list
+                            val customerSearchState by viewModel.customerSearchState.collectAsStateWithLifecycle()
+                            val selectedCustomer by viewModel.selectedCustomer.collectAsStateWithLifecycle()
+                            val recentCustomers by viewModel.recentCustomers.collectAsStateWithLifecycle()
+                            val isLoadingRecentCustomers by viewModel.isLoadingRecentCustomers.collectAsStateWithLifecycle()
+
+                            // Multi-customer state
+                            val orderCustomers by viewModel.orderCustomers.collectAsStateWithLifecycle()
+                            val isAddingCustomer by viewModel.isAddingCustomer.collectAsStateWithLifecycle()
+
                             GuestTab(
                                 order = order,
+                                // Multi-customer support (NEW)
+                                orderCustomers = orderCustomers,
+                                isAddingCustomer = isAddingCustomer,
+                                // 🎁 Loyalty program status (Toast/Square pattern)
+                                loyaltyActive = viewModel.loyaltyActive,
+                                // Search & selection
+                                searchState = customerSearchState,
+                                recentCustomers = recentCustomers,
+                                isLoadingRecentCustomers = isLoadingRecentCustomers,
+                                onSearchCustomer = { query -> viewModel.searchCustomers(query) },
+                                onSelectCustomer = { customer -> viewModel.addCustomerToOrder(customer) },
+                                onRemoveCustomer = { customerId -> viewModel.removeCustomerFromOrder(customerId) },
+                                onCreateAndAddCustomer = { firstName, phone, email ->
+                                    viewModel.createAndAddCustomerToOrder(firstName, phone, email)
+                                },
+                                onLoadRecentCustomers = { viewModel.loadRecentCustomers() },
                                 onSaveGuestInfo = { covers, name, phone, requests ->
                                     viewModel.updateGuest(
                                         covers = covers,
@@ -371,7 +465,10 @@ fun MenuScreen(
                                         customerPhone = phone,
                                         specialRequests = requests
                                     )
-                                }
+                                },
+                                // Deprecated (backward compat)
+                                selectedCustomer = selectedCustomer,
+                                onClearCustomer = { viewModel.clearSelectedCustomer() }
                             )
                         }
                     }
@@ -383,6 +480,16 @@ fun MenuScreen(
                     AvoqadoLoadingOverlay(
                         message = "Cargando productos y categorías...",
                         modifier = Modifier.zIndex(2f)  // Above everything else
+                    )
+                }
+
+                // 💳 Payment preparation overlay
+                // Shows while syncing order and fetching recalculated discounts
+                // Prevents navigating to PaymentScreen with wrong amounts
+                if (isPreparingPayment) {
+                    AvoqadoLoadingOverlay(
+                        message = "Preparando pago...",
+                        modifier = Modifier.zIndex(3f)  // Above loading overlay
                     )
                 }
 
@@ -422,7 +529,11 @@ fun MenuScreen(
                         onFullPayment = {
                             // Navigate to payment with FULLPAYMENT
                             Timber.d("💳 Full payment selected")
-                            onProcessPayment(order)
+                            // ⚠️ CRITICAL: Force sync and fetch recalculated discounts
+                            viewModel.onPaymentRequested(
+                                onReady = { preparedOrder -> onProcessPayment(preparedOrder) },
+                                onError = { error -> Timber.e("❌ Payment prep failed: $error") }
+                            )
                         }
                     )
                 }
@@ -447,7 +558,58 @@ fun MenuScreen(
 
                             if (customAmount > BigDecimal.ZERO) {
                                 Timber.d("💰 Processing custom amount: $customAmount with CUSTOMAMOUNT split")
-                                onProcessPaymentWithAmount(order, customAmount, SplitType.CUSTOMAMOUNT)
+                                // ⚠️ CRITICAL: Force sync before custom amount payment too
+                                viewModel.onPaymentRequested(
+                                    onReady = { preparedOrder ->
+                                        onProcessPaymentWithAmount(preparedOrder, customAmount, SplitType.CUSTOMAMOUNT)
+                                    },
+                                    onError = { error -> Timber.e("❌ Payment prep failed: $error") }
+                                )
+                            }
+                        }
+                    )
+                }
+
+                // 🎁 Comp Items Dialog - Select items to comp (100% discount)
+                if (order != null && showCompDialog) {
+                    ItemSelectionDialog(
+                        title = "Comp Items (Cortesía)",
+                        subtitle = "Selecciona los items a regalar como cortesía",
+                        items = order.items,
+                        onDismiss = { showCompDialog = false },
+                        onConfirm = { selectedItemIds, reason ->
+                            showCompDialog = false
+                            if (selectedItemIds.isNotEmpty()) {
+                                // Apply 100% discount to selected items
+                                viewModel.applyManualDiscount(
+                                    type = DiscountType.PERCENTAGE,
+                                    value = 100.0,
+                                    reason = reason ?: "Cortesía",
+                                    itemIds = selectedItemIds
+                                )
+                            }
+                        }
+                    )
+                }
+
+                // 🗑️ Void Items Dialog - Select items to void (remove from order)
+                if (order != null && showVoidDialog) {
+                    ItemSelectionDialog(
+                        title = "Void Items (Anular)",
+                        subtitle = "Selecciona los items a anular de la orden",
+                        items = order.items,
+                        onDismiss = { showVoidDialog = false },
+                        onConfirm = { selectedItemIds, reason ->
+                            showVoidDialog = false
+                            if (selectedItemIds.isNotEmpty()) {
+                                // Remove each selected item from order
+                                selectedItemIds.forEach { itemId ->
+                                    // Find the OrderItem by ID and remove it
+                                    order.items.find { it.id == itemId }?.let { item ->
+                                        viewModel.removeItem(item)
+                                    }
+                                }
+                                Timber.d("🗑️ Voided ${selectedItemIds.size} items: $selectedItemIds, reason: $reason")
                             }
                         }
                     )
@@ -458,6 +620,145 @@ fun MenuScreen(
         }  // Close Scaffold
     }  // Close else block (conditional rendering)
 }
+// ============================================================================
+// Item Selection Dialog (Comp/Void)
+// ============================================================================
+
+/**
+ * Dialog for selecting order items (used for Comp and Void operations)
+ *
+ * @param title Dialog title
+ * @param subtitle Dialog subtitle/description
+ * @param items List of order items to select from
+ * @param onDismiss Called when dialog is dismissed
+ * @param onConfirm Called with selected item IDs and optional reason
+ */
+@Composable
+private fun ItemSelectionDialog(
+    title: String,
+    subtitle: String,
+    items: List<OrderItem>,
+    onDismiss: () -> Unit,
+    onConfirm: (selectedItemIds: List<String>, reason: String?) -> Unit
+) {
+    var selectedItems by remember { mutableStateOf(setOf<String>()) }
+    var reason by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                HorizontalDivider()
+
+                // Item list with checkboxes
+                if (items.isEmpty()) {
+                    Text(
+                        text = "No hay items en la orden",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .heightIn(max = 300.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items.forEach { item ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        selectedItems = if (selectedItems.contains(item.id)) {
+                                            selectedItems - item.id
+                                        } else {
+                                            selectedItems + item.id
+                                        }
+                                    }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Checkbox(
+                                    checked = selectedItems.contains(item.id),
+                                    onCheckedChange = { checked ->
+                                        selectedItems = if (checked) {
+                                            selectedItems + item.id
+                                        } else {
+                                            selectedItems - item.id
+                                        }
+                                    }
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "${item.quantity}x ${item.productName}",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    if (item.modifiers.isNotEmpty()) {
+                                        Text(
+                                            text = item.formattedModifiers,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = item.formattedTotalPrice,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider()
+
+                // Reason input field
+                OutlinedTextField(
+                    value = reason,
+                    onValueChange = { reason = it },
+                    label = { Text("Razón (opcional)") },
+                    placeholder = { Text("Ej: Cliente frecuente, queja justificada...") },
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = 2
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(selectedItems.toList(), reason.ifBlank { null }) },
+                enabled = selectedItems.isNotEmpty()
+            ) {
+                Text("Confirmar (${selectedItems.size})")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar")
+            }
+        }
+    )
+}
+
 // Previews
 // ============================================================================
 

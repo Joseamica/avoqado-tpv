@@ -47,7 +47,7 @@
 
     <!-- Ordering System -->
     <string name="ordering_welcome_title">Sistema de Pedidos</string>
-    <string name="ordering_quick_order_title">Pedido Rápido</string>
+    <string name="ordering_quick_order_title">Pedido rápido</string>
     <string name="ordering_quick_order_subtitle">Venta sin mesa\n(Retail/QSR)</string>
     <string name="ordering_table_service_title">Servicio de Mesa</string>
     <string name="ordering_table_service_subtitle">Restaurante con plano de piso</string>

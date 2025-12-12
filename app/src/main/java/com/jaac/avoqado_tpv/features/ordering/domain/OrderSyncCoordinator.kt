@@ -14,9 +14,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -34,7 +38,7 @@ import kotlin.math.pow
  *
  * **Architecture: Toast POS Hybrid Approach**
  * - Creates/updates orders locally first (instant UI, 0ms latency)
- * - Debounced auto-save every 5 seconds (batches rapid changes)
+ * - Debounced auto-save every 2 seconds (batches rapid changes)
  * - Immediate sync for critical operations (sendToKitchen, payment, conflicts)
  * - Handles ID replacement (local UUID → server CUID)
  * - Handles version conflicts (409 responses)
@@ -43,9 +47,9 @@ import kotlin.math.pow
  * **Flow:**
  * ```
  * 1. User adds item → Save to Room immediately → UI updates (0ms)
- * 2. Schedule debounced sync (5s delay)
- * 3. If user adds another item → Cancel previous sync, restart 5s timer
- * 4. After 5s of no changes → Sync to backend
+ * 2. Schedule debounced sync (2s delay)
+ * 3. If user adds another item → Cancel previous sync, restart 2s timer
+ * 4. After 2s of no changes → Sync to backend
  * 5. On success → Replace local UUID with server CUID
  * 6. On 409 conflict → Store server version in conflictData, emit conflict event
  * ```
@@ -59,7 +63,7 @@ import kotlin.math.pow
  * ```kotlin
  * // In MenuViewModel
  * orderSyncCoordinator.createLocalOrder(venueId, tableId, covers)
- * orderSyncCoordinator.scheduleSync(orderId) // Debounced 5s
+ * orderSyncCoordinator.scheduleSync(orderId) // Debounced 2s
  * orderSyncCoordinator.syncOrderImmediately(orderId) // Before kitchen/payment
  * ```
  *
@@ -73,6 +77,19 @@ class OrderSyncCoordinator @Inject constructor(
     private val draftOrderItemDao: DraftOrderItemDao,
     private val orderRepository: OrderRepository
 ) {
+
+    companion object {
+        /**
+         * Debounce delay for order sync (milliseconds).
+         *
+         * After user makes a change (add item, change quantity), wait this long
+         * before syncing to backend. Resets on each change to batch rapid edits.
+         *
+         * - 2000ms for fast responsiveness
+         * - Industry: Toast ~2-3s, Clover ~1-2s, Square uses real-time WebSocket
+         */
+        private const val SYNC_DEBOUNCE_MS = 2000L
+    }
 
     // ========================================
     // SYNC STATE MANAGEMENT
@@ -242,6 +259,49 @@ class OrderSyncCoordinator @Inject constructor(
             Timber.e(e, "❌ Error loading order from local DB: $orderId")
             null
         }
+    }
+
+    /**
+     * Observe order as reactive Flow - Single Source of Truth Pattern.
+     *
+     * **CRITICAL: This is the recommended way to observe orders in UI.**
+     *
+     * Room automatically emits whenever the order OR any of its items change.
+     * This eliminates race conditions between separate queries and ensures
+     * the UI always has fresh data without manual refresh.
+     *
+     * **Benefits over getLocalOrder():**
+     * - Reactive: UI updates automatically when Room DB changes
+     * - Single query: Order + items loaded together (Room handles JOIN)
+     * - No race conditions: Flow emits on ANY change (order fields, items added/removed)
+     * - Eliminates dual state: ViewModel doesn't need to manually update _state
+     *
+     * **Usage in ViewModel:**
+     * ```kotlin
+     * val orderState: StateFlow<MenuState> = _currentOrderId
+     *     .filterNotNull()
+     *     .flatMapLatest { orderId ->
+     *         orderSyncCoordinator.observeOrder(orderId)
+     *     }
+     *     .map { order -> MenuState.Success(order) }
+     *     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), MenuState.Loading)
+     * ```
+     *
+     * @param orderId Order ID (local UUID or server CUID)
+     * @return Flow<Order> that emits on every order/item change
+     */
+    fun observeOrder(orderId: String): Flow<Order> {
+        return draftOrderDao.observeOrderWithItems(orderId)
+            .filterNotNull()
+            .map { withItems ->
+                // Filter out DELETED items (soft-delete pattern)
+                val activeItems = withItems.items
+                    .filter { it.syncStatus != DraftOrderItemEntity.SYNC_STATUS_DELETED }
+
+                // Convert to domain model
+                withItems.order.toDomain(activeItems)
+            }
+            .distinctUntilChanged()
     }
 
     /**
@@ -464,17 +524,22 @@ class OrderSyncCoordinator @Inject constructor(
     }
 
     /**
-     * Schedule debounced sync (5 seconds after last change).
+     * Schedule debounced sync (2 seconds after last change).
      *
      * Cancels any previous pending sync for this order and restarts timer.
      * This batches rapid changes (user adding multiple items) into one sync.
      *
+     * **Debounce Timing:**
+     * - 2s balances responsiveness vs batching
+     * - Industry reference: Toast ~2-3s, Clover ~1-2s
+     * - Square uses real-time WebSocket sync (no debounce)
+     *
      * **Example:**
      * ```
-     * User adds item 1 → scheduleSync() → timer starts (5s)
-     * User adds item 2 → scheduleSync() → previous timer cancelled, new timer starts (5s)
-     * User adds item 3 → scheduleSync() → previous timer cancelled, new timer starts (5s)
-     * 5 seconds of no changes → All 3 items synced in one API call
+     * User adds item 1 → scheduleSync() → timer starts (2s)
+     * User adds item 2 → scheduleSync() → previous timer cancelled, new timer starts (2s)
+     * User adds item 3 → scheduleSync() → previous timer cancelled, new timer starts (2s)
+     * 2 seconds of no changes → All 3 items synced in one API call
      * ```
      *
      * @param orderId Order to sync (local or server ID)
@@ -486,10 +551,10 @@ class OrderSyncCoordinator @Inject constructor(
         // Schedule new debounced sync
         val job = syncScope.launch {
             val scheduledAt = System.currentTimeMillis()
-            Timber.d("⏱️ [Sync] Scheduled debounced sync | order=$orderId | delay=5s")
-            Timber.d("⏱️ [SYNC-DEBUG] scheduleSync() | orderId=$orderId | debounce=5000ms | timestamp=$scheduledAt")
+            Timber.d("⏱️ [Sync] Scheduled debounced sync | order=$orderId | delay=${SYNC_DEBOUNCE_MS}ms")
+            Timber.d("⏱️ [SYNC-DEBUG] scheduleSync() | orderId=$orderId | debounce=${SYNC_DEBOUNCE_MS}ms | timestamp=$scheduledAt")
 
-            delay(5000) // 5 second debounce
+            delay(SYNC_DEBOUNCE_MS)
 
             Timber.d("🔄 [Sync] Debounce expired, executing sync | order=$orderId")
             Timber.i("🔄 [SYNC-DEBUG] scheduleSync() DEBOUNCE EXPIRED | orderId=$orderId | timestamp=${System.currentTimeMillis()} | elapsed=${System.currentTimeMillis() - scheduledAt}ms")
@@ -535,7 +600,7 @@ class OrderSyncCoordinator @Inject constructor(
      * **Sync Behavior:**
      * - Updates local order immediately
      * - Marks as PENDING sync
-     * - Schedules debounced sync to backend (5s delay)
+     * - Schedules debounced sync to backend (2s delay)
      *
      * @param orderId Order to update
      * @param merchantAccountId Backend merchant account CUID (e.g., "cm...")

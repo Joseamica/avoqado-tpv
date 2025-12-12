@@ -5,8 +5,10 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Update
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity
+import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderWithItems
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -52,6 +54,35 @@ interface DraftOrderDao {
      */
     @Query("SELECT * FROM draft_orders WHERE id = :orderId")
     fun getOrderFlow(orderId: String): Flow<DraftOrderEntity?>
+
+    /**
+     * Get order WITH items as Flow (reactive) - Single Source of Truth pattern.
+     *
+     * This is the PRIMARY method for observing orders in the UI layer.
+     * Room automatically emits whenever the order OR any of its items change.
+     *
+     * ## Usage (Single Source of Truth)
+     * ```kotlin
+     * // In ViewModel
+     * val orderState: StateFlow<OrderUiState> = orderDao
+     *     .observeOrderWithItems(orderId)
+     *     .filterNotNull()
+     *     .map { OrderUiState.Success(it.toDomain()) }
+     *     .stateIn(viewModelScope, WhileSubscribed(5000), OrderUiState.Loading)
+     * ```
+     *
+     * ## Benefits
+     * - Room handles JOIN automatically (order + items in single emission)
+     * - Flow emits on ANY change (order fields, items added/removed/modified)
+     * - Eliminates race conditions between separate queries
+     * - UI always has fresh data without manual refresh
+     *
+     * @param orderId Order ID (local UUID or server CUID)
+     * @return Flow<DraftOrderWithItems?> that emits on every order/item change
+     */
+    @Transaction
+    @Query("SELECT * FROM draft_orders WHERE id = :orderId")
+    fun observeOrderWithItems(orderId: String): Flow<DraftOrderWithItems?>
 
     /**
      * Get active order for a table.

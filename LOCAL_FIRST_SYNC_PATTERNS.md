@@ -182,4 +182,148 @@ private fun listenToSocketEvents() {
 
 ---
 
-**Ultima actualizacion:** 2024-11-28
+---
+
+## SSOT Migration (Single Source of Truth) - 2025-12-11
+
+### El Problema Original: Dual Source of Truth
+
+Antes de la migración, teníamos DOS fuentes de verdad que podían diverger:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    PROBLEMA CENTRAL                         │
+├─────────────────────────────────────────────────────────────┤
+│  MenuViewModel._state.value.order  ←→  Room DB Order        │
+│         (StateFlow in memory)           (SQLite)            │
+│                                                             │
+│  ⚠️ Estos DOS estados pueden diverger en cualquier momento │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Bug típico:**
+1. Usuario abre mesa → `_state = Success(order: local_xxx)`
+2. Debounce sync completa → Room DB cambia `local_xxx` → `cmj123...`
+3. Usuario hace click → `_state.value.order.id` aún es `local_xxx` ❌
+4. API call falla: "Order not found"
+
+### La Solución: Room como Single Source of Truth
+
+Siguiendo las [recomendaciones oficiales de Google](https://developer.android.com/topic/architecture):
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    ARQUITECTURA SSOT                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Room DB (SQLite)  ──────►  Flow<Order>  ──────►  UI        │
+│       ↑                         ↑                           │
+│       │                         │                           │
+│  OrderSyncCoordinator      MenuViewModel                    │
+│  (escribe a DB)           (solo observa)                    │
+│                                                             │
+│  ✅ Room emite Flow → UI se actualiza automáticamente       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Archivos Modificados
+
+| Archivo | Cambio |
+|---------|--------|
+| `DraftOrderDao.kt` | +`observeOrderWithItems()` - Flow de Room |
+| `DraftOrderWithItems.kt` | NUEVO - Relación Room (Order + Items) |
+| `OrderSyncCoordinator.kt` | +`observeOrder()` - Flow que transforma a dominio |
+| `MenuViewModel.kt` | +`_currentOrderId` + `collectOrderFromRoom()` |
+
+### Código Clave
+
+**1. DAO expone Flow:**
+```kotlin
+// DraftOrderDao.kt
+@Transaction
+@Query("SELECT * FROM draft_orders WHERE id = :orderId")
+fun observeOrderWithItems(orderId: String): Flow<DraftOrderWithItems?>
+```
+
+**2. Coordinator transforma a dominio:**
+```kotlin
+// OrderSyncCoordinator.kt
+fun observeOrder(orderId: String): Flow<Order> {
+    return draftOrderDao.observeOrderWithItems(orderId)
+        .filterNotNull()
+        .map { withItems ->
+            withItems.order.toDomain(
+                withItems.items.filter { it.syncStatus != DELETED }
+            )
+        }
+        .distinctUntilChanged()
+}
+```
+
+**3. ViewModel observa via Flow:**
+```kotlin
+// MenuViewModel.kt
+private val _currentOrderId = MutableStateFlow<String?>(null)
+
+private fun collectOrderFromRoom() {
+    viewModelScope.launch {
+        _currentOrderId
+            .filterNotNull()
+            .flatMapLatest { orderId ->
+                orderSyncCoordinator.observeOrder(orderId)
+            }
+            .collect { order ->
+                _state.update { current ->
+                    if (current is MenuState.Success) {
+                        current.copy(order = order)
+                    } else {
+                        MenuState.Success(order)
+                    }
+                }
+            }
+    }
+}
+```
+
+**4. Sync actualiza `_currentOrderId`:**
+```kotlin
+// En collectSyncEvents()
+is SyncEvent.Synced -> {
+    val previousId = _currentOrderId.value
+    if (previousId != event.orderId) {
+        _currentOrderId.value = event.orderId  // Flow se re-suscribe automáticamente
+    }
+}
+```
+
+### Logs de Diagnóstico
+
+Buscar estos patrones en logcat:
+```
+🔄 [SSOT] _currentOrderId set to local_xxx
+🔄 [SSOT] Observing order from Room | orderId=local_xxx
+🔄 [SSOT] Room emitted order update | id=local_xxx | items=3
+✅ [SSOT] State updated from Room | orderId=local_xxx
+🔄 [SSOT] Order ID changed after sync | old=local_xxx → new=cmjxxx
+```
+
+### Optimistic Updates (Conservados)
+
+Los updates manuales en `addItem()`, `removeItem()`, etc. se mantienen para feedback instantáneo (0ms). El Flow proporciona consistencia (IDs correctos después de sync).
+
+**Patrón "Belt & Suspenders":**
+- Optimistic update → UI responde instantáneamente
+- Room Flow → Garantiza consistencia de datos
+
+### Testing Verificado (2025-12-11)
+
+| Test | Estado |
+|------|--------|
+| Quick order → add items → sync → ID changes | ✅ PASS |
+| Table order → Flow emits updates | ✅ PASS |
+| Add customer to local order → sync | ✅ PASS |
+| Payment with correct orderId | ✅ PASS |
+
+---
+
+**Ultima actualizacion:** 2025-12-11

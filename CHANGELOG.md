@@ -6,6 +6,36 @@
 
 ## [Unreleased]
 
+### **Added**
+
+- **SSOT Migration (Single Source of Truth)**: Room DB as single source of truth for orders (2025-12-11)
+  - **Problem Solved**: Race conditions where `_state.value.order.id` could be stale after sync
+    - Before: ViewModel snapshot could have `local_xxx` while Room DB already had `cmjxxx`
+    - Result: API calls failed with "Order not found"
+  - **Architecture Change**: Following [Google's official architecture guide](https://developer.android.com/topic/architecture)
+    - Room DB → Flow<Order> → ViewModel → UI (reactive chain)
+    - ViewModel observes Room changes via Flow, never updates state directly after sync
+  - **Files Modified**:
+    - `DraftOrderDao.kt` - Added `observeOrderWithItems()` Flow method
+    - `DraftOrderWithItems.kt` - NEW: Room relation class for Order + Items
+    - `OrderSyncCoordinator.kt` - Added `observeOrder()` that transforms entity to domain
+    - `MenuViewModel.kt` - Added `_currentOrderId` StateFlow + `collectOrderFromRoom()`
+  - **Key Pattern**:
+    ```kotlin
+    // ViewModel observes Room via Flow
+    _currentOrderId
+        .filterNotNull()
+        .flatMapLatest { orderId -> orderSyncCoordinator.observeOrder(orderId) }
+        .collect { order -> _state.update { it.copy(order = order) } }
+    ```
+  - **Testing Verified**:
+    - ✅ Quick order → add items → sync → ID changes automatically
+    - ✅ Table order → Flow emits updates correctly
+    - ✅ Add customer to local order → sync → works with correct ID
+    - ✅ Payment flow uses correct orderId after sync
+  - **Logs**: Look for `[SSOT]` tags in logcat to trace the flow
+  - **Documentation**: Updated `LOCAL_FIRST_SYNC_PATTERNS.md` with full SSOT section
+
 ### **Changed**
 
 - **Order UI**: Improved order summary layout following Mexico UX patterns and Square POS design (CheckTab.kt, OrderTopPanel.kt)

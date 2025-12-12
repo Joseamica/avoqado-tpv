@@ -12,6 +12,12 @@
     <!-- Professional POS systems (Square, Toast, Clover) use hardware serial for terminal identification -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 
+    <!-- Camera Permission (Step 4: Sale Verification) -->
+    <!-- Required for capturing verification photos and scanning barcodes -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
     <application
         android:name=".AvoqadoTPVApplication"
         android:allowBackup="true"

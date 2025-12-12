@@ -44,8 +44,13 @@ import com.example.clean_lib_services.shared.initializer.domain.use_case.insert_
 import com.example.clean_lib_services.shared.core.domain.entity.init.InitData
 import com.example.clean_lib_services.shared.core.domain.entity.init.Contact
 import com.example.clean_lib_services.shared.core.domain.entity.init.KushkiData
+import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
+import com.jaac.avoqado_tpv.features.payment.domain.ScannedProduct
 import com.jaac.avoqado_tpv.features.payment.domain.RetryContext
+import com.jaac.avoqado_tpv.features.payment.domain.VerificationPhoto
+import com.jaac.avoqado_tpv.features.payment.domain.PhotoUploadStatus
+import com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 // 🔌 Socket.IO Events
@@ -126,7 +131,9 @@ class PaymentViewModel @Inject constructor(
     // ⭐ OrderSyncCoordinator - Local-first order sync (ensures order synced before payment)
     private val orderSyncCoordinator: com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator,
     // ⚙️ TPV Settings - Configurable payment flow screens (tip, review, receipt)
-    private val tpvSettingsRepository: TpvSettingsRepository
+    private val tpvSettingsRepository: TpvSettingsRepository,
+    // 📸 Firebase Storage - Upload verification photos before payment
+    private val verificationUploadManager: VerificationUploadManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentState>(PaymentState.Idle)
@@ -152,12 +159,17 @@ class PaymentViewModel @Inject constructor(
     private val _merchantSwitchMessage = MutableStateFlow<String?>(null)
     val merchantSwitchMessage: StateFlow<String?> = _merchantSwitchMessage.asStateFlow()
 
+    // 📸 Step 4: TPV Settings for verification screen
+    private val _tpvSettings = MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings?>(null)
+    val tpvSettings: StateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings?> = _tpvSettings.asStateFlow()
+
     // ═══════════════════════════════════════════════════════════════════════════
 
     private var currentAmount: String = ""  // Amount in decimal format (e.g., "30.00") for UI display
     private var currentAmountInCents: String = ""  // Amount in cents (e.g., "3000") for SDK calls
     private var currentTip: String = "0.00"  // Tip amount in decimal format (e.g., "5.00")
     private var currentTrack2: String = ""  // Track2 data extracted from chip/contactless
+    private var lastEmvIssuerCountry: String = ""  // 🌍 EMV tag 5F28 (Issuer Country Code) for international detection
     private var currentRating: Int? = null  // Optional rating from user (1-5 stars)
 
     // ⭐ NEW: Payment context data for backend recording
@@ -174,6 +186,13 @@ class PaymentViewModel @Inject constructor(
     private var currentEqualPartsPartySize: Int? = null  // Total people for EQUALPARTS mode
     private var currentEqualPartsPayedFor: Int? = null  // How many parts being paid now
     private var currentPaidProductIds: List<String> = emptyList()  // Product IDs for PERPRODUCT mode
+
+    // 📸 PRE-payment verification data (captured BEFORE payment processing)
+    // Stored here after user completes VerifyingPrePayment step, then sent with payment to backend
+    private var prePaymentVerificationPhotos: List<String> = emptyList()
+    private var prePaymentVerificationBarcodes: List<ScannedProduct> = emptyList()
+    // 🔧 FIX: Store the order reference generated for verification (ensures consistent naming)
+    private var prePaymentOrderReference: String? = null
 
     // ⚡ Performance optimization flags (1GB RAM devices)
     private var pinDialogFlowsStarted = false  // Track if PIN dialog collectors are running
@@ -247,6 +266,24 @@ class PaymentViewModel @Inject constructor(
         // If SDK is not ready when user starts payment, we await it in startPayment()
 
         collectSocketEvents()  // 🔌 Listen to real-time Socket.IO events
+
+        // 📸 Step 4: Load TPV settings for verification screen
+        loadTpvSettings()
+    }
+
+    /**
+     * 📸 Load TPV settings (used for Step 4 verification screen configuration).
+     */
+    private fun loadTpvSettings() {
+        viewModelScope.launch {
+            try {
+                val settings = tpvSettingsRepository.getCurrentSettings()
+                _tpvSettings.value = settings
+                Timber.d("📸 [TPV Settings] Loaded | showVerificationScreen=${settings.showVerificationScreen} | requirePhoto=${settings.requireVerificationPhoto} | requireBarcode=${settings.requireVerificationBarcode}")
+            } catch (e: Exception) {
+                Timber.e(e, "📸 [TPV Settings] Failed to load settings")
+            }
+        }
     }
 
     /**
@@ -650,10 +687,28 @@ class PaymentViewModel @Inject constructor(
                 )
             }
             else -> {
-                // Skip both rating and tip, go directly to merchant selection
+                // Skip both rating and tip
                 Timber.d("⏭️ [Payment Flow] Skipping review and tip screens (disabled in TPV settings)")
                 currentTip = "0.00"
                 currentRating = null
+
+                // 📸 PRE-PAYMENT VERIFICATION: Check if verification is enabled BEFORE merchant selection
+                if (tpvSettings.showVerificationScreen) {
+                    // 🔧 FIX: Generate orderReference ONCE for consistent naming
+                    val orderRef = currentOrderNumber ?: "FAST-${System.currentTimeMillis()}"
+                    Timber.d("📸 [Payment Flow] PRE-payment verification enabled → Going to VerifyingPrePayment (no rating/tip)")
+                    Timber.d("📸 [Payment Flow] Requirements: requirePhoto=${tpvSettings.requireVerificationPhoto}, requireBarcode=${tpvSettings.requireVerificationBarcode}, orderRef=$orderRef")
+                    _state.value = PaymentState.VerifyingPrePayment(
+                        amount = amount,
+                        rating = null,
+                        tipAmount = "0.00",
+                        requirePhoto = tpvSettings.requireVerificationPhoto,
+                        requireBarcode = tpvSettings.requireVerificationBarcode,
+                        orderReference = orderRef
+                    )
+                    return
+                }
+
                 proceedToMerchantSelection(amount, "0", amount, null)
             }
         }
@@ -740,10 +795,28 @@ class PaymentViewModel @Inject constructor(
                 tipAmount = defaultTipAmount
             )
         } else {
-            // Skip tip screen, go directly to merchant selection
+            // Skip tip screen
             Timber.d("⏭️ [Payment Flow] Skipping tip screen (disabled in TPV settings)")
             currentTip = "0.00"
             currentRating = rating
+
+            // 📸 PRE-PAYMENT VERIFICATION: Check if verification is enabled BEFORE merchant selection
+            if (tpvSettings.showVerificationScreen) {
+                // 🔧 FIX: Generate orderReference ONCE for consistent naming
+                val orderRef = currentOrderNumber ?: "FAST-${System.currentTimeMillis()}"
+                Timber.d("📸 [Payment Flow] PRE-payment verification enabled → Going to VerifyingPrePayment (from submitRating)")
+                Timber.d("📸 [Payment Flow] Requirements: requirePhoto=${tpvSettings.requireVerificationPhoto}, requireBarcode=${tpvSettings.requireVerificationBarcode}, orderRef=$orderRef")
+                _state.value = PaymentState.VerifyingPrePayment(
+                    amount = amount,
+                    rating = rating,
+                    tipAmount = "0.00",
+                    requirePhoto = tpvSettings.requireVerificationPhoto,
+                    requireBarcode = tpvSettings.requireVerificationBarcode,
+                    orderReference = orderRef
+                )
+                return
+            }
+
             proceedToMerchantSelection(amount, "0", amount, rating)
         }
     }
@@ -767,10 +840,28 @@ class PaymentViewModel @Inject constructor(
                 tipAmount = defaultTipAmount
             )
         } else {
-            // Skip tip screen, go directly to merchant selection
+            // Skip tip screen
             Timber.d("⏭️ [Payment Flow] Skipping tip screen (disabled in TPV settings)")
             currentTip = "0.00"
             currentRating = null
+
+            // 📸 PRE-PAYMENT VERIFICATION: Check if verification is enabled BEFORE merchant selection
+            if (tpvSettings.showVerificationScreen) {
+                // 🔧 FIX: Generate orderReference ONCE for consistent naming
+                val orderRef = currentOrderNumber ?: "FAST-${System.currentTimeMillis()}"
+                Timber.d("📸 [Payment Flow] PRE-payment verification enabled → Going to VerifyingPrePayment (from skipRating)")
+                Timber.d("📸 [Payment Flow] Requirements: requirePhoto=${tpvSettings.requireVerificationPhoto}, requireBarcode=${tpvSettings.requireVerificationBarcode}, orderRef=$orderRef")
+                _state.value = PaymentState.VerifyingPrePayment(
+                    amount = amount,
+                    rating = null,
+                    tipAmount = "0.00",
+                    requirePhoto = tpvSettings.requireVerificationPhoto,
+                    requireBarcode = tpvSettings.requireVerificationBarcode,
+                    orderReference = orderRef
+                )
+                return
+            }
+
             proceedToMerchantSelection(amount, "0", amount, null)
         }
     }
@@ -865,10 +956,13 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
-     * Submit tip and proceed to merchant selection
+     * Submit tip and proceed to verification (if enabled) or merchant selection
      *
      * 🔒 RACE CONDITION FIX: Now awaits merchants to be fully loaded before reading them.
      * Previously, ensureMerchantsLoaded() was async and _merchants.value could be empty.
+     *
+     * 📸 PRE-PAYMENT VERIFICATION: If showVerificationScreen is enabled, route to
+     * VerifyingPrePayment state BEFORE selecting merchant/processing payment.
      */
     fun submitTip(subtotal: String, tipAmount: String, rating: Int?) {
         Timber.d("💵 [Payment Flow] submitTip called with: subtotal='$subtotal', tipAmount='$tipAmount', rating=$rating")
@@ -877,79 +971,74 @@ class PaymentViewModel @Inject constructor(
 
         Timber.d("💵 [Payment Flow] Calculated total: '$totalAmount' (subtotal='$subtotal' + tip='$tipAmount')")
 
-        // ⭐ NEW: Save tip and rating for backend recording
+        // ⭐ Save tip and rating for backend recording
         currentTip = tipAmount
         currentRating = rating
 
+        // 📸 PRE-PAYMENT VERIFICATION: Check if verification is enabled
+        // ⚠️ CRITICAL: Use synchronous getCurrentSettings(), NOT async _tpvSettings.value
+        // (same pattern as submitRating - _tpvSettings.value might be null due to async load)
+        val settings = tpvSettingsRepository.getCurrentSettings()
+        if (settings.showVerificationScreen) {
+            // 🔧 FIX: Generate orderReference ONCE for consistent naming
+            val orderRef = currentOrderNumber ?: "FAST-${System.currentTimeMillis()}"
+            Timber.d("📸 [Payment Flow] PRE-payment verification enabled → Going to VerifyingPrePayment")
+            Timber.d("📸 [Payment Flow] Requirements: requirePhoto=${settings.requireVerificationPhoto}, requireBarcode=${settings.requireVerificationBarcode}, orderRef=$orderRef")
+            _state.value = PaymentState.VerifyingPrePayment(
+                amount = subtotal,
+                rating = rating,
+                tipAmount = tipAmount,
+                requirePhoto = settings.requireVerificationPhoto,
+                requireBarcode = settings.requireVerificationBarcode,
+                orderReference = orderRef
+            )
+            return
+        }
+
         // 🔒 CRITICAL: Await merchants to be fully loaded before using them
         // This prevents race condition where _merchants.value is empty
-        viewModelScope.launch {
-            awaitMerchantsLoaded()
-
-            // Pre-select if only 1 merchant (but still show Step 3 for user confirmation)
-            val merchants = _merchants.value
-            if (merchants.size == 1) {
-                val onlyMerchant = merchants.first()
-                Timber.d("🏪 [Payment Flow] Only 1 merchant (${onlyMerchant.displayName}) → Pre-selecting")
-                _currentMerchant.value = onlyMerchant
-            } else if (_currentMerchant.value == null && merchants.isNotEmpty()) {
-                // Multiple merchants: auto-select first as default
-                val defaultMerchant = merchants.first()
-                Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
-                _currentMerchant.value = defaultMerchant
-            }
-
-            // ✅ ALWAYS show Step 3 (SelectingMerchant) - user must see summary & confirm payment method
-            _state.value = PaymentState.SelectingMerchant(
-                subtotal = subtotal,
-                tipAmount = tipAmount,
-                totalAmount = totalAmount,
-                rating = rating
-            )
-
-            Timber.d("💵 [Payment Flow] SelectingMerchant state created: subtotal='$subtotal', tipAmount='$tipAmount', totalAmount='$totalAmount'")
-        }
+        proceedToMerchantSelection(subtotal, tipAmount, totalAmount, rating)
     }
 
     /**
-     * Skip tip (no tip) and proceed to merchant selection
+     * Skip tip (no tip) and proceed to verification (if enabled) or merchant selection
      *
      * 🔒 RACE CONDITION FIX: Now awaits merchants to be fully loaded before reading them.
      * Previously, ensureMerchantsLoaded() was async and _merchants.value could be empty.
+     *
+     * 📸 PRE-PAYMENT VERIFICATION: If showVerificationScreen is enabled, route to
+     * VerifyingPrePayment state BEFORE selecting merchant/processing payment.
      */
     fun skipTip(subtotal: String, rating: Int?) {
         Timber.d("⏭️  [Payment Flow] Tip skipped")
 
-        // ⭐ NEW: Save zero tip and rating for backend recording
+        // ⭐ Save zero tip and rating for backend recording
         currentTip = "0.00"
         currentRating = rating
 
+        // 📸 PRE-PAYMENT VERIFICATION: Check if verification is enabled
+        // ⚠️ CRITICAL: Use synchronous getCurrentSettings(), NOT async _tpvSettings.value
+        // (same pattern as submitRating - _tpvSettings.value might be null due to async load)
+        val settings = tpvSettingsRepository.getCurrentSettings()
+        if (settings.showVerificationScreen) {
+            // 🔧 FIX: Generate orderReference ONCE for consistent naming
+            val orderRef = currentOrderNumber ?: "FAST-${System.currentTimeMillis()}"
+            Timber.d("📸 [Payment Flow] PRE-payment verification enabled → Going to VerifyingPrePayment (no tip)")
+            Timber.d("📸 [Payment Flow] Requirements: requirePhoto=${settings.requireVerificationPhoto}, requireBarcode=${settings.requireVerificationBarcode}, orderRef=$orderRef")
+            _state.value = PaymentState.VerifyingPrePayment(
+                amount = subtotal,
+                rating = rating,
+                tipAmount = "0.00",
+                requirePhoto = settings.requireVerificationPhoto,
+                requireBarcode = settings.requireVerificationBarcode,
+                orderReference = orderRef
+            )
+            return
+        }
+
         // 🔒 CRITICAL: Await merchants to be fully loaded before using them
         // This prevents race condition where _merchants.value is empty
-        viewModelScope.launch {
-            awaitMerchantsLoaded()
-
-            // Pre-select if only 1 merchant (but still show Step 3 for user confirmation)
-            val merchants = _merchants.value
-            if (merchants.size == 1) {
-                val onlyMerchant = merchants.first()
-                Timber.d("🏪 [Payment Flow] Only 1 merchant (${onlyMerchant.displayName}) → Pre-selecting")
-                _currentMerchant.value = onlyMerchant
-            } else if (_currentMerchant.value == null && merchants.isNotEmpty()) {
-                // Multiple merchants: auto-select first as default
-                val defaultMerchant = merchants.first()
-                Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
-                _currentMerchant.value = defaultMerchant
-            }
-
-            // ✅ ALWAYS show Step 3 (SelectingMerchant) - user must see summary & confirm payment method
-            _state.value = PaymentState.SelectingMerchant(
-                subtotal = subtotal,
-                tipAmount = "0",
-                totalAmount = subtotal,
-                rating = rating
-            )
-        }
+        proceedToMerchantSelection(subtotal, "0", subtotal, rating)
     }
 
     /**
@@ -1082,6 +1171,9 @@ class PaymentViewModel @Inject constructor(
     fun startPayment(amount: String) {
         currentAmount = amount  // Save for UI display
         currentAmountInCents = convertToCents(amount)  // Save for SDK calls (cents as integer string)
+
+        // Reset international detection state for new payment
+        lastEmvIssuerCountry = ""
 
         // ⭐ Get venue and staff context for backend recording
         val venueId = authRepository.getVenueId()
@@ -1404,7 +1496,8 @@ class PaymentViewModel @Inject constructor(
                         0x9F1A,  // Terminal Country Code
                         0x95,    // Terminal Verification Results (TVR)
                         0x9F1E,  // Interface Device (IFD) Serial Number ← ADDED per Edgardo
-                        0x50     // Application Label ← ADDED per Edgardo
+                        0x50,    // Application Label ← ADDED per Edgardo
+                        0x5F28   // 🌍 Issuer Country Code (ISO 3166 numeric, e.g., "484" = Mexico)
                     ),
                     format = Format.DECIMAL,  // ⭐ CRITICAL: DECIMAL for CHIP (per Edgardo)
                     cardTech = CardTech.CHIP  // ICC transaction (chip card)
@@ -1442,7 +1535,28 @@ class PaymentViewModel @Inject constructor(
                     Timber.w("   ⚠️ Track2 not found in EMV tags - this may cause issues")
                 }
 
-                // ⚠️ NOTE: emvTagListStr already contains ALL 21 tags in correct TLV format
+                // 🌍 Extract Issuer Country Code (EMV tag 0x5F28) for international card detection
+                try {
+                    val countryParams = GetTagValueParams(
+                        tag = 0x5F28,  // Issuer Country Code (ISO 3166 numeric)
+                        cardTech = CardTech.CHIP
+                    )
+                    val countryResult = getTagValueUseCase.run(countryParams)
+                    if (countryResult.isRight) {
+                        lastEmvIssuerCountry = countryResult.rightValue().tagValue ?: ""
+                        if (lastEmvIssuerCountry.isNotEmpty()) {
+                            Timber.i("🌍 [EMV 5F28] Issuer Country Code (CHIP): $lastEmvIssuerCountry")
+                        }
+                    } else {
+                        lastEmvIssuerCountry = ""
+                        Timber.d("🌍 [EMV 5F28] Not available for this card (CHIP)")
+                    }
+                } catch (e: Exception) {
+                    lastEmvIssuerCountry = ""
+                    Timber.w("🌍 [EMV 5F28] Could not extract (CHIP): ${e.message}")
+                }
+
+                // ⚠️ NOTE: emvTagListStr already contains ALL 22 tags in correct TLV format
                 // No need to manually construct - GetEmvTagListUseCase returned complete TLV string
 
                 // ✅ REMOVED: Init logic (PASO 3.9 + 3.9.5) - Now handled by InitializationManager in init{}
@@ -1950,7 +2064,8 @@ class PaymentViewModel @Inject constructor(
                     0x9F1A,  // Terminal Country Code
                     0x95,    // Terminal Verification Results (TVR)
                     0x9F1E,  // Interface Device (IFD) Serial Number
-                    0x50     // Application Label
+                    0x50,    // Application Label
+                    0x5F28   // 🌍 Issuer Country Code (ISO 3166 numeric, e.g., "484" = Mexico)
                 ),
                 format = Format.DECIMAL,  // ⭐ CRITICAL: DECIMAL (same as chip)
                 cardTech = CardTech.CONTACTLESS  // ⭐ CRITICAL: Use CONTACTLESS instead of CHIP
@@ -1979,6 +2094,27 @@ class PaymentViewModel @Inject constructor(
                 Timber.i("   ✅ Track2 extracted: ${track2.take(16)}... (length: ${track2.length})")
             } else {
                 Timber.w("   ⚠️ Track2 not found - may cause issues")
+            }
+
+            // 🌍 Extract Issuer Country Code (EMV tag 0x5F28) for international card detection
+            try {
+                val countryParams = GetTagValueParams(
+                    tag = 0x5F28,  // Issuer Country Code (ISO 3166 numeric)
+                    cardTech = CardTech.CONTACTLESS
+                )
+                val countryResult = getTagValueUseCase.run(countryParams)
+                if (countryResult.isRight) {
+                    lastEmvIssuerCountry = countryResult.rightValue().tagValue ?: ""
+                    if (lastEmvIssuerCountry.isNotEmpty()) {
+                        Timber.i("🌍 [EMV 5F28] Issuer Country Code (CONTACTLESS): $lastEmvIssuerCountry")
+                    }
+                } else {
+                    lastEmvIssuerCountry = ""
+                    Timber.d("🌍 [EMV 5F28] Not available for this card (CONTACTLESS)")
+                }
+            } catch (e: Exception) {
+                lastEmvIssuerCountry = ""
+                Timber.w("🌍 [EMV 5F28] Could not extract (CONTACTLESS): ${e.message}")
             }
 
             // ✅ REMOVED: Init logic (PASO 2 + 2.5) - Now handled by InitializationManager in init{}
@@ -2133,7 +2269,11 @@ class PaymentViewModel @Inject constructor(
                         tip = currentState.tipAmount.toBigDecimal(),
                         rating = currentState.rating,
                         merchantAccountId = null,  // ✅ null = cash (no processor, no commission)
-                        blumonSerialNumber = ""   // No Blumon SDK for cash payments
+                        blumonSerialNumber = "",  // No Blumon SDK for cash payments
+                        // 📸 PRE-PAYMENT VERIFICATION (2025-01-14)
+                        orderReference = prePaymentOrderReference,
+                        verificationPhotos = prePaymentVerificationPhotos,
+                        verificationBarcodes = prePaymentVerificationBarcodes.map { it.barcode },
                     )
                 }
 
@@ -2170,7 +2310,8 @@ class PaymentViewModel @Inject constructor(
                         orderId = currentOrderId,  // 🆕 Order ID (for loading order items in success screen)
                         orderNumber = currentOrderNumber,  // 🆕 Order number (for display)
                         orderItems = orderData?.items,  // 🆕 Order items (for displaying itemized receipt)
-                        remainingBalance = orderData?.remainingBalance  // ⭐ NEW: Amount left to pay (for "Continuar pagando" button)
+                        remainingBalance = orderData?.remainingBalance,  // ⭐ NEW: Amount left to pay (for "Continuar pagando" button)
+                        discountAmount = orderData?.discountAmount?.toPlainString()  // 🆕 Discount for receipt printing
                     )
 
                     Timber.d("💚 [Cash Payment] Payment completed successfully")
@@ -2397,11 +2538,42 @@ class PaymentViewModel @Inject constructor(
                 }
             }
 
+            // 📸 PRE-payment verification - go back to previous screen
+            is PaymentState.VerifyingPrePayment -> {
+                Timber.d("⬅️  [Payment Flow] Back from VerifyingPrePayment")
+                goBackFromPrePaymentVerification()
+                true
+            }
+
             is PaymentState.SelectingMerchant -> {
                 // ⚙️ TPV Settings: Check which screen to go back to
                 val tpvSettings = tpvSettingsRepository.getCurrentSettings()
 
                 when {
+                    // 📸 PRE-payment verification: If enabled, go back to verification
+                    tpvSettings.showVerificationScreen -> {
+                        Timber.d("⬅️  [Payment Flow] Back from SelectingMerchant → VerifyingPrePayment")
+                        // Reconstruct VerificationPhoto objects from saved Firebase URLs
+                        val restoredPhotos = prePaymentVerificationPhotos.map { url ->
+                            VerificationPhoto(
+                                localPath = url, // Use URL as path (already uploaded)
+                                status = PhotoUploadStatus.UPLOADED,
+                                firebaseUrl = url
+                            )
+                        }
+                        _state.value = PaymentState.VerifyingPrePayment(
+                            amount = currentState.subtotal,
+                            rating = currentState.rating,
+                            tipAmount = currentState.tipAmount,
+                            photos = restoredPhotos,
+                            scannedBarcodes = prePaymentVerificationBarcodes,
+                            requirePhoto = tpvSettings.requireVerificationPhoto,
+                            requireBarcode = tpvSettings.requireVerificationBarcode,
+                            // 🔧 FIX: Restore saved order reference (ensures consistency on go-back)
+                            orderReference = prePaymentOrderReference
+                        )
+                        true
+                    }
                     tpvSettings.showTipScreen -> {
                         // Go back to tip
                         Timber.d("⬅️  [Payment Flow] Back from SelectingMerchant → CollectingTip")
@@ -2444,7 +2616,9 @@ class PaymentViewModel @Inject constructor(
             is PaymentState.Idle,
             // 🆕 NEW: Printing states - no back
             is PaymentState.Printing,
-            is PaymentState.PrintError -> {
+            is PaymentState.PrintError,
+            // 📸 Step 4: Verification - no back (must confirm or skip)
+            is PaymentState.Verifying -> {
                 Timber.d("⬅️  [Payment Flow] Back from final state → Return to home")
                 false
             }
@@ -2643,6 +2817,10 @@ class PaymentViewModel @Inject constructor(
                         rating = currentRating, // 🆕 NEW: Include user rating (1-5 stars or null)
                         merchantAccountId = merchantAccountId, // 🆕 PRIMARY: Merchant account ID
                         blumonSerialNumber = blumonSerial, // ⚠️ LEGACY: Fallback (FIXED: virtual serial)
+                        // 📸 PRE-PAYMENT VERIFICATION (2025-01-14)
+                        orderReference = prePaymentOrderReference,
+                        verificationPhotos = prePaymentVerificationPhotos,
+                        verificationBarcodes = prePaymentVerificationBarcodes.map { it.barcode },
                     )
                 }
 
@@ -2686,7 +2864,8 @@ class PaymentViewModel @Inject constructor(
                             orderId = currentOrderId,  // 🆕 Order ID (for loading order items in success screen)
                             orderNumber = currentOrderNumber,  // 🆕 Order number (for display)
                             orderItems = orderData?.items,  // 🆕 Order items (for displaying itemized receipt)
-                            remainingBalance = orderData?.remainingBalance  // ⭐ NEW: Amount left to pay (for "Continuar pagando" button)
+                            remainingBalance = orderData?.remainingBalance,  // ⭐ NEW: Amount left to pay (for "Continuar pagando" button)
+                            discountAmount = orderData?.discountAmount?.toPlainString()  // 🆕 Discount for receipt printing
                         )
                         Timber.d("🎫 [Receipt] Updated Success state with receipt | URL=${receipt.receiptUrl}")
                         Timber.d("🎫 [Receipt] Card: ${cardDetails.cardBrand} ${cardDetails.maskedPan} | Entry: ${cardDetails.entryMode}")
@@ -2768,9 +2947,32 @@ class PaymentViewModel @Inject constructor(
             var cardBrand = CardBrand.UNKNOWN
             var bin = ""
             var bank = ""
+            var issuerCountryFromBlumon = ""
 
             if (binInfo != null) {
                 val binInfoClass = binInfo::class.java
+
+                // 🔍 DISCOVERY: List available fields in binInformation (DEBUG only)
+                // ⚠️ SECURITY: Only log in debug builds - may contain sensitive card data
+                if (BuildConfig.DEBUG) {
+                    try {
+                        val allFields = binInfoClass.declaredFields
+                        Timber.d("🔍 [BinInformation] Available fields: ${allFields.map { it.name }}")
+
+                        // Log field values for discovery (debug only)
+                        allFields.forEach { field ->
+                            try {
+                                field.isAccessible = true
+                                val value = field.get(binInfo)
+                                Timber.d("🔍 [BinInformation] Field '${field.name}' = $value (type: ${field.type.simpleName})")
+                            } catch (e: Exception) {
+                                Timber.w("🔍 [BinInformation] Could not read field '${field.name}': ${e.message}")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Timber.w("🔍 [BinInformation] Could not list fields: ${e.message}")
+                    }
+                }
 
                 // Extract brand from binInformation
                 try {
@@ -2813,6 +3015,28 @@ class PaymentViewModel @Inject constructor(
                 } catch (e: Exception) {
                     Timber.w("Could not extract bank from binInformation: ${e.message}")
                 }
+
+                // 🌍 Extract country/issuerCountry for international card detection
+                val countryFieldNames = listOf(
+                    "country", "countryCode", "issuerCountry", "issuerCountryCode",
+                    "cardOrigin", "cardCountry", "origin", "issuingCountry", "emisor"
+                )
+                for (fieldName in countryFieldNames) {
+                    try {
+                        val countryField = binInfoClass.getDeclaredField(fieldName)
+                        countryField.isAccessible = true
+                        val countryValue = countryField.get(binInfo)?.toString() ?: ""
+                        if (countryValue.isNotEmpty()) {
+                            issuerCountryFromBlumon = countryValue
+                            Timber.i("🌍 [BinInformation] Found country field '$fieldName' = $countryValue")
+                            break
+                        }
+                    } catch (e: NoSuchFieldException) {
+                        // Field doesn't exist, try next
+                    } catch (e: Exception) {
+                        Timber.w("🌍 [BinInformation] Error reading '$fieldName': ${e.message}")
+                    }
+                }
             }
 
             // Mask PAN from Track2 or BIN
@@ -2826,11 +3050,18 @@ class PaymentViewModel @Inject constructor(
                 "************"
             }
 
+            // 🌍 Determine if international card (3-level strategy)
+            val isInternational = determineIsInternational(
+                binInfoCountry = issuerCountryFromBlumon,
+                emvIssuerCountry = lastEmvIssuerCountry,
+                bin = bin
+            )
+
             CardDetails(
                 maskedPan = maskedPan,
                 cardBrand = cardBrand,
                 entryMode = entryMode,
-                isInternational = false, // TODO: Determine from binInformation if available
+                isInternational = isInternational,
             )
         } catch (e: Exception) {
             Timber.e(e, "Failed to extract card details from Blumon response - falling back to Track2 detection")
@@ -2867,8 +3098,15 @@ class PaymentViewModel @Inject constructor(
             // Detect card brand from BIN (first 6 digits)
             val cardBrand = detectCardBrand(pan)
 
-            // Check if international (TODO: Implement BIN database lookup)
-            val isInternational = false  // For now, assume domestic
+            // Extract BIN for international detection
+            val bin = pan.take(6)
+
+            // 🌍 Determine if international (using EMV + BIN lookup since no Blumon binInfo here)
+            val isInternational = determineIsInternational(
+                binInfoCountry = null,
+                emvIssuerCountry = lastEmvIssuerCountry,
+                bin = bin
+            )
 
             CardDetails(
                 maskedPan = maskedPan,
@@ -2886,6 +3124,147 @@ class PaymentViewModel @Inject constructor(
                 isInternational = false,
             )
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNATIONAL CARD DETECTION (3-LEVEL STRATEGY)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * 🌍 Determine if a card is international using a 3-level strategy.
+     *
+     * **Level 1 (Most Reliable):** binInformation.country from Blumon
+     * - Blumon has BIN database and returns issuer country
+     * - Works for ALL transaction types
+     *
+     * **Level 2 (Chip/Contactless):** EMV Tag 0x5F28 (Issuer Country Code)
+     * - ISO 3166 numeric code (e.g., "484" = Mexico)
+     * - May not be available for swipe/fallback
+     *
+     * **Level 3 (Fallback):** BIN lookup against known Mexican BINs
+     * - Less reliable, only used when Level 1 and 2 unavailable
+     * - Has false positives/negatives
+     *
+     * @param binInfoCountry Country from Blumon's binInformation (Level 1)
+     * @param emvIssuerCountry EMV tag 0x5F28 Issuer Country Code (Level 2)
+     * @param bin First 6-8 digits of card number (Level 3 fallback)
+     * @return true if card is international, false if domestic (Mexico)
+     */
+    private fun determineIsInternational(
+        binInfoCountry: String?,
+        emvIssuerCountry: String? = null,
+        bin: String?
+    ): Boolean {
+        // Level 1: binInformation.country from Blumon (most reliable)
+        if (!binInfoCountry.isNullOrEmpty()) {
+            val isMexico = binInfoCountry.equals("MX", ignoreCase = true) ||
+                    binInfoCountry.equals("MEX", ignoreCase = true) ||
+                    binInfoCountry.equals("Mexico", ignoreCase = true) ||
+                    binInfoCountry.equals("México", ignoreCase = true) ||
+                    binInfoCountry.contains("484") ||  // ISO 3166 numeric
+                    binInfoCountry.contains("Mexico", ignoreCase = true)
+
+            val result = !isMexico
+            Timber.i("🌍 [International] Level 1 (Blumon): country='$binInfoCountry' → ${if (result) "INTERNATIONAL" else "DOMESTIC"}")
+            return result
+        }
+
+        // Level 2: EMV Tag 0x5F28 (Issuer Country Code from chip/contactless)
+        if (!emvIssuerCountry.isNullOrEmpty()) {
+            // ISO 3166-1 numeric code: "484" = Mexico
+            // May come as "484", "0484", or with padding
+            val normalizedCode = emvIssuerCountry.trim().padStart(3, '0')
+            val isMexico = normalizedCode == "484" ||
+                    emvIssuerCountry == "484" ||
+                    emvIssuerCountry == "0484"
+
+            val result = !isMexico
+            Timber.i("🌍 [International] Level 2 (EMV 5F28): code='$emvIssuerCountry' (normalized: $normalizedCode) → ${if (result) "INTERNATIONAL" else "DOMESTIC"}")
+            return result
+        }
+
+        // Level 3: BIN lookup against known Mexican bank BINs (fallback)
+        if (!bin.isNullOrEmpty() && bin.length >= 6) {
+            val isLikelyMexican = isLikelyMexicanBin(bin)
+            val result = !isLikelyMexican
+            Timber.i("🌍 [International] Level 3 (BIN lookup): bin='$bin' → ${if (result) "LIKELY INTERNATIONAL" else "LIKELY DOMESTIC"}")
+            return result
+        }
+
+        // Default: Assume domestic if no data available
+        Timber.w("🌍 [International] No country data available, assuming DOMESTIC")
+        return false
+    }
+
+    /**
+     * Check if a BIN is likely from a Mexican bank.
+     *
+     * ⚠️ WARNING: This is a FALLBACK method with known limitations:
+     * - BIN ranges change frequently
+     * - Some Mexican banks use international BINs
+     * - Some international banks have Mexican BINs
+     *
+     * Only use when Blumon's binInformation.country is unavailable.
+     *
+     * Source: Common Mexican bank BIN prefixes
+     */
+    private fun isLikelyMexicanBin(bin: String): Boolean {
+        // Known Mexican bank BIN prefixes (6 digits)
+        // This list should be expanded based on actual transaction data
+        val mexicanBinPrefixes = setOf(
+            // BBVA Bancomer
+            "400000", "400001", "400895", "403684", "406334", "410180",
+            "411111", "415231", "417100", "417101", "422222", "428331",
+            // Banamex / Citibanamex
+            "432420", "451510", "454671", "455000", "489363", "493193",
+            // Banorte
+            "500000", "504363", "511785", "512912", "516758", "520000",
+            // Santander
+            "521000", "523456", "530000", "542418", "546554",
+            // HSBC México
+            "400360", "402191", "404091", "407440", "411250",
+            // Scotiabank México
+            "400217", "400835", "402658", "417432",
+            // Inbursa
+            "400470", "431510", "432920",
+            // Banregio
+            "410160", "410161", "423514",
+            // Banco Azteca
+            "451100", "464401", "464402",
+        )
+
+        val binPrefix = bin.take(6)
+
+        // Check if BIN starts with any known Mexican prefix
+        val isKnownMexican = mexicanBinPrefixes.any { prefix ->
+            binPrefix.startsWith(prefix.take(binPrefix.length.coerceAtMost(prefix.length)))
+        }
+
+        // Additional heuristics for common Mexican patterns
+        // Most Mexican cards use certain BIN ranges
+        val isLikelyMexicanRange = when {
+            binPrefix.startsWith("4") -> {
+                // VISA: Many Mexican banks use 4xxxxx
+                // But this is too broad - only trust explicit prefixes
+                isKnownMexican
+            }
+            binPrefix.startsWith("5") -> {
+                // Mastercard: 51-55 range
+                // Mexican banks commonly use 51xxxx, 52xxxx
+                isKnownMexican
+            }
+            binPrefix.startsWith("3") -> {
+                // AMEX: 34, 37 - Usually international
+                false
+            }
+            binPrefix.startsWith("6") -> {
+                // Discover: Usually international
+                false
+            }
+            else -> false
+        }
+
+        return isKnownMexican || isLikelyMexicanRange
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -2914,7 +3293,8 @@ class PaymentViewModel @Inject constructor(
      */
     private data class OrderData(
         val items: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>,
-        val remainingBalance: java.math.BigDecimal
+        val remainingBalance: java.math.BigDecimal,
+        val discountAmount: java.math.BigDecimal = java.math.BigDecimal.ZERO  // 🆕 Discount for receipt printing
     )
 
     private suspend fun loadOrderData(orderId: String?): OrderData? {
@@ -2959,7 +3339,8 @@ class PaymentViewModel @Inject constructor(
             result.getOrNull()?.let { order ->
                 OrderData(
                     items = order.items,
-                    remainingBalance = order.remainingBalance
+                    remainingBalance = order.remainingBalance,
+                    discountAmount = order.discountAmount  // 🆕 Include discount for receipt printing
                 )
             }
         } catch (e: Exception) {
@@ -3017,7 +3398,8 @@ class PaymentViewModel @Inject constructor(
                     cardDetails = currentState.cardDetails,  // 🎫 Pass card info for professional receipt
                     referenceNumber = currentState.referenceNumber,  // 🎫 Pass reference for receipt
                     orderNumber = currentState.orderNumber,  // 🆕 Order number (for display in receipt)
-                    orderItems = currentState.orderItems  // 🆕 Order items (for itemized receipt - only for orders, not fast payments)
+                    orderItems = currentState.orderItems,  // 🆕 Order items (for itemized receipt - only for orders, not fast payments)
+                    discountAmount = currentState.discountAmount  // 🆕 Discount for receipt printing
                 )
 
                 result.onSuccess {
@@ -3178,5 +3560,562 @@ class PaymentViewModel @Inject constructor(
             Timber.w("Failed to detect card brand from PAN: ${e.message}")
             CardBrand.UNKNOWN
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 📸 STEP 4: SALE VERIFICATION (Photo + Barcode)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // 🆕 PRE-PAYMENT VERIFICATION FUNCTIONS
+    // These functions handle verification BEFORE payment processing.
+    // Flow: CollectingTip → VerifyingPrePayment → SelectingMerchant → Payment
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * 📸 Add photo to PRE-payment verification state with immediate Firebase upload.
+     *
+     * **Flow:**
+     * 1. Create VerificationPhoto with PENDING status
+     * 2. Add to state immediately (shows local preview)
+     * 3. Launch background coroutine to upload to Firebase
+     * 4. Update state with UPLOADING → UPLOADED/ERROR
+     *
+     * @param photoPath Local file path of captured photo
+     */
+    fun addPrePaymentPhoto(photoPath: String) {
+        val currentState = _state.value
+        if (currentState is PaymentState.VerifyingPrePayment) {
+            // Step 1: Create photo with PENDING status
+            val newPhoto = VerificationPhoto(
+                localPath = photoPath,
+                status = PhotoUploadStatus.PENDING
+            )
+
+            // Step 2: Add to state immediately (shows local preview)
+            val updatedPhotos = currentState.photos + newPhoto
+            val photoIndex = updatedPhotos.size - 1
+            _state.value = currentState.copy(photos = updatedPhotos)
+            Timber.d("📸 [PRE-Verification] Added photo: $photoPath | index=$photoIndex | status=PENDING")
+
+            // Step 3: Launch background upload
+            viewModelScope.launch {
+                uploadPhotoInBackground(photoPath, photoIndex)
+            }
+        } else {
+            Timber.w("📸 [PRE-Verification] Cannot add photo - state is not VerifyingPrePayment: $currentState")
+        }
+    }
+
+    /**
+     * 📸 Upload photo to Firebase Storage in background.
+     *
+     * **Path Structure:**
+     * venues/{venueSlug}/verifications/{YYYY-MM-DD}/{orderRef}_{index}.jpg
+     *
+     * Updates state with progress and final status (UPLOADED/ERROR).
+     *
+     * @param localPath Local file path of photo
+     * @param photoIndex Index of photo in photos list (0-based)
+     */
+    private suspend fun uploadPhotoInBackground(localPath: String, photoIndex: Int) {
+        val venueSlug = authRepository.getVenueSlug()
+        if (venueSlug.isNullOrBlank()) {
+            Timber.e("📸 [PRE-Verification] Cannot upload - no venueSlug")
+            updatePhotoStatus(photoIndex, PhotoUploadStatus.ERROR, error = "No venueSlug disponible")
+            return
+        }
+
+        // 🔧 FIX: Use orderReference from state (generated ONCE when entering VerifyingPrePayment)
+        // This ensures photos match the orderNumber that will be sent to backend
+        val currentState = _state.value
+        val orderReference = if (currentState is PaymentState.VerifyingPrePayment) {
+            currentState.orderReference ?: currentOrderNumber ?: "FAST-${System.currentTimeMillis()}"
+        } else {
+            currentOrderNumber ?: "FAST-${System.currentTimeMillis()}"
+        }
+
+        Timber.d("📸 [PRE-Verification] Uploading with orderRef=$orderReference | venue=$venueSlug | fromState=${currentState is PaymentState.VerifyingPrePayment}")
+
+        // Update to UPLOADING status
+        updatePhotoStatus(photoIndex, PhotoUploadStatus.UPLOADING)
+
+        // Upload with progress tracking
+        verificationUploadManager.uploadPhoto(
+            localPath = localPath,
+            venueSlug = venueSlug,
+            orderReference = orderReference,
+            photoIndex = photoIndex + 1,  // Convert to 1-based index for filename
+            onProgress = { progress ->
+                updatePhotoProgress(photoIndex, progress)
+            }
+        ).fold(
+            onSuccess = { downloadUrl ->
+                Timber.i("📸 [PRE-Verification] Upload complete | index=$photoIndex | url=$downloadUrl")
+                updatePhotoStatus(photoIndex, PhotoUploadStatus.UPLOADED, firebaseUrl = downloadUrl)
+            },
+            onFailure = { error ->
+                Timber.e(error, "📸 [PRE-Verification] Upload failed | index=$photoIndex")
+                updatePhotoStatus(photoIndex, PhotoUploadStatus.ERROR, error = error.message ?: "Error desconocido")
+            }
+        )
+    }
+
+    /**
+     * 📸 Update photo upload status in state.
+     */
+    private fun updatePhotoStatus(
+        photoIndex: Int,
+        status: PhotoUploadStatus,
+        firebaseUrl: String? = null,
+        error: String? = null
+    ) {
+        val currentState = _state.value
+        if (currentState is PaymentState.VerifyingPrePayment && photoIndex in currentState.photos.indices) {
+            val updatedPhoto = currentState.photos[photoIndex].copy(
+                status = status,
+                firebaseUrl = firebaseUrl,
+                error = error
+            )
+            val updatedPhotos = currentState.photos.toMutableList().apply {
+                set(photoIndex, updatedPhoto)
+            }
+            _state.value = currentState.copy(photos = updatedPhotos)
+            Timber.d("📸 [PRE-Verification] Photo $photoIndex status → $status")
+        }
+    }
+
+    /**
+     * 📸 Update photo upload progress in state.
+     */
+    private fun updatePhotoProgress(photoIndex: Int, progress: Float) {
+        val currentState = _state.value
+        if (currentState is PaymentState.VerifyingPrePayment && photoIndex in currentState.photos.indices) {
+            val updatedPhoto = currentState.photos[photoIndex].copy(
+                uploadProgress = progress
+            )
+            val updatedPhotos = currentState.photos.toMutableList().apply {
+                set(photoIndex, updatedPhoto)
+            }
+            _state.value = currentState.copy(photos = updatedPhotos)
+            // Don't log every progress update to avoid log spam
+        }
+    }
+
+    /**
+     * 📸 Remove photo from PRE-payment verification state.
+     *
+     * Also deletes from Firebase Storage if already uploaded.
+     *
+     * @param index Index of photo to remove
+     */
+    fun removePrePaymentPhoto(index: Int) {
+        val currentState = _state.value
+        if (currentState is PaymentState.VerifyingPrePayment && index in currentState.photos.indices) {
+            val photoToRemove = currentState.photos[index]
+
+            // Delete from Firebase if already uploaded
+            if (photoToRemove.isUploaded() && photoToRemove.firebaseUrl != null) {
+                viewModelScope.launch {
+                    verificationUploadManager.deletePhoto(photoToRemove.firebaseUrl)
+                        .onFailure { Timber.w(it, "📸 [PRE-Verification] Failed to delete from Firebase") }
+                }
+            }
+
+            val updatedPhotos = currentState.photos.toMutableList().apply {
+                removeAt(index)
+            }
+            _state.value = currentState.copy(photos = updatedPhotos)
+            Timber.d("📸 [PRE-Verification] Removed photo at index $index | remaining=${updatedPhotos.size}")
+        }
+    }
+
+    /**
+     * 📸 Add scanned barcode to PRE-payment verification state.
+     *
+     * @param barcode The scanned barcode value
+     * @param format The barcode format (EAN_13, UPC_A, QR_CODE, etc.)
+     */
+    fun addPrePaymentBarcode(barcode: String, format: String) {
+        val currentState = _state.value
+        if (currentState is PaymentState.VerifyingPrePayment) {
+            // Check if already scanned (prevent duplicates)
+            if (currentState.scannedBarcodes.any { it.barcode == barcode }) {
+                Timber.w("📸 [PRE-Verification] Barcode already scanned: $barcode")
+                return
+            }
+
+            val scannedProduct = ScannedProduct(
+                barcode = barcode,
+                format = format,
+                productName = null, // TODO: Lookup product by barcode from inventory
+                productId = null,
+                hasInventory = false
+            )
+            val updatedBarcodes = currentState.scannedBarcodes + scannedProduct
+            _state.value = currentState.copy(scannedBarcodes = updatedBarcodes)
+            Timber.d("📸 [PRE-Verification] Added barcode: $barcode ($format) | total=${updatedBarcodes.size}")
+        } else {
+            Timber.w("📸 [PRE-Verification] Cannot add barcode - state is not VerifyingPrePayment: $currentState")
+        }
+    }
+
+    /**
+     * 📸 Remove scanned barcode from PRE-payment verification state.
+     *
+     * @param barcode Barcode value to remove
+     */
+    fun removePrePaymentBarcode(barcode: String) {
+        val currentState = _state.value
+        if (currentState is PaymentState.VerifyingPrePayment) {
+            val updatedBarcodes = currentState.scannedBarcodes.filter { it.barcode != barcode }
+            _state.value = currentState.copy(scannedBarcodes = updatedBarcodes)
+            Timber.d("📸 [PRE-Verification] Removed barcode: $barcode | remaining=${updatedBarcodes.size}")
+        }
+    }
+
+    /**
+     * 📸 Complete PRE-payment verification and proceed to merchant selection.
+     *
+     * Called when user taps "Continuar" in VerifyingPrePayment screen.
+     * Stores verification data (Firebase URLs) and proceeds to SelectingMerchant state.
+     *
+     * **Validation:**
+     * - If requirePhoto=true, at least one photo must be captured AND uploaded
+     * - If requireBarcode=true, at least one barcode must be scanned
+     * - All photos must be uploaded (canProceed() checks this)
+     * - Only proceeds if canProceed() returns true
+     */
+    fun completePrePaymentVerification() {
+        val currentState = _state.value
+        if (currentState !is PaymentState.VerifyingPrePayment) {
+            Timber.w("📸 [PRE-Verification] Cannot complete - state is not VerifyingPrePayment")
+            return
+        }
+
+        if (!currentState.canProceed()) {
+            Timber.w("📸 [PRE-Verification] Cannot proceed - requirements not met")
+            Timber.w("📸 [PRE-Verification] requirePhoto=${currentState.requirePhoto} | photos=${currentState.photos.size}")
+            Timber.w("📸 [PRE-Verification] allUploaded=${currentState.allPhotosUploaded} | hasError=${currentState.hasUploadError}")
+            Timber.w("📸 [PRE-Verification] requireBarcode=${currentState.requireBarcode} | barcodes=${currentState.scannedBarcodes.size}")
+            return
+        }
+
+        // 💾 Store verification data for later (when recording payment)
+        // ⭐ Use Firebase URLs (not local paths) for backend storage
+        prePaymentVerificationPhotos = currentState.uploadedPhotoUrls
+        prePaymentVerificationBarcodes = currentState.scannedBarcodes
+        // 🔧 FIX: Store order reference for backend (ensures photos match order)
+        prePaymentOrderReference = currentState.orderReference
+        Timber.d("📸 [PRE-Verification] Stored verification data: photos=${prePaymentVerificationPhotos.size} (Firebase URLs) | barcodes=${prePaymentVerificationBarcodes.size} | orderRef=$prePaymentOrderReference")
+
+        // Calculate total and proceed to merchant selection
+        val totalAmount = calculateTotal(currentState.amount, currentState.tipAmount)
+        Timber.d("📸 [PRE-Verification] Proceeding to merchant selection: amount=${currentState.amount} | tip=${currentState.tipAmount} | total=$totalAmount")
+        proceedToMerchantSelection(currentState.amount, currentState.tipAmount, totalAmount, currentState.rating)
+    }
+
+    /**
+     * 📸 Skip PRE-payment verification and proceed to merchant selection.
+     *
+     * Called when user taps "Saltar" in VerifyingPrePayment screen.
+     * Only available when canSkip() returns true (no mandatory requirements).
+     *
+     * **Logic:**
+     * - If requirePhoto=false AND requireBarcode=false → Skip allowed
+     * - If ANY requirement is mandatory → Skip NOT allowed (button hidden in UI)
+     */
+    fun skipPrePaymentVerification() {
+        val currentState = _state.value
+        if (currentState !is PaymentState.VerifyingPrePayment) {
+            Timber.w("📸 [PRE-Verification] Cannot skip - state is not VerifyingPrePayment")
+            return
+        }
+
+        if (!currentState.canSkip()) {
+            Timber.w("📸 [PRE-Verification] Cannot skip - verification is required")
+            Timber.w("📸 [PRE-Verification] requirePhoto=${currentState.requirePhoto} | requireBarcode=${currentState.requireBarcode}")
+            return
+        }
+
+        // Clear any partial verification data
+        prePaymentVerificationPhotos = emptyList()
+        prePaymentVerificationBarcodes = emptyList()
+        prePaymentOrderReference = null
+        Timber.d("📸 [PRE-Verification] Skipped - no verification data stored")
+
+        // Calculate total and proceed to merchant selection
+        val totalAmount = calculateTotal(currentState.amount, currentState.tipAmount)
+        Timber.d("📸 [PRE-Verification] Skipping → merchant selection: amount=${currentState.amount} | tip=${currentState.tipAmount} | total=$totalAmount")
+        proceedToMerchantSelection(currentState.amount, currentState.tipAmount, totalAmount, currentState.rating)
+    }
+
+    /**
+     * 📸 Go back from PRE-payment verification to previous step.
+     *
+     * Called when user taps back button in VerifyingPrePayment screen.
+     * Returns to CollectingTip (or CollectingRating if tip is disabled).
+     */
+    fun goBackFromPrePaymentVerification() {
+        val currentState = _state.value
+        if (currentState !is PaymentState.VerifyingPrePayment) {
+            Timber.w("📸 [PRE-Verification] Cannot go back - state is not VerifyingPrePayment")
+            return
+        }
+
+        val settings = _tpvSettings.value
+
+        // Go back to appropriate previous screen
+        when {
+            settings?.showTipScreen == true -> {
+                Timber.d("📸 [PRE-Verification] Going back to CollectingTip")
+                _state.value = PaymentState.CollectingTip(
+                    amount = currentState.amount,
+                    rating = currentState.rating,
+                    tipAmount = currentState.tipAmount
+                )
+            }
+            settings?.showReviewScreen == true -> {
+                Timber.d("📸 [PRE-Verification] Going back to CollectingRating (tip disabled)")
+                _state.value = PaymentState.CollectingRating(
+                    amount = currentState.amount,
+                    rating = currentState.rating ?: 0
+                )
+            }
+            else -> {
+                Timber.d("📸 [PRE-Verification] Going back to EnteringAmount (rating & tip disabled)")
+                _state.value = PaymentState.EnteringAmount(amount = currentState.amount)
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // POST-PAYMENT VERIFICATION FUNCTIONS (Legacy - to be removed after migration)
+    // These functions handle verification AFTER payment processing.
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * 📸 Add captured photo to verification state.
+     *
+     * Called from VerificationScreen when user captures a photo with CameraPreviewScreen.
+     *
+     * @param photoPath Local file path of captured photo
+     */
+    fun addVerificationPhoto(photoPath: String) {
+        val currentState = _state.value
+        if (currentState is PaymentState.Verifying) {
+            val updatedPhotos = currentState.capturedPhotos + photoPath
+            _state.value = currentState.copy(capturedPhotos = updatedPhotos)
+            Timber.d("📸 [Verification] Added photo: $photoPath | total=${updatedPhotos.size}")
+        } else {
+            Timber.w("📸 [Verification] Cannot add photo - state is not Verifying: $currentState")
+        }
+    }
+
+    /**
+     * 📸 Remove photo from verification state.
+     *
+     * @param index Index of photo to remove
+     */
+    fun removeVerificationPhoto(index: Int) {
+        val currentState = _state.value
+        if (currentState is PaymentState.Verifying) {
+            val updatedPhotos = currentState.capturedPhotos.toMutableList().apply {
+                if (index in indices) removeAt(index)
+            }
+            _state.value = currentState.copy(capturedPhotos = updatedPhotos)
+            Timber.d("📸 [Verification] Removed photo at index $index | remaining=${updatedPhotos.size}")
+        }
+    }
+
+    /**
+     * 📸 Add scanned barcode to verification state.
+     *
+     * Called from VerificationScreen when user scans a barcode with BarcodeScannerScreen.
+     *
+     * @param barcode The scanned barcode value
+     * @param format The barcode format (EAN_13, UPC_A, QR_CODE, etc.)
+     */
+    fun addScannedBarcode(barcode: String, format: String) {
+        val currentState = _state.value
+        if (currentState is PaymentState.Verifying) {
+            // Check if already scanned (prevent duplicates)
+            if (currentState.scannedBarcodes.any { it.barcode == barcode }) {
+                Timber.w("📸 [Verification] Barcode already scanned: $barcode")
+                return
+            }
+
+            val scannedProduct = ScannedProduct(
+                barcode = barcode,
+                format = format,
+                productName = null, // TODO: Lookup product by barcode from inventory
+                productId = null,
+                hasInventory = false
+            )
+            val updatedBarcodes = currentState.scannedBarcodes + scannedProduct
+            _state.value = currentState.copy(scannedBarcodes = updatedBarcodes)
+            Timber.d("📸 [Verification] Added barcode: $barcode ($format) | total=${updatedBarcodes.size.toString()}")
+        } else {
+            Timber.w("📸 [Verification] Cannot add barcode - state is not Verifying: $currentState")
+        }
+    }
+
+    /**
+     * 📸 Remove scanned barcode from verification state.
+     *
+     * @param barcode Barcode value to remove
+     */
+    fun removeScannedBarcode(barcode: String) {
+        val currentState = _state.value
+        if (currentState is PaymentState.Verifying) {
+            val updatedBarcodes = currentState.scannedBarcodes.filter { it.barcode != barcode }
+            _state.value = currentState.copy(scannedBarcodes = updatedBarcodes)
+            Timber.d("📸 [Verification] Removed barcode: $barcode | remaining=${updatedBarcodes.size}")
+        }
+    }
+
+    /**
+     * 📸 Confirm verification and upload data.
+     *
+     * **Flow:**
+     * 1. Validate requirements (photo/barcode if required)
+     * 2. Upload photos to Firebase Storage
+     * 3. Send verification data to backend API
+     * 4. Transition to Success state
+     *
+     * Called when user taps "Confirmar" in VerificationScreen.
+     */
+    fun confirmVerification() {
+        val currentState = _state.value
+        if (currentState !is PaymentState.Verifying) {
+            Timber.w("📸 [Verification] Cannot confirm - state is not Verifying")
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                // Mark as uploading
+                _state.value = currentState.copy(isUploading = true, error = null)
+                Timber.d("📸 [Verification] Starting upload | photos=${currentState.capturedPhotos.size} | barcodes=${currentState.scannedBarcodes.size}")
+
+                // TODO: Phase 6 - Upload photos to Firebase Storage
+                // TODO: Phase 6 - Send verification data to backend API
+
+                // For now, just log and transition to success
+                Timber.i("✅ [Verification] Verification confirmed | paymentId=${currentState.paymentId}")
+
+                // Transition back to Success state with verificationCompleted=true to prevent loop
+                _state.value = PaymentState.Success(
+                    authCode = currentState.paymentId, // Use paymentId as authCode
+                    amount = currentState.amount,
+                    orderId = currentState.orderId,
+                    orderNumber = currentState.orderNumber,
+                    receipt = currentState.receipt, // 🆕 Preserve receipt for QR code display
+                    cardDetails = null,
+                    referenceNumber = null,
+                    orderItems = null,
+                    remainingBalance = null,
+                    discountAmount = null,
+                    verificationCompleted = true  // ⚠️ CRITICAL: Prevents infinite verification loop
+                )
+
+            } catch (e: Exception) {
+                Timber.e(e, "📸 [Verification] Upload failed")
+                _state.value = currentState.copy(
+                    isUploading = false,
+                    error = "Error al subir verificación: ${e.message}"
+                )
+            }
+        }
+    }
+
+    /**
+     * 📸 Skip verification step.
+     *
+     * Transitions directly to Success state without uploading verification data.
+     * Used when verification is optional or user chooses to skip.
+     */
+    fun skipVerification() {
+        val currentState = _state.value
+        if (currentState !is PaymentState.Verifying) {
+            Timber.w("📸 [Verification] Cannot skip - state is not Verifying")
+            return
+        }
+
+        Timber.d("📸 [Verification] Skipped by user | paymentId=${currentState.paymentId}")
+
+        // Transition to Success state
+        _state.value = PaymentState.Success(
+            authCode = currentState.paymentId, // Use paymentId as authCode
+            amount = currentState.amount,
+            orderId = currentState.orderId,
+            orderNumber = currentState.orderNumber,
+            receipt = currentState.receipt, // 🆕 Preserve receipt for QR code display
+            cardDetails = null,
+            referenceNumber = null,
+            orderItems = null,
+            remainingBalance = null,
+            discountAmount = null,
+            verificationCompleted = true  // 🆕 Prevent re-triggering verification
+        )
+    }
+
+    /**
+     * 📸 Check if verification step should be shown for this venue.
+     *
+     * Conditions:
+     * 1. showVerificationScreen is enabled in TpvSettings
+     * 2. Venue type is in list of applicable types (retail, telecomunicaciones, etc.)
+     *
+     * @return true if verification should be shown
+     */
+    fun shouldShowVerificationStep(): Boolean {
+        val settings = _tpvSettings.value ?: return false
+
+        if (!settings.showVerificationScreen) {
+            Timber.d("📸 [Verification] Not showing - disabled in settings")
+            return false
+        }
+
+        // TODO: Check venue type against applicable types
+        // For now, just check if enabled in settings
+        Timber.d("📸 [Verification] Should show verification screen")
+        return true
+    }
+
+    /**
+     * 📸 Start verification step after successful payment.
+     *
+     * Called from PaymentScreen after PaymentState.Success to transition to Verifying.
+     *
+     * @param paymentId The payment ID from success state
+     * @param amount The payment amount
+     * @param orderId Optional order ID
+     * @param orderNumber Optional order number for display
+     */
+    fun startVerificationStep(
+        paymentId: String,
+        amount: String,
+        orderId: String? = null,
+        orderNumber: String? = null,
+        receipt: com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt? = null  // 🆕 Preserve receipt for QR code
+    ) {
+        // Removed: Internal shouldShowVerificationStep() check
+        // Caller (PaymentScreen) already validated using collected tpvSettings StateFlow
+        // This fixes the race condition where _tpvSettings.value could be null
+
+        Timber.i("📸 [Verification] Starting verification step | paymentId=$paymentId | amount=$amount | hasReceipt=${receipt != null}")
+        _state.value = PaymentState.Verifying(
+            paymentId = paymentId,
+            amount = amount,
+            orderId = orderId,
+            orderNumber = orderNumber,
+            capturedPhotos = emptyList(),
+            scannedBarcodes = emptyList(),
+            isUploading = false,
+            uploadProgress = 0f,
+            error = null,
+            receipt = receipt  // 🆕 Preserve receipt for QR code after verification
+        )
     }
 }

@@ -242,6 +242,20 @@ dependencies {
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
     implementation("com.google.firebase:firebase-appdistribution-api:16.0.0-beta14")
     implementation("com.google.firebase:firebase-appdistribution:16.0.0-beta14")
+    implementation("com.google.firebase:firebase-storage-ktx")  // Step 4: Verification photos
+
+    // CameraX (Step 4: Verification photo capture)
+    val cameraxVersion = "1.4.0"
+    implementation("androidx.camera:camera-core:$cameraxVersion")
+    implementation("androidx.camera:camera-camera2:$cameraxVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
+    implementation("androidx.camera:camera-view:$cameraxVersion")
+
+    // ZXing Barcode Scanner (Step 4: Product verification)
+    // NOTE: Using ZXing instead of ML Kit because ML Kit requires armeabi-v7a
+    // but PAX devices only support armeabi (required by Blumon SDK)
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation("com.google.zxing:core:3.5.3")
 
     // Room (para gestión de transacciones local)
     implementation("androidx.room:room-runtime:2.6.1")

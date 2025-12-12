@@ -107,6 +107,120 @@ sealed class PaymentState {
         val tipAmount: String = "0"
     ) : PaymentState()
 
+    // 🆕 PRE-payment verification state (Step 4: Verificación de Venta)
+    /**
+     * Verification state BEFORE payment processing.
+     *
+     * **Flow (NEW - PRE-Payment):**
+     * CollectingTip → VerifyingPrePayment → SelectingMerchant → Payment
+     *
+     * **Purpose:**
+     * Retail/telecomunicaciones venues capture evidence (photos + barcodes) BEFORE processing payment.
+     * This ensures verification requirements are met BEFORE the transaction is authorized.
+     *
+     * **Skip Logic:**
+     * - If BOTH requirePhoto=false AND requireBarcode=false → "Saltar" button visible
+     * - If ANY requirement is mandatory → "Saltar" button hidden (user MUST complete)
+     *
+     * **UI:**
+     * - Grid of captured photos (local paths)
+     * - List of scanned products
+     * - "Tomar Foto" / "Escanear Código" buttons
+     * - "Continuar" (enabled when requirements met)
+     * - "Saltar" (only visible if no mandatory requirements)
+     * - Back button (returns to Tip/Rating screen)
+     *
+     * @param amount Original payment amount
+     * @param rating User rating (null = skipped, 1-5 = rated)
+     * @param tipAmount Tip amount ("0" if skipped)
+     * @param capturedPhotos List of local file paths to captured photos
+     * @param scannedBarcodes List of scanned product data
+     * @param requirePhoto true if photo is mandatory (from TpvSettings)
+     * @param requireBarcode true if barcode is mandatory (from TpvSettings)
+     * @param isUploading true while uploading photos to Firebase (future)
+     * @param error Error message if capture/upload failed
+     */
+    data class VerifyingPrePayment(
+        val amount: String,
+        val rating: Int?,
+        val tipAmount: String,
+        val photos: List<VerificationPhoto> = emptyList(),
+        val scannedBarcodes: List<ScannedProduct> = emptyList(),
+        val requirePhoto: Boolean = false,
+        val requireBarcode: Boolean = false,
+        val error: String? = null,
+        /**
+         * Pre-generated order reference for consistent naming.
+         *
+         * For fast payments (no existing order): "FAST-{timestamp}" generated ONCE when entering this state.
+         * For order payments: Uses the existing order number (e.g., "ORDER-12345").
+         *
+         * This ensures photos uploaded to Firebase match the orderNumber created in backend.
+         * Without this, photos would have different timestamps than the final order.
+         */
+        val orderReference: String? = null
+    ) : PaymentState() {
+        /**
+         * Get local paths for UI display (backward compatibility).
+         */
+        val capturedPhotos: List<String>
+            get() = photos.map { it.localPath }
+
+        /**
+         * Get successfully uploaded Firebase URLs.
+         */
+        val uploadedPhotoUrls: List<String>
+            get() = photos.mapNotNull { it.firebaseUrl }
+
+        /**
+         * Check if any photo is currently uploading.
+         */
+        val isUploading: Boolean
+            get() = photos.any { it.isUploading() }
+
+        /**
+         * Check if all photos are successfully uploaded.
+         */
+        val allPhotosUploaded: Boolean
+            get() = photos.isNotEmpty() && photos.all { it.isUploaded() }
+
+        /**
+         * Check if any photo has upload error.
+         */
+        val hasUploadError: Boolean
+            get() = photos.any { it.hasError() }
+
+        /**
+         * Get overall upload progress (0.0 to 1.0).
+         */
+        val overallUploadProgress: Float
+            get() {
+                if (photos.isEmpty()) return 0f
+                val uploaded = photos.count { it.isUploaded() }
+                val uploading = photos.find { it.isUploading() }?.uploadProgress ?: 0f
+                return (uploaded + uploading) / photos.size
+            }
+
+        /**
+         * Check if user can skip verification.
+         * @return true if NO mandatory requirements (both requirePhoto=false AND requireBarcode=false)
+         */
+        fun canSkip(): Boolean = !requirePhoto && !requireBarcode
+
+        /**
+         * Check if user can proceed to payment.
+         * Requirements must be met AND all photos must be uploaded.
+         * @return true if all mandatory requirements are satisfied AND uploads complete
+         */
+        fun canProceed(): Boolean {
+            val photoMet = !requirePhoto || photos.isNotEmpty()
+            val barcodeMet = !requireBarcode || scannedBarcodes.isNotEmpty()
+            val uploadsComplete = photos.isEmpty() || allPhotosUploaded
+            val noErrors = !hasUploadError
+            return photoMet && barcodeMet && uploadsComplete && noErrors
+        }
+    }
+
     data class SelectingMerchant(
         val subtotal: String,      // Original amount
         val tipAmount: String,     // Calculated tip
@@ -132,7 +246,9 @@ sealed class PaymentState {
         val orderId: String? = null,  // 🆕 Order ID (for loading order items in success screen)
         val orderNumber: String? = null,  // 🆕 Order number (for display)
         val orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null,  // 🆕 Order items (for displaying itemized receipt)
-        val remainingBalance: java.math.BigDecimal? = null  // ⭐ NEW: Amount left to pay (for split payments - shows "Continuar pagando" button)
+        val remainingBalance: java.math.BigDecimal? = null,  // ⭐ NEW: Amount left to pay (for split payments - shows "Continuar pagando" button)
+        val discountAmount: String? = null,  // 🆕 Discount applied to order (for receipt printing)
+        val verificationCompleted: Boolean = false  // 📸 Prevents verification loop after confirmation
     ) : PaymentState()
     /**
      * Payment error with preserved context for smart retry.
@@ -169,4 +285,123 @@ sealed class PaymentState {
         val message: String,
         val previousState: Success  // Return to success state after error
     ) : PaymentState()
+
+    // 📸 Step 4: Sale Verification (for retail/telecomunicaciones venues)
+    /**
+     * Verification state after successful payment.
+     *
+     * **Flow (Step 4):**
+     * Success → Verifying → Final (return to Idle or OrderScreen)
+     *
+     * **Purpose:**
+     * Retail/telecomunicaciones venues capture evidence (photos + barcodes) to:
+     * - Prove sale occurred (photo of purchased items)
+     * - Link specific products to payment (barcode scan)
+     * - Enable automatic inventory deduction
+     *
+     * **UI:**
+     * - Grid of captured photos (local paths)
+     * - List of scanned products
+     * - "Tomar Foto" / "Escanear Código" buttons
+     * - "Confirmar" (uploads to Firebase + syncs to backend)
+     * - "Saltar" (skip verification)
+     *
+     * @param paymentId Backend payment ID (for linking verification)
+     * @param amount Payment amount for display
+     * @param orderId Optional order ID (null for fast payments)
+     * @param orderNumber Optional order number for display
+     * @param capturedPhotos List of local file paths to captured photos
+     * @param scannedBarcodes List of scanned product data
+     * @param isUploading true while uploading photos to Firebase
+     * @param uploadProgress Upload progress (0.0 to 1.0)
+     * @param error Error message if upload/sync failed
+     */
+    data class Verifying(
+        val paymentId: String,
+        val amount: String,
+        val orderId: String? = null,
+        val orderNumber: String? = null,
+        val capturedPhotos: List<String> = emptyList(),  // Local file paths
+        val scannedBarcodes: List<ScannedProduct> = emptyList(),
+        val isUploading: Boolean = false,
+        val uploadProgress: Float = 0f,
+        val error: String? = null,
+        val receipt: PaymentReceipt? = null  // 🆕 Preserve receipt for QR code after verification
+    ) : PaymentState()
+}
+
+/**
+ * Scanned product data from barcode.
+ *
+ * **ML Kit Barcode Scan Result:**
+ * When user scans a barcode, we attempt to look up the product in local cache.
+ * If found, we populate productName/productId/hasInventory.
+ * If not found, we still capture the barcode for backend resolution.
+ *
+ * @param barcode Raw barcode value (EAN-13, UPC-A, QR, etc.)
+ * @param format Barcode format (e.g., "EAN_13", "UPC_A", "QR_CODE")
+ * @param productName Product name if found in local cache (null if unknown)
+ * @param productId Backend product ID if found (null if unknown)
+ * @param hasInventory true if product has trackInventory=true (for auto-deduction)
+ * @param quantity Number of units scanned (default 1, can increment if same barcode scanned multiple times)
+ */
+data class ScannedProduct(
+    val barcode: String,
+    val format: String = "UNKNOWN",
+    val productName: String? = null,
+    val productId: String? = null,
+    val hasInventory: Boolean = false,
+    val quantity: Int = 1
+)
+
+/**
+ * Verification photo with upload tracking.
+ *
+ * **Upload Flow:**
+ * 1. Photo captured → status = PENDING, localPath set
+ * 2. Upload starts → status = UPLOADING, uploadProgress updating
+ * 3. Upload success → status = UPLOADED, firebaseUrl set
+ * 4. Upload fails → status = ERROR, error message set
+ *
+ * @param localPath Local file path for preview display
+ * @param status Current upload status
+ * @param firebaseUrl Firebase Storage download URL (null until uploaded)
+ * @param uploadProgress Upload progress 0.0 to 1.0 (only during UPLOADING)
+ * @param error Error message if upload failed
+ */
+data class VerificationPhoto(
+    val localPath: String,
+    val status: PhotoUploadStatus = PhotoUploadStatus.PENDING,
+    val firebaseUrl: String? = null,
+    val uploadProgress: Float = 0f,
+    val error: String? = null
+) {
+    /**
+     * Check if photo is successfully uploaded.
+     */
+    fun isUploaded(): Boolean = status == PhotoUploadStatus.UPLOADED && firebaseUrl != null
+
+    /**
+     * Check if photo is currently uploading.
+     */
+    fun isUploading(): Boolean = status == PhotoUploadStatus.UPLOADING
+
+    /**
+     * Check if photo upload failed.
+     */
+    fun hasError(): Boolean = status == PhotoUploadStatus.ERROR
+}
+
+/**
+ * Upload status for verification photos.
+ */
+enum class PhotoUploadStatus {
+    /** Photo captured, waiting to upload */
+    PENDING,
+    /** Currently uploading to Firebase Storage */
+    UPLOADING,
+    /** Successfully uploaded, URL available */
+    UPLOADED,
+    /** Upload failed, can retry */
+    ERROR
 }

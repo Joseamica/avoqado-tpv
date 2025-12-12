@@ -26,9 +26,11 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import timber.log.Timber
 import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoButton
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoCard
@@ -36,6 +38,11 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTextField
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
+import com.jaac.avoqado_tpv.features.payment.presentation.components.PaymentApprovedScreen
+import com.jaac.avoqado_tpv.features.verification.presentation.VerificationScreen
+import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
+import com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen
+import java.io.File
 
 /**
  * PaymentScreen - EMV chip card payment with online authorization via Blumon Momentum
@@ -67,23 +74,60 @@ fun PaymentScreen(
     val currentMerchant by viewModel.currentMerchant.collectAsStateWithLifecycle()
     val merchantSwitchingLoading by viewModel.merchantSwitchingLoading.collectAsStateWithLifecycle()
     val merchantSwitchMessage by viewModel.merchantSwitchMessage.collectAsStateWithLifecycle()
+    val tpvSettings by viewModel.tpvSettings.collectAsStateWithLifecycle()
+
+    // 📊 Dynamic step counter based on TPV settings
+    // PRE-PAYMENT screens: Review? → Tip? → Payment (always)
+    // POST-PAYMENT: Verification? (separate, after success)
+    val showReview = tpvSettings?.showReviewScreen ?: false
+    val showTip = tpvSettings?.showTipScreen ?: false
+    val showVerification = tpvSettings?.showVerificationScreen ?: false
+
+    // Only count PRE-PAYMENT steps (verification is post-payment)
+    val prePaymentSteps = listOf(showReview, showTip, true /* payment */).count { it }
+
+    // Calculate current step number based on state and enabled screens
+    fun getCurrentStep(currentState: PaymentState): Int {
+        return when (currentState) {
+            is PaymentState.CollectingRating -> 1
+            is PaymentState.CollectingTip -> if (showReview) 2 else 1
+            is PaymentState.SelectingMerchant -> {
+                var step = 1
+                if (showReview) step++
+                if (showTip) step++
+                step
+            }
+            else -> 0 // No step indicator for other states
+        }
+    }
 
     // Dynamic topBar titles based on payment state
     // Note: EnteringAmount removed - amount now comes from WelcomeScreen modal
     val (topBarTitle, topBarSubtitle) = when (val currentState = state) {
-        is PaymentState.CollectingRating -> "Calificación" to "Paso 1 de 3 · $${currentState.amount}"
+        is PaymentState.CollectingRating -> {
+            val step = getCurrentStep(currentState)
+            "Calificación" to "Paso $step de $prePaymentSteps · $${currentState.amount}"
+        }
         is PaymentState.CollectingTip -> {
+            val step = getCurrentStep(currentState)
             val tipAmount = currentState.tipAmount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
             val subtotal = currentState.amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
             val total = subtotal.add(tipAmount)
 
             if (tipAmount > java.math.BigDecimal.ZERO) {
-                "Propina" to "Paso 2 de 3 · Total: $$total MXN"
+                "Propina" to "Paso $step de $prePaymentSteps · Total: $$total MXN"
             } else {
-                "Propina" to "Paso 2 de 3 · Subtotal: $${currentState.amount} MXN"
+                "Propina" to "Paso $step de $prePaymentSteps · Subtotal: $${currentState.amount} MXN"
             }
         }
-        is PaymentState.SelectingMerchant -> "Seleccionar Cuenta" to "Paso 3 de 3 · Total: $${currentState.totalAmount}"
+        is PaymentState.SelectingMerchant -> {
+            val step = getCurrentStep(currentState)
+            "Seleccionar Cuenta" to "Paso $step de $prePaymentSteps · Total: $${currentState.totalAmount}"
+        }
+        is PaymentState.Verifying -> {
+            // Post-payment verification - separate from pre-payment steps
+            "Verificación" to "Post-pago · $${currentState.amount}"
+        }
         else -> "Pago con Tarjeta" to null
     }
 
@@ -183,6 +227,71 @@ fun PaymentScreen(
                     )
                 }
 
+                // 📸 PRE-Payment Verification (Step 4 - BEFORE payment processing)
+                // Flow: CollectingTip → VerifyingPrePayment → SelectingMerchant → Payment
+                is PaymentState.VerifyingPrePayment -> {
+                    val context = LocalContext.current
+                    val verificationDir = remember {
+                        java.io.File(context.cacheDir, "verification_photos").apply { mkdirs() }
+                    }
+
+                    // State for showing camera/scanner overlays
+                    var showCamera by remember { mutableStateOf(false) }
+                    var showScanner by remember { mutableStateOf(false) }
+
+                    if (showCamera) {
+                        CameraPreviewScreen(
+                            onPhotoCaptured = { photoPath ->
+                                viewModel.addPrePaymentPhoto(photoPath)
+                                showCamera = false
+                            },
+                            onClose = { showCamera = false },
+                            outputDirectory = verificationDir
+                        )
+                    } else if (showScanner) {
+                        BarcodeScannerScreen(
+                            onBarcodeScanned = { barcode, format ->
+                                viewModel.addPrePaymentBarcode(barcode, format)
+                                showScanner = false
+                            },
+                            onClose = { showScanner = false }
+                        )
+                    } else {
+                        // Show verification screen with PRE-payment context
+                        VerificationScreen(
+                            paymentId = null, // 📸 PRE-payment: No paymentId yet (payment hasn't happened)
+                            amount = currentState.amount,
+                            orderNumber = null, // PRE-payment: order number not available yet
+                            capturedPhotos = currentState.capturedPhotos,
+                            scannedBarcodes = currentState.scannedBarcodes,
+                            requirePhoto = currentState.requirePhoto,
+                            requireBarcode = currentState.requireBarcode,
+                            isUploading = currentState.isUploading,
+                            uploadProgress = 0f,
+                            error = currentState.error,
+                            onTakePhoto = { showCamera = true },
+                            onScanBarcode = { showScanner = true },
+                            onRemovePhoto = { index ->
+                                viewModel.removePrePaymentPhoto(index)
+                            },
+                            onRemoveBarcode = { barcode ->
+                                viewModel.removePrePaymentBarcode(barcode)
+                            },
+                            onConfirm = {
+                                viewModel.completePrePaymentVerification()
+                            },
+                            onSkip = {
+                                viewModel.skipPrePaymentVerification()
+                            },
+                            // 📸 PRE-payment specific: Back button and conditional skip
+                            canSkip = currentState.canSkip(),
+                            onNavigateBack = {
+                                viewModel.goBackFromPrePaymentVerification()
+                            }
+                        )
+                    }
+                }
+
                 is PaymentState.SelectingMerchant -> {
                     MerchantSelectionContent(
                         totalAmount = currentState.totalAmount,
@@ -262,48 +371,75 @@ fun PaymentScreen(
                     PaymentLoadingContent(currentState.message)
                 }
                 is PaymentState.Success -> {
-                    PaymentSuccessContent(
-                        authCode = currentState.authCode,
-                        amount = currentState.amount,
-                        receipt = currentState.receipt,  // 🆕 NEW: Pass receipt for QR code
-                        orderId = currentState.orderId,  // 🆕 Order ID (for determining if this is an order payment)
-                        orderNumber = currentState.orderNumber,  // 🆕 Order number (for display)
-                        orderItems = currentState.orderItems,  // 🆕 Order items (for displaying itemized receipt)
-                        tableId = tableId,  // 🆕 Table ID (for clearing table post-payment)
-                        remainingBalance = currentState.remainingBalance,  // ⭐ NEW: For split payment "Continuar pagando"
-                        showReceiptOptions = viewModel.showReceiptScreen,  // ⚙️ TPV Settings: Show/hide QR code & print button
-                        onPrintReceipt = viewModel::printReceipt,  // 🆕 NEW: Print callback
-                        onPrintKitchenTicket = {
-                            // 🍳 Print kitchen ticket (comanda) with order items
-                            currentState.orderItems?.let { items ->
-                                viewModel.printKitchenTicket(
-                                    orderNumber = currentState.orderNumber,
-                                    tableName = null,  // TODO: Pass table name when available in state
-                                    orderItems = items
-                                )
-                            }
-                        },
-                        onNavigateBack = onNavigateBack,  // 🆕 Navigate to WelcomeScreen (home button)
-                        onNewOrder = {
-                            viewModel.resetPayment()
-                            onNavigateToNewOrder()  // 🔄 Toast/Square pattern: Navigate FORWARD to new order
-                        },
-                        onNewFastPayment = {
-                            viewModel.resetPayment()
-                            onNavigateToNewFastPayment()  // 🔄 Navigate to WelcomeScreen and open fast payment modal
-                        },
-                        onClearTableAndReturnToFloorPlan = { clearedTableId ->
-                            viewModel.resetPayment()
-                            onClearTableAndReturnToFloorPlan(clearedTableId)  // 🪑 Square pattern: Clear table and return to floor plan
-                        },
-                        onContinuePayment = {
-                            // ⭐ NEW: Navigate to order to continue paying remaining balance
-                            currentState.orderId?.let { orderIdValue ->
-                                viewModel.resetPayment()
-                                onNavigateToOrder(orderIdValue, tableId)
-                            }
+                    // 🎉 Payment Success Flow:
+                    // 1. Show "Aprobado" animation with confetti
+                    // 2. After animation: show success content
+                    // Works for: fast payments, quick orders, table service
+                    //
+                    // 📸 NOTE: Verification now happens BEFORE payment (PRE-payment flow)
+                    // The POST-payment verification has been removed.
+
+                    // Track if we should show the approved animation
+                    var showApprovedAnimation by remember(currentState.authCode) {
+                        mutableStateOf(true)
+                    }
+
+                    when {
+                        // 🎉 Phase 1: Show approved animation
+                        showApprovedAnimation -> {
+                            PaymentApprovedScreen(
+                                amount = currentState.amount,
+                                onAnimationComplete = {
+                                    Timber.d("🎉 [Approved] Animation complete, showing success content")
+                                    showApprovedAnimation = false
+                                }
+                            )
                         }
-                    )
+
+                        // ✅ Phase 2: Show success content
+                        else -> {
+                            PaymentSuccessContent(
+                                authCode = currentState.authCode,
+                                amount = currentState.amount,
+                                receipt = currentState.receipt,
+                                orderId = currentState.orderId,
+                                orderNumber = currentState.orderNumber,
+                                orderItems = currentState.orderItems,
+                                tableId = tableId,
+                                remainingBalance = currentState.remainingBalance,
+                                showReceiptOptions = viewModel.showReceiptScreen,
+                                onPrintReceipt = viewModel::printReceipt,
+                                onPrintKitchenTicket = {
+                                    currentState.orderItems?.let { items ->
+                                        viewModel.printKitchenTicket(
+                                            orderNumber = currentState.orderNumber,
+                                            tableName = null,
+                                            orderItems = items
+                                        )
+                                    }
+                                },
+                                onNavigateBack = onNavigateBack,
+                                onNewOrder = {
+                                    viewModel.resetPayment()
+                                    onNavigateToNewOrder()
+                                },
+                                onNewFastPayment = {
+                                    viewModel.resetPayment()
+                                    onNavigateToNewFastPayment()
+                                },
+                                onClearTableAndReturnToFloorPlan = { clearedTableId ->
+                                    viewModel.resetPayment()
+                                    onClearTableAndReturnToFloorPlan(clearedTableId)
+                                },
+                                onContinuePayment = {
+                                    currentState.orderId?.let { orderIdValue ->
+                                        viewModel.resetPayment()
+                                        onNavigateToOrder(orderIdValue, tableId)
+                                    }
+                                }
+                            )
+                        }
+                    }
                 }
                 is PaymentState.Error -> {
                     PaymentErrorContent(
@@ -342,6 +478,68 @@ fun PaymentScreen(
                         onCancel = viewModel::dismissPrintError  // Return to success screen
                     )
                 }
+
+                // 📸 Step 4: Sale Verification (for retail/telecomunicaciones venues)
+                is PaymentState.Verifying -> {
+                    val context = LocalContext.current
+                    val verificationDir = remember {
+                        File(context.cacheDir, "verification_photos").apply { mkdirs() }
+                    }
+
+                    // State for showing camera/scanner overlays
+                    var showCamera by remember { mutableStateOf(false) }
+                    var showScanner by remember { mutableStateOf(false) }
+
+                    if (showCamera) {
+                        CameraPreviewScreen(
+                            onPhotoCaptured = { photoPath ->
+                                viewModel.addVerificationPhoto(photoPath)
+                                showCamera = false
+                            },
+                            onClose = { showCamera = false },
+                            outputDirectory = verificationDir
+                        )
+                    } else if (showScanner) {
+                        BarcodeScannerScreen(
+                            onBarcodeScanned = { barcode, format ->
+                                viewModel.addScannedBarcode(barcode, format)
+                                showScanner = false
+                            },
+                            onClose = { showScanner = false }
+                        )
+                    } else {
+                        // Get settings from ViewModel (collected from SecureStorage)
+                        val tpvSettings by viewModel.tpvSettings.collectAsStateWithLifecycle()
+
+                        VerificationScreen(
+                            paymentId = currentState.paymentId,
+                            amount = currentState.amount,
+                            orderNumber = currentState.orderNumber,
+                            capturedPhotos = currentState.capturedPhotos,
+                            scannedBarcodes = currentState.scannedBarcodes,
+                            requirePhoto = tpvSettings?.requireVerificationPhoto ?: false,
+                            requireBarcode = tpvSettings?.requireVerificationBarcode ?: false,
+                            isUploading = currentState.isUploading,
+                            uploadProgress = currentState.uploadProgress,
+                            error = currentState.error,
+                            onTakePhoto = { showCamera = true },
+                            onScanBarcode = { showScanner = true },
+                            onRemovePhoto = { index ->
+                                viewModel.removeVerificationPhoto(index)
+                            },
+                            onRemoveBarcode = { barcode ->
+                                viewModel.removeScannedBarcode(barcode)
+                            },
+                            onConfirm = {
+                                viewModel.confirmVerification()
+                            },
+                            onSkip = {
+                                viewModel.skipVerification()
+                            }
+                        )
+                    }
+                }
+
                 is PaymentState.Cancelled -> {
                     // Auto-navigate back
                     LaunchedEffect(Unit) {

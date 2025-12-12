@@ -51,6 +51,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_SESSION_TOKEN = "session_token"
         private const val KEY_REFRESH_TOKEN = "refresh_token"
         private const val KEY_VENUE_ID = "venue_id"
+        private const val KEY_VENUE_SLUG = "venue_slug"  // 📸 For Firebase Storage path: venues/{venueSlug}/verifications/
         private const val KEY_STAFF_ID = "staff_id"
         private const val KEY_STAFF_NAME = "staff_name"
         private const val KEY_PERMISSIONS = "permissions"
@@ -58,6 +59,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_VENUE_NAME = "venue_name"
         private const val KEY_VENUE_TYPE = "venue_type"
         private const val KEY_VENUE_STATUS = "venue_status"
+        private const val KEY_LOYALTY_ACTIVE = "loyalty_active"  // Toast/Square pattern
 
         // Blumon keys
         private const val KEY_BLUMON_MERCHANT_ID = "blumon_merchant_id"
@@ -81,6 +83,10 @@ class SecureStorage @Inject constructor(
         private const val KEY_TPV_DEFAULT_TIP = "tpv_default_tip"
         private const val KEY_TPV_TIP_SUGGESTIONS = "tpv_tip_suggestions"
         private const val KEY_TPV_REQUIRE_PIN = "tpv_require_pin"
+        // Step 4: Sale Verification settings
+        private const val KEY_TPV_SHOW_VERIFICATION = "tpv_show_verification"
+        private const val KEY_TPV_REQUIRE_VERIFICATION_PHOTO = "tpv_require_verification_photo"
+        private const val KEY_TPV_REQUIRE_VERIFICATION_BARCODE = "tpv_require_verification_barcode"
 
         // Terminal state keys (persisted across app restarts)
         private const val KEY_IS_LOCKED = "is_locked"
@@ -204,7 +210,7 @@ class SecureStorage @Inject constructor(
      * Clear authentication session
      * Removes token and auth context
      *
-     * ⚠️ IMPORTANT: venueId and venueStatus are NOT cleared because they're part of device activation,
+     * ⚠️ IMPORTANT: venueId, venueSlug, and venueStatus are NOT cleared because they're part of device activation,
      * not user session. The device remains activated to the venue even after logout.
      * Only the staff member's session (token, refreshToken, staffId, name, permissions) is cleared.
      */
@@ -212,12 +218,12 @@ class SecureStorage @Inject constructor(
         encryptedPrefs.edit().apply {
             remove(KEY_SESSION_TOKEN)
             remove(KEY_REFRESH_TOKEN)
-            // DO NOT remove KEY_VENUE_ID or KEY_VENUE_STATUS - device activation persists across logout!
+            // DO NOT remove KEY_VENUE_ID, KEY_VENUE_SLUG, or KEY_VENUE_STATUS - device activation persists across logout!
             remove(KEY_STAFF_ID)
             remove(KEY_STAFF_NAME)
             remove(KEY_PERMISSIONS)
         }.apply()
-        Timber.d("Session cleared (venueId and venueStatus preserved for device activation)")
+        Timber.d("Session cleared (venueId, venueSlug, and venueStatus preserved for device activation)")
     }
 
     // ========== Auth Context ==========
@@ -236,6 +242,30 @@ class SecureStorage @Inject constructor(
      */
     fun getVenueId(): String? {
         return encryptedPrefs.getString(KEY_VENUE_ID, null)
+    }
+
+    /**
+     * Save venue slug for Firebase Storage path organization
+     *
+     * 📸 Used for verification photo uploads:
+     * Path: venues/{venueSlug}/verifications/{date}/{orderName}.jpg
+     *
+     * @param slug Venue slug (e.g., "avoqado-full")
+     */
+    fun saveVenueSlug(slug: String) {
+        encryptedPrefs.edit().putString(KEY_VENUE_SLUG, slug).apply()
+        Timber.d("📸 Venue slug saved: $slug")
+    }
+
+    /**
+     * Get current venue slug
+     *
+     * 📸 Used for Firebase Storage path: venues/{venueSlug}/verifications/
+     *
+     * @return Venue slug or null if not set
+     */
+    fun getVenueSlug(): String? {
+        return encryptedPrefs.getString(KEY_VENUE_SLUG, null)
     }
 
     /**
@@ -360,6 +390,29 @@ class SecureStorage @Inject constructor(
      */
     fun isVenueDemo(): Boolean {
         return VenueStatus.isDemo(getVenueStatus())
+    }
+
+    // ========== Loyalty Program (Toast/Square Pattern) ==========
+
+    /**
+     * Save loyalty program active status
+     *
+     * Toast/Square pattern: If inactive, hide loyalty-related UI elements
+     * @param active true if venue has loyalty program enabled
+     */
+    fun saveLoyaltyActive(active: Boolean) {
+        encryptedPrefs.edit().putBoolean(KEY_LOYALTY_ACTIVE, active).apply()
+        Timber.d("🎁 Loyalty active status saved: $active")
+    }
+
+    /**
+     * Get loyalty program active status
+     *
+     * Used to conditionally show/hide loyalty points in customer UI
+     * @return true if loyalty program is active (default false)
+     */
+    fun isLoyaltyActive(): Boolean {
+        return encryptedPrefs.getBoolean(KEY_LOYALTY_ACTIVE, false)
     }
 
     /**
@@ -717,8 +770,12 @@ class SecureStorage @Inject constructor(
             }
             putString(KEY_TPV_TIP_SUGGESTIONS, settings.tipSuggestions.joinToString(","))
             putBoolean(KEY_TPV_REQUIRE_PIN, settings.requirePinLogin)
+            // Step 4: Sale Verification settings
+            putBoolean(KEY_TPV_SHOW_VERIFICATION, settings.showVerificationScreen)
+            putBoolean(KEY_TPV_REQUIRE_VERIFICATION_PHOTO, settings.requireVerificationPhoto)
+            putBoolean(KEY_TPV_REQUIRE_VERIFICATION_BARCODE, settings.requireVerificationBarcode)
         }.apply()
-        Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}")
+        Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, showVerification=${settings.showVerificationScreen}")
     }
 
     /**
@@ -749,7 +806,11 @@ class SecureStorage @Inject constructor(
             showReceiptScreen = encryptedPrefs.getBoolean(KEY_TPV_SHOW_RECEIPT, true),
             defaultTipPercentage = defaultTip,
             tipSuggestions = tipSuggestions,
-            requirePinLogin = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_PIN, true)
+            requirePinLogin = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_PIN, true),
+            // Step 4: Sale Verification settings (default: disabled)
+            showVerificationScreen = encryptedPrefs.getBoolean(KEY_TPV_SHOW_VERIFICATION, false),
+            requireVerificationPhoto = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_VERIFICATION_PHOTO, false),
+            requireVerificationBarcode = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_VERIFICATION_BARCODE, false)
         )
     }
 
@@ -764,6 +825,10 @@ class SecureStorage @Inject constructor(
             remove(KEY_TPV_DEFAULT_TIP)
             remove(KEY_TPV_TIP_SUGGESTIONS)
             remove(KEY_TPV_REQUIRE_PIN)
+            // Step 4: Sale Verification settings
+            remove(KEY_TPV_SHOW_VERIFICATION)
+            remove(KEY_TPV_REQUIRE_VERIFICATION_PHOTO)
+            remove(KEY_TPV_REQUIRE_VERIFICATION_BARCODE)
         }.apply()
         Timber.d("TPV settings cleared")
     }

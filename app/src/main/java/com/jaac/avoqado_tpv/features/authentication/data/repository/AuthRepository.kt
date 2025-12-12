@@ -183,11 +183,20 @@ class AuthRepository @Inject constructor(
         secureStorage.saveStaffName(authResponse.staff.displayName)
         secureStorage.savePermissions(authResponse.permissions)
 
-        // Save venue info for UI (logo, name)
+        // Save venue info for UI (logo, name, slug)
         secureStorage.saveVenueLogo(authResponse.venue.logo)
         secureStorage.saveVenueName(authResponse.venue.name)
 
-        Timber.d("✅ Session saved: venueId=${authResponse.venueId}, staffId=${authResponse.staffId}")
+        // 📸 Save venue slug for Firebase Storage path (venues/{slug}/verifications/)
+        authResponse.venue.slug?.let { slug ->
+            secureStorage.saveVenueSlug(slug)
+            Timber.d("📸 Venue slug saved: $slug")
+        }
+
+        // 🎁 Save loyalty program status (Toast/Square pattern)
+        secureStorage.saveLoyaltyActive(authResponse.loyaltyActive)
+
+        Timber.d("✅ Session saved: venueId=${authResponse.venueId}, staffId=${authResponse.staffId}, venueSlug=${authResponse.venue.slug}, loyaltyActive=${authResponse.loyaltyActive}")
     }
 
     /**
@@ -297,6 +306,18 @@ class AuthRepository @Inject constructor(
     }
 
     /**
+     * Get current venue slug
+     *
+     * 📸 Used for Firebase Storage path organization:
+     * Path: venues/{venueSlug}/verifications/{date}/{filename}.jpg
+     *
+     * @return Venue slug or null if not set (e.g., "avoqado-full")
+     */
+    fun getVenueSlug(): String? {
+        return secureStorage.getVenueSlug()
+    }
+
+    /**
      * Get current staff ID
      *
      * @return Staff ID or null if not authenticated
@@ -324,6 +345,18 @@ class AuthRepository @Inject constructor(
      */
     fun hasPermission(permission: String): Boolean {
         return secureStorage.hasPermission(permission)
+    }
+
+    /**
+     * Check if loyalty program is active for current venue
+     *
+     * Toast/Square pattern: If false, hide loyalty-related UI elements
+     * (loyalty points in customer chips, customer search results, etc.)
+     *
+     * @return true if loyalty program is enabled for venue
+     */
+    fun isLoyaltyActive(): Boolean {
+        return secureStorage.isLoyaltyActive()
     }
 
     /**

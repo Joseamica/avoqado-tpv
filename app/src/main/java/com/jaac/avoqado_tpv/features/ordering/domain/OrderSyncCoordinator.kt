@@ -262,6 +262,35 @@ class OrderSyncCoordinator @Inject constructor(
     }
 
     /**
+     * Get local-only orders for a venue (not yet synced to backend).
+     *
+     * Used by OrderListScreen to show pending orders alongside backend orders.
+     * Filters to orders that:
+     * - Are NOT server-created (local-first Quick Orders)
+     * - OR have PENDING sync status (changes not yet synced)
+     *
+     * @param venueId Venue ID
+     * @return List of local-only Order domain models
+     */
+    suspend fun getLocalOnlyOrders(venueId: String): List<Order> = withContext(Dispatchers.IO) {
+        try {
+            val localOrders = draftOrderDao.getOrdersByVenue(venueId)
+                .filter { !it.isServerCreated || it.syncStatus == DraftOrderEntity.SYNC_STATUS_PENDING }
+
+            Timber.d("📋 [LocalOrders] Found ${localOrders.size} local-only orders for venue=$venueId")
+
+            localOrders.mapNotNull { entity ->
+                val items = draftOrderItemDao.getItemsByOrder(entity.id)
+                    .filter { it.syncStatus != DraftOrderItemEntity.SYNC_STATUS_DELETED }
+                entity.toDomain(items)
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error fetching local-only orders for venue=$venueId")
+            emptyList()
+        }
+    }
+
+    /**
      * Observe order as reactive Flow - Single Source of Truth Pattern.
      *
      * **CRITICAL: This is the recommended way to observe orders in UI.**

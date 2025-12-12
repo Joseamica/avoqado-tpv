@@ -81,15 +81,45 @@ class OrderRepositoryImpl @Inject constructor(
     }
 
     /**
-     * Get all orders for venue.
+     * Get all open orders for venue.
      *
-     * NOT IMPLEMENTED - Will be added when needed.
+     * Backend: GET /tpv/venues/{venueId}/orders
+     *
+     * Returns orders with paymentStatus IN ['PENDING', 'PARTIAL'].
+     * Backend automatically filters - status parameter ignored for now.
      */
     override suspend fun getOrders(
         venueId: String,
         status: OrderStatus?
     ): Result<List<Order>> {
-        return Result.failure(NotImplementedError("getOrders not implemented yet"))
+        return try {
+            Timber.d("📋 [OrderList] Fetching orders for venueId=$venueId")
+
+            val response = apiService.getOrders(venueId)
+
+            if (response.isSuccessful) {
+                val body = response.body()
+                if (body != null && body.success) {
+                    val orders = body.data.map { it.toOrder() }
+                    Timber.i("✅ [OrderList] Loaded ${orders.size} orders from backend")
+                    Result.success(orders)
+                } else {
+                    Timber.e("❌ [OrderList] Invalid response body")
+                    Result.failure(Exception("Invalid response from server"))
+                }
+            } else {
+                val errorMessage = when (response.code()) {
+                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    500 -> "Error del servidor. Por favor intenta nuevamente."
+                    else -> "Error al obtener órdenes: ${response.code()}"
+                }
+                Timber.e("❌ [OrderList] Failed: $errorMessage")
+                Result.failure(Exception(errorMessage))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [OrderList] Exception fetching orders")
+            Result.failure(e)
+        }
     }
 
     /**

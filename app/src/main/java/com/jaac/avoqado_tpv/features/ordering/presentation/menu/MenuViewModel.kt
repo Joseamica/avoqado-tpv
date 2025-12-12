@@ -1000,6 +1000,23 @@ class MenuViewModel @Inject constructor(
                             Timber.i("✅ [Local-First] Order loaded from local DB | id=$orderId | items=${localOrder.items.size}")
                             localOrder
                         } else {
+                            // ⚠️ DEFENSIVE CHECK: Detect local-only IDs that can't be fetched from backend
+                            // These IDs were used by mock data or are local Quick Orders that never synced
+                            val isLocalOnlyId = orderId.startsWith("local_") ||
+                                orderId.startsWith("order_table") ||
+                                orderId.startsWith("order_quick") ||
+                                !orderId.matches(Regex("^[a-z0-9]{20,30}$"))  // CUID pattern
+
+                            if (isLocalOnlyId) {
+                                Timber.w("⚠️ [Defensive] Local-only ID cannot be fetched from backend: $orderId")
+                                _state.value = MenuState.Error(
+                                    "Esta orden no está disponible.\n\n" +
+                                    "Puede que haya expirado o no se haya sincronizado correctamente.\n\n" +
+                                    "Por favor crea una nueva orden."
+                                )
+                                return@launch
+                            }
+
                             // STEP 2: Not in local DB - fallback to backend (300ms+)
                             Timber.d("⚠️ [Fallback] Order not in local DB, fetching from backend: $orderId")
 

@@ -107,6 +107,16 @@ interface DraftOrderDao {
     suspend fun getOrdersByStatus(venueId: String, syncStatus: String): List<DraftOrderEntity>
 
     /**
+     * Get all orders for a venue (no status filter).
+     * Used by OrderListViewModel to fetch local orders for merge with backend.
+     *
+     * @param venueId Tenant ID
+     * @return List of all local orders for venue
+     */
+    @Query("SELECT * FROM draft_orders WHERE venue_id = :venueId ORDER BY updated_at DESC")
+    suspend fun getOrdersByVenue(venueId: String): List<DraftOrderEntity>
+
+    /**
      * Get all pending orders for a venue (need sync).
      * Convenience method for finding orders that need to sync to server.
      *

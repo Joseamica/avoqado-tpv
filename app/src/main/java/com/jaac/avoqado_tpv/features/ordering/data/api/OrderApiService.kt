@@ -30,6 +30,46 @@ import retrofit2.http.Query
  */
 interface OrderApiService {
     /**
+     * Get all open orders for a venue.
+     *
+     * **Endpoint:** GET /tpv/venues/{venueId}/orders
+     *
+     * **Backend Behavior:**
+     * 1. Fetches orders with paymentStatus IN ['PENDING', 'PARTIAL']
+     * 2. Includes items, payments, createdBy, servedBy, table info
+     * 3. Returns computed tableName field ("Mesa X")
+     * 4. Ordered by createdAt DESC (most recent first)
+     *
+     * **Success Response (200):**
+     * ```json
+     * {
+     *   "success": true,
+     *   "data": [
+     *     {
+     *       "id": "cmi1yg8mw00ad9kti6j7jy7f8",
+     *       "orderNumber": "ORD-001234",
+     *       "tableName": "Mesa 5",
+     *       "items": [...],
+     *       "total": 174.00,
+     *       "paymentStatus": "PENDING"
+     *     }
+     *   ]
+     * }
+     * ```
+     *
+     * **Error Responses:**
+     * - 401: Unauthorized (token missing or expired)
+     * - 500: Internal server error
+     *
+     * @param venueId ID of the venue (for tenant isolation)
+     * @return Response with list of open orders
+     */
+    @GET("tpv/venues/{venueId}/orders")
+    suspend fun getOrders(
+        @Path("venueId") venueId: String
+    ): Response<ApiResponse<List<OrderDto>>>
+
+    /**
      * Get order by ID with full details including items.
      *
      * **Endpoint:** GET /tpv/venues/{venueId}/orders/{orderId}

@@ -85,6 +85,9 @@ data class ProductDto(
 
 /**
  * Category DTO
+ *
+ * Maps to backend MenuCategory model.
+ * Includes optional color for UI theming (Square/Toast pattern).
  */
 data class CategoryDto(
     @SerializedName("id")
@@ -100,7 +103,12 @@ data class CategoryDto(
     val displayOrder: Int? = 0,
 
     @SerializedName("emoji")
-    val emoji: String? = null
+    val emoji: String? = null,
+
+    // UI theming - hex color string (e.g., "#4CAF50")
+    // Backend: MenuCategory.color (already exists in Prisma schema)
+    @SerializedName("color")
+    val color: String? = null
 )
 
 /**

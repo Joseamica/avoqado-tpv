@@ -4,11 +4,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -18,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -30,8 +34,12 @@ import com.jaac.avoqado_tpv.features.ordering.domain.MockProducts
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import java.math.BigDecimal
 
-// ⚡ PERFORMANCE: Reusable shape constant (avoid allocations on each recomposition)
+// ⚡ PERFORMANCE: Reusable shape constants (avoid allocations on each recomposition)
 private val InventoryBadgeShape = RoundedCornerShape(4.dp)
+private val CategoryBorderShape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp)
+
+// Category border width (subtle, Toast pattern)
+private val CategoryBorderWidth = 3.dp
 
 /**
  * Product card for menu grid (Square POS style)
@@ -90,6 +98,15 @@ fun ProductCard(
         }
     } else null
 
+    // 🎨 CATEGORY COLOR: Parse hex color for left border (Square/Toast pattern)
+    val categoryColor = remember(product.effectiveCategoryColor) {
+        try {
+            Color(android.graphics.Color.parseColor(product.effectiveCategoryColor))
+        } catch (e: Exception) {
+            Color.Gray  // Fallback if parsing fails
+        }
+    }
+
     // ✅ Box padre permite que el badge sobresalga del Card
     Box(modifier = modifier) {
         Card(
@@ -102,26 +119,39 @@ fun ProductCard(
             ),
             elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
         ) {
-            // Product content (left-aligned, Square POS style)
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(8.dp),
-                horizontalAlignment = Alignment.Start,  // ✅ Left-aligned (Square pattern)
-                verticalArrangement = Arrangement.Center
-            ) {
-                // ⚡ OPTIMIZATION: Direct TextStyle properties (no style override)
-                Text(
-                    text = product.name,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    lineHeight = 16.sp,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Start,  // ✅ Left-aligned
-                    maxLines = 2,  // ✅ 2 lines for longer names
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.fillMaxWidth()
+            // Row with category color border + content
+            Row(modifier = Modifier.fillMaxSize()) {
+                // 🎨 Category color border (subtle left stripe - Toast pattern)
+                Box(
+                    modifier = Modifier
+                        .width(CategoryBorderWidth)
+                        .fillMaxHeight()
+                        .clip(CategoryBorderShape)
+                        .background(categoryColor)
                 )
+
+                // Product content (left-aligned, Square POS style)
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .padding(8.dp),
+                    horizontalAlignment = Alignment.Start,  // ✅ Left-aligned (Square pattern)
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    // ⚡ OPTIMIZATION: Direct TextStyle properties (no style override)
+                    Text(
+                        text = product.name,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        lineHeight = 16.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Start,  // ✅ Left-aligned
+                        maxLines = 2,  // ✅ 2 lines for longer names
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
         }
 

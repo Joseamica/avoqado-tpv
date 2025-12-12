@@ -48,6 +48,11 @@ data class ProductCategoryEntity(
     @ColumnInfo(name = "emoji")
     val emoji: String,
 
+    // UI theming - hex color string (e.g., "#4CAF50")
+    // Nullable - if null, auto-generated from categoryId in domain model
+    @ColumnInfo(name = "color")
+    val color: String? = null,
+
     @ColumnInfo(name = "cached_at")
     val cachedAt: Long  // Unix timestamp (for TTL expiration)
 )

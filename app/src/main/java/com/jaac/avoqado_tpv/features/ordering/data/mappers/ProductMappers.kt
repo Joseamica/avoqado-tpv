@@ -45,12 +45,18 @@ fun ProductDto.toDomain(): Product {
         inventoryMethod = inventoryMethod,
         availableQuantity = availableQuantity,  // ✅ Backend calculates for both QUANTITY and RECIPE
         // Modifier groups (for product customization)
-        modifierGroups = modifierGroups?.map { it.group.toDomain() } ?: emptyList()
+        modifierGroups = modifierGroups?.map { it.group.toDomain() } ?: emptyList(),
+        // Category color for visual distinction (Square/Toast pattern)
+        // If backend doesn't provide, Product.effectiveCategoryColor auto-generates
+        categoryColor = category.color
     )
 }
 
 /**
  * Map CategoryDto to ProductCategory domain model
+ *
+ * Includes color for UI theming (Square/Toast pattern).
+ * If backend doesn't provide color, auto-generated in domain model.
  */
 fun CategoryDto.toDomain(): ProductCategory {
     return ProductCategory(
@@ -58,7 +64,8 @@ fun CategoryDto.toDomain(): ProductCategory {
         name = name,
         displayOrder = displayOrder ?: 0,
         productCount = 0,  // Will be calculated when loading products
-        emoji = emoji ?: getCategoryEmojiByName(name)
+        emoji = emoji ?: getCategoryEmojiByName(name),
+        color = color  // Pass through from backend (null = auto-generate in domain)
     )
 }
 

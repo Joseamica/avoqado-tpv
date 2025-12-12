@@ -87,6 +87,11 @@ data class ProductEntity(
     @ColumnInfo(name = "modifier_groups_json")
     val modifierGroupsJson: String,  // JSON serialized List<ModifierGroup>
 
+    // Category color for visual distinction (Square/Toast pattern)
+    // Nullable - if null, auto-generated from categoryId in domain model
+    @ColumnInfo(name = "category_color")
+    val categoryColor: String? = null,
+
     @ColumnInfo(name = "cached_at")
     val cachedAt: Long  // Unix timestamp (for TTL expiration)
 )

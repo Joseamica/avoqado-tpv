@@ -51,7 +51,8 @@ fun ProductEntity.toDomain(): Product {
         trackInventory = trackInventory,
         inventoryMethod = inventoryMethod,
         availableQuantity = availableQuantity,
-        modifierGroups = modifierGroups
+        modifierGroups = modifierGroups,
+        categoryColor = categoryColor  // Pass through from cache (null = auto-generate in domain)
     )
 }
 
@@ -81,6 +82,7 @@ fun Product.toEntity(venueId: String, cachedAt: Long): ProductEntity {
         inventoryMethod = inventoryMethod,
         availableQuantity = availableQuantity,
         modifierGroupsJson = gson.toJson(modifierGroups),
+        categoryColor = categoryColor,  // Store backend color in cache
         cachedAt = cachedAt
     )
 }
@@ -119,7 +121,8 @@ fun ProductCategoryEntity.toDomain(): ProductCategory {
         name = name,
         displayOrder = displayOrder,
         productCount = productCount,
-        emoji = emoji
+        emoji = emoji,
+        color = color  // Pass through from cache (null = auto-generate in domain)
     )
 }
 
@@ -139,6 +142,7 @@ fun ProductCategory.toEntity(venueId: String, cachedAt: Long): ProductCategoryEn
         displayOrder = displayOrder,
         productCount = productCount,
         emoji = emoji,
+        color = color,  // Store backend color in cache
         cachedAt = cachedAt
     )
 }

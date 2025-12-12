@@ -43,7 +43,12 @@ data class Product(
 
     // Modifier groups (for product customization)
     // Backend returns this in ProductDto.modifierGroups
-    val modifierGroups: List<ModifierGroup> = emptyList()
+    val modifierGroups: List<ModifierGroup> = emptyList(),
+
+    // Category color for visual distinction (Square/Toast pattern)
+    // Used to render subtle left border in ProductCard
+    // If null, auto-generated from categoryId
+    val categoryColor: String? = null
 ) {
     /**
      * Convenience property: Formatted price for UI
@@ -64,26 +69,86 @@ data class Product(
      */
     val hasModifiers: Boolean
         get() = modifierGroups.isNotEmpty()
+
+    /**
+     * Convenience property: Effective category color for UI
+     * Uses defined categoryColor if available, otherwise auto-generates from categoryId
+     */
+    val effectiveCategoryColor: String
+        get() = categoryColor ?: CategoryColors.getAutoColor(categoryId)
 }
 
 /**
  * Product category
+ *
+ * **Category Colors (Square/Toast Pattern):**
+ * - color: Optional hex color string (e.g., "#4CAF50")
+ * - If null, use [CategoryColors.getAutoColor] for automatic color generation
+ * - Colors are used for visual distinction in ProductCard (left border)
  */
 data class ProductCategory(
     val id: String,
     val name: String,
     val displayOrder: Int,
     val productCount: Int,
-    val emoji: String = ""
+    val emoji: String = "",
+    val color: String? = null  // Hex color (e.g., "#4CAF50") or null for auto-color
 ) {
+    /**
+     * Get the effective color for this category.
+     * Uses defined color if available, otherwise generates one automatically.
+     */
+    val effectiveColor: String
+        get() = color ?: CategoryColors.getAutoColor(id)
+
     companion object {
         val ALL = ProductCategory(
             id = "all",
             name = "Todos",
             displayOrder = 0,
             productCount = 0,
-            emoji = "🍽️"
+            emoji = "🍽️",
+            color = null  // No border for "All" category
         )
+    }
+}
+
+/**
+ * Auto-generated category colors (Square/Toast pattern)
+ *
+ * Provides a consistent color palette for categories that don't have
+ * a manually assigned color. Uses hash-based selection for consistency.
+ *
+ * **Palette:**
+ * - 12 harmonious colors optimized for dark theme
+ * - Each category always gets the same color (deterministic)
+ * - Colors are vibrant but not overwhelming (suitable for subtle borders)
+ */
+object CategoryColors {
+    // Palette optimized for dark theme (vibrant but not too bright)
+    private val palette = listOf(
+        "#4CAF50",  // Green
+        "#2196F3",  // Blue
+        "#FF9800",  // Orange
+        "#9C27B0",  // Purple
+        "#E91E63",  // Pink
+        "#00BCD4",  // Cyan
+        "#FFEB3B",  // Yellow
+        "#795548",  // Brown
+        "#607D8B",  // Blue Grey
+        "#FF5722",  // Deep Orange
+        "#3F51B5",  // Indigo
+        "#8BC34A"   // Light Green
+    )
+
+    /**
+     * Get auto-generated color for a category ID.
+     * Always returns the same color for the same ID (deterministic).
+     */
+    fun getAutoColor(categoryId: String): String {
+        if (categoryId == "all") return "#808080"  // Neutral grey for "All"
+        val index = kotlin.math.abs(categoryId.hashCode()) % palette.size
+        return palette[index]
     }
 }
 

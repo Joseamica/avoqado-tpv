@@ -218,7 +218,7 @@ class FastPaymentRecorder @Inject constructor(
             blumonSerialNumber = context.blumonSerialNumber.takeIf { it.isNotBlank() }, // ⚠️ LEGACY: Fallback
 
             maskedPan = cardDetails.maskedPan,
-            cardBrand = if (cardDetails.cardBrand == CardBrand.UNKNOWN) null else cardDetails.cardBrand.name, // Send null if UNKNOWN
+            cardBrand = if (cardDetails.cardBrand == CardBrand.UNKNOWN) null else cardDetails.cardBrand.backendName, // Use backendName for Prisma enum compatibility
             entryMode = cardDetails.entryMode.toBackendString(), // CHIP → "CHIP"
 
             // Currency and international
@@ -227,6 +227,15 @@ class FastPaymentRecorder @Inject constructor(
 
             // Optional rating: Send numeric rating as string (1-5 stars)
             reviewRating = context.rating?.toString(),
+
+            // 📸 PRE-PAYMENT VERIFICATION (2025-01-14)
+            // Order reference generated ONCE when entering VerifyingPrePayment state
+            // Ensures Firebase photos match the order number created in backend
+            orderReference = context.orderReference,
+            // Firebase Storage URLs of verification photos (uploaded before payment)
+            verificationPhotos = context.verificationPhotos.takeIf { it.isNotEmpty() },
+            // Scanned barcodes from verification screen
+            verificationBarcodes = context.verificationBarcodes.takeIf { it.isNotEmpty() },
         )
     }
 }

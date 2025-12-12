@@ -61,6 +61,14 @@ sealed class PaymentContext {
         override val rating: Int? = null, // 🆕 Optional rating (1-5 stars, null if skipped)
         override val merchantAccountId: String?, // ✅ NULLABLE: null for cash (no processor, proper reconciliation)
         override val blumonSerialNumber: String = "", // ⚠️ LEGACY: Blumon serial (deprecated)
+        // 📸 PRE-PAYMENT VERIFICATION (2025-01-14)
+        // Order reference generated ONCE when entering VerifyingPrePayment state
+        // Ensures Firebase photos match the order number created in backend
+        val orderReference: String? = null, // e.g., "FAST-1765549860972"
+        // Firebase Storage URLs of verification photos (uploaded before payment)
+        val verificationPhotos: List<String> = emptyList(),
+        // Scanned barcodes from verification screen
+        val verificationBarcodes: List<String> = emptyList(),
     ) : PaymentContext()
 
     /**

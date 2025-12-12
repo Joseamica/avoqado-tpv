@@ -279,7 +279,7 @@ class OrderPaymentRecorder @Inject constructor(
             authorizationNumber = authorizationNumber,
             referenceNumber = referenceNumber,
             maskedPan = cardDetails.maskedPan,
-            cardBrand = if (cardDetails.cardBrand == CardBrand.UNKNOWN) null else cardDetails.cardBrand.name, // Send null if UNKNOWN
+            cardBrand = if (cardDetails.cardBrand == CardBrand.UNKNOWN) null else cardDetails.cardBrand.backendName, // Use backendName for Prisma enum compatibility
             entryMode = cardDetails.entryMode.toBackendString(),
 
             // Currency and international

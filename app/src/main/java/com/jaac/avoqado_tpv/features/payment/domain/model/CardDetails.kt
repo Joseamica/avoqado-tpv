@@ -60,14 +60,14 @@ data class CardDetails(
  * - DINERS: 36xxxx, 38xxxx
  * - JCB: 3528-3589xxxx
  */
-enum class CardBrand(val displayName: String) {
-    VISA("Visa"),
-    MASTERCARD("Mastercard"),
-    AMEX("American Express"),
-    DISCOVER("Discover"),
-    DINERS("Diners Club"),
-    JCB("JCB"),
-    UNKNOWN("Unknown");
+enum class CardBrand(val displayName: String, val backendName: String) {
+    VISA("Visa", "VISA"),
+    MASTERCARD("Mastercard", "MASTERCARD"),
+    AMEX("American Express", "AMERICAN_EXPRESS"),  // Backend expects AMERICAN_EXPRESS, not AMEX
+    DISCOVER("Discover", "DISCOVER"),
+    DINERS("Diners Club", "DINERS_CLUB"),  // Backend expects DINERS_CLUB, not DINERS
+    JCB("JCB", "JCB"),
+    UNKNOWN("Unknown", "UNKNOWN");
 
     /**
      * Detecta la marca a partir del BIN.

@@ -35,6 +35,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEnvironment
  */
 @Composable
 fun MerchantSelectionContent(
+    modifier: Modifier = Modifier,
     totalAmount: String,
     tipAmount: String,
     rating: Int?,
@@ -45,7 +46,7 @@ fun MerchantSelectionContent(
     onStartPayment: () -> Unit,
     onStartCashPayment: () -> Unit,
     onNavigateBack: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+
 ) {
     Box(modifier = modifier.fillMaxSize()) {
         ResponsiveScaffold(

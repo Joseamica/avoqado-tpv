@@ -91,4 +91,18 @@ data class FastPaymentRequest(
 
     @SerializedName("reviewRating")
     val reviewRating: String? = null,
+
+    // 📸 PRE-PAYMENT VERIFICATION (2025-01-14)
+    // Order reference generated ONCE when entering VerifyingPrePayment state
+    // Ensures Firebase photos match the order number created in backend
+    @SerializedName("orderReference")
+    val orderReference: String? = null, // e.g., "FAST-1765549860972"
+
+    // Firebase Storage URLs of verification photos (uploaded before payment)
+    @SerializedName("verificationPhotos")
+    val verificationPhotos: List<String>? = null,
+
+    // Scanned barcodes from verification screen
+    @SerializedName("verificationBarcodes")
+    val verificationBarcodes: List<String>? = null,
 )

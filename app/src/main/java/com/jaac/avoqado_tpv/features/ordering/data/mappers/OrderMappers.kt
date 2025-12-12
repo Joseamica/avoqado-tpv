@@ -46,7 +46,8 @@ fun OrderDto.toOrder(): Order {
         updatedAt = Instant.parse(updatedAt),
         version = version,
         lastSplitType = lastSplitType?.toSplitType(),  // ⭐ Split type restriction (nullable for graceful degradation)
-        paidItemIds = paidItemIds ?: emptyList()  // ⭐ Items already paid (for SplitByProduct screen)
+        paidItemIds = paidItemIds ?: emptyList(),  // ⭐ Items already paid (for SplitByProduct screen)
+        discounts = orderDiscounts?.map { it.toOrderDiscount() } ?: emptyList()  // 🎟️ Applied discounts
     )
 }
 

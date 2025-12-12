@@ -14,12 +14,18 @@ import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.features.ordering.domain.AddOrderItemRequest
 import com.jaac.avoqado_tpv.features.ordering.domain.KitchenStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
+import com.jaac.avoqado_tpv.features.ordering.domain.OrderCustomer
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderItem
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
 import com.jaac.avoqado_tpv.features.ordering.domain.PaymentStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier
+import com.jaac.avoqado_tpv.features.ordering.domain.Discount
+import com.jaac.avoqado_tpv.features.ordering.domain.DiscountRepository
+import com.jaac.avoqado_tpv.features.ordering.domain.DiscountType
+import com.jaac.avoqado_tpv.features.ordering.domain.OrderDiscount
+import com.jaac.avoqado_tpv.features.ordering.domain.CouponCode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +36,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -61,6 +69,8 @@ class MenuViewModel @Inject constructor(
     private val productRepository: com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository,
     private val orderRepository: com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository,
     private val tableRepository: com.jaac.avoqado_tpv.features.ordering.domain.TableRepository,
+    private val discountRepository: DiscountRepository,  // 🎟️ Discount/Coupon operations
+    private val customerRepository: com.jaac.avoqado_tpv.features.ordering.domain.CustomerRepository,  // 👤 Customer search
     private val socketManager: com.jaac.avoqado_tpv.core.data.realtime.SocketManager,
     private val orderSyncCoordinator: com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator,
     private val productDao: ProductDao,  // ⚡ Cache-first product loading
@@ -70,6 +80,16 @@ class MenuViewModel @Inject constructor(
 
     private val _state = MutableStateFlow<MenuState>(MenuState.Loading)
     val state: StateFlow<MenuState> = _state.asStateFlow()
+
+    /**
+     * Current order ID being observed - Single Source of Truth Pattern.
+     *
+     * When this changes, the Room Flow automatically emits the new order data.
+     * This eliminates the need for manual _state.value updates after sync.
+     *
+     * @see collectOrderFromRoom
+     */
+    private val _currentOrderId = MutableStateFlow<String?>(null)
 
     private val _products = MutableStateFlow<List<Product>>(emptyList())
     val products: StateFlow<List<Product>> = _products.asStateFlow()
@@ -96,6 +116,81 @@ class MenuViewModel @Inject constructor(
     // Pull-to-refresh state
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
+    // 🎁 Loyalty program status (Toast/Square pattern)
+    // If false, hide loyalty points in customer UI
+    val loyaltyActive: Boolean
+        get() = secureStorage.isLoyaltyActive()
+
+    // ============================================================================
+    // 🎟️ Discount & Coupon State (ActionsTab)
+    // ============================================================================
+
+    // Available predefined discounts for the venue
+    private val _availableDiscounts = MutableStateFlow<List<Discount>>(emptyList())
+    val availableDiscounts: StateFlow<List<Discount>> = _availableDiscounts.asStateFlow()
+
+    // Applied discounts on current order
+    private val _appliedDiscounts = MutableStateFlow<List<OrderDiscount>>(emptyList())
+    val appliedDiscounts: StateFlow<List<OrderDiscount>> = _appliedDiscounts.asStateFlow()
+
+    // Loading state for discounts
+    private val _isLoadingDiscounts = MutableStateFlow(false)
+    val isLoadingDiscounts: StateFlow<Boolean> = _isLoadingDiscounts.asStateFlow()
+
+    // Coupon validation state
+    private val _couponValidationState = MutableStateFlow<CouponValidationState>(CouponValidationState.Idle)
+    val couponValidationState: StateFlow<CouponValidationState> = _couponValidationState.asStateFlow()
+
+    // ============================================================================
+    // 💳 Payment Preparation State
+    // ============================================================================
+
+    /**
+     * Payment preparation state - shows loading while syncing order before payment.
+     *
+     * ⚠️ CRITICAL: When user clicks "Pagar", we must sync pending changes and fetch
+     * recalculated discounts from backend BEFORE navigating to PaymentScreen.
+     * This prevents charging wrong amounts due to stale percentage discounts.
+     */
+    private val _isPreparingPayment = MutableStateFlow(false)
+    val isPreparingPayment: StateFlow<Boolean> = _isPreparingPayment.asStateFlow()
+
+    // ============================================================================
+    // 👤 Customer Search State (GuestTab)
+    // ============================================================================
+
+    // Customer search results state
+    private val _customerSearchState = MutableStateFlow<com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState>(
+        com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState.Idle
+    )
+    val customerSearchState: StateFlow<com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState> = _customerSearchState.asStateFlow()
+
+    // @DEPRECATED: Use orderCustomers instead for multi-customer support
+    // Kept for backward compatibility - will return first (primary) customer
+    private val _selectedCustomer = MutableStateFlow<com.jaac.avoqado_tpv.features.ordering.domain.Customer?>(null)
+    val selectedCustomer: StateFlow<com.jaac.avoqado_tpv.features.ordering.domain.Customer?> = _selectedCustomer.asStateFlow()
+
+    // ============================================================================
+    // 👥 Multi-Customer per Order State (NEW)
+    // ============================================================================
+
+    // Customers associated with the current order (many-to-many via OrderCustomer junction)
+    // First customer added is isPrimary=true and receives loyalty points on payment
+    private val _orderCustomers = MutableStateFlow<List<OrderCustomer>>(emptyList())
+    val orderCustomers: StateFlow<List<OrderCustomer>> = _orderCustomers.asStateFlow()
+
+    // Loading state for adding/removing customers
+    private val _isAddingCustomer = MutableStateFlow(false)
+    val isAddingCustomer: StateFlow<Boolean> = _isAddingCustomer.asStateFlow()
+
+    // Recent customers for quick selection (Toast/Square pattern)
+    private val _recentCustomers = MutableStateFlow<List<com.jaac.avoqado_tpv.features.ordering.domain.Customer>>(emptyList())
+    val recentCustomers: StateFlow<List<com.jaac.avoqado_tpv.features.ordering.domain.Customer>> = _recentCustomers.asStateFlow()
+
+    // Loading state for recent customers
+    private val _isLoadingRecentCustomers = MutableStateFlow(false)
+    val isLoadingRecentCustomers: StateFlow<Boolean> = _isLoadingRecentCustomers.asStateFlow()
 
     /**
      * Filtered products based on search query.
@@ -132,8 +227,15 @@ class MenuViewModel @Inject constructor(
         // Load products on ViewModel creation
         loadProducts()
 
+        // 🎟️ Load available discounts for the venue
+        loadAvailableDiscounts()
+
         // 🔄 Collect sync events from OrderSyncCoordinator
         collectSyncEvents()
+
+        // 🔄 [SSOT] Observe order from Room DB - Single Source of Truth Pattern
+        // When Room DB changes (sync, add item, etc.), _state updates automatically
+        collectOrderFromRoom()
 
         // Listen to Socket.IO events for real-time inventory updates
         listenToSocketEvents()
@@ -268,6 +370,243 @@ class MenuViewModel @Inject constructor(
     }
 
     /**
+     * Refresh order from backend after sync completes.
+     *
+     * ⚡ OPTIMIZATION: Only fetch if order has discounts applied.
+     * This avoids unnecessary HTTP calls for orders without discounts.
+     *
+     * Critical for discount recalculation:
+     * - Backend recalculates percentage discounts when items are added/removed
+     * - We need to fetch the updated discountAmount from backend
+     * - Also refresh _appliedDiscounts StateFlow with recalculated amounts
+     *
+     * @see avoqado-server/src/services/tpv/order.tpv.service.ts lines 504-540
+     */
+    private fun refreshOrderAfterSync(orderId: String) {
+        val currentState = _state.value
+        if (currentState !is MenuState.Success) return
+
+        // ⚡ OPTIMIZATION: Only fetch if order has discounts
+        val appliedDiscountsCount = _appliedDiscounts.value.size
+        val orderDiscountAmount = currentState.order.discountAmount
+        val hasDiscounts = appliedDiscountsCount > 0 || orderDiscountAmount > BigDecimal.ZERO
+
+        Timber.d("🔍 [Sync] Checking discounts | _appliedDiscounts.size=$appliedDiscountsCount | order.discountAmount=$orderDiscountAmount | hasDiscounts=$hasDiscounts")
+
+        if (!hasDiscounts) {
+            Timber.d("⏭️ [Sync] No discounts applied - skipping backend refresh")
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                val venueId = deviceInfoManager.getVenueId() ?: return@launch
+
+                Timber.d("🔄 [Sync] Refreshing order to get recalculated discounts | orderId=$orderId")
+
+                // Fetch fresh order from backend (includes recalculated discounts)
+                val backendOrder = orderRepository.getOrder(
+                    venueId = venueId,
+                    orderId = orderId
+                ).getOrElse { error ->
+                    Timber.w(error, "⚠️ Failed to refresh order after sync - using local data")
+                    return@launch
+                }
+
+                // Cache to local DB
+                orderSyncCoordinator.cacheBackendOrder(backendOrder)
+
+                // Load merged order (preserves local-only fields like sentToKitchenAt)
+                val mergedOrder = orderSyncCoordinator.getLocalOrder(orderId) ?: backendOrder
+
+                // ⭐ FIX: Only update _appliedDiscounts if backend has discount data
+                // Backend may return empty discounts[] even when discountAmount > 0
+                // Don't overwrite local _appliedDiscounts with empty list
+                if (backendOrder.discounts.isNotEmpty()) {
+                    _appliedDiscounts.value = backendOrder.discounts
+                    Timber.d("🔄 [refreshOrderAfterSync] Updated _appliedDiscounts from backend (${backendOrder.discounts.size})")
+                }
+
+                // Update state
+                val latestState = _state.value
+                if (latestState is MenuState.Success) {
+                    _state.value = latestState.copy(order = mergedOrder)
+                    Timber.i("✅ [Sync] Order refreshed from backend | discountAmount=${mergedOrder.discountAmount} | discounts=${backendOrder.discounts.size}")
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "❌ Error refreshing order after sync")
+            }
+        }
+    }
+
+    // ============================================================================
+    // 💳 Payment Preparation (Force Sync Before Payment)
+    // ============================================================================
+
+    /**
+     * Prepare order for payment by forcing sync and fetching recalculated totals.
+     *
+     * ⚠️ CRITICAL: Must be called before navigating to PaymentScreen when order may have
+     * pending changes or percentage discounts. Backend recalculates percentage discounts
+     * when items change - we need the authoritative amount.
+     *
+     * **Flow:**
+     * 1. Force sync any pending local changes (bypass 5-second debounce)
+     * 2. Fetch order from backend (gets recalculated discountAmount)
+     * 3. Update local state with correct totals
+     * 4. Return the prepared order
+     *
+     * **Why This is Necessary:**
+     * - User applies 10% coupon on $149 → discount = $14.9
+     * - User adds another $149 item → subtotal = $298
+     * - LOCAL shows: total = $283.1 (old discount $14.9) ❌
+     * - BACKEND calculates: total = $268.2 (recalculated $29.8) ✅
+     * - If user clicks "Pagar" before 2s sync → CHARGES WRONG AMOUNT!
+     *
+     * @return Result with prepared Order (correct totals) or error
+     */
+    private suspend fun prepareForPayment(): Result<Order> {
+        val currentState = _state.value
+        if (currentState !is MenuState.Success) {
+            return Result.failure(Exception("No order loaded"))
+        }
+
+        val order = currentState.order
+
+        return try {
+            // Step 1: Force sync pending changes (bypass 2s debounce)
+            val syncedOrderId = orderSyncCoordinator.syncOrderImmediately(order.id)
+            Timber.d("⚡ [Payment Prep] Order synced | id=$syncedOrderId")
+
+            // Step 2: Fetch order from backend with recalculated discounts
+            val venueId = deviceInfoManager.getVenueId()
+                ?: return Result.failure(Exception("Venue not configured"))
+
+            val backendOrder = orderRepository.getOrder(venueId, syncedOrderId).getOrElse { error ->
+                Timber.e(error, "❌ [Payment Prep] Failed to fetch order")
+                return Result.failure(error)
+            }
+
+            // Step 3: Cache and update local state
+            orderSyncCoordinator.cacheBackendOrder(backendOrder)
+            val mergedOrder = orderSyncCoordinator.getLocalOrder(syncedOrderId) ?: backendOrder
+
+            // Step 4: Update UI state with correct amounts
+            // ⭐ FIX: Only update _appliedDiscounts if backend has discount data
+            // Backend may return empty discounts[] even when discountAmount > 0
+            // Don't overwrite local _appliedDiscounts with empty list
+            if (backendOrder.discounts.isNotEmpty()) {
+                _appliedDiscounts.value = backendOrder.discounts
+                Timber.d("🔄 [prepareOrderForPayment] Updated _appliedDiscounts from backend (${backendOrder.discounts.size})")
+            }
+            val latestState = _state.value
+            if (latestState is MenuState.Success) {
+                _state.value = latestState.copy(order = mergedOrder)
+            }
+
+            Timber.i("✅ [Payment Prep] Order ready | total=${mergedOrder.total} | discount=${mergedOrder.discountAmount}")
+            Result.success(mergedOrder)
+
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Payment Prep] Failed")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Public function to prepare order for payment with loading state.
+     *
+     * Called when user clicks "Pagar" button. Forces sync, fetches recalculated
+     * totals from backend, then calls onReady with the prepared order.
+     *
+     * **UX:**
+     * - Shows "Preparando pago..." overlay (~400ms)
+     * - Prevents navigation to PaymentScreen with wrong amounts
+     * - Handles errors gracefully
+     *
+     * @param onReady Called with the prepared Order when ready to navigate
+     * @param onError Called with error message if preparation fails
+     */
+    fun onPaymentRequested(onReady: (Order) -> Unit, onError: (String) -> Unit) {
+        viewModelScope.launch {
+            _isPreparingPayment.value = true
+            try {
+                prepareForPayment().fold(
+                    onSuccess = { order ->
+                        _isPreparingPayment.value = false
+                        onReady(order)
+                    },
+                    onFailure = { error ->
+                        _isPreparingPayment.value = false
+                        onError(error.message ?: "Error preparando pago")
+                    }
+                )
+            } catch (e: Exception) {
+                _isPreparingPayment.value = false
+                onError(e.message ?: "Error preparando pago")
+            }
+        }
+    }
+
+    /**
+     * 🔄 [SSOT] Collect order changes from Room DB - Single Source of Truth Pattern.
+     *
+     * **This is the core of the Flow migration!**
+     *
+     * When `_currentOrderId` changes:
+     * 1. flatMapLatest switches to observe the new orderId
+     * 2. Room DB emits Order whenever it changes (sync, add item, remove item, etc.)
+     * 3. _state is updated automatically with fresh data
+     *
+     * **Benefits:**
+     * - Eliminates manual _state.value updates scattered across the codebase
+     * - Room is the Single Source of Truth - no dual state issues
+     * - UI always has fresh data (no stale order IDs after sync)
+     * - Works with ID replacement (local_xxx → CUID) automatically
+     *
+     * **How ID replacement works:**
+     * 1. Order created with local_xxx ID → _currentOrderId = "local_xxx"
+     * 2. Sync completes → Room DB updates ID to CUID
+     * 3. Flow emits null (old ID not found)
+     * 4. collectSyncEvents() updates _currentOrderId to CUID
+     * 5. Flow switches to observe CUID → emits fresh order
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private fun collectOrderFromRoom() {
+        viewModelScope.launch {
+            _currentOrderId
+                .filterNotNull()
+                .flatMapLatest { orderId ->
+                    Timber.d("🔄 [SSOT] Observing order from Room | orderId=$orderId")
+                    orderSyncCoordinator.observeOrder(orderId)
+                }
+                .distinctUntilChanged()
+                .collect { order ->
+                    Timber.d("🔄 [SSOT] Room emitted order update | id=${order.id} | items=${order.items.size}")
+
+                    // Update _state with fresh order from Room
+                    val currentState = _state.value
+                    when (currentState) {
+                        is MenuState.Success -> {
+                            // Preserve other state fields, only update order
+                            updateStateWithOrder(order)  // 🔄 Syncs _appliedDiscounts
+                            Timber.i("✅ [SSOT] State updated from Room | orderId=${order.id}")
+                        }
+                        is MenuState.Loading -> {
+                            // First load - transition to Success
+                            updateStateWithOrder(order)  // 🔄 Syncs _appliedDiscounts
+                            Timber.i("✅ [SSOT] Initial order loaded from Room | orderId=${order.id}")
+                        }
+                        else -> {
+                            // Error state - stay in error (user should manually retry)
+                            Timber.w("⚠️ [SSOT] Room emitted but state is ${currentState::class.simpleName}, ignoring")
+                        }
+                    }
+                }
+        }
+    }
+
+    /**
      * Collect sync events from OrderSyncCoordinator
      *
      * **Local-First Architecture Pattern:**
@@ -291,25 +630,23 @@ class MenuViewModel @Inject constructor(
                         Timber.i("📬 [VM-DEBUG] SyncEvent.Synced RECEIVED | serverId=${event.orderId} | timestamp=$receivedAt")
                         _isSyncing.value = false
 
-                        // ⭐ P0 FIX: Reload order from Room DB to get updated server ID/version
-                        // When local UUID is replaced with server CUID, we need to update the state
-                        // with the new ID so subsequent operations (add item) use the correct ID
-                        val currentState = _state.value
-                        if (currentState is MenuState.Success) {
-                            Timber.d("📬 [VM-DEBUG] BEFORE STATE UPDATE | currentStateOrderId=${currentState.order.id} | timestamp=${System.currentTimeMillis()}")
-                            try {
-                                val updatedOrder = orderSyncCoordinator.getLocalOrder(event.orderId)
-                                if (updatedOrder != null) {
-                                    Timber.d("🔄 [Sync] Reloading order after sync | oldId=${currentState.order.id} | newId=${updatedOrder.id}")
-                                    _state.value = currentState.copy(order = updatedOrder)
-                                    Timber.i("✅ [VM-DEBUG] _state UPDATED with new order | newOrderId=${updatedOrder.id} | timestamp=${System.currentTimeMillis()} | totalDelay=${System.currentTimeMillis() - receivedAt}ms")
-                                } else {
-                                    Timber.w("⚠️ [Sync] Order not found after sync | id=${event.orderId}")
-                                }
-                            } catch (e: Exception) {
-                                Timber.e(e, "❌ [Sync] Error reloading order after sync")
-                            }
+                        // ⭐ [SSOT] Update _currentOrderId when ID changes (local_xxx → CUID)
+                        // This triggers collectOrderFromRoom() to switch to the new ID
+                        val previousId = _currentOrderId.value
+                        if (previousId != event.orderId) {
+                            Timber.i("🔄 [SSOT] Order ID changed after sync | old=$previousId → new=${event.orderId}")
+                            _currentOrderId.value = event.orderId
+                            // Flow will automatically emit the new order, updating _state
                         }
+
+                        // ✅ [SSOT Phase 4] Legacy manual reload REMOVED
+                        // collectOrderFromRoom() now handles _state updates automatically via Room Flow
+                        // When _currentOrderId changes → Flow switches → Room emits → _state updates
+
+                        // ⭐ FIX: Refresh order from backend to get recalculated discounts
+                        // Backend recalculates percentage discounts when items change
+                        // Only fetches if order has discounts (optimization)
+                        refreshOrderAfterSync(event.orderId)
                     }
                     is com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator.SyncEvent.Error -> {
                         Timber.e("❌ [Sync] Sync error | order=${event.orderId} | error=${event.message}")
@@ -595,9 +932,9 @@ class MenuViewModel @Inject constructor(
                             return@launch
                         }
 
-                        // STEP 3: Schedule debounced sync (5 seconds)
+                        // STEP 3: Schedule debounced sync (2 seconds)
                         orderSyncCoordinator.scheduleSync(localOrderId)
-                        Timber.i("✅ [Local-First] Quick order created instantly | id=$localOrderId | syncScheduled=5s")
+                        Timber.i("✅ [Local-First] Quick order created instantly | id=$localOrderId | syncScheduled=2s")
 
                         localOrder
                     }
@@ -685,7 +1022,21 @@ class MenuViewModel @Inject constructor(
                     }
                 }
 
+                // ⭐ [SSOT] Set current order ID for Flow observation
+                // This triggers collectOrderFromRoom() to start observing this order
+                _currentOrderId.value = order.id
+                Timber.d("🔄 [SSOT] _currentOrderId set to ${order.id}")
+
                 _state.value = MenuState.Success(order)
+
+                // 🎟️ Sync applied discounts from order
+                _appliedDiscounts.value = order.discounts
+                if (order.discounts.isNotEmpty()) {
+                    Timber.i("🎟️ Synced ${order.discounts.size} applied discounts from order")
+                }
+
+                // 👥 Load order customers (multi-customer support)
+                loadOrderCustomers(order.id)
 
                 // 🔍 DEBUG: Detailed order state on load
                 Timber.i("═══════════════════════════════════════════════════════════")
@@ -724,18 +1075,18 @@ class MenuViewModel @Inject constructor(
      * **🆕 Local-First Flow (Toast POS Pattern):**
      * 1. Add to Room DB via OrderSyncCoordinator → INSTANT UI (0ms)
      * 2. Update state with new item (optimistic)
-     * 3. Schedule debounced sync (5s delay)
+     * 3. Schedule debounced sync (2s delay)
      * 4. (Eventually) Sync to backend automatically
      *
      * **Benefits:**
      * - 0ms UI latency (vs 300ms+ with immediate backend call)
      * - Works offline (syncs when connection restored)
-     * - Batches rapid changes (5 items = 1 API call instead of 5)
+     * - Batches rapid changes (multiple items = 1 API call)
      * - Reduces server load by 80%
      *
      * **Comparison:**
      * - OLD: Add → API call (300ms) → UI update
-     * - NEW: Add → Room DB (0ms) → UI update → Schedule sync (5s) → Backend
+     * - NEW: Add → Room DB (0ms) → UI update → Schedule sync (2s) → Backend
      */
     fun addItem(
         product: Product,
@@ -797,7 +1148,7 @@ class MenuViewModel @Inject constructor(
                 )
 
                 val updatedOrder = recalculateOrder(order.copy(items = order.items + newItem))
-                _state.value = MenuState.Success(updatedOrder)
+                updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts with order.discounts
 
                 // 🔍 DEBUG: Item added details
                 Timber.i("═══════════════════════════════════════════════════════════")
@@ -817,12 +1168,12 @@ class MenuViewModel @Inject constructor(
                 Timber.i("      total: ${updatedOrder.total}")
                 Timber.i("═══════════════════════════════════════════════════════════")
 
-                // ✅ STEP 4: Schedule debounced sync (5 seconds)
+                // ✅ STEP 4: Schedule debounced sync (2 seconds)
                 orderSyncCoordinator.scheduleSync(order.id)
                 Timber.d("⏱️ [Sync] Scheduled debounced sync for order: ${order.id}")
 
                 // 🎯 Result: User sees item added INSTANTLY (0ms)
-                // Backend sync happens automatically 5 seconds later (or sooner if user sends to kitchen)
+                // Backend sync happens automatically 2 seconds later (or sooner if user sends to kitchen)
 
             } catch (e: Exception) {
                 Timber.e(e, "❌ Error in addItem (local-first)")
@@ -838,7 +1189,7 @@ class MenuViewModel @Inject constructor(
      * 1. Update quantity in Room DB → Marks as PENDING
      * 2. Update UI state (optimistic)
      * 3. Recalculate totals
-     * 4. Schedule debounced sync (5s delay)
+     * 4. Schedule debounced sync (2s delay)
      * 5. (Eventually) Sync to backend
      *
      * **Key Fix (Issue #XXX):**
@@ -882,7 +1233,7 @@ class MenuViewModel @Inject constructor(
                 }
 
                 val updatedOrder = recalculateOrder(order.copy(items = updatedItems))
-                _state.value = MenuState.Success(updatedOrder)
+                updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts with order.discounts
                 Timber.d("✏️ Item quantity updated: ${item.productName} → $newQuantity")
 
                 // ✅ FIX: Schedule sync to send updated quantity to backend
@@ -899,7 +1250,7 @@ class MenuViewModel @Inject constructor(
      * **🆕 Local-First Flow with Soft Delete:**
      * 1. Mark as DELETED in Room DB → INSTANT UI (0ms)
      * 2. Remove from UI state (optimistic)
-     * 3. Schedule debounced sync (5s delay)
+     * 3. Schedule debounced sync (2s delay)
      * 4. (Eventually) Sync deletion to backend
      * 5. Hard delete from DB after server confirms
      *
@@ -931,16 +1282,16 @@ class MenuViewModel @Inject constructor(
                 // ✅ STEP 2: Update UI state (remove from list)
                 val updatedItems = order.items.filter { it.id != item.id }
                 val updatedOrder = recalculateOrder(order.copy(items = updatedItems))
-                _state.value = MenuState.Success(updatedOrder)
+                updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts with order.discounts
 
                 Timber.i("✅ [Local-First] Item removed from UI instantly | id=${item.id}")
 
-                // ✅ STEP 3: Schedule debounced sync (5 seconds)
+                // ✅ STEP 3: Schedule debounced sync (2 seconds)
                 orderSyncCoordinator.scheduleSync(order.id)
                 Timber.d("⏱️ [Sync] Scheduled debounced sync for order: ${order.id}")
 
                 // 🎯 Result: User sees item removed INSTANTLY (0ms)
-                // Backend sync happens automatically 5 seconds later
+                // Backend sync happens automatically 2 seconds later
                 // If sync fails, item can be restored from DELETED status
 
             } catch (e: Exception) {
@@ -956,13 +1307,13 @@ class MenuViewModel @Inject constructor(
      * ⚠️ LOCAL-FIRST TRANSFORMATION ⚠️
      *
      * Flow:
-     * 1. Force immediate sync (bypass 5s debounce) - kitchen cannot wait
+     * 1. Force immediate sync (bypass 2s debounce) - kitchen cannot wait
      * 2. Update kitchen status on backend
      * 3. Update UI state
      *
      * Why immediate sync?
      * - Kitchen needs to start cooking NOW
-     * - Cannot wait 5 seconds for debounced sync
+     * - Cannot wait 2 seconds for debounced sync
      * - Order must exist on backend before changing kitchen status
      *
      * Performance:
@@ -1030,7 +1381,7 @@ class MenuViewModel @Inject constructor(
                             items = updatedItems,
                             kitchenStatus = KitchenStatus.PREPARING
                         )
-                        _state.value = MenuState.Success(updatedOrder)
+                        updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts
                         Timber.i("✅ [SendToKitchen] Local state updated - ${pendingItems.size} items marked as sent")
 
                     } catch (e: Exception) {
@@ -1113,7 +1464,7 @@ class MenuViewModel @Inject constructor(
                     }
                 }
                 val updatedOrder = order.copy(items = updatedItems)
-                _state.value = MenuState.Success(updatedOrder)
+                updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts
                 Timber.i("✅ Item marked as sent: ${item.productName}")
 
             } catch (e: Exception) {
@@ -1178,7 +1529,7 @@ class MenuViewModel @Inject constructor(
                     }
                 }
                 val updatedOrder = order.copy(items = updatedItems)
-                _state.value = MenuState.Success(updatedOrder)
+                updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts
                 Timber.i("✅ [PrintComanda] Local state updated - ${pendingItems.size} items marked as sent")
 
             } catch (e: Exception) {
@@ -1225,7 +1576,8 @@ class MenuViewModel @Inject constructor(
             }
 
             try {
-                Timber.d("👤 Updating guest info: covers=$covers, name=$customerName, phone=$customerPhone")
+                val customerId = _selectedCustomer.value?.id
+                Timber.d("👤 Updating guest info: covers=$covers, name=$customerName, phone=$customerPhone, customerId=$customerId")
 
                 // Call repository
                 orderRepository.updateGuest(
@@ -1234,10 +1586,11 @@ class MenuViewModel @Inject constructor(
                     covers = covers,
                     customerName = customerName,
                     customerPhone = customerPhone,
-                    specialRequests = specialRequests
+                    specialRequests = specialRequests,
+                    customerId = customerId
                 ).fold(
                     onSuccess = { updatedOrder ->
-                        _state.value = MenuState.Success(updatedOrder)
+                        updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts
                         Timber.d("✅ Guest info updated successfully")
                         // TODO Step 10: Show success Snackbar
                     },
@@ -1302,7 +1655,7 @@ class MenuViewModel @Inject constructor(
                     notes = notes
                 ).fold(
                     onSuccess = { updatedOrder ->
-                        _state.value = MenuState.Success(updatedOrder)
+                        updateStateWithOrder(updatedOrder)  // 🔄 CRITICAL: Comp adds discount!
                         Timber.d("✅ Items comped successfully")
                         // TODO Step 10: Show success Snackbar
                     },
@@ -1361,7 +1714,7 @@ class MenuViewModel @Inject constructor(
                     currentVersion = order.version
                 ).fold(
                     onSuccess = { updatedOrder ->
-                        _state.value = MenuState.Success(updatedOrder)
+                        updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts
                         Timber.d("✅ Items voided successfully")
                         // TODO Step 10: Show success Snackbar
                     },
@@ -1425,7 +1778,7 @@ class MenuViewModel @Inject constructor(
                     currentVersion = order.version
                 ).fold(
                     onSuccess = { updatedOrder ->
-                        _state.value = MenuState.Success(updatedOrder)
+                        updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts
                         Timber.d("✅ Discount applied successfully")
                         // TODO Step 10: Show success Snackbar
                     },
@@ -1442,6 +1795,822 @@ class MenuViewModel @Inject constructor(
     }
 
     // ============================================================================
+    // 🎟️ Discount & Coupon Operations (NEW - DiscountRepository)
+    // ============================================================================
+
+    /**
+     * Load available predefined discounts for the venue.
+     *
+     * Called on ViewModel init. Fetches all active discounts that can be applied.
+     * Discounts may have conditions (time, minimum amount, day of week).
+     */
+    private fun loadAvailableDiscounts() {
+        viewModelScope.launch {
+            val venueId = deviceInfoManager.getVenueId() ?: return@launch
+            val currentState = _state.value
+            val orderId = (currentState as? MenuState.Success)?.order?.id ?: return@launch
+
+            _isLoadingDiscounts.value = true
+            try {
+                discountRepository.getAvailableDiscounts(venueId, orderId).fold(
+                    onSuccess = { discounts ->
+                        _availableDiscounts.value = discounts
+                        Timber.i("🎟️ Loaded ${discounts.size} available discounts")
+                    },
+                    onFailure = { error ->
+                        Timber.e(error, "❌ Failed to load available discounts")
+                        _availableDiscounts.value = emptyList()
+                    }
+                )
+            } finally {
+                _isLoadingDiscounts.value = false
+            }
+        }
+    }
+
+    /**
+     * Refresh available discounts (public API for pull-to-refresh).
+     */
+    fun refreshDiscounts() {
+        loadAvailableDiscounts()
+    }
+
+    /**
+     * Apply a predefined discount to the current order.
+     *
+     * @param discountId ID of the predefined discount
+     * @param itemIds Optional list of item IDs to apply discount to (null = entire order)
+     * @param reason Optional reason/notes for applying discount
+     */
+    fun applyPredefinedDiscount(
+        discountId: String,
+        itemIds: List<String>? = null,
+        reason: String? = null
+    ) {
+        viewModelScope.launch {
+            val currentState = _state.value
+            if (currentState !is MenuState.Success) {
+                Timber.w("⚠️ Cannot apply discount - no order loaded")
+                return@launch
+            }
+
+            var order = currentState.order
+            val venueId = deviceInfoManager.getVenueId()
+
+            if (venueId == null) {
+                Timber.e("❌ Cannot apply discount: venueId is null")
+                return@launch
+            }
+
+            _isLoadingDiscounts.value = true
+            try {
+                // ⚡ CRITICAL: Force sync before discount (bypass 2s debounce)
+                // Discount needs accurate totals from backend to calculate correctly
+                Timber.d("🔄 [Discount] Forcing sync before applying predefined discount...")
+                val syncedOrderId = orderSyncCoordinator.syncOrderImmediately(order.id)
+                // Update order ID if it changed (local_ → server ID)
+                if (syncedOrderId != order.id) {
+                    order = order.copy(id = syncedOrderId)
+                    Timber.i("✅ [Discount] Order synced | original → $syncedOrderId")
+                }
+
+                Timber.d("🎟️ Applying predefined discount: $discountId")
+
+                discountRepository.applyPredefinedDiscount(
+                    venueId = venueId,
+                    orderId = order.id,
+                    discountId = discountId
+                ).fold(
+                    onSuccess = { appliedDiscount ->
+                        // Update applied discounts list
+                        val updatedDiscounts = _appliedDiscounts.value + appliedDiscount
+                        _appliedDiscounts.value = updatedDiscounts
+                        // 🔄 Recalculate totals with new discount
+                        val orderWithDiscounts = order.copy(discounts = updatedDiscounts)
+                        val updatedOrder = recalculateOrder(orderWithDiscounts)
+                        _state.value = MenuState.Success(updatedOrder)
+                        Timber.i("✅ Predefined discount applied: ${appliedDiscount.name} | discount=${updatedOrder.discountAmount} | total=${updatedOrder.total}")
+                    },
+                    onFailure = { error ->
+                        Timber.e(error, "❌ Error applying predefined discount")
+                    }
+                )
+            } finally {
+                _isLoadingDiscounts.value = false
+            }
+        }
+    }
+
+    /**
+     * Apply a manual discount to the current order.
+     *
+     * @param type Discount type: PERCENTAGE or FIXED
+     * @param value Discount value (percentage as 0-100, or fixed amount)
+     * @param reason Optional reason for the discount
+     * @param itemIds Optional list of item IDs to apply discount to (null = entire order)
+     */
+    fun applyManualDiscount(
+        type: DiscountType,
+        value: Double,
+        reason: String? = null,
+        itemIds: List<String>? = null
+    ) {
+        viewModelScope.launch {
+            val currentState = _state.value
+            if (currentState !is MenuState.Success) {
+                Timber.w("⚠️ Cannot apply manual discount - no order loaded")
+                return@launch
+            }
+
+            var order = currentState.order
+            val venueId = deviceInfoManager.getVenueId()
+
+            if (venueId == null) {
+                Timber.e("❌ Cannot apply manual discount: venueId is null")
+                return@launch
+            }
+
+            _isLoadingDiscounts.value = true
+            try {
+                // ⚡ CRITICAL: Force sync before discount (bypass 2s debounce)
+                // Discount needs accurate totals from backend to calculate correctly
+                Timber.d("🔄 [Discount] Forcing sync before applying manual discount...")
+                val syncedOrderId = orderSyncCoordinator.syncOrderImmediately(order.id)
+                // Update order ID if it changed (local_ → server ID)
+                if (syncedOrderId != order.id) {
+                    order = order.copy(id = syncedOrderId)
+                    Timber.i("✅ [Discount] Order synced | original → $syncedOrderId")
+                }
+
+                Timber.d("🎟️ Applying manual discount: type=$type, value=$value")
+
+                discountRepository.applyManualDiscount(
+                    venueId = venueId,
+                    orderId = order.id,
+                    type = type,
+                    value = value,
+                    reason = reason
+                ).fold(
+                    onSuccess = { appliedDiscount ->
+                        val updatedDiscounts = _appliedDiscounts.value + appliedDiscount
+                        _appliedDiscounts.value = updatedDiscounts
+                        // 🔄 Recalculate totals with new discount
+                        val orderWithDiscounts = order.copy(discounts = updatedDiscounts)
+                        val updatedOrder = recalculateOrder(orderWithDiscounts)
+                        _state.value = MenuState.Success(updatedOrder)
+                        Timber.i("✅ Manual discount applied: ${appliedDiscount.name} | discount=${updatedOrder.discountAmount} | total=${updatedOrder.total}")
+                    },
+                    onFailure = { error ->
+                        Timber.e(error, "❌ Error applying manual discount")
+                    }
+                )
+            } finally {
+                _isLoadingDiscounts.value = false
+            }
+        }
+    }
+
+    /**
+     * Remove a discount from the current order.
+     *
+     * @param orderDiscountId ID of the applied discount to remove
+     */
+    fun removeDiscount(orderDiscountId: String) {
+        viewModelScope.launch {
+            val currentState = _state.value
+            if (currentState !is MenuState.Success) {
+                Timber.w("⚠️ Cannot remove discount - no order loaded")
+                return@launch
+            }
+
+            val order = currentState.order
+            val venueId = deviceInfoManager.getVenueId()
+
+            if (venueId == null) {
+                Timber.e("❌ Cannot remove discount: venueId is null")
+                return@launch
+            }
+
+            _isLoadingDiscounts.value = true
+            try {
+                Timber.d("🗑️ Removing discount: $orderDiscountId")
+
+                discountRepository.removeDiscount(
+                    venueId = venueId,
+                    orderId = order.id,
+                    orderDiscountId = orderDiscountId,
+                    expectedVersion = order.version
+                ).fold(
+                    onSuccess = {
+                        // Remove from local list
+                        val updatedDiscounts = _appliedDiscounts.value.filter { it.id != orderDiscountId }
+                        _appliedDiscounts.value = updatedDiscounts
+                        // 🔄 Recalculate totals without the removed discount
+                        val orderWithDiscounts = order.copy(discounts = updatedDiscounts)
+                        val updatedOrder = recalculateOrder(orderWithDiscounts)
+                        _state.value = MenuState.Success(updatedOrder)
+                        Timber.i("✅ Discount removed | discount=${updatedOrder.discountAmount} | total=${updatedOrder.total}")
+                    },
+                    onFailure = { error ->
+                        Timber.e(error, "❌ Error removing discount")
+                    }
+                )
+            } finally {
+                _isLoadingDiscounts.value = false
+            }
+        }
+    }
+
+    /**
+     * Validate a coupon code without applying it.
+     *
+     * Updates couponValidationState with the result.
+     *
+     * @param code Coupon code to validate
+     */
+    fun validateCoupon(code: String) {
+        viewModelScope.launch {
+            val currentState = _state.value
+            if (currentState !is MenuState.Success) {
+                Timber.w("⚠️ Cannot validate coupon - no order loaded")
+                return@launch
+            }
+
+            val order = currentState.order
+            val venueId = deviceInfoManager.getVenueId()
+
+            if (venueId == null) {
+                Timber.e("❌ Cannot validate coupon: venueId is null")
+                return@launch
+            }
+
+            _couponValidationState.value = CouponValidationState.Loading
+            try {
+                Timber.d("🎟️ Validating coupon: $code")
+
+                discountRepository.validateCoupon(
+                    venueId = venueId,
+                    code = code,
+                    orderTotal = order.total.toDouble()
+                ).fold(
+                    onSuccess = { couponCode ->
+                        _couponValidationState.value = CouponValidationState.Valid(couponCode)
+                        Timber.i("✅ Coupon validated: ${couponCode.code} - ${couponCode.name}")
+                    },
+                    onFailure = { error ->
+                        _couponValidationState.value = CouponValidationState.Invalid(
+                            error.message ?: "Código de cupón inválido"
+                        )
+                        Timber.e(error, "❌ Coupon validation failed")
+                    }
+                )
+            } catch (e: Exception) {
+                _couponValidationState.value = CouponValidationState.Error(
+                    e.message ?: "Error validando cupón"
+                )
+                Timber.e(e, "❌ Error validating coupon")
+            }
+        }
+    }
+
+    /**
+     * Apply a validated coupon to the current order.
+     *
+     * @param code Coupon code to apply (should be validated first)
+     */
+    fun applyCoupon(code: String) {
+        viewModelScope.launch {
+            val currentState = _state.value
+            if (currentState !is MenuState.Success) {
+                Timber.w("⚠️ Cannot apply coupon - no order loaded")
+                return@launch
+            }
+
+            val order = currentState.order
+            val venueId = deviceInfoManager.getVenueId()
+
+            if (venueId == null) {
+                Timber.e("❌ Cannot apply coupon: venueId is null")
+                return@launch
+            }
+
+            // Show loading state for spinner in button (Toast/Square UX)
+            _couponValidationState.value = CouponValidationState.Loading
+            _isLoadingDiscounts.value = true
+            try {
+                Timber.d("🎟️ Applying coupon: $code")
+
+                // ⭐ FIX: Get validated coupon's type and value for local recalculation
+                // Backend applyCoupon returns OrderDiscount with value=0, but we need the
+                // percentage value to recalculate discounts locally when items change.
+                val validatedCoupon = (_couponValidationState.value as? CouponValidationState.Valid)?.coupon
+
+                discountRepository.applyCoupon(
+                    venueId = venueId,
+                    orderId = order.id,
+                    code = code
+                ).fold(
+                    onSuccess = { appliedDiscount ->
+                        // ⭐ FIX: Copy type and value from validated coupon for local recalculation
+                        // This enables recalculateOrder() to correctly recalculate percentage discounts
+                        // when items are added/removed BEFORE backend sync.
+                        //
+                        // ⚠️ OPTIMISTIC UPDATE: This provides immediate UI feedback. Backend may apply
+                        // different rules (max discount cap, eligibility conditions, item exclusions).
+                        // refreshOrderAfterSync() fetches the authoritative amounts after sync completes.
+                        val discountWithValue = if (validatedCoupon != null) {
+                            appliedDiscount.copy(
+                                type = validatedCoupon.type,
+                                value = validatedCoupon.value
+                            )
+                        } else {
+                            appliedDiscount
+                        }
+
+                        val updatedDiscounts = _appliedDiscounts.value + discountWithValue
+                        _appliedDiscounts.value = updatedDiscounts
+                        // 🔄 Recalculate totals with new discount
+                        val orderWithDiscounts = order.copy(discounts = updatedDiscounts)
+                        val updatedOrder = recalculateOrder(orderWithDiscounts)
+                        _state.value = MenuState.Success(updatedOrder)
+                        // Reset validation state after successful application
+                        _couponValidationState.value = CouponValidationState.Idle
+                        Timber.i("✅ Coupon applied: ${discountWithValue.name} | type=${discountWithValue.type} | value=${discountWithValue.value} | discount=${updatedOrder.discountAmount} | total=${updatedOrder.total}")
+                    },
+                    onFailure = { error ->
+                        // Map backend error to user-friendly Spanish message
+                        val userMessage = mapCouponErrorToSpanish(error.message)
+                        _couponValidationState.value = CouponValidationState.Invalid(userMessage)
+                        Timber.e(error, "❌ Error applying coupon: ${error.message} → $userMessage")
+                    }
+                )
+            } finally {
+                _isLoadingDiscounts.value = false
+            }
+        }
+    }
+
+    /**
+     * Reset coupon validation state to Idle.
+     * Called when user clears the coupon input field.
+     */
+    fun resetCouponValidation() {
+        _couponValidationState.value = CouponValidationState.Idle
+    }
+
+    /**
+     * Maps backend coupon error messages to user-friendly Spanish messages.
+     * Toast/Square UX: specific error messages help users understand what went wrong.
+     */
+    private fun mapCouponErrorToSpanish(errorMessage: String?): String {
+        return when {
+            errorMessage == null -> "Error desconocido"
+            "not found" in errorMessage.lowercase() ->
+                "Cupón no encontrado. Verifica el código."
+            "expired" in errorMessage.lowercase() ->
+                "Este cupón ya expiró."
+            "inactive" in errorMessage.lowercase() ->
+                "Este cupón está desactivado."
+            "usage limit" in errorMessage.lowercase() ->
+                "Este cupón ya agotó todos sus usos disponibles."
+            "already been applied" in errorMessage.lowercase() ->
+                "Este cupón ya fue aplicado a esta orden."
+            "already used this coupon" in errorMessage.lowercase() ->
+                "Ya alcanzaste el límite de usos de este cupón."
+            "minimum purchase" in errorMessage.lowercase() -> {
+                // Extract amount from message: "Minimum purchase of X required"
+                val amount = errorMessage.substringAfter("of ").substringBefore(" required")
+                "Compra mínima requerida: $$amount"
+            }
+            "not valid yet" in errorMessage.lowercase() ->
+                "Este cupón aún no está activo."
+            else -> errorMessage
+        }
+    }
+
+    // ============================================================================
+    // 👤 Customer Search Functions (GuestTab)
+    // ============================================================================
+
+    /**
+     * Search customers by query (name, phone, or email).
+     *
+     * Uses debounce (300ms) in the UI layer (GuestTab).
+     * Requires minimum 2 characters to search.
+     *
+     * @param query Search query string
+     */
+    fun searchCustomers(query: String) {
+        if (query.length < 2) {
+            _customerSearchState.value = com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState.Idle
+            return
+        }
+
+        viewModelScope.launch {
+            val venueId = deviceInfoManager.getVenueId()
+            if (venueId == null) {
+                Timber.e("❌ Cannot search customers: venueId is null")
+                _customerSearchState.value = com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState.Error(
+                    "Error de configuración"
+                )
+                return@launch
+            }
+
+            _customerSearchState.value = com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState.Loading
+
+            customerRepository.searchCustomers(
+                venueId = venueId,
+                query = query,
+                limit = 10
+            ).onSuccess { customers ->
+                _customerSearchState.value = com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState.Success(customers)
+                Timber.d("👤 [Customer Search] Found ${customers.size} customers for query: $query")
+            }.onFailure { error ->
+                _customerSearchState.value = com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState.Error(
+                    error.message ?: "Error buscando clientes"
+                )
+                Timber.e(error, "❌ [Customer Search] Failed to search customers")
+            }
+        }
+    }
+
+    /**
+     * @DEPRECATED: Use addCustomerToOrder() instead.
+     * Select a customer for the order - kept for backward compatibility.
+     */
+    fun selectCustomer(customer: com.jaac.avoqado_tpv.features.ordering.domain.Customer) {
+        // Delegate to new multi-customer method
+        addCustomerToOrder(customer)
+    }
+
+    /**
+     * Clear the selected customer and reset search state.
+     */
+    fun clearSelectedCustomer() {
+        _selectedCustomer.value = null
+        _customerSearchState.value = com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState.Idle
+        Timber.d("👤 [Customer] Selection cleared")
+    }
+
+    /**
+     * Load recent customers for the search modal (Toast/Square pattern).
+     *
+     * ⚠️ UX CRITICAL: If order is local, sync it FIRST before loading customers.
+     * This ensures that when the user selects a customer, the order is already synced
+     * and they don't have to wait. This is essential for fast workflows during rush hours.
+     *
+     * Flow:
+     * 1. User clicks "Buscar y Agregar Cliente" button
+     * 2. This function is called
+     * 3. If order is local → sync immediately (background, user sees "Cargando clientes...")
+     * 4. Load recent customers
+     * 5. Modal opens with synced order - clicking a customer is instant!
+     */
+    fun loadRecentCustomers() {
+        viewModelScope.launch {
+            val venueId = deviceInfoManager.getVenueId()
+            if (venueId == null) {
+                Timber.e("❌ Cannot load recent customers: venueId is null")
+                return@launch
+            }
+
+            _isLoadingRecentCustomers.value = true
+
+            // 🚀 PROACTIVE SYNC: If order is local, sync BEFORE loading customers
+            // This ensures instant customer selection without waiting
+            val currentState = _state.value
+            if (currentState is MenuState.Success) {
+                val orderId = currentState.order.id
+                if (orderId.startsWith("local_")) {
+                    Timber.d("🔄 [loadRecentCustomers] Order is local, syncing proactively...")
+                    try {
+                        val localOrder = orderSyncCoordinator.getLocalOrder(orderId)
+                        if (localOrder != null) {
+                            val syncedOrderId = orderSyncCoordinator.syncOrderImmediately(orderId)
+                            Timber.i("✅ [loadRecentCustomers] Order synced proactively | $orderId → $syncedOrderId")
+
+                            // Update state with synced order
+                            val syncedOrder = orderSyncCoordinator.getLocalOrder(syncedOrderId)
+                            if (syncedOrder != null) {
+                                updateStateWithOrder(syncedOrder)
+                            }
+                        } else {
+                            Timber.d("🔄 [loadRecentCustomers] Order already synced by debounce")
+                        }
+                    } catch (e: Exception) {
+                        Timber.w(e, "⚠️ [loadRecentCustomers] Proactive sync failed, will retry on customer selection")
+                        // Continue loading customers - addCustomerToOrder will handle sync as fallback
+                    }
+                }
+            }
+
+            customerRepository.getRecentCustomers(
+                venueId = venueId,
+                limit = 10
+            ).onSuccess { customers ->
+                _recentCustomers.value = customers
+                Timber.d("👤 [Recent Customers] Loaded ${customers.size} recent customers")
+            }.onFailure { error ->
+                Timber.e(error, "❌ [Recent Customers] Failed to load")
+                // Don't show error to user - just empty list
+                _recentCustomers.value = emptyList()
+            }
+
+            _isLoadingRecentCustomers.value = false
+        }
+    }
+
+    // ============================================================================
+    // 👥 Multi-Customer Order Functions (NEW)
+    // ============================================================================
+
+    /**
+     * Load customers associated with the current order.
+     *
+     * Called when order is loaded (loadOrder, refreshOrder, etc.).
+     * Updates _orderCustomers and _selectedCustomer for backward compatibility.
+     *
+     * @param orderId The order ID to load customers for
+     */
+    fun loadOrderCustomers(orderId: String) {
+        viewModelScope.launch {
+            val venueId = deviceInfoManager.getVenueId()
+            if (venueId == null) {
+                Timber.e("❌ Cannot load order customers: venueId is null")
+                return@launch
+            }
+
+            // Skip loading for local-only orders (not synced to backend yet)
+            if (orderId.startsWith("local_")) {
+                Timber.d("👥 [Order Customers] Skipping load for local order: $orderId")
+                return@launch
+            }
+
+            orderRepository.getOrderCustomers(
+                venueId = venueId,
+                orderId = orderId
+            ).onSuccess { customers ->
+                _orderCustomers.value = customers
+                // Update legacy selectedCustomer with primary customer for backward compatibility
+                _selectedCustomer.value = customers.firstOrNull { it.isPrimary }?.customer
+                Timber.d("👥 [Order Customers] Loaded ${customers.size} customers for order $orderId")
+            }.onFailure { error ->
+                Timber.e(error, "❌ [Order Customers] Failed to load")
+                // Don't clear existing - might be network error
+            }
+        }
+    }
+
+    /**
+     * Add a customer to the current order.
+     *
+     * **Immediate Action:** No extra "save" step required.
+     * Click on search result → customer is added immediately.
+     * First customer added becomes isPrimary=true (receives loyalty points on payment).
+     *
+     * **Local Order Handling:** If order is local (not yet synced), automatically
+     * syncs the order first before adding the customer. This ensures a seamless UX
+     * where clicking a customer result always works.
+     *
+     * @param customer The customer to add
+     */
+    fun addCustomerToOrder(customer: com.jaac.avoqado_tpv.features.ordering.domain.Customer) {
+        val currentState = _state.value
+        if (currentState !is MenuState.Success) {
+            Timber.w("⚠️ [addCustomerToOrder] Cannot add customer: no order loaded")
+            return
+        }
+
+        var orderId = currentState.order.id
+
+        // Check if customer is already in the list
+        if (_orderCustomers.value.any { it.customerId == customer.id }) {
+            Timber.d("👥 [addCustomerToOrder] Customer already in order: ${customer.displayName}")
+            return
+        }
+
+        viewModelScope.launch {
+            val venueId = deviceInfoManager.getVenueId()
+            if (venueId == null) {
+                Timber.e("❌ Cannot add customer: venueId is null")
+                return@launch
+            }
+
+            _isAddingCustomer.value = true
+
+            // 🔄 If order is local, sync first before adding customer
+            if (orderId.startsWith("local_")) {
+                Timber.d("🔄 [addCustomerToOrder] Order is local, checking sync status...")
+
+                // Check if local order still exists (might have been synced by debounce)
+                val localOrder = orderSyncCoordinator.getLocalOrder(orderId)
+                if (localOrder == null) {
+                    // Order was already synced by debounce - check current state for new ID
+                    val latestState = _state.value
+                    if (latestState is MenuState.Success && !latestState.order.id.startsWith("local_")) {
+                        orderId = latestState.order.id
+                        Timber.i("✅ [addCustomerToOrder] Order was already synced by debounce | id=$orderId")
+                    } else {
+                        // Can't find the synced order - abort
+                        Timber.e("❌ [addCustomerToOrder] Order not found after debounce sync")
+                        _isAddingCustomer.value = false
+                        return@launch
+                    }
+                } else {
+                    // Order still local, sync it now
+                    try {
+                        val syncedOrderId = orderSyncCoordinator.syncOrderImmediately(orderId)
+                        Timber.i("✅ [addCustomerToOrder] Order synced | $orderId → $syncedOrderId")
+                        orderId = syncedOrderId
+
+                        // Update state with synced order
+                        val syncedOrder = orderSyncCoordinator.getLocalOrder(syncedOrderId)
+                        if (syncedOrder != null) {
+                            updateStateWithOrder(syncedOrder)
+                        }
+                    } catch (e: Exception) {
+                        Timber.e(e, "❌ [addCustomerToOrder] Failed to sync order before adding customer")
+                        _isAddingCustomer.value = false
+                        return@launch
+                    }
+                }
+            }
+
+            Timber.d("➕ [addCustomerToOrder] Adding customer: ${customer.displayName} | orderId=$orderId")
+
+            orderRepository.addCustomerToOrder(
+                venueId = venueId,
+                orderId = orderId,
+                customerId = customer.id
+            ).onSuccess { updatedCustomers ->
+                _orderCustomers.value = updatedCustomers
+                // Update legacy selectedCustomer with primary customer
+                _selectedCustomer.value = updatedCustomers.firstOrNull { it.isPrimary }?.customer
+                // Clear search state after successful add
+                _customerSearchState.value = com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState.Idle
+                Timber.i("✅ [addCustomerToOrder] Customer added | total=${updatedCustomers.size}")
+            }.onFailure { error ->
+                Timber.e(error, "❌ [addCustomerToOrder] Failed to add customer")
+                // Could show snackbar here via a separate error state if needed
+            }
+
+            _isAddingCustomer.value = false
+        }
+    }
+
+    /**
+     * Remove a customer from the current order.
+     *
+     * **Note:** If removed customer was isPrimary, backend promotes next oldest to primary.
+     * Does NOT delete the Customer record itself.
+     *
+     * @param customerId The customer ID to remove
+     */
+    fun removeCustomerFromOrder(customerId: String) {
+        val currentState = _state.value
+        if (currentState !is MenuState.Success) {
+            Timber.w("⚠️ [removeCustomerFromOrder] Cannot remove customer: no order loaded")
+            return
+        }
+
+        val orderId = currentState.order.id
+        if (orderId.startsWith("local_")) {
+            Timber.w("⚠️ [removeCustomerFromOrder] Cannot remove customer from local order")
+            return
+        }
+
+        viewModelScope.launch {
+            val venueId = deviceInfoManager.getVenueId()
+            if (venueId == null) {
+                Timber.e("❌ Cannot remove customer: venueId is null")
+                return@launch
+            }
+
+            _isAddingCustomer.value = true
+            Timber.d("➖ [removeCustomerFromOrder] Removing customer: $customerId | orderId=$orderId")
+
+            orderRepository.removeCustomerFromOrder(
+                venueId = venueId,
+                orderId = orderId,
+                customerId = customerId
+            ).onSuccess { updatedCustomers ->
+                _orderCustomers.value = updatedCustomers
+                // Update legacy selectedCustomer with primary customer (or null if empty)
+                _selectedCustomer.value = updatedCustomers.firstOrNull { it.isPrimary }?.customer
+                Timber.i("✅ [removeCustomerFromOrder] Customer removed | remaining=${updatedCustomers.size}")
+            }.onFailure { error ->
+                Timber.e(error, "❌ [removeCustomerFromOrder] Failed to remove customer")
+            }
+
+            _isAddingCustomer.value = false
+        }
+    }
+
+    /**
+     * Create a new customer and add to the current order.
+     *
+     * **Inline Creation:** For quick customer registration during checkout.
+     * At least one of firstName, phone, or email is required.
+     *
+     * @param firstName Customer first name (optional)
+     * @param phone Customer phone (optional)
+     * @param email Customer email (optional)
+     */
+    fun createAndAddCustomerToOrder(firstName: String?, phone: String?, email: String?) {
+        // Validate at least one field is provided
+        if (firstName.isNullOrBlank() && phone.isNullOrBlank() && email.isNullOrBlank()) {
+            Timber.w("⚠️ [createAndAddCustomer] At least one field required")
+            return
+        }
+
+        val currentState = _state.value
+        if (currentState !is MenuState.Success) {
+            Timber.w("⚠️ [createAndAddCustomer] Cannot create customer: no order loaded")
+            return
+        }
+
+        var orderId = currentState.order.id
+
+        viewModelScope.launch {
+            val venueId = deviceInfoManager.getVenueId()
+            if (venueId == null) {
+                Timber.e("❌ Cannot create customer: venueId is null")
+                return@launch
+            }
+
+            _isAddingCustomer.value = true
+
+            // 🔄 If order is local, sync first before creating customer
+            if (orderId.startsWith("local_")) {
+                Timber.d("🔄 [createAndAddCustomer] Order is local, checking sync status...")
+
+                // Check if local order still exists (might have been synced by debounce)
+                val localOrder = orderSyncCoordinator.getLocalOrder(orderId)
+                if (localOrder == null) {
+                    // Order was already synced by debounce - check current state for new ID
+                    val latestState = _state.value
+                    if (latestState is MenuState.Success && !latestState.order.id.startsWith("local_")) {
+                        orderId = latestState.order.id
+                        Timber.i("✅ [createAndAddCustomer] Order was already synced by debounce | id=$orderId")
+                    } else {
+                        // Can't find the synced order - abort
+                        Timber.e("❌ [createAndAddCustomer] Order not found after debounce sync")
+                        _isAddingCustomer.value = false
+                        return@launch
+                    }
+                } else {
+                    // Order still local, sync it now
+                    try {
+                        val syncedOrderId = orderSyncCoordinator.syncOrderImmediately(orderId)
+                        Timber.i("✅ [createAndAddCustomer] Order synced | $orderId → $syncedOrderId")
+                        orderId = syncedOrderId
+
+                        // Update state with synced order
+                        val syncedOrder = orderSyncCoordinator.getLocalOrder(syncedOrderId)
+                        if (syncedOrder != null) {
+                            updateStateWithOrder(syncedOrder)
+                        }
+                    } catch (e: Exception) {
+                        Timber.e(e, "❌ [createAndAddCustomer] Failed to sync order before creating customer")
+                        _isAddingCustomer.value = false
+                        return@launch
+                    }
+                }
+            }
+
+            Timber.d("🆕 [createAndAddCustomer] Creating customer | name=$firstName | phone=$phone | email=$email")
+
+            orderRepository.createAndAddCustomerToOrder(
+                venueId = venueId,
+                orderId = orderId,
+                firstName = firstName?.trim()?.takeIf { it.isNotBlank() },
+                phone = phone?.trim()?.takeIf { it.isNotBlank() },
+                email = email?.trim()?.takeIf { it.isNotBlank() }
+            ).onSuccess { updatedCustomers ->
+                _orderCustomers.value = updatedCustomers
+                // Update legacy selectedCustomer with primary customer
+                _selectedCustomer.value = updatedCustomers.firstOrNull { it.isPrimary }?.customer
+                Timber.i("✅ [createAndAddCustomer] Customer created and added | total=${updatedCustomers.size}")
+            }.onFailure { error ->
+                Timber.e(error, "❌ [createAndAddCustomer] Failed to create customer")
+            }
+
+            _isAddingCustomer.value = false
+        }
+    }
+
+    /**
+     * Clear all customers from UI state (on order change/close).
+     * Does NOT remove from backend - just clears local state.
+     */
+    fun clearOrderCustomers() {
+        _orderCustomers.value = emptyList()
+        _selectedCustomer.value = null
+        _customerSearchState.value = com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState.Idle
+        Timber.d("👥 [Order Customers] Cleared")
+    }
+
+    // ============================================================================
     // Split Payment Support
     // ============================================================================
 
@@ -1450,7 +2619,7 @@ class MenuViewModel @Inject constructor(
      *
      * **Why This Is Needed:**
      * Split screens (SplitByProduct, SplitByPerson) fetch order from BACKEND.
-     * If items haven't been synced yet (5s debounce), backend returns 0 items.
+     * If items haven't been synced yet (2s debounce), backend returns 0 items.
      *
      * **Solution:**
      * Force immediate sync before navigation to ensure backend has all items.
@@ -1472,7 +2641,7 @@ class MenuViewModel @Inject constructor(
             Timber.d("🔄 [syncBeforeNavigate] Forcing sync before navigation | orderId=${order.id}")
 
             try {
-                // Force immediate sync (bypass 5s debounce) - returns synced order ID
+                // Force immediate sync (bypass 2s debounce) - returns synced order ID
                 val syncedOrderId = orderSyncCoordinator.syncOrderImmediately(order.id)
                 Timber.i("✅ [syncBeforeNavigate] Sync completed | original=${order.id} | synced=$syncedOrderId")
 
@@ -1480,7 +2649,7 @@ class MenuViewModel @Inject constructor(
                 if (syncedOrderId != order.id) {
                     val syncedOrder = orderSyncCoordinator.getLocalOrder(syncedOrderId)
                     if (syncedOrder != null) {
-                        _state.value = MenuState.Success(syncedOrder)
+                        updateStateWithOrder(syncedOrder)
                         Timber.d("🔄 [syncBeforeNavigate] State updated with new ID | old=${order.id} | new=$syncedOrderId")
                     }
                 }
@@ -1501,26 +2670,89 @@ class MenuViewModel @Inject constructor(
     // ============================================================================
 
     /**
-     * Recalculate order totals
+     * Update state with a new order AND preserve _appliedDiscounts StateFlow.
+     *
+     * ⚠️ CRITICAL: Always use this instead of directly setting _state.value.
+     * This keeps _appliedDiscounts in sync with order.discounts.
+     *
+     * **Room Limitation:**
+     * Room doesn't persist `order.discounts` list (only `discountAmount` total).
+     * When Room emits, `order.discounts` is always empty.
+     * We must NOT overwrite `_appliedDiscounts` with empty list from Room.
+     *
+     * **Rule:**
+     * - If `order.discounts` has data → use it (comes from backend/local calculation)
+     * - If `order.discounts` is empty → PRESERVE `_appliedDiscounts` (Room emits before recalculate)
+     * - `_appliedDiscounts` is only cleared explicitly via `clearAppliedDiscounts()`
+     *
+     * @param order The updated order (after recalculateOrder)
+     */
+    private fun updateStateWithOrder(order: Order) {
+        _state.value = MenuState.Success(order)
+
+        // 🔄 Only UPDATE _appliedDiscounts if order.discounts has real data
+        // NEVER clear based on discountAmount (Room emits before recalculate, causing race condition)
+        if (order.discounts.isNotEmpty()) {
+            _appliedDiscounts.value = order.discounts
+            Timber.d("🔄 [updateStateWithOrder] Updated _appliedDiscounts (${order.discounts.size} discounts)")
+        }
+        // If order.discounts is empty, PRESERVE existing _appliedDiscounts
+        // This handles the race condition where Room emits before recalculateOrder() runs
+    }
+
+    /**
+     * Recalculate order totals including discounts
+     *
      * Subtotal = sum of all item totals
+     * DiscountAmount = recalculated for PERCENTAGE discounts, preserved for FIXED_AMOUNT
+     * Total = subtotal - discountAmount
      * Tax = 0% (backend handles tax separately)
-     * Total = subtotal (no tax added)
+     *
+     * @see order.tpv.service.ts - Backend also recalculates percentage discounts on add/remove
      */
     private fun recalculateOrder(order: Order): Order {
         val subtotal = order.items.sumOf { it.totalPrice }
-        val tax = BigDecimal.ZERO  // ✅ FIX: Backend handles tax (currently 0% for new orders)
-        val total = subtotal  // ✅ FIX: Total = subtotal (no tax added)
+        val tax = BigDecimal.ZERO  // Backend handles tax (currently 0% for new orders)
 
-        // ✅ FIX: Recalculate remainingBalance for split payments
+        // 🔄 Recalculate discounts (PERCENTAGE type needs new amount based on new subtotal)
+        var newDiscountAmount = BigDecimal.ZERO
+        val updatedDiscounts = order.discounts.map { orderDiscount ->
+            val discountType = orderDiscount.type
+            val discountValue = orderDiscount.value
+
+            if (discountType == DiscountType.PERCENTAGE && discountValue > BigDecimal.ZERO) {
+                // Recalculate: new_amount = subtotal * percentage / 100
+                val recalculatedAmount = subtotal.multiply(discountValue)
+                    .divide(BigDecimal(100), 2, java.math.RoundingMode.HALF_UP)
+                Timber.d("🔄 Recalculating PERCENTAGE discount: ${discountValue}% of $subtotal = $recalculatedAmount")
+                newDiscountAmount += recalculatedAmount
+                orderDiscount.copy(amount = recalculatedAmount)
+            } else {
+                // FIXED_AMOUNT or COMP - keep original amount
+                newDiscountAmount += orderDiscount.amount
+                orderDiscount
+            }
+        }
+
+        // If no discounts list but order has discountAmount (legacy), preserve it
+        if (order.discounts.isEmpty() && order.discountAmount > BigDecimal.ZERO) {
+            newDiscountAmount = order.discountAmount
+        }
+
+        val total = subtotal - newDiscountAmount
+
+        // Recalculate remainingBalance for split payments
         // Fresh order: paidAmount=0 → remainingBalance = total
         // Partial payment: paidAmount=50 → remainingBalance = total - 50
         val remainingBalance = total - order.paidAmount
 
         return order.copy(
             subtotal = subtotal,
+            discountAmount = newDiscountAmount,
             tax = tax,
             total = total,
             remainingBalance = remainingBalance,
+            discounts = updatedDiscounts,
             updatedAt = Instant.now()
         )
     }

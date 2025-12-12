@@ -1,14 +1,19 @@
 package com.jaac.avoqado_tpv.features.ordering.data.repository
 
+import com.jaac.avoqado_tpv.features.ordering.data.api.CustomerApiService
 import com.jaac.avoqado_tpv.features.ordering.data.api.OrderApiService
+import com.jaac.avoqado_tpv.features.ordering.data.dto.AddCustomerToOrderRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.ApplyDiscountRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.CompItemsRequest
+import com.jaac.avoqado_tpv.features.ordering.data.dto.CreateAndAddCustomerRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.CreateOrderRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.UpdateGuestRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.VoidItemsRequest
 import com.jaac.avoqado_tpv.features.ordering.data.mappers.toOrder
+import com.jaac.avoqado_tpv.features.ordering.data.mappers.toOrderCustomers
 import com.jaac.avoqado_tpv.features.ordering.domain.AddOrderItemRequest
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
+import com.jaac.avoqado_tpv.features.ordering.domain.OrderCustomer
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
@@ -24,7 +29,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class OrderRepositoryImpl @Inject constructor(
-    private val apiService: OrderApiService
+    private val apiService: OrderApiService,
+    private val customerApiService: CustomerApiService
 ) : OrderRepository {
 
     /**
@@ -334,14 +340,16 @@ class OrderRepositoryImpl @Inject constructor(
         covers: Int?,
         customerName: String?,
         customerPhone: String?,
-        specialRequests: String?
+        specialRequests: String?,
+        customerId: String?
     ): Result<Order> {
         return try {
             val request = UpdateGuestRequest(
                 covers = covers,
                 customerName = customerName,
                 customerPhone = customerPhone,
-                specialRequests = specialRequests
+                specialRequests = specialRequests,
+                customerId = customerId
             )
 
             Timber.d("👥 Updating guest info | orderId=$orderId | covers=$covers")
@@ -547,6 +555,187 @@ class OrderRepositoryImpl @Inject constructor(
             }
         } catch (e: Exception) {
             Timber.e(e, "Exception in applyDiscount")
+            Result.failure(e)
+        }
+    }
+
+    // ========================================================================
+    // ORDER-CUSTOMER OPERATIONS (Multi-Customer per Order)
+    // ========================================================================
+
+    /**
+     * Get all customers associated with an order.
+     *
+     * Backend: GET /tpv/venues/{venueId}/orders/{orderId}/customers
+     */
+    override suspend fun getOrderCustomers(
+        venueId: String,
+        orderId: String
+    ): Result<List<OrderCustomer>> {
+        return try {
+            Timber.d("👥 Fetching customers for order | orderId=$orderId")
+
+            val response = customerApiService.getOrderCustomers(venueId, orderId)
+
+            if (response.isSuccessful) {
+                val body = response.body()
+                if (body != null && body.success) {
+                    val orderCustomers = body.data.toOrderCustomers()
+                    Timber.i("✅ Fetched ${orderCustomers.size} customers for order")
+                    Result.success(orderCustomers)
+                } else {
+                    val errorMsg = "Failed to fetch order customers: Invalid response"
+                    Timber.e(errorMsg)
+                    Result.failure(Exception(errorMsg))
+                }
+            } else {
+                val errorMessage = when (response.code()) {
+                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    404 -> "Orden no encontrada."
+                    500 -> "Error del servidor. Por favor intenta nuevamente."
+                    else -> "Error al obtener clientes: ${response.code()}"
+                }
+                Timber.e("getOrderCustomers failed: $errorMessage (HTTP ${response.code()})")
+                Result.failure(Exception(errorMessage))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Exception in getOrderCustomers")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Add an existing customer to an order.
+     *
+     * Backend: POST /tpv/venues/{venueId}/orders/{orderId}/customers
+     */
+    override suspend fun addCustomerToOrder(
+        venueId: String,
+        orderId: String,
+        customerId: String
+    ): Result<List<OrderCustomer>> {
+        return try {
+            Timber.d("➕ Adding customer to order | orderId=$orderId | customerId=$customerId")
+
+            val request = AddCustomerToOrderRequest(customerId = customerId)
+            val response = customerApiService.addCustomerToOrder(venueId, orderId, request)
+
+            if (response.isSuccessful) {
+                val body = response.body()
+                if (body != null && body.success) {
+                    val orderCustomers = body.data.toOrderCustomers()
+                    Timber.i("✅ Customer added successfully | total=${orderCustomers.size}")
+                    Result.success(orderCustomers)
+                } else {
+                    val errorMsg = body?.message ?: "Failed to add customer to order"
+                    Timber.e(errorMsg)
+                    Result.failure(Exception(errorMsg))
+                }
+            } else {
+                val errorMessage = when (response.code()) {
+                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    404 -> "Orden o cliente no encontrado."
+                    409 -> "Este cliente ya está agregado a la orden."
+                    500 -> "Error del servidor. Por favor intenta nuevamente."
+                    else -> "Error al agregar cliente: ${response.code()}"
+                }
+                Timber.e("addCustomerToOrder failed: $errorMessage (HTTP ${response.code()})")
+                Result.failure(Exception(errorMessage))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Exception in addCustomerToOrder")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Remove a customer from an order.
+     *
+     * Backend: DELETE /tpv/venues/{venueId}/orders/{orderId}/customers/{customerId}
+     */
+    override suspend fun removeCustomerFromOrder(
+        venueId: String,
+        orderId: String,
+        customerId: String
+    ): Result<List<OrderCustomer>> {
+        return try {
+            Timber.d("➖ Removing customer from order | orderId=$orderId | customerId=$customerId")
+
+            val response = customerApiService.removeCustomerFromOrder(venueId, orderId, customerId)
+
+            if (response.isSuccessful) {
+                val body = response.body()
+                if (body != null && body.success) {
+                    val orderCustomers = body.data.toOrderCustomers()
+                    Timber.i("✅ Customer removed successfully | remaining=${orderCustomers.size}")
+                    Result.success(orderCustomers)
+                } else {
+                    val errorMsg = body?.message ?: "Failed to remove customer from order"
+                    Timber.e(errorMsg)
+                    Result.failure(Exception(errorMsg))
+                }
+            } else {
+                val errorMessage = when (response.code()) {
+                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    404 -> "Orden o cliente no encontrado."
+                    500 -> "Error del servidor. Por favor intenta nuevamente."
+                    else -> "Error al quitar cliente: ${response.code()}"
+                }
+                Timber.e("removeCustomerFromOrder failed: $errorMessage (HTTP ${response.code()})")
+                Result.failure(Exception(errorMessage))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Exception in removeCustomerFromOrder")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Create a new customer and add to order.
+     *
+     * Backend: POST /tpv/venues/{venueId}/orders/{orderId}/customers/create
+     */
+    override suspend fun createAndAddCustomerToOrder(
+        venueId: String,
+        orderId: String,
+        firstName: String?,
+        phone: String?,
+        email: String?
+    ): Result<List<OrderCustomer>> {
+        return try {
+            Timber.d("🆕 Creating and adding customer | orderId=$orderId | name=$firstName | phone=$phone | email=$email")
+
+            val request = CreateAndAddCustomerRequest(
+                firstName = firstName,
+                phone = phone,
+                email = email
+            )
+            val response = customerApiService.createAndAddCustomerToOrder(venueId, orderId, request)
+
+            if (response.isSuccessful) {
+                val body = response.body()
+                if (body != null && body.success) {
+                    val orderCustomers = body.data.toOrderCustomers()
+                    Timber.i("✅ Customer created and added | total=${orderCustomers.size}")
+                    Result.success(orderCustomers)
+                } else {
+                    val errorMsg = body?.message ?: "Failed to create customer"
+                    Timber.e(errorMsg)
+                    Result.failure(Exception(errorMsg))
+                }
+            } else {
+                val errorMessage = when (response.code()) {
+                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    400 -> "Se requiere al menos nombre, teléfono o email."
+                    404 -> "Orden no encontrada."
+                    500 -> "Error del servidor. Por favor intenta nuevamente."
+                    else -> "Error al crear cliente: ${response.code()}"
+                }
+                Timber.e("createAndAddCustomerToOrder failed: $errorMessage (HTTP ${response.code()})")
+                Result.failure(Exception(errorMessage))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Exception in createAndAddCustomerToOrder")
             Result.failure(e)
         }
     }

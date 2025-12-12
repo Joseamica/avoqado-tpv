@@ -206,7 +206,8 @@ data class OrderDto(
     @SerializedName("updatedAt") val updatedAt: String,
     @SerializedName("version") val version: Int = 1,
     @SerializedName("lastSplitType") val lastSplitType: String? = null,  // ⭐ Split type restriction (PERPRODUCT, EQUALPARTS, etc.)
-    @SerializedName("paidItemIds") val paidItemIds: List<String>? = null  // ⭐ Items already paid (for SplitByProduct)
+    @SerializedName("paidItemIds") val paidItemIds: List<String>? = null,  // ⭐ Items already paid (for SplitByProduct)
+    @SerializedName("orderDiscounts") val orderDiscounts: List<OrderDiscountDto>? = null  // 🎟️ Applied discounts
 )
 
 /**
@@ -330,7 +331,8 @@ data class UpdateGuestRequest(
     @SerializedName("covers") val covers: Int? = null,
     @SerializedName("customerName") val customerName: String? = null,
     @SerializedName("customerPhone") val customerPhone: String? = null,
-    @SerializedName("specialRequests") val specialRequests: String? = null
+    @SerializedName("specialRequests") val specialRequests: String? = null,
+    @SerializedName("customerId") val customerId: String? = null
 )
 
 /**

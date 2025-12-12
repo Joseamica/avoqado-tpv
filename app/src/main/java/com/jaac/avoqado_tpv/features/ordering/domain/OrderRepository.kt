@@ -251,7 +251,8 @@ interface OrderRepository {
         covers: Int? = null,
         customerName: String? = null,
         customerPhone: String? = null,
-        specialRequests: String? = null
+        specialRequests: String? = null,
+        customerId: String? = null
     ): Result<Order>
 
     /**
@@ -394,6 +395,101 @@ interface OrderRepository {
         itemIds: List<String>? = null,
         currentVersion: Int
     ): Result<Order>
+
+    // ========================================================================
+    // ORDER-CUSTOMER OPERATIONS (Multi-Customer per Order)
+    // ========================================================================
+
+    /**
+     * Get all customers associated with an order
+     *
+     * Returns list of OrderCustomer records with full Customer details.
+     * First customer added is marked as isPrimary=true (receives loyalty points).
+     *
+     * @param venueId Tenant isolation
+     * @param orderId Order to query
+     * @return Result with list of OrderCustomer records
+     *
+     * Backend: GET /tpv/venues/{venueId}/orders/{orderId}/customers
+     */
+    suspend fun getOrderCustomers(
+        venueId: String,
+        orderId: String
+    ): Result<List<OrderCustomer>>
+
+    /**
+     * Add an existing customer to an order
+     *
+     * Immediately associates customer with order (no extra "save" step).
+     * First customer added becomes isPrimary=true.
+     * Duplicate customers cannot be added to same order.
+     *
+     * @param venueId Tenant isolation
+     * @param orderId Order to modify
+     * @param customerId Customer to add
+     * @return Result with updated list of OrderCustomer records
+     *
+     * Backend: POST /tpv/venues/{venueId}/orders/{orderId}/customers
+     *
+     * Use cases:
+     * - Click on customer search result → immediate add
+     * - Multiple customers per order for visit tracking
+     */
+    suspend fun addCustomerToOrder(
+        venueId: String,
+        orderId: String,
+        customerId: String
+    ): Result<List<OrderCustomer>>
+
+    /**
+     * Remove a customer from an order
+     *
+     * Removes association but does NOT delete the Customer record.
+     * If removed customer was isPrimary, promotes next oldest to primary.
+     *
+     * @param venueId Tenant isolation
+     * @param orderId Order to modify
+     * @param customerId Customer to remove
+     * @return Result with updated list of OrderCustomer records
+     *
+     * Backend: DELETE /tpv/venues/{venueId}/orders/{orderId}/customers/{customerId}
+     *
+     * Use cases:
+     * - Click (X) on customer chip in GuestTab
+     * - Correct wrong customer selection
+     */
+    suspend fun removeCustomerFromOrder(
+        venueId: String,
+        orderId: String,
+        customerId: String
+    ): Result<List<OrderCustomer>>
+
+    /**
+     * Create a new customer and add to order in one operation
+     *
+     * For quick inline customer creation during checkout.
+     * At least one of firstName, phone, or email is required.
+     *
+     * @param venueId Tenant isolation
+     * @param orderId Order to modify
+     * @param firstName Customer first name (optional)
+     * @param phone Customer phone (optional)
+     * @param email Customer email (optional)
+     * @return Result with updated list of OrderCustomer records
+     *
+     * Backend: POST /tpv/venues/{venueId}/orders/{orderId}/customers/create
+     *
+     * Use cases:
+     * - Inline customer creation in GuestTab
+     * - Quick registration for loyalty program
+     */
+    suspend fun createAndAddCustomerToOrder(
+        venueId: String,
+        orderId: String,
+        firstName: String?,
+        phone: String?,
+        email: String?
+    ): Result<List<OrderCustomer>>
 }
 
 /**

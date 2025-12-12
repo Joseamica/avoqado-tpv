@@ -17,7 +17,10 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
  *   "showReceiptScreen": true,
  *   "defaultTipPercentage": 15,
  *   "tipSuggestions": [15, 18, 20, 25],
- *   "requirePinLogin": true
+ *   "requirePinLogin": true,
+ *   "showVerificationScreen": false,
+ *   "requireVerificationPhoto": false,
+ *   "requireVerificationBarcode": false
  * }
  * ```
  */
@@ -38,7 +41,17 @@ data class TpvSettingsDto(
     val tipSuggestions: List<Int>?,
 
     @SerializedName("requirePinLogin")
-    val requirePinLogin: Boolean?
+    val requirePinLogin: Boolean?,
+
+    // Step 4: Sale Verification (for retail/telecomunicaciones venues)
+    @SerializedName("showVerificationScreen")
+    val showVerificationScreen: Boolean?,
+
+    @SerializedName("requireVerificationPhoto")
+    val requireVerificationPhoto: Boolean?,
+
+    @SerializedName("requireVerificationBarcode")
+    val requireVerificationBarcode: Boolean?
 )
 
 /**
@@ -50,7 +63,11 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     showReceiptScreen = showReceiptScreen ?: true,
     defaultTipPercentage = defaultTipPercentage,
     tipSuggestions = tipSuggestions ?: listOf(10, 15, 20),
-    requirePinLogin = requirePinLogin ?: true
+    requirePinLogin = requirePinLogin ?: true,
+    // Step 4: Verification defaults to disabled
+    showVerificationScreen = showVerificationScreen ?: false,
+    requireVerificationPhoto = requireVerificationPhoto ?: false,
+    requireVerificationBarcode = requireVerificationBarcode ?: false
 )
 
 /**
@@ -62,7 +79,10 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     showReceiptScreen = showReceiptScreen,
     defaultTipPercentage = defaultTipPercentage,
     tipSuggestions = tipSuggestions,
-    requirePinLogin = requirePinLogin
+    requirePinLogin = requirePinLogin,
+    showVerificationScreen = showVerificationScreen,
+    requireVerificationPhoto = requireVerificationPhoto,
+    requireVerificationBarcode = requireVerificationBarcode
 )
 
 /**

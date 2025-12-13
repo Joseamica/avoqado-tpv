@@ -48,4 +48,42 @@ interface ProductRepository {
         venueId: String,
         productId: String
     ): Result<Product?>
+
+    /**
+     * Search product by barcode (SKU)
+     *
+     * ✅ BARCODE QUICK ADD: Find product by scanning barcode
+     * Uses SKU field as barcode identifier
+     *
+     * @param venueId Venue identifier
+     * @param barcode Scanned barcode value
+     * @return Result with product or null if not found
+     */
+    suspend fun getProductByBarcode(
+        venueId: String,
+        barcode: String
+    ): Result<Product?>
+
+    /**
+     * Create product quickly from barcode scan
+     *
+     * ✅ BARCODE QUICK ADD: When scanning unknown barcode, create product on-the-fly
+     * (Square POS pattern)
+     *
+     * @param venueId Venue identifier
+     * @param barcode Scanned barcode (will be used as SKU)
+     * @param name Product name
+     * @param price Product price
+     * @param categoryId Optional category ID
+     * @param trackInventory Whether to track inventory for this product
+     * @return Result with created product or error
+     */
+    suspend fun createQuickAddProduct(
+        venueId: String,
+        barcode: String,
+        name: String,
+        price: java.math.BigDecimal,
+        categoryId: String?,
+        trackInventory: Boolean
+    ): Result<Product>
 }

@@ -571,6 +571,11 @@ class OrderSyncCoordinator @Inject constructor(
      * 2 seconds of no changes → All 3 items synced in one API call
      * ```
      *
+     * **⚡ P0 FIX: Race Condition Prevention**
+     * - Checks if sync is already in progress AFTER debounce expires
+     * - Skips redundant sync if another sync started while waiting
+     * - Prevents version conflicts when adding items rapidly
+     *
      * @param orderId Order to sync (local or server ID)
      */
     fun scheduleSync(orderId: String) {
@@ -584,6 +589,15 @@ class OrderSyncCoordinator @Inject constructor(
             Timber.d("⏱️ [SYNC-DEBUG] scheduleSync() | orderId=$orderId | debounce=${SYNC_DEBOUNCE_MS}ms | timestamp=$scheduledAt")
 
             delay(SYNC_DEBOUNCE_MS)
+
+            // ⚡ P0 FIX: Check if another sync is already in progress
+            // This prevents race condition when rapid changes schedule multiple syncs
+            val currentOrder = draftOrderDao.getOrder(orderId)
+            if (currentOrder?.syncStatus == DraftOrderEntity.SYNC_STATUS_SYNCING) {
+                Timber.d("⏭️ [Sync] Skipping debounced sync - already in progress | order=$orderId")
+                pendingSyncJobs.remove(orderId)
+                return@launch
+            }
 
             Timber.d("🔄 [Sync] Debounce expired, executing sync | order=$orderId")
             Timber.i("🔄 [SYNC-DEBUG] scheduleSync() DEBOUNCE EXPIRED | orderId=$orderId | timestamp=${System.currentTimeMillis()} | elapsed=${System.currentTimeMillis() - scheduledAt}ms")
@@ -713,6 +727,11 @@ class OrderSyncCoordinator @Inject constructor(
                 // Do NOT retry on 409 - user must resolve conflict
                 _syncEvents.emit(SyncEvent.Conflict(orderId, e.serverVersion))
                 orderId  // Return original ID on conflict
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // ⚠️ CRITICAL: Rethrow CancellationException so coroutine is cancelled properly
+                // Do NOT catch this as a generic error, or it will trigger retries!
+                Timber.d("🛑 [Sync] Cancelled (debounce) | order=$orderId")
+                throw e
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Sync] Failed (attempt $attempt) | order=$orderId")
 
@@ -724,6 +743,8 @@ class OrderSyncCoordinator @Inject constructor(
                 } else {
                     // Max retries exceeded
                     Timber.e("❌ [Sync] Max retries exceeded | order=$orderId")
+                    // ✅ P0 FIX: Persist 'ERROR' status in DB
+                    draftOrderDao.updateSyncStatus(orderId, "ERROR", System.currentTimeMillis())
                     _syncEvents.emit(SyncEvent.Error(orderId, e.message ?: "Sync failed"))
                     orderId  // Return original ID on failure
                 }
@@ -754,6 +775,9 @@ class OrderSyncCoordinator @Inject constructor(
                 Timber.w("⚠️ [Sync] Conflict detected | order=$orderId | version mismatch")
                 _syncEvents.emit(SyncEvent.Conflict(orderId, e.serverVersion))
                 orderId
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                Timber.d("🛑 [Sync] Cancelled during retry (debounce) | order=$orderId")
+                throw e
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Sync] Failed (attempt $attempt) | order=$orderId")
 
@@ -761,6 +785,8 @@ class OrderSyncCoordinator @Inject constructor(
                     executeSyncWithRetryInternal(orderId, attempt + 1)
                 } else {
                     Timber.e("❌ [Sync] Max retries exceeded | order=$orderId")
+                    // ✅ P0 FIX: Persist 'ERROR' status in DB
+                    draftOrderDao.updateSyncStatus(orderId, "ERROR", System.currentTimeMillis())
                     _syncEvents.emit(SyncEvent.Error(orderId, e.message ?: "Sync failed"))
                     orderId
                 }

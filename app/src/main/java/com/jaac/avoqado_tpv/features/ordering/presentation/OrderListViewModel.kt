@@ -7,6 +7,7 @@ import com.jaac.avoqado_tpv.features.ordering.domain.Order
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -74,11 +75,16 @@ class OrderListViewModel @Inject constructor(
 
             Timber.d("📋 [OrderList] Loading orders for venue=$venueId")
 
+            // 🚀 PARALLEL FETCH: Backend + Local
+            // Reduces loading time by running I/O and Network concurrently
+            val backendDeferred = async { orderRepository.getOrders(venueId, null) }
+            val localDeferred = async { orderSyncCoordinator.getLocalOnlyOrders(venueId) }
+
             // 1. Fetch from backend
-            val backendResult = orderRepository.getOrders(venueId, null)
+            val backendResult = backendDeferred.await()
 
             // 2. Get local-only orders (Quick Orders not yet synced to backend)
-            val localOrders = orderSyncCoordinator.getLocalOnlyOrders(venueId)
+            val localOrders = localDeferred.await()
             Timber.d("📋 [OrderList] Local-only orders: ${localOrders.size}")
 
             backendResult.fold(

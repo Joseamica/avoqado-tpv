@@ -38,6 +38,12 @@ import java.text.NumberFormat
 import java.util.Locale
 
 /**
+ * Extension function to format OrderItem display name with quantity
+ */
+private fun com.jaac.avoqado_tpv.features.ordering.domain.OrderItem.displayName(): String =
+    if (quantity > 1) "$productName (${quantity}x)" else productName
+
+/**
  * Split By Product Screen
  *
  * Allows user to select specific products from an order to pay.
@@ -181,10 +187,10 @@ private fun SplitByProductContent(
 
                 items(
                     items = availableItems,
-                    key = { it.id }
+                    key = { item -> "available_${item.id}" }
                 ) { item ->
                     SelectableItemRow(
-                        label = item.productName,
+                        label = item.displayName(),
                         trailingText = currencyFormatter.format(item.totalPrice),
                         isSelected = item.id in selectedProductIds,
                         isPaid = false,
@@ -207,10 +213,10 @@ private fun SplitByProductContent(
 
                 items(
                     items = paidItems,
-                    key = { it.id }
+                    key = { item -> "paid_${item.id}" }
                 ) { item ->
                     SelectableItemRow(
-                        label = item.productName,
+                        label = item.displayName(),
                         trailingText = "Pagado",
                         isSelected = false,
                         isPaid = true,

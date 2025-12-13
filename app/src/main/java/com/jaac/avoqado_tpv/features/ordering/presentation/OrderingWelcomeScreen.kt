@@ -2,25 +2,33 @@ package com.jaac.avoqado_tpv.features.ordering.presentation
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -35,12 +43,28 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 /**
  * Ordering Welcome Screen
  *
- * Entry point for the ordering system.
- * Shows options based on venue type:
- * - Quick Order: For retail/QSR without table assignment (always visible)
- * - Table Service: For restaurant with floor plan and table management
- *   (only visible for RESTAURANT, BAR, CAFE, FAST_FOOD venues)
- * - View Orders: See list of all orders with filters (always visible)
+ * Entry point for the ordering system with improved visual hierarchy.
+ *
+ * **Layout Structure:**
+ * ```
+ * ┌─────────────────────────────┐
+ * │ Nueva Orden (Primary)       │  ← Section Header (Primary color)
+ * ├─────────────────────────────┤
+ * │ [Pedido rápido]            │  ← Large Card
+ * │ [Servicio de Mesa]         │  ← Large Card (conditional)
+ * ├─────────────────────────────┤
+ * │        ───────              │  ← Divider
+ * ├─────────────────────────────┤
+ * │ Gestión (Secondary)         │  ← Section Header (Muted)
+ * ├─────────────────────────────┤
+ * │ [Ver Órdenes]              │  ← Compact OutlinedCard
+ * └─────────────────────────────┘
+ * ```
+ *
+ * **Visual Hierarchy:**
+ * - Primary actions (create orders): Large cards with icons centered
+ * - Secondary actions (view orders): Compact horizontal card
+ * - Clear section separation with headers and divider
  *
  * Similar to Square POS ordering entry screen.
  *
@@ -60,99 +84,167 @@ fun OrderingWelcomeScreen(
     onViewOrdersClick: () -> Unit = {},
     onNavigateBack: () -> Unit = {}
 ) {
-    Scaffold(
-        topBar = {
-            AvoqadoTopBar(
-                title = stringResource(R.string.ordering_welcome_title),
-                onNavigationClick = onNavigateBack
-            )
-        },
-        containerColor = MaterialTheme.colorScheme.background
-    ) { paddingValues ->
-        ResponsiveScaffold(
-            modifier = Modifier.padding(paddingValues),
-            scrollable = false,
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Top
-        ) {
-            val sizes = LocalResponsiveSizes.current
-
-            Spacer(modifier = Modifier.height(sizes.spacingMedium))
-
-            // Quick Order Button
-            OrderingOptionCard(
-                icon = {
-                    Icon(
-                        imageVector = Icons.Default.ShoppingCart,
-                        contentDescription = stringResource(R.string.ordering_quick_order_title),
-                        modifier = Modifier.size(sizes.iconSizeLarge),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                },
-                title = stringResource(R.string.ordering_quick_order_title),
-                subtitle = stringResource(R.string.ordering_quick_order_subtitle),
-                onClick = onQuickOrderClick,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            // Table Service Button (only for RESTAURANT, BAR, CAFE, FAST_FOOD venues)
-            if (showTableService) {
-                Spacer(modifier = Modifier.height(sizes.spacingMedium))
-
-                OrderingOptionCard(
-                    icon = {
-                        Icon(
-                            imageVector = Icons.Default.Restaurant,
-                            contentDescription = stringResource(R.string.ordering_table_service_title),
-                            modifier = Modifier.size(sizes.iconSizeLarge),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    },
-                    title = stringResource(R.string.ordering_table_service_title),
-                    subtitle = stringResource(R.string.ordering_table_service_subtitle),
-                    onClick = onTableServiceClick,
-                    modifier = Modifier.fillMaxWidth()
+    ResponsiveScaffold(
+        modifier = modifier,
+        scrollable = false  // We handle our own Column layout
+    ) {
+        Scaffold(
+            topBar = {
+                AvoqadoTopBar(
+                    title = stringResource(R.string.ordering_welcome_title),
+                    onNavigationClick = onNavigateBack
                 )
+            },
+            containerColor = MaterialTheme.colorScheme.background
+        ) { paddingValues ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+            ) {
+                val sizes = LocalResponsiveSizes.current
+
+            // ═══════════════════════════════════════════════════════════
+            // SECTION: Nueva Orden (Primary Actions)
+            // ═══════════════════════════════════════════════════════════
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = sizes.paddingScreen)
+            ) {
+                Text(
+                    text = "Nueva Orden",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(bottom = sizes.spacingSmall)
+                )
+
+                // Primary actions in grid (same style as ActionsTab)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(sizes.spacingSmall)
+                ) {
+                    // Quick Order Card (compact)
+                    CompactActionCard(
+                        icon = Icons.Default.ShoppingCart,
+                        title = stringResource(R.string.ordering_quick_order_title),
+                        subtitle = stringResource(R.string.ordering_quick_order_subtitle),
+                        backgroundColor = MaterialTheme.colorScheme.surface,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                        onClick = onQuickOrderClick,
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    // Table Service Card (compact, conditional)
+                    if (showTableService) {
+                        CompactActionCard(
+                            icon = Icons.Default.Restaurant,
+                            title = stringResource(R.string.ordering_table_service_title),
+                            subtitle = stringResource(R.string.ordering_table_service_subtitle),
+                            backgroundColor = MaterialTheme.colorScheme.surface,
+                            contentColor = MaterialTheme.colorScheme.onSurface,
+                            onClick = onTableServiceClick,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
             }
 
-            Spacer(modifier = Modifier.height(sizes.spacingMedium))
-
-            // View Orders Button
-            OrderingOptionCard(
-                icon = {
-                    Icon(
-                        imageVector = Icons.Default.Receipt,
-                        contentDescription = "Ver Órdenes",
-                        modifier = Modifier.size(sizes.iconSizeLarge),
-                        tint = MaterialTheme.colorScheme.tertiary
-                    )
-                },
-                title = "Ver Órdenes",
-                subtitle = "Lista de todas las órdenes",
-                onClick = onViewOrdersClick,
-                modifier = Modifier.fillMaxWidth()
+            // Divider between sections
+            HorizontalDivider(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = sizes.spacingMedium),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
             )
+
+            // ═══════════════════════════════════════════════════════════
+            // SECTION: Gestión (Secondary Actions)
+            // ═══════════════════════════════════════════════════════════
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = sizes.paddingScreen)
+            ) {
+                Text(
+                    text = "Gestión",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(bottom = sizes.spacingSmall)
+                )
+
+                // View Orders Button (Ultra Compact)
+                OutlinedCard(
+                    onClick = onViewOrdersClick,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.outlinedCardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Icon (smaller)
+                        Icon(
+                            imageVector = Icons.Default.Receipt,
+                            contentDescription = "Ver Órdenes",
+                            modifier = Modifier.size(28.dp),
+                            tint = MaterialTheme.colorScheme.tertiary
+                        )
+
+                        // Text (compact)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Ver Órdenes",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Lista de todas las órdenes",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
         }
     }
 }
 
 /**
- * Ordering Option Card
+ * Compact Action Card - ActionsTab Style
  *
- * Large tappable card for ordering flow selection.
- * Follows Avoqado dark theme design.
+ * Compact card matching ActionsTab's ShortcutActionCard pattern:
+ * - Icon in top-left
+ * - Title + subtitle at bottom
+ * - Colored background
+ * - Responsive height (iconSizeLarge * 2.5f)
  *
- * @param icon Icon composable
+ * @param icon Icon vector
  * @param title Main title text
  * @param subtitle Descriptive subtitle
+ * @param backgroundColor Card background color
+ * @param contentColor Color for text and icons (default: White)
  * @param onClick Click callback
  * @param modifier Modifier for customization
  */
 @Composable
-private fun OrderingOptionCard(
-    icon: @Composable () -> Unit,
+private fun CompactActionCard(
+    icon: ImageVector,
     title: String,
     subtitle: String,
+    backgroundColor: Color,
+    contentColor: Color = Color.White,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -160,44 +252,46 @@ private fun OrderingOptionCard(
 
     Card(
         onClick = onClick,
-        modifier = modifier,
+        modifier = modifier
+            .fillMaxWidth()
+            .height(sizes.iconSizeLarge * 2.5f), // Same as ActionsTab
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
-            contentColor = MaterialTheme.colorScheme.onSurface
+            containerColor = backgroundColor
         ),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
     ) {
-        Column(
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(sizes.spacingLarge),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+                .fillMaxSize()
+                .padding(16.dp)
         ) {
-            // Icon
-            icon()
-
-            Spacer(modifier = Modifier.height(sizes.spacingMedium))
-
-            // Title
-            Text(
-                text = title,
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center
+            // Icon in top-left
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .size(32.dp),
+                tint = contentColor
             )
 
-            Spacer(modifier = Modifier.height(sizes.spacingSmall))
-
-            // Subtitle
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
+            // Title and subtitle at bottom
+            Column(
+                modifier = Modifier.align(Alignment.BottomStart)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = contentColor
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = contentColor.copy(alpha = 0.9f)
+                )
+            }
         }
     }
 }

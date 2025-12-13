@@ -41,6 +41,8 @@ import java.time.Instant
  * - Table/Order type (icon + text)
  * - Item count
  * - Total amount
+ *   - For PARTIAL payments: Shows "Total: $X" + "Falta: $Y" (remaining balance)
+ *   - For other statuses: Shows total amount only
  * - Status badge (color-coded)
  *
  * Used in OrderListScreen
@@ -165,13 +167,35 @@ fun OrderCard(
                     }
                 }
 
-                // Right: Total
-                Text(
-                    text = "$${order.total}",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                // Right: Total (or Partial Payment Info)
+                if (order.paymentStatus == PaymentStatus.PARTIAL && order.remainingBalance > BigDecimal.ZERO) {
+                    // Show total and remaining balance for partial payments
+                    Column(
+                        horizontalAlignment = Alignment.End
+                    ) {
+                        // Total amount (strikethrough style to show original)
+                        Text(
+                            text = "Total: $${String.format(java.util.Locale.US, "%.2f", order.total)}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        // Remaining balance (prominent)
+                        Text(
+                            text = "Falta: $${String.format(java.util.Locale.US, "%.2f", order.remainingBalance)}",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
+                } else {
+                    // Show total for non-partial payments
+                    Text(
+                        text = "$${String.format(java.util.Locale.US, "%.2f", order.total)}",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
         }
     }
@@ -271,6 +295,41 @@ private fun OrderCardTakeoutPreview() {
                 createdAt = Instant.now().minusSeconds(60), // 1 minute ago
                 updatedAt = Instant.now(),
                 version = 1
+            ),
+            onClick = {}
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun OrderCardPartialPaymentPreview() {
+    AvoqadoTheme {
+        OrderCard(
+            order = Order(
+                id = "order_partial_1",
+                orderNumber = "ORD-001237",
+                venueId = "venue_1",
+                tableId = "table_8",
+                tableName = "Mesa 8",
+                covers = 4,
+                waiterId = "waiter_2",
+                waiterName = "María",
+                status = OrderStatus.OPEN,
+                kitchenStatus = KitchenStatus.PREPARING,
+                paymentStatus = PaymentStatus.PARTIAL,
+                orderType = OrderType.DINE_IN,
+                items = emptyList(),
+                subtotal = BigDecimal("450.00"),
+                discountAmount = BigDecimal.ZERO,
+                tax = BigDecimal("72.00"),
+                total = BigDecimal("522.00"),
+                paidAmount = BigDecimal("200.00"),
+                remainingBalance = BigDecimal("322.00"),
+                notes = null,
+                createdAt = Instant.now().minusSeconds(1200), // 20 minutes ago
+                updatedAt = Instant.now(),
+                version = 3
             ),
             onClick = {}
         )

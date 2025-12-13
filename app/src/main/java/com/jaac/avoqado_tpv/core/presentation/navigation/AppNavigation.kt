@@ -383,8 +383,8 @@ fun AppNavigation(
                 showTableService = secureStorage.supportsTableService(),
                 onQuickOrderClick = {
                     // Quick Order flow (retail/QSR) - No table assignment
-                    // MenuViewModel will create order via backend and get CUID
-                    Timber.d("🛒 Quick Order clicked - Creating new order via backend")
+                    // MenuViewModel will create order LOCALLY (local-first) and sync later
+                    Timber.d("🛒 Quick Order clicked - Creating new order LOCALLY (local-first)")
                     navController.navigate(NavRoute.Menu.createRoute("CREATE_QUICK_ORDER"))
                 },
                 onTableServiceClick = {
@@ -834,7 +834,12 @@ private fun SplashScreen(
         // ✅ Square/Toast Pattern: Check activation status with BACKEND first
         // This prevents routing to LoginScreen when terminal has venueId locally
         // but activatedAt = NULL on backend (happens after DB reset)
-        val backendStatusResult = deviceInfoManager.checkActivationStatusWithBackend()
+        
+        // 🚀 Optimization: Run network call on IO thread to prevent freezing Splash animation
+        // Previously caused ~2.6s UI freeze (160 skipped frames)
+        val backendStatusResult = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            deviceInfoManager.checkActivationStatusWithBackend()
+        }
 
         when (backendStatusResult) {
             is com.jaac.avoqado_tpv.core.domain.models.Result.Success -> {

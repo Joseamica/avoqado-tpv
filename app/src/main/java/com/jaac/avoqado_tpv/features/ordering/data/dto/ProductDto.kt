@@ -204,3 +204,45 @@ data class ProductsResponse(
     @SerializedName("correlationId")
     val correlationId: String?
 )
+
+/**
+ * Product Response wrapper (single product)
+ *
+ * ✅ BARCODE QUICK ADD: Used for barcode search endpoint
+ * Backend returns: { message: string, data: Product, correlationId: string }
+ */
+data class ProductResponse(
+    @SerializedName("message")
+    val message: String?,
+
+    @SerializedName("data")
+    val data: ProductDto,
+
+    @SerializedName("correlationId")
+    val correlationId: String?
+)
+
+/**
+ * Quick Add Product Request
+ *
+ * ✅ BARCODE QUICK ADD: Create product on-the-fly from barcode scan
+ * (Square POS pattern)
+ *
+ * Request body for POST /venues/{venueId}/products/quick-add
+ */
+data class QuickAddProductRequest(
+    @SerializedName("barcode")
+    val barcode: String,
+
+    @SerializedName("name")
+    val name: String,
+
+    @SerializedName("price")
+    val price: Double,
+
+    @SerializedName("categoryId")
+    val categoryId: String? = null,
+
+    @SerializedName("trackInventory")
+    val trackInventory: Boolean = false
+)

@@ -403,6 +403,42 @@ interface ApiService {
     ): Response<com.jaac.avoqado_tpv.features.ordering.data.dto.ProductsResponse>
 
     /**
+     * Search product by barcode
+     *
+     * GET /api/v1/tpv/venues/{venueId}/products/barcode/{barcode}
+     *
+     * ✅ BARCODE QUICK ADD: Search product by scanning barcode
+     * Returns 404 if product not found (trigger QuickAddProductDialog)
+     *
+     * @param venueId Venue identifier
+     * @param barcode Scanned barcode value (SKU)
+     * @return Response with single product or 404
+     */
+    @GET("tpv/venues/{venueId}/products/barcode/{barcode}")
+    suspend fun getProductByBarcode(
+        @Path("venueId") venueId: String,
+        @Path("barcode") barcode: String
+    ): Response<com.jaac.avoqado_tpv.features.ordering.data.dto.ProductResponse>
+
+    /**
+     * Create product quickly from barcode scan
+     *
+     * POST /api/v1/tpv/venues/{venueId}/products/quick-add
+     *
+     * ✅ BARCODE QUICK ADD: Create product on-the-fly when barcode not found
+     * (Square POS pattern)
+     *
+     * @param venueId Venue identifier
+     * @param request Quick-add product request
+     * @return Response with created product
+     */
+    @POST("tpv/venues/{venueId}/products/quick-add")
+    suspend fun createQuickAddProduct(
+        @Path("venueId") venueId: String,
+        @Body request: com.jaac.avoqado_tpv.features.ordering.data.dto.QuickAddProductRequest
+    ): Response<com.jaac.avoqado_tpv.features.ordering.data.dto.ProductResponse>
+
+    /**
      * Get menu categories for venue
      *
      * GET /api/v1/dashboard/venues/{venueId}/categories

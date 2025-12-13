@@ -21,6 +21,11 @@ import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandType
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
 import com.jaac.avoqado_tpv.core.data.repository.HeartbeatRepository
 import com.jaac.avoqado_tpv.core.domain.models.Result
+import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
+import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
+import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
+import com.jaac.avoqado_tpv.core.data.local.mappers.toEntities
+import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryEntities
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -56,7 +61,11 @@ class HomeViewModel @Inject constructor(
     // 📡 HTTP ACK for commands received via Socket.IO
     private val heartbeatRepository: HeartbeatRepository,
     val lockScreenManager: LockScreenManager,
-    val maintenanceManager: MaintenanceManager
+    val maintenanceManager: MaintenanceManager,
+    // 📦 Product Cache Warm-up (Performance Optimization)
+    private val productRepository: ProductRepository,
+    private val productDao: ProductDao,
+    private val productCategoryDao: ProductCategoryDao
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -110,6 +119,56 @@ class HomeViewModel @Inject constructor(
         collectSocketEvents()
         // 🔧 Initialize Blumon SDK in background (so it's ready when user opens payment)
         initializeBlumonSDK()
+        // 📦 Warm up product cache (so "Quick Order" opens instantly)
+        warmUpProductCache()
+    }
+
+    /**
+     * 📦 Warm up product cache in background
+     *
+     * Fetches products and categories from backend and saves to Room DB.
+     * This ensures that when user clicks "Quick Order" or opens a table,
+     * the menu loads INSTANTLY from cache (0ms latency).
+     *
+     * Solves: "Skipped 40+ frames" delay on Quick Order click.
+     */
+    private fun warmUpProductCache() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // Wait 1s to let critical home screen UI render first
+                delay(1000)
+
+                val venueId = secureStorage.getVenueId() ?: return@launch
+                val cachedAt = System.currentTimeMillis()
+
+                Timber.d("📦 [HomeViewModel] Warming up product cache for venue: $venueId")
+
+                // Fetch products
+                productRepository.getProducts(venueId).fold(
+                    onSuccess = { products ->
+                        productDao.upsertProducts(products.toEntities(venueId, cachedAt))
+                        Timber.i("✅ [HomeViewModel] Cached ${products.size} products")
+                    },
+                    onFailure = { e ->
+                        Timber.w(e, "⚠️ [HomeViewModel] Failed to cache products")
+                    }
+                )
+
+                // Fetch categories
+                productRepository.getCategories(venueId).fold(
+                    onSuccess = { categories ->
+                        productCategoryDao.upsertCategories(categories.toCategoryEntities(venueId, cachedAt))
+                        Timber.i("✅ [HomeViewModel] Cached ${categories.size} categories")
+                    },
+                    onFailure = { e ->
+                        Timber.w(e, "⚠️ [HomeViewModel] Failed to cache categories")
+                    }
+                )
+
+            } catch (e: Exception) {
+                Timber.e(e, "⚠️ [HomeViewModel] Error warming up cache")
+            }
+        }
     }
 
     /**

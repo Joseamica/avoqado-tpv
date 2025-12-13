@@ -47,7 +47,7 @@ fun PaymentApprovedScreen(
     val circleDuration = 600
     val checkmarkDelay = 400
     val checkmarkDuration = 400
-    val totalDisplayTime = 3500L  // 3.5 seconds total
+    val totalDisplayTime = 2500L  // 2.5 seconds total
 
     // Circle animation progress (0f to 1f)
     var circleProgress by remember { mutableFloatStateOf(0f) }
@@ -119,18 +119,6 @@ fun PaymentApprovedScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            // Amount
-            Text(
-                text = amount,
-                style = MaterialTheme.typography.headlineMedium.copy(
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 28.sp
-                ),
-                color = textColor
-            )
-
-            Spacer(modifier = Modifier.height(48.dp))
-
             // Animated check circle
             AnimatedCheckCircle(
                 circleProgress = animatedCircleProgress,
@@ -147,6 +135,18 @@ fun PaymentApprovedScreen(
                 style = MaterialTheme.typography.headlineSmall.copy(
                     fontWeight = FontWeight.Bold,
                     fontSize = 24.sp
+                ),
+                color = textColor
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Amount with peso sign
+            Text(
+                text = amount.takeIf { it.startsWith("$") } ?: "${'$'}$amount",
+                style = MaterialTheme.typography.headlineMedium.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 28.sp
                 ),
                 color = textColor
             )

@@ -166,10 +166,11 @@ class InitializationManager @Inject constructor(
     private fun shouldInitialize(lastInit: Long?, now: Long): Boolean {
         // Development mode: ALWAYS force re-init to prevent DUKPT key corruption
         // This fixes NA_002 errors when doing rebuild without uninstalling
-        if (com.jaac.avoqado_tpv.BuildConfig.FORCE_BLUMON_REINIT) {
+        // ⚠️ DISABLE FORCE RE-INIT: It causes GenericFailure due to rate limiting
+        /* if (com.jaac.avoqado_tpv.BuildConfig.FORCE_BLUMON_REINIT) {
             Timber.w("⚠️ [DEV MODE] Forcing Blumon SDK re-initialization (FORCE_BLUMON_REINIT=true)")
             return true
-        }
+        } */
 
         // Production mode: Use 24-hour cache
         return when {

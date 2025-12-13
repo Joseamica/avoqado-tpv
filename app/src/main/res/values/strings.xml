@@ -51,4 +51,6 @@
     <string name="ordering_quick_order_subtitle">Venta sin mesa\n(Retail/QSR)</string>
     <string name="ordering_table_service_title">Servicio de Mesa</string>
     <string name="ordering_table_service_subtitle">Restaurante con plano de piso</string>
+    <string name="ordering_empty_state_title">Orden vacía</string>
+    <string name="ordering_empty_state_subtitle">Agrega productos desde el menú</string>
 </resources>

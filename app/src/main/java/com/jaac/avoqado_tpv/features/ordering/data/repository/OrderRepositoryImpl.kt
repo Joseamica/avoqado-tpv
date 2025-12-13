@@ -12,6 +12,7 @@ import com.jaac.avoqado_tpv.features.ordering.data.dto.VoidItemsRequest
 import com.jaac.avoqado_tpv.features.ordering.data.mappers.toOrder
 import com.jaac.avoqado_tpv.features.ordering.data.mappers.toOrderCustomers
 import com.jaac.avoqado_tpv.features.ordering.domain.AddOrderItemRequest
+import com.jaac.avoqado_tpv.features.ordering.domain.ConflictException
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderCustomer
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository
@@ -118,7 +119,16 @@ class OrderRepositoryImpl @Inject constructor(
             }
         } catch (e: Exception) {
             Timber.e(e, "❌ [OrderList] Exception fetching orders")
-            Result.failure(e)
+            
+            // Map technical exceptions to user-friendly messages
+            val userFriendlyError = when (e) {
+                is java.net.UnknownHostException, 
+                is java.net.ConnectException -> Exception("Sin conexión a internet. Verifique su red.")
+                is java.net.SocketTimeoutException -> Exception("El servidor tardó demasiado en responder.")
+                else -> e
+            }
+            
+            Result.failure(userFriendlyError)
         }
     }
 
@@ -247,20 +257,20 @@ class OrderRepositoryImpl @Inject constructor(
                     Result.failure(Exception(errorMsg))
                 }
             } else {
-                val errorMessage = when (response.code()) {
-                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
-                    400 -> "Solicitud inválida. Verifica los productos seleccionados."
-                    404 -> "Orden no encontrada."
-                    409 -> {
-                        Timber.w("⚠️ Version conflict - order was modified by another terminal")
-                        "La orden fue modificada por otra terminal.\n\n" +
-                        "Por favor, intenta nuevamente."
+                if (response.code() == 409) {
+                    Timber.w("⚠️ Version conflict - order was modified by another terminal")
+                    Result.failure(ConflictException(serverVersion = "unknown", message = "La orden fue modificada por otra terminal."))
+                } else {
+                    val errorMessage = when (response.code()) {
+                        401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                        400 -> "Solicitud inválida. Verifica los productos seleccionados."
+                        404 -> "Orden no encontrada."
+                        500 -> "Error del servidor. Por favor intenta nuevamente."
+                        else -> "Error al agregar items: ${response.code()}"
                     }
-                    500 -> "Error del servidor. Por favor intenta nuevamente."
-                    else -> "Error al agregar items: ${response.code()}"
+                    Timber.e("addItemsToOrder failed: $errorMessage (HTTP ${response.code()})")
+                    Result.failure(Exception(errorMessage))
                 }
-                Timber.e("addItemsToOrder failed: $errorMessage (HTTP ${response.code()})")
-                Result.failure(Exception(errorMessage))
             }
         } catch (e: Exception) {
             Timber.e(e, "Exception in addItemsToOrder")
@@ -296,20 +306,20 @@ class OrderRepositoryImpl @Inject constructor(
                     Result.failure(Exception(errorMsg))
                 }
             } else {
-                val errorMessage = when (response.code()) {
-                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
-                    400 -> "La orden ya está pagada y no puede modificarse."
-                    404 -> "Orden o item no encontrado."
-                    409 -> {
-                        Timber.w("⚠️ Version conflict - order was modified by another terminal")
-                        "La orden fue modificada por otra terminal.\n\n" +
-                        "Por favor, intenta nuevamente."
+                if (response.code() == 409) {
+                    Timber.w("⚠️ Version conflict - order was modified by another terminal")
+                    Result.failure(ConflictException(serverVersion = "unknown", message = "La orden fue modificada por otra terminal."))
+                } else {
+                    val errorMessage = when (response.code()) {
+                        401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                        400 -> "La orden ya está pagada y no puede modificarse."
+                        404 -> "Orden o item no encontrado."
+                        500 -> "Error del servidor. Por favor intenta nuevamente."
+                        else -> "Error al eliminar item: ${response.code()}"
                     }
-                    500 -> "Error del servidor. Por favor intenta nuevamente."
-                    else -> "Error al eliminar item: ${response.code()}"
+                    Timber.e("removeOrderItem failed: $errorMessage (HTTP ${response.code()})")
+                    Result.failure(Exception(errorMessage))
                 }
-                Timber.e("removeOrderItem failed: $errorMessage (HTTP ${response.code()})")
-                Result.failure(Exception(errorMessage))
             }
         } catch (e: Exception) {
             Timber.e(e, "Exception in removeOrderItem")
@@ -504,20 +514,20 @@ class OrderRepositoryImpl @Inject constructor(
                     Result.failure(Exception(errorMsg))
                 }
             } else {
-                val errorMessage = when (response.code()) {
-                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
-                    400 -> "La orden ya está pagada y no puede modificarse."
-                    404 -> "Orden no encontrada."
-                    409 -> {
-                        Timber.w("⚠️ Version conflict - order was modified by another terminal")
-                        "La orden fue modificada por otra terminal.\n\n" +
-                        "Por favor, intenta nuevamente."
+                if (response.code() == 409) {
+                    Timber.w("⚠️ Version conflict - order was modified by another terminal")
+                    Result.failure(ConflictException(serverVersion = "unknown", message = "La orden fue modificada por otra terminal."))
+                } else {
+                    val errorMessage = when (response.code()) {
+                        401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                        400 -> "La orden ya está pagada y no puede modificarse."
+                        404 -> "Orden no encontrada."
+                        500 -> "Error del servidor. Por favor intenta nuevamente."
+                        else -> "Error al anular items: ${response.code()}"
                     }
-                    500 -> "Error del servidor. Por favor intenta nuevamente."
-                    else -> "Error al anular items: ${response.code()}"
+                    Timber.e("voidItems failed: $errorMessage (HTTP ${response.code()})")
+                    Result.failure(Exception(errorMessage))
                 }
-                Timber.e("voidItems failed: $errorMessage (HTTP ${response.code()})")
-                Result.failure(Exception(errorMessage))
             }
         } catch (e: Exception) {
             Timber.e(e, "Exception in voidItems")
@@ -568,20 +578,20 @@ class OrderRepositoryImpl @Inject constructor(
                     Result.failure(Exception(errorMsg))
                 }
             } else {
-                val errorMessage = when (response.code()) {
-                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
-                    400 -> "Descuento inválido. Verifica el valor ingresado."
-                    404 -> "Orden no encontrada."
-                    409 -> {
-                        Timber.w("⚠️ Version conflict - order was modified by another terminal")
-                        "La orden fue modificada por otra terminal.\n\n" +
-                        "Por favor, intenta nuevamente."
+                if (response.code() == 409) {
+                    Timber.w("⚠️ Version conflict - order was modified by another terminal")
+                    Result.failure(ConflictException(serverVersion = "unknown", message = "La orden fue modificada por otra terminal."))
+                } else {
+                    val errorMessage = when (response.code()) {
+                        401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                        400 -> "Descuento inválido. Verifica el valor ingresado."
+                        404 -> "Orden no encontrada."
+                        500 -> "Error del servidor. Por favor intenta nuevamente."
+                        else -> "Error al aplicar descuento: ${response.code()}"
                     }
-                    500 -> "Error del servidor. Por favor intenta nuevamente."
-                    else -> "Error al aplicar descuento: ${response.code()}"
+                    Timber.e("applyDiscount failed: $errorMessage (HTTP ${response.code()})")
+                    Result.failure(Exception(errorMessage))
                 }
-                Timber.e("applyDiscount failed: $errorMessage (HTTP ${response.code()})")
-                Result.failure(Exception(errorMessage))
             }
         } catch (e: Exception) {
             Timber.e(e, "Exception in applyDiscount")

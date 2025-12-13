@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.payment.presentation.split
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderItem
@@ -125,8 +126,15 @@ class SplitByProductViewModel @Inject constructor(
                         )
                     }
                     Timber.i("📦 [SplitByProduct] Loaded order: ${order.items.size} items, ${paidProductIds.size} already paid")
-                    if (paidProductIds.isNotEmpty()) {
-                        Timber.i("   💰 Paid items: ${paidProductIds.joinToString()}")
+
+                    // Verbose logging only in debug builds to avoid performance impact on production
+                    if (BuildConfig.DEBUG) {
+                        order.items.forEachIndexed { index, item ->
+                            Timber.d("   Item $index: id=${item.id}, product=${item.productName}, qty=${item.quantity}, price=${item.totalPrice}, isPaid=${item.id in paidProductIds}")
+                        }
+                        if (paidProductIds.isNotEmpty()) {
+                            Timber.d("   💰 Paid items: ${paidProductIds.joinToString()}")
+                        }
                     }
                 }.onFailure { error ->
                     _uiState.update {

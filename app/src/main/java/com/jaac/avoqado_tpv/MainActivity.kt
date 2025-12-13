@@ -27,7 +27,9 @@ import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -144,9 +146,53 @@ class MainActivity : ComponentActivity() {
         // ✅ Square/Toast Pattern: Start heartbeat if terminal is activated
         // Only runs after permission is granted
         if (permissionGranted.value == true) {
-            startHeartbeatIfActivated()
-            fetchTerminalConfigIfActivated()
+            // 🚀 Performance Optimization:
+            // Move heavy initialization (SecureStorage disk reads + Network) to IO thread.
+            // This prevents "Skipped frames" and ANRs during app startup.
+            // Previously caused ~1.2s Main Thread block.
+            lifecycleScope.launch(Dispatchers.IO) {
+                startHeartbeatIfActivated()
+                fetchTerminalConfigIfActivated()
+            }
         }
+    }
+
+    /**
+     * Intercept VOLUME_UP button to open barcode scanner (Square POS pattern)
+     * ✅ BARCODE QUICK ADD: Hardware button shortcut for "Scan & Go" mode
+     *
+     * **Android Hardware Button Handling:**
+     * - VOLUME_UP and VOLUME_DOWN can be intercepted (documented in Android Developers)
+     * - Only works when app is in foreground
+     * - Returning true consumes the event (prevents volume change)
+     *
+     * **PAX Terminal Compatibility:**
+     * - PAX terminals use standard Android KeyEvent API
+     * - No special PAX SDK required for volume buttons
+     * - Works on PAX A910S and all PAX Android terminals
+     *
+     * **Flow:**
+     * 1. User presses VOLUME+ while on MenuScreen with active order
+     * 2. Broadcast intent "com.jaac.avoqado_tpv.OPEN_BARCODE_SCANNER"
+     * 3. MenuViewModel receives broadcast and opens BarcodeQuickAddScreen
+     *
+     * **Limitations:**
+     * - Only works when app is in foreground
+     * - Cannot intercept HOME or POWER buttons (system-level)
+     * - MenuViewModel must register BroadcastReceiver to listen for intent
+     */
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+        if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
+            Timber.d("🔊 [MainActivity] VOLUME_UP pressed - broadcasting scanner intent")
+
+            // Broadcast intent for MenuViewModel to open barcode scanner
+            val intent = Intent("com.jaac.avoqado_tpv.OPEN_BARCODE_SCANNER")
+            sendBroadcast(intent)
+
+            return true  // Consume event (don't change volume)
+        }
+
+        return super.onKeyDown(keyCode, event)
     }
 
     /**
@@ -245,7 +291,8 @@ class MainActivity : ComponentActivity() {
      * - Falls back to hardcoded sandbox accounts if backend unreachable
      * - User can still process payments with fallback accounts
      */
-    private fun fetchTerminalConfigIfActivated() {
+    private suspend fun fetchTerminalConfigIfActivated() {
+        // Runs on Dispatchers.IO (called from onCreate)
         val isActivated = secureStorage.isTerminalActivated()
 
         if (!isActivated) {
@@ -258,32 +305,30 @@ class MainActivity : ComponentActivity() {
 
         Timber.d("🔧 [TerminalConfig] Fetching config from backend for serial: $serialNumber")
 
-        lifecycleScope.launch {
-            terminalConfigRepository.fetchConfig(serialNumber)
-                .onSuccess { (terminalInfo, merchantAccounts) ->
-                    Timber.i("✅ [TerminalConfig] Fetched ${merchantAccounts.size} merchant accounts")
-                    Timber.d("   📋 Terminal: ${terminalInfo.brand} ${terminalInfo.model}")
-                    Timber.d("   🏢 Venue: ${terminalInfo.venueName}")
-                    Timber.d("   🏷️ VenueType: ${terminalInfo.venueType ?: "N/A"}")
+        terminalConfigRepository.fetchConfig(serialNumber)
+            .onSuccess { (terminalInfo, merchantAccounts) ->
+                Timber.i("✅ [TerminalConfig] Fetched ${merchantAccounts.size} merchant accounts")
+                Timber.d("   📋 Terminal: ${terminalInfo.brand} ${terminalInfo.model}")
+                Timber.d("   🏢 Venue: ${terminalInfo.venueName}")
+                Timber.d("   🏷️ VenueType: ${terminalInfo.venueType ?: "N/A"}")
 
-                    // Replace MerchantRepository fallback accounts with fetched merchants from backend
-                    merchantRepository.updateMerchants(merchantAccounts)
+                // Replace MerchantRepository fallback accounts with fetched merchants from backend
+                merchantRepository.updateMerchants(merchantAccounts)
 
-                    // Save venue type for conditional UI (table service visibility)
-                    secureStorage.saveVenueType(terminalInfo.venueType)
+                // Save venue type for conditional UI (table service visibility)
+                secureStorage.saveVenueType(terminalInfo.venueType)
 
-                    Timber.i("✅ [TerminalConfig] Successfully loaded dynamic config from backend")
-                }
-                .onFailure { error ->
-                    // Silently fail with log warning (doesn't block app startup)
-                    Timber.w(
-                        error,
-                        "⚠️ [TerminalConfig] Failed to fetch config - using fallback accounts"
-                    )
-                    Timber.d("   ℹ️  This is normal if backend is unreachable")
-                    Timber.d("   ℹ️  App will use hardcoded sandbox accounts as fallback")
-                }
-        }
+                Timber.i("✅ [TerminalConfig] Successfully loaded dynamic config from backend")
+            }
+            .onFailure { error ->
+                // Silently fail with log warning (doesn't block app startup)
+                Timber.w(
+                    error,
+                    "⚠️ [TerminalConfig] Failed to fetch config - using fallback accounts"
+                )
+                Timber.d("   ℹ️  This is normal if backend is unreachable")
+                Timber.d("   ℹ️  App will use hardcoded sandbox accounts as fallback")
+            }
     }
 }
 

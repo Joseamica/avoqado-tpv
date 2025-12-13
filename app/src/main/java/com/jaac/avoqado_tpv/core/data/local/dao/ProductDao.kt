@@ -84,6 +84,25 @@ interface ProductDao {
     suspend fun getProductById(venueId: String, productId: String): ProductEntity?
 
     /**
+     * Get a single product by SKU (barcode).
+     *
+     * ✅ BARCODE QUICK ADD: Fast lookup for scanned barcodes
+     * Uses indexed query for O(1) search
+     *
+     * @param venueId Venue ID (tenant isolation)
+     * @param sku SKU (barcode) to search
+     * @return Product or null if not found in cache
+     */
+    @Query(
+        """
+        SELECT * FROM products
+        WHERE venue_id = :venueId AND sku = :sku
+        LIMIT 1
+        """
+    )
+    suspend fun getProductBySku(venueId: String, sku: String): ProductEntity?
+
+    /**
      * Upsert products (batch insert/update).
      *
      * **Strategy:** REPLACE on conflict (venue_id, product_id unique index)

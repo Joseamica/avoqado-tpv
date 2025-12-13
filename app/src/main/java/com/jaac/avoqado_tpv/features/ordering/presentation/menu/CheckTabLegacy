@@ -1,0 +1,703 @@
+package com.jaac.avoqado_tpv.features.ordering.presentation.menu
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.ui.graphics.Color
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.features.ordering.domain.KitchenStatus
+import com.jaac.avoqado_tpv.features.ordering.domain.Order
+import com.jaac.avoqado_tpv.features.ordering.domain.OrderItem
+import com.jaac.avoqado_tpv.features.ordering.domain.OrderStatus
+import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
+import com.jaac.avoqado_tpv.features.ordering.domain.PaymentStatus
+import com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier
+import java.math.BigDecimal
+import java.text.NumberFormat
+import java.util.Locale
+
+/**
+ * CheckTab - Order review and item management
+ *
+ * Dedicated tab for viewing order details and managing items.
+ * Shows OrderTopPanel content in expanded, permanent state (not overlay).
+ *
+ * ## Layout
+ * ```
+ * ┌─────────────────────────────────────┐
+ * │ Order Summary                       │ ← Header with totals
+ * │ 3 items • $150.00                   │
+ * ├─────────────────────────────────────┤
+ * │                                     │
+ * │ ┌─────────────────────────────────┐ │
+ * │ │ Alitas Buffalo x2                │ │ ← Item row
+ * │ │ $120.00                          │ │
+ * │ │ [+] [2] [-] [🗑️]                 │ │ ← Quantity controls
+ * │ │   • BBQ Sauce                    │ │ ← Modifiers
+ * │ │   • Ranch                        │ │
+ * │ └─────────────────────────────────┘ │
+ * │                                     │
+ * │ ┌─────────────────────────────────┐ │
+ * │ │ Coca-Cola x1                     │ │
+ * │ │ $30.00                           │ │
+ * │ │ [+] [1] [-] [🗑️]                 │ │
+ * │ └─────────────────────────────────┘ │
+ * │                                     │
+ * ├─────────────────────────────────────┤
+ * │ Total: $162.00                      │
+ * ├─────────────────────────────────────┤
+ * │ [Send to Kitchen]  [Process Payment]│ ← Action buttons
+ * └─────────────────────────────────────┘
+ * ```
+ *
+ * ## Features
+ * - **Item List**: All order items with modifiers and notes
+ * - **Quantity Controls**: +/- buttons to adjust item quantity
+ * - **Remove Item**: Trash icon to remove item from order
+ * - **Totals**: Total (with IVA included) displayed at bottom
+ * - **Actions**: Send to Kitchen and Process Payment buttons
+ *
+ * @param order Current order with items
+ * @param onItemQuantityChange Callback when item quantity is changed
+ * @param onItemRemove Callback when item is removed
+ * @param onSendToKitchen Callback to send order to kitchen
+ * @param onProcessPayment Callback to process payment
+ * @param modifier Optional modifier
+ */
+ @Composable
+fun CheckTab(
+    order: Order,
+    onItemQuantityChange: (OrderItem, Int) -> Unit,
+    onItemRemove: (OrderItem) -> Unit,
+    onSendToKitchen: () -> Unit,
+    onProcessPayment: () -> Unit,
+    onSplitPayment: () -> Unit,
+    onPrintComanda: () -> Unit,
+    onPrintItem: (OrderItem) -> Unit,  // 🖨️ Print single item
+    modifier: Modifier = Modifier
+) {
+    val currencyFormatter = NumberFormat.getCurrencyInstance(Locale("es", "MX"))
+
+    // ✅ FIX: Calculate total from items (don't trust order.total from backend)
+    // Backend sometimes includes tax or calculates incorrectly
+    val calculatedTotal = order.items.sumOf { it.totalPrice }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        // Header with order summary and print button
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Resumen de Orden",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "${order.items.size} items • ${currencyFormatter.format(calculatedTotal)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                // Print comanda button
+                if (order.items.isNotEmpty()) {
+                    IconButton(onClick = onPrintComanda) {
+                        Icon(
+                            imageVector = Icons.Default.Print,
+                            contentDescription = "Imprimir comanda",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+        }
+
+        // ⭐ Partial Payment Banner - Shows ONLY when there's a partial payment made
+        // Bug fix: Don't show banner if paidAmount = $0 (no payment yet)
+        if (order.hasRemainingBalance && order.paidAmount > BigDecimal.ZERO) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        text = "⚠️ Pago Parcial",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Pagado:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                        Text(
+                            text = currencyFormatter.format(order.paidAmount),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Por pagar:",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Text(
+                            text = currencyFormatter.format(order.remainingBalance),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        // Empty state
+        if (order.items.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "No hay items en esta orden.\n\nAgrega productos desde el tab Menú.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            // Item list
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(horizontal = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(
+                    items = order.items,
+                    key = { it.id }
+                ) { item ->
+                    OrderItemCard(
+                        item = item,
+                        onQuantityChange = { newQty ->
+                            onItemQuantityChange(item, newQty)
+                        },
+                        onRemove = {
+                            onItemRemove(item)
+                        },
+                        onPrintItem = {
+                            onPrintItem(item)
+                        }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Totals section - Shows Subtotal → Descuento → Total breakdown
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    // ✅ FIX: Only show Subtotal → Descuento breakdown when discount exists
+                    // If no discount, just show "Por Pagar" total (cleaner UX)
+                    if (order.discountAmount > BigDecimal.ZERO) {
+                        TotalRow(label = "Subtotal:", amount = order.subtotal, isBold = false)
+                        DiscountRow(label = "Descuento:", amount = order.discountAmount)
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    }
+
+                    // ⭐ Show "Por pagar" with remainingBalance when there's partial payment
+                    if (order.hasRemainingBalance) {
+                        TotalRow(label = "Por pagar:", amount = order.remainingBalance, isBold = true)
+                    } else {
+                        TotalRow(label = "Total:", amount = order.total, isBold = true)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Action buttons
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Send to Kitchen button - ONLY for DINE_IN (servicio de mesa)
+                // Pedido Rápido (TAKEOUT) skips kitchen and goes directly to payment
+                if (order.orderType == OrderType.DINE_IN) {
+                    Button(
+                        onClick = onSendToKitchen,
+                        modifier = Modifier.weight(1f),
+                        enabled = order.canSendToKitchen
+                    ) {
+                        Text("Cocina")
+                    }
+                }
+
+                // Split Payment button - Show options for dividing payment
+                OutlinedButton(
+                    onClick = onSplitPayment,
+                    modifier = Modifier.weight(1f),
+                    enabled = order.items.isNotEmpty() && order.canProcessPayment
+                ) {
+                    Text("Dividir")
+                }
+
+                // Process Payment button - Full payment (FULLPAYMENT)
+                Button(
+                    onClick = onProcessPayment,
+                    modifier = Modifier.weight(1f),
+                    enabled = order.canProcessPayment
+                ) {
+                    Text("Pagar")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Order Item Card
+ *
+ * Shows a single order item with quantity controls, modifiers, and remove button.
+ * Tap on printer icon to print just this item.
+ */
+@Composable
+private fun OrderItemCard(
+    item: OrderItem,
+    onQuantityChange: (Int) -> Unit,
+    onRemove: () -> Unit,
+    onPrintItem: () -> Unit,  // 🖨️ Print this single item
+    modifier: Modifier = Modifier
+) {
+    val currencyFormatter = NumberFormat.getCurrencyInstance(Locale("es", "MX"))
+
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp)
+        ) {
+            // Product name and price
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f)
+                ) {
+                    // Product name with kitchen status badge
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = item.productName,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        KitchenStatusBadge(
+                            item = item,
+                            onPrint = onPrintItem  // 🖨️ Tap to print this item
+                        )
+                    }
+
+                    // Modifiers (if any) - RIGHT AFTER product name
+                    if (item.modifiers.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Column(
+                            modifier = Modifier.padding(start = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(1.dp)
+                        ) {
+                            item.modifiers.forEach { modifier ->
+                                Text(
+                                    text = modifier.name,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    // Notes (if any)
+                    if (!item.notes.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Nota: ${item.notes}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                        )
+                    }
+                }
+
+                // Price (aligned to top-right)
+                Text(
+                    text = currencyFormatter.format(item.totalPrice),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Quantity controls + Delete button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Quantity controls
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Decrease quantity
+                    IconButton(
+                        onClick = {
+                            if (item.quantity > 1) {
+                                onQuantityChange(item.quantity - 1)
+                            }
+                        },
+                        enabled = item.quantity > 1
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Remove,
+                            contentDescription = "Disminuir cantidad"
+                        )
+                    }
+
+                    // Quantity display
+                    Text(
+                        text = item.quantity.toString(),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
+
+                    // Increase quantity
+                    IconButton(
+                        onClick = {
+                            onQuantityChange(item.quantity + 1)
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Aumentar cantidad"
+                        )
+                    }
+                }
+
+                // Remove item button
+                IconButton(
+                    onClick = onRemove
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Eliminar item",
+                        tint = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Kitchen Status Badge
+ *
+ * Visual indicator showing if item was sent to kitchen.
+ * - Printer with small red X - Item not yet sent
+ * - Printer with small green check - Item already sent
+ *
+ * **TAP TO PRINT**: Clicking this badge prints JUST THIS ITEM.
+ */
+@Composable
+private fun KitchenStatusBadge(
+    item: OrderItem,
+    onPrint: () -> Unit,  // 🖨️ Tap to print this single item
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .size(24.dp)
+            .clickable(onClick = onPrint),  // 🖨️ Tap to print
+        contentAlignment = Alignment.Center
+    ) {
+        // Main printer icon
+        Icon(
+            imageVector = Icons.Default.Print,
+            contentDescription = if (item.wasSentToKitchen) "Enviado a cocina" else "Pendiente de envío",
+            modifier = Modifier.size(18.dp),
+            tint = if (item.wasSentToKitchen) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            }
+        )
+
+        // Small status indicator in top-right corner
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .size(10.dp)
+                .background(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(50)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            if (item.wasSentToKitchen) {
+                // ✅ Green check
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = null,
+                    modifier = Modifier.size(8.dp),
+                    tint = Color(0xFF4CAF50)  // Green
+                )
+            } else {
+                // ❌ Red X
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = null,
+                    modifier = Modifier.size(8.dp),
+                    tint = Color(0xFFE53935)  // Red
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Total Row
+ *
+ * Shows a label and amount row for the totals section.
+ */
+@Composable
+private fun TotalRow(
+    label: String,
+    amount: java.math.BigDecimal,
+    isBold: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val currencyFormatter = NumberFormat.getCurrencyInstance(Locale("es", "MX"))
+
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (isBold) FontWeight.Bold else FontWeight.Normal
+        )
+        Text(
+            text = currencyFormatter.format(amount),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (isBold) FontWeight.Bold else FontWeight.Normal
+        )
+    }
+}
+
+/**
+ * Discount Row
+ *
+ * Shows discount amount in a distinct color (primary/green to indicate savings).
+ */
+@Composable
+private fun DiscountRow(
+    label: String,
+    amount: java.math.BigDecimal,
+    modifier: Modifier = Modifier
+) {
+    val currencyFormatter = NumberFormat.getCurrencyInstance(Locale("es", "MX"))
+
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            text = "-${currencyFormatter.format(amount)}",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.primary
+        )
+    }
+}
+
+// ============================================================
+// PREVIEWS
+// ============================================================
+
+@Preview(showBackground = true)
+@Composable
+private fun CheckTabPreview() {
+    AvoqadoTheme {
+        val mockOrder = Order(
+            id = "order_123",
+            orderNumber = "ORD-001",
+            venueId = "venue_1",
+            tableId = "table_1",
+            tableName = "Mesa 5",
+            covers = 2,
+            waiterId = "waiter_1",
+            waiterName = "Juan Pérez",
+            customerName = null,
+            customerPhone = null,
+            specialRequests = null,
+            status = OrderStatus.OPEN,
+            kitchenStatus = KitchenStatus.PENDING,
+            paymentStatus = PaymentStatus.PENDING,
+            orderType = OrderType.DINE_IN,
+            items = listOf(
+                OrderItem(
+                    id = "item_1",
+                    orderId = "order_123",
+                    productId = "prod_1",
+                    productName = "Hamburguesa de Pollo",
+                    productSku = "HAM-001",
+                    quantity = 1,
+                    unitPrice = java.math.BigDecimal("139.00"),
+                    totalPrice = java.math.BigDecimal("139.00"),
+                    modifiers = listOf(
+                        ProductModifier(
+                            id = "mod_1",
+                            name = "Tocino",
+                            priceAdjustment = java.math.BigDecimal("0.00"),
+                            type = com.jaac.avoqado_tpv.features.ordering.domain.ModifierType.MULTIPLE_CHOICE,
+                            required = false,
+                            displayOrder = 0
+                        )
+                    ),
+                    notes = null,
+                    kitchenStatus = KitchenStatus.PENDING,
+                    createdAt = java.time.Instant.now(),
+                    sentToKitchenAt = null
+                )
+            ),
+            subtotal = java.math.BigDecimal("139.00"),
+            discountAmount = java.math.BigDecimal.ZERO,
+            tax = java.math.BigDecimal.ZERO,
+            total = java.math.BigDecimal("139.00"),
+            notes = null,
+            createdAt = java.time.Instant.now(),
+            updatedAt = java.time.Instant.now(),
+            version = 1
+        )
+
+        CheckTab(
+            order = mockOrder,
+            onItemQuantityChange = { _, _ -> },
+            onItemRemove = { },
+            onSendToKitchen = { },
+            onProcessPayment = { },
+            onSplitPayment = { },
+            onPrintComanda = { },
+            onPrintItem = { }
+        )
+    }
+}

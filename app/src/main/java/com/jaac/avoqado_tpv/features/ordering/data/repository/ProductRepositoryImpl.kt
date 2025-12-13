@@ -145,4 +145,72 @@ class ProductRepositoryImpl @Inject constructor(
             Result.failure(e)
         }
     }
+
+    override suspend fun getProductByBarcode(
+        venueId: String,
+        barcode: String
+    ): Result<Product?> = withContext(Dispatchers.IO) {
+        try {
+            Timber.d("📷 [BarcodeQuickAdd] Searching product by barcode: $barcode for venue: $venueId")
+
+            val response = apiService.getProductByBarcode(venueId, barcode)
+
+            if (response.isSuccessful && response.body() != null) {
+                val productResponse = response.body()!!
+                val product = productResponse.data.toDomain()
+
+                Timber.i("✅ [BarcodeQuickAdd] Product found: ${product.name} (SKU: ${product.sku})")
+                Result.success(product)
+            } else if (response.code() == 404) {
+                // Product not found - expected behavior for quick-add flow
+                Timber.w("⚠️ [BarcodeQuickAdd] Product not found for barcode: $barcode")
+                Result.success(null)
+            } else {
+                val error = "Failed to search product by barcode: HTTP ${response.code()} - ${response.message()}"
+                Timber.e("❌ [BarcodeQuickAdd] $error")
+                Result.failure(Exception(error))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [BarcodeQuickAdd] Error searching product by barcode: $barcode")
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun createQuickAddProduct(
+        venueId: String,
+        barcode: String,
+        name: String,
+        price: java.math.BigDecimal,
+        categoryId: String?,
+        trackInventory: Boolean
+    ): Result<Product> = withContext(Dispatchers.IO) {
+        try {
+            Timber.d("📦 [BarcodeQuickAdd] Creating product: name=$name, barcode=$barcode, price=$price")
+
+            val request = com.jaac.avoqado_tpv.features.ordering.data.dto.QuickAddProductRequest(
+                barcode = barcode,
+                name = name,
+                price = price.toDouble(),
+                categoryId = categoryId,
+                trackInventory = trackInventory
+            )
+
+            val response = apiService.createQuickAddProduct(venueId, request)
+
+            if (response.isSuccessful && response.body() != null) {
+                val productResponse = response.body()!!
+                val product = productResponse.data.toDomain()
+
+                Timber.i("✅ [BarcodeQuickAdd] Product created successfully: ${product.name} (ID: ${product.id})")
+                Result.success(product)
+            } else {
+                val error = "Failed to create product: HTTP ${response.code()} - ${response.message()}"
+                Timber.e("❌ [BarcodeQuickAdd] $error")
+                Result.failure(Exception(error))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [BarcodeQuickAdd] Error creating product")
+            Result.failure(e)
+        }
+    }
 }

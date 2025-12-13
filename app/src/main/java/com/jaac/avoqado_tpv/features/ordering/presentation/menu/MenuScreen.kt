@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -22,6 +23,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -152,6 +154,16 @@ fun MenuScreen(
     // Load order on first composition
     LaunchedEffect(orderId) {
         viewModel.loadOrder(orderId)
+    }
+
+    // 🚀 Performance Optimization: Deferred Rendering
+    // Show skeletal UI immediately, then load heavy content (Product Grid) after navigation settles.
+    // Solves 750ms UI freeze ("Skipped 40 frames") on navigation transition.
+    var isHeavyContentReady by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        // Wait 300ms for navigation animation to complete before rendering heavy grids
+        kotlinx.coroutines.delay(300)
+        isHeavyContentReady = true
     }
 
     // Extract order and syncError from state (simplified smart cast)
@@ -305,13 +317,24 @@ fun MenuScreen(
                 CompositionLocalProvider(
                     LocalResponsiveSizes provides sizes
                 ) {
-                    if (order == null) {
-                        // Loading state
+                    if (order == null || !isHeavyContentReady) {
+                        // 🚀 Loading state (or Deferred Rendering Placeholder)
+                        // If order is loaded but content deferred, show lightweight spinner
+                        // This allows navigation animation to finish smoothly
                         Box(
                             modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
                     ) {
-                        AvoqadoFullScreenLoading(message = "Cargando orden...")
+                        // Use lightweight loading indicator (not full screen) during deferred phase
+                        if (order != null) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(32.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            AvoqadoFullScreenLoading(message = "Cargando orden...")
+                        }
                     }
                 } else {
                         // Route to tab-specific content based on currentTab
@@ -611,6 +634,37 @@ fun MenuScreen(
                                 }
                                 Timber.d("🗑️ Voided ${selectedItemIds.size} items: $selectedItemIds, reason: $reason")
                             }
+                        }
+                    )
+                }
+
+                // ✨ BARCODE QUICK ADD: Scanner screen (Square POS "Scan & Go" pattern)
+                if (successState != null && successState.showBarcodeScanner) {
+                    BarcodeQuickAddScreen(
+                        onBarcodeScanned = { barcode, format ->
+                            viewModel.onBarcodeScanned(barcode, format)
+                        },
+                        onDismiss = {
+                            viewModel.closeBarcodeScanner()
+                        },
+                        isProcessing = successState.barcodeProcessing,
+                        lastScannedProduct = successState.lastScannedProductName,
+                        totalScannedCount = successState.totalScannedCount,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                // ✨ BARCODE QUICK ADD: Create product dialog when barcode not found
+                if (successState != null && successState.showQuickAddDialog && successState.scannedBarcodeForQuickAdd != null) {
+                    val categories by viewModel.categories.collectAsStateWithLifecycle()
+                    QuickAddProductDialog(
+                        barcode = successState.scannedBarcodeForQuickAdd,
+                        categories = categories,
+                        onConfirm = { name, price, categoryId, trackInventory ->
+                            viewModel.createQuickAddProduct(name, price, categoryId, trackInventory)
+                        },
+                        onDismiss = {
+                            viewModel.dismissQuickAddDialog()
                         }
                     )
                 }

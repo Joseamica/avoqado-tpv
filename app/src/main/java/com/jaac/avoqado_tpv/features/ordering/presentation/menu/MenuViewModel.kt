@@ -64,6 +64,7 @@ import javax.inject.Inject
  */
 @HiltViewModel
 class MenuViewModel @Inject constructor(
+    @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context,  // ✨ BARCODE QUICK ADD: For BroadcastReceiver
     private val secureStorage: SecureStorage,
     private val deviceInfoManager: DeviceInfoManager,
     private val productRepository: com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository,
@@ -223,6 +224,16 @@ class MenuViewModel @Inject constructor(
             initialValue = emptyList()
         )
 
+    // ✨ BARCODE QUICK ADD: BroadcastReceiver for VOLUME_UP button
+    private val barcodeScannerReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: android.content.Intent?) {
+            if (intent?.action == "com.jaac.avoqado_tpv.OPEN_BARCODE_SCANNER") {
+                Timber.d("📷 [BarcodeQuickAdd] Broadcast received - opening scanner")
+                openBarcodeQuickAdd()
+            }
+        }
+    }
+
     init {
         // Load products on ViewModel creation
         loadProducts()
@@ -239,6 +250,27 @@ class MenuViewModel @Inject constructor(
 
         // Listen to Socket.IO events for real-time inventory updates
         listenToSocketEvents()
+
+        // ✨ BARCODE QUICK ADD: Register BroadcastReceiver for VOLUME_UP button
+        val intentFilter = android.content.IntentFilter("com.jaac.avoqado_tpv.OPEN_BARCODE_SCANNER")
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(barcodeScannerReceiver, intentFilter, android.content.Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            context.registerReceiver(barcodeScannerReceiver, intentFilter)
+        }
+        Timber.d("📷 [BarcodeQuickAdd] BroadcastReceiver registered")
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        // ✨ BARCODE QUICK ADD: Unregister BroadcastReceiver
+        try {
+            context.unregisterReceiver(barcodeScannerReceiver)
+            Timber.d("📷 [BarcodeQuickAdd] BroadcastReceiver unregistered")
+        } catch (e: Exception) {
+            Timber.w(e, "📷 [BarcodeQuickAdd] Error unregistering BroadcastReceiver")
+        }
     }
 
     /**
@@ -1002,10 +1034,10 @@ class MenuViewModel @Inject constructor(
                         } else {
                             // ⚠️ DEFENSIVE CHECK: Detect local-only IDs that can't be fetched from backend
                             // These IDs were used by mock data or are local Quick Orders that never synced
+                            // Regex check removed (Issue #5): was too restrictive for CUIDs
                             val isLocalOnlyId = orderId.startsWith("local_") ||
                                 orderId.startsWith("order_table") ||
-                                orderId.startsWith("order_quick") ||
-                                !orderId.matches(Regex("^[a-z0-9]{20,30}$"))  // CUID pattern
+                                orderId.startsWith("order_quick")
 
                             if (isLocalOnlyId) {
                                 Timber.w("⚠️ [Defensive] Local-only ID cannot be fetched from backend: $orderId")
@@ -2773,6 +2805,303 @@ class MenuViewModel @Inject constructor(
             updatedAt = Instant.now()
         )
     }
+
+    // ================================================================================================
+    // BARCODE QUICK ADD - Square POS "Scan & Go" Pattern
+    // ================================================================================================
+
+    /**
+     * Opens the barcode scanner in Quick Add mode.
+     * ✅ BARCODE QUICK ADD: User presses VOLUME+ button to start scanning.
+     *
+     * **Safety Validations:**
+     * - Only opens if MenuState.Success (screen is active)
+     * - Only opens if there's an active order
+     * - Only opens if order can receive items (OPEN or IN_PROGRESS status)
+     *
+     * **Why these validations?**
+     * The BroadcastReceiver stays registered while ViewModel is alive.
+     * If user navigates to PaymentScreen, VOLUME+ should NOT open scanner.
+     * These checks prevent scanning when MenuScreen is not in foreground.
+     */
+    fun openBarcodeQuickAdd() {
+        val currentState = _state.value
+
+        // Validation 1: State must be Success
+        if (currentState !is MenuState.Success) {
+            Timber.w("📷 [BarcodeQuickAdd] Cannot open scanner - current state is ${currentState::class.simpleName} (not Success)")
+            return
+        }
+
+        // Validation 2: Order must exist
+        val order = currentState.order
+
+        // Validation 3: Order must be able to accept items
+        if (order.status != OrderStatus.OPEN && order.status != OrderStatus.IN_PROGRESS) {
+            Timber.w("📷 [BarcodeQuickAdd] Cannot open scanner - order cannot accept items | status=${order.status}")
+            return
+        }
+
+        // All validations passed - open scanner
+        _state.value = currentState.copy(
+            showBarcodeScanner = true,
+            totalScannedCount = 0,
+            lastScannedProductName = null
+        )
+        Timber.d("📷 [BarcodeQuickAdd] Scanner opened | orderId=${order.id} | status=${order.status}")
+    }
+
+    /**
+     * Closes the barcode scanner.
+     * ✅ BARCODE QUICK ADD: User taps "Listo" button or back.
+     */
+    fun closeBarcodeScanner() {
+        val currentState = _state.value
+        if (currentState is MenuState.Success) {
+            val totalScanned = currentState.totalScannedCount
+            _state.value = currentState.copy(
+                showBarcodeScanner = false,
+                barcodeProcessing = false,
+                lastScannedProductName = null
+            )
+            Timber.d("📷 [BarcodeQuickAdd] Scanner closed | Total scanned: $totalScanned")
+        }
+    }
+
+    /**
+     * Handles barcode scanned event.
+     * ✅ BARCODE QUICK ADD: Search product by SKU, add to order, or show quick-add dialog if not found.
+     *
+     * Flow:
+     * 1. Search product by barcode (SKU)
+     * 2a. Found + No modifiers → Add to order directly (quantity=1)
+     * 2b. Found + Has modifiers → Close scanner, open ProductSelectorBottomSheet
+     * 2c. Not found → Show Quick Add Product dialog
+     */
+    fun onBarcodeScanned(barcode: String, format: String) {
+        val currentState = _state.value
+        if (currentState !is MenuState.Success) {
+            Timber.w("📷 [BarcodeQuickAdd] No active order")
+            return
+        }
+
+        val order = currentState.order
+        if (order.status != OrderStatus.OPEN && order.status != OrderStatus.IN_PROGRESS) {
+            Timber.w("📷 [BarcodeQuickAdd] Order cannot accept items | status=${order.status}")
+            return
+        }
+
+        Timber.d("📷 [BarcodeQuickAdd] Barcode scanned | barcode=$barcode | format=$format")
+
+        _state.value = currentState.copy(barcodeProcessing = true)
+
+        viewModelScope.launch {
+            try {
+                val venueId = secureStorage.getVenueId() ?: run {
+                    Timber.e("📷 [BarcodeQuickAdd] No venueId in secure storage")
+                    updateStateIfSuccess { it.copy(
+                        barcodeProcessing = false,
+                        lastScannedProductName = "❌ Error: No venue ID"
+                    )}
+                    return@launch
+                }
+
+                // Search product by barcode
+                val result = productRepository.getProductByBarcode(venueId, barcode)
+
+                result.fold(
+                    onSuccess = { product ->
+                        if (product == null) {
+                            // Product not found - Show Quick Add dialog
+                            Timber.w("📷 [BarcodeQuickAdd] Product not found | barcode=$barcode")
+                            updateStateIfSuccess { it.copy(
+                                barcodeProcessing = false,
+                                showQuickAddDialog = true,
+                                scannedBarcodeForQuickAdd = barcode
+                            )}
+                        } else {
+                            // Product found
+                            Timber.d("📷 [BarcodeQuickAdd] Product found | id=${product.id} | name=${product.name}")
+
+                            if (product.modifierGroups.isNotEmpty()) {
+                                // Has modifiers - Close scanner and open modifier selector
+                                Timber.d("📷 [BarcodeQuickAdd] Product has modifiers | count=${product.modifierGroups.size}")
+                                // TODO: Integrate with ProductSelectorBottomSheet
+                                // For now, just add without modifiers
+                                addProductToOrder(product, currentState)
+                            } else {
+                                // No modifiers - Add directly
+                                addProductToOrder(product, currentState)
+                            }
+                        }
+                    },
+                    onFailure = { error ->
+                        Timber.e(error, "📷 [BarcodeQuickAdd] Error searching product")
+                        updateStateIfSuccess { it.copy(
+                            barcodeProcessing = false,
+                            lastScannedProductName = "❌ Error: ${error.message}"
+                        )}
+
+                        // Clear error after 2s
+                        viewModelScope.launch {
+                            kotlinx.coroutines.delay(2000)
+                            updateStateIfSuccess { it.copy(lastScannedProductName = null) }
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                Timber.e(e, "📷 [BarcodeQuickAdd] Unexpected error")
+                updateStateIfSuccess { it.copy(
+                    barcodeProcessing = false,
+                    lastScannedProductName = "❌ Error inesperado"
+                )}
+            }
+        }
+    }
+
+    /**
+     * Adds product to order (helper for barcode scanning).
+     */
+    private suspend fun addProductToOrder(product: Product, currentState: MenuState.Success) {
+        // Add item using existing addItem logic
+        addItem(
+            product = product,
+            quantity = 1,
+            modifiers = emptyList(),
+            notes = ""
+        )
+
+        val newCount = currentState.totalScannedCount + 1
+
+        updateStateIfSuccess { it.copy(
+            barcodeProcessing = false,
+            lastScannedProductName = "✓ ${product.name}",
+            totalScannedCount = newCount
+        )}
+
+        Timber.d("📷 [BarcodeQuickAdd] Product added | total=$newCount")
+
+        // Clear feedback after 2s
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(2000)
+            updateStateIfSuccess { it.copy(lastScannedProductName = null) }
+        }
+    }
+
+    /**
+     * Shows Quick Add Product dialog when barcode not found.
+     * ✅ BARCODE QUICK ADD: User can create product on-the-fly from scanned barcode.
+     */
+    fun showQuickAddProductDialog(barcode: String) {
+        updateStateIfSuccess { it.copy(
+            showQuickAddDialog = true,
+            scannedBarcodeForQuickAdd = barcode,
+            barcodeProcessing = false
+        )}
+        Timber.d("📦 [QuickAdd] Dialog opened | barcode=$barcode")
+    }
+
+    /**
+     * Dismisses Quick Add Product dialog.
+     */
+    fun dismissQuickAddDialog() {
+        updateStateIfSuccess { it.copy(
+            showQuickAddDialog = false,
+            scannedBarcodeForQuickAdd = null
+        )}
+    }
+
+    /**
+     * Creates product from Quick Add dialog.
+     * ✅ BARCODE QUICK ADD: POST /venues/{venueId}/products/quick-add
+     *
+     * Flow:
+     * 1. Create product via backend API
+     * 2. Close dialog
+     * 3a. Product has modifiers → Open modifier selector
+     * 3b. No modifiers → Add to order directly
+     * 4. Refresh product catalog to include new product
+     */
+    fun createQuickAddProduct(
+        name: String,
+        price: Double,
+        categoryId: String?,
+        trackInventory: Boolean
+    ) {
+        val currentState = _state.value
+        if (currentState !is MenuState.Success) return
+
+        val barcode = currentState.scannedBarcodeForQuickAdd ?: return
+
+        _state.value = currentState.copy(isCreatingProduct = true)
+
+        viewModelScope.launch {
+            try {
+                val venueId = secureStorage.getVenueId() ?: run {
+                    Timber.e("📦 [QuickAdd] No venueId in secure storage")
+                    return@launch
+                }
+
+                // Call backend to create product
+                val result = productRepository.createQuickAddProduct(
+                    venueId = venueId,
+                    barcode = barcode,
+                    name = name,
+                    price = price.toBigDecimal(),
+                    categoryId = categoryId,
+                    trackInventory = trackInventory
+                )
+
+                result.fold(
+                    onSuccess = { product ->
+                        Timber.d("📦 [QuickAdd] Product created | id=${product.id} | name=$name")
+
+                        // Close dialog
+                        updateStateIfSuccess { it.copy(
+                            showQuickAddDialog = false,
+                            scannedBarcodeForQuickAdd = null,
+                            isCreatingProduct = false
+                        )}
+
+                        // Add product to order
+                        if (product.modifierGroups.isNotEmpty()) {
+                            // TODO: Open ProductSelectorBottomSheet
+                            // For now, add without modifiers
+                            addProductToOrder(product, currentState)
+                        } else {
+                            addProductToOrder(product, currentState)
+                        }
+
+                        // Refresh product catalog
+                        refreshProducts()
+                    },
+                    onFailure = { error ->
+                        Timber.e(error, "📦 [QuickAdd] Error creating product")
+                        updateStateIfSuccess { it.copy(
+                            isCreatingProduct = false,
+                            lastScannedProductName = "❌ Error: ${error.message}"
+                        )}
+                    }
+                )
+            } catch (e: Exception) {
+                Timber.e(e, "📦 [QuickAdd] Unexpected error")
+                updateStateIfSuccess { it.copy(
+                    isCreatingProduct = false,
+                    lastScannedProductName = "❌ Error inesperado"
+                )}
+            }
+        }
+    }
+
+    /**
+     * Helper to update state only if current state is Success.
+     */
+    private fun updateStateIfSuccess(update: (MenuState.Success) -> MenuState.Success) {
+        val currentState = _state.value
+        if (currentState is MenuState.Success) {
+            _state.value = update(currentState)
+        }
+    }
 }
 
 /**
@@ -2782,7 +3111,18 @@ sealed interface MenuState {
     data object Loading : MenuState
     data class Success(
         val order: Order,
-        val syncError: String? = null  // ✅ FIX: Sync errors don't replace state, just show warning
+        val syncError: String? = null,  // ✅ FIX: Sync errors don't replace state, just show warning
+
+        // ✨ BARCODE QUICK ADD: Scanner state (Square POS "Scan & Go" pattern)
+        val showBarcodeScanner: Boolean = false,
+        val barcodeProcessing: Boolean = false,
+        val lastScannedProductName: String? = null,  // Feedback: "✓ Pizza Margherita"
+        val totalScannedCount: Int = 0,
+
+        // ✨ BARCODE QUICK ADD: Create product dialog state
+        val showQuickAddDialog: Boolean = false,
+        val scannedBarcodeForQuickAdd: String? = null,  // Barcode for new product
+        val isCreatingProduct: Boolean = false
     ) : MenuState
     data class Error(val message: String) : MenuState
 }

@@ -1,8 +1,8 @@
 package com.jaac.avoqado_tpv.features.ordering.presentation
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,27 +18,32 @@ import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
-import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
+import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.features.ordering.presentation.components.UnpaidTakeoutBanner
+import timber.log.Timber
 
 /**
  * Ordering Welcome Screen
@@ -82,141 +87,114 @@ fun OrderingWelcomeScreen(
     onQuickOrderClick: () -> Unit = {},
     onTableServiceClick: () -> Unit = {},
     onViewOrdersClick: () -> Unit = {},
-    onNavigateBack: () -> Unit = {}
+    onViewUnpaidOrdersClick: () -> Unit = {},
+    onNavigateBack: () -> Unit = {},
+    viewModel: OrderingWelcomeViewModel = hiltViewModel()
 ) {
-    ResponsiveScaffold(
-        modifier = modifier,
-        scrollable = false  // We handle our own Column layout
-    ) {
-        Scaffold(
-            topBar = {
-                AvoqadoTopBar(
-                    title = stringResource(R.string.ordering_welcome_title),
-                    onNavigationClick = onNavigateBack
-                )
-            },
-            containerColor = MaterialTheme.colorScheme.background
-        ) { paddingValues ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-            ) {
-                val sizes = LocalResponsiveSizes.current
+    val unpaidTakeoutCount by viewModel.unpaidTakeoutCount.collectAsStateWithLifecycle()
 
-            // ═══════════════════════════════════════════════════════════
-            // SECTION: Nueva Orden (Primary Actions)
-            // ═══════════════════════════════════════════════════════════
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = sizes.paddingScreen)
-            ) {
-                Text(
-                    text = "Nueva Orden",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(bottom = sizes.spacingSmall)
-                )
+    // Refresh orders when screen is displayed
+    LaunchedEffect(Unit) {
+        viewModel.refresh()
+    }
 
-                // Primary actions in grid (same style as ActionsTab)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(sizes.spacingSmall)
-                ) {
-                    // Quick Order Card (compact)
-                    CompactActionCard(
-                        icon = Icons.Default.ShoppingCart,
-                        title = stringResource(R.string.ordering_quick_order_title),
-                        subtitle = stringResource(R.string.ordering_quick_order_subtitle),
-                        backgroundColor = MaterialTheme.colorScheme.surface,
-                        contentColor = MaterialTheme.colorScheme.onSurface,
-                        onClick = onQuickOrderClick,
-                        modifier = Modifier.weight(1f)
-                    )
-
-                    // Table Service Card (compact, conditional)
-                    if (showTableService) {
-                        CompactActionCard(
-                            icon = Icons.Default.Restaurant,
-                            title = stringResource(R.string.ordering_table_service_title),
-                            subtitle = stringResource(R.string.ordering_table_service_subtitle),
-                            backgroundColor = MaterialTheme.colorScheme.surface,
-                            contentColor = MaterialTheme.colorScheme.onSurface,
-                            onClick = onTableServiceClick,
-                            modifier = Modifier.weight(1f)
+    Scaffold(
+        topBar = {
+            AvoqadoTopBar(
+                title = stringResource(R.string.ordering_welcome_title),
+                titleStyle = MaterialTheme.typography.titleMedium,
+                onNavigationClick = onNavigateBack,
+                actions = {
+                    IconButton(onClick = onViewOrdersClick) {
+                        Icon(
+                            imageVector = Icons.Default.Receipt,
+                            contentDescription = "Ver Órdenes"
                         )
                     }
                 }
-            }
-
-            // Divider between sections
-            HorizontalDivider(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = sizes.spacingMedium),
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
             )
+        },
+        containerColor = MaterialTheme.colorScheme.background,
+        modifier = modifier
+    ) { paddingValues ->
+        @Suppress("UnusedBoxWithConstraintsScope")
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+        ) {
+            val sizes = ResponsiveSizes.calculate(maxHeight, maxWidth)
 
-            // ═══════════════════════════════════════════════════════════
-            // SECTION: Gestión (Secondary Actions)
-            // ═══════════════════════════════════════════════════════════
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = sizes.paddingScreen)
-            ) {
-                Text(
-                    text = "Gestión",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(bottom = sizes.spacingSmall)
-                )
+            CompositionLocalProvider(LocalResponsiveSizes provides sizes) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // ═══════════════════════════════════════════════════════════
+                    // SECTION: Unpaid Takeout Banner (Warning) - FullWidth
+                    // ═══════════════════════════════════════════════════════════
+                    UnpaidTakeoutBanner(
+                        count = unpaidTakeoutCount,
+                        onClick = {
+                            Timber.d("🔔 [OrderingWelcome] Banner tapped | Navigating to unpaid TAKEOUT orders")
+                            onViewUnpaidOrdersClick()
+                        },
+                        modifier = Modifier.fillMaxWidth()  // FullWidth, sin padding
+                    )
 
-                // View Orders Button (Ultra Compact)
-                OutlinedCard(
-                    onClick = onViewOrdersClick,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.outlinedCardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
-                ) {
-                    Row(
+                    // Content wrapper with horizontal padding
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(horizontal = sizes.paddingScreen)
                     ) {
-                        // Icon (smaller)
-                        Icon(
-                            imageVector = Icons.Default.Receipt,
-                            contentDescription = "Ver Órdenes",
-                            modifier = Modifier.size(28.dp),
-                            tint = MaterialTheme.colorScheme.tertiary
-                        )
+                        // Spacing between banner and Nueva Orden section
+                        Spacer(modifier = Modifier.height(sizes.spacingMedium))
 
-                        // Text (compact)
-                        Column(modifier = Modifier.weight(1f)) {
+                        // ═══════════════════════════════════════════════════════════
+                        // SECTION: Nueva Orden (Primary Actions)
+                        // ═══════════════════════════════════════════════════════════
+                        Column(
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
                             Text(
-                                text = "Ver Órdenes",
-                                style = MaterialTheme.typography.bodyLarge,
+                                text = "Nueva Orden",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface
+                                modifier = Modifier.padding(bottom = sizes.spacingSmall)
                             )
-                            Text(
-                                text = "Lista de todas las órdenes",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+
+                            // Primary actions in grid (same style as ActionsTab)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(sizes.spacingSmall)
+                            ) {
+                                // Quick Order Card (compact)
+                                CompactActionCard(
+                                    icon = Icons.Default.ShoppingCart,
+                                    title = stringResource(R.string.ordering_quick_order_title),
+                                    subtitle = stringResource(R.string.ordering_quick_order_subtitle),
+                                    backgroundColor = MaterialTheme.colorScheme.surface,
+                                    contentColor = MaterialTheme.colorScheme.onSurface,
+                                    onClick = onQuickOrderClick,
+                                    modifier = Modifier.weight(1f)
+                                )
+
+                                // Table Service Card (compact, conditional)
+                                if (showTableService) {
+                                    CompactActionCard(
+                                        icon = Icons.Default.Restaurant,
+                                        title = stringResource(R.string.ordering_table_service_title),
+                                        subtitle = stringResource(R.string.ordering_table_service_subtitle),
+                                        backgroundColor = MaterialTheme.colorScheme.surface,
+                                        contentColor = MaterialTheme.colorScheme.onSurface,
+                                        onClick = onTableServiceClick,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
-        }
         }
     }
 }
@@ -239,7 +217,7 @@ fun OrderingWelcomeScreen(
  * @param modifier Modifier for customization
  */
 @Composable
-private fun CompactActionCard(
+fun CompactActionCard(
     icon: ImageVector,
     title: String,
     subtitle: String,
@@ -302,12 +280,13 @@ private fun CompactActionCard(
 
 @Preview(showBackground = true, widthDp = 600, heightDp = 1024, name = "PAX A80 (Portrait)")
 @Composable
-private fun OrderingWelcomeScreenPreview() {
+internal fun OrderingWelcomeScreenPreview() {
     AvoqadoTheme {
         OrderingWelcomeScreen(
             onQuickOrderClick = {},
             onTableServiceClick = {},
             onViewOrdersClick = {},
+            onViewUnpaidOrdersClick = {},
             onNavigateBack = {}
         )
     }
@@ -315,12 +294,13 @@ private fun OrderingWelcomeScreenPreview() {
 
 @Preview(showBackground = true, widthDp = 720, heightDp = 1280, name = "PAX A920 (Portrait)")
 @Composable
-private fun OrderingWelcomeScreenPreviewLarge() {
+internal fun OrderingWelcomeScreenPreviewLarge() {
     AvoqadoTheme {
         OrderingWelcomeScreen(
             onQuickOrderClick = {},
             onTableServiceClick = {},
             onViewOrdersClick = {},
+            onViewUnpaidOrdersClick = {},
             onNavigateBack = {}
         )
     }

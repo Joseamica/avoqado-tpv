@@ -63,6 +63,7 @@ import com.jaac.avoqado_tpv.features.ordering.domain.TableRepository
 import com.jaac.avoqado_tpv.features.ordering.presentation.FloorPlanCanvasScreen
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderingWelcomeScreen
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderListScreen
+import com.jaac.avoqado_tpv.features.ordering.presentation.OrderStatusFilter
 import com.jaac.avoqado_tpv.features.ordering.presentation.menu.MenuScreen
 import com.jaac.avoqado_tpv.features.timeclock.presentation.TimeclockScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.split.SplitByProductScreen
@@ -396,6 +397,11 @@ fun AppNavigation(
                     navController.navigate(NavRoute.OrderList.route)
                     Timber.d("📋 Navigating to Order List")
                 },
+                onViewUnpaidOrdersClick = {
+                    // Navigate to Order List screen with UNPAID_TAKEOUT filter
+                    navController.navigate(NavRoute.OrderList.createRoute("UNPAID_TAKEOUT"))
+                    Timber.d("🔔 Navigating to Order List with UNPAID_TAKEOUT filter")
+                },
                 onNavigateBack = {
                     navController.popBackStack()
                 }
@@ -466,7 +472,25 @@ fun AppNavigation(
         }
 
         // Order List Screen - List of all orders with filters
-        composable(NavRoute.OrderList.route) {
+        composable(
+            route = NavRoute.OrderList.route,
+            arguments = listOf(
+                navArgument("filter") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                }
+            )
+        ) { backStackEntry ->
+            val filterParam = backStackEntry.arguments?.getString("filter")
+            val initialFilter = filterParam?.let {
+                try {
+                    OrderStatusFilter.valueOf(it)
+                } catch (e: IllegalArgumentException) {
+                    OrderStatusFilter.ALL
+                }
+            } ?: OrderStatusFilter.ALL
+
             OrderListScreen(
                 onNavigateBack = {
                     navController.popBackStack()
@@ -475,7 +499,8 @@ fun AppNavigation(
                     // Navigate to MenuScreen to view/edit order
                     navController.navigate(NavRoute.Menu.createRoute(order.id))
                     Timber.d("📋 Viewing order: ${order.orderNumber}")
-                }
+                },
+                initialFilter = initialFilter
             )
         }
 

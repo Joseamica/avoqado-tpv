@@ -49,7 +49,7 @@ fun AvoqadoTopBar(
     flatBottom: Boolean = false,
     actions: @Composable RowScope.() -> Unit = {}
 ) {
-    val bottomRadius = if (flatBottom) 0.dp else 20.dp
+    val bottomRadius = 0.dp
     val shape = RoundedCornerShape(
         topStart = 0.dp,
         topEnd = 0.dp,

@@ -307,9 +307,11 @@ private fun ScanAreaOverlay(
             compositingStrategy = CompositingStrategy.Offscreen
         }
     ) {
-        val scanAreaSize = size.minDimension * 0.6f
-        val scanAreaLeft = (size.width - scanAreaSize) / 2
-        val scanAreaTop = (size.height - scanAreaSize) / 2
+        // Rectangle scan area (wider than tall for barcodes)
+        val scanAreaWidth = size.width * 0.80f  // 80% of screen width
+        val scanAreaHeight = size.height * 0.35f  // 35% of screen height
+        val scanAreaLeft = (size.width - scanAreaWidth) / 2
+        val scanAreaTop = (size.height - scanAreaHeight) / 2
 
         // Dark overlay
         drawRect(
@@ -317,11 +319,11 @@ private fun ScanAreaOverlay(
             size = size
         )
 
-        // Clear scan area
+        // Clear scan area (rectangle)
         drawRoundRect(
             color = Color.Transparent,
             topLeft = Offset(scanAreaLeft, scanAreaTop),
-            size = Size(scanAreaSize, scanAreaSize),
+            size = Size(scanAreaWidth, scanAreaHeight),
             cornerRadius = CornerRadius(16.dp.toPx()),
             blendMode = BlendMode.Clear
         )
@@ -330,7 +332,7 @@ private fun ScanAreaOverlay(
         drawRoundRect(
             color = Color.White,
             topLeft = Offset(scanAreaLeft, scanAreaTop),
-            size = Size(scanAreaSize, scanAreaSize),
+            size = Size(scanAreaWidth, scanAreaHeight),
             cornerRadius = CornerRadius(16.dp.toPx()),
             style = Stroke(width = 3.dp.toPx())
         )
@@ -357,42 +359,42 @@ private fun ScanAreaOverlay(
         // Top-right corner
         drawLine(
             color = accentColor,
-            start = Offset(scanAreaLeft + scanAreaSize, scanAreaTop + cornerLength),
-            end = Offset(scanAreaLeft + scanAreaSize, scanAreaTop),
+            start = Offset(scanAreaLeft + scanAreaWidth, scanAreaTop + cornerLength),
+            end = Offset(scanAreaLeft + scanAreaWidth, scanAreaTop),
             strokeWidth = cornerStroke
         )
         drawLine(
             color = accentColor,
-            start = Offset(scanAreaLeft + scanAreaSize, scanAreaTop),
-            end = Offset(scanAreaLeft + scanAreaSize - cornerLength, scanAreaTop),
+            start = Offset(scanAreaLeft + scanAreaWidth, scanAreaTop),
+            end = Offset(scanAreaLeft + scanAreaWidth - cornerLength, scanAreaTop),
             strokeWidth = cornerStroke
         )
 
         // Bottom-left corner
         drawLine(
             color = accentColor,
-            start = Offset(scanAreaLeft, scanAreaTop + scanAreaSize - cornerLength),
-            end = Offset(scanAreaLeft, scanAreaTop + scanAreaSize),
+            start = Offset(scanAreaLeft, scanAreaTop + scanAreaHeight - cornerLength),
+            end = Offset(scanAreaLeft, scanAreaTop + scanAreaHeight),
             strokeWidth = cornerStroke
         )
         drawLine(
             color = accentColor,
-            start = Offset(scanAreaLeft, scanAreaTop + scanAreaSize),
-            end = Offset(scanAreaLeft + cornerLength, scanAreaTop + scanAreaSize),
+            start = Offset(scanAreaLeft, scanAreaTop + scanAreaHeight),
+            end = Offset(scanAreaLeft + cornerLength, scanAreaTop + scanAreaHeight),
             strokeWidth = cornerStroke
         )
 
         // Bottom-right corner
         drawLine(
             color = accentColor,
-            start = Offset(scanAreaLeft + scanAreaSize, scanAreaTop + scanAreaSize - cornerLength),
-            end = Offset(scanAreaLeft + scanAreaSize, scanAreaTop + scanAreaSize),
+            start = Offset(scanAreaLeft + scanAreaWidth, scanAreaTop + scanAreaHeight - cornerLength),
+            end = Offset(scanAreaLeft + scanAreaWidth, scanAreaTop + scanAreaHeight),
             strokeWidth = cornerStroke
         )
         drawLine(
             color = accentColor,
-            start = Offset(scanAreaLeft + scanAreaSize, scanAreaTop + scanAreaSize),
-            end = Offset(scanAreaLeft + scanAreaSize - cornerLength, scanAreaTop + scanAreaSize),
+            start = Offset(scanAreaLeft + scanAreaWidth, scanAreaTop + scanAreaHeight),
+            end = Offset(scanAreaLeft + scanAreaWidth - cornerLength, scanAreaTop + scanAreaHeight),
             strokeWidth = cornerStroke
         )
     }

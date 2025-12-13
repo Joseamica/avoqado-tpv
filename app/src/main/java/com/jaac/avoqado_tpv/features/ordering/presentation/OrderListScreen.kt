@@ -23,24 +23,31 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderStatus
+import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
+import com.jaac.avoqado_tpv.features.ordering.domain.PaymentStatus
 import com.jaac.avoqado_tpv.features.ordering.presentation.components.OrderCard
+import timber.log.Timber
+import java.math.BigDecimal
 
 /**
  * OrderListScreen - List of all orders with filters
@@ -66,10 +73,20 @@ fun OrderListScreen(
     onNavigateBack: () -> Unit,
     onOrderClick: (Order) -> Unit,
     modifier: Modifier = Modifier,
+    initialFilter: OrderStatusFilter = OrderStatusFilter.ALL,
     viewModel: OrderListViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val selectedFilter by viewModel.selectedFilter.collectAsStateWithLifecycle()
+
+    // Set initial filter on first composition
+    LaunchedEffect(initialFilter) {
+        Timber.d("🔍 [OrderList] Received initialFilter: ${initialFilter.label}")
+        if (initialFilter != OrderStatusFilter.ALL) {
+            viewModel.selectFilter(initialFilter)
+            Timber.d("✅ [OrderList] Applied filter: ${initialFilter.label}")
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -243,6 +260,7 @@ private fun EmptyState(
                     OrderStatusFilter.OPEN -> "No hay órdenes abiertas"
                     OrderStatusFilter.IN_PROGRESS -> "No hay órdenes en cocina"
                     OrderStatusFilter.COMPLETED -> "No hay órdenes completadas"
+                    OrderStatusFilter.UNPAID_TAKEOUT -> stringResource(R.string.unpaid_takeout_empty_state)
                 },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Medium,
@@ -268,7 +286,8 @@ enum class OrderStatusFilter(val label: String) {
     ALL("Todas"),
     OPEN("Abiertas"),
     IN_PROGRESS("En Cocina"),
-    COMPLETED("Completadas");
+    COMPLETED("Completadas"),
+    UNPAID_TAKEOUT("Para Llevar sin Pagar");
 
     /**
      * Check if order matches this filter
@@ -279,6 +298,11 @@ enum class OrderStatusFilter(val label: String) {
             OPEN -> order.status == OrderStatus.OPEN
             IN_PROGRESS -> order.status == OrderStatus.IN_PROGRESS
             COMPLETED -> order.status == OrderStatus.COMPLETED
+            UNPAID_TAKEOUT -> {
+                order.orderType == OrderType.TAKEOUT &&
+                order.paymentStatus in listOf(PaymentStatus.PENDING, PaymentStatus.PARTIAL) &&
+                order.remainingBalance > BigDecimal.ZERO
+            }
         }
     }
 }

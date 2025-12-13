@@ -91,9 +91,17 @@ sealed class NavRoute(val route: String) {
 
     /**
      * Order List screen - List of all orders with filters
-     * Shows all venue orders with filter chips (ALL, OPEN, IN_PROGRESS, COMPLETED)
+     * Shows all venue orders with filter chips (ALL, OPEN, IN_PROGRESS, COMPLETED, UNPAID_TAKEOUT)
+     *
+     * @param filter Optional filter to apply (e.g., "UNPAID_TAKEOUT")
      */
-    data object OrderList : NavRoute("order_list")
+    data object OrderList : NavRoute("order_list?filter={filter}") {
+        fun createRoute(filter: String? = null) = if (filter != null) {
+            "order_list?filter=$filter"
+        } else {
+            "order_list"
+        }
+    }
 
     /**
      * Reports screen - Sales analytics and reports dashboard

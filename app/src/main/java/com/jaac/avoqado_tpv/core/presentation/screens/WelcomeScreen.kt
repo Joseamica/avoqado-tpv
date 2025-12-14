@@ -2,10 +2,14 @@ package com.jaac.avoqado_tpv.core.presentation.screens
 
 import android.content.Context
 import android.content.Intent
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Help
 import androidx.compose.material.icons.filled.AdminPanelSettings
@@ -37,7 +41,8 @@ import com.jaac.avoqado_tpv.core.presentation.components.ActionButtonGrid
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoDialog
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
-import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
+import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
+import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.SettingsBottomSheet
 import com.jaac.avoqado_tpv.core.presentation.components.ShiftStatusBanner
 import com.jaac.avoqado_tpv.core.presentation.components.VenueStatusBanner
@@ -368,34 +373,46 @@ private fun WelcomeScreenContent(
         },
         containerColor = MaterialTheme.colorScheme.background
     ) { paddingValues ->
-        ResponsiveScaffold(
-            modifier = Modifier.padding(paddingValues),
-            scrollable = false,  // LazyVerticalGrid handles scrolling internally
-            horizontalAlignment = Alignment.CenterHorizontally
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
         ) {
-            // ═══════════════════════════════════════════════════════════════
-            // VENUE STATUS BANNER (shows only for non-ACTIVE statuses)
-            // ═══════════════════════════════════════════════════════════════
-            VenueStatusBanner(status = venueStatus)
+            val sizes = ResponsiveSizes.calculate(maxHeight, maxWidth)
 
-            // Top spacing
-            Spacer(modifier = Modifier.height(16.dp))
+            CompositionLocalProvider(LocalResponsiveSizes provides sizes) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // ═══════════════════════════════════════════════════════════════
+                    // VENUE STATUS BANNER (shows only for non-ACTIVE statuses) - FullWidth
+                    // ═══════════════════════════════════════════════════════════════
+                    VenueStatusBanner(status = venueStatus)
 
-            // Shift status banner (with offline state support)
-            ShiftStatusBanner(
-                shift = currentShift,
-                isOffline = isOffline,
-                cachedInfo = cachedShiftInfo,
-                onClick = onNavigateToShifts
-            )
+                    // Shift status banner (with offline state support) - FullWidth
+                    ShiftStatusBanner(
+                        shift = currentShift,
+                        isOffline = isOffline,
+                        cachedInfo = cachedShiftInfo,
+                        onClick = onNavigateToShifts,
+                        modifier = Modifier.fillMaxWidth()
+                    )
 
-            Spacer(modifier = Modifier.height(16.dp))
+                    // Content with horizontal padding
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = sizes.paddingScreen),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Spacer(modifier = Modifier.height(16.dp))
 
-            // Action button grid (LazyVerticalGrid handles its own scrolling)
-            ActionButtonGrid(
-                buttons = actionButtons,
-                modifier = Modifier.fillMaxSize()
-            )
+                        // Action button grid (LazyVerticalGrid handles its own scrolling)
+                        ActionButtonGrid(
+                            buttons = actionButtons,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+            }
         }
     }
 

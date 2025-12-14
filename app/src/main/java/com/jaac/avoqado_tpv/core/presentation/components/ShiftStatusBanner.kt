@@ -126,7 +126,12 @@ private fun OnlineShiftBanner(
         modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(
+            topStart = 0.dp,
+            topEnd = 0.dp,
+            bottomStart = 12.dp,
+            bottomEnd = 12.dp
+        ),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
@@ -156,9 +161,9 @@ private fun OnlineShiftBanner(
                 // Shift info
                 Column {
                     if (isShiftOpen && shift != null) {
-                        // Staff name + start time
+                        // Turno Abierto
                         Text(
-                            text = "Turno: ${shift.staffName}",
+                            text = "Turno Abierto",
                             style = MaterialTheme.typography.bodyMedium.copy(
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 14.sp
@@ -233,7 +238,12 @@ private fun OfflineCachedBanner(
         modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(
+            topStart = 0.dp,
+            topEnd = 0.dp,
+            bottomStart = 12.dp,
+            bottomEnd = 12.dp
+        ),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
@@ -264,7 +274,7 @@ private fun OfflineCachedBanner(
                 Column {
                     Text(
                         text = if (cachedInfo.isOpen) {
-                            "Turno: ${cachedInfo.staffName}"
+                            "Turno Abierto"
                         } else {
                             "Sin turno activo"
                         },
@@ -325,7 +335,12 @@ private fun OfflineUnknownBanner(
         modifier = modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(
+            topStart = 0.dp,
+            topEnd = 0.dp,
+            bottomStart = 12.dp,
+            bottomEnd = 12.dp
+        ),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),

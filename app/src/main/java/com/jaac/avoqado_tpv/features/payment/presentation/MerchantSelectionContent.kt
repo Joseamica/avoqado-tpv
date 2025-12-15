@@ -276,7 +276,7 @@ fun MerchantSelectionContent(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "Tarjeta 💳",
+                                text = "Tarjeta",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (cardEnabled) MaterialTheme.colorScheme.onPrimary
@@ -305,7 +305,7 @@ fun MerchantSelectionContent(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "Efectivo 💵",
+                                text = "Efectivo",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (cashEnabled) MaterialTheme.colorScheme.onSurfaceVariant

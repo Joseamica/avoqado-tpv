@@ -147,9 +147,8 @@ fun MenuScreen(
     // Custom amount modal state (for CUSTOMAMOUNT split type)
     var showCustomAmountModal by remember { mutableStateOf(false) }
 
-    // Comp/Void dialog state
+    // Comp dialog state (Void dialog moved to ActionsTab)
     var showCompDialog by remember { mutableStateOf(false) }
-    var showVoidDialog by remember { mutableStateOf(false) }
 
     // Load order on first composition
     LaunchedEffect(orderId) {
@@ -445,8 +444,8 @@ fun MenuScreen(
                                 onCompItems = {
                                     showCompDialog = true
                                 },
-                                onVoidItems = {
-                                    showVoidDialog = true
+                                onVoidItems = { itemIds, reason ->
+                                    viewModel.voidItems(itemIds, reason)
                                 }
                             )
                         }
@@ -610,29 +609,6 @@ fun MenuScreen(
                                     reason = reason ?: "Cortesía",
                                     itemIds = selectedItemIds
                                 )
-                            }
-                        }
-                    )
-                }
-
-                // 🗑️ Void Items Dialog - Select items to void (remove from order)
-                if (order != null && showVoidDialog) {
-                    ItemSelectionDialog(
-                        title = "Void Items (Anular)",
-                        subtitle = "Selecciona los items a anular de la orden",
-                        items = order.items,
-                        onDismiss = { showVoidDialog = false },
-                        onConfirm = { selectedItemIds, reason ->
-                            showVoidDialog = false
-                            if (selectedItemIds.isNotEmpty()) {
-                                // Remove each selected item from order
-                                selectedItemIds.forEach { itemId ->
-                                    // Find the OrderItem by ID and remove it
-                                    order.items.find { it.id == itemId }?.let { item ->
-                                        viewModel.removeItem(item)
-                                    }
-                                }
-                                Timber.d("🗑️ Voided ${selectedItemIds.size} items: $selectedItemIds, reason: $reason")
                             }
                         }
                     )

@@ -1728,12 +1728,10 @@ class MenuViewModel @Inject constructor(
      *
      * @param itemIds List of item IDs to void
      * @param reason Reason for void (e.g., "Customer changed mind", "Out of stock")
-     * @param staffId ID of staff member performing the void
      */
     fun voidItems(
         itemIds: List<String>,
-        reason: String,
-        staffId: String
+        reason: String
     ) {
         viewModelScope.launch {
             val currentState = _state.value
@@ -1744,14 +1742,20 @@ class MenuViewModel @Inject constructor(
 
             val order = currentState.order
             val venueId = deviceInfoManager.getVenueId()
+            val staffId = secureStorage.getStaffId()  // Get staffId internally
 
             if (venueId == null) {
                 Timber.e("❌ Cannot void items: venueId is null")
                 return@launch
             }
 
+            if (staffId == null) {
+                Timber.e("❌ Cannot void items: staffId is null")
+                return@launch
+            }
+
             try {
-                Timber.d("🗑️ Voiding items: ${itemIds.size} items, reason: $reason")
+                Timber.d("🗑️ Voiding items: ${itemIds.size} items, reason: $reason, staffId: $staffId")
 
                 // Call repository with version for optimistic concurrency control
                 orderRepository.voidItems(

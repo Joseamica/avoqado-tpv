@@ -201,7 +201,7 @@ fun ActionsTab(
     onValidateCoupon: (code: String) -> Unit = {},
     onApplyCoupon: (code: String) -> Unit = {},
     onCompItems: () -> Unit = {},
-    onVoidItems: () -> Unit = {},
+    onVoidItems: (itemIds: List<String>, reason: String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     // Navigation state
@@ -347,9 +347,7 @@ fun ActionsTab(
                 items = order.items,
                 onDismiss = { dialogState = ActionsDialogState.None },
                 onConfirm = { selectedIds, reason ->
-                    // TODO: Update callback to pass selectedIds and reason
-                    // For now, call the existing callback
-                    onVoidItems()
+                    onVoidItems(selectedIds, reason)
                     dialogState = ActionsDialogState.None
                 }
             )

@@ -20,6 +20,20 @@ This file is the **index** for Claude Code. It provides quick context and points
 
 **Full context**: See avoqado-server `docs/BLUMON_TWO_INTEGRATIONS.md`
 
+### ⚠️ MANDATORY: Before Working on Blumon Payments
+
+**ALWAYS read this document first:**
+
+```
+avoqado-server/docs/blumon-tpv/BLUMON_MULTI_MERCHANT_ANALYSIS.md
+```
+
+This is the **complete technical deep dive** on multi-merchant architecture:
+- Virtual vs Physical serial numbers
+- Multi-merchant credential routing & selection logic
+- Payment flow with merchant account resolution
+- Cost structures and pricing per merchant
+
 ---
 
 ## 2. Role & Identity
@@ -226,7 +240,7 @@ val orders = orderRepository.getOrders(limit = 20, cursor = cursor)
 | ----------------------------- | ---------------------------------------- |
 | Understand Kotlin patterns    | `docs/KOTLIN_BEST_PRACTICES.md`          |
 | Make decisions on UI/errors   | `docs/DECISION_MATRIX.md`                |
-| Work on Blumon payments       | `PAYMENT_RECONCILIATION.md`              |
+| Work on Blumon payments       | `avoqado-server/docs/blumon-tpv/BLUMON_MULTI_MERCHANT_ANALYSIS.md` **(READ FIRST)** |
 | Deploy to production          | `docs/PRODUCTION_DEPLOYMENT.md`          |
 | Understand backend integration| `docs/DOMAIN_RULES.md`                   |
 | Set up build variants         | `docs/DEVELOPMENT_WORKFLOW.md`           |
@@ -240,6 +254,6 @@ val orders = orderRepository.getOrders(limit = 20, cursor = cursor)
 
 ---
 
-**Last Updated:** 2025-12-12
+**Last Updated:** 2025-12-14
 **Maintainer:** Development Team
 **Version:** 3.0 (Refactored: CLAUDE.md as index + detailed docs/)

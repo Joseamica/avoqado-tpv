@@ -40,8 +40,41 @@ data class Payment(
     val processedBy: StaffSummary?,
     val createdAt: Instant,
     val status: PaymentStatus,
-    val tableName: String?
+    val tableName: String?,
+
+    // ⭐ MULTI-MERCHANT REFUND SUPPORT (2025-01-XX)
+    // These fields are CRITICAL for processing refunds to the correct merchant
+    val merchantAccountId: String? = null, // Backend MerchantAccount ID (null for cash payments)
+    val blumonSerialNumber: String? = null, // Terminal serial used for payment (for SDK switch)
+
+    // 🔐 REFUND STATUS TRACKING
+    val refundedAmount: BigDecimal? = null, // Amount already refunded (null = not refunded)
+    val isFullyRefunded: Boolean = false, // True if totalAmount == refundedAmount
+
+    // 🎫 BLUMON TRANSACTION REFERENCE (for audit/tracking)
+    // This is the original transaction reference from Blumon SDK SaleData
+    // NOTE: This is NOT the operationID for CancelIcc! Use blumonOperationNumber instead
+    // Example: "195978383755"
+    val referenceNumber: String? = null,
+
+    // 💳 BLUMON OPERATION NUMBER (CRITICAL for CancelIcc refunds!)
+    // This is the small integer from Blumon webhook (processorData.blumonOperationNumber)
+    // Required as operationID for CancelIccUseCase when processing refunds
+    // Example: 75656
+    // NOTE: referenceNumber (12-digit) is too large for Blumon's Integer API
+    val blumonOperationNumber: Int? = null,
+
+    // 💸 REFUND TRANSACTION FLAG
+    // True if this transaction is a refund (money returned to customer)
+    // Detected by negative totalAmount or explicit flag from backend
+    val isRefundTransaction: Boolean = false,
 ) {
+    /**
+     * Check if this payment is a refund transaction
+     * A refund has negative totalAmount OR explicit isRefundTransaction flag
+     */
+    val isRefund: Boolean
+        get() = isRefundTransaction || totalAmount < BigDecimal.ZERO
     /**
      * Format payment amount for display
      * Example: "$125.50"
@@ -106,12 +139,69 @@ data class Payment(
             "Pago rápido"
         }
     }
+
+    /**
+     * Check if this payment can be refunded
+     *
+     * A payment is refundable if:
+     * - Status is COMPLETED (not FAILED or PENDING)
+     * - Not already fully refunded
+     * - Method is not CASH (cash refunds handled differently - see Square pattern)
+     * - Has merchant account info (required for multi-merchant routing)
+     * - Has Blumon operation number (required as operationID for CancelIcc)
+     *
+     * NOTE: blumonOperationNumber comes from Blumon webhook (processorData.blumonOperationNumber)
+     * It's the small integer (e.g., 75656) that Blumon's API accepts.
+     * referenceNumber (12-digit SDK value) is TOO LARGE for Blumon's Integer API.
+     */
+    fun isRefundable(): Boolean {
+        return status == PaymentStatus.COMPLETED &&
+                !isFullyRefunded &&
+                method != PaymentMethod.CASH &&
+                merchantAccountId != null &&
+                blumonOperationNumber != null // Required for CancelIcc operationID
+    }
+
+    /**
+     * Get the remaining amount that can be refunded
+     * For partial refund support
+     */
+    fun getRefundableAmount(): BigDecimal {
+        return if (refundedAmount != null) {
+            totalAmount - refundedAmount
+        } else {
+            totalAmount
+        }
+    }
+
+    /**
+     * Format refundable amount for display
+     * Example: "$125.50"
+     */
+    fun formatRefundableAmount(): String {
+        return "$${getRefundableAmount().setScale(2, RoundingMode.HALF_UP)}"
+    }
+
+    /**
+     * Get reason why payment cannot be refunded (for UI display)
+     */
+    fun getNonRefundableReason(): String? {
+        return when {
+            status != PaymentStatus.COMPLETED -> "El pago no está completado"
+            isFullyRefunded -> "Este pago ya fue reembolsado"
+            method == PaymentMethod.CASH -> "Los pagos en efectivo no pueden reembolsarse con tarjeta"
+            merchantAccountId == null -> "Información de comercio no disponible"
+            blumonOperationNumber == null -> "Número de operación Blumon no disponible (webhook pendiente)"
+            else -> null
+        }
+    }
 }
 
 /**
  * Payment Method Enum
  *
  * Matches backend PaymentMethod enum.
+ * Handles various backend formats: DEBIT, CREDIT, CARD_PRESENT, etc.
  */
 enum class PaymentMethod(val label: String) {
     CASH("Efectivo"),
@@ -120,8 +210,41 @@ enum class PaymentMethod(val label: String) {
     OTHER("Otro");
 
     companion object {
+        /**
+         * Parse payment method from backend string.
+         *
+         * Handles various formats:
+         * - CASH, cash → CASH
+         * - CARD, DEBIT, CREDIT, DEBIT_CARD, CREDIT_CARD, CARD_PRESENT → CARD
+         * - VOUCHER, vale → VOUCHER
+         * - Anything else → OTHER
+         */
         fun fromString(value: String): PaymentMethod {
-            return values().firstOrNull { it.name == value.uppercase() } ?: OTHER
+            val normalized = value.uppercase().trim()
+
+            return when {
+                // Cash variations
+                normalized == "CASH" || normalized == "EFECTIVO" -> CASH
+
+                // Card variations (covers DEBIT, CREDIT, CARD_PRESENT, etc.)
+                normalized == "CARD" ||
+                normalized == "DEBIT" ||
+                normalized == "CREDIT" ||
+                normalized == "DEBIT_CARD" ||
+                normalized == "CREDIT_CARD" ||
+                normalized == "CARD_PRESENT" ||
+                normalized == "CARD_NOT_PRESENT" ||
+                normalized == "TARJETA" ||
+                normalized.contains("CARD") ||
+                normalized.contains("DEBIT") ||
+                normalized.contains("CREDIT") -> CARD
+
+                // Voucher variations
+                normalized == "VOUCHER" || normalized == "VALE" -> VOUCHER
+
+                // Fallback
+                else -> OTHER
+            }
         }
     }
 }

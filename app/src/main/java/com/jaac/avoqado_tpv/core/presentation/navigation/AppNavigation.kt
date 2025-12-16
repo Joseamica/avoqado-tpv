@@ -69,9 +69,13 @@ import com.jaac.avoqado_tpv.features.timeclock.presentation.TimeclockScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.split.SplitByProductScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.split.SplitByPersonScreen
 import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
+import com.jaac.avoqado_tpv.features.payment.domain.model.RefundReason
+import com.jaac.avoqado_tpv.features.refund.presentation.RefundConfirmationScreen
+import com.jaac.avoqado_tpv.features.payments.domain.models.Payment
 import androidx.navigation.NavType
 import androidx.navigation.navArgument
 import timber.log.Timber
+import java.time.Instant
 
 /**
  * EntryPoint for accessing TableRepository in AppNavigation
@@ -543,6 +547,21 @@ fun AppNavigation(
             val equalPartsPayedFor = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("equalPartsPayedFor")
             val paidProductIds = navController.previousBackStackEntry?.savedStateHandle?.get<List<String>>("paidProductIds") ?: emptyList()
 
+            // 💸 REFUND MODE PARAMS (from RefundConfirmationScreen)
+            val isRefundMode = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("isRefundMode") ?: false
+            val refundAmount = navController.previousBackStackEntry?.savedStateHandle?.get<String>("refundAmount")
+            val refundReason = navController.previousBackStackEntry?.savedStateHandle?.get<String>("refundReason")
+            val originalPaymentId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("originalPaymentId")
+            val originalOrderId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("originalOrderId")
+            val originalTotalAmount = navController.previousBackStackEntry?.savedStateHandle?.get<String>("originalTotalAmount")
+            val originalTipAmount = navController.previousBackStackEntry?.savedStateHandle?.get<String>("originalTipAmount")
+            val refundMerchantAccountId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("merchantAccountId")
+            val refundBlumonSerialNumber = navController.previousBackStackEntry?.savedStateHandle?.get<String>("blumonSerialNumber")
+            // 🎫 CRITICAL: Blumon operation number for CancelIcc (from webhook, NOT SDK referenceNumber!)
+            val originalOperationNumber = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("blumonOperationNumber")
+            // 🏢 CRITICAL: Payment's venueId for refund API call (NOT auth context's venue!)
+            val refundVenueId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("paymentVenueId")
+
             // 🔌 Get TableRepository via Hilt EntryPoint for clearing tables post-payment
             val context = LocalContext.current
             val tableRepository = remember {
@@ -565,6 +584,20 @@ fun AppNavigation(
                 equalPartsPartySize = equalPartsPartySize,
                 equalPartsPayedFor = equalPartsPayedFor,
                 paidProductIds = paidProductIds,
+                // 💸 REFUND MODE PARAMS
+                isRefundMode = isRefundMode,
+                refundAmount = refundAmount,
+                refundReason = refundReason,
+                originalPaymentId = originalPaymentId,
+                originalOrderId = originalOrderId,
+                originalTotalAmount = originalTotalAmount,
+                originalTipAmount = originalTipAmount,
+                refundMerchantAccountId = refundMerchantAccountId,
+                refundBlumonSerialNumber = refundBlumonSerialNumber,
+                // 🎫 CRITICAL: Blumon operation number for CancelIcc (from webhook)
+                originalOperationNumber = originalOperationNumber,
+                // 🏢 CRITICAL: Payment's venueId for refund API call (NOT auth context's venue!)
+                refundVenueId = refundVenueId,
                 onNavigateBack = {
                     // 🏠 Navigate directly to WelcomeScreen (clearing payment stack)
                     navController.popBackStack(NavRoute.Home.route, inclusive = false)
@@ -720,6 +753,107 @@ fun AppNavigation(
             com.jaac.avoqado_tpv.features.payments.presentation.PaymentsScreen(
                 onBack = {
                     navController.popBackStack()
+                },
+                onNavigateToRefund = { payment: Payment ->
+                    // Store payment data in savedStateHandle for RefundConfirmationScreen
+                    navController.currentBackStackEntry?.savedStateHandle?.apply {
+                        set("paymentId", payment.id)
+                        set("orderNumber", payment.orderNumber)
+                        set("originalAmount", payment.amount.toString())
+                        set("originalTipAmount", payment.tipAmount.toString())
+                        set("paymentMethod", payment.method.label) // Payment uses 'method: PaymentMethod' enum
+                        set("createdAt", payment.createdAt.toString())
+                        set("merchantAccountId", payment.merchantAccountId ?: "")
+                        set("blumonSerialNumber", payment.blumonSerialNumber ?: "")
+                        set("refundedAmount", (payment.refundedAmount ?: java.math.BigDecimal.ZERO).toString())
+                        // Also store original orderId for RefundPayment context
+                        set("orderId", payment.orderId)
+                        // 🎫 CRITICAL: Blumon operation number for CancelIcc refunds (from webhook)
+                        // NOTE: This is the small int (e.g., 75656), NOT referenceNumber (12-digit)
+                        set("blumonOperationNumber", payment.blumonOperationNumber ?: 0)
+                        // 🏢 CRITICAL: Pass payment's venueId for refund API call (NOT auth context's venue!)
+                        // The refund MUST be recorded to the same venue as the original payment
+                        set("paymentVenueId", payment.venueId)
+                    }
+                    navController.navigate(NavRoute.RefundConfirmation.createRoute(payment.id))
+                }
+            )
+        }
+
+        // Refund Confirmation Screen - Review refund before processing
+        composable(
+            route = NavRoute.RefundConfirmation.route,
+            arguments = listOf(navArgument("paymentId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val paymentId = backStackEntry.arguments?.getString("paymentId") ?: ""
+
+            // Retrieve payment data from savedStateHandle (stored in PaymentsScreen)
+            val previousBackStack = navController.previousBackStackEntry
+            val paymentHandle = previousBackStack?.savedStateHandle
+
+            // Parse data from savedStateHandle
+            val orderNumber = paymentHandle?.get<String>("orderNumber")
+            val originalAmount = paymentHandle?.get<String>("originalAmount")?.toBigDecimalOrNull()
+                ?: java.math.BigDecimal.ZERO
+            val originalTipAmount = paymentHandle?.get<String>("originalTipAmount")?.toBigDecimalOrNull()
+                ?: java.math.BigDecimal.ZERO
+            val paymentMethod = paymentHandle?.get<String>("paymentMethod") ?: "Tarjeta"
+            val createdAtStr = paymentHandle?.get<String>("createdAt")
+            val createdAt = createdAtStr?.let {
+                try { Instant.parse(it) } catch (e: Exception) { Instant.now() }
+            } ?: Instant.now()
+            val merchantAccountId = paymentHandle?.get<String>("merchantAccountId") ?: ""
+            val blumonSerialNumber = paymentHandle?.get<String>("blumonSerialNumber") ?: ""
+            val refundedAmount = paymentHandle?.get<String>("refundedAmount")?.toBigDecimalOrNull()
+                ?: java.math.BigDecimal.ZERO
+            val orderId = paymentHandle?.get<String>("orderId")
+            // 🎫 CRITICAL: Blumon operation number for CancelIcc (from webhook, NOT SDK referenceNumber!)
+            val blumonOperationNumber = paymentHandle?.get<Int>("blumonOperationNumber") ?: 0
+            // 🏢 CRITICAL: Payment's venueId for refund API call (NOT auth context's venue!)
+            val paymentVenueId = paymentHandle?.get<String>("paymentVenueId") ?: ""
+
+            RefundConfirmationScreen(
+                paymentId = paymentId,
+                orderNumber = orderNumber,
+                originalAmount = originalAmount,
+                originalTipAmount = originalTipAmount,
+                paymentMethod = paymentMethod,
+                createdAt = createdAt,
+                merchantAccountId = merchantAccountId,
+                blumonSerialNumber = blumonSerialNumber,
+                refundedAmount = refundedAmount,
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onConfirmRefund = { refundAmount, refundReason ->
+                    // 💸 Navigate to PaymentScreen with refund context
+                    // Store refund data for PaymentScreen to process
+                    Timber.i("💸 [Refund] Confirming refund: $refundAmount for payment: $paymentId, reason: $refundReason")
+
+                    navController.currentBackStackEntry?.savedStateHandle?.apply {
+                        // Refund mode flag
+                        set("isRefundMode", true)
+
+                        // Refund-specific data
+                        set("refundAmount", refundAmount.toString())
+                        set("refundReason", refundReason.name)
+                        set("originalPaymentId", paymentId)
+                        set("originalOrderId", orderId)
+                        set("originalTotalAmount", originalAmount.toString())
+                        set("originalTipAmount", originalTipAmount.toString())
+
+                        // Merchant data (CRITICAL for multi-merchant refunds)
+                        set("merchantAccountId", merchantAccountId)
+                        set("blumonSerialNumber", blumonSerialNumber)
+                        // 🎫 CRITICAL: Blumon operation number for CancelIcc refunds (from webhook)
+                        set("blumonOperationNumber", blumonOperationNumber)
+                        // 🏢 CRITICAL: Payment's venueId for refund API call (NOT auth context's venue!)
+                        // The refund MUST be recorded to the same venue as the original payment
+                        set("paymentVenueId", paymentVenueId)
+                    }
+
+                    // Navigate to PaymentScreen (will detect refund mode and call startRefund)
+                    navController.navigate(NavRoute.Payment.route)
                 }
             )
         }

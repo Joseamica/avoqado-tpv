@@ -164,4 +164,21 @@ sealed class NavRoute(val route: String) {
     data object SplitByPerson : NavRoute("split_by_person/{orderId}") {
         fun createRoute(orderId: String) = "split_by_person/$orderId"
     }
+
+    /**
+     * Refund Confirmation screen - Review and confirm refund before processing
+     * User reviews refund details before card is presented
+     *
+     * Pattern: Square POS refund flow
+     * - Select refund reason
+     * - Confirm amount (full or partial)
+     * - Present same card for refund
+     *
+     * @param paymentId Original payment ID to refund
+     *
+     * Note: Full Payment object is passed via savedStateHandle (too many fields for URL args)
+     */
+    data object RefundConfirmation : NavRoute("refund_confirmation/{paymentId}") {
+        fun createRoute(paymentId: String) = "refund_confirmation/$paymentId"
+    }
 }

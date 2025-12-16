@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
 import com.jaac.avoqado_tpv.core.presentation.navigation.AppNavigation
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
@@ -98,6 +99,14 @@ class MainActivity : ComponentActivity() {
         if (isGranted) {
             Timber.i("✅ READ_PHONE_STATE permission granted - hardware serial: ${deviceInfoManager.getSerialNumber()}")
             permissionGranted.value = true
+
+            // 🐛 FIX: Start initialization AFTER permission is granted (not in onCreate)
+            // On fresh install, permission callback fires AFTER onCreate() completes,
+            // so we need to trigger heartbeat + config fetch here too.
+            lifecycleScope.launch(Dispatchers.IO) {
+                startHeartbeatIfActivated()
+                fetchTerminalConfigIfActivated()
+            }
         } else {
             Timber.e("❌ READ_PHONE_STATE permission DENIED - app cannot function without hardware serial")
             permissionGranted.value = false
@@ -144,7 +153,8 @@ class MainActivity : ComponentActivity() {
         }
 
         // ✅ Square/Toast Pattern: Start heartbeat if terminal is activated
-        // Only runs after permission is granted
+        // This runs when permission was ALREADY granted (returning user)
+        // For fresh installs, the permission callback handles this (see requestPermissionLauncher)
         if (permissionGranted.value == true) {
             // 🚀 Performance Optimization:
             // Move heavy initialization (SecureStorage disk reads + Network) to IO thread.
@@ -293,11 +303,28 @@ class MainActivity : ComponentActivity() {
      */
     private suspend fun fetchTerminalConfigIfActivated() {
         // Runs on Dispatchers.IO (called from onCreate)
-        val isActivated = secureStorage.isTerminalActivated()
+        var isActivated = secureStorage.isTerminalActivated()
 
+        // 🐛 FIX: On fresh install, local cache is empty but terminal may still be activated.
+        // Check backend activation status to handle reinstall/cache clear scenarios.
         if (!isActivated) {
-            Timber.d("🔴 Terminal not activated - skipping config fetch")
-            return
+            Timber.d("🔍 Local activation cache empty - checking backend...")
+
+            when (val result = deviceInfoManager.checkActivationStatusWithBackend()) {
+                is Result.Success -> {
+                    if (result.data.isActivated) {
+                        Timber.i("✅ Backend confirms terminal is activated - proceeding with config fetch")
+                        isActivated = true
+                    } else {
+                        Timber.d("🔴 Backend confirms terminal not activated - skipping config fetch")
+                        return
+                    }
+                }
+                is Result.Error -> {
+                    Timber.w("⚠️ Could not verify activation with backend - skipping config fetch")
+                    return
+                }
+            }
         }
 
         // Get device serial number (e.g., "AVQD-2841548417")

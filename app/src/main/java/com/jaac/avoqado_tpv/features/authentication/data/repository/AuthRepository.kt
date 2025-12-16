@@ -9,6 +9,7 @@ import com.jaac.avoqado_tpv.features.authentication.data.dto.toDto
 import com.jaac.avoqado_tpv.features.authentication.domain.models.AuthResponse
 import com.jaac.avoqado_tpv.features.authentication.domain.models.PinLoginRequest
 import com.jaac.avoqado_tpv.features.authentication.domain.models.RefreshTokenResponse
+import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import org.json.JSONObject
 import timber.log.Timber
@@ -181,6 +182,7 @@ class AuthRepository @Inject constructor(
         secureStorage.saveVenueId(authResponse.venueId)
         secureStorage.saveStaffId(authResponse.staffId)
         secureStorage.saveStaffName(authResponse.staff.displayName)
+        secureStorage.saveRole(authResponse.role) // 🔐 Save role for refund authorization
         secureStorage.savePermissions(authResponse.permissions)
 
         // Save venue info for UI (logo, name, slug)
@@ -196,7 +198,7 @@ class AuthRepository @Inject constructor(
         // 🎁 Save loyalty program status (Toast/Square pattern)
         secureStorage.saveLoyaltyActive(authResponse.loyaltyActive)
 
-        Timber.d("✅ Session saved: venueId=${authResponse.venueId}, staffId=${authResponse.staffId}, venueSlug=${authResponse.venue.slug}, loyaltyActive=${authResponse.loyaltyActive}")
+        Timber.d("✅ Session saved: venueId=${authResponse.venueId}, staffId=${authResponse.staffId}, role=${authResponse.role}, venueSlug=${authResponse.venue.slug}, loyaltyActive=${authResponse.loyaltyActive}")
     }
 
     /**
@@ -335,6 +337,18 @@ class AuthRepository @Inject constructor(
      */
     fun getStaffName(): String? {
         return secureStorage.getStaffName()
+    }
+
+    /**
+     * Get current staff role
+     *
+     * 🔐 Used for refund authorization checks:
+     * - Only SUPERADMIN, OWNER, ADMIN can process refunds
+     *
+     * @return StaffRole enum or null if not authenticated
+     */
+    fun getRole(): StaffRole? {
+        return secureStorage.getRole()
     }
 
     /**

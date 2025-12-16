@@ -122,6 +122,30 @@ enum class StaffRole {
             return values().find { it.name.equals(value, ignoreCase = true) }
                 ?: throw IllegalArgumentException("Unknown role: $value")
         }
+
+        /**
+         * Roles authorized to process refunds
+         *
+         * Following Square/Toast pattern: Only management-level roles
+         * can process refunds to prevent fraud and misuse.
+         */
+        val REFUND_AUTHORIZED_ROLES = setOf(SUPERADMIN, OWNER, ADMIN)
+    }
+
+    /**
+     * Check if this role can process refunds
+     *
+     * 🔐 Refund Authorization Rules:
+     * - SUPERADMIN, OWNER, ADMIN: Can process refunds
+     * - All other roles: Cannot process refunds
+     *
+     * This follows Square POS and Toast patterns where only
+     * management-level roles have refund authority.
+     *
+     * @return true if role is authorized to process refunds
+     */
+    fun canRefund(): Boolean {
+        return this in REFUND_AUTHORIZED_ROLES
     }
 }
 

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -54,6 +55,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_VENUE_SLUG = "venue_slug"  // 📸 For Firebase Storage path: venues/{venueSlug}/verifications/
         private const val KEY_STAFF_ID = "staff_id"
         private const val KEY_STAFF_NAME = "staff_name"
+        private const val KEY_STAFF_ROLE = "staff_role"  // 🔐 Staff role for refund authorization
         private const val KEY_PERMISSIONS = "permissions"
         private const val KEY_VENUE_LOGO = "venue_logo"
         private const val KEY_VENUE_NAME = "venue_name"
@@ -221,6 +223,7 @@ class SecureStorage @Inject constructor(
             // DO NOT remove KEY_VENUE_ID, KEY_VENUE_SLUG, or KEY_VENUE_STATUS - device activation persists across logout!
             remove(KEY_STAFF_ID)
             remove(KEY_STAFF_NAME)
+            remove(KEY_STAFF_ROLE)
             remove(KEY_PERMISSIONS)
         }.apply()
         Timber.d("Session cleared (venueId, venueSlug, and venueStatus preserved for device activation)")
@@ -298,6 +301,40 @@ class SecureStorage @Inject constructor(
      */
     fun getStaffName(): String? {
         return encryptedPrefs.getString(KEY_STAFF_NAME, null)
+    }
+
+    /**
+     * Save staff role for refund authorization
+     *
+     * 🔐 Required for role-based access control:
+     * - Only SUPERADMIN, OWNER, ADMIN can process refunds
+     * - Role persists with session, cleared on logout
+     *
+     * @param role StaffRole enum value
+     */
+    fun saveRole(role: StaffRole) {
+        encryptedPrefs.edit().putString(KEY_STAFF_ROLE, role.name).apply()
+        Timber.d("🔐 Staff role saved: ${role.name}")
+    }
+
+    /**
+     * Get current staff role
+     *
+     * Used for refund authorization checks.
+     * Returns null if not authenticated.
+     *
+     * @return StaffRole enum or null if not set
+     */
+    fun getRole(): StaffRole? {
+        val roleStr = encryptedPrefs.getString(KEY_STAFF_ROLE, null)
+        return roleStr?.let {
+            try {
+                StaffRole.fromString(it)
+            } catch (e: IllegalArgumentException) {
+                Timber.w(e, "Unknown role stored: $it")
+                null
+            }
+        }
     }
 
     /**

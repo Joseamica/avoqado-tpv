@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
+import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.payments.domain.models.Payment
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod
 import com.jaac.avoqado_tpv.features.payments.domain.repository.PaymentRepository
@@ -86,6 +87,32 @@ class PaymentsViewModel @Inject constructor(
 
     private val _showPrintDialog = MutableStateFlow(false)
     val showPrintDialog: StateFlow<Boolean> = _showPrintDialog.asStateFlow()
+
+    // ══════════════════════════════════════════════════════════════════════
+    // PAYMENT DETAIL STATE (for bottom sheet)
+    // ══════════════════════════════════════════════════════════════════════
+
+    private val _selectedPaymentForDetail = MutableStateFlow<Payment?>(null)
+    val selectedPaymentForDetail: StateFlow<Payment?> = _selectedPaymentForDetail.asStateFlow()
+
+    private val _showPaymentDetailSheet = MutableStateFlow(false)
+    val showPaymentDetailSheet: StateFlow<Boolean> = _showPaymentDetailSheet.asStateFlow()
+
+    /**
+     * Whether current user can process refunds.
+     *
+     * Based on StaffRole.canRefund() which allows:
+     * - SUPERADMIN
+     * - OWNER
+     * - ADMIN
+     */
+    val canProcessRefund: StateFlow<Boolean> = MutableStateFlow(
+        secureStorage.getRole()?.canRefund() ?: false
+    )
+
+    // Payment selected for refund (to be passed to navigation)
+    private val _paymentForRefund = MutableStateFlow<Payment?>(null)
+    val paymentForRefund: StateFlow<Payment?> = _paymentForRefund.asStateFlow()
 
     // Pagination state
     private var currentPage = 1
@@ -496,6 +523,77 @@ class PaymentsViewModel @Inject constructor(
                 Timber.e(e, "❌ [PaymentsViewModel] Unexpected error during printing")
             }
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // PAYMENT DETAIL METHODS (for bottom sheet + refund)
+    // ══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Show payment detail bottom sheet
+     *
+     * Called when user taps a payment card (not in print mode).
+     * Opens bottom sheet with full payment details and refund option.
+     */
+    fun showPaymentDetail(payment: Payment) {
+        Timber.d("📋 [PaymentsViewModel] Showing payment detail: ${payment.id}")
+        _selectedPaymentForDetail.value = payment
+        _showPaymentDetailSheet.value = true
+    }
+
+    /**
+     * Dismiss payment detail bottom sheet
+     */
+    fun dismissPaymentDetail() {
+        Timber.d("📋 [PaymentsViewModel] Dismissing payment detail")
+        _showPaymentDetailSheet.value = false
+        _selectedPaymentForDetail.value = null
+    }
+
+    /**
+     * Initiate refund for a payment
+     *
+     * Called when user taps "Refund" button in payment detail.
+     * Sets the payment for refund and triggers navigation.
+     *
+     * **Pre-conditions checked:**
+     * - User role is authorized (canRefund)
+     * - Payment is refundable (not cash, not fully refunded, has merchantAccountId)
+     *
+     * @param payment Payment to refund
+     */
+    fun initiateRefund(payment: Payment) {
+        // Validate refundability
+        if (!payment.isRefundable()) {
+            val reason = payment.getNonRefundableReason()
+            Timber.w("⚠️ [PaymentsViewModel] Payment not refundable: $reason")
+            return
+        }
+
+        // Validate user role
+        val role = secureStorage.getRole()
+        if (role == null || !role.canRefund()) {
+            Timber.w("⚠️ [PaymentsViewModel] User role cannot process refunds: $role")
+            return
+        }
+
+        Timber.i("🔄 [PaymentsViewModel] Initiating refund for payment: ${payment.id} | merchant: ${payment.merchantAccountId}")
+
+        // Close detail sheet
+        _showPaymentDetailSheet.value = false
+        _selectedPaymentForDetail.value = null
+
+        // Set payment for refund (triggers navigation)
+        _paymentForRefund.value = payment
+    }
+
+    /**
+     * Clear refund navigation state
+     *
+     * Called after navigation to refund screen is complete.
+     */
+    fun clearRefundNavigation() {
+        _paymentForRefund.value = null
     }
 
     // ══════════════════════════════════════════════════════════════════════

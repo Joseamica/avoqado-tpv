@@ -44,7 +44,60 @@ data class PaymentDto(
     val processedBy: StaffDto?,
 
     @SerializedName("order")
-    val order: OrderSummaryDto?
+    val order: OrderSummaryDto?,
+
+    // ⭐ MULTI-MERCHANT REFUND SUPPORT (2025-01-XX)
+    // Backend needs to return these fields for refund routing
+    @SerializedName("merchantAccountId")
+    val merchantAccountId: String? = null, // Backend MerchantAccount CUID
+
+    @SerializedName("blumonSerialNumber")
+    val blumonSerialNumber: String? = null, // Terminal serial used for payment
+
+    // 🔐 REFUND STATUS TRACKING
+    @SerializedName("refundedAmount")
+    val refundedAmount: String? = null, // Amount already refunded (string for precision)
+
+    @SerializedName("isFullyRefunded")
+    val isFullyRefunded: Boolean? = null, // True if fully refunded
+
+    // 🎫 BLUMON TRANSACTION REFERENCE (for audit/tracking)
+    // This is the original transaction reference from Blumon SDK SaleData
+    // NOTE: This is NOT the operationID for CancelIcc! Use blumonOperationNumber instead
+    @SerializedName("referenceNumber")
+    val referenceNumber: String? = null, // e.g., "195978383755"
+
+    // 💳 BLUMON PROCESSOR DATA (contains blumonOperationNumber)
+    // Backend returns this as JSONB, we extract blumonOperationNumber for refunds
+    @SerializedName("processorData")
+    val processorData: ProcessorDataDto? = null
+)
+
+/**
+ * Processor Data DTO
+ *
+ * Nested JSON object from Payment.processorData field.
+ * Contains Blumon-specific data including the critical blumonOperationNumber.
+ *
+ * ⚠️ CRITICAL: blumonOperationNumber is required for CancelIcc refunds!
+ * The referenceNumber (12-digit) is too large for Integer - use operationNumber instead.
+ */
+data class ProcessorDataDto(
+    // 🎫 CRITICAL: This is the operationID for CancelIcc refunds!
+    // Format: small integer (e.g., 75656) that fits in Blumon's Integer type
+    // This comes from Blumon webhook, NOT from SDK SaleData.reference
+    @SerializedName("blumonOperationNumber")
+    val blumonOperationNumber: Int? = null,
+
+    // Other fields for reference (not currently used)
+    @SerializedName("referenceNumber")
+    val referenceNumber: String? = null,
+
+    @SerializedName("blumonMembership")
+    val blumonMembership: String? = null,
+
+    @SerializedName("blumonSerialNumber")
+    val blumonSerialNumber: String? = null
 )
 
 /**
@@ -194,6 +247,18 @@ fun PaymentDto.toDomain(): Payment {
     // Calculate total
     val total = amountDecimal + tipDecimal
 
+    // Parse refunded amount (if present)
+    val refundedDecimal = try {
+        refundedAmount?.let { BigDecimal(it) }
+    } catch (e: Exception) {
+        Timber.e(e, "Failed to parse refunded amount: $refundedAmount")
+        null
+    }
+
+    // Extract blumonOperationNumber from processorData (CRITICAL for CancelIcc refunds!)
+    // This is the operationID that Blumon's backend expects as Integer
+    val operationNumber = processorData?.blumonOperationNumber
+
     return Payment(
         id = id,
         orderId = orderId,
@@ -206,6 +271,16 @@ fun PaymentDto.toDomain(): Payment {
         processedBy = staff,
         createdAt = timestamp,
         status = paymentStatus,
-        tableName = order?.table?.name
+        tableName = order?.table?.name,
+        // Multi-merchant refund fields
+        merchantAccountId = merchantAccountId,
+        blumonSerialNumber = blumonSerialNumber,
+        refundedAmount = refundedDecimal,
+        isFullyRefunded = isFullyRefunded ?: false,
+        // Blumon transaction reference (for audit - NOT for CancelIcc operationID!)
+        referenceNumber = referenceNumber,
+        // 🎫 CRITICAL: Blumon operationNumber for CancelIcc refunds
+        // This is the small integer from Blumon webhook, NOT the SDK's large reference
+        blumonOperationNumber = operationNumber
     )
 }

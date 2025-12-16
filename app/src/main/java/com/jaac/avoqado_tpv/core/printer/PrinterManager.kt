@@ -131,7 +131,8 @@ class PrinterManager @Inject constructor(
         venueAddress: String? = null,
         orderNumber: String? = null,  // 🆕 Order number (for display)
         orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null,  // 🆕 Order items (for itemized receipt)
-        discountAmount: String? = null  // 🆕 Discount applied to order
+        discountAmount: String? = null,  // 🆕 Discount applied to order
+        isRefund: Boolean = false  // 💸 Refund mode - changes header and labels
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
@@ -189,7 +190,9 @@ class PrinterManager @Inject constructor(
                 printerInstance.printStr("          AVOQADO\n", null)
             }
 
-            printerInstance.printStr("    Comprobante de Venta\n\n", null)
+            // 💸 Different header for refunds vs sales
+            val receiptTitle = if (isRefund) "  Comprobante de Reembolso" else "    Comprobante de Venta"
+            printerInstance.printStr("$receiptTitle\n\n", null)
 
             // RFC and Address (if available) - small text
             if (venueRfc != null) {
@@ -261,22 +264,28 @@ class PrinterManager @Inject constructor(
             // TRANSACTION DETAILS
             // ========================================
             val amountValue = amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
-            val tipValue = tipAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+            // 💸 Skip tip calculation for refunds
+            val tipValue = if (isRefund) java.math.BigDecimal.ZERO else (tipAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)
             val totalValue = amountValue + tipValue
 
-            printerInstance.printStr("Monto:         \$${amount} MXN\n", null)
+            // 💸 Different label for refunds
+            val amountLabel = if (isRefund) "Reembolso:     " else "Monto:         "
+            printerInstance.printStr("$amountLabel\$${amount} MXN\n", null)
 
-            // 🆕 Descuento (si aplica)
-            if (!discountAmount.isNullOrEmpty() && discountAmount != "0" && discountAmount != "0.00") {
+            // 🆕 Descuento (si aplica) - not applicable for refunds
+            if (!isRefund && !discountAmount.isNullOrEmpty() && discountAmount != "0" && discountAmount != "0.00") {
                 printerInstance.printStr("Descuento:     -\$${discountAmount} MXN\n", null)
             }
 
-            if (tipValue > java.math.BigDecimal.ZERO) {
+            // 💸 Skip tip for refunds
+            if (!isRefund && tipValue > java.math.BigDecimal.ZERO) {
                 printerInstance.printStr("Propina:        \$${tipAmount} MXN\n", null)
             }
 
             printerInstance.printStr("================================\n", null)
-            printerInstance.printStr("TOTAL:         \$${totalValue} MXN\n", null)
+            // 💸 Different total label for refunds
+            val totalLabel = if (isRefund) "TOTAL REEMBOLSO:" else "TOTAL:         "
+            printerInstance.printStr("$totalLabel \$${totalValue} MXN\n", null)
             printerInstance.printStr("================================\n\n", null)
 
             // ========================================

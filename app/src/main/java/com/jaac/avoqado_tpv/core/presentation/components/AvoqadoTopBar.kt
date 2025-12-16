@@ -19,9 +19,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import com.jaac.avoqado_tpv.BuildConfig
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 
 /**
@@ -57,23 +57,10 @@ fun AvoqadoTopBar(
         bottomEnd = bottomRadius
     )
 
-    // ⭐ PRODUCTION MIGRATION (2025-11-19): Environment border color
-    val borderColor = if (BuildConfig.DEBUG) {
-        when (BuildConfig.BLUMON_ENV) {
-            "PROD" -> Color(0xFFEF5350)  // Red 400 - Production (danger)
-//            "SAND" -> Color(0xFFFFA726)  // Amber 400 - Sandbox (warning)
-            else -> MaterialTheme.colorScheme.outline
-        }
-    } else {
-        // Release builds: No environment indicator
-        MaterialTheme.colorScheme.outline
-    }
-
-    val borderWidth = if (BuildConfig.DEBUG && BuildConfig.BLUMON_ENV in listOf("PROD", "SAND")) {
-        3.dp  // Thicker border for debug builds to make environment obvious
-    } else {
-        1.dp
-    }
+    // Border color - Blue for sandbox to distinguish from production
+    val isSandbox = BuildConfig.BLUMON_ENV == "SAND"
+    val borderColor = if (isSandbox) Color(0xFF42A5F5) else MaterialTheme.colorScheme.outline  // Blue 400
+    val borderWidth = if (isSandbox) 3.dp else 1.dp
 
     val resolvedTitleStyle = titleStyle ?: MaterialTheme.typography.titleLarge
 

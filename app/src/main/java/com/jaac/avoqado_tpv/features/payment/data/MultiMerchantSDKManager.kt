@@ -152,8 +152,11 @@ class MultiMerchantSDKManager @Inject constructor(
                 Timber.i("   ✅ TerminalConfig updated: $previousSerial → ${targetAccount.serialNumber}")
 
                 // Step 4: Force SDK re-initialization with new credentials
-                Timber.d("   [Step 2/2] Re-initializing Blumon SDK...")
-                val initResult = initializationManager.forceReinitialize()
+                // CRITICAL: Pass posId from MerchantAccount to fix multi-merchant switching bug
+                // GetInitDataUseCase returns stale cache after multiple switches, causing wrong posId
+                // This follows the same pattern as PaymentViewModel.performOnlineAuthorization()
+                Timber.d("   [Step 2/2] Re-initializing Blumon SDK with posId: ${targetAccount.posId}...")
+                val initResult = initializationManager.forceReinitialize(merchantPosId = targetAccount.posId)
 
                 if (initResult.isFailure) {
                     // Rollback TerminalConfig on failure

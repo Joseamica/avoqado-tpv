@@ -292,17 +292,21 @@ class HomeViewModel @Inject constructor(
 
                 // Step 1: Fetch merchants from backend to get real serial numbers
                 val merchants = getMerchantsUseCase().firstOrNull()
-                if (merchants.isNullOrEmpty()) {
+                val defaultMerchant = if (merchants.isNullOrEmpty()) {
                     Timber.w("⚠️ [Blumon] No merchants found - SDK init will use default serial")
+                    null
                 } else {
                     // Step 2: Use first merchant's serial for TerminalConfig
-                    val defaultMerchant = merchants.first()
-                    Timber.i("🏪 [Blumon] Using merchant for SDK init: ${defaultMerchant.displayName} (${defaultMerchant.serialNumber})")
-                    TerminalConfig.updateSerial(defaultMerchant.serialNumber)
+                    val merchant = merchants.first()
+                    Timber.i("🏪 [Blumon] Using merchant for SDK init: ${merchant.displayName} (${merchant.serialNumber})")
+                    TerminalConfig.updateSerial(merchant.serialNumber)
+                    merchant
                 }
 
-                // Step 3: Initialize SDK with correct serial
-                initializationManager.ensureInitialized()
+                // Step 3: Initialize SDK with correct serial AND posId
+                // CRITICAL: Pass posId to handle app restart after merchant switch
+                // Without this, SDK database has stale posId → "NO AUTORIZADO" on first payment
+                initializationManager.ensureInitialized(defaultMerchantPosId = defaultMerchant?.posId)
                     .onSuccess {
                         Timber.i("✅ [Blumon] SDK initialized successfully - ready for payments")
                     }

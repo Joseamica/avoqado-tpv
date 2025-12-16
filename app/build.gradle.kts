@@ -29,9 +29,9 @@ android {
 
         // Environment variables (NEVER hardcode secrets in code)
         buildConfigField("String", "API_BASE_URL", "\"https://api.avoqado.io/api/v1/\"")
-        buildConfigField("String", "API_BASE_URL_DEV", "\"https://unmistrustful-marla-unvermiculated.ngrok-free.dev/api/v1/\"")
+        buildConfigField("String", "API_BASE_URL_DEV", "\"https://humane-immortal-pika.ngrok-free.app/api/v1/\"")
         buildConfigField("String", "SOCKET_URL", "\"https://api.avoqado.io\"")
-        buildConfigField("String", "SOCKET_URL_DEV", "\"https://unmistrustful-marla-unvermiculated.ngrok-free.dev\"")
+        buildConfigField("String", "SOCKET_URL_DEV", "\"https://humane-immortal-pika.ngrok-free.app\"")
 
         // ⚠️ REMOVED: Hardcoded terminal configuration (2025-11-05)
         // Serial numbers and merchant accounts now fetched dynamically from backend

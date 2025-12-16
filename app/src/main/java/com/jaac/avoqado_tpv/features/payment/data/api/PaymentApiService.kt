@@ -3,6 +3,8 @@ package com.jaac.avoqado_tpv.features.payment.data.api
 import com.jaac.avoqado_tpv.features.payment.data.dto.FastPaymentRequest
 import com.jaac.avoqado_tpv.features.payment.data.dto.OrderPaymentRequest
 import com.jaac.avoqado_tpv.features.payment.data.dto.PaymentResponse
+import com.jaac.avoqado_tpv.features.payment.data.dto.RefundRequest
+import com.jaac.avoqado_tpv.features.payment.data.dto.RefundResponse
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.POST
@@ -12,7 +14,7 @@ import retrofit2.http.Path
  * Retrofit service interface para payment endpoints del backend.
  *
  * **Base URL:** https://api.avoqado.io/api/v1/ (producción)
- *              https://unmistrustful-marla-unvermiculated.ngrok-free.dev/api/v1/ (desarrollo)
+ *              https://humane-immortal-pika.ngrok-free.app/api/v1/ (desarrollo)
  *
  * **Autenticación:** Todas las requests requieren Bearer token en header.
  * ```
@@ -161,4 +163,65 @@ interface PaymentApiService {
         @Path("orderId") orderId: String,
         @Body request: OrderPaymentRequest,
     ): Response<PaymentResponse>
+
+    /**
+     * Procesa un reembolso para un pago existente.
+     *
+     * **Endpoint:** POST /tpv/venues/{venueId}/refunds
+     *
+     * **⚠️ MULTI-MERCHANT CRITICAL:**
+     * The refund MUST be processed through the same merchant account that
+     * processed the original payment. The merchantAccountId in the request
+     * is used for settlement reconciliation.
+     *
+     * **Comportamiento del backend:**
+     * 1. Valida que el payment existe y pertenece al venue
+     * 2. Verifica que el refund amount <= remaining refundable amount
+     * 3. Verifica que merchantAccountId matches original payment
+     * 4. Crea el Refund record vinculado al Payment
+     * 5. Updates Payment.refundedAmount (for partial refund tracking)
+     * 6. Genera DigitalReceipt para el refund (optional)
+     * 7. Emite evento Socket.IO para dashboard real-time
+     *
+     * **Request Body:** RefundRequest
+     * ```json
+     * {
+     *   "venueId": "venue_xxx",
+     *   "originalPaymentId": "payment_xxx",
+     *   "originalOrderId": "order_xxx",
+     *   "amount": 5000,
+     *   "reason": "CUSTOMER_REQUEST",
+     *   "staffId": "staff_xxx",
+     *   "shiftId": "shift_xxx",
+     *   "merchantAccountId": "merchant_xxx",
+     *   "blumonSerialNumber": "PAX123456",
+     *   "authorizationNumber": "502511",
+     *   "referenceNumber": "000000188231",
+     *   "maskedPan": "411111******1111",
+     *   "cardBrand": "VISA",
+     *   "entryMode": "CHIP",
+     *   "isPartialRefund": false
+     * }
+     * ```
+     *
+     * **Success Response (201):** RefundResponse
+     *
+     * **Error Responses:**
+     * - 400: Invalid request data, or refund exceeds original amount
+     * - 401: Unauthorized (token missing or expired)
+     * - 403: Forbidden (no refunds:create permission or role not authorized)
+     * - 404: Payment not found
+     * - 409: Conflict (payment already fully refunded)
+     * - 429: Too many requests
+     * - 500: Internal server error
+     *
+     * @param venueId ID del venue donde se procesa el reembolso
+     * @param request Datos del refund (originalPaymentId, amount, reason, etc.)
+     * @return Response con RefundResponse o error HTTP
+     */
+    @POST("tpv/venues/{venueId}/refunds")
+    suspend fun recordRefund(
+        @Path("venueId") venueId: String,
+        @Body request: RefundRequest,
+    ): Response<RefundResponse>
 }

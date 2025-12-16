@@ -1,6 +1,5 @@
 package com.jaac.avoqado_tpv.features.payments.presentation
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -11,6 +10,7 @@ import androidx.compose.material.icons.filled.Print
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
@@ -27,6 +27,7 @@ import com.jaac.avoqado_tpv.features.payments.domain.models.Payment
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentStatus
 import com.jaac.avoqado_tpv.features.payments.domain.models.StaffSummary
+import com.jaac.avoqado_tpv.features.payments.presentation.components.PaymentDetailBottomSheet
 import java.math.BigDecimal
 import java.time.Instant
 
@@ -45,7 +46,8 @@ import java.time.Instant
 fun PaymentsScreen(
     modifier: Modifier = Modifier,
     viewModel: PaymentsViewModel = hiltViewModel(),
-    onBack: () -> Unit = {}
+    onBack: () -> Unit = {},
+    onNavigateToRefund: (Payment) -> Unit = {}
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val filterDateRange by viewModel.filterDateRange.collectAsStateWithLifecycle()
@@ -55,6 +57,20 @@ fun PaymentsScreen(
     val isPrintMode by viewModel.isPrintMode.collectAsStateWithLifecycle()
     val selectedPaymentsForPrint by viewModel.selectedPaymentsForPrint.collectAsStateWithLifecycle()
     val showPrintDialog by viewModel.showPrintDialog.collectAsStateWithLifecycle()
+
+    // Payment detail states (for bottom sheet + refund)
+    val showPaymentDetailSheet by viewModel.showPaymentDetailSheet.collectAsStateWithLifecycle()
+    val selectedPaymentForDetail by viewModel.selectedPaymentForDetail.collectAsStateWithLifecycle()
+    val canProcessRefund by viewModel.canProcessRefund.collectAsStateWithLifecycle()
+    val paymentForRefund by viewModel.paymentForRefund.collectAsStateWithLifecycle()
+
+    // Handle refund navigation
+    LaunchedEffect(paymentForRefund) {
+        paymentForRefund?.let { payment ->
+            onNavigateToRefund(payment)
+            viewModel.clearRefundNavigation()
+        }
+    }
 
     var showFilterDialog by remember { mutableStateOf(false) }
 
@@ -130,7 +146,7 @@ fun PaymentsScreen(
 
             is PaymentsState.Success -> {
                 PaymentsContent(
-                    modifier = Modifier.padding(paddingValues),
+                    modifier = Modifier.padding(top = paddingValues.calculateTopPadding()),
                     payments = currentState.payments,
                     hasMore = currentState.hasMore,
                     currentPage = currentState.currentPage,
@@ -143,6 +159,9 @@ fun PaymentsScreen(
                     onPaymentClick = { payment ->
                         if (isPrintMode) {
                             viewModel.togglePaymentSelection(payment)
+                        } else {
+                            // Show payment detail bottom sheet
+                            viewModel.showPaymentDetail(payment)
                         }
                     },
                     onLoadMore = { viewModel.loadMore() },
@@ -152,7 +171,7 @@ fun PaymentsScreen(
 
             is PaymentsState.LoadingMore -> {
                 PaymentsContent(
-                    modifier = Modifier.padding(paddingValues),
+                    modifier = Modifier.padding(top = paddingValues.calculateTopPadding()),
                     payments = currentState.payments,
                     hasMore = true,
                     currentPage = currentState.currentPage,
@@ -166,6 +185,9 @@ fun PaymentsScreen(
                     onPaymentClick = { payment ->
                         if (isPrintMode) {
                             viewModel.togglePaymentSelection(payment)
+                        } else {
+                            // Show payment detail bottom sheet
+                            viewModel.showPaymentDetail(payment)
                         }
                     },
                     onLoadMore = {},
@@ -204,6 +226,18 @@ fun PaymentsScreen(
                 onDismiss = { viewModel.dismissPrintDialog() }
             )
         }
+
+        // Payment Detail Bottom Sheet (for refund initiation)
+        if (showPaymentDetailSheet && selectedPaymentForDetail != null) {
+            PaymentDetailBottomSheet(
+                payment = selectedPaymentForDetail!!,
+                canProcessRefund = canProcessRefund,
+                onDismiss = { viewModel.dismissPaymentDetail() },
+                onRefundClick = { payment ->
+                    viewModel.initiateRefund(payment)
+                }
+            )
+        }
     }
 }
 
@@ -229,95 +263,91 @@ private fun PaymentsContent(
     onLoadMore: () -> Unit,
     onRefresh: () -> Unit
 ) {
-    ResponsiveScaffold(
-        modifier = modifier,
-        scrollable = false
+    // FIX: Use payments.size as fallback when totalCount is 0 but payments exist
+    val displayCount = if (totalCount > 0) totalCount else payments.size
+
+    Column(
+        modifier = modifier.fillMaxSize()
     ) {
-        val sizes = LocalResponsiveSizes.current
-
-        Column(
-            modifier = Modifier.fillMaxSize()
+        // Summary Header - Full width banner (no margins, before ResponsiveScaffold)
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surfaceVariant
         ) {
-            // Summary Header - Date range section with accent styling
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.surfaceVariant
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                // Left side: Title and count in one line
                 Row(
-                    modifier = Modifier.fillMaxWidth()
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Left accent border
-                    Box(
-                        modifier = Modifier
-                            .width(4.dp)
-                            .height(IntrinsicSize.Max)
-                            .background(MaterialTheme.colorScheme.primary)
+                    Text(
+                        text = dateRangeLabel,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
                     )
+                    Text(
+                        text = "•",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "$displayCount pagos",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
 
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(sizes.paddingScreen)
+                // Show selection count when in print mode
+                if (isPrintMode && selectedPaymentIds.isNotEmpty()) {
+                    Surface(
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.primaryContainer
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text(
-                                    text = dateRangeLabel,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(modifier = Modifier.height(sizes.spacingSmall))
-                                Text(
-                                    text = "$totalCount pagos registrados",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-
-                            // Show selection count when in print mode
-                            if (isPrintMode && selectedPaymentIds.isNotEmpty()) {
-                                Surface(
-                                    shape = MaterialTheme.shapes.small,
-                                    color = MaterialTheme.colorScheme.primaryContainer
-                                ) {
-                                    Text(
-                                        text = "${selectedPaymentIds.size} seleccionados",
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                }
-                            }
-                        }
+                        Text(
+                            text = "${selectedPaymentIds.size} seleccionados",
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium
+                        )
                     }
                 }
             }
+        }
 
-            // Print mode hint
-            if (isPrintMode) {
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-                ) {
-                    Text(
-                        text = "Toca los pagos para seleccionarlos (máx. 20)",
-                        modifier = Modifier.padding(horizontal = sizes.paddingScreen, vertical = 8.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                }
+        // Print mode hint
+        if (isPrintMode) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+            ) {
+                Text(
+                    text = "Toca los pagos para seleccionarlos (máx. 20)",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
             }
+        }
+
+        // Content with ResponsiveScaffold (for LocalResponsiveSizes)
+        ResponsiveScaffold(
+            modifier = Modifier.weight(1f),
+            scrollable = false
+        ) {
+            val sizes = LocalResponsiveSizes.current
 
             // Payment List with Pull-to-Refresh
             AvoqadoPullToRefresh(
                 isRefreshing = isRefreshing,
                 onRefresh = onRefresh,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.fillMaxSize()
             ) {
                 if (payments.isEmpty()) {
                     Box(
@@ -403,7 +433,7 @@ private fun PaymentCard(
                         onValueChange = { onClick() }
                     )
                 } else {
-                    Modifier
+                    Modifier.clickable { onClick() }
                 }
             ),
         shape = MaterialTheme.shapes.medium,
@@ -431,7 +461,7 @@ private fun PaymentCard(
             Column(
                 modifier = Modifier.weight(1f)
             ) {
-                // Header Row (Amount + Method)
+                // Header Row (Amount + Method/Refund Badge)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -441,24 +471,47 @@ private fun PaymentCard(
                         text = payment.formatTotalAmount(),
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
+                        // Red for refunds, primary for normal payments
+                        color = if (payment.isRefund)
+                            MaterialTheme.colorScheme.error
+                        else
+                            MaterialTheme.colorScheme.primary
                     )
 
-                    Surface(
-                        shape = MaterialTheme.shapes.small,
-                        color = when (payment.method) {
-                            PaymentMethod.CASH -> MaterialTheme.colorScheme.secondaryContainer
-                            PaymentMethod.CARD -> MaterialTheme.colorScheme.primaryContainer
-                            PaymentMethod.VOUCHER -> MaterialTheme.colorScheme.tertiaryContainer
-                            PaymentMethod.OTHER -> MaterialTheme.colorScheme.surfaceVariant
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Refund badge (if refund)
+                        if (payment.isRefund) {
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.errorContainer
+                            ) {
+                                Text(
+                                    text = "Reembolso",
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
                         }
-                    ) {
-                        Text(
-                            text = payment.getMethodLabel(),
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Medium
-                        )
+
+                        // Payment method badge
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = when (payment.method) {
+                                PaymentMethod.CASH -> MaterialTheme.colorScheme.secondaryContainer
+                                PaymentMethod.CARD -> MaterialTheme.colorScheme.primaryContainer
+                                PaymentMethod.VOUCHER -> MaterialTheme.colorScheme.tertiaryContainer
+                                PaymentMethod.OTHER -> MaterialTheme.colorScheme.surfaceVariant
+                            }
+                        ) {
+                            Text(
+                                text = payment.getMethodLabel(),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
                     }
                 }
 

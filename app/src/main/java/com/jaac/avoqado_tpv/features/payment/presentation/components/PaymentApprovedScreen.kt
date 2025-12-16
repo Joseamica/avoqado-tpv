@@ -41,7 +41,8 @@ import kotlin.random.Random
 fun PaymentApprovedScreen(
     amount: String,
     onAnimationComplete: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isRefund: Boolean = false  // 💸 True = show "Reembolso Aprobado", False = show "Aprobado"
 ) {
     // Animation duration constants
     val circleDuration = 600
@@ -129,9 +130,9 @@ fun PaymentApprovedScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // "Aprobado" text
+            // "Aprobado" / "Reembolso Aprobado" text
             Text(
-                text = "Aprobado",
+                text = if (isRefund) "Reembolso Aprobado" else "Aprobado",
                 style = MaterialTheme.typography.headlineSmall.copy(
                     fontWeight = FontWeight.Bold,
                     fontSize = 24.sp

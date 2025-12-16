@@ -248,7 +248,8 @@ sealed class PaymentState {
         val orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null,  // 🆕 Order items (for displaying itemized receipt)
         val remainingBalance: java.math.BigDecimal? = null,  // ⭐ NEW: Amount left to pay (for split payments - shows "Continuar pagando" button)
         val discountAmount: String? = null,  // 🆕 Discount applied to order (for receipt printing)
-        val verificationCompleted: Boolean = false  // 📸 Prevents verification loop after confirmation
+        val verificationCompleted: Boolean = false,  // 📸 Prevents verification loop after confirmation
+        val isRefund: Boolean = false  // 💸 Indicates this was a refund transaction (for UI display)
     ) : PaymentState()
     /**
      * Payment error with preserved context for smart retry.

@@ -10,6 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material3.*
@@ -43,11 +44,17 @@ import com.jaac.avoqado_tpv.features.verification.presentation.VerificationScree
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
 import com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen
 import java.io.File
+import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
+import com.jaac.avoqado_tpv.features.payment.domain.model.RefundReason
 
 /**
  * PaymentScreen - EMV chip card payment with online authorization via Blumon Momentum
  *
  * Flow: PreTrans → DetectCard → StartEmvTrans → SaleIcc (ONLINE) → CompleteEmvTrans
+ *
+ * 💸 REFUND MODE:
+ * When isRefundMode=true, this screen processes a TransType.REFUND instead of SALE.
+ * The refund uses the same EMV flow but with the original payment's merchant account.
  */
 @Composable
 fun PaymentScreen(
@@ -61,6 +68,18 @@ fun PaymentScreen(
     equalPartsPartySize: Int? = null,  // Total people for EQUALPARTS mode
     equalPartsPayedFor: Int? = null,  // How many parts being paid now
     paidProductIds: List<String> = emptyList(),  // Product IDs for PERPRODUCT mode
+    // 💸 REFUND MODE PARAMS
+    isRefundMode: Boolean = false,  // 💸 True = process refund, False = normal payment
+    refundAmount: String? = null,  // 💸 Amount to refund
+    refundReason: String? = null,  // 💸 Reason enum name (CUSTOMER_REQUEST, etc.)
+    originalPaymentId: String? = null,  // 💸 Original payment being refunded
+    originalOrderId: String? = null,  // 💸 Original order (if applicable)
+    originalTotalAmount: String? = null,  // 💸 Original payment total
+    originalTipAmount: String? = null,  // 💸 Original tip amount
+    refundMerchantAccountId: String? = null,  // 💸 CRITICAL: Original payment's merchant
+    refundBlumonSerialNumber: String? = null,  // 💸 Original payment's terminal serial
+    originalOperationNumber: Int? = null,  // 🎫 CRITICAL: Blumon operation number for CancelIcc (from webhook)
+    refundVenueId: String? = null,  // 🏢 CRITICAL: Payment's venueId for refund API call (NOT auth context's venue!)
     onNavigateBack: () -> Unit,
     onNavigateToShifts: () -> Unit = {},  // 🆕 Navigate to Shifts screen (for "No shift open" errors)
     onNavigateToNewOrder: () -> Unit = {},  // 🆕 Navigate to new order (Toast/Square pattern)
@@ -75,6 +94,8 @@ fun PaymentScreen(
     val merchantSwitchingLoading by viewModel.merchantSwitchingLoading.collectAsStateWithLifecycle()
     val merchantSwitchMessage by viewModel.merchantSwitchMessage.collectAsStateWithLifecycle()
     val tpvSettings by viewModel.tpvSettings.collectAsStateWithLifecycle()
+    val pinEntryState by viewModel.pinEntryState.collectAsStateWithLifecycle()  // PIN asterisks feedback
+    val isPinDialogVisible by viewModel.isPinDialogVisible.collectAsStateWithLifecycle()  // PIN dialog visibility
 
     // 📊 Dynamic step counter based on TPV settings
     // PRE-PAYMENT screens: Review? → Tip? → Payment (always)
@@ -128,7 +149,8 @@ fun PaymentScreen(
             // Post-payment verification - separate from pre-payment steps
             "Verificación" to "Post-pago · $${currentState.amount}"
         }
-        else -> "Pago con Tarjeta" to null
+        // 💸 Different title for refund mode vs regular payment
+        else -> if (isRefundMode) "Reembolso con Tarjeta" to null else "Pago con Tarjeta" to null
     }
 
     // Hide topBar on Success screen (full-screen receipt)
@@ -320,8 +342,38 @@ fun PaymentScreen(
 
                 // LEGACY: Old idle state (redirect to new flow)
                 is PaymentState.Idle -> {
-                    LaunchedEffect(initialAmount, skipReview, orderId, orderNumber, splitType) {
-                        if (initialAmount != null) {
+                    LaunchedEffect(initialAmount, skipReview, orderId, orderNumber, splitType, isRefundMode) {
+                        // 💸 REFUND MODE: Process refund instead of payment
+                        if (isRefundMode && refundAmount != null && originalPaymentId != null) {
+                            Timber.i("💸 [PaymentScreen] Refund mode detected - starting refund for payment: $originalPaymentId")
+
+                            // Create RefundPayment context
+                            val refundContext = PaymentContext.RefundPayment(
+                                // 🏢 CRITICAL: Use payment's venueId, NOT auth context (fixes 404 bug)
+                                // The refund MUST be recorded to the same venue as the original payment
+                                venueId = refundVenueId ?: "", // Payment's venue (fallback to empty, will be validated)
+                                staffId = "", // Will be populated from authContext in ViewModel
+                                shiftId = null, // Will be populated from authContext in ViewModel
+                                amount = refundAmount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO,
+                                tip = java.math.BigDecimal.ZERO, // No tip for refunds
+                                rating = null,
+                                merchantAccountId = refundMerchantAccountId,
+                                blumonSerialNumber = refundBlumonSerialNumber ?: "",
+                                originalPaymentId = originalPaymentId,
+                                originalOrderId = originalOrderId,
+                                originalTotalAmount = originalTotalAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO,
+                                refundReason = refundReason?.let { RefundReason.fromString(it) } ?: RefundReason.CUSTOMER_REQUEST,
+                                isPartialRefund = (refundAmount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO) <
+                                    (originalTotalAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO),
+                                // 🎫 CRITICAL: Blumon operation number for CancelIcc (from webhook)
+                                // If null/0, validation will fail with clear error message
+                                originalOperationNumber = originalOperationNumber ?: 0
+                            )
+
+                            // Start refund flow
+                            viewModel.startRefund(refundContext)
+                        } else if (initialAmount != null) {
+                            // 💳 NORMAL PAYMENT MODE
                             if (skipReview) {
                                 // 🧪 Test payment from SuperAdmin → skip rating/tip, go directly to merchant selection
                                 viewModel.submitAmountDirectToMerchant(
@@ -353,9 +405,13 @@ fun PaymentScreen(
                     }
 
                     // Show loading while processing
-                    if (initialAmount != null) {
+                    if (initialAmount != null || isRefundMode) {
                         AvoqadoLoadingOverlay(
-                            message = if (skipReview) "Preparando pago de prueba..." else "Preparando pago..."
+                            message = when {
+                                isRefundMode -> "Preparando reembolso..."
+                                skipReview -> "Preparando pago de prueba..."
+                                else -> "Preparando pago..."
+                            }
                         )
                     }
                 }
@@ -365,10 +421,17 @@ fun PaymentScreen(
                     PaymentLoadingContent("Configurando terminal...")
                 }
                 is PaymentState.DetectingCard -> {
-                    PaymentDetectingCard(amount = currentState.amount)
+                    PaymentDetectingCard(
+                        amount = currentState.amount,
+                        isRefund = isRefundMode
+                    )
                 }
                 is PaymentState.Processing -> {
-                    PaymentLoadingContent(currentState.message)
+                    PaymentLoadingContent(
+                        message = currentState.message,
+                        pinState = pinEntryState,  // Show asterisks when user types PIN
+                        showPinSection = isPinDialogVisible  // Keep PIN section visible even when cleared
+                    )
                 }
                 is PaymentState.Success -> {
                     // 🎉 Payment Success Flow:
@@ -392,7 +455,8 @@ fun PaymentScreen(
                                 onAnimationComplete = {
                                     Timber.d("🎉 [Approved] Animation complete, showing success content")
                                     showApprovedAnimation = false
-                                }
+                                },
+                                isRefund = currentState.isRefund  // 💸 Show "Reembolso Aprobado" for refunds
                             )
                         }
 
@@ -408,6 +472,7 @@ fun PaymentScreen(
                                 tableId = tableId,
                                 remainingBalance = currentState.remainingBalance,
                                 showReceiptOptions = viewModel.showReceiptScreen,
+                                isRefund = currentState.isRefund,  // 💸 Show refund-specific UI
                                 onPrintReceipt = viewModel::printReceipt,
                                 onPrintKitchenTicket = {
                                     currentState.orderItems?.let { items ->
@@ -446,6 +511,7 @@ fun PaymentScreen(
                         message = currentState.message,
                         canRetry = currentState.canRetry,
                         showOpenShiftButton = currentState.showOpenShiftButton,  // 🆕 Show "Abrir Turno" button
+                        isRefund = isRefundMode,  // 💸 Show "Error en el Reembolso" for refunds
                         onRetry = {
                             // 🔄 Smart Retry: Restore context if available, otherwise reset
                             if (currentState.context != null) {
@@ -676,7 +742,13 @@ private fun PaymentIdleContent(
 }
 
 @Composable
-private fun PaymentDetectingCard(amount: String) {
+private fun PaymentDetectingCard(
+    amount: String,
+    isRefund: Boolean = false
+) {
+    // 💸 Refund indicator color (amber/orange like Square's yellow arrow)
+    val refundColor = Color(0xFFFFA726) // Orange/Amber
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -687,29 +759,46 @@ private fun PaymentDetectingCard(amount: String) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
-            // Contactless payment icon (custom drawable)
-            Image(
-                painter = painterResource(id = R.drawable.ic_contact_payment),
-                contentDescription = "Contactless payment",
-                modifier = Modifier.size(120.dp),
-                colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onBackground)
-            )
+            // Contactless payment icon with optional refund badge
+            Box(contentAlignment = Alignment.Center) {
+                Image(
+                    painter = painterResource(id = R.drawable.ic_contact_payment),
+                    contentDescription = if (isRefund) "Refund card" else "Contactless payment",
+                    modifier = Modifier.size(120.dp),
+                    colorFilter = ColorFilter.tint(
+                        if (isRefund) refundColor else MaterialTheme.colorScheme.onBackground
+                    )
+                )
+
+                // 💸 Refund arrow icon overlay (bottom-right)
+                if (isRefund) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Undo,
+                        contentDescription = "Refund indicator",
+                        modifier = Modifier
+                            .size(40.dp)
+                            .align(Alignment.BottomEnd)
+                            .offset(x = 8.dp, y = 8.dp),
+                        tint = refundColor
+                    )
+                }
+            }
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Amount display (large, bold)
+            // Amount display (large, bold) - show negative for refunds
             Text(
-                text = "$$amount",
+                text = if (isRefund) "-$$amount" else "$$amount",
                 style = MaterialTheme.typography.displayLarge.copy(
                     fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
                 ),
-                color = MaterialTheme.colorScheme.onBackground,
+                color = if (isRefund) refundColor else MaterialTheme.colorScheme.onBackground,
                 textAlign = TextAlign.Center
             )
 
             // Instructions (smaller, below amount)
             Text(
-                text = "Acerca o inserta la tarjeta",
+                text = if (isRefund) "Acerca o inserta la tarjeta para reembolso" else "Acerca o inserta la tarjeta",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
                 textAlign = TextAlign.Center
@@ -719,14 +808,44 @@ private fun PaymentDetectingCard(amount: String) {
 }
 
 @Composable
-private fun PaymentLoadingContent(message: String) {
+private fun PaymentLoadingContent(
+    message: String,
+    pinState: String = "",  // Asterisks from SDK ("*", "**", "***", "****")
+    showPinSection: Boolean = false  // True when SDK is waiting for PIN (even if cleared)
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = Arrangement.Top  // Changed to Top so PIN is visible above PAX keyboard
     ) {
+        Spacer(modifier = Modifier.height(48.dp))
+
+        // 🔢 PIN entry feedback ABOVE the card (visible even when PAX keyboard appears)
+        // Show section when SDK requests PIN OR when there are asterisks
+        if (showPinSection || pinState.isNotEmpty()) {
+            Text(
+                text = "Ingrese su PIN",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                // Show asterisks or placeholder dots when cleared
+                text = if (pinState.isNotEmpty()) pinState else "● ● ● ●",
+                style = MaterialTheme.typography.displayMedium,
+                color = if (pinState.isNotEmpty())
+                    MaterialTheme.colorScheme.primary
+                else
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
+                textAlign = TextAlign.Center,
+                letterSpacing = 12.sp
+            )
+            Spacer(modifier = Modifier.height(32.dp))
+        }
+
         AvoqadoCard(
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -786,6 +905,7 @@ private fun PaymentSuccessContent(
     tableId: String? = null,  // 🆕 Table ID (for clearing table post-payment)
     remainingBalance: java.math.BigDecimal? = null,  // ⭐ NEW: Amount left to pay (for split payments)
     showReceiptOptions: Boolean = true,  // ⚙️ TPV Settings: Show/hide QR code & print button
+    isRefund: Boolean = false,  // 💸 True = show refund-specific UI text
     onPrintReceipt: () -> Unit = {},
     onPrintKitchenTicket: () -> Unit = {},  // 🆕 Print kitchen ticket (comanda)
     onNavigateBack: () -> Unit,  // 🆕 Navigate to WelcomeScreen (home button)
@@ -839,52 +959,69 @@ private fun PaymentSuccessContent(
                     )
                 }
 
-                // Center button - "Continuar pagando" (if remaining balance) or "Nueva Orden"/"Nuevo Pago"
+                // Center button - "Listo" (refund), "Continuar pagando" (remaining balance), or "Nueva Orden"/"Nuevo Pago"
                 // ✅ Centered using Box alignment
                 Box(
                     modifier = Modifier.weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (hasRemainingBalance) {
-                        // ⭐ Split payment: Show "Continuar pagando" button with remaining amount
-                        Button(
-                            onClick = onContinuePayment,
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,  // Highlighted color
-                                contentColor = MaterialTheme.colorScheme.onPrimary
-                            ),
-                            modifier = Modifier.height(48.dp)
-                        ) {
-                            Text(
-                                text = "Continuar pagando $${String.format(java.util.Locale.US, "%.2f", remainingBalance)}"
-                            )
+                    when {
+                        // 💸 Refund: Show "Listo" button that navigates back
+                        isRefund -> {
+                            Button(
+                                onClick = onNavigateBack,
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary,
+                                    contentColor = MaterialTheme.colorScheme.onPrimary
+                                ),
+                                modifier = Modifier.height(48.dp)
+                            ) {
+                                Text(text = "Listo")
+                            }
                         }
-                    } else {
+                        // ⭐ Split payment: Show "Continuar pagando" button with remaining amount
+                        hasRemainingBalance -> {
+                            Button(
+                                onClick = onContinuePayment,
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary,  // Highlighted color
+                                    contentColor = MaterialTheme.colorScheme.onPrimary
+                                ),
+                                modifier = Modifier.height(48.dp)
+                            ) {
+                                Text(
+                                    text = "Continuar pagando $${String.format(java.util.Locale.US, "%.2f", remainingBalance)}"
+                                )
+                            }
+                        }
                         // Normal flow: "Nueva Orden" or "Nuevo Pago"
-                        Button(
-                            onClick = {
-                                val currentTableId = tableId
-                                when {
-                                    // 🪑 Table order → Clear table and return to floor plan
-                                    currentTableId != null -> onClearTableAndReturnToFloorPlan(currentTableId)
-                                    // 📋 Quick order → Create new quick order
-                                    orderId != null -> onNewOrder()
-                                    // ⚡ Fast payment → New fast payment
-                                    else -> onNewFastPayment()
-                                }
-                            },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.surface,
-                                contentColor = MaterialTheme.colorScheme.onSurface
-                            ),
-                            modifier = Modifier.height(48.dp)
-                        ) {
-                            Text(
-                                // ✅ Dynamic text based on payment type
-                                if (orderId != null) "Nueva Orden" else "Nuevo Pago"
-                            )
+                        else -> {
+                            Button(
+                                onClick = {
+                                    val currentTableId = tableId
+                                    when {
+                                        // 🪑 Table order → Clear table and return to floor plan
+                                        currentTableId != null -> onClearTableAndReturnToFloorPlan(currentTableId)
+                                        // 📋 Quick order → Create new quick order
+                                        orderId != null -> onNewOrder()
+                                        // ⚡ Fast payment → New fast payment
+                                        else -> onNewFastPayment()
+                                    }
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.surface,
+                                    contentColor = MaterialTheme.colorScheme.onSurface
+                                ),
+                                modifier = Modifier.height(48.dp)
+                            ) {
+                                Text(
+                                    // ✅ Dynamic text based on payment type
+                                    if (orderId != null) "Nueva Orden" else "Nuevo Pago"
+                                )
+                            }
                         }
                     }
                 }
@@ -1004,13 +1141,13 @@ private fun PaymentSuccessContent(
 
                     Spacer(modifier = Modifier.height(24.dp))
 
-                    // Total pagado
+                    // Total pagado / Total reembolsado
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "Total pagado",
+                            text = if (isRefund) "Total reembolsado" else "Total pagado",
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -1268,6 +1405,7 @@ private fun PaymentErrorContent(
     message: String,
     canRetry: Boolean,
     showOpenShiftButton: Boolean = false,  // 🆕 Show "Abrir Turno" instead of "Reintentar"
+    isRefund: Boolean = false,  // 💸 Show "Error en el Reembolso" instead of "Error en el Pago"
     onRetry: () -> Unit,
     onOpenShift: () -> Unit = {},  // 🆕 Navigate to Shifts screen
     onCancel: () -> Unit
@@ -1295,9 +1433,10 @@ private fun PaymentErrorContent(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Text(
-                    text = "Error en el Pago",
+                    text = if (isRefund) "Error en el Reembolso" else "Error en el Pago",
                     style = MaterialTheme.typography.headlineMedium,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))

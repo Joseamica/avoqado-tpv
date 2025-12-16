@@ -4,7 +4,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.ui.draw.clip
@@ -12,11 +16,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
-import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoButton
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
-import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoSecondaryButton
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
@@ -102,31 +105,14 @@ fun MerchantSelectionContent(
                                     color = MaterialTheme.colorScheme.primary
                                 )
 
-                                // Currency + inline details (modern single-line approach)
-                                Row(
-                                    horizontalArrangement = Arrangement.Center,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(top = 4.dp)
-                                ) {
+                                // Inline tip (if exists)
+                                if (hasTip) {
                                     Text(
-                                        text = "MXN",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        text = "+$$tipAmount propina",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        modifier = Modifier.padding(top = 4.dp)
                                     )
-
-                                    // Inline tip (if exists) with dot separator
-                                    if (hasTip) {
-                                        Text(
-                                            text = "  ·  ",
-                                            style = MaterialTheme.typography.titleMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                                        )
-                                        Text(
-                                            text = "+$$tipAmount propina",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                        )
-                                    }
                                 }
 
                                 // Rating stars (if exists) - clean, no label
@@ -140,92 +126,61 @@ fun MerchantSelectionContent(
                             }
                         }
                     } else {
-                        // ✅ MULTIPLE MERCHANTS: Layout compacto + selector de cuenta
+                        // ✅ MULTIPLE MERCHANTS: Modern fintech card selector
+                        val hasTip = (tipAmount.toBigDecimalOrNull()?.compareTo(java.math.BigDecimal.ZERO) ?: 0) > 0
 
-                        // Payment summary
+                        // Payment amount (same style as single merchant)
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            // Total
                             Text(
-                                text = "Total a cobrar:",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = "$$totalAmount MXN",
-                                style = MaterialTheme.typography.headlineMedium,
+                                text = "$$totalAmount",
+                                style = MaterialTheme.typography.displayMedium,
+                                fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary
                             )
 
-                            // Tip (if provided)
-                            if ((tipAmount.toBigDecimalOrNull()?.compareTo(java.math.BigDecimal.ZERO) ?: 0) > 0) {
-                                Spacer(modifier = Modifier.height(sizes.spacingXSmall))
+                            if (hasTip) {
                                 Text(
-                                    text = "Incluye propina: $$tipAmount",
+                                    text = "+$$tipAmount propina",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                    modifier = Modifier.padding(top = 4.dp)
                                 )
                             }
 
-                            // Rating (if provided)
                             rating?.let {
-                                Spacer(modifier = Modifier.height(sizes.spacingXSmall))
                                 Text(
-                                    text = "Calificación: ${"⭐".repeat(it)}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    text = "⭐".repeat(it),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.padding(top = 8.dp)
                                 )
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(sizes.spacingMedium))
+                        Spacer(modifier = Modifier.height(24.dp))
 
-                        // Merchant selection (solo cuando hay 2+ merchants)
+                        // Merchant selector cards
                         Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Text(
-                                text = "Seleccionar Cuenta",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface
+                                text = "Cuenta de cobro",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 4.dp)
                             )
 
-                            Spacer(modifier = Modifier.height(sizes.spacingSmall))
-
-                            // Current merchant
-                            Text(
-                                text = "Activa: ${currentMerchant?.shortName() ?: "Default"}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-
-                            Spacer(modifier = Modifier.height(sizes.spacingSmall))
-
-                            // Merchant buttons (show short names for better fit)
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(sizes.spacingSmall)
-                            ) {
-                                merchants.forEach { merchant ->
-                                    if (merchant == currentMerchant) {
-                                        AvoqadoButton(
-                                            text = merchant.shortName(),
-                                            onClick = { onSelectMerchant(merchant) },
-                                            enabled = !merchantSwitchingLoading,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                    } else {
-                                        AvoqadoSecondaryButton(
-                                            text = merchant.shortName(),
-                                            onClick = { onSelectMerchant(merchant) },
-                                            enabled = !merchantSwitchingLoading,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                    }
-                                }
+                            merchants.forEach { merchant ->
+                                val isSelected = merchant == currentMerchant
+                                MerchantCard(
+                                    merchant = merchant,
+                                    isSelected = isSelected,
+                                    enabled = !merchantSwitchingLoading,
+                                    onClick = { onSelectMerchant(merchant) }
+                                )
                             }
                         }
                     }
@@ -329,16 +284,85 @@ fun MerchantSelectionContent(
 }
 
 /**
- * Get short merchant name for button display
- * Example: "Cuenta Blumon A (Sandbox)" → "Cuenta A"
+ * Modern merchant card selector
+ *
+ * Design: Clean card with merchant name and checkmark indicator
+ * - Selected: Primary border + checkmark + subtle background
+ * - Unselected: Outline border + no checkmark
  */
-private fun MerchantAccount.shortName(): String {
-    return when {
-        displayName.contains("Account A") || displayName.contains("Cuenta") && displayName.contains("A") -> "Cuenta A"
-        displayName.contains("Account B") || displayName.contains("Cuenta") && displayName.contains("B") -> "Cuenta B"
-        displayName.contains("C") -> "Cuenta C"
-        displayName.contains("D") -> "Cuenta D"
-        else -> displayName.take(8) // Fallback: first 8 chars
+@Composable
+private fun MerchantCard(
+    merchant: MerchantAccount,
+    isSelected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val selectedColor = MaterialTheme.colorScheme.primary
+    val unselectedColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (isSelected) selectedColor.copy(alpha = 0.08f)
+                else Color.Transparent
+            )
+            .border(
+                width = if (isSelected) 2.dp else 1.dp,
+                color = if (isSelected) selectedColor else unselectedColor,
+                shape = RoundedCornerShape(12.dp)
+            )
+            .clickable(enabled = enabled) { onClick() }
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        // Merchant info
+        Column {
+            Text(
+                text = merchant.displayName,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (isSelected) MaterialTheme.colorScheme.onSurface
+                       else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "SN: ${merchant.serialNumber}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            )
+        }
+
+        // Selection indicator
+        if (isSelected) {
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(selectedColor),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = "Seleccionado",
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        } else {
+            // Empty circle placeholder
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .border(
+                        width = 1.5.dp,
+                        color = unselectedColor,
+                        shape = CircleShape
+                    )
+            )
+        }
     }
 }
 
@@ -394,15 +418,15 @@ private fun MerchantSelectionSingleNoExtrasPreview() {
     }
 }
 
-@Preview(showBackground = true, backgroundColor = 0xFF1C1C1C, name = "Multiple Merchants")
+@Preview(showBackground = true, backgroundColor = 0xFF1C1C1C, name = "Multiple Merchants (2)")
 @Composable
-private fun MerchantSelectionMultipleMerchantsPreview() {
+private fun MerchantSelectionTwoMerchantsPreview() {
     val merchantA = MerchantAccount(
         id = "1",
         serialNumber = "2841548417",
         posId = "376",
-        displayName = "Account A",
-        environment = MerchantEnvironment.SANDBOX
+        displayName = "Mindform Principal",
+        environment = MerchantEnvironment.PRODUCTION
     )
     com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
         MerchantSelectionContent(
@@ -415,11 +439,52 @@ private fun MerchantSelectionMultipleMerchantsPreview() {
                     id = "2",
                     serialNumber = "2841548418",
                     posId = "378",
-                    displayName = "Account B",
-                    environment = MerchantEnvironment.SANDBOX
+                    displayName = "Mindform Secundaria",
+                    environment = MerchantEnvironment.PRODUCTION
                 )
             ),
             currentMerchant = merchantA,
+            merchantSwitchingLoading = false,
+            onSelectMerchant = {},
+            onStartPayment = {},
+            onStartCashPayment = {}
+        )
+    }
+}
+
+@Preview(showBackground = true, backgroundColor = 0xFF1C1C1C, name = "Multiple Merchants (3)")
+@Composable
+private fun MerchantSelectionThreeMerchantsPreview() {
+    val merchantB = MerchantAccount(
+        id = "2",
+        serialNumber = "A28415",
+        posId = "378",
+        displayName = "a A28415",
+        environment = MerchantEnvironment.PRODUCTION
+    )
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
+        MerchantSelectionContent(
+            totalAmount = "250.00",
+            tipAmount = "0",
+            rating = null,
+            merchants = listOf(
+                MerchantAccount(
+                    id = "1",
+                    serialNumber = "2841548417",
+                    posId = "376",
+                    displayName = "Cuenta Principal",
+                    environment = MerchantEnvironment.PRODUCTION
+                ),
+                merchantB,
+                MerchantAccount(
+                    id = "3",
+                    serialNumber = "B94821",
+                    posId = "380",
+                    displayName = "Cuenta Tercera",
+                    environment = MerchantEnvironment.PRODUCTION
+                )
+            ),
+            currentMerchant = merchantB,
             merchantSwitchingLoading = false,
             onSelectMerchant = {},
             onStartPayment = {},

@@ -214,6 +214,11 @@ val orders = orderRepository.getOrders(limit = 20, cursor = cursor)
 2. Tests are living documentation
 3. If code + tests explain it clearly → don't document
 4. ALL new docs go in `docs/` directory, never in root
+5. **CRITICAL: Update documentation after every significant change**
+   - When fixing bugs → Document root cause and solution in relevant `.md` files
+   - When adding features → Update architecture docs if needed
+   - Blumon/payment changes → Update `avoqado-server/docs/blumon-tpv/BLUMON_MULTI_MERCHANT_ANALYSIS.md`
+   - This prevents knowledge loss and helps future developers understand the system
 
 ---
 
@@ -254,6 +259,6 @@ val orders = orderRepository.getOrders(limit = 20, cursor = cursor)
 
 ---
 
-**Last Updated:** 2025-12-14
+**Last Updated:** 2025-12-15
 **Maintainer:** Development Team
 **Version:** 3.0 (Refactored: CLAUDE.md as index + detailed docs/)

@@ -832,7 +832,7 @@ fun `when Terminal 1 completes payment, Terminal 2 should receive event`() = run
 adb logcat | grep -E "Socket\.IO|Socket\]"
 
 # Expected output:
-🔌 [Socket.IO] Connecting to: https://unmistrustful-marla-unvermiculated.ngrok-free.dev
+🔌 [Socket.IO] Connecting to: https://humane-immortal-pika.ngrok-free.app
 ✅ [Socket.IO] Connected successfully
 ✅ [Socket.IO] Joined venue room: venue_cm123
 ```

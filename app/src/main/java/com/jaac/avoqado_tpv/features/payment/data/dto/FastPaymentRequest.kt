@@ -105,4 +105,11 @@ data class FastPaymentRequest(
     // Scanned barcodes from verification screen
     @SerializedName("verificationBarcodes")
     val verificationBarcodes: List<String>? = null,
+
+    // 💸 Blumon Operation Number (2025-12-16)
+    // Small integer from SDK response (response.operation) needed for CancelIcc refunds
+    // This allows refunds to work WITHOUT waiting for Blumon webhook
+    // Example: 12945658 (fits in Int, unlike the 12-digit referenceNumber)
+    @SerializedName("blumonOperationNumber")
+    val blumonOperationNumber: Int? = null,
 )

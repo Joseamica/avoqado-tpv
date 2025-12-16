@@ -291,6 +291,10 @@ class OrderPaymentRecorder @Inject constructor(
 
             // ⭐ RECONCILIATION: null = cash (no processor cost), CUID = card payment
             merchantAccountId = context.merchantAccountId,
+
+            // 💸 Blumon Operation Number (2025-12-16) - For refunds without webhook
+            // This comes from response.operation in SaleIccResponse
+            blumonOperationNumber = context.blumonOperationNumber,
         )
     }
 }

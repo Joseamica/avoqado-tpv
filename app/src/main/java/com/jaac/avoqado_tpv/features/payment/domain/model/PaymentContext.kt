@@ -69,6 +69,9 @@ sealed class PaymentContext {
         val verificationPhotos: List<String> = emptyList(),
         // Scanned barcodes from verification screen
         val verificationBarcodes: List<String> = emptyList(),
+        // 💸 Blumon Operation Number (2025-12-16) - For refunds without webhook
+        // This comes from response.operation in SaleIccResponse
+        val blumonOperationNumber: Int? = null,
     ) : PaymentContext()
 
     /**
@@ -113,5 +116,132 @@ sealed class PaymentContext {
         val paidProductIds: List<String> = emptyList(), // Product IDs for PERPRODUCT mode
         val equalPartsPartySize: Int? = null, // Total people for EQUALPARTS mode
         val equalPartsPayedFor: Int? = null, // How many parts being paid now
+        // 💸 Blumon Operation Number (2025-12-16) - For refunds without webhook
+        // This comes from response.operation in SaleIccResponse
+        val blumonOperationNumber: Int? = null,
     ) : PaymentContext()
+
+    /**
+     * Refund Payment: Devolución de un pago existente.
+     *
+     * Procesa un reembolso al cliente por un pago previamente completado.
+     * Usa TransType.REFUND con el SDK de Blumon.
+     *
+     * **Flujo Square Pattern:**
+     * 1. Usuario navega a historial de pagos (PaymentsScreen)
+     * 2. Selecciona un pago → ve detalles (PaymentDetailBottomSheet)
+     * 3. Toca "Reembolso" → confirma monto/razón (RefundConfirmationScreen)
+     * 4. SDK procesa con TransType.REFUND → Dinero regresa al cliente
+     *
+     * **Multi-Merchant Critical:**
+     * ⚠️ El reembolso DEBE usar el mismo merchantAccountId del pago original.
+     * MultiMerchantSDKManager debe cambiar al merchant correcto ANTES de procesar.
+     *
+     * **Endpoint backend:**
+     * POST /tpv/venues/{venueId}/refunds
+     *
+     * @param venueId ID del venue actual
+     * @param staffId ID del staff que procesa el reembolso
+     * @param shiftId ID del turno actual (para reconciliación)
+     * @param amount Monto a reembolsar (puede ser menor que original para parcial)
+     * @param originalPaymentId ID del pago original siendo reembolsado
+     * @param originalOrderId ID de la orden original (si aplica)
+     * @param originalTotalAmount Monto total del pago original (para validación)
+     * @param refundReason Razón del reembolso
+     * @param merchantAccountId MUST match original payment (multi-merchant routing)
+     * @param blumonSerialNumber Terminal serial for SDK initialization
+     * @param originalOperationNumber CRITICAL: Blumon operation number for CancelIcc (from webhook)
+     */
+    data class RefundPayment(
+        override val venueId: String,
+        override val staffId: String,
+        override val shiftId: String? = null,
+        override val amount: BigDecimal, // Monto a reembolsar (puede ser parcial)
+        override val tip: BigDecimal = BigDecimal.ZERO, // Tip to refund (usually 0 for partial, original tip for full)
+        override val rating: Int? = null, // Not used for refunds
+        override val merchantAccountId: String?, // ⚠️ CRITICAL: MUST match original payment!
+        override val blumonSerialNumber: String, // ⚠️ REQUIRED: For SDK merchant switch
+
+        // Refund-specific fields
+        val originalPaymentId: String, // Payment being refunded
+        val originalOrderId: String?, // Order (if order payment, null for fast payment)
+        val originalTotalAmount: BigDecimal, // Original payment total (for validation)
+        val refundReason: RefundReason, // Why the refund is being processed
+        val isPartialRefund: Boolean = false, // True if refunding less than original amount
+
+        // 🎫 CRITICAL: Blumon Operation Number (2025-12-XX)
+        // This is passed as operationID to CancelIccUseCase
+        // Without this, Blumon cannot identify which transaction to cancel/refund
+        //
+        // ⚠️ IMPORTANT: This is the OPERATION NUMBER (small int like 75656), NOT referenceNumber!
+        // referenceNumber (12-digit SDK value like "195978383755") exceeds Integer.MAX_VALUE
+        // operationNumber comes from Blumon webhook (processorData.blumonOperationNumber)
+        val originalOperationNumber: Int, // e.g., 75656 (fits in Integer)
+    ) : PaymentContext() {
+
+        /**
+         * Validate refund amount doesn't exceed original
+         */
+        fun isValidRefundAmount(): Boolean {
+            return amount <= originalTotalAmount && amount > BigDecimal.ZERO
+        }
+
+        /**
+         * Calculate remaining refundable amount
+         * (Used for partial refunds - in future, track already refunded amounts)
+         */
+        fun getRemainingRefundable(): BigDecimal {
+            return originalTotalAmount - amount
+        }
+    }
+}
+
+/**
+ * Reasons for processing a refund
+ *
+ * Following PCI compliance and payment processor requirements,
+ * refunds should have documented reasons.
+ */
+enum class RefundReason(val displayName: String, val description: String) {
+    /**
+     * Customer requested the refund
+     * Most common reason - customer changed mind, dissatisfied, etc.
+     */
+    CUSTOMER_REQUEST("Solicitud del cliente", "El cliente solicitó el reembolso"),
+
+    /**
+     * Duplicate charge was made
+     * Technical issue - customer was charged twice for same transaction
+     */
+    DUPLICATE_CHARGE("Cargo duplicado", "Se cobró dos veces por error"),
+
+    /**
+     * Product or service was defective
+     * Quality issue - item damaged, wrong order, service not provided
+     */
+    PRODUCT_ISSUE("Problema con producto/servicio", "Producto defectuoso o servicio no cumplido"),
+
+    /**
+     * Incorrect amount was charged
+     * Pricing error - wrong price, wrong items, calculation error
+     */
+    INCORRECT_AMOUNT("Monto incorrecto", "Se cobró un monto erróneo"),
+
+    /**
+     * Fraud or unauthorized transaction
+     * Security issue - requires additional verification
+     */
+    FRAUD_SUSPECTED("Fraude sospechado", "Transacción no autorizada o fraudulenta"),
+
+    /**
+     * Other reason not listed
+     * Catch-all - should include notes for audit trail
+     */
+    OTHER("Otro motivo", "Otra razón no especificada");
+
+    companion object {
+        fun fromString(value: String): RefundReason {
+            return values().find { it.name.equals(value, ignoreCase = true) } ?: OTHER
+        }
+    }
 }

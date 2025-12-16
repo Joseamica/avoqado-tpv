@@ -72,8 +72,38 @@ class FastPaymentRecorder @Inject constructor(
                         "tip=${context.tip} | card=${cardDetails.cardBrand} | entry=${cardDetails.entryMode}"
             )
 
+            // 🔍 DEBUG: Trace blumonOperationNumber through the chain
+            Timber.i("═══════════════════════════════════════════════════════════")
+            Timber.i("🔍 DEBUG TRACE - blumonOperationNumber")
+            Timber.i("   STEP 1 - In PaymentContext:")
+            Timber.i("      context.blumonOperationNumber = ${context.blumonOperationNumber}")
+            Timber.i("      context.blumonOperationNumber type = ${context.blumonOperationNumber?.javaClass?.name ?: "null"}")
+            Timber.i("═══════════════════════════════════════════════════════════")
+
             // 2. Construir request DTO
             val request = buildFastPaymentRequest(context, cardDetails, authorizationNumber, referenceNumber)
+
+            // 🔍 DEBUG: Verify the DTO has the value
+            Timber.i("═══════════════════════════════════════════════════════════")
+            Timber.i("🔍 DEBUG TRACE - After building FastPaymentRequest")
+            Timber.i("   STEP 2 - In FastPaymentRequest DTO:")
+            Timber.i("      request.blumonOperationNumber = ${request.blumonOperationNumber}")
+            Timber.i("      request.blumonOperationNumber type = ${request.blumonOperationNumber?.javaClass?.name ?: "null"}")
+            Timber.i("═══════════════════════════════════════════════════════════")
+
+            // 🔍 DEBUG: Manually serialize to JSON to see exactly what Gson produces
+            try {
+                val gson = com.google.gson.GsonBuilder().create()
+                val jsonBody = gson.toJson(request)
+                Timber.i("═══════════════════════════════════════════════════════════")
+                Timber.i("🔍 DEBUG TRACE - Gson Serialization Result")
+                Timber.i("   STEP 3 - JSON body to be sent:")
+                Timber.i("      $jsonBody")
+                Timber.i("   Contains 'blumonOperationNumber'? ${jsonBody.contains("blumonOperationNumber")}")
+                Timber.i("═══════════════════════════════════════════════════════════")
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to serialize request for debug logging")
+            }
 
             // 3. Llamar al backend
             val response = apiService.recordFastPayment(
@@ -236,6 +266,10 @@ class FastPaymentRecorder @Inject constructor(
             verificationPhotos = context.verificationPhotos.takeIf { it.isNotEmpty() },
             // Scanned barcodes from verification screen
             verificationBarcodes = context.verificationBarcodes.takeIf { it.isNotEmpty() },
+
+            // 💸 Blumon Operation Number (2025-12-16) - For refunds without webhook
+            // This comes from response.operation in SaleIccResponse
+            blumonOperationNumber = context.blumonOperationNumber,
         )
     }
 }

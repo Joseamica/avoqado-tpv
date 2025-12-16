@@ -5,6 +5,8 @@ import com.jaac.avoqado_tpv.features.payment.data.repository.OrderPaymentRecorde
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
+import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentRecorder
+import kotlinx.coroutines.delay
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -61,6 +63,27 @@ class RecordPaymentUseCase @Inject constructor(
     private val fastPaymentRecorder: FastPaymentRecorder,
     private val orderPaymentRecorder: OrderPaymentRecorder,
 ) {
+    companion object {
+        /**
+         * Número máximo de intentos para grabar un pago antes de marcarlo como fallido.
+         *
+         * **Backoff exponencial:**
+         * - Intento 1: Inmediato
+         * - Intento 2: +500ms delay
+         * - Intento 3: +1s delay
+         * - Intento 4: +2s delay
+         * - Intento 5: +4s delay
+         *
+         * Total: ~7.5s de intentos antes de ir a la cola offline
+         */
+        private const val MAX_RETRIES = 5
+
+        /**
+         * Delay inicial en milisegundos para el primer retry.
+         * Se duplica exponencialmente en cada intento: 500ms → 1s → 2s → 4s
+         */
+        private const val INITIAL_RETRY_DELAY_MS = 500L
+    }
     /**
      * Graba el pago en el backend usando el recorder apropiado.
      *
@@ -134,14 +157,173 @@ class RecordPaymentUseCase @Inject constructor(
                 Timber.d("📍 Using OrderPaymentRecorder for order payment (orderId=${context.orderId})")
                 orderPaymentRecorder
             }
+
+            is PaymentContext.RefundPayment -> {
+                // 🔐 REFUNDS: Use dedicated RecordRefundUseCase instead
+                // Refunds follow a different flow:
+                // 1. SDK processes TransType.REFUND
+                // 2. RecordRefundUseCase records to backend
+                // This UseCase is for SALES only
+                Timber.e("❌ RefundPayment should use RecordRefundUseCase, not RecordPaymentUseCase")
+                return Result.failure(
+                    IllegalStateException(
+                        "Refunds must be recorded via RecordRefundUseCase. " +
+                        "Use PaymentViewModel's processRefund() method instead."
+                    )
+                )
+            }
         }
 
-        // Delegar al recorder apropiado
-        return recorder.recordPayment(
+        // 🔄 Delegar con retry automático
+        return recordPaymentWithRetry(
+            recorder = recorder,
             context = context,
             cardDetails = cardDetails,
             authorizationNumber = authorizationNumber,
             referenceNumber = referenceNumber,
         )
+    }
+
+    /**
+     * Intenta grabar el pago con retry automático en caso de errores transitorios.
+     *
+     * **Estrategia de retry:**
+     * - Máximo 5 intentos
+     * - Exponential backoff: 500ms → 1s → 2s → 4s
+     * - Solo reintenta errores transitorios (5xx, network, timeout)
+     * - NO reintenta errores permanentes (401, 403, 404, 429)
+     *
+     * **Errores con retry (transitorios):**
+     * - 500-599 (server errors)
+     * - Timeout / Network errors
+     * - Connection errors
+     *
+     * **Errores sin retry (permanentes):**
+     * - 401 (Unauthorized - token expirado)
+     * - 403 (Forbidden - sin permisos)
+     * - 404 (Not Found - venue no existe)
+     * - 429 (Rate Limit - demasiadas requests)
+     *
+     * **Ejemplo de log:**
+     * ```
+     * 📡 Recording payment (attempt 1/5)
+     * ⚠️ Retriable error (attempt 1/5): Error del servidor (502)
+     * 🔄 Retry attempt 2/5 in 500ms...
+     * 📡 Recording payment (attempt 2/5)
+     * ✅ Payment recorded successfully after 2 attempts
+     * ```
+     */
+    private suspend fun recordPaymentWithRetry(
+        recorder: PaymentRecorder,
+        context: PaymentContext,
+        cardDetails: CardDetails,
+        authorizationNumber: String,
+        referenceNumber: String,
+    ): Result<PaymentReceipt> {
+        var lastError: Exception? = null
+
+        repeat(MAX_RETRIES) { attemptIndex ->
+            val attemptNumber = attemptIndex + 1
+
+            // Delay exponencial ANTES del intento (excepto el primero)
+            if (attemptIndex > 0) {
+                val delayMs = INITIAL_RETRY_DELAY_MS * (1 shl (attemptIndex - 1)) // 2^(n-1)
+                Timber.w("🔄 Retry attempt $attemptNumber/$MAX_RETRIES in ${delayMs}ms...")
+                delay(delayMs)
+            }
+
+            Timber.d("📡 Recording payment (attempt $attemptNumber/$MAX_RETRIES)")
+
+            // Intentar grabar el pago
+            val result = recorder.recordPayment(
+                context = context,
+                cardDetails = cardDetails,
+                authorizationNumber = authorizationNumber,
+                referenceNumber = referenceNumber,
+            )
+
+            // ✅ Si fue exitoso, retornar inmediatamente
+            if (result.isSuccess) {
+                if (attemptIndex > 0) {
+                    Timber.i("✅ Payment recorded successfully after $attemptNumber attempts")
+                }
+                return result
+            }
+
+            // ❌ Analizar el error
+            val exception = result.exceptionOrNull()
+            lastError = exception as? Exception
+
+            // Determinar si es un error retriable
+            val isRetriable = isRetriableError(exception)
+
+            if (!isRetriable) {
+                Timber.w("⚠️ Non-retriable error, stopping retries: ${exception?.message}")
+                return result
+            }
+
+            Timber.w("⚠️ Retriable error (attempt $attemptNumber/$MAX_RETRIES): ${exception?.message}")
+        }
+
+        // Si llegamos aquí, agotamos todos los intentos
+        Timber.e("❌ Payment recording failed after $MAX_RETRIES attempts")
+        return Result.failure(
+            lastError ?: Exception("Error registrando el pago después de $MAX_RETRIES intentos")
+        )
+    }
+
+    /**
+     * Determina si un error es retriable (transitorio) o no.
+     *
+     * **Retriable (transitorios):**
+     * - Server errors (500-599) - backend temporalmente caído
+     * - Network/timeout errors - problemas de conectividad
+     * - Connection errors
+     *
+     * **No retriable (permanentes):**
+     * - 401 Unauthorized - token expirado, requiere re-login
+     * - 403 Forbidden - sin permisos, requiere cambio de rol
+     * - 404 Not Found - recurso no existe, requiere corrección
+     * - 429 Rate Limit - demasiadas requests, requiere esperar más tiempo
+     *
+     * @param exception El error a analizar
+     * @return true si el error es retriable, false si es permanente
+     */
+    private fun isRetriableError(exception: Throwable?): Boolean {
+        if (exception == null) return false
+
+        val message = exception.message ?: ""
+
+        return when {
+            // ✅ Server errors (5xx) - RETRIABLE
+            message.contains("Error del servidor", ignoreCase = true) -> true
+            message.contains(Regex("5\\d{2}")) -> true // Match 500, 502, 503, etc.
+
+            // ✅ Network/timeout errors - RETRIABLE
+            message.contains("conexión", ignoreCase = true) -> true
+            message.contains("timeout", ignoreCase = true) -> true
+            message.contains("network", ignoreCase = true) -> true
+            message.contains("Verifica tu conexión", ignoreCase = true) -> true
+
+            // ❌ Auth/Permission errors - NO RETRIABLE
+            message.contains("401", ignoreCase = false) -> false
+            message.contains("Unauthorized", ignoreCase = true) -> false
+            message.contains("Token", ignoreCase = true) && message.contains("expirado", ignoreCase = true) -> false
+
+            message.contains("403", ignoreCase = false) -> false
+            message.contains("Forbidden", ignoreCase = true) -> false
+            message.contains("permisos", ignoreCase = true) -> false
+
+            message.contains("404", ignoreCase = false) -> false
+            message.contains("Not Found", ignoreCase = true) -> false
+            message.contains("no encontrado", ignoreCase = true) -> false
+
+            message.contains("429", ignoreCase = false) -> false
+            message.contains("Rate Limit", ignoreCase = true) -> false
+            message.contains("Demasiadas solicitudes", ignoreCase = true) -> false
+
+            // ✅ Default: retriable para cualquier otro error
+            else -> true
+        }
     }
 }

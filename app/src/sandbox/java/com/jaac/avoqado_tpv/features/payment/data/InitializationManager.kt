@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.payment.data
 
+import android.content.Context
 import com.example.clean_lib_services.shared.core.domain.entity.init.Contact
 import com.example.clean_lib_services.shared.core.domain.entity.init.InitData
 import com.example.clean_lib_services.shared.core.domain.entity.init.KushkiData
@@ -11,6 +12,7 @@ import com.example.clean_lib_services.shared.initializer.domain.use_case.insert_
 import com.example.clean_lib_services.shared.initializer.domain.use_case.insert_init.InsertInitUseCase
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -47,6 +49,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class InitializationManager @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val secureStorage: SecureStorage,
     private val initializerUseCase: InitializerUseCase,
     private val insertInitUseCase: InsertInitUseCase,
@@ -55,6 +58,7 @@ class InitializationManager @Inject constructor(
 
     companion object {
         private const val TWENTY_FOUR_HOURS_MS = 86_400_000L  // 24 hours in milliseconds
+        private const val SDK_DATABASE_NAME = "pax-database"  // Blumon SDK Room database
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -87,15 +91,19 @@ class InitializationManager @Inject constructor(
      * - First time (no timestamp exists)
      * - 24+ hours since last init
      *
-     * Otherwise skips init (reuses existing configuration)
+     * Otherwise skips full init (reuses existing configuration) BUT still ensures
+     * the correct posId is in the database to handle app restarts after merchant switches.
      *
      * **Thread-safe:** Uses mutex to prevent concurrent initialization attempts.
      * If called while init is in progress, awaits the ongoing init instead.
      *
+     * @param defaultMerchantPosId Optional posId from default MerchantAccount.
+     *                             When provided, ensures this posId is in the SDK database
+     *                             even when skipping full init (handles app restart after merchant switch).
      * @return Result.success(Unit) if initialized or already valid
      * @return Result.failure if initialization fails
      */
-    suspend fun ensureInitialized(): Result<Unit> {
+    suspend fun ensureInitialized(defaultMerchantPosId: String? = null): Result<Unit> {
         // Fast path: already initialized
         if (_isInitialized.value) {
             Timber.d("✅ [InitializationManager] Already initialized (fast path)")
@@ -127,7 +135,7 @@ class InitializationManager @Inject constructor(
                 initializationDeferred = deferred
 
                 Timber.i("🔧 [InitializationManager] Running Blumon SDK initialization...")
-                val result = executeInitialization(now)
+                val result = executeInitialization(now, merchantPosId = defaultMerchantPosId)
 
                 // Mark as initialized on success
                 if (result.isSuccess) {
@@ -138,7 +146,27 @@ class InitializationManager @Inject constructor(
                 result
             } else {
                 val hoursSinceInit = ((now - (lastInit ?: 0)) / (1000 * 60 * 60)).toInt()
-                Timber.d("✅ [InitializationManager] SDK already initialized ($hoursSinceInit hours ago) - skipping init")
+
+                // CRITICAL FIX: When defaultMerchantPosId is provided, always do full re-init
+                // Reason: Room's in-memory cache is loaded on app start with stale posId.
+                // Clearing SQLite directly doesn't clear Room's cache, so GetInitDataUseCase
+                // returns stale data. Only full re-init properly resets Room's state.
+                if (defaultMerchantPosId != null) {
+                    Timber.i("🔄 [InitializationManager] App restart detected - forcing full re-init to fix posId")
+                    Timber.d("   Reason: Room cache may have stale posId from previous merchant switch")
+
+                    // Force full initialization with the correct posId
+                    val result = executeInitialization(now, merchantPosId = defaultMerchantPosId)
+
+                    if (result.isSuccess) {
+                        _isInitialized.value = true
+                    }
+
+                    return@withLock result
+                }
+
+                // No defaultMerchantPosId = normal skip (no merchant switch history to worry about)
+                Timber.d("✅ [InitializationManager] SDK already initialized ($hoursSinceInit hours ago) - skipping full init")
                 _isInitialized.value = true  // Mark as initialized (cached)
                 Result.success(Unit)
             }
@@ -196,8 +224,13 @@ class InitializationManager @Inject constructor(
      * 2. InsertInitUseCase - Force correct posId (SDK bug workaround)
      * 3. GetInitDataUseCase - Verification
      * 4. Save timestamp
+     *
+     * @param timestamp Current timestamp for caching
+     * @param merchantPosId Optional posId from MerchantAccount (for merchant switching).
+     *                      When provided, bypasses GetInitDataUseCase (which may return stale cache).
+     *                      This follows the same pattern as PaymentViewModel.performOnlineAuthorization().
      */
-    private suspend fun executeInitialization(timestamp: Long): Result<Unit> {
+    private suspend fun executeInitialization(timestamp: Long, merchantPosId: String? = null): Result<Unit> {
         return try {
             // STEP 1: InitializerUseCase (OAuth + DUKPT download)
             Timber.i("[INIT STEP 1] InitializerUseCase - OAuth + DUKPT key download...")
@@ -217,19 +250,39 @@ class InitializationManager @Inject constructor(
 
             Timber.i("✅ [INIT STEP 1] OAuth + DUKPT keys downloaded successfully")
 
-            // STEP 1.5: Get the correct posId from backend BEFORE overwriting
-            Timber.i("[INIT STEP 1.5] GetInitDataUseCase - Fetching backend posId...")
-            val preInitDataParams = GetInitDataParams()
-            val preInitDataResult = getInitDataUseCase.run(preInitDataParams)
+            // STEP 1.5: Clear init table for merchant switching
+            // CRITICAL FIX: InitializerUseCase may insert init data with wrong posId from server.
+            // InsertInitUseCase ADDS records (doesn't update), so GetInitDataUseCase returns
+            // the first/stale record. By clearing the table before InsertInitUseCase, we ensure
+            // only our correct posId exists in the database.
+            // NOTE: This uses raw SQLite to bypass Room's in-memory cache.
+            if (merchantPosId != null) {
+                Timber.i("[INIT STEP 1.5] Clearing init table for merchant switch...")
+                clearInitTable()
+            }
 
-            val correctPosId = if (preInitDataResult.isRight) {
-                val preInitData = preInitDataResult.rightValue().initData
-                Timber.i("   Backend returned posId: ${preInitData.posId} for serial: ${TerminalConfig.serialNumber}")
-                preInitData.posId
+            // STEP 1.6: Determine correct posId
+            // When merchantPosId is provided (merchant switching), use it directly.
+            // Otherwise, query SDK (initial app launch).
+            val correctPosId = if (merchantPosId != null) {
+                // ✅ Merchant switching: Use provided posId directly (bypasses stale SDK cache)
+                Timber.i("[INIT STEP 1.6] Using provided merchantPosId: $merchantPosId (merchant switch)")
+                merchantPosId
             } else {
-                // Fallback to old hardcoded value if backend call fails
-                Timber.w("   ⚠️ Failed to get posId from backend, using fallback: 376")
-                "376"
+                // Initial app launch: Query SDK for posId
+                Timber.i("[INIT STEP 1.6] GetInitDataUseCase - Fetching backend posId...")
+                val preInitDataParams = GetInitDataParams()
+                val preInitDataResult = getInitDataUseCase.run(preInitDataParams)
+
+                if (preInitDataResult.isRight) {
+                    val preInitData = preInitDataResult.rightValue().initData
+                    Timber.i("   Backend returned posId: ${preInitData.posId} for serial: ${TerminalConfig.serialNumber}")
+                    preInitData.posId
+                } else {
+                    // Fallback to old hardcoded value if backend call fails
+                    Timber.w("   ⚠️ Failed to get posId from backend, using fallback: 376")
+                    "376"
+                }
             }
 
             // STEP 2: InsertInitUseCase (posId bug workaround)
@@ -298,12 +351,17 @@ class InitializationManager @Inject constructor(
     }
 
     /**
-     * Force re-initialization (for testing or troubleshooting)
+     * Force re-initialization (for testing, troubleshooting, or merchant switching)
      *
-     * Clears timestamp and executes full init sequence
+     * Clears timestamp and executes full init sequence.
+     *
+     * @param merchantPosId Optional posId from MerchantAccount.
+     *                      When provided (merchant switching), bypasses GetInitDataUseCase
+     *                      which may return stale cached data after multiple merchant switches.
+     *                      This follows the same pattern as PaymentViewModel.performOnlineAuthorization().
      */
-    suspend fun forceReinitialize(): Result<Unit> {
-        Timber.w("⚠️ [InitializationManager] Force re-initialization requested")
+    suspend fun forceReinitialize(merchantPosId: String? = null): Result<Unit> {
+        Timber.w("⚠️ [InitializationManager] Force re-initialization requested (merchantPosId: ${merchantPosId ?: "null"})")
 
         return initMutex.withLock {
             // Reset state before re-initializing
@@ -312,7 +370,7 @@ class InitializationManager @Inject constructor(
             val deferred = CompletableDeferred<Result<Unit>>()
             initializationDeferred = deferred
 
-            val result = executeInitialization(System.currentTimeMillis())
+            val result = executeInitialization(System.currentTimeMillis(), merchantPosId)
 
             if (result.isSuccess) {
                 _isInitialized.value = true
@@ -320,6 +378,85 @@ class InitializationManager @Inject constructor(
 
             deferred.complete(result)
             result
+        }
+    }
+
+    /**
+     * Clear the init table using raw SQLite to bypass Room's in-memory cache
+     *
+     * **Problem:**
+     * Room's DAO singleton caches query results. Even after InsertInitUseCase adds a new record,
+     * GetInitDataUseCase may return the first/stale record from cache.
+     *
+     * **Solution:**
+     * Use raw SQLite to delete all records from the init table. This bypasses Room and directly
+     * modifies the database file. The next GetInitDataUseCase call will query the updated database.
+     *
+     * **Table names to try:**
+     * The SDK's Room database may use various table names for init data:
+     * - InitEntity, init_entity, initentity
+     * - Init, init
+     * - InitData, init_data, initdata
+     * - Configuration, configuration
+     */
+    private fun clearInitTable() {
+        try {
+            // Open SDK database directly using SQLite (bypasses Room)
+            val dbPath = context.getDatabasePath(SDK_DATABASE_NAME)
+            if (!dbPath.exists()) {
+                Timber.w("   SDK database doesn't exist yet, skipping clear")
+                return
+            }
+
+            val db = android.database.sqlite.SQLiteDatabase.openDatabase(
+                dbPath.absolutePath,
+                null,
+                android.database.sqlite.SQLiteDatabase.OPEN_READWRITE
+            )
+
+            try {
+                // Try table names used by Blumon SDK Room database
+                // "Init" is the confirmed table name (discovered 2025-12-15)
+                val tableNames = listOf(
+                    "Init",  // ← Confirmed correct table name for Blumon SDK
+                    "init",
+                    "InitEntity", "init_entity", "initentity",
+                    "InitData", "init_data", "initdata",
+                    "Configuration", "configuration"
+                )
+
+                var cleared = false
+                for (tableName in tableNames) {
+                    try {
+                        val rowsDeleted = db.delete(tableName, null, null)
+                        if (rowsDeleted > 0) {
+                            Timber.i("   ✅ Cleared $rowsDeleted rows from '$tableName' table")
+                            cleared = true
+                        }
+                    } catch (e: Exception) {
+                        // Table doesn't exist, try next
+                        Timber.v("   Table '$tableName' not found or error: ${e.message}")
+                    }
+                }
+
+                if (!cleared) {
+                    // Fallback: List all tables and try to find init-related one
+                    val cursor = db.rawQuery(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'android_%' AND name NOT LIKE 'room_%'",
+                        null
+                    )
+                    val tables = mutableListOf<String>()
+                    while (cursor.moveToNext()) {
+                        tables.add(cursor.getString(0))
+                    }
+                    cursor.close()
+                    Timber.w("   ⚠️ Could not find init table. Available tables: $tables")
+                }
+            } finally {
+                db.close()
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "   ❌ Failed to clear init table")
         }
     }
 }

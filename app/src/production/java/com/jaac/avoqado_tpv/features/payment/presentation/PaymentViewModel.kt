@@ -25,6 +25,7 @@ import com.blumonpay.pax.shared.trans_process.domain.use_case.pre_trans.PreTrans
 import com.blumonpay.pax.shared.trans_process.domain.use_case.pre_trans.PreTransUseCase
 import com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransParams
 import com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransUseCase
+import com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransFailure
 // Contactless (NFC) payment processing
 import com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase
 import com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransParams
@@ -34,6 +35,16 @@ import com.example.clean_lib_services.shared.core.domain.entity.sale_data.Cipher
 import com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccParams
 import com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccResponse
 import com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccUseCase
+// 💸 CancelIccUseCase - For REFUND transactions (returns money to customer)
+// NOTE: We use CancelIcc (NOT ReverseIcc) because:
+// - ReverseIcc reads operationID from pending transactions table (not useful for completed payments)
+// - CancelIcc accepts operationID parameter for canceling COMPLETED transactions
+// - CancelIcc is what we need for refunding payments that have already been settled
+import com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.cancel_icc.CancelIccParams
+import com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.cancel_icc.CancelIccResponse
+import com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.cancel_icc.CancelIccUseCase
+import com.example.clean_lib_services.shared.core.domain.entity.cancel_data.AuthenticationCardCancel
+import com.example.clean_lib_services.shared.core.domain.entity.cancel_data.CipherTypeCancel
 import com.example.clean_lib_services.shared.initializer.domain.use_case.initializer.InitializerParams
 import com.example.clean_lib_services.shared.initializer.domain.use_case.initializer.InitializerUseCase
 import com.example.clean_lib_services.shared.initializer.domain.use_case.get_init_data.GetInitDataParams
@@ -57,7 +68,10 @@ import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsReposito
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 // ⭐ NEW: Backend payment recording
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
+// 💸 Backend Refund Recording - Record refunds to avoqado-server database
+import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordRefundUseCase
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
+import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode
@@ -101,6 +115,12 @@ class PaymentViewModel @Inject constructor(
     private val continueConfirmCardUseCase: ContinueConfirmCardUseCase,
     // ⭐ SaleIccUseCase provided automatically by lib-services Hilt modules
     private val saleIccUseCase: SaleIccUseCase,
+    // 💸 CancelIccUseCase for REFUND transactions - provided by lib-services Hilt modules
+    // NOTE: We use CancelIcc (NOT ReverseIcc) because:
+    // - ReverseIcc reads operationID from pending transactions table (not useful for completed payments)
+    // - CancelIcc accepts operationID parameter for canceling COMPLETED transactions
+    // - CancelIcc is what we need for refunding payments that have already been settled
+    private val cancelIccUseCase: CancelIccUseCase,
     // 🔐 TransProcessRepository for PIN StateFlows (auto-injected by SDK's Hilt module)
     private val transProcessRepository: TransProcessRepository,
     // 🔧 InitializerUseCase from SDK - Complete initialization with DUKPT download
@@ -116,6 +136,8 @@ class PaymentViewModel @Inject constructor(
     private val multiMerchantSDKManager: com.jaac.avoqado_tpv.features.payment.data.MultiMerchantSDKManager,
     // 💾 Backend Payment Recording - Record payments to avoqado-server database
     private val recordPaymentUseCase: RecordPaymentUseCase,
+    // 💸 Backend Refund Recording - Record refunds to avoqado-server database
+    private val recordRefundUseCase: RecordRefundUseCase,
     // 🔐 Auth Repository - Get current venue and staff context
     private val authRepository: com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository,
     // 💾 Payment Queue Repository - Offline payment queue for failed backend recordings
@@ -163,6 +185,16 @@ class PaymentViewModel @Inject constructor(
     private val _tpvSettings = MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings?>(null)
     val tpvSettings: StateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings?> = _tpvSettings.asStateFlow()
 
+    // 🔢 PIN Entry feedback - asterisks from SDK ("", "*", "**", "***", "****")
+    // READ-ONLY: Only observes what SDK emits, does NOT affect payment flow
+    private val _pinEntryState = MutableStateFlow("")
+    val pinEntryState: StateFlow<String> = _pinEntryState.asStateFlow()
+
+    // 🔢 PIN Dialog visibility - true when SDK needs PIN input
+    // Used to keep "Ingrese su PIN" visible even when asterisks are cleared
+    private val _isPinDialogVisible = MutableStateFlow(false)
+    val isPinDialogVisible: StateFlow<Boolean> = _isPinDialogVisible.asStateFlow()
+
     // ═══════════════════════════════════════════════════════════════════════════
 
     private var currentAmount: String = ""  // Amount in decimal format (e.g., "30.00") for UI display
@@ -200,6 +232,12 @@ class PaymentViewModel @Inject constructor(
     // For order payments: Uses existing order number (e.g., "ORD-12345")
     // This ensures photos uploaded to Firebase match the orderNumber created in backend
     private var prePaymentOrderReference: String? = null
+
+    // 💸 REFUND SUPPORT: Track transaction type (SALE vs REFUND)
+    // Default to SALE for normal payments, set to REFUND in startRefund()
+    private var currentTransactionType: TransType = TransType.SALE
+    // Refund context (null for sales, set for refunds)
+    private var currentRefundContext: PaymentContext.RefundPayment? = null
 
     // 🔒 CRITICAL: Signal when merchants are fully loaded (prevents race condition)
     // Used by skipTip()/submitTip() to await merchants before reading _merchants.value
@@ -319,16 +357,17 @@ class PaymentViewModel @Inject constructor(
         viewModelScope.launch {
             transProcessRepository.getEventPinDialogStateFlow().collect { state ->
                 Timber.d("📟 [PIN Dialog] State changed: $state")
-                // PAX A910S physical keyboard activates automatically
-                // No UI action needed - hardware handles it
+                // Update visibility for UI (keeps "Ingrese su PIN" visible even when cleared)
+                _isPinDialogVisible.value = state.show && !state.dismiss
             }
         }
 
-        // 2️⃣ Keyboard PIN State - Physical keyboard status
+        // 2️⃣ Keyboard PIN State - Physical keyboard status (asterisks feedback)
         viewModelScope.launch {
             transProcessRepository.getKeyboardPinStateFlow().collect { pinState ->
                 Timber.d("⌨️  [PIN Keyboard] State: $pinState")
-                // Tracks when user is typing on PAX physical keyboard
+                // Expose asterisks to UI for visual feedback (READ-ONLY, does not affect payment)
+                _pinEntryState.value = pinState
             }
         }
 
@@ -1394,7 +1433,8 @@ class PaymentViewModel @Inject constructor(
                 // ═══════════════════════════════════════════════════════════════════════════
                 _state.value = PaymentState.ConfiguringKernel
                 Timber.i("[PHASE 1] PreTrans - Configuring EMV kernel...")
-                val preParams = PreTransParams(currentAmountInCents, "0", TransType.SALE, CountryConstants.MEX)
+                // 💸 REFUND SUPPORT: Use currentTransactionType (SALE or REFUND) instead of hardcoded SALE
+                val preParams = PreTransParams(currentAmountInCents, "0", currentTransactionType, CountryConstants.MEX)
                 preTransUseCase.runInfallible(preParams)
                 Timber.d("✅ [PHASE 1] PreTrans completed")
 
@@ -1453,8 +1493,19 @@ class PaymentViewModel @Inject constructor(
                 if (emvResult.isLeft) {
                     val error = emvResult.leftValue()
                     Timber.e("❌ [PHASE 3] EMV failed: $error")
+                    // Convert SDK error class to user-friendly message
+                    val friendlyMessage = when (error) {
+                        is StartEmvTransFailure.WithdrawnCardFailure -> "Tarjeta retirada antes de tiempo. Por favor, mantenga la tarjeta insertada hasta que se complete la operación."
+                        is StartEmvTransFailure.TimeoutFailure -> "Tiempo de espera agotado. Por favor, intente de nuevo."
+                        is StartEmvTransFailure.CancelOperationFailure -> "Operación cancelada."
+                        is StartEmvTransFailure.DetectChipFailure -> "Error al leer el chip. Por favor, limpie el chip e intente de nuevo."
+                        is StartEmvTransFailure.CardDeclineByEmvFailure -> "Tarjeta rechazada por el chip. Por favor, use otra tarjeta."
+                        is StartEmvTransFailure.EmvIncompleteFailure -> "Lectura de tarjeta incompleta. Por favor, intente de nuevo."
+                        is StartEmvTransFailure.EMVFailure -> "Error al procesar la tarjeta. Por favor, intente de nuevo."
+                        else -> "Error procesando tarjeta. Por favor, intente de nuevo."
+                    }
                     _state.value = PaymentState.Error(
-                        message = "Error procesando EMV: $error",
+                        message = friendlyMessage,
                         context = createPaymentContext()  // 🔄 Preserve context for smart retry
                     )
                     return@launch
@@ -1585,9 +1636,11 @@ class PaymentViewModel @Inject constructor(
                 }
 
                 val saleData = authResult.response.saleData
+                val operationNumber = authResult.response.operation?.toIntOrNull() // 💸 Extract for refunds (String → Int)
                 Timber.i("✅ [PHASE 4] Online authorization SUCCESS!")
                 Timber.i("   Auth Code: ${saleData.authorization}")
                 Timber.i("   Reference: ${saleData.reference}")
+                Timber.i("   Operation: $operationNumber") // 💸 Log for debugging
                 Timber.i("   EMV Code: ${saleData.emvResponseCode}")
                 Timber.i("   ARPC: ${saleData.arpc?.take(16)}...")
 
@@ -1650,7 +1703,8 @@ class PaymentViewModel @Inject constructor(
                 // ⭐ NEW: Record payment to backend (in background)
                 handlePaymentSuccess(
                     saleData = saleData,
-                    entryMode = CardEntryMode.CHIP
+                    entryMode = CardEntryMode.CHIP,
+                    blumonOperationNumber = operationNumber, // 💸 Pass for refunds without webhook
                 )
 
             } catch (e: Exception) {
@@ -1804,10 +1858,13 @@ class PaymentViewModel @Inject constructor(
                     }
 
                     // Translate SDK errors to user-friendly Spanish messages
+                    // 💸 Use "Reembolso" for refund mode, "Pago" for sales
+                    val isRefund = currentTransactionType == TransType.REFUND
+                    val rejectedPrefix = if (isRefund) "Reembolso rechazado" else "Pago rechazado"
                     val userMessage = when {
                         // ⭐ NEW: Use specific error description if available
                         specificErrorDescription != null -> {
-                            "Pago rechazado:\n\n$specificErrorDescription\n\n" +
+                            "$rejectedPrefix:\n\n$specificErrorDescription\n\n" +
                             "Por favor, solicita otra forma de pago."
                         }
                         errorString.contains("AMOUNT' must be greater than", ignoreCase = true) -> {
@@ -1833,7 +1890,7 @@ class PaymentViewModel @Inject constructor(
                         }
                         errorString.contains("declined", ignoreCase = true) ||
                         errorString.contains("rechazado", ignoreCase = true) -> {
-                            "Pago rechazado por el banco.\n\n" +
+                            "$rejectedPrefix por el banco.\n\n" +
                             "Solicita otra forma de pago."
                         }
                         else -> {
@@ -1893,6 +1950,178 @@ class PaymentViewModel @Inject constructor(
             AuthorizationResult(
                 response = null,
                 userFriendlyError = "Error inesperado procesando el pago.\n\nPor favor, intenta nuevamente."
+            )
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    // 💸 REFUND AUTHORIZATION - Uses CancelIccUseCase (NOT SaleIccUseCase!)
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Result class for refund authorization (CancelIcc)
+     * Note: CancelData has 'reference' field, not 'authorization'
+     */
+    private data class RefundAuthorizationResult(
+        val response: CancelIccResponse?,
+        val userFriendlyError: String?
+    )
+
+    /**
+     * 💸 Perform REFUND authorization with Momentum platform using CancelIccUseCase
+     *
+     * CRITICAL: This uses CancelIccUseCase (not SaleIccUseCase) to ensure:
+     * 1. Blumon registers the transaction as a REFUND (not a sale)
+     * 2. Money is returned TO the customer (not charged)
+     * 3. Correct ticket type ("Ticket de Devolución" vs "Ticket de Venta")
+     * 4. The operationID links to the original transaction for proper refund
+     *
+     * @param amount Amount to refund (positive value)
+     * @param track2 Track2 data from the card
+     * @param cardHolderName Cardholder name from chip
+     * @param emvTagList EMV tags in TLV format
+     * @param originalOperationNumber Blumon operation number from original payment (REQUIRED)
+     * @return RefundAuthorizationResult with response or error message
+     */
+    private suspend fun performRefundAuthorization(
+        amount: String,
+        track2: String,
+        cardHolderName: String,
+        emvTagList: String,
+        originalOperationNumber: Int  // 💸 CRITICAL: Blumon operation number from original payment
+    ): RefundAuthorizationResult {
+        return try {
+            // ✅ Use posId from current merchant (same as payment authorization)
+            val currentMerchantAccount = _currentMerchant.value
+            val posIdToUse = currentMerchantAccount?.posId
+
+            if (posIdToUse == null) {
+                Timber.e("❌ [Refund] No posId available - current merchant: ${currentMerchantAccount?.displayName ?: "null"}")
+                return RefundAuthorizationResult(
+                    response = null,
+                    userFriendlyError = "Error de configuración del merchant.\n\n" +
+                        "Por favor, seleccione un merchant antes de procesar el reembolso."
+                )
+            }
+
+            Timber.i("✅ [Refund] Using posId from current merchant: $posIdToUse")
+            Timber.i("   Merchant: ${currentMerchantAccount.displayName}")
+            Timber.i("   Serial: ${currentMerchantAccount.serialNumber}")
+
+            Timber.i("🌐 [CancelIcc] Sending REFUND authorization to Momentum...")
+            Timber.d("   Amount: $amount")
+            Timber.d("   Track2: ${track2.take(16)}...")
+            Timber.d("   Cardholder: $cardHolderName")
+            Timber.d("   EMV Tags: ${emvTagList.take(50)}...")
+            Timber.d("   OperationID (blumon operation number): $originalOperationNumber")
+
+            // Build CancelIccParams with operationID for the original transaction
+            // NOTE: operationID expects String, but we pass the Int as String
+            // CRITICAL: This must be the small int from webhook (e.g., 75656), NOT referenceNumber!
+            val cipherType = CipherTypeCancel.DUKPT  // ✅ ALWAYS DUKPT (same as sales)
+
+            val params = CancelIccParams(
+                operationID = originalOperationNumber.toString(),  // 🎫 CRITICAL: Blumon operation number (fits in Integer)
+                idMembership = "",  // Empty = no loyalty program
+                amount = amount,
+                currency = "484",  // MXN (ISO 4217)
+                track2 = track2,
+                cardHolderName = cardHolderName,
+                authenticationCard = AuthenticationCardCancel.SIGNATURE,
+                emvTagList = emvTagList,
+                cipherType = cipherType
+            )
+
+            // Call CancelIccUseCase (returns Either<Failure, Success>)
+            val result = cancelIccUseCase.run(params)
+
+            // Handle Either<Failure, Success> result
+            when {
+                result.isLeft -> {
+                    // Handle failure
+                    val failure = result.leftValue()
+                    Timber.e("❌ [CancelIcc] Refund failed: $failure")
+
+                    // Extract error description from failure
+                    var specificErrorDescription: String? = null
+                    try {
+                        val failureClass = failure.javaClass
+                        failureClass.declaredFields.forEach { field ->
+                            try {
+                                field.isAccessible = true
+                                val value = field.get(failure)
+                                if (value != null) {
+                                    val valueStr = value.toString()
+                                    if (valueStr.contains("description=", ignoreCase = true)) {
+                                        val pattern = """description=([^,)]+)""".toRegex()
+                                        val match = pattern.find(valueStr)
+                                        if (match != null) {
+                                            specificErrorDescription = match.groupValues[1].trim()
+                                        }
+                                    }
+                                }
+                            } catch (e: Exception) { }
+                        }
+                    } catch (e: Exception) {
+                        Timber.w(e, "⚠️ [Error Parsing] Failed to parse refund error details")
+                    }
+
+                    val userMessage = when {
+                        specificErrorDescription != null -> {
+                            "Reembolso rechazado:\n\n$specificErrorDescription"
+                        }
+                        failure.toString().contains("NetworkConnection", ignoreCase = true) -> {
+                            "Sin conexión a internet.\n\nVerifique su conexión e intente nuevamente."
+                        }
+                        failure.toString().contains("timeout", ignoreCase = true) -> {
+                            "El banco no respondió a tiempo.\n\nPor favor, intente nuevamente."
+                        }
+                        else -> {
+                            "Error procesando el reembolso.\n\nPor favor, intente nuevamente."
+                        }
+                    }
+
+                    RefundAuthorizationResult(response = null, userFriendlyError = userMessage)
+                }
+                else -> {
+                    // Success - extract response
+                    val response = result.rightValue()
+                    Timber.i("✅ [CancelIcc] REFUND Success!")
+                    Timber.i("   Reference: ${response.cancelData.reference}")
+                    Timber.i("   Description: ${response.cancelData.description}")
+
+                    // Log full response structure using reflection (SDK fields vary between versions)
+                    Timber.d("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                    Timber.d("📋 [BLUMON RESPONSE] CancelIccResponse structure:")
+                    Timber.d("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                    try {
+                        val cancelData = response.cancelData
+                        Timber.d("🔹 reference: ${cancelData.reference}")
+                        Timber.d("🔹 description: ${cancelData.description}")
+                        // Use reflection for optional fields that may vary between SDK versions
+                        cancelData::class.java.declaredFields.forEach { field ->
+                            try {
+                                field.isAccessible = true
+                                val value = field.get(cancelData)
+                                if (value != null && field.name !in listOf("reference", "description")) {
+                                    Timber.d("🔹 ${field.name}: $value")
+                                }
+                            } catch (e: Exception) { /* Skip inaccessible fields */ }
+                        }
+                    } catch (e: Exception) {
+                        Timber.w(e, "Could not extract full refund response structure")
+                    }
+                    Timber.d("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+                    RefundAuthorizationResult(response = response, userFriendlyError = null)
+                }
+            }
+
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [CancelIcc] Exception in refund authorization")
+            RefundAuthorizationResult(
+                response = null,
+                userFriendlyError = "Error inesperado procesando el reembolso.\n\nPor favor, intenta nuevamente."
             )
         }
     }
@@ -2138,9 +2367,11 @@ class PaymentViewModel @Inject constructor(
 
             val saleResponse = authResult.response!!
             val saleData = saleResponse.saleData
+            val operationNumber = saleResponse.operation?.toIntOrNull() // 💸 Extract for refunds (String → Int)
             Timber.i("✅ [CONTACTLESS ONLINE PHASE 2] Online authorization SUCCESS!")
             Timber.i("   Auth Code: ${saleData.authorization}")
             Timber.i("   Reference: ${saleData.reference}")
+            Timber.i("   Operation: $operationNumber") // 💸 Log for debugging
 
             // ⚠️ NOTE: Contactless typically does NOT require CompleteEmvTrans (ARPC)
             // Skip ARPC checking for contactless transactions
@@ -2156,7 +2387,8 @@ class PaymentViewModel @Inject constructor(
             // ⭐ NEW: Record payment to backend (in background)
             handlePaymentSuccess(
                 saleData = saleData,
-                entryMode = CardEntryMode.CONTACTLESS
+                entryMode = CardEntryMode.CONTACTLESS,
+                blumonOperationNumber = operationNumber, // 💸 Pass for refunds without webhook
             )
 
         } catch (e: Exception) {
@@ -2742,6 +2974,7 @@ class PaymentViewModel @Inject constructor(
     private fun handlePaymentSuccess(
         saleData: Any, // Blumon SDK SaleData object (type from com.example.clean_lib_services)
         entryMode: CardEntryMode,
+        blumonOperationNumber: Int? = null, // 💸 Operation number from SDK for refunds
     ) {
         viewModelScope.launch {
             try {
@@ -2826,7 +3059,9 @@ class PaymentViewModel @Inject constructor(
                         splitType = splitTypeEnum,
                         paidProductIds = currentPaidProductIds,
                         equalPartsPartySize = currentEqualPartsPartySize,
-                        equalPartsPayedFor = currentEqualPartsPayedFor
+                        equalPartsPayedFor = currentEqualPartsPayedFor,
+                        // 💸 Blumon Operation Number - For refunds without webhook
+                        blumonOperationNumber = blumonOperationNumber,
                     )
                 } else {
                     PaymentContext.FastPayment(
@@ -2842,10 +3077,25 @@ class PaymentViewModel @Inject constructor(
                         orderReference = prePaymentOrderReference,
                         verificationPhotos = prePaymentVerificationPhotos,
                         verificationBarcodes = prePaymentVerificationBarcodes.map { it.barcode },
+                        // 💸 Blumon Operation Number - For refunds without webhook
+                        blumonOperationNumber = blumonOperationNumber,
                     )
                 }
 
                 Timber.d("💾 [Backend Recording] Context: venue=$currentVenueId, staff=$currentStaffId, shift=$currentShiftId, amount=$currentAmount, tip=$currentTip, rating=$currentRating, merchantId=${context.merchantAccountId}, blumonSerial=${context.blumonSerialNumber}")
+
+                // 🔍 DEBUG: Trace blumonOperationNumber being passed to recorder
+                val contextOpNumber = when (context) {
+                    is PaymentContext.FastPayment -> context.blumonOperationNumber
+                    is PaymentContext.OrderPayment -> context.blumonOperationNumber
+                    is PaymentContext.RefundPayment -> context.originalOperationNumber
+                }
+                Timber.i("═══════════════════════════════════════════════════════════")
+                Timber.i("🔍 DEBUG TRACE - ViewModel → Recorder handoff")
+                Timber.i("   blumonOperationNumber param received: $blumonOperationNumber")
+                Timber.i("   context type: ${context::class.simpleName}")
+                Timber.i("   context.blumonOperationNumber: $contextOpNumber")
+                Timber.i("═══════════════════════════════════════════════════════════")
 
                 // 3. Call use case to record payment
                 val result = recordPaymentUseCase(
@@ -3420,7 +3670,8 @@ class PaymentViewModel @Inject constructor(
                     referenceNumber = currentState.referenceNumber,  // 🎫 Pass reference for receipt
                     orderNumber = currentState.orderNumber,  // 🆕 Order number (for display in receipt)
                     orderItems = currentState.orderItems,  // 🆕 Order items (for itemized receipt - only for orders, not fast payments)
-                    discountAmount = currentState.discountAmount  // 🆕 Discount for receipt printing
+                    discountAmount = currentState.discountAmount,  // 🆕 Discount for receipt printing
+                    isRefund = currentState.isRefund  // 💸 Pass refund flag for receipt header
                 )
 
                 result.onSuccess {
@@ -4132,6 +4383,605 @@ class PaymentViewModel @Inject constructor(
                 // Both disabled - go back to home (return to EnteringAmount)
                 Timber.d("📸 [PRE-Verification] Back → EnteringAmount (tip & review disabled)")
                 _state.value = PaymentState.EnteringAmount(amount = currentState.amount)
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════════
+    // 💸 REFUND FUNCTIONS - Process card refunds with TransType.REFUND
+    // ═══════════════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Start a refund transaction.
+     *
+     * **Multi-Merchant CRITICAL:**
+     * Refunds MUST be processed on the SAME merchant account as the original payment.
+     * This ensures proper settlement reconciliation with Blumon.
+     *
+     * **Flow:**
+     * 1. Switch to original payment's merchant (using blumonSerialNumber)
+     * 2. PreTrans with TransType.REFUND (0x20)
+     * 3. Detect card
+     * 4. Route to processChipRefund() or processContactlessRefund()
+     * 5. Record refund to backend via RecordRefundUseCase
+     *
+     * @param context RefundPayment context with original payment info
+     */
+    fun startRefund(context: PaymentContext.RefundPayment) {
+        currentTransactionType = TransType.REFUND
+
+        // Set amount from context
+        currentAmount = context.amount.toPlainString()
+        currentAmountInCents = convertToCents(currentAmount)
+        currentTip = context.tip.toPlainString()
+
+        // 💸 CRITICAL FIX: Get auth context from repository (not from RefundPayment which has empty fields)
+        // The RefundPayment context is created in PaymentScreen without access to auth info
+        currentVenueId = authRepository.getVenueId() ?: ""
+        currentStaffId = authRepository.getStaffId() ?: ""
+        currentShiftId = context.shiftId  // ShiftId from context (may be null, will be resolved later if needed)
+
+        // 💸 CRITICAL FIX: Update context with auth info from repository
+        // The original context has empty venueId/staffId - we MUST update them here
+        // Otherwise RecordRefundUseCase will call API with /venues//refunds (404)
+        currentRefundContext = context.copy(
+            venueId = currentVenueId,
+            staffId = currentStaffId
+        )
+
+        Timber.i("═══════════════════════════════════════════════════════════")
+        Timber.i("💸 [REFUND] Starting refund transaction")
+        Timber.i("═══════════════════════════════════════════════════════════")
+        Timber.i("   💰 Refund amount: $$currentAmount")
+        Timber.i("   📄 Original payment: ${context.originalPaymentId}")
+        Timber.i("   🏪 Merchant: ${context.merchantAccountId}")
+        Timber.i("   📟 Serial: ${context.blumonSerialNumber}")
+        Timber.i("   📝 Reason: ${context.refundReason.displayName}")
+        Timber.i("   👤 Staff: $currentStaffId")
+        Timber.i("   🏢 Venue: $currentVenueId")
+
+        // ⚡ Performance: Start PIN dialog collectors only when transaction begins
+        collectPinDialogFlows()
+
+        viewModelScope.launch {
+            try {
+                // ═══════════════════════════════════════════════════════════════════════════
+                // STEP 0: Ensure merchants are loaded (CRITICAL for multi-merchant lookup)
+                // ═══════════════════════════════════════════════════════════════════════════
+                _state.value = PaymentState.Processing("Cargando configuración...")
+                awaitMerchantsLoaded()
+                Timber.i("✅ [REFUND] Merchants loaded: ${_merchants.value.size} accounts")
+
+                // ═══════════════════════════════════════════════════════════════════════════
+                // STEP 1: Switch to original payment's merchant (CRITICAL for multi-merchant)
+                // ═══════════════════════════════════════════════════════════════════════════
+                _state.value = PaymentState.Processing("Configurando cuenta de comerciante...")
+
+                // Find merchant account by serial number OR merchantAccountId (from original payment)
+                val targetMerchant = _merchants.value.find {
+                    it.serialNumber == context.blumonSerialNumber ||
+                    it.merchantAccountId == context.merchantAccountId
+                }
+
+                if (targetMerchant == null) {
+                    Timber.e("❌ [REFUND] Merchant not found!")
+                    Timber.e("   🔍 Looking for serial: '${context.blumonSerialNumber}' or merchantId: '${context.merchantAccountId}'")
+                    Timber.e("   📋 Available merchants (${_merchants.value.size}):")
+                    _merchants.value.forEach { m ->
+                        Timber.e("      - ${m.displayName}: serial='${m.serialNumber}', merchantId='${m.merchantAccountId}'")
+                    }
+                    _state.value = PaymentState.Error(
+                        message = "No se encontró la cuenta del comerciante original.\n\n" +
+                                "El reembolso debe procesarse con la misma cuenta del pago original.",
+                        canRetry = false
+                    )
+                    return@launch
+                }
+
+                // Switch SDK to target merchant
+                if (!multiMerchantSDKManager.isMerchantActive(targetMerchant)) {
+                    Timber.i("🔄 [REFUND] Switching to merchant: ${targetMerchant.displayName}")
+                    val switchResult = multiMerchantSDKManager.switchMerchant(targetMerchant)
+
+                    if (switchResult.isFailure) {
+                        val error = switchResult.exceptionOrNull()
+                        Timber.e(error, "❌ [REFUND] Failed to switch merchant")
+                        _state.value = PaymentState.Error(
+                            message = "Error configurando cuenta:\n${error?.message ?: "Error desconocido"}",
+                            canRetry = true
+                        )
+                        return@launch
+                    }
+                    Timber.i("✅ [REFUND] Switched to merchant: ${targetMerchant.displayName}")
+                }
+
+                // Update current merchant state
+                _currentMerchant.value = targetMerchant
+
+                // 💸 CRITICAL FIX: Update refund context with merchant's serial number if it was missing
+                // This fixes the "blumonSerialNumber is required" error when original payment
+                // doesn't have blumonSerialNumber stored (older payments before this field was added)
+                // NOTE: Use currentRefundContext (not context) to preserve the venueId/staffId we already fixed
+                if (currentRefundContext?.blumonSerialNumber.isNullOrBlank() && targetMerchant.serialNumber.isNotBlank()) {
+                    Timber.i("🔧 [REFUND] Fixing missing blumonSerialNumber from target merchant")
+                    currentRefundContext = currentRefundContext?.copy(blumonSerialNumber = targetMerchant.serialNumber)
+                }
+
+                // ═══════════════════════════════════════════════════════════════════════════
+                // STEP 2: Await SDK initialization (same as regular payment)
+                // ═══════════════════════════════════════════════════════════════════════════
+                if (!initializationManager.isInitialized.value) {
+                    _state.value = PaymentState.Processing("Configurando sistema de pago...")
+                }
+
+                initializationManager.awaitInitialization().onFailure { error ->
+                    Timber.e(error, "❌ [REFUND] SDK initialization failed")
+                    _state.value = PaymentState.Error(
+                        message = "Error inicializando sistema de pago.\n\nPor favor, cierre sesión e intente nuevamente.",
+                        canRetry = false
+                    )
+                    return@launch
+                }
+
+                // ═══════════════════════════════════════════════════════════════════════════
+                // STEP 3: PreTrans with TransType.REFUND (already set in currentTransactionType)
+                // ═══════════════════════════════════════════════════════════════════════════
+                _state.value = PaymentState.ConfiguringKernel
+                Timber.i("[REFUND PHASE 1] PreTrans - Configuring EMV kernel for REFUND...")
+                val preParams = PreTransParams(currentAmountInCents, "0", currentTransactionType, CountryConstants.MEX)
+                preTransUseCase.runInfallible(preParams)
+                Timber.d("✅ [REFUND PHASE 1] PreTrans completed with TransType.REFUND")
+
+                // ═══════════════════════════════════════════════════════════════════════════
+                // STEP 4: Detect card (same as sale)
+                // ═══════════════════════════════════════════════════════════════════════════
+                _state.value = PaymentState.DetectingCard(currentAmount)
+                Timber.i("[REFUND PHASE 2] Detecting card for refund...")
+
+                val detectParams = StartDetectCardParams(EReaderType.MAG_ICC_PICC)
+                val detectResult = startDetectCardUseCase.run(detectParams)
+
+                if (detectResult.isLeft) {
+                    val error = detectResult.leftValue()
+                    Timber.e("❌ [REFUND PHASE 2] Card detection failed: $error")
+                    _state.value = PaymentState.Error(
+                        message = "Error detectando tarjeta: $error",
+                        canRetry = true
+                    )
+                    return@launch
+                }
+
+                val detectResponse = detectResult.rightValue()
+                val cardType = mapReaderTypeToCardType(detectResponse.pollingResult.readerType)
+                Timber.i("✅ [REFUND PHASE 2] Card detected - Type: $cardType")
+
+                // Route based on card type (same as sale)
+                when (cardType) {
+                    CardType.PICC -> {
+                        Timber.i("🔄 [REFUND ROUTING] Contactless card → processContactlessRefund()")
+                        processContactlessRefund(currentAmountInCents)
+                        return@launch
+                    }
+                    CardType.ICC, CardType.MAG -> {
+                        Timber.i("🔄 [REFUND ROUTING] Chip/Mag card → processChipRefund()")
+                        processChipRefund()
+                    }
+                    CardType.UNKNOWN -> {
+                        _state.value = PaymentState.Error(
+                            message = "Tipo de tarjeta no soportado para reembolso",
+                            canRetry = true
+                        )
+                        return@launch
+                    }
+                }
+
+            } catch (e: CancellationException) {
+                throw e // Don't catch coroutine cancellation
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [REFUND] Unexpected error")
+                _state.value = PaymentState.Error(
+                    message = "Error inesperado en reembolso: ${e.message}",
+                    canRetry = true
+                )
+            }
+        }
+    }
+
+    /**
+     * Process chip card refund (EMV flow with TransType.REFUND)
+     */
+    private suspend fun processChipRefund() {
+        try {
+            // STEP 1: Start EMV transaction
+            _state.value = PaymentState.Processing("Procesando reembolso con chip...")
+            Timber.i("[REFUND PHASE 3] StartEmvTrans...")
+
+            val emvParams = StartEmvTransParams()
+            val emvResult = startEmvTransUseCase.run(emvParams)
+
+            if (emvResult.isLeft) {
+                val error = emvResult.leftValue()
+                Timber.e("❌ [REFUND PHASE 3] EMV failed: $error")
+                // Convert SDK error class to user-friendly message
+                val friendlyMessage = when (error) {
+                    is StartEmvTransFailure.WithdrawnCardFailure -> "Tarjeta retirada antes de tiempo. Por favor, mantenga la tarjeta insertada."
+                    is StartEmvTransFailure.TimeoutFailure -> "Tiempo de espera agotado. Por favor, intente de nuevo."
+                    is StartEmvTransFailure.CancelOperationFailure -> "Operación cancelada."
+                    is StartEmvTransFailure.DetectChipFailure -> "Error al leer el chip. Por favor, limpie el chip e intente de nuevo."
+                    is StartEmvTransFailure.CardDeclineByEmvFailure -> "Tarjeta rechazada por el chip. Por favor, use otra tarjeta."
+                    is StartEmvTransFailure.EmvIncompleteFailure -> "Lectura incompleta. Por favor, intente de nuevo."
+                    is StartEmvTransFailure.EMVFailure -> "Error al procesar la tarjeta. Por favor, intente de nuevo."
+                    else -> "Error procesando tarjeta. Por favor, intente de nuevo."
+                }
+                _state.value = PaymentState.Error(message = friendlyMessage, canRetry = true)
+                return
+            }
+
+            Timber.d("✅ [REFUND PHASE 3] EMV processed")
+
+            // STEP 2: Extract EMV tags (same as sale)
+            _state.value = PaymentState.Processing("Leyendo datos de la tarjeta...")
+            Timber.i("[REFUND PHASE 4] Extracting EMV tags...")
+
+            val emvTagParams = GetEmvTagListParam(
+                emvTagList = listOf(
+                    0x9F27, 0x9F26, 0x9F37, 0x9F36, 0x9C, 0x82, 0x9F33, 0x9F34,
+                    0x9A, 0x5F2A, 0x9F02, 0x9F03, 0x9F35, 0x9F10, 0x9F1A, 0x9F09,
+                    0x9F6C, 0x9F6E, 0x5F34, 0x84, 0x5F28
+                ),
+                format = Format.DECIMAL,
+                cardTech = CardTech.CHIP
+            )
+
+            val tagListResult = getEmvTagListUseCase.runInfallible(emvTagParams)
+            val emvTagList = tagListResult.emvTagList
+            Timber.d("✅ [REFUND PHASE 4] EMV tags extracted")
+
+            // STEP 3: Extract Track2 for SaleIcc
+            val track2TagParams = GetTagValueParams(0x57, CardTech.CHIP)
+            val track2Result = getTagValueUseCase.run(track2TagParams)
+            val track2 = if (track2Result.isRight) track2Result.rightValue().tagValue else ""
+            currentTrack2 = track2
+
+            // STEP 4: Online authorization using CancelIccUseCase
+            // 💸 CancelIcc is the correct SDK method for refunding COMPLETED transactions
+            // - It accepts operationID (original Blumon operation number)
+            // - This tells Blumon which transaction to cancel/refund
+            _state.value = PaymentState.Processing("Autorizando reembolso...")
+
+            // 💸 Get original operation number from refund context
+            val originalOpNum = currentRefundContext?.originalOperationNumber
+            if (originalOpNum == null || originalOpNum == 0) {
+                Timber.e("❌ [REFUND PHASE 5] Missing originalOperationNumber in refund context!")
+                _state.value = PaymentState.Error(
+                    message = "Error: No se encontró el número de operación original.\n\n" +
+                        "El reembolso requiere el número de operación del pago original.",
+                    canRetry = false
+                )
+                return
+            }
+
+            Timber.i("[REFUND PHASE 5] Using CancelIccUseCase with operationID: $originalOpNum")
+
+            val authResult = performRefundAuthorization(
+                amount = formatAmountDecimal(currentAmount),
+                track2 = track2,
+                cardHolderName = "",
+                emvTagList = emvTagList,
+                originalOperationNumber = originalOpNum
+            )
+
+            if (authResult.userFriendlyError != null) {
+                Timber.e("❌ [REFUND PHASE 5] Authorization failed: ${authResult.userFriendlyError}")
+                _state.value = PaymentState.Error(message = authResult.userFriendlyError, canRetry = true)
+                return
+            }
+
+            val cancelResponse = authResult.response!!
+            val cancelData = cancelResponse.cancelData
+
+            // STEP 5: Complete EMV if required (same as sale)
+            val continueParams = ContinueConfirmCardParams(emvCode = 0)
+            continueConfirmCardUseCase.runInfallible(continueParams)
+
+            Timber.i("🎉 REFUND APPROVED!")
+            Timber.i("   Reference: ${cancelData.reference}")
+            Timber.i("   Description: ${cancelData.description}")
+
+            _state.value = PaymentState.Success(
+                authCode = cancelData.reference ?: "", // CancelData uses reference, not authorization
+                amount = currentAmount,
+                isRefund = true // 💸 Flag this as refund for UI
+            )
+
+            // Record refund to backend (using cancelData - handleRefundSuccess uses reflection)
+            handleRefundSuccess(
+                saleData = cancelData, // CancelData object - reflection extracts reference field
+                entryMode = CardEntryMode.CHIP
+            )
+
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [REFUND] Unexpected error in chip refund flow")
+            _state.value = PaymentState.Error(message = "Error inesperado: ${e.message}", canRetry = true)
+        }
+    }
+
+    /**
+     * Process contactless (NFC) refund
+     */
+    private suspend fun processContactlessRefund(amount: String) {
+        try {
+            Timber.i("🌊 [CONTACTLESS REFUND] Starting contactless refund flow")
+
+            _state.value = PaymentState.Processing("Procesando reembolso contactless...")
+            val ctlssParams = StartCtlssTransParams()
+            val ctlssResult = startCtlssTransUseCase.run(ctlssParams)
+
+            if (ctlssResult.isLeft) {
+                val error = ctlssResult.leftValue()
+                Timber.e("❌ [CONTACTLESS REFUND] Failed: $error")
+                _state.value = PaymentState.Error(
+                    message = "Error en pago contactless para reembolso",
+                    canRetry = true
+                )
+                return
+            }
+
+            val ctlssResponse = ctlssResult.rightValue()
+            val transResultEnum = ctlssResponse.transResult?.transResult
+
+            when (transResultEnum) {
+                TransResultEnum.RESULT_REQ_ONLINE -> {
+                    Timber.i("[CONTACTLESS REFUND] RESULT_REQ_ONLINE → Online authorization")
+                    processContactlessRefundOnlineAuth(formatAmountDecimal(currentAmount))
+                }
+                TransResultEnum.RESULT_OFFLINE_APPROVED -> {
+                    Timber.i("🎉 [CONTACTLESS REFUND] Offline approved!")
+                    _state.value = PaymentState.Success(
+                        authCode = "OFFLINE_APPROVED",
+                        amount = currentAmount,
+                        isRefund = true
+                    )
+                    // Note: Offline refunds should still be recorded to backend
+                    handleRefundSuccess(saleData = null, entryMode = CardEntryMode.CONTACTLESS)
+                }
+                TransResultEnum.RESULT_OFFLINE_DENIED -> {
+                    // 💸 EMV SPEC: Para REEMBOLSOS, OFFLINE_DENIED significa "requiero autorización online"
+                    // Los bancos NO permiten reembolsos offline por seguridad anti-fraude
+                    // Esto es diferente a pagos donde OFFLINE_DENIED es rechazo final
+                    // Square/Toast behavior: Intentar online auth cuando el kernel dice "no puedo offline"
+                    Timber.i("[CONTACTLESS REFUND] RESULT_OFFLINE_DENIED → Requiere autorización online (comportamiento EMV normal para reembolsos)")
+                    processContactlessRefundOnlineAuth(formatAmountDecimal(currentAmount))
+                }
+                else -> {
+                    _state.value = PaymentState.Error(
+                        message = "Resultado desconocido: $transResultEnum",
+                        canRetry = true
+                    )
+                }
+            }
+
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [CONTACTLESS REFUND] Unexpected error")
+            _state.value = PaymentState.Error(message = "Error inesperado: ${e.message}", canRetry = true)
+        }
+    }
+
+    /**
+     * Process contactless refund with online authorization
+     */
+    private suspend fun processContactlessRefundOnlineAuth(amount: String) {
+        try {
+            _state.value = PaymentState.Processing("Leyendo datos de tarjeta contactless...")
+
+            // Extract EMV tags with CONTACTLESS card tech
+            val emvTagParams = GetEmvTagListParam(
+                emvTagList = listOf(
+                    0x9F27, 0x9F26, 0x9F37, 0x9F36, 0x9C, 0x82, 0x9F33, 0x9F34,
+                    0x9A, 0x5F2A, 0x9F02, 0x9F03, 0x9F35, 0x9F10, 0x9F1A, 0x9F09,
+                    0x9F6C, 0x9F6E, 0x5F34, 0x84, 0x5F28
+                ),
+                format = Format.DECIMAL,
+                cardTech = CardTech.CONTACTLESS
+            )
+
+            val tagListResult = getEmvTagListUseCase.runInfallible(emvTagParams)
+            val emvTagList = tagListResult.emvTagList
+
+            // Get Track2
+            val track2Params = GetTagValueParams(0x57, CardTech.CONTACTLESS)
+            val track2Result = getTagValueUseCase.run(track2Params)
+            val track2 = if (track2Result.isRight) track2Result.rightValue().tagValue else ""
+            currentTrack2 = track2
+
+            // Online authorization using CancelIccUseCase
+            // 💸 CancelIcc is the correct SDK method for refunding COMPLETED transactions
+            _state.value = PaymentState.Processing("Autorizando reembolso...")
+
+            // 💸 Get original operation number from refund context
+            val originalOpNum = currentRefundContext?.originalOperationNumber
+            if (originalOpNum == null || originalOpNum == 0) {
+                Timber.e("❌ [CONTACTLESS REFUND] Missing originalOperationNumber in refund context!")
+                _state.value = PaymentState.Error(
+                    message = "Error: No se encontró el número de operación original.\n\n" +
+                        "El reembolso requiere el número de operación del pago original.",
+                    canRetry = false
+                )
+                return
+            }
+
+            Timber.i("[CONTACTLESS REFUND] Using CancelIccUseCase with operationID: $originalOpNum")
+
+            val authResult = performRefundAuthorization(
+                amount = amount,
+                track2 = track2,
+                cardHolderName = "",
+                emvTagList = emvTagList,
+                originalOperationNumber = originalOpNum
+            )
+
+            if (authResult.userFriendlyError != null) {
+                _state.value = PaymentState.Error(message = authResult.userFriendlyError, canRetry = true)
+                return
+            }
+
+            val cancelResponse = authResult.response!!
+            val cancelData = cancelResponse.cancelData
+
+            Timber.i("🎉 CONTACTLESS REFUND APPROVED!")
+            Timber.i("   Reference: ${cancelData.reference}")
+            Timber.i("   Description: ${cancelData.description}")
+
+            _state.value = PaymentState.Success(
+                authCode = cancelData.reference ?: "", // CancelData uses reference, not authorization
+                amount = currentAmount,
+                isRefund = true
+            )
+
+            handleRefundSuccess(saleData = cancelData, entryMode = CardEntryMode.CONTACTLESS)
+
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [CONTACTLESS REFUND ONLINE] Unexpected error")
+            _state.value = PaymentState.Error(message = "Error inesperado: ${e.message}", canRetry = true)
+        }
+    }
+
+    /**
+     * 💸 Handle successful refund and record to backend.
+     *
+     * This function is called after Blumon SDK approves the refund.
+     * It runs in background to avoid blocking the UI.
+     *
+     * **Flow:**
+     * 1. Show success to user immediately (already done by caller)
+     * 2. Extract card details from Blumon SDK response (binInformation)
+     * 3. Call RecordRefundUseCase with RefundPayment context
+     * 4. Handle response (success → receipt ready, error → log warning)
+     *
+     * **Important:** This function does NOT block the success state.
+     * Even if backend call fails, the refund was already approved by Blumon.
+     *
+     * @param saleData Complete sale data from Blumon SDK (includes binInformation), null for offline refunds
+     * @param entryMode How the card was read (CHIP, CONTACTLESS, SWIPE)
+     */
+    private fun handleRefundSuccess(
+        saleData: Any?, // Blumon SDK SaleData object (null for offline refunds)
+        entryMode: CardEntryMode,
+    ) {
+        viewModelScope.launch {
+            try {
+                val refundContext = currentRefundContext
+                if (refundContext == null) {
+                    Timber.e("❌ [Refund Recording] currentRefundContext is NULL - cannot record refund")
+                    return@launch
+                }
+
+                // Extract authorization and reference from SDK response
+                val authorizationNumber = if (saleData != null) {
+                    try {
+                        val authField = saleData::class.java.getDeclaredField("authorization")
+                        authField.isAccessible = true
+                        authField.get(saleData)?.toString() ?: ""
+                    } catch (e: Exception) {
+                        Timber.w("Could not extract authorization from saleData: ${e.message}")
+                        ""
+                    }
+                } else {
+                    "OFFLINE"
+                }
+
+                val referenceNumber = if (saleData != null) {
+                    try {
+                        val refField = saleData::class.java.getDeclaredField("reference")
+                        refField.isAccessible = true
+                        refField.get(saleData)?.toString() ?: ""
+                    } catch (e: Exception) {
+                        Timber.w("Could not extract reference from saleData: ${e.message}")
+                        ""
+                    }
+                } else {
+                    "OFFLINE-${System.currentTimeMillis()}"
+                }
+
+                Timber.d("💸 [Refund Recording] Starting refund record | auth=$authorizationNumber | ref=$referenceNumber")
+                Timber.d("   Original payment: ${refundContext.originalPaymentId}")
+                Timber.d("   Refund amount: ${refundContext.amount}")
+                Timber.d("   Reason: ${refundContext.refundReason.displayName}")
+
+                // Validate authentication before backend recording
+                val hasAuth = authRepository.isAuthenticated()
+                if (!hasAuth || currentStaffId.isBlank() || currentVenueId.isBlank()) {
+                    Timber.w("⚠️ [Refund Recording] SKIPPED - Missing authentication context")
+                    Timber.w("   → Refund succeeded with Blumon, but backend sync requires login")
+                    return@launch
+                }
+
+                // Extract card details (if saleData available)
+                val cardDetails = if (saleData != null) {
+                    extractCardDetailsFromBlumonResponse(saleData, entryMode)
+                } else {
+                    // Offline refund - minimal card details
+                    CardDetails(
+                        maskedPan = "****",
+                        cardBrand = CardBrand.UNKNOWN,
+                        entryMode = entryMode,
+                        isInternational = false
+                    )
+                }
+
+                Timber.d("💸 [Refund Recording] Card: ${cardDetails.cardBrand} ${cardDetails.maskedPan} | Entry: ${entryMode}")
+
+                // Call RecordRefundUseCase
+                val result = recordRefundUseCase(
+                    context = refundContext,
+                    cardDetails = cardDetails,
+                    authorizationNumber = authorizationNumber,
+                    referenceNumber = referenceNumber
+                )
+
+                result.onSuccess { receipt ->
+                    Timber.i("✅ [Refund Recording] Refund recorded successfully | refundId=${receipt.refundId}")
+                    Timber.i("📄 [Refund Recording] Receipt URL: ${receipt.receiptUrl}")
+
+                    // Update Success state with refund receipt
+                    val currentState = _state.value
+                    if (currentState is PaymentState.Success) {
+                        // Convert RefundReceipt to PaymentReceipt for display
+                        val paymentReceipt = PaymentReceipt(
+                            paymentId = receipt.refundId,
+                            receiptUrl = receipt.receiptUrl ?: "", // Fallback to empty if no receipt URL
+                            accessKey = "", // Refunds may not have separate access key
+                            amount = refundContext.amount.add(refundContext.tip),
+                            tipAmount = refundContext.tip
+                        )
+
+                        _state.value = currentState.copy(
+                            receipt = paymentReceipt,
+                            cardDetails = cardDetails,
+                            referenceNumber = referenceNumber,
+                            isRefund = true
+                        )
+                        Timber.d("🎫 [Refund Receipt] Updated Success state with refund receipt")
+                    }
+                }.onFailure { error ->
+                    Timber.e(error, "❌ [Refund Recording] Failed to record refund: ${error.message}")
+                    Timber.w("   → Refund succeeded with Blumon but NOT recorded to backend")
+                    Timber.w("   → This requires manual reconciliation")
+                    // Note: Unlike payments, we don't queue refunds for offline retry
+                    // Refunds require immediate attention for proper reconciliation
+                }
+
+                // Reset transaction type after refund completes
+                currentTransactionType = TransType.SALE
+                currentRefundContext = null
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Refund Recording] Unexpected error")
+                // Reset state even on error
+                currentTransactionType = TransType.SALE
+                currentRefundContext = null
             }
         }
     }

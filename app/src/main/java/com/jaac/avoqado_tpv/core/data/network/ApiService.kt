@@ -14,7 +14,7 @@ import retrofit2.http.*
  *
  * **Base URL:**
  * - PROD: https://api.avoqado.io/api/v1/
- * - DEV: https://unmistrustful-marla-unvermiculated.ngrok-free.dev/api/v1/
+ * - DEV: https://humane-immortal-pika.ngrok-free.app/api/v1/
  *
  * **Response Handling:**
  * Use Result<T> wrapper in repositories:

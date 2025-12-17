@@ -1265,22 +1265,29 @@ class PaymentViewModel @Inject constructor(
 
             val currentShift = shiftRepository.getCurrentShift(currentVenueId).getOrNull()
 
-            if (currentShift == null || currentShift.status != com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN) {
-                Timber.w("⚠️ [Payment] No active shift - cannot process payment")
-                Timber.w("   → Shift validation required for cash reconciliation and audit trail")
-                Timber.w("   → Pattern: Square POS / Toast POS - always require open shift for payments")
-                _state.value = PaymentState.Error(
-                    message = "No hay turno abierto.\n\n" +
-                             "Abre un turno para procesar pagos.",
-                    context = null,
-                    showOpenShiftButton = true  // ⭐ Show "Abrir Turno" button in dialog
-                )
-                return@launch
+            // ⭐ CRITICAL: Shift System Validation
+            // - If enabled (default): Block payment if no shift is open
+            // - If disabled (Settings): Bypass check
+            if (shiftRepository.isShiftSystemEnabled()) {
+                if (currentShift == null || currentShift.status != com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN) {
+                    Timber.w("⚠️ [Payment] No active shift - cannot process payment")
+                    Timber.w("   → Shift validation required for cash reconciliation and audit trail")
+                    Timber.w("   → Pattern: Square POS / Toast POS - always require open shift for payments")
+                    _state.value = PaymentState.Error(
+                        message = "No hay turno abierto.\n\n" +
+                                 "Abre un turno para procesar pagos.",
+                        context = null,
+                        showOpenShiftButton = true  // ⭐ Show "Abrir Turno" button in dialog
+                    )
+                    return@launch
+                }
+                // Save shiftId for backend recording
+                currentShiftId = currentShift.id
+                Timber.d("✅ [Payment] Shift validation passed: ${currentShift.id} (${currentShift.staffName})")
+            } else {
+                currentShiftId = null
+                Timber.i("ℹ️ [Payment] Shift system disabled - bypassing shift check")
             }
-
-            // Save shiftId for backend recording
-            currentShiftId = currentShift.id
-            Timber.d("✅ [Payment] Shift validation passed: ${currentShift.id} (${currentShift.staffName})")
 
             // ⭐ P0 FIX: Merchant Account Validation (Split Payment Protection)
             // Validates that split payments use the same merchant account to avoid reconciliation issues
@@ -2440,21 +2447,25 @@ class PaymentViewModel @Inject constructor(
                 // Without an open shift, cash reconciliation is impossible
                 val currentShift = shiftRepository.getCurrentShift(currentVenueId!!).getOrNull()
 
-                if (currentShift == null || currentShift.status != com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN) {
-                    Timber.w("⚠️ [Cash Payment] No active shift - cannot process payment")
-                    Timber.w("   → Cash payments REQUIRE shift for reconciliation (starting cash + payments = expected cash)")
-                    _state.value = PaymentState.Error(
-                        message = "No hay turno abierto.\n\n" +
-                                 "Abre un turno para procesar pagos.",
-                        context = null,
-                        showOpenShiftButton = true  // ⭐ Show "Abrir Turno" button in dialog
-                    )
-                    return@launch
+                if (shiftRepository.isShiftSystemEnabled()) {
+                    if (currentShift == null || currentShift.status != com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN) {
+                        Timber.w("⚠️ [Cash Payment] No active shift - cannot process payment")
+                        Timber.w("   → Cash payments REQUIRE shift for reconciliation (starting cash + payments = expected cash)")
+                        _state.value = PaymentState.Error(
+                            message = "No hay turno abierto.\n\n" +
+                                     "Abre un turno para procesar pagos.",
+                            context = null,
+                            showOpenShiftButton = true  // ⭐ Show "Abrir Turno" button in dialog
+                        )
+                        return@launch
+                    }
+                    // Save shiftId for backend recording
+                    currentShiftId = currentShift.id
+                    Timber.d("✅ [Cash Payment] Shift validation passed: ${currentShift.id}")
+                } else {
+                    currentShiftId = null
+                    Timber.i("ℹ️ [Cash Payment] Shift system disabled - bypassing shift check")
                 }
-
-                // Save shiftId for backend recording
-                currentShiftId = currentShift.id
-                Timber.d("✅ [Cash Payment] Shift validation passed: ${currentShift.id}")
 
                 // Now change state to Processing
                 _state.value = PaymentState.Processing("Registrando pago en efectivo...")

@@ -83,7 +83,12 @@ class TpvSettingsRepository @Inject constructor(
                 secureStorage.saveTpvSettings(settings)
                 _settings.value = settings
 
-                Timber.i("✅ TPV settings loaded: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}")
+                // Sync enableShifts from backend to SecureStorage
+                // This allows ShiftRepository.isShiftSystemEnabled() to read the backend value
+                secureStorage.setShiftSystemEnabled(settings.enableShifts)
+                Timber.i("✅ Synced enableShifts from backend: ${settings.enableShifts}")
+
+                Timber.i("✅ TPV settings loaded: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, enableShifts=${settings.enableShifts}")
                 Result.success(settings)
             } else {
                 val errorCode = response.code()

@@ -7,6 +7,8 @@ import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
+import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
+import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,7 +28,8 @@ import javax.inject.Inject
 class SettingsViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val tpvSettingsRepository: TpvSettingsRepository,
-    private val printerManager: PrinterManager
+    private val printerManager: PrinterManager,
+    private val shiftRepository: ShiftRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsState())
@@ -60,8 +63,11 @@ class SettingsViewModel @Inject constructor(
                 val venueId = secureStorage.getVenueId()
                 val venueStatus = secureStorage.getVenueStatus()
 
-                // Load TPV settings from repository
+                // Load TPV settings from repository (source of truth from backend)
                 val tpvSettings = tpvSettingsRepository.getCurrentSettings()
+
+                // Use tpvSettings.enableShifts as source of truth (synced from backend)
+                val isShiftSystemEnabled = tpvSettings.enableShifts
 
                 _state.update {
                     it.copy(
@@ -69,7 +75,8 @@ class SettingsViewModel @Inject constructor(
                         venueName = venueName,
                         venueId = venueId,
                         venueStatus = venueStatus,
-                        tpvSettings = tpvSettings
+                        tpvSettings = tpvSettings,
+                        isShiftSystemEnabled = isShiftSystemEnabled
                     )
                 }
 
@@ -102,11 +109,12 @@ class SettingsViewModel @Inject constructor(
                     _state.update {
                         it.copy(
                             tpvSettings = settings,
+                            isShiftSystemEnabled = settings.enableShifts, // Sync UI with backend value
                             isRefreshing = false,
                             message = "Configuración actualizada"
                         )
                     }
-                    Timber.i("✅ Settings refreshed from backend")
+                    Timber.i("✅ Settings refreshed from backend: enableShifts=${settings.enableShifts}")
                 }.onFailure { error ->
                     _state.update {
                         it.copy(
@@ -131,6 +139,100 @@ class SettingsViewModel @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════════════
     // TPV SETTINGS TOGGLES
     // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Toggle Shift System enabled state.
+     * Syncs to backend VenueSettings and updates local SecureStorage.
+     *
+     * **Option E Validation**: Cannot disable shift system if there's an active shift.
+     * User must close the shift first before disabling the system.
+     */
+    fun toggleShiftSystem() {
+        val newValue = !_state.value.isShiftSystemEnabled
+
+        viewModelScope.launch {
+            // Option E: If trying to DISABLE, check for active shift first
+            if (!newValue) {
+                val venueId = _state.value.venueId
+                if (venueId != null) {
+                    _state.update { it.copy(isSaving = true) }
+
+                    val shiftResult = shiftRepository.getCurrentShift(venueId)
+                    when (shiftResult) {
+                        is com.jaac.avoqado_tpv.core.domain.models.Result.Success -> {
+                            val currentShift = shiftResult.data
+                            if (currentShift != null && currentShift.status == ShiftStatus.OPEN) {
+                                // Block: There's an active shift
+                                _state.update {
+                                    it.copy(
+                                        isSaving = false,
+                                        showActiveShiftBlockedDialog = true,
+                                        activeShiftStaffName = currentShift.staffName
+                                    )
+                                }
+                                Timber.w("⚠️ Cannot disable shift system - active shift exists (Staff: ${currentShift.staffName})")
+                                return@launch
+                            }
+                        }
+                        is com.jaac.avoqado_tpv.core.domain.models.Result.Error -> {
+                            // Network error checking shift - show warning but allow toggle
+                            Timber.w("⚠️ Could not verify active shift status, proceeding with toggle")
+                        }
+                    }
+                }
+            }
+
+            // Optimistic update - show change immediately
+            _state.update { it.copy(isShiftSystemEnabled = newValue, isSaving = true) }
+
+            try {
+                // Update via TpvSettings (backend will update VenueSettings.enableShifts)
+                val currentSettings = _state.value.tpvSettings
+                val updatedSettings = currentSettings.copy(enableShifts = newValue)
+
+                val result = tpvSettingsRepository.updateSettings(updatedSettings)
+                result.onSuccess { savedSettings ->
+                    // Sync to local storage
+                    secureStorage.setShiftSystemEnabled(newValue)
+                    _state.update {
+                        it.copy(
+                            tpvSettings = savedSettings,
+                            isSaving = false,
+                            message = if (newValue) "Sistema de turnos habilitado" else "Sistema de turnos deshabilitado"
+                        )
+                    }
+                    Timber.i("✅ Shift system ${if (newValue) "ENABLED" else "DISABLED"} - synced to backend")
+                }.onFailure { error ->
+                    // Revert on failure
+                    _state.update {
+                        it.copy(
+                            isShiftSystemEnabled = !newValue,
+                            isSaving = false,
+                            message = "Error: ${error.message}"
+                        )
+                    }
+                    Timber.e(error, "❌ Failed to update shift system setting")
+                }
+            } catch (e: Exception) {
+                // Revert on exception
+                _state.update {
+                    it.copy(
+                        isShiftSystemEnabled = !newValue,
+                        isSaving = false,
+                        message = "Error de conexión"
+                    )
+                }
+                Timber.e(e, "❌ Error updating shift system setting")
+            }
+        }
+    }
+
+    /**
+     * Dismiss the active shift blocked dialog
+     */
+    fun dismissActiveShiftBlockedDialog() {
+        _state.update { it.copy(showActiveShiftBlockedDialog = false, activeShiftStaffName = null) }
+    }
 
     /**
      * Toggle show review screen setting
@@ -314,10 +416,17 @@ data class SettingsState(
     // TPV Settings (from backend, editable)
     val tpvSettings: TpvSettings = TpvSettings.DEFAULT,
 
+    // Local Settings
+    val isShiftSystemEnabled: Boolean = true,
+
     // Loading states
     val isRefreshing: Boolean = false,
     val isPrinting: Boolean = false,
     val isSaving: Boolean = false,
+
+    // Dialog states
+    val showActiveShiftBlockedDialog: Boolean = false,
+    val activeShiftStaffName: String? = null,
 
     // Feedback message
     val message: String? = null

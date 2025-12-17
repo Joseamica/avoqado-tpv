@@ -51,7 +51,11 @@ data class TpvSettingsDto(
     val requireVerificationPhoto: Boolean?,
 
     @SerializedName("requireVerificationBarcode")
-    val requireVerificationBarcode: Boolean?
+    val requireVerificationBarcode: Boolean?,
+
+    // Venue-level shift system toggle (from VenueSettings)
+    @SerializedName("enableShifts")
+    val enableShifts: Boolean?
 )
 
 /**
@@ -67,7 +71,9 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     // Step 4: Verification defaults to disabled
     showVerificationScreen = showVerificationScreen ?: false,
     requireVerificationPhoto = requireVerificationPhoto ?: false,
-    requireVerificationBarcode = requireVerificationBarcode ?: false
+    requireVerificationBarcode = requireVerificationBarcode ?: false,
+    // Shift system defaults to enabled
+    enableShifts = enableShifts ?: true
 )
 
 /**
@@ -82,7 +88,8 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     requirePinLogin = requirePinLogin,
     showVerificationScreen = showVerificationScreen,
     requireVerificationPhoto = requireVerificationPhoto,
-    requireVerificationBarcode = requireVerificationBarcode
+    requireVerificationBarcode = requireVerificationBarcode,
+    enableShifts = enableShifts
 )
 
 /**

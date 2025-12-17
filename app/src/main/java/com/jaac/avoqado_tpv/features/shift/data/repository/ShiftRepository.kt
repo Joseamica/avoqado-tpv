@@ -58,8 +58,15 @@ import javax.inject.Singleton
  */
 @Singleton
 class ShiftRepository @Inject constructor(
-    private val apiService: ApiService
+    private val apiService: ApiService,
+    private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage
 ) {
+
+    /**
+     * Check if Shift System is enabled
+     * Used by UI and Logic to bypass shift requirements
+     */
+    fun isShiftSystemEnabled(): Boolean = secureStorage.isShiftSystemEnabled()
 
     /**
      * Open a new shift

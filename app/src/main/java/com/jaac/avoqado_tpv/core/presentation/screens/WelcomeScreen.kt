@@ -96,6 +96,7 @@ fun WelcomeScreen(
 
     // Shift state from ShiftViewModel
     val shiftState by shiftViewModel.state.collectAsStateWithLifecycle()
+    val isShiftSystemEnabled by shiftViewModel.isShiftSystemEnabled.collectAsStateWithLifecycle()
     val currentShift = when (val state = shiftState) {
         is com.jaac.avoqado_tpv.features.shift.presentation.ShiftState.ShiftActive -> state.shift
         else -> null
@@ -153,6 +154,7 @@ fun WelcomeScreen(
     // This ensures shift status is updated when returning from ShiftScreen
     androidx.compose.runtime.LaunchedEffect(Unit) {
         shiftViewModel.loadCurrentShift()
+        shiftViewModel.refreshSettings() // Refresh settings too
     }
 
     // Main content
@@ -161,6 +163,7 @@ fun WelcomeScreen(
         staffName = staffName,
         clockInTime = clockInTime,
         currentShift = currentShift,
+        isShiftSystemEnabled = isShiftSystemEnabled, // Pass setting
         isOffline = isOffline,
         cachedShiftInfo = cachedShiftInfo,
         venueStatus = venueStatus,  // 📊 Pass venue status for banner
@@ -272,6 +275,7 @@ private fun WelcomeScreenContent(
     staffName: String,
     clockInTime: String?,
     currentShift: Shift?,
+    isShiftSystemEnabled: Boolean = true, // Default true
     isOffline: Boolean = false,
     cachedShiftInfo: CachedShiftInfo? = null,
     venueStatus: VenueStatus = VenueStatus.ACTIVE,  // 📊 Venue status for banner
@@ -300,21 +304,22 @@ private fun WelcomeScreenContent(
 
     // ⭐ Check if shift is open for payment processing (Square/Toast pattern)
     val hasOpenShift = currentShift?.status == ShiftStatus.OPEN
+    val canOperate = hasOpenShift || !isShiftSystemEnabled // Unlock if disabled
 
-    val actionButtons = listOf(
+    val allButtons = listOf(
         // ✅ ENABLED FEATURES
         ActionButton(
             icon = Icons.Default.CreditCard,
             label = "Pago rápido",
-            enabled = hasOpenShift,  // ⭐ Only enabled when shift is open
-            badge = if (!hasOpenShift) "Abre el turno primero" else null,  // ⭐ Show hint when disabled
+            enabled = canOperate,  // ⭐ Only enabled when shift is open (or disabled)
+            badge = if (!canOperate) "Abre el turno primero" else null,  // ⭐ Show hint when disabled
             onClick = { showAmountBottomSheet = true }  // ✅ Open modal (first-time flow)
         ),
         ActionButton(
             icon = Icons.Default.Restaurant,
             label = "Órdenes",
-            enabled = hasOpenShift,  // ⭐ Only enabled when shift is open
-            badge = if (!hasOpenShift) "Abre el turno primero" else null,
+            enabled = canOperate,  // ⭐ Only enabled when shift is open (or disabled)
+            badge = if (!canOperate) "Abre el turno primero" else null,
             onClick = onNavigateToOrdering
         ),
         ActionButton(
@@ -360,6 +365,13 @@ private fun WelcomeScreenContent(
         )
     )
 
+    // Filter out "Turnos" button if system is disabled
+    val actionButtons = if (isShiftSystemEnabled) {
+        allButtons
+    } else {
+        allButtons.filter { it.label != "Turnos" }
+    }
+
     // ══════════════════════════════════════════════════════════════════════
     // UI
     // ══════════════════════════════════════════════════════════════════════
@@ -388,13 +400,15 @@ private fun WelcomeScreenContent(
                     VenueStatusBanner(status = venueStatus)
 
                     // Shift status banner (with offline state support) - FullWidth
-                    ShiftStatusBanner(
-                        shift = currentShift,
-                        isOffline = isOffline,
-                        cachedInfo = cachedShiftInfo,
-                        onClick = onNavigateToShifts,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    if (isShiftSystemEnabled) {
+                        ShiftStatusBanner(
+                            shift = currentShift,
+                            isOffline = isOffline,
+                            cachedInfo = cachedShiftInfo,
+                            onClick = onNavigateToShifts,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
 
                     // Content with horizontal padding
                     Column(

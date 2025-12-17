@@ -89,6 +89,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_TPV_SHOW_VERIFICATION = "tpv_show_verification"
         private const val KEY_TPV_REQUIRE_VERIFICATION_PHOTO = "tpv_require_verification_photo"
         private const val KEY_TPV_REQUIRE_VERIFICATION_BARCODE = "tpv_require_verification_barcode"
+        private const val KEY_ENABLE_SHIFTS = "enable_shifts"
 
         // Terminal state keys (persisted across app restarts)
         private const val KEY_IS_LOCKED = "is_locked"
@@ -811,8 +812,10 @@ class SecureStorage @Inject constructor(
             putBoolean(KEY_TPV_SHOW_VERIFICATION, settings.showVerificationScreen)
             putBoolean(KEY_TPV_REQUIRE_VERIFICATION_PHOTO, settings.requireVerificationPhoto)
             putBoolean(KEY_TPV_REQUIRE_VERIFICATION_BARCODE, settings.requireVerificationBarcode)
+            // Shift system toggle
+            putBoolean(KEY_ENABLE_SHIFTS, settings.enableShifts)
         }.apply()
-        Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, showVerification=${settings.showVerificationScreen}")
+        Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, showVerification=${settings.showVerificationScreen}, enableShifts=${settings.enableShifts}")
     }
 
     /**
@@ -847,7 +850,9 @@ class SecureStorage @Inject constructor(
             // Step 4: Sale Verification settings (default: disabled)
             showVerificationScreen = encryptedPrefs.getBoolean(KEY_TPV_SHOW_VERIFICATION, false),
             requireVerificationPhoto = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_VERIFICATION_PHOTO, false),
-            requireVerificationBarcode = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_VERIFICATION_BARCODE, false)
+            requireVerificationBarcode = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_VERIFICATION_BARCODE, false),
+            // Shift system toggle (default: enabled)
+            enableShifts = encryptedPrefs.getBoolean(KEY_ENABLE_SHIFTS, true)
         )
     }
 
@@ -866,8 +871,36 @@ class SecureStorage @Inject constructor(
             remove(KEY_TPV_SHOW_VERIFICATION)
             remove(KEY_TPV_REQUIRE_VERIFICATION_PHOTO)
             remove(KEY_TPV_REQUIRE_VERIFICATION_BARCODE)
+            // Shift system toggle
+            remove(KEY_ENABLE_SHIFTS)
         }.apply()
         Timber.d("TPV settings cleared")
+    }
+
+    /**
+     * Check if Shift System is enabled for this terminal.
+     * Default: true (Shift system active)
+     */
+    fun isShiftSystemEnabled(): Boolean {
+        return try {
+            encryptedPrefs.getBoolean(KEY_ENABLE_SHIFTS, true)
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Failed to read enable_shifts preference, defaulting to true")
+            true
+        }
+    }
+
+    /**
+     * Enable or disable Shift System.
+     * @param enabled true to enable shifts, false to disable
+     */
+    fun setShiftSystemEnabled(enabled: Boolean) {
+        try {
+            encryptedPrefs.edit().putBoolean(KEY_ENABLE_SHIFTS, enabled).apply()
+            Timber.i("💾 Shift system ${if (enabled) "ENABLED" else "DISABLED"}")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Failed to save enable_shifts preference")
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

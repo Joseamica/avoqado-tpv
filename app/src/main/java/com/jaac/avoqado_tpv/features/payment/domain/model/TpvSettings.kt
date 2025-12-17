@@ -31,7 +31,9 @@ data class TpvSettings(
     // Step 4: Sale Verification (for retail/telecomunicaciones venues)
     val showVerificationScreen: Boolean = false,
     val requireVerificationPhoto: Boolean = false,
-    val requireVerificationBarcode: Boolean = false
+    val requireVerificationBarcode: Boolean = false,
+    // Venue-level shift system toggle (from VenueSettings)
+    val enableShifts: Boolean = true
 ) {
     companion object {
         /**

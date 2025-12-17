@@ -665,7 +665,8 @@ fun AppNavigation(
         // Settings Screen
         composable(NavRoute.Settings.route) {
             com.jaac.avoqado_tpv.features.settings.presentation.SettingsScreen(
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
+                onNavigateToShifts = { navController.navigate(NavRoute.Shifts.route) }
             )
         }
 

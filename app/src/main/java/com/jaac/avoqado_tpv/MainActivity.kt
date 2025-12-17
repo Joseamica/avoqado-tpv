@@ -26,6 +26,7 @@ import com.jaac.avoqado_tpv.core.presentation.navigation.AppNavigation
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
+import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
@@ -71,6 +72,9 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var merchantRepository: MerchantRepository
+
+    @Inject
+    lateinit var tpvSettingsRepository: TpvSettingsRepository
 
     /**
      * State to track permission status
@@ -332,30 +336,43 @@ class MainActivity : ComponentActivity() {
 
         Timber.d("🔧 [TerminalConfig] Fetching config from backend for serial: $serialNumber")
 
-        terminalConfigRepository.fetchConfig(serialNumber)
-            .onSuccess { (terminalInfo, merchantAccounts) ->
-                Timber.i("✅ [TerminalConfig] Fetched ${merchantAccounts.size} merchant accounts")
-                Timber.d("   📋 Terminal: ${terminalInfo.brand} ${terminalInfo.model}")
-                Timber.d("   🏢 Venue: ${terminalInfo.venueName}")
-                Timber.d("   🏷️ VenueType: ${terminalInfo.venueType ?: "N/A"}")
+        val configResult = terminalConfigRepository.fetchConfig(serialNumber)
 
-                // Replace MerchantRepository fallback accounts with fetched merchants from backend
-                merchantRepository.updateMerchants(merchantAccounts)
+        configResult.onSuccess { (terminalInfo, merchantAccounts) ->
+            Timber.i("✅ [TerminalConfig] Fetched ${merchantAccounts.size} merchant accounts")
+            Timber.d("   📋 Terminal: ${terminalInfo.brand} ${terminalInfo.model}")
+            Timber.d("   🏢 Venue: ${terminalInfo.venueName}")
+            Timber.d("   🏷️ VenueType: ${terminalInfo.venueType ?: "N/A"}")
 
-                // Save venue type for conditional UI (table service visibility)
-                secureStorage.saveVenueType(terminalInfo.venueType)
+            // Replace MerchantRepository fallback accounts with fetched merchants from backend
+            merchantRepository.updateMerchants(merchantAccounts)
 
-                Timber.i("✅ [TerminalConfig] Successfully loaded dynamic config from backend")
-            }
-            .onFailure { error ->
-                // Silently fail with log warning (doesn't block app startup)
-                Timber.w(
-                    error,
-                    "⚠️ [TerminalConfig] Failed to fetch config - using fallback accounts"
-                )
-                Timber.d("   ℹ️  This is normal if backend is unreachable")
-                Timber.d("   ℹ️  App will use hardcoded sandbox accounts as fallback")
-            }
+            // Save venue type for conditional UI (table service visibility)
+            secureStorage.saveVenueType(terminalInfo.venueType)
+
+            Timber.i("✅ [TerminalConfig] Successfully loaded dynamic config from backend")
+        }.onFailure { error ->
+            // Silently fail with log warning (doesn't block app startup)
+            Timber.w(
+                error,
+                "⚠️ [TerminalConfig] Failed to fetch config - using fallback accounts"
+            )
+            Timber.d("   ℹ️  This is normal if backend is unreachable")
+            Timber.d("   ℹ️  App will use hardcoded sandbox accounts as fallback")
+        }
+
+        // 🔧 FIX: Also refresh TPV settings from backend (includes enableShifts)
+        // This ensures settings are synced on app startup, not just after login
+        // Note: This is called even if terminalConfig failed, as tpvSettings has its own endpoint
+        if (configResult.isSuccess) {
+            tpvSettingsRepository.refreshFromTerminalConfig(serialNumber)
+                .onSuccess { settings ->
+                    Timber.i("✅ [TpvSettings] Synced from backend: enableShifts=${settings.enableShifts}")
+                }
+                .onFailure { error ->
+                    Timber.w(error, "⚠️ [TpvSettings] Failed to sync - using cached settings")
+                }
+        }
     }
 }
 

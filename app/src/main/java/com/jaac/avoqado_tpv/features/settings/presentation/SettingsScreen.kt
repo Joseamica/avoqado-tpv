@@ -38,6 +38,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 fun SettingsScreen(
     modifier: Modifier = Modifier,
     onBack: () -> Unit = {},
+    onNavigateToShifts: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -49,6 +50,58 @@ fun SettingsScreen(
             snackbarHostState.showSnackbar(message)
             viewModel.clearMessage()
         }
+    }
+
+    // Active Shift Blocked Dialog (Option E validation)
+    if (state.showActiveShiftBlockedDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissActiveShiftBlockedDialog() },
+            icon = {
+                Icon(
+                    imageVector = Icons.Filled.Schedule,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error
+                )
+            },
+            title = {
+                Text("Turno Activo")
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "No puedes desactivar el sistema de turnos mientras hay un turno abierto.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Turno actual: ${state.activeShiftStaffName ?: "Desconocido"}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Primero cierra el turno desde la pantalla de Turnos.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            },
+            confirmButton = {
+                FilledTonalButton(
+                    onClick = {
+                        viewModel.dismissActiveShiftBlockedDialog()
+                        onNavigateToShifts()
+                    }
+                ) {
+                    Text("Ir a Turnos")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissActiveShiftBlockedDialog() }) {
+                    Text("Cancelar")
+                }
+            }
+        )
     }
 
     Scaffold(
@@ -113,6 +166,30 @@ fun SettingsScreen(
                         VenueStatusRow(
                             status = state.venueStatus,
                             modifier = Modifier.padding(horizontal = 0.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+
+                // ═══════════════════════════════════════════════════════════════
+                // SHIFT SYSTEM SETTINGS
+                // ═══════════════════════════════════════════════════════════════
+                item {
+                    Spacer(modifier = Modifier.height(sizes.spacingMedium))
+                    SectionHeader(
+                        title = "Sistema de Turnos",
+                        icon = Icons.Filled.Schedule, // Using Filled to ensure availability
+                        subtitle = "Gestión de caja y personal"
+                    )
+                }
+
+                item {
+                    SettingsCard {
+                        SettingsToggleRow(
+                            label = "Habilitar Turnos",
+                            description = "Requiere abrir/cerrar turno para operar",
+                            enabled = state.isShiftSystemEnabled,
+                            isSaving = false,
+                            onToggle = { viewModel.toggleShiftSystem() }
                         )
                     }
                 }

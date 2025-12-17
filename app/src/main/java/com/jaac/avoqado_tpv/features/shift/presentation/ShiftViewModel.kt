@@ -85,14 +85,26 @@ class ShiftViewModel @Inject constructor(
     private val _cachedShiftInfo = MutableStateFlow<CachedShiftInfo?>(null)
     val cachedShiftInfo: StateFlow<CachedShiftInfo?> = _cachedShiftInfo.asStateFlow()
 
+    // Shift system enabled state (Settings)
+    private val _isShiftSystemEnabled = MutableStateFlow(true)
+    val isShiftSystemEnabled: StateFlow<Boolean> = _isShiftSystemEnabled.asStateFlow()
+
     // ══════════════════════════════════════════════════════════════════════
     // INITIALIZATION
     // ══════════════════════════════════════════════════════════════════════
 
     init {
+        refreshSettings()
         loadCurrentShift()
         listenToConnectionRestored()
         observeConnectivity()
+    }
+
+    /**
+     * Refresh settings from SecureStorage
+     */
+    fun refreshSettings() {
+        _isShiftSystemEnabled.value = secureStorage.isShiftSystemEnabled()
     }
 
     /**

@@ -152,7 +152,7 @@ private fun OnlineShiftBanner(
                 Icon(
                     imageVector = if (isShiftOpen) Icons.Default.CheckCircle else Icons.Default.Error,
                     contentDescription = if (isShiftOpen) "Turno abierto" else "Sin turno activo",
-                    tint = if (isShiftOpen) Color(0xFF4CAF50) else Color(0xFFEB5757),
+                    tint = if (isShiftOpen) MaterialTheme.colorScheme.tertiary else Color(0xFFEB5757),
                     modifier = Modifier.size(24.dp)
                 )
 
@@ -208,7 +208,7 @@ private fun OnlineShiftBanner(
                             fontWeight = FontWeight.Bold,
                             fontSize = 18.sp
                         ),
-                        color = Color(0xFF4CAF50)
+                        color = MaterialTheme.colorScheme.tertiary  // ✅ Verde Avoqado del theme
                     )
 
                     Text(

@@ -69,6 +69,7 @@ Kotlin, Jetpack Compose, POS terminals, payments, offline-first architecture, an
 | `docs/DEVELOPMENT_WORKFLOW.md`           | Build variants, testing, commits, CHANGELOG policy       |
 | `PERFORMANCE_GUIDE.md`                   | 1GB RAM optimization, pagination, caching                |
 | `UI_RESPONSIVE_GUIDE.md`                 | Responsive patterns for TPV devices (PAX A80, A920)      |
+| `docs/COMPOSE_KEYBOARD_HANDLING.md`      | **FIX: TextField keyboard issues in Dialog (common bug)**|
 | `SOCKET_IO_IMPLEMENTATION.md`            | Real-time events architecture & integration              |
 | `SOCKET_IO_TESTING.md`                   | Socket.IO testing strategies & examples                  |
 | `LOCAL_FIRST_SYNC_PATTERNS.md`           | **CRITICAL: Preserve local-only fields when syncing**    |
@@ -259,6 +260,111 @@ val orders = orderRepository.getOrders(limit = 20, cursor = cursor)
 
 ---
 
-**Last Updated:** 2025-12-15
+## 9. MANDATORY: Permission System for New Features
+
+**⚠️ CRITICAL RULE**: Cada vez que agregues una nueva funcionalidad al TPV, DEBES seguir este proceso:
+
+### Paso 1: Definir Permisos en Backend
+
+1. Agrega el permiso a `avoqado-server/src/lib/permissions.ts` en `PERMISSION_CATEGORIES`
+2. Agrega a `DEFAULT_PERMISSIONS` para cada rol apropiado
+3. Usa `checkPermission()` middleware en el endpoint
+
+### Paso 2: Validar en TPV Android
+
+1. Verifica permiso antes de mostrar UI (botones, opciones, screens)
+2. Usa `PermissionsRepository.hasPermission()` en composables
+3. Deshabilita acciones si el usuario no tiene el permiso
+
+### Paso 3: Dashboard UI
+
+1. El permiso aparecerá automáticamente en RolePermissions.tsx
+2. Verifica que la descripción sea clara
+
+### Ejemplos de Permisos TPV Existentes
+
+| Feature | Permission | Roles con Acceso por Defecto |
+|---------|-----------|------------------------------|
+| Ver órdenes | `tpv-orders:read` | WAITER+ |
+| Procesar pagos | `tpv-payments:create` | CASHIER+ |
+| Hacer reembolsos | `tpv-payments:refund` | ADMIN+ |
+| Abrir turno | `tpv-shifts:create` | MANAGER+ |
+| Ver reportes | `tpv-reports:read` | ADMIN+ |
+| Modificar config terminal | `tpv-terminal:settings` | ADMIN+ |
+| Reset de fábrica | `tpv-factory-reset:execute` | OWNER+ |
+
+### Naming Convention
+
+```
+tpv-{resource}:{action}
+
+Resources: orders, payments, shifts, tables, customers, reports, terminal, etc.
+Actions: read, create, update, delete, refund, comp, void, settings, execute
+```
+
+### ⚠️ Si NO agregas permisos:
+
+- Cualquier usuario podrá acceder a la funcionalidad (security risk)
+- No se podrá restringir desde el dashboard
+- Violación de principio de least privilege
+
+### ✅ Proceso Correcto:
+
+1. Nueva feature → Definir permiso
+2. Agregar a DEFAULT_PERMISSIONS
+3. Usar `checkPermission()` en backend
+4. Validar en TPV UI con `hasPermission()`
+5. Probar con diferentes roles
+
+---
+
+## 10. MANDATORY: Release Build Checklist
+
+**⚠️ CUANDO EL USUARIO PIDA COMPILAR APK DE PRODUCCIÓN/RELEASE**, Claude DEBE:
+
+### Paso 1: Preguntar sobre la versión
+
+```
+🚀 Antes de compilar el APK de release:
+
+1. ¿Cuál es la versión actual? (reviso app/build.gradle)
+2. ¿Quieres hacer bump de versión?
+   - PATCH (1.2.3 → 1.2.4): Bug fixes
+   - MINOR (1.2.3 → 1.3.0): Nueva funcionalidad
+   - MAJOR (1.2.3 → 2.0.0): Cambios breaking
+
+¿Qué tipo de release es este?
+```
+
+### Paso 2: Si el usuario confirma bump
+
+1. Actualizar `app/build.gradle`:
+   - `versionCode` += 1 (SIEMPRE incrementar)
+   - `versionName` = nueva versión
+2. Preguntar si quiere actualizar CHANGELOG.md
+3. Compilar APK
+
+### Paso 3: Generar APK
+
+```bash
+./gradlew assembleProductionRelease
+```
+
+### Versión actual en build.gradle
+
+Ubicación: `app/build.gradle` → `android.defaultConfig`
+```kotlin
+versionCode 45        // Número único, siempre incrementa
+versionName "1.2.3"   // Semántico: MAJOR.MINOR.PATCH
+```
+
+### Regla de Oro
+
+- **Desarrollo/Testing**: No cambiar versión
+- **Release a producción**: SIEMPRE bump versionCode + versionName
+
+---
+
+**Last Updated:** 2025-12-17
 **Maintainer:** Development Team
-**Version:** 3.0 (Refactored: CLAUDE.md as index + detailed docs/)
+**Version:** 4.1 (Added: Release Build Checklist)

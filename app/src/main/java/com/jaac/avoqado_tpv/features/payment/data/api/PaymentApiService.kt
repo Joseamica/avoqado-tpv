@@ -5,6 +5,8 @@ import com.jaac.avoqado_tpv.features.payment.data.dto.OrderPaymentRequest
 import com.jaac.avoqado_tpv.features.payment.data.dto.PaymentResponse
 import com.jaac.avoqado_tpv.features.payment.data.dto.RefundRequest
 import com.jaac.avoqado_tpv.features.payment.data.dto.RefundResponse
+import com.jaac.avoqado_tpv.features.payment.data.dto.SendReceiptRequest
+import com.jaac.avoqado_tpv.features.payment.data.dto.SendReceiptResponse
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.POST
@@ -224,4 +226,50 @@ interface PaymentApiService {
         @Path("venueId") venueId: String,
         @Body request: RefundRequest,
     ): Response<RefundResponse>
+
+    /**
+     * Envía un recibo de pago por email al cliente.
+     *
+     * **Endpoint:** POST /tpv/venues/{venueId}/payments/{paymentId}/send-receipt
+     *
+     * **Comportamiento del backend:**
+     * 1. Valida que el payment existe y pertenece al venue
+     * 2. Genera el DigitalReceipt si no existe
+     * 3. Envía el email usando el template del dashboard
+     * 4. Retorna confirmación de envío
+     *
+     * **Request Body:** SendReceiptRequest
+     * ```json
+     * {
+     *   "recipientEmail": "cliente@ejemplo.com"
+     * }
+     * ```
+     *
+     * **Success Response (200):** SendReceiptResponse
+     * ```json
+     * {
+     *   "success": true,
+     *   "receiptId": "receipt_xxx",
+     *   "message": "Recibo enviado exitosamente"
+     * }
+     * ```
+     *
+     * **Error Responses:**
+     * - 400: Invalid email format
+     * - 401: Unauthorized (token missing or expired)
+     * - 404: Payment not found
+     * - 429: Too many requests
+     * - 500: Internal server error (email sending failed)
+     *
+     * @param venueId ID del venue donde está el pago
+     * @param paymentId ID del pago para enviar el recibo
+     * @param request Datos del envío (recipientEmail)
+     * @return Response con SendReceiptResponse o error HTTP
+     */
+    @POST("tpv/venues/{venueId}/payments/{paymentId}/send-receipt")
+    suspend fun sendReceipt(
+        @Path("venueId") venueId: String,
+        @Path("paymentId") paymentId: String,
+        @Body request: SendReceiptRequest,
+    ): Response<SendReceiptResponse>
 }

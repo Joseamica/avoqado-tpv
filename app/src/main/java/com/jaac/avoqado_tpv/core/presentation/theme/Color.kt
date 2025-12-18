@@ -75,10 +75,35 @@ val Gray800 = Color(0xFF1F2937)
 val Gray900 = Color(0xFF111827)
 
 // ========== Semantic Colors ==========
+//
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║  🎨 COLOR USAGE GUIDE                                                         ║
+// ╠══════════════════════════════════════════════════════════════════════════════╣
+// ║                                                                               ║
+// ║  ✅ VERDE (éxito, turno abierto, ventas positivas):                          ║
+// ║     → MaterialTheme.colorScheme.tertiary                                      ║
+// ║     → En dark mode = AvoqadoGreenLight (0xFF34D399)                          ║
+// ║                                                                               ║
+// ║  ❌ ROJO (error, cerrado, warning destructivo):                              ║
+// ║     → MaterialTheme.colorScheme.error                                         ║
+// ║     → En dark mode = DarkError (0xFFEB5757)                                  ║
+// ║                                                                               ║
+// ║  ⚠️  NARANJA (offline, warning no destructivo):                              ║
+// ║     → Color(0xFFE65100) - Naranja elegante                                   ║
+// ║                                                                               ║
+// ║  🔵 AZUL (info, links):                                                       ║
+// ║     → MaterialTheme.colorScheme.primary (en light mode)                      ║
+// ║     → O usar Info directamente                                               ║
+// ║                                                                               ║
+// ║  ⛔ NUNCA usar Color(0xFF4CAF50) directamente - usar tertiary del theme      ║
+// ║                                                                               ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
 
 /**
  * Success color - Positive feedback, completed actions
  * Contrast ratio: 4.85:1 (AA compliant)
+ *
+ * ⚠️ PREFER: MaterialTheme.colorScheme.tertiary for green in UI
  */
 val Success = Color(0xFF10B981) // Green 500
 
@@ -91,6 +116,8 @@ val Warning = Color(0xFFF59E0B) // Amber 500
 /**
  * Error color - Destructive actions, errors
  * Contrast ratio: 4.53:1 (AA compliant)
+ *
+ * ⚠️ PREFER: MaterialTheme.colorScheme.error for red in UI
  */
 val Error = Color(0xFFEF4444) // Red 500
 
@@ -99,6 +126,12 @@ val Error = Color(0xFFEF4444) // Red 500
  * Contrast ratio: 4.56:1 (AA compliant)
  */
 val Info = Color(0xFF3B82F6) // Blue 500
+
+/**
+ * Offline/Warning Orange - Used for offline states and non-destructive warnings
+ * Darker, more elegant orange than Warning
+ */
+val OfflineOrange = Color(0xFFE65100)
 
 // ========== Light Theme Colors ==========
 

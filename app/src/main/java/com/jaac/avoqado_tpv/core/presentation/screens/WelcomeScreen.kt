@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Help
 import androidx.compose.material.icons.filled.AdminPanelSettings
@@ -47,13 +48,17 @@ import com.jaac.avoqado_tpv.core.presentation.components.SettingsBottomSheet
 import com.jaac.avoqado_tpv.core.presentation.components.ShiftStatusBanner
 import com.jaac.avoqado_tpv.core.presentation.components.VenueStatusBanner
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel
+import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
+import com.jaac.avoqado_tpv.features.permissions.di.PermissionsEntryPoint
 import com.jaac.avoqado_tpv.features.remote_command.presentation.LockScreenOverlay
 import com.jaac.avoqado_tpv.features.remote_command.presentation.MaintenanceOverlay
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import com.jaac.avoqado_tpv.features.shift.presentation.CachedShiftInfo
+import dagger.hilt.android.EntryPointAccessors
 import java.math.BigDecimal
 
 /**
@@ -293,6 +298,27 @@ private fun WelcomeScreenContent(
     // STATE
     // ══════════════════════════════════════════════════════════════════════
 
+    // 🔐 Get current user's role from SecureStorage for authorization checks
+    val context = LocalContext.current
+    val secureStorage = remember { SecureStorage(context) }
+    val currentUserRole = remember { secureStorage.getRole() }
+
+    // 🔐 Get permissions repository via EntryPoint for permission checks
+    val permissionsRepository = remember {
+        val hiltEntryPoint = EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            PermissionsEntryPoint::class.java
+        )
+        hiltEntryPoint.permissionsRepository()
+    }
+
+    // 🔐 Check if user has permission to access Settings
+    var hasSettingsAccess by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        val result = permissionsRepository.getPermissions()
+        hasSettingsAccess = result.getOrNull()?.contains("tpv-terminal:settings") ?: false
+    }
+
     // Modal states
     var showAmountBottomSheet by remember { mutableStateOf(false) }
     var showSettingsModal by remember { mutableStateOf(false) }
@@ -354,22 +380,27 @@ private fun WelcomeScreenContent(
             label = "Soporte",
             enabled = true,
             onClick = onNavigateToSupport
-        ),
-
-        // 🔧 SUPERADMIN TOOLS
-        ActionButton(
-            icon = Icons.Default.AdminPanelSettings,
-            label = "SuperAdmin",
-            enabled = true,
-            onClick = onNavigateToSuperAdmin
         )
     )
 
-    // Filter out "Turnos" button if system is disabled
-    val actionButtons = if (isShiftSystemEnabled) {
-        allButtons
-    } else {
-        allButtons.filter { it.label != "Turnos" }
+    // 🔐 AUTHORIZATION-BASED FILTERING
+    val actionButtons = allButtons.toMutableList().apply {
+        // Add SuperAdmin button ONLY if user has SUPERADMIN role
+        if (currentUserRole == StaffRole.SUPERADMIN) {
+            add(
+                ActionButton(
+                    icon = Icons.Default.AdminPanelSettings,
+                    label = "SuperAdmin",
+                    enabled = true,
+                    onClick = onNavigateToSuperAdmin
+                )
+            )
+        }
+
+        // Filter out "Turnos" button if shift system is disabled
+        if (!isShiftSystemEnabled) {
+            removeAll { it.label == "Turnos" }
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -390,8 +421,8 @@ private fun WelcomeScreenContent(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            val sizes = ResponsiveSizes.calculate(maxHeight, maxWidth)
-
+            // Explicitly use constraints from scope to avoid "unused scope" error                  │
+            val sizes = ResponsiveSizes.calculate(this.maxHeight, this.maxWidth)
             CompositionLocalProvider(LocalResponsiveSizes provides sizes) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     // ═══════════════════════════════════════════════════════════════
@@ -410,21 +441,18 @@ private fun WelcomeScreenContent(
                         )
                     }
 
-                    // Content with horizontal padding
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = sizes.paddingScreen),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Action button grid (LazyVerticalGrid handles its own scrolling)
-                        ActionButtonGrid(
-                            buttons = actionButtons,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
+                        // Content with horizontal padding
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize(), // ⭐ Removed horizontal padding to let Grid handle it (edge-to-edge feel)
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            // Action button grid (LazyVerticalGrid handles its own scrolling)
+                            ActionButtonGrid(
+                                buttons = actionButtons,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                 }
             }
         }
@@ -457,10 +485,13 @@ private fun WelcomeScreenContent(
                 showSettingsModal = false
                 showRestartConfirmDialog = true  // Show confirmation dialog
             },
-            onSettings = {
-                showSettingsModal = false
-                onNavigateToSettings()
-            },
+            // 🔐 Only show Settings option if user has permission
+            onSettings = if (hasSettingsAccess) {
+                {
+                    showSettingsModal = false
+                    onNavigateToSettings()
+                }
+            } else null,
             onHelp = null // Disabled - future feature
         )
     }

@@ -97,6 +97,55 @@ data class RefreshTokenResponseDto(
     @SerializedName("tokenType") val tokenType: String
 )
 
+/**
+ * Staff Permissions Response DTO
+ *
+ * Response from GET /tpv/auth/permissions endpoint.
+ * Contains resolved permissions for the authenticated staff member.
+ *
+ * Backend response merges:
+ * 1. Base permissions from DEFAULT_PERMISSIONS (role-based)
+ * 2. Custom permissions from VenueRolePermission (dashboard-configured)
+ * 3. Implicit permissions from dependencies
+ *
+ * **Backend Response Example:**
+ * ```json
+ * {
+ *   "success": true,
+ *   "data": {
+ *     "staffId": "staff_xxx",
+ *     "venueId": "venue_xxx",
+ *     "role": "ADMIN",
+ *     "permissions": ["tpv-terminal:settings", "tpv-payments:create", ...]
+ *   }
+ * }
+ * ```
+ *
+ * @param success API success flag
+ * @param data Nested data object with staff permissions
+ */
+data class StaffPermissionsResponse(
+    @SerializedName("success") val success: Boolean,
+    @SerializedName("data") val data: StaffPermissionsData
+)
+
+/**
+ * Staff Permissions Data DTO
+ *
+ * Contains staff identity and resolved permissions list.
+ *
+ * @param staffId Staff member ID
+ * @param venueId Venue ID
+ * @param role Staff role (SUPERADMIN, OWNER, ADMIN, MANAGER, CASHIER, WAITER, etc.)
+ * @param permissions List of resolved permissions (e.g., ["tpv-terminal:settings", "orders:read"])
+ */
+data class StaffPermissionsData(
+    @SerializedName("staffId") val staffId: String,
+    @SerializedName("venueId") val venueId: String,
+    @SerializedName("role") val role: String,
+    @SerializedName("permissions") val permissions: List<String>
+)
+
 // ========== Domain → DTO Mappers ==========
 
 /**

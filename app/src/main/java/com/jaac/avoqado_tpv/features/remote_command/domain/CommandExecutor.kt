@@ -498,8 +498,17 @@ class CommandExecutor @Inject constructor(
             context.externalCacheDir?.deleteRecursively()
 
             // Clear databases
+            // Note: Some databases (like pax-database from Blumon SDK) may be locked
+            // if they have active connections. This is OK - the app restart will clean them up.
             context.databaseList().forEach { dbName ->
-                context.deleteDatabase(dbName)
+                try {
+                    context.deleteDatabase(dbName)
+                    Timber.d("✅ [$TAG] Deleted database: $dbName")
+                } catch (e: Exception) {
+                    // Database is locked (active connections) or other error
+                    // Non-critical: app restart (line 516) will clear this
+                    Timber.w("⚠️ [$TAG] Could not delete $dbName (will be cleared on app restart): ${e.message}")
+                }
             }
 
             // Clear shared preferences

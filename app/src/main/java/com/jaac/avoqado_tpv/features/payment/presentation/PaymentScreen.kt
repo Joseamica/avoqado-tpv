@@ -5,15 +5,29 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material3.*
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,6 +60,15 @@ import com.jaac.avoqado_tpv.features.verification.presentation.components.Camera
 import java.io.File
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.RefundReason
+// 👤 Customer search imports (for email receipt dialog)
+import com.jaac.avoqado_tpv.features.ordering.domain.Customer
+import com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.Search
+import kotlinx.coroutines.delay
 
 /**
  * PaymentScreen - EMV chip card payment with online authorization via Blumon Momentum
@@ -96,6 +119,21 @@ fun PaymentScreen(
     val tpvSettings by viewModel.tpvSettings.collectAsStateWithLifecycle()
     val pinEntryState by viewModel.pinEntryState.collectAsStateWithLifecycle()  // PIN asterisks feedback
     val isPinDialogVisible by viewModel.isPinDialogVisible.collectAsStateWithLifecycle()  // PIN dialog visibility
+    val isSendingReceipt by viewModel.isSendingReceipt.collectAsStateWithLifecycle()  // 📧 Send receipt loading
+    val sendReceiptMessage by viewModel.sendReceiptMessage.collectAsStateWithLifecycle()  // 📧 Send receipt result
+    // 👤 Customer search states (for email receipt dialog)
+    val customerSearchState by viewModel.customerSearchState.collectAsStateWithLifecycle()
+    val recentCustomers by viewModel.recentCustomers.collectAsStateWithLifecycle()
+    val isLoadingRecentCustomers by viewModel.isLoadingRecentCustomers.collectAsStateWithLifecycle()
+
+    // 📧 Show toast when send receipt message changes
+    val context = LocalContext.current
+    LaunchedEffect(sendReceiptMessage) {
+        sendReceiptMessage?.let { message ->
+            android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
+            viewModel.clearSendReceiptMessage()
+        }
+    }
 
     // 📊 Dynamic step counter based on TPV settings
     // PRE-PAYMENT screens: Review? → Tip? → Payment (always)
@@ -501,7 +539,16 @@ fun PaymentScreen(
                                         viewModel.resetPayment()
                                         onNavigateToOrder(orderIdValue, tableId)
                                     }
-                                }
+                                },
+                                onSendReceipt = viewModel::sendReceiptByEmail,
+                                isSendingReceipt = isSendingReceipt,
+                                // 👤 Customer search for email receipt dialog
+                                customerSearchState = customerSearchState,
+                                recentCustomers = recentCustomers,
+                                isLoadingRecentCustomers = isLoadingRecentCustomers,
+                                onSearchCustomer = viewModel::searchCustomersForReceipt,
+                                onLoadRecentCustomers = viewModel::loadRecentCustomersForReceipt,
+                                onResetCustomerSearch = viewModel::resetCustomerSearch
                             )
                         }
                     }
@@ -912,7 +959,16 @@ private fun PaymentSuccessContent(
     onNewOrder: () -> Unit,  // 🆕 Navigate to new order (for order payments)
     onNewFastPayment: () -> Unit,  // 🆕 Navigate to new fast payment (for fast payments)
     onClearTableAndReturnToFloorPlan: (String) -> Unit = {},  // 🆕 Clear table and return to floor plan
-    onContinuePayment: () -> Unit = {}  // ⭐ NEW: Continue paying remaining balance
+    onContinuePayment: () -> Unit = {},  // ⭐ NEW: Continue paying remaining balance
+    onSendReceipt: (email: String) -> Unit = {},  // 📧 Send receipt by email
+    isSendingReceipt: Boolean = false,  // 📧 Loading state for sending receipt
+    // 👤 Customer search for email receipt dialog
+    customerSearchState: CustomerSearchState = CustomerSearchState.Idle,
+    recentCustomers: List<Customer> = emptyList(),
+    isLoadingRecentCustomers: Boolean = false,
+    onSearchCustomer: (String) -> Unit = {},
+    onLoadRecentCustomers: () -> Unit = {},
+    onResetCustomerSearch: () -> Unit = {}
 ) {
     // Parse amounts (prefer receipt data if available)
     val totalAmount = receipt?.amount ?: (amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)
@@ -924,6 +980,9 @@ private fun PaymentSuccessContent(
 
     // State for order details modal
     var showOrderDetailsModal by remember { mutableStateOf(false) }
+
+    // 📧 State for email receipt dialog
+    var showEmailDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -1231,8 +1290,9 @@ private fun PaymentSuccessContent(
             }
         }
 
-        // ⚙️ TPV Settings: Only show print button if showReceiptOptions is enabled
+        // ⚙️ TPV Settings: Only show receipt options if showReceiptOptions is enabled
         if (showReceiptOptions) {
+            // 🖨️ Print receipt button
             Button(
                 onClick = onPrintReceipt,
                 modifier = Modifier
@@ -1246,7 +1306,7 @@ private fun PaymentSuccessContent(
                 )
             ) {
                 Icon(
-                    painter = painterResource(R.drawable.ic_contact_payment), // Placeholder - ideally use print icon
+                    imageVector = Icons.Default.Print,
                     contentDescription = "Imprimir",
                     tint = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.size(20.dp)
@@ -1255,7 +1315,37 @@ private fun PaymentSuccessContent(
                 Spacer(modifier = Modifier.width(8.dp))
 
                 Text(
-                    text = "O imprime el recibo",
+                    text = "Imprime el recibo",
+                    fontSize = 16.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // 📧 Send receipt by email button
+            Button(
+                onClick = { showEmailDialog = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .padding(horizontal = 16.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.onSurface
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Email,
+                    contentDescription = "Enviar",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(20.dp)
+                )
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Text(
+                    text = "Enviar recibo",
                     fontSize = 16.sp
                 )
             }
@@ -1398,6 +1488,25 @@ private fun PaymentSuccessContent(
             }
         }
     }
+
+    // 📧 Email receipt dialog
+    if (showEmailDialog) {
+        EmailReceiptDialog(
+            onDismiss = { showEmailDialog = false },
+            onSend = { email ->
+                onSendReceipt(email)
+                showEmailDialog = false
+            },
+            isLoading = isSendingReceipt,
+            // 👤 Customer search parameters
+            customerSearchState = customerSearchState,
+            recentCustomers = recentCustomers,
+            isLoadingRecentCustomers = isLoadingRecentCustomers,
+            onSearchCustomer = onSearchCustomer,
+            onLoadRecentCustomers = onLoadRecentCustomers,
+            onResetSearch = onResetCustomerSearch
+        )
+    }
 }
 
 @Composable
@@ -1478,6 +1587,385 @@ private fun PaymentErrorContent(
             }
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EMAIL RECEIPT DIALOG
+// Following keyboard handling pattern from docs/COMPOSE_KEYBOARD_HANDLING.md
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Dialog for entering customer email to send receipt
+ *
+ * **Features:**
+ * - Customer search with debounce (300ms)
+ * - Recent customers list on open
+ * - Auto-fill email when selecting customer with email
+ * - Manual email entry fallback
+ *
+ * **Keyboard Handling Pattern:**
+ * 1. FocusManager captured INSIDE Dialog context
+ * 2. imePadding() on Card container
+ * 3. verticalScroll for scrollable content
+ * 4. pointerInput + detectTapGestures for tap-outside-to-dismiss
+ * 5. ImeAction.Done + KeyboardActions to clear focus on Done
+ * 6. clearFocus() on button click before action
+ *
+ * @param onDismiss Callback when dialog is dismissed
+ * @param onSend Callback with email when user clicks "Enviar"
+ * @param isLoading True when sending is in progress (disables button)
+ * @param customerSearchState State of customer search (Idle, Loading, Success, Error)
+ * @param recentCustomers List of recent customers to show on dialog open
+ * @param isLoadingRecentCustomers Loading state for recent customers
+ * @param onSearchCustomer Callback to search customers
+ * @param onLoadRecentCustomers Callback to load recent customers
+ * @param onResetSearch Callback to reset search state
+ */
+@Composable
+private fun EmailReceiptDialog(
+    onDismiss: () -> Unit,
+    onSend: (email: String) -> Unit,
+    isLoading: Boolean = false,
+    // 👤 Customer search parameters
+    customerSearchState: CustomerSearchState = CustomerSearchState.Idle,
+    recentCustomers: List<Customer> = emptyList(),
+    isLoadingRecentCustomers: Boolean = false,
+    onSearchCustomer: (String) -> Unit = {},
+    onLoadRecentCustomers: () -> Unit = {},
+    onResetSearch: () -> Unit = {}
+) {
+    var email by remember { mutableStateOf("") }
+    var searchQuery by remember { mutableStateOf("") }
+    val emailFocusRequester = remember { FocusRequester() }
+
+    // Load recent customers when dialog opens
+    LaunchedEffect(Unit) {
+        onLoadRecentCustomers()
+    }
+
+    // Debounce customer search (300ms)
+    LaunchedEffect(searchQuery) {
+        if (searchQuery.length >= 2) {
+            delay(300)
+            onSearchCustomer(searchQuery)
+        } else if (searchQuery.isEmpty()) {
+            onResetSearch()
+        }
+    }
+
+    // Cleanup on dismiss
+    DisposableEffect(Unit) {
+        onDispose {
+            onResetSearch()
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        // ✅ STEP 2: Capture FocusManager INSIDE Dialog
+        val focusManager = LocalFocusManager.current
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.9f)
+                .imePadding(),  // ✅ STEP 3: IME padding
+            shape = MaterialTheme.shapes.large,
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())  // ✅ STEP 4: Scrollable
+                    .padding(24.dp)
+                    .pointerInput(Unit) {  // ✅ STEP 5: Tap outside to dismiss keyboard
+                        detectTapGestures(onTap = {
+                            focusManager.clearFocus()
+                        })
+                    },
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Icon
+                Icon(
+                    imageVector = Icons.Default.Email,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(40.dp)
+                )
+
+                // Title
+                Text(
+                    text = "Enviar recibo",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                // 👤 Customer search section
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Buscar cliente") },
+                    placeholder = { Text("Nombre, teléfono o correo") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    trailingIcon = {
+                        if (customerSearchState is CustomerSearchState.Loading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                        }
+                    },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Text,
+                        imeAction = ImeAction.Search
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onSearch = { focusManager.clearFocus() }
+                    ),
+                    singleLine = true,
+                    enabled = !isLoading
+                )
+
+                // 👤 Customer list (search results or recent customers)
+                val customersToShow = when {
+                    searchQuery.length >= 2 -> {
+                        when (val state = customerSearchState) {
+                            is CustomerSearchState.Success -> state.customers
+                            else -> emptyList()
+                        }
+                    }
+                    else -> recentCustomers
+                }
+
+                val showLoading = isLoadingRecentCustomers || customerSearchState is CustomerSearchState.Loading
+
+                if (customersToShow.isNotEmpty()) {
+                    // Section header
+                    Text(
+                        text = if (searchQuery.length >= 2) "Resultados" else "Clientes recientes",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp)
+                    )
+
+                    // Customer list
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 180.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        customersToShow.take(5).forEach { customer ->
+                            CustomerListItem(
+                                customer = customer,
+                                onClick = {
+                                    // Auto-fill email if customer has one
+                                    customer.email?.let { customerEmail ->
+                                        email = customerEmail
+                                    }
+                                    searchQuery = ""
+                                    onResetSearch()
+                                    focusManager.clearFocus()
+                                }
+                            )
+                        }
+                    }
+                } else if (showLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .padding(vertical = 8.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else if (searchQuery.length >= 2 && customerSearchState is CustomerSearchState.Success) {
+                    // No results found
+                    Text(
+                        text = "No se encontraron clientes",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+                }
+
+                // Divider between customer list and manual email
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 4.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant
+                )
+
+                Text(
+                    text = "o escribe el correo manualmente",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                // Email TextField (manual entry)
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(emailFocusRequester),
+                    label = { Text("Correo electrónico") },
+                    placeholder = { Text("ejemplo@correo.com") },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Email,
+                        imeAction = ImeAction.Done  // ✅ STEP 6: Done button
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            focusManager.clearFocus()  // ✅ Clear focus on Done
+                        }
+                    ),
+                    singleLine = true,
+                    enabled = !isLoading,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                    )
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // Buttons Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)
+                ) {
+                    // Cancel button
+                    TextButton(
+                        onClick = onDismiss,
+                        enabled = !isLoading
+                    ) {
+                        Text("Cancelar")
+                    }
+
+                    // Send button
+                    Button(
+                        onClick = {
+                            focusManager.clearFocus()  // ✅ STEP 7: Clear on button click
+                            onSend(email.trim())
+                        },
+                        enabled = email.isValidEmail() && !isLoading
+                    ) {
+                        if (isLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
+                        Text(if (isLoading) "Enviando..." else "Enviar")
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Customer list item for email receipt dialog
+ * Shows customer name, email (if available) or phone, and email indicator icon
+ */
+@Composable
+private fun CustomerListItem(
+    customer: Customer,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Avatar with initials
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = customer.shortName.take(2).uppercase(),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            Spacer(modifier = Modifier.width(10.dp))
+
+            // Name and contact info
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = customer.displayName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                // Show email if available, otherwise phone
+                customer.email?.let { emailAddress ->
+                    Text(
+                        text = emailAddress,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                } ?: customer.phone?.let { phone ->
+                    Text(
+                        text = phone,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+            }
+
+            // Email indicator icon (only if customer has email)
+            if (customer.email != null) {
+                Icon(
+                    imageVector = Icons.Default.Email,
+                    contentDescription = "Tiene email",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Email validation extension function
+ * Uses Android's built-in EMAIL_ADDRESS pattern matcher
+ */
+private fun String.isValidEmail(): Boolean {
+    return this.isNotBlank() && android.util.Patterns.EMAIL_ADDRESS.matcher(this).matches()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

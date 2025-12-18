@@ -50,16 +50,17 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 @Composable
 fun ActionButtonGrid(
     buttons: List<ActionButton>,
+    columns: Int = 2,
     modifier: Modifier = Modifier
 ) {
     val sizes = LocalResponsiveSizes.current
 
     LazyVerticalGrid(
-        columns = GridCells.Fixed(3),
+        columns = GridCells.Fixed(columns),
         modifier = modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(horizontal = 8.dp, vertical = sizes.paddingScreen),  // ⭐ Reduced horizontal padding (was sizes.paddingScreen)
-        horizontalArrangement = Arrangement.spacedBy(8.dp),  // ⭐ Reduced spacing between buttons (was sizes.spacingMedium)
-        verticalArrangement = Arrangement.spacedBy(8.dp)     // ⭐ Reduced spacing between buttons (was sizes.spacingMedium)
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         items(buttons) { button ->
             ActionButtonItem(
@@ -68,7 +69,7 @@ fun ActionButtonGrid(
                 enabled = button.enabled,
                 badge = button.badge,
                 onClick = button.onClick,
-                iconSize = sizes.iconSizeLarge,
+                iconSize = 32.dp, // ⭐ Crisp, standard size
                 spacing = sizes.spacingSmall
             )
         }
@@ -78,7 +79,11 @@ fun ActionButtonGrid(
 /**
  * Individual action button item
  *
- * Square card with icon on top, text below, and optional badge overlay.
+ * Square/Professional POS Style:
+ * - Left-aligned content
+ * - Minimalist (White background, subtle border)
+ * - Moderate rounding (12dp)
+ * - No clutter (removed icon circle backgrounds)
  */
 @Composable
 private fun ActionButtonItem(
@@ -92,71 +97,73 @@ private fun ActionButtonItem(
 ) {
     Card(
         onClick = if (enabled) onClick else { {} },
-        modifier = Modifier.aspectRatio(1f), // Square shape
+        modifier = Modifier
+            .aspectRatio(1.3f) // ⭐ Wider aspect ratio (Square style tiles)
+            .fillMaxWidth(),
         enabled = enabled,
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp), // ⭐ Professional radius (Square is ~8-12dp)
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
-            disabledContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+            containerColor = MaterialTheme.colorScheme.surface, // Pure white/surface
+            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
         ),
-        elevation = CardDefaults.cardElevation(
-            defaultElevation = 2.dp,
-            pressedElevation = 4.dp,
-            disabledElevation = 0.dp
-        )
+        border = androidx.compose.foundation.BorderStroke(
+            width = 1.dp,
+            color = if (enabled) MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f) else androidx.compose.ui.graphics.Color.Transparent
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp) // ⭐ Flat design
     ) {
         Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp) // Generous padding
         ) {
-            // Main content: Icon + Text
-            Column(
+            // Icon (Top-Left)
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(spacing),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = label,
-                    modifier = Modifier.size(iconSize),
-                    tint = if (enabled) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                    }
-                )
+                    .size(iconSize)
+                    .align(Alignment.TopStart),
+                tint = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                }
+            )
 
-                Spacer(modifier = Modifier.height(spacing))
+            // Text (Bottom-Left)
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Medium,
+                    fontSize = 15.sp
+                ),
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                },
+                textAlign = TextAlign.Start,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.align(Alignment.BottomStart)
+            )
 
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (enabled) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                    },
-                    textAlign = TextAlign.Center,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            // Badge overlay (top-center, absolute positioned)
+            // Badge overlay (Top-Right)
             if (badge != null) {
-                Badge(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)  // ⭐ Changed from TopEnd to TopCenter (centered at top edge)
-                        .padding(top = 4.dp),        // ⭐ Reduced padding, positioned closer to edge
-                    containerColor = MaterialTheme.colorScheme.tertiary
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp),
+                    modifier = Modifier.align(Alignment.TopEnd)
                 ) {
                     Text(
                         text = badge,
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),  // ⭐ Extra small text (9sp for compact badge)
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),  // ⭐ Minimal padding for compact look
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                            fontSize = 10.sp
+                        ),
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }
             }

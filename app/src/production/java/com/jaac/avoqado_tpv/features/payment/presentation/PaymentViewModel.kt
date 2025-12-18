@@ -66,6 +66,10 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 // 🔌 Socket.IO Events
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
+// 👤 Customer Search (for email receipt dialog)
+import com.jaac.avoqado_tpv.features.ordering.domain.Customer
+import com.jaac.avoqado_tpv.features.ordering.domain.CustomerRepository
+import com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState
 // ⭐ NEW: Backend payment recording
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
 // 💸 Backend Refund Recording - Record refunds to avoqado-server database
@@ -155,7 +159,11 @@ class PaymentViewModel @Inject constructor(
     // ⚙️ TPV Settings - Configurable payment flow screens (tip, review, receipt)
     private val tpvSettingsRepository: TpvSettingsRepository,
     // 📸 Firebase Storage - Upload verification photos before payment
-    private val verificationUploadManager: VerificationUploadManager
+    private val verificationUploadManager: VerificationUploadManager,
+    // 📧 PaymentApiService - For sending receipt by email
+    private val paymentApiService: com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService,
+    // 👤 CustomerRepository - For searching customers in email receipt dialog
+    private val customerRepository: CustomerRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentState>(PaymentState.Idle)
@@ -194,6 +202,24 @@ class PaymentViewModel @Inject constructor(
     // Used to keep "Ingrese su PIN" visible even when asterisks are cleared
     private val _isPinDialogVisible = MutableStateFlow(false)
     val isPinDialogVisible: StateFlow<Boolean> = _isPinDialogVisible.asStateFlow()
+
+    // 📧 Send receipt by email loading state
+    private val _isSendingReceipt = MutableStateFlow(false)
+    val isSendingReceipt: StateFlow<Boolean> = _isSendingReceipt.asStateFlow()
+
+    // 📧 Send receipt result message (for toast/snackbar display)
+    private val _sendReceiptMessage = MutableStateFlow<String?>(null)
+    val sendReceiptMessage: StateFlow<String?> = _sendReceiptMessage.asStateFlow()
+
+    // 👤 Customer search for email receipt dialog
+    private val _customerSearchState = MutableStateFlow<CustomerSearchState>(CustomerSearchState.Idle)
+    val customerSearchState: StateFlow<CustomerSearchState> = _customerSearchState.asStateFlow()
+
+    private val _recentCustomers = MutableStateFlow<List<Customer>>(emptyList())
+    val recentCustomers: StateFlow<List<Customer>> = _recentCustomers.asStateFlow()
+
+    private val _isLoadingRecentCustomers = MutableStateFlow(false)
+    val isLoadingRecentCustomers: StateFlow<Boolean> = _isLoadingRecentCustomers.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -3717,6 +3743,140 @@ class PaymentViewModel @Inject constructor(
             _state.value = currentState.previousState
             Timber.d("🔙 [Print] Dismissed print error, returned to Success state")
         }
+    }
+
+    /**
+     * Send receipt to customer via email.
+     *
+     * **Called from:** PaymentSuccessContent "Enviar recibo" button dialog
+     *
+     * **Backend Endpoint:** POST /tpv/venues/{venueId}/payments/{paymentId}/send-receipt
+     *
+     * @param email Customer email address (validated in UI before calling)
+     */
+    fun sendReceiptByEmail(email: String) {
+        val currentState = _state.value
+        if (currentState !is PaymentState.Success) {
+            Timber.w("⚠️ [SendReceipt] Cannot send: Not in Success state")
+            _sendReceiptMessage.value = "Error: No hay pago completado"
+            return
+        }
+
+        val receipt = currentState.receipt
+        if (receipt == null) {
+            Timber.w("⚠️ [SendReceipt] Cannot send: No receipt available (backend recording may have failed)")
+            _sendReceiptMessage.value = "Error: No hay recibo disponible"
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                Timber.i("📧 [SendReceipt] Sending receipt to: $email")
+                _isSendingReceipt.value = true
+
+                val request = com.jaac.avoqado_tpv.features.payment.data.dto.SendReceiptRequest(
+                    recipientEmail = email
+                )
+
+                val response = paymentApiService.sendReceipt(
+                    venueId = currentVenueId,
+                    paymentId = receipt.paymentId,
+                    request = request
+                )
+
+                if (response.isSuccessful && response.body()?.success == true) {
+                    Timber.i("✅ [SendReceipt] Receipt sent successfully to $email")
+                    _sendReceiptMessage.value = "✓ Recibo enviado a $email"
+                } else {
+                    val errorMessage = response.body()?.message ?: "Error al enviar recibo"
+                    Timber.e("❌ [SendReceipt] Failed: $errorMessage")
+                    _sendReceiptMessage.value = "Error: $errorMessage"
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [SendReceipt] Unexpected error sending receipt")
+                _sendReceiptMessage.value = "Error de conexión: ${e.message}"
+            } finally {
+                _isSendingReceipt.value = false
+            }
+        }
+    }
+
+    /**
+     * Clear send receipt message after displaying to user.
+     *
+     * **Called from:** PaymentScreen after showing toast/snackbar
+     */
+    fun clearSendReceiptMessage() {
+        _sendReceiptMessage.value = null
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 👤 CUSTOMER SEARCH (for email receipt dialog)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Search customers by name, email, or phone for the email receipt dialog.
+     *
+     * **Debounce:** Should be called from UI with 300ms debounce (via LaunchedEffect).
+     *
+     * @param query Search query (min 2 characters)
+     */
+    fun searchCustomersForReceipt(query: String) {
+        if (query.length < 2) {
+            _customerSearchState.value = CustomerSearchState.Idle
+            return
+        }
+
+        viewModelScope.launch {
+            _customerSearchState.value = CustomerSearchState.Loading
+            Timber.d("🔍 [CustomerSearch] Searching for: $query")
+
+            customerRepository.searchCustomers(
+                venueId = currentVenueId,
+                query = query,
+                limit = 10
+            ).onSuccess { customers ->
+                _customerSearchState.value = CustomerSearchState.Success(customers)
+                Timber.d("✅ [CustomerSearch] Found ${customers.size} customers")
+            }.onFailure { error ->
+                _customerSearchState.value = CustomerSearchState.Error(
+                    error.message ?: "Error buscando clientes"
+                )
+                Timber.e(error, "❌ [CustomerSearch] Failed to search")
+            }
+        }
+    }
+
+    /**
+     * Load recent customers for quick selection in email receipt dialog.
+     *
+     * **Called from:** Dialog's LaunchedEffect(Unit) on open.
+     */
+    fun loadRecentCustomersForReceipt() {
+        viewModelScope.launch {
+            _isLoadingRecentCustomers.value = true
+            Timber.d("🕐 [CustomerSearch] Loading recent customers")
+
+            customerRepository.getRecentCustomers(
+                venueId = currentVenueId,
+                limit = 10
+            ).onSuccess { customers ->
+                _recentCustomers.value = customers
+                Timber.d("✅ [CustomerSearch] Loaded ${customers.size} recent customers")
+            }.onFailure { error ->
+                _recentCustomers.value = emptyList()
+                Timber.e(error, "❌ [CustomerSearch] Failed to load recent customers")
+            }
+
+            _isLoadingRecentCustomers.value = false
+        }
+    }
+
+    /**
+     * Reset customer search state when dialog closes or user clears search.
+     */
+    fun resetCustomerSearch() {
+        _customerSearchState.value = CustomerSearchState.Idle
     }
 
     /**

@@ -15,6 +15,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -23,6 +28,7 @@ import com.jaac.avoqado_tpv.BuildConfig
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import kotlinx.coroutines.delay
 
 /**
  * Avoqado Top App Bar
@@ -64,6 +70,9 @@ fun AvoqadoTopBar(
 
     val resolvedTitleStyle = titleStyle ?: MaterialTheme.typography.titleLarge
 
+    // 🔒 Throttle navigation clicks to prevent double-click navigation bugs
+    var isNavigationLocked by remember { mutableStateOf(false) }
+
     CenterAlignedTopAppBar(
         title = {
             if (subtitle != null) {
@@ -98,11 +107,28 @@ fun AvoqadoTopBar(
             ),
         navigationIcon = {
             if (onNavigationClick != null) {
-                IconButton(onClick = onNavigationClick) {
+                IconButton(
+                    onClick = {
+                        // 🔒 Throttle: Ignore clicks if already navigating
+                        if (!isNavigationLocked) {
+                            isNavigationLocked = true
+                            onNavigationClick()
+                        }
+                    },
+                    enabled = !isNavigationLocked
+                ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                         contentDescription = "Navigate back"
                     )
+                }
+
+                // 🔓 Unlock after 500ms to allow next navigation
+                if (isNavigationLocked) {
+                    LaunchedEffect(Unit) {
+                        delay(500)
+                        isNavigationLocked = false
+                    }
                 }
             }
         },

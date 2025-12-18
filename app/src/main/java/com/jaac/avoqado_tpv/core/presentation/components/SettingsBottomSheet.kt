@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material3.*
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,8 +57,12 @@ fun SettingsBottomSheet(
     onSettings: (() -> Unit)? = null,
     onHelp: (() -> Unit)? = null
 ) {
+    // ✅ Skip partially expanded state - open fully
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
+        sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
         tonalElevation = 8.dp
     ) {

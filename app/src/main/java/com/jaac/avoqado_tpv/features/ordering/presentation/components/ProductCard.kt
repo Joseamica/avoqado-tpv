@@ -98,13 +98,19 @@ fun ProductCard(
         }
     } else null
 
-    // 🎨 CATEGORY COLOR: Parse hex color for left border (Square/Toast pattern)
+    // 🎨 CATEGORY COLOR: Parse hex color for card background
     val categoryColor = remember(product.effectiveCategoryColor) {
         try {
             Color(android.graphics.Color.parseColor(product.effectiveCategoryColor))
         } catch (e: Exception) {
             Color.Gray  // Fallback if parsing fails
         }
+    }
+
+    // 🎨 Calculate contrasting text color (white or black based on luminance)
+    val textColor = remember(categoryColor) {
+        val luminance = (0.299 * categoryColor.red + 0.587 * categoryColor.green + 0.114 * categoryColor.blue)
+        if (luminance > 0.5) Color.Black else Color.White
     }
 
     // ✅ Box padre permite que el badge sobresalga del Card
@@ -115,43 +121,30 @@ fun ProductCard(
                 .aspectRatio(1.7f),  // Rectangular - wider than tall (Square POS style)
             onClick = onClick,
             colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
+                containerColor = categoryColor  // 🎨 Full card background with category color
             ),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
         ) {
-            // Row with category color border + content
-            Row(modifier = Modifier.fillMaxSize()) {
-                // 🎨 Category color border (subtle left stripe - Toast pattern)
-                Box(
-                    modifier = Modifier
-                        .width(CategoryBorderWidth)
-                        .fillMaxHeight()
-                        .clip(CategoryBorderShape)
-                        .background(categoryColor)
+            // Product content (centered, full background color)
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(8.dp),
+                horizontalAlignment = Alignment.Start,
+                verticalArrangement = Arrangement.Center
+            ) {
+                // ⚡ OPTIMIZATION: Direct TextStyle properties (no style override)
+                Text(
+                    text = product.name,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    lineHeight = 16.sp,
+                    color = textColor,  // 🎨 Contrasting text color
+                    textAlign = TextAlign.Start,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth()
                 )
-
-                // Product content (left-aligned, Square POS style)
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .padding(8.dp),
-                    horizontalAlignment = Alignment.Start,  // ✅ Left-aligned (Square pattern)
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    // ⚡ OPTIMIZATION: Direct TextStyle properties (no style override)
-                    Text(
-                        text = product.name,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        lineHeight = 16.sp,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        textAlign = TextAlign.Start,  // ✅ Left-aligned
-                        maxLines = 2,  // ✅ 2 lines for longer names
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
             }
         }
 

@@ -258,15 +258,13 @@ private fun ActiveShiftContent(
                     Icon(
                         imageVector = Icons.Default.CheckCircle,
                         contentDescription = "Turno abierto",
-                        tint = Color(0xFF4CAF50),
+                        tint = MaterialTheme.colorScheme.tertiary,  // ✅ Verde Avoqado del theme
                         modifier = Modifier.size(24.dp)
                     )
 
                     Text(
                         text = "  Abierto - ${shift.staffName}",
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold
-                        ),
+                        style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.padding(start = 8.dp)
                     )
@@ -289,10 +287,10 @@ private fun ActiveShiftContent(
                     onClick = onCloseShift,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFFEB5757)  // Red for closing
+                        containerColor = MaterialTheme.colorScheme.error  // ✅ Rojo del theme
                     )
                 ) {
-                    Text("Cerrar Turno", fontSize = 16.sp)
+                    Text("Cerrar Turno", style = MaterialTheme.typography.bodyLarge)
                 }
             }
         }
@@ -329,7 +327,7 @@ private fun NoActiveShiftContent(
                 Icon(
                     imageVector = Icons.Default.Error,
                     contentDescription = "Sin turno activo",
-                    tint = Color(0xFFEB5757),
+                    tint = MaterialTheme.colorScheme.error,  // ✅ Rojo del theme
                     modifier = Modifier.size(48.dp)
                 )
 
@@ -357,10 +355,10 @@ private fun NoActiveShiftContent(
                 Button(
                     onClick = onOpenShift,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF4CAF50)  // Green for opening
+                        containerColor = MaterialTheme.colorScheme.tertiary  // ✅ Verde Avoqado
                     )
                 ) {
-                    Text("Abrir Turno", fontSize = 16.sp)
+                    Text("Abrir Turno", style = MaterialTheme.typography.bodyLarge)
                 }
             }
         }
@@ -384,7 +382,7 @@ private fun ShiftClosedContent(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),
             colors = CardDefaults.cardColors(
-                containerColor = Color(0xFF4CAF50).copy(alpha = 0.1f)
+                containerColor = MaterialTheme.colorScheme.tertiaryContainer  // ✅ Verde claro del theme
             ),
             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
         ) {
@@ -397,7 +395,7 @@ private fun ShiftClosedContent(
                 Icon(
                     imageVector = Icons.Default.CheckCircle,
                     contentDescription = "Turno cerrado",
-                    tint = Color(0xFF4CAF50),
+                    tint = MaterialTheme.colorScheme.tertiary,  // ✅ Verde Avoqado
                     modifier = Modifier.size(64.dp)
                 )
 
@@ -405,9 +403,7 @@ private fun ShiftClosedContent(
 
                 Text(
                     text = "Turno Cerrado Exitosamente",
-                    style = MaterialTheme.typography.titleLarge.copy(
-                        fontWeight = FontWeight.Bold
-                    ),
+                    style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.Center
                 )
@@ -417,7 +413,7 @@ private fun ShiftClosedContent(
                 Text(
                     text = "Ventas: $${shift.totalSales}",
                     style = MaterialTheme.typography.titleMedium,
-                    color = Color(0xFF4CAF50)
+                    color = MaterialTheme.colorScheme.tertiary  // ✅ Verde Avoqado
                 )
 
                 Text(
@@ -633,7 +629,7 @@ private fun ShiftDetailRow(
             style = MaterialTheme.typography.bodyMedium.copy(
                 fontWeight = if (highlight) FontWeight.Bold else FontWeight.Normal
             ),
-            color = if (highlight) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurface
+            color = if (highlight) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurface  // ✅ Verde del theme
         )
     }
 }

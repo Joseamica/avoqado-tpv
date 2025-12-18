@@ -3,24 +3,169 @@ package com.jaac.avoqado_tpv.features.support.presentation
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import timber.log.Timber
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.FocusManager
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.BuildConfig
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.data.network.ApiErrorResponse
+import com.jaac.avoqado_tpv.core.data.network.TpvFeedbackRequest
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import dagger.hilt.android.EntryPointAccessors
+import dagger.hilt.android.qualifiers.ApplicationContext
+import androidx.compose.runtime.rememberCoroutineScope
+import dagger.hilt.EntryPoint
+import dagger.hilt.InstallIn
+import dagger.hilt.components.SingletonComponent
+
+// ══════════════════════════════════════════════════════════════════════
+// Hilt Entry Point for ApiService
+// ══════════════════════════════════════════════════════════════════════
+
+@EntryPoint
+@InstallIn(SingletonComponent::class)
+interface SupportScreenEntryPoint {
+    fun apiService(): ApiService
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Helper Functions
+// ══════════════════════════════════════════════════════════════════════
+
+// Result sealed class for internal use
+private sealed class FeedbackResult {
+    object Success : FeedbackResult()
+    data class Error(val message: String) : FeedbackResult()
+}
+
+/**
+ * Send feedback to backend via API
+ *
+ * Sends bug report or feature suggestion to backend, which emails it to hola@avoqado.io.
+ * Includes device information automatically for debugging purposes.
+ *
+ * @param apiService Retrofit API service
+ * @param feedbackType "bug" or "feature"
+ * @param message User's feedback message
+ * @param venueSlug Current venue slug
+ * @param onSuccess Callback on successful send (runs on Main thread)
+ * @param onError Callback on error with error message (runs on Main thread)
+ */
+private suspend fun sendFeedbackToBackend(
+    apiService: ApiService,
+    feedbackType: String,
+    message: String,
+    venueSlug: String,
+    onSuccess: () -> Unit,
+    onError: (String) -> Unit
+) {
+    // Execute heavy work on IO thread
+    val result = withContext(Dispatchers.IO) {
+        try {
+            val request = TpvFeedbackRequest(
+                feedbackType = feedbackType,
+                message = message,
+                venueSlug = venueSlug,
+                appVersion = BuildConfig.VERSION_NAME,
+                buildVersion = BuildConfig.VERSION_CODE.toString(),
+                androidVersion = "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
+                deviceModel = Build.MODEL,
+                deviceManufacturer = Build.MANUFACTURER
+            )
+
+            val response = apiService.sendFeedback(request)
+
+            if (response.isSuccessful && response.body()?.success == true) {
+                FeedbackResult.Success
+            } else {
+                // Parse error response body to extract validation errors
+                // NOTE: response.errorBody()?.string() is blocking I/O, so it MUST be on Dispatchers.IO
+                val errorMsg = try {
+                    val errorBody = response.errorBody()?.string()
+                    if (errorBody != null) {
+                        val gson = com.google.gson.Gson()
+                        val errorResponse = gson.fromJson(errorBody, ApiErrorResponse::class.java)
+
+                        // Extract specific validation error if present
+                        val msg = errorResponse.message ?: "Error desconocido"
+
+                        // If it's a validation error, extract the user-friendly message
+                        if (msg.contains("Validation failed:") && msg.contains("body.message:")) {
+                            // Extract message after "body.message: "
+                            val validationMsg = msg.substringAfter("body.message: ").substringBefore(",")
+                            validationMsg.ifEmpty { msg }
+                        } else {
+                            msg
+                        }
+                    } else {
+                        response.body()?.message ?: "Error desconocido"
+                    }
+                } catch (e: Exception) {
+                    Timber.w(e, "Failed to parse error response")
+                    response.body()?.message ?: "Error desconocido"
+                }
+                
+                Timber.w("⚠️ Failed to send feedback: $errorMsg")
+                FeedbackResult.Error(errorMsg)
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error sending feedback")
+            FeedbackResult.Error("No se pudo enviar el feedback. Verifica tu conexión.")
+        }
+    }
+
+    // Handle result on Main thread
+    when (result) {
+        is FeedbackResult.Success -> {
+            Timber.i("✅ Feedback sent successfully")
+            onSuccess()
+        }
+        is FeedbackResult.Error -> {
+            onError(result.message)
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Main Screen
+// ══════════════════════════════════════════════════════════════════════
 
 /**
  * Support Screen
@@ -40,6 +185,32 @@ fun SupportScreen(
     onBack: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val secureStorage = remember {
+        SecureStorage(context.applicationContext)
+    }
+    val venueSlug = secureStorage.getVenueSlug() ?: "unknown"
+
+    // Get ApiService via Hilt EntryPoint
+    val apiService = remember {
+        val appContext = context.applicationContext
+        val hiltEntryPoint = EntryPointAccessors.fromApplication(
+            appContext,
+            SupportScreenEntryPoint::class.java
+        )
+        hiltEntryPoint.apiService()
+    }
+
+    val coroutineScope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // Contact dialogs
+    var showEmailDialog by remember { mutableStateOf(false) }
+    var showPhoneDialog by remember { mutableStateOf(false) }
+    var showWhatsAppDialog by remember { mutableStateOf(false) }
+
+    // Feedback dialogs
+    var showBugReportDialog by remember { mutableStateOf(false) }
+    var showFeatureSuggestionDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -47,6 +218,9 @@ fun SupportScreen(
                 title = "Soporte",
                 onNavigationClick = onBack
             )
+        },
+        snackbarHost = {
+            SnackbarHost(hostState = snackbarHostState)
         },
         containerColor = MaterialTheme.colorScheme.background
     ) { paddingValues ->
@@ -68,37 +242,9 @@ fun SupportScreen(
 
                 item {
                     ContactOptions(
-                        onEmailClick = {
-                            try {
-                                val intent = Intent(Intent.ACTION_SENDTO).apply {
-                                    data = Uri.parse("mailto:soporte@avoqado.io")
-                                    putExtra(Intent.EXTRA_SUBJECT, "Soporte TPV - ${BuildConfig.VERSION_NAME}")
-                                }
-                                context.startActivity(intent)
-                            } catch (e: Exception) {
-                                // Email app not available - ignore gracefully
-                            }
-                        },
-                        onPhoneClick = {
-                            try {
-                                val intent = Intent(Intent.ACTION_DIAL).apply {
-                                    data = Uri.parse("tel:+525512345678")
-                                }
-                                context.startActivity(intent)
-                            } catch (e: Exception) {
-                                // Phone app not available - ignore gracefully
-                            }
-                        },
-                        onWhatsAppClick = {
-                            try {
-                                val intent = Intent(Intent.ACTION_VIEW).apply {
-                                    data = Uri.parse("https://wa.me/525512345678?text=Hola,%20necesito%20ayuda%20con%20Avoqado%20TPV")
-                                }
-                                context.startActivity(intent)
-                            } catch (e: Exception) {
-                                // WhatsApp not installed - ignore gracefully
-                            }
-                        }
+                        onEmailClick = { showEmailDialog = true },
+                        onPhoneClick = { showPhoneDialog = true },
+                        onWhatsAppClick = { showWhatsAppDialog = true }
                     )
                 }
 
@@ -110,43 +256,8 @@ fun SupportScreen(
 
                 item {
                     QuickActions(
-                        onReportBugClick = {
-                            try {
-                                val intent = Intent(Intent.ACTION_SENDTO).apply {
-                                    data = Uri.parse("mailto:bugs@avoqado.io")
-                                    putExtra(Intent.EXTRA_SUBJECT, "Bug Report - TPV ${BuildConfig.VERSION_NAME}")
-                                    putExtra(Intent.EXTRA_TEXT, """
-                                        |Describe el problema:
-                                        |
-                                        |
-                                        |Pasos para reproducir:
-                                        |1.
-                                        |2.
-                                        |3.
-                                        |
-                                        |---
-                                        |App Version: ${BuildConfig.VERSION_NAME}
-                                        |Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})
-                                        |Device: ${Build.MANUFACTURER} ${Build.MODEL}
-                                    """.trimMargin())
-                                }
-                                context.startActivity(intent)
-                            } catch (e: Exception) {
-                                // Email app not available - ignore gracefully
-                            }
-                        },
-                        onRequestFeatureClick = {
-                            try {
-                                val intent = Intent(Intent.ACTION_SENDTO).apply {
-                                    data = Uri.parse("mailto:features@avoqado.io")
-                                    putExtra(Intent.EXTRA_SUBJECT, "Feature Request - TPV")
-                                    putExtra(Intent.EXTRA_TEXT, "Describe la funcionalidad que necesitas:\n\n")
-                                }
-                                context.startActivity(intent)
-                            } catch (e: Exception) {
-                                // Email app not available - ignore gracefully
-                            }
-                        }
+                        onReportBugClick = { showBugReportDialog = true },
+                        onRequestFeatureClick = { showFeatureSuggestionDialog = true }
                     )
                 }
 
@@ -202,6 +313,109 @@ fun SupportScreen(
                 }
             }
         }
+    }
+
+    // Contact Info Dialogs
+    if (showEmailDialog) {
+        ContactInfoDialog(
+            title = "Contacto por Email",
+            icon = Icons.Default.Email,
+            message = "Escríbenos a: hola@avoqado.io",
+            onDismiss = { showEmailDialog = false }
+        )
+    }
+
+    if (showPhoneDialog) {
+        ContactInfoDialog(
+            title = "Contacto Telefónico",
+            icon = Icons.Default.Phone,
+            message = "Para comunicarte con nosotros marca a +52 56 400 70001",
+            onDismiss = { showPhoneDialog = false }
+        )
+    }
+
+    if (showWhatsAppDialog) {
+        ContactInfoDialog(
+            title = "Contacto por WhatsApp",
+            icon = Icons.Default.Chat,
+            message = "Para comunicarte con nosotros escribe a +52 56 400 70001",
+            onDismiss = { showWhatsAppDialog = false }
+        )
+    }
+
+    // Feedback Dialogs
+    if (showBugReportDialog) {
+        FeedbackDialog(
+            title = "Reportar Bug",
+            subtitle = "Describe el problema que encontraste",
+            icon = Icons.Default.BugReport,
+            iconTint = Color(0xFFF44336),
+            onDismiss = { showBugReportDialog = false },
+            onSend = { message, onError, onSuccess ->
+                coroutineScope.launch {
+                    sendFeedbackToBackend(
+                        apiService = apiService,
+                        feedbackType = "bug",
+                        message = message,
+                        venueSlug = venueSlug,
+                        onSuccess = {
+                            showBugReportDialog = false
+                            Timber.i("✅ Bug report sent successfully")
+                            onSuccess()
+                            // Show success snackbar after dialog closes
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar(
+                                    message = "✅ Reporte enviado correctamente",
+                                    duration = SnackbarDuration.Short
+                                )
+                            }
+                        },
+                        onError = { error ->
+                            Timber.e("❌ Failed to send bug report: $error")
+                            // Show error in dialog, not snackbar
+                            onError(error)
+                        }
+                    )
+                }
+            }
+        )
+    }
+
+    if (showFeatureSuggestionDialog) {
+        FeedbackDialog(
+            title = "Sugerir Función",
+            subtitle = "Comparte tu idea para mejorar Avoqado TPV",
+            icon = Icons.Default.Lightbulb,
+            iconTint = Color(0xFFFF9800),
+            onDismiss = { showFeatureSuggestionDialog = false },
+            onSend = { message, onError, onSuccess ->
+                coroutineScope.launch {
+                    sendFeedbackToBackend(
+                        apiService = apiService,
+                        feedbackType = "feature",
+                        message = message,
+                        venueSlug = venueSlug,
+                        onSuccess = {
+                            showFeatureSuggestionDialog = false
+                            Timber.i("✅ Feature suggestion sent successfully")
+                            onSuccess()
+                            // Show success snackbar after dialog closes
+                            coroutineScope.launch {
+                                snackbarHostState.showSnackbar(
+                                    message = "✅ Sugerencia enviada correctamente",
+                                    duration = SnackbarDuration.Short
+                                )
+                            }
+                        },
+                        onError = { error ->
+                            Timber.e("❌ Failed to send feature suggestion: $error")
+                            // Show error in dialog, not snackbar
+                            onError(error)
+                        }
+                    )
+                }
+            }
+        )
     }
 }
 
@@ -507,6 +721,244 @@ private fun DocumentationLinks(
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// Dialog Components
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Contact Info Dialog
+ *
+ * Shows informational dialog with contact details
+ * (phone, email, WhatsApp) without opening external apps.
+ *
+ * Hardware PAX terminals don't have external apps installed,
+ * so we show the info for the user to copy manually.
+ */
+@Composable
+private fun ContactInfoDialog(
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    message: String,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(32.dp)
+            )
+        },
+        title = { Text(title) },
+        text = {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyLarge
+            )
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("Entendido")
+            }
+        }
+    )
+}
+
+/**
+ * Feedback Dialog
+ *
+ * Fullscreen dialog with TextField for bug reports
+ * and feature suggestions. Sends email to hola@avoqado.io
+ * with venue slug and device info.
+ */
+@Composable
+private fun FeedbackDialog(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    iconTint: Color,
+    onDismiss: () -> Unit,
+    onSend: (message: String, onError: (String) -> Unit, onSuccess: () -> Unit) -> Unit
+) {
+    var message by remember { mutableStateOf("") }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+    }
+
+    // Clear error when user types
+    LaunchedEffect(message) {
+        if (errorMessage != null) {
+            errorMessage = null
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,  // Allow custom width
+            decorFitsSystemWindows = false     // Handle keyboard properly
+        )
+    ) {
+        // ✅ Capture FocusManager INSIDE Dialog (not outside)
+        val focusManager = LocalFocusManager.current
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.9f)
+                .fillMaxHeight(0.85f)  // Leave space for keyboard
+                .imePadding(),  // ✅ Add IME padding
+            shape = MaterialTheme.shapes.large,
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(24.dp)
+                    // ✅ Detect taps outside TextField to hide keyboard
+                    .pointerInput(Unit) {
+                        detectTapGestures(onTap = {
+                            focusManager.clearFocus()
+                        })
+                    },
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Icon + Title
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = iconTint,
+                        modifier = Modifier.size(40.dp)
+                    )
+
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                // Subtitle
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                // TextField
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    OutlinedTextField(
+                        value = message,
+                        onValueChange = { message = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(250.dp)
+                            .focusRequester(focusRequester),
+                        placeholder = { Text("Describe el problema o sugerencia...") },
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.Sentences,
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                // ✅ Clear focus instead of just hiding keyboard
+                                focusManager.clearFocus()
+                            }
+                        ),
+                        maxLines = 15,
+                        singleLine = false,
+                        isError = errorMessage != null
+                    )
+
+                    // Error message in red
+                    if (errorMessage != null) {
+                        Text(
+                            text = errorMessage!!,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(start = 16.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Buttons Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)
+                ) {
+                    TextButton(
+                        onClick = onDismiss,
+                        enabled = !isLoading
+                    ) {
+                        Text("Cancelar")
+                    }
+
+                    Button(
+                        onClick = {
+                            // Validate locally first
+                            when {
+                                message.isBlank() -> {
+                                    errorMessage = "El mensaje no puede estar vacío"
+                                }
+                                message.length < 10 -> {
+                                    errorMessage = "El mensaje debe tener al menos 10 caracteres"
+                                }
+                                else -> {
+                                    // Clear focus before sending
+                                    focusManager.clearFocus()
+                                    isLoading = true
+
+                                    onSend(
+                                        message,
+                                        { error ->
+                                            isLoading = false
+                                            errorMessage = error
+                                        },
+                                        {
+                                            isLoading = false
+                                            // Dialog will be dismissed by parent
+                                        }
+                                    )
+                                }
+                            }
+                        },
+                        enabled = message.isNotBlank() && !isLoading
+                    ) {
+                        if (isLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text("Enviar")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // Data Models
 // ══════════════════════════════════════════════════════════════════════
 
@@ -530,7 +982,7 @@ private val faqItems = listOf(
     ),
     FAQ(
         question = "¿Cómo cambio de usuario?",
-        answer = "Presiona el botón de menú (☰) en la esquina superior izquierda y selecciona 'Cambiar Usuario'. Ingresa el PIN del nuevo usuario."
+        answer = "Presiona el botón de Configuración en la pantalla principal y selecciona 'Cambiar Usuario'. Ingresa el PIN del nuevo usuario."
     ),
     FAQ(
         question = "¿Puedo trabajar sin internet?",

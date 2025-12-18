@@ -52,7 +52,8 @@ import javax.inject.Singleton
 class AuthRepository @Inject constructor(
     private val apiService: ApiService,
     private val secureStorage: SecureStorage,
-    private val tpvSettingsRepository: TpvSettingsRepository
+    private val tpvSettingsRepository: TpvSettingsRepository,
+    private val permissionsRepository: com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 ) {
 
     /**
@@ -107,6 +108,15 @@ class AuthRepository @Inject constructor(
                 // Refresh TPV settings from backend (Square/Toast pattern)
                 // Settings control payment flow screens (tip, review, receipt options)
                 tpvSettingsRepository.refreshSettings(authResponse.venueId)
+
+                // 🔐 Fetch permissions from backend and cache (for permission-based UI)
+                try {
+                    permissionsRepository.getPermissions(forceRefresh = true)
+                    Timber.d("✅ Permissions fetched and cached")
+                } catch (e: Exception) {
+                    Timber.w(e, "⚠️ Failed to fetch permissions - will retry on demand")
+                    // Don't block login on permission fetch failure
+                }
 
                 Timber.d("✅ Login successful: ${authResponse.staff.displayName}")
                 Result.Success(authResponse)
@@ -274,12 +284,17 @@ class AuthRepository @Inject constructor(
      *
      * Flow:
      * 1. Clear SecureStorage
-     * 2. Navigate to login screen
-     * 3. Stop heartbeat worker
+     * 2. Clear permissions cache
+     * 3. Navigate to login screen
+     * 4. Stop heartbeat worker
      */
     fun logout() {
         Timber.d("🚪 Logging out")
         secureStorage.clearSession()
+
+        // 🔐 Clear permissions cache
+        permissionsRepository.clearCache()
+
         Timber.d("✅ Session cleared")
     }
 

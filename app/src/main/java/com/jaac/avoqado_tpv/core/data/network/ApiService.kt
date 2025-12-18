@@ -284,6 +284,33 @@ interface ApiService {
         @Path("venueId") venueId: String
     ): Response<StaffMember>
 
+    /**
+     * Get staff permissions
+     *
+     * GET /tpv/auth/permissions
+     *
+     * Returns resolved permissions for the authenticated staff member.
+     * Permissions are merged from:
+     * 1. Base permissions (DEFAULT_PERMISSIONS by role)
+     * 2. Custom permissions (VenueRolePermission - dashboard-configured)
+     * 3. Implicit permissions (dependencies)
+     *
+     * **Caching Strategy:**
+     * - Response is cached locally for 5 minutes
+     * - Called on login and stored in PermissionsRepository
+     * - Cache invalidated on logout
+     *
+     * Flow:
+     * 1. Login → Fetch permissions → Cache locally
+     * 2. UI checks → Use cached permissions (5min TTL)
+     * 3. Logout → Clear cache
+     *
+     * @return Staff permissions response with role and permissions list
+     */
+    @GET("tpv/auth/permissions")
+    suspend fun getStaffPermissions():
+        Response<com.jaac.avoqado_tpv.features.authentication.data.dto.StaffPermissionsResponse>
+
     // ========== Venue Settings ==========
 
     /**
@@ -822,6 +849,22 @@ interface ApiService {
         @Query("pageNumber") pageNumber: Int,
         @Body request: com.jaac.avoqado_tpv.features.payments.data.dto.PaymentHistoryRequestBody
     ): Response<com.jaac.avoqado_tpv.features.payments.data.dto.PaymentHistoryResponse>
+
+    /**
+     * Send TPV feedback (bug report or feature suggestion)
+     *
+     * POST /api/v1/tpv/feedback
+     *
+     * Sends bug reports or feature suggestions to hola@avoqado.io
+     * with device information for debugging purposes.
+     *
+     * @param request Feedback data including message and device info
+     * @return Success response
+     */
+    @POST("tpv/feedback")
+    suspend fun sendFeedback(
+        @Body request: TpvFeedbackRequest
+    ): Response<TpvFeedbackResponse>
 }
 
 // ========== Request/Response DTOs ==========
@@ -940,4 +983,29 @@ data class Shift(
     val clockIn: String,
     val clockOut: String?,
     val status: String // ACTIVE, CLOSED
+)
+
+// ========== TPV Feedback DTOs ==========
+
+data class TpvFeedbackRequest(
+    val feedbackType: String, // "bug" or "feature"
+    val message: String,
+    val venueSlug: String,
+    val appVersion: String,
+    val buildVersion: String,
+    val androidVersion: String,
+    val deviceModel: String,
+    val deviceManufacturer: String
+)
+
+data class TpvFeedbackResponse(
+    val success: Boolean,
+    val message: String,
+    val correlationId: String?
+)
+
+data class ApiErrorResponse(
+    val error: String?,
+    val message: String?,
+    val statusCode: Int?
 )

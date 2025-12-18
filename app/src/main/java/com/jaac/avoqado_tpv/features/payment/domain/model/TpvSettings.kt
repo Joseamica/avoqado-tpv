@@ -33,7 +33,9 @@ data class TpvSettings(
     val requireVerificationPhoto: Boolean = false,
     val requireVerificationBarcode: Boolean = false,
     // Venue-level shift system toggle (from VenueSettings)
-    val enableShifts: Boolean = true
+    val enableShifts: Boolean = true,
+    // Clock-in photo verification (anti-fraud, prevents WhatsApp photo recycling)
+    val requireClockInPhoto: Boolean = false
 ) {
     companion object {
         /**

@@ -771,6 +771,32 @@ interface ApiService {
         @Path("venueId") venueId: String
     ): Response<com.jaac.avoqado_tpv.features.timeclock.data.dto.TimeEntriesListResponseDto>
 
+    /**
+     * Get MY time entries (self-service, no special permissions required)
+     *
+     * GET /tpv/venues/{venueId}/staff/{staffId}/time-entries
+     *
+     * Allows any authenticated staff member to view ONLY their own time entries.
+     * No shifts:manage permission required - staff can always see their own clock-in/out history.
+     *
+     * Used by TimeclockScreen to show the current clock-in status for the logged-in user.
+     *
+     * @param venueId Venue identifier
+     * @param staffId Staff member ID (must be the logged-in user's ID)
+     * @param startDate Optional start date (ISO 8601)
+     * @param endDate Optional end date (ISO 8601)
+     * @param limit Number of entries (default 10)
+     * @return List of time entries for this staff member
+     */
+    @GET("tpv/venues/{venueId}/staff/{staffId}/time-entries")
+    suspend fun getMyTimeEntries(
+        @Path("venueId") venueId: String,
+        @Path("staffId") staffId: String,
+        @Query("startDate") startDate: String? = null,
+        @Query("endDate") endDate: String? = null,
+        @Query("limit") limit: Int = 10
+    ): Response<com.jaac.avoqado_tpv.features.timeclock.data.dto.TimeEntriesListResponseDto>
+
     // ========== Shifts (Timeclock) - DEPRECATED ==========
     // TODO: Remove these after shift management migration complete
 

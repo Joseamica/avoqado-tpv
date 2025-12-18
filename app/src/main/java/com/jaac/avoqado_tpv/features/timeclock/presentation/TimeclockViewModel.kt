@@ -3,7 +3,10 @@ package com.jaac.avoqado_tpv.features.timeclock.presentation
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
+import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
+import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntry
 import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntryStatus
 import com.jaac.avoqado_tpv.features.timeclock.domain.repository.TimeEntryRepository
@@ -25,6 +28,8 @@ import javax.inject.Inject
 class TimeclockViewModel @Inject constructor(
     private val timeEntryRepository: TimeEntryRepository,
     private val authRepository: AuthRepository,
+    private val tpvSettingsRepository: TpvSettingsRepository,
+    private val verificationUploadManager: VerificationUploadManager,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -40,6 +45,9 @@ class TimeclockViewModel @Inject constructor(
     // Store staff info after verification
     private var currentStaffId: String? = null
     private var currentStaffName: String? = null
+
+    // Photo flow state (anti-fraud)
+    private var pendingClockInPhotoUrl: String? = null
 
     init {
         if (venueId.isNotEmpty() && pin.isNotEmpty()) {
@@ -142,35 +150,180 @@ class TimeclockViewModel @Inject constructor(
     }
 
     /**
-     * Clock in the current staff member
+     * Clock in the current staff member.
+     *
+     * **Photo Verification Flow (anti-fraud):**
+     * 1. Check if venue requires clock-in photo (TpvSettings.requireClockInPhoto)
+     * 2. If required and no photo captured → Show RequiresPhoto state
+     * 3. If required and user is ADMIN/MANAGER/OWNER → Allow skip option
+     * 4. After photo captured or skipped → Proceed with actual clock-in
      */
     fun clockIn() {
         val staffId = currentStaffId ?: return
         val staffName = currentStaffName ?: return
 
         viewModelScope.launch {
-            _state.value = TimeclockState.Processing("Registrando entrada...")
+            // Check if venue requires clock-in photo (anti-fraud feature)
+            val settings = tpvSettingsRepository.getCurrentSettings()
 
-            val result = timeEntryRepository.clockIn(
-                venueId = venueId,
+            if (settings.requireClockInPhoto && pendingClockInPhotoUrl == null) {
+                // Photo required but not yet captured
+                // Check if current user can skip (ADMIN/MANAGER/OWNER)
+                val currentRole = authRepository.getRole()
+                val canSkip = currentRole in listOf(
+                    StaffRole.ADMIN,
+                    StaffRole.MANAGER,
+                    StaffRole.OWNER,
+                    StaffRole.SUPERADMIN
+                )
+
+                Timber.d("⏱️ Photo required for clock-in | canSkip=$canSkip | role=$currentRole")
+                _state.value = TimeclockState.RequiresPhoto(
+                    staffId = staffId,
+                    staffName = staffName,
+                    canSkip = canSkip
+                )
+                return@launch
+            }
+
+            // Proceed with clock-in (with or without photo)
+            performClockIn(staffId, staffName, pendingClockInPhotoUrl)
+        }
+    }
+
+    /**
+     * Start camera capture for clock-in photo.
+     * Called when user clicks "Take Photo" button.
+     */
+    fun startPhotoCapture() {
+        val staffId = currentStaffId ?: return
+        Timber.d("📸 Starting clock-in photo capture for staff: $staffId")
+        _state.value = TimeclockState.CapturingPhoto(staffId)
+    }
+
+    /**
+     * Handle captured photo from camera.
+     * Uploads to Firebase Storage and then proceeds with clock-in.
+     *
+     * @param localPath Local file path of the captured photo
+     */
+    fun onPhotoCaptured(localPath: String) {
+        val staffId = currentStaffId ?: return
+        val staffName = currentStaffName ?: return
+
+        viewModelScope.launch {
+            Timber.d("📸 Photo captured, starting upload: $localPath")
+            _state.value = TimeclockState.UploadingPhoto(localPath, 0f)
+
+            // Get venue slug for Firebase Storage path
+            // Use venueId as fallback (at least it's unique and identifiable)
+            val venueSlug = authRepository.getVenueSlug()
+            if (venueSlug == null) {
+                Timber.w("⚠️ Venue slug not available, using venueId as fallback for storage path")
+            }
+            val storagePath = venueSlug ?: authRepository.getVenueId() ?: "unknown-venue"
+            val timestamp = System.currentTimeMillis()
+
+            verificationUploadManager.uploadClockInPhoto(
+                localPath = localPath,
+                venueSlug = storagePath,
                 staffId = staffId,
-                pin = pin
-            )
+                timestamp = timestamp,
+                onProgress = { progress ->
+                    _state.value = TimeclockState.UploadingPhoto(localPath, progress)
+                }
+            ).fold(
+                onSuccess = { downloadUrl ->
+                    Timber.i("📸 Clock-in photo uploaded: $downloadUrl")
+                    pendingClockInPhotoUrl = downloadUrl
 
-            result.fold(
-                onSuccess = { entry ->
-                    Timber.i("✅ Clock in successful")
-                    _events.emit(TimeclockEvent.ClockInSuccess(entry))
-                    loadTimeclockStatus(staffId, staffName)
+                    // Clean up local file after successful upload (storage optimization for PAX devices)
+                    try {
+                        java.io.File(localPath).delete()
+                        Timber.d("📸 Cleaned up local photo file")
+                    } catch (e: Exception) {
+                        Timber.w(e, "📸 Failed to clean up local photo file")
+                    }
+
+                    // Auto-proceed with clock-in after successful upload
+                    performClockIn(staffId, staffName, downloadUrl)
                 },
                 onFailure = { error ->
-                    Timber.e("❌ Clock in failed: ${error.message}")
-                    _events.emit(TimeclockEvent.Error(error.message ?: "Error al registrar entrada"))
-                    // Reload status to refresh UI
-                    loadTimeclockStatus(staffId, staffName)
+                    Timber.e(error, "📸 Failed to upload clock-in photo")
+                    _events.emit(TimeclockEvent.Error("Error al subir foto: ${error.message}"))
+                    // Go back to RequiresPhoto state so user can retry
+                    val canSkip = authRepository.getRole() in listOf(
+                        StaffRole.ADMIN,
+                        StaffRole.MANAGER,
+                        StaffRole.OWNER,
+                        StaffRole.SUPERADMIN
+                    )
+                    _state.value = TimeclockState.RequiresPhoto(staffId, staffName, canSkip)
                 }
             )
         }
+    }
+
+    /**
+     * Skip photo verification (only for ADMIN/MANAGER/OWNER).
+     * Proceeds with clock-in without photo.
+     */
+    fun skipPhoto() {
+        val staffId = currentStaffId ?: return
+        val staffName = currentStaffName ?: return
+
+        Timber.d("⏱️ Skipping photo verification (admin override)")
+        viewModelScope.launch {
+            performClockIn(staffId, staffName, null)
+        }
+    }
+
+    /**
+     * Cancel photo capture and go back to Ready state.
+     */
+    fun cancelPhotoCapture() {
+        val staffId = currentStaffId ?: return
+        val staffName = currentStaffName ?: return
+
+        Timber.d("⏱️ Photo capture cancelled")
+        pendingClockInPhotoUrl = null
+        viewModelScope.launch {
+            loadTimeclockStatus(staffId, staffName)
+        }
+    }
+
+    /**
+     * Perform the actual clock-in API call.
+     *
+     * @param staffId Staff member ID
+     * @param staffName Staff member name (for reloading status)
+     * @param photoUrl Optional Firebase Storage URL of clock-in photo
+     */
+    private suspend fun performClockIn(staffId: String, staffName: String, photoUrl: String?) {
+        _state.value = TimeclockState.Processing("Registrando entrada...")
+
+        val result = timeEntryRepository.clockIn(
+            venueId = venueId,
+            staffId = staffId,
+            pin = pin,
+            checkInPhotoUrl = photoUrl
+        )
+
+        result.fold(
+            onSuccess = { entry ->
+                Timber.i("✅ Clock in successful | hasPhoto=${photoUrl != null}")
+                pendingClockInPhotoUrl = null // Clear for next clock-in
+                _events.emit(TimeclockEvent.ClockInSuccess(entry))
+                loadTimeclockStatus(staffId, staffName)
+            },
+            onFailure = { error ->
+                Timber.e("❌ Clock in failed: ${error.message}")
+                pendingClockInPhotoUrl = null // Clear on failure
+                _events.emit(TimeclockEvent.Error(error.message ?: "Error al registrar entrada"))
+                // Reload status to refresh UI
+                loadTimeclockStatus(staffId, staffName)
+            }
+        )
     }
 
     /**

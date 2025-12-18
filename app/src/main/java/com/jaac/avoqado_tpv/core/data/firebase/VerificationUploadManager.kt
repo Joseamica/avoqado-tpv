@@ -326,6 +326,72 @@ class VerificationUploadManager @Inject constructor(
     }
 
     /**
+     * Upload a clock-in verification photo to Firebase Storage.
+     *
+     * **Path Structure:**
+     * venues/{venueSlug}/clockin/{YYYY-MM-DD}/{staffId}_{timestamp}.jpg
+     *
+     * **Anti-Fraud Features:**
+     * - Timestamp in filename prevents reuse
+     * - Live camera capture only (no gallery)
+     * - URL stored in TimeEntry for audit trail
+     *
+     * @param localPath Local file path of captured photo
+     * @param venueSlug Venue slug for storage path (e.g., "avoqado-full")
+     * @param staffId Staff member ID for filename
+     * @param timestamp Timestamp for uniqueness (System.currentTimeMillis())
+     * @param onProgress Optional callback for upload progress (0.0 to 1.0)
+     * @return Result with download URL on success, or error on failure
+     */
+    suspend fun uploadClockInPhoto(
+        localPath: String,
+        venueSlug: String,
+        staffId: String,
+        timestamp: Long = System.currentTimeMillis(),
+        onProgress: ((Float) -> Unit)? = null
+    ): Result<String> {
+        return try {
+            Timber.d("📸 [$TAG] Starting clock-in photo upload | staff=$staffId | venue=$venueSlug")
+
+            // Step 1: Compress image
+            val compressedBytes = compressImage(localPath)
+            Timber.d("📸 [$TAG] Compressed to ${compressedBytes.size / 1024}KB")
+
+            // Step 2: Generate storage path
+            // Format: venues/{venueSlug}/clockin/{date}/{staffId}_{timestamp}.jpg
+            val dateStr = SimpleDateFormat(DATE_FORMAT, Locale.US).format(Date())
+            val fileName = "${staffId}_${timestamp}.jpg"
+            val storagePath = "venues/$venueSlug/clockin/$dateStr/$fileName"
+
+            Timber.d("📸 [$TAG] Uploading clock-in photo to: $storagePath")
+
+            // Step 3: Upload to Firebase Storage
+            val photoRef = storageRef.child(storagePath)
+            val uploadTask = photoRef.putBytes(compressedBytes)
+
+            // Track progress
+            uploadTask.addOnProgressListener { snapshot ->
+                val progress = snapshot.bytesTransferred.toFloat() / snapshot.totalByteCount.toFloat()
+                onProgress?.invoke(progress)
+                Timber.d("📸 [$TAG] Upload progress: ${(progress * 100).toInt()}%")
+            }
+
+            // Wait for upload to complete
+            uploadTask.await()
+
+            // Step 4: Get download URL
+            val downloadUrl = photoRef.downloadUrl.await().toString()
+
+            Timber.i("📸 [$TAG] Clock-in photo upload complete | url=$downloadUrl")
+            Result.success(downloadUrl)
+
+        } catch (e: Exception) {
+            Timber.e(e, "📸 [$TAG] Clock-in photo upload failed")
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Delete a photo from Firebase Storage.
      * Used for cleanup when user removes a photo before payment.
      *

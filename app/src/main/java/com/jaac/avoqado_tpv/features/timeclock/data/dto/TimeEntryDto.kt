@@ -22,6 +22,7 @@ data class TimeEntryDto(
     val status: String,
     val notes: String?,
     val editedBy: String?,
+    val checkInPhotoUrl: String?, // Firebase Storage URL of clock-in photo (anti-fraud)
     val staff: StaffInfoDto?,
     val breaks: List<TimeEntryBreakDto>?
 )
@@ -60,7 +61,8 @@ data class PaginationMetaDto(
 data class ClockInRequestDto(
     val staffId: String,
     val pin: String,
-    val jobRole: String? = null
+    val jobRole: String? = null,
+    val checkInPhotoUrl: String? = null // Firebase Storage URL of clock-in photo (anti-fraud)
 )
 
 data class ClockOutRequestDto(
@@ -94,6 +96,7 @@ fun TimeEntryDto.toDomain(): TimeEntry {
         totalHours = totalHours?.let { BigDecimal(it) },
         breakMinutes = breakMinutes ?: 0,
         status = parseStatus(status),
+        checkInPhotoUrl = checkInPhotoUrl,
         breaks = breaks?.map { it.toDomain() } ?: emptyList()
     )
 }

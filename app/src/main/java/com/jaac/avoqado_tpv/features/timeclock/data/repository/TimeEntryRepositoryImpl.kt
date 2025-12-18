@@ -22,15 +22,17 @@ class TimeEntryRepositoryImpl @Inject constructor(
         venueId: String,
         staffId: String,
         pin: String,
-        jobRole: String?
+        jobRole: String?,
+        checkInPhotoUrl: String?
     ): Result<TimeEntry> = withContext(Dispatchers.IO) {
         try {
-            Timber.d("⏱ Clocking in staff: $staffId at venue: $venueId")
+            Timber.d("⏱ Clocking in staff: $staffId at venue: $venueId, hasPhoto: ${checkInPhotoUrl != null}")
 
             val request = ClockInRequestDto(
                 staffId = staffId,
                 pin = pin,
-                jobRole = jobRole
+                jobRole = jobRole,
+                checkInPhotoUrl = checkInPhotoUrl
             )
 
             val response = apiService.timeEntryClockIn(venueId, request)
@@ -131,16 +133,30 @@ class TimeEntryRepositoryImpl @Inject constructor(
         offset: Int
     ): Result<List<TimeEntry>> = withContext(Dispatchers.IO) {
         try {
-            Timber.d("⏱ Fetching time entries for venue: $venueId")
+            Timber.d("⏱ Fetching time entries for venue: $venueId, staffId: $staffId")
 
-            val response = apiService.getTimeEntries(
-                venueId = venueId,
-                staffId = staffId,
-                startDate = startDate,
-                endDate = endDate,
-                limit = limit,
-                offset = offset
-            )
+            // Use self-service endpoint when staffId is provided (no shifts:manage permission required)
+            // Use manager endpoint when no staffId (requires shifts:manage permission)
+            val response = if (staffId != null) {
+                Timber.d("⏱ Using self-service endpoint (no permission required)")
+                apiService.getMyTimeEntries(
+                    venueId = venueId,
+                    staffId = staffId,
+                    startDate = startDate,
+                    endDate = endDate,
+                    limit = limit
+                )
+            } else {
+                Timber.d("⏱ Using manager endpoint (requires shifts:manage)")
+                apiService.getTimeEntries(
+                    venueId = venueId,
+                    staffId = null,
+                    startDate = startDate,
+                    endDate = endDate,
+                    limit = limit,
+                    offset = offset
+                )
+            }
 
             if (response.isSuccessful && response.body()?.data != null) {
                 val entries = response.body()!!.data!!.map { it.toDomain() }
@@ -185,13 +201,11 @@ class TimeEntryRepositoryImpl @Inject constructor(
         try {
             Timber.d("⏱ Finding active entry for staff: $staffId")
 
-            // Get entries filtered by staffId and active status
-            val response = apiService.getTimeEntries(
+            // Use self-service endpoint - no shifts:manage permission required
+            val response = apiService.getMyTimeEntries(
                 venueId = venueId,
                 staffId = staffId,
-                status = "CLOCKED_IN", // Also includes ON_BREAK
-                limit = 1,
-                offset = 0
+                limit = 10 // Get recent entries to find active one
             )
 
             if (response.isSuccessful) {

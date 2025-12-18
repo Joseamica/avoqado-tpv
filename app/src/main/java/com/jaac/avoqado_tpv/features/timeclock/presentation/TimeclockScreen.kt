@@ -6,16 +6,19 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
@@ -29,7 +32,9 @@ import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntry
 import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntryStatus
+import com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen
 import kotlinx.coroutines.delay
+import java.io.File
 import java.math.BigDecimal
 import java.time.Duration
 import java.time.LocalDateTime
@@ -55,6 +60,12 @@ fun TimeclockScreen(
     viewModel: TimeclockViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+
+    // Output directory for clock-in photos (cache directory for temporary storage)
+    val outputDirectory = remember {
+        File(context.cacheDir, "clockin_photos").apply { mkdirs() }
+    }
 
     // Collect one-time events
     LaunchedEffect(Unit) {
@@ -64,6 +75,19 @@ fun TimeclockScreen(
                 else -> {} // Handle other events with snackbar if needed
             }
         }
+    }
+
+    // Handle camera states (full-screen, no scaffold)
+    when (val currentState = state) {
+        is TimeclockState.CapturingPhoto -> {
+            CameraPreviewScreen(
+                onPhotoCaptured = viewModel::onPhotoCaptured,
+                onClose = viewModel::cancelPhotoCapture,
+                outputDirectory = outputDirectory
+            )
+            return
+        }
+        else -> { /* Continue to normal scaffold UI */ }
     }
 
     Scaffold(
@@ -121,6 +145,25 @@ fun TimeclockScreen(
                         onEndBreak = viewModel::endBreak,
                         onDone = viewModel::navigateToLogin
                     )
+                }
+
+                // Photo verification states (anti-fraud feature)
+                is TimeclockState.RequiresPhoto -> {
+                    ClockInPhotoPrompt(
+                        staffName = currentState.staffName,
+                        canSkip = currentState.canSkip,
+                        onTakePhoto = viewModel::startPhotoCapture,
+                        onSkip = viewModel::skipPhoto,
+                        onCancel = viewModel::cancelPhotoCapture
+                    )
+                }
+
+                is TimeclockState.CapturingPhoto -> {
+                    // Handled above (full-screen camera)
+                }
+
+                is TimeclockState.UploadingPhoto -> {
+                    PhotoUploadProgress(progress = currentState.progress)
                 }
 
                 is TimeclockState.Error -> {
@@ -559,6 +602,147 @@ private fun RecentEntryItem(entry: TimeEntry) {
     }
 }
 
+/**
+ * Photo prompt screen for clock-in verification.
+ *
+ * Shown when venue requires clock-in photo (anti-fraud feature).
+ * Allows user to take photo or skip (if admin/manager).
+ */
+@Composable
+private fun ClockInPhotoPrompt(
+    staffName: String,
+    canSkip: Boolean,
+    onTakePhoto: () -> Unit,
+    onSkip: () -> Unit,
+    onCancel: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        // Camera icon
+        Icon(
+            imageVector = Icons.Default.CameraAlt,
+            contentDescription = null,
+            modifier = Modifier.size(72.dp),
+            tint = MaterialTheme.colorScheme.primary
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Title
+        Text(
+            text = "Foto Requerida",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Staff name
+        Text(
+            text = staffName,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Instructions
+        Text(
+            text = "Para verificar tu entrada, toma una foto con la cámara del dispositivo.",
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Spacer(modifier = Modifier.height(32.dp))
+
+        // Take photo button
+        Button(
+            onClick = onTakePhoto,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary
+            )
+        ) {
+            Icon(
+                imageVector = Icons.Default.PhotoCamera,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Tomar Foto")
+        }
+
+        // Skip button (only for admins)
+        if (canSkip) {
+            Spacer(modifier = Modifier.height(16.dp))
+
+            TextButton(onClick = onSkip) {
+                Text(
+                    text = "Saltar (Solo Admin)",
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Cancel button
+        OutlinedButton(
+            onClick = onCancel,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Cancelar")
+        }
+    }
+}
+
+/**
+ * Upload progress indicator for clock-in photo.
+ *
+ * Shows circular progress while photo uploads to Firebase Storage.
+ */
+@Composable
+private fun PhotoUploadProgress(progress: Float) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        // Progress indicator
+        CircularProgressIndicator(
+            progress = { progress },
+            modifier = Modifier.size(64.dp),
+            strokeWidth = 6.dp
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Progress text
+        Text(
+            text = "Subiendo foto...",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Medium
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Text(
+            text = "${(progress * 100).toInt()}%",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.primary
+        )
+    }
+}
+
 @Composable
 private fun ErrorContent(
     message: String,
@@ -644,6 +828,7 @@ private fun TimeclockClockedInPreview() {
                     totalHours = null,
                     breakMinutes = 15,
                     status = TimeEntryStatus.CLOCKED_IN,
+                    checkInPhotoUrl = null,
                     breaks = emptyList()
                 ),
                 recentEntries = emptyList(),
@@ -681,6 +866,7 @@ private fun TimeclockOnBreakPreview() {
                     totalHours = null,
                     breakMinutes = 0,
                     status = TimeEntryStatus.ON_BREAK,
+                    checkInPhotoUrl = null,
                     breaks = emptyList()
                 ),
                 recentEntries = emptyList(),

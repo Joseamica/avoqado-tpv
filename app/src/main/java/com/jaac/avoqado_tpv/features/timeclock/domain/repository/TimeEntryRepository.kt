@@ -14,13 +14,15 @@ interface TimeEntryRepository {
      * @param staffId Staff member identifier
      * @param pin Staff PIN for verification
      * @param jobRole Optional job role for this shift
+     * @param checkInPhotoUrl Optional Firebase Storage URL of clock-in photo (anti-fraud)
      * @return Result with created TimeEntry or error
      */
     suspend fun clockIn(
         venueId: String,
         staffId: String,
         pin: String,
-        jobRole: String? = null
+        jobRole: String? = null,
+        checkInPhotoUrl: String? = null
     ): Result<TimeEntry>
 
     /**

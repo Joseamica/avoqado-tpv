@@ -17,6 +17,7 @@ data class TimeEntry(
     val totalHours: BigDecimal?,
     val breakMinutes: Int,
     val status: TimeEntryStatus,
+    val checkInPhotoUrl: String?, // Firebase Storage URL of clock-in photo (anti-fraud)
     val breaks: List<TimeEntryBreak>
 ) {
     /**

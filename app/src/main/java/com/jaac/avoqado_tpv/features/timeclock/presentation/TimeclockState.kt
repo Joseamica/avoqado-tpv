@@ -33,6 +33,34 @@ sealed class TimeclockState {
     data class Processing(val message: String) : TimeclockState()
 
     /**
+     * Photo required - venue requires check-in photo before clocking in
+     * @param staffId Staff member attempting to clock in
+     * @param staffName Staff member's name for display
+     * @param canSkip Whether current user can skip (ADMIN/MANAGER)
+     */
+    data class RequiresPhoto(
+        val staffId: String,
+        val staffName: String,
+        val canSkip: Boolean = false
+    ) : TimeclockState()
+
+    /**
+     * Capturing photo - camera preview is active
+     * @param staffId Staff member taking the photo
+     */
+    data class CapturingPhoto(val staffId: String) : TimeclockState()
+
+    /**
+     * Uploading photo - sending captured photo to Firebase Storage
+     * @param localPath Local file path of the captured photo
+     * @param progress Upload progress (0.0 to 1.0)
+     */
+    data class UploadingPhoto(
+        val localPath: String,
+        val progress: Float = 0f
+    ) : TimeclockState()
+
+    /**
      * Error state - something went wrong
      */
     data class Error(val message: String) : TimeclockState()

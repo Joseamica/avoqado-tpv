@@ -55,7 +55,11 @@ data class TpvSettingsDto(
 
     // Venue-level shift system toggle (from VenueSettings)
     @SerializedName("enableShifts")
-    val enableShifts: Boolean?
+    val enableShifts: Boolean?,
+
+    // Clock-in photo verification (anti-fraud, from VenueSettings)
+    @SerializedName("requireClockInPhoto")
+    val requireClockInPhoto: Boolean?
 )
 
 /**
@@ -73,7 +77,9 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     requireVerificationPhoto = requireVerificationPhoto ?: false,
     requireVerificationBarcode = requireVerificationBarcode ?: false,
     // Shift system defaults to enabled
-    enableShifts = enableShifts ?: true
+    enableShifts = enableShifts ?: true,
+    // Clock-in photo verification defaults to disabled
+    requireClockInPhoto = requireClockInPhoto ?: false
 )
 
 /**
@@ -89,7 +95,8 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     showVerificationScreen = showVerificationScreen,
     requireVerificationPhoto = requireVerificationPhoto,
     requireVerificationBarcode = requireVerificationBarcode,
-    enableShifts = enableShifts
+    enableShifts = enableShifts,
+    requireClockInPhoto = requireClockInPhoto
 )
 
 /**

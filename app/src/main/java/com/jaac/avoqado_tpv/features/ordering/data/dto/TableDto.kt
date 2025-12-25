@@ -207,7 +207,8 @@ data class OrderDto(
     @SerializedName("version") val version: Int = 1,
     @SerializedName("lastSplitType") val lastSplitType: String? = null,  // ⭐ Split type restriction (PERPRODUCT, EQUALPARTS, etc.)
     @SerializedName("paidItemIds") val paidItemIds: List<String>? = null,  // ⭐ Items already paid (for SplitByProduct)
-    @SerializedName("orderDiscounts") val orderDiscounts: List<OrderDiscountDto>? = null  // 🎟️ Applied discounts
+    @SerializedName("orderDiscounts") val orderDiscounts: List<OrderDiscountDto>? = null,  // 🎟️ Applied discounts
+    @SerializedName("orderCustomers") val orderCustomers: List<OrderCustomerDto>? = null  // 💳 Customers linked to order (for pay-later)
 )
 
 /**

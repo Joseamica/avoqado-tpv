@@ -18,6 +18,20 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
+    <!-- Storage Permissions (Self-Update Feature) -->
+    <!-- Required for downloading APK updates to external storage -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28"
+        tools:ignore="ScopedStorage" />
+
+    <!-- Package Installation Permissions (Self-Update Feature) -->
+    <!-- Required for installing APK updates via PAX SDK -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.INSTALL_PACKAGES"
+        tools:ignore="ProtectedPermissions" />
+
     <application
         android:name=".AvoqadoTPVApplication"
         android:allowBackup="true"

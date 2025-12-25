@@ -1157,6 +1157,38 @@ class SocketManager @Inject constructor() {
     }
 
     // ========================================
+    // Generic Emit Methods
+    // ========================================
+
+    /**
+     * Emit a custom event with data (for observability and other use cases)
+     */
+    fun emit(event: String, data: Map<String, Any?>) {
+        try {
+            val jsonData = mapToJsonObject(data)
+            socket?.emit(event, jsonData)
+            Timber.d("📤 Emitted event: $event")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Failed to emit event: $event")
+        }
+    }
+
+    /**
+     * Convert Map to JSONObject (helper for emit)
+     */
+    private fun mapToJsonObject(map: Map<String, Any?>): JSONObject {
+        val json = JSONObject()
+        map.forEach { (key, value) ->
+            when (value) {
+                is Map<*, *> -> json.put(key, mapToJsonObject(value as Map<String, Any?>))
+                is List<*> -> json.put(key, JSONArray(value))
+                else -> json.put(key, value)
+            }
+        }
+        return json
+    }
+
+    // ========================================
     // TPV Command ACK Emissions
     // ========================================
 

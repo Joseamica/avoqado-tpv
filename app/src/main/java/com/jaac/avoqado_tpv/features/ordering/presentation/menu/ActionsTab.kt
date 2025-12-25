@@ -3,16 +3,19 @@ package com.jaac.avoqado_tpv.features.ordering.presentation.menu
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -69,8 +72,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -78,6 +85,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.ordering.domain.Discount
@@ -125,6 +134,7 @@ private sealed class ActionsDialogState {
     data object None : ActionsDialogState()
     data object Cortesia : ActionsDialogState()
     data object VoidItems : ActionsDialogState()
+    data object PayLater : ActionsDialogState()
     data class DiscountConfirmation(val discount: Discount) : ActionsDialogState()
 }
 
@@ -195,6 +205,11 @@ fun ActionsTab(
     appliedDiscounts: List<OrderDiscount> = emptyList(),
     isLoadingDiscounts: Boolean = false,
     couponValidationState: CouponValidationState = CouponValidationState.Idle,
+    // Customer search for Pay Later
+    customerSearchState: com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState = com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState.Idle,
+    recentCustomers: List<com.jaac.avoqado_tpv.features.ordering.domain.Customer> = emptyList(),
+    isLoadingRecentCustomers: Boolean = false,
+    loyaltyActive: Boolean = false,
     onApplyPredefinedDiscount: (discountId: String, itemIds: List<String>?, reason: String?) -> Unit = { _, _, _ -> },
     onApplyManualDiscount: (type: DiscountType, value: Double, reason: String?, itemIds: List<String>?) -> Unit = { _, _, _, _ -> },
     onRemoveDiscount: (orderDiscountId: String) -> Unit = {},
@@ -202,6 +217,10 @@ fun ActionsTab(
     onApplyCoupon: (code: String) -> Unit = {},
     onCompItems: () -> Unit = {},
     onVoidItems: (itemIds: List<String>, reason: String) -> Unit = { _, _ -> },
+    onSearchCustomers: (query: String) -> Unit = {},
+    onLoadRecentCustomers: () -> Unit = {},
+    onClearCustomerSearch: () -> Unit = {},
+    onCreatePayLaterOrder: (customerId: String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     // Navigation state
@@ -219,58 +238,72 @@ fun ActionsTab(
     // Define actions for the grid
     // NOTE: Do NOT use remember for actions list - onClick lambdas need fresh state references
     val hasItems = order.items.isNotEmpty()
-    val actions = listOf(
-        ShortcutAction(
-            id = "gift_card",
-            title = "Gift Card",
-            icon = Icons.Outlined.CardGiftcard,
-            backgroundColor = ActionColors.GiftCard,
-            enabled = false,
-            badge = "Pronto",
-            onClick = { /* Disabled */ }
-        ),
-        ShortcutAction(
-            id = "descuentos",
-            title = "Descuentos",
-            icon = Icons.Outlined.Percent,
-            backgroundColor = ActionColors.Discounts,
-            enabled = hasItems,
-            onClick = { currentNav = ActionsNavigation.DiscountsSubNav }
-        ),
-        ShortcutAction(
-            id = "cupones",
-            title = "Cupones",
-            icon = Icons.Outlined.ConfirmationNumber,
-            backgroundColor = ActionColors.Coupons,
-            enabled = hasItems,
-            onClick = { currentNav = ActionsNavigation.CouponsSubNav }
-        ),
-        ShortcutAction(
-            id = "pagar_despues",
-            title = "Pagar Despues",
-            icon = Icons.Outlined.Schedule,
-            backgroundColor = ActionColors.PayLater,
-            enabled = false,
-            badge = "Pronto",
-            onClick = { /* Disabled */ }
-        ),
-        ShortcutAction(
-            id = "void_items",
-            title = "Void Items",
-            icon = Icons.Default.Delete,
-            backgroundColor = ActionColors.VoidItems,
-            enabled = hasItems,
-            onClick = { dialogState = ActionsDialogState.VoidItems }
-        ),
-        ShortcutAction(
-            id = "cortesia",
-            title = "Cortesia",
-            icon = Icons.Default.Favorite,
-            backgroundColor = ActionColors.Cortesia,
-            enabled = hasItems,
-            onClick = { dialogState = ActionsDialogState.Cortesia }
+    val actions = buildList {
+        add(
+            ShortcutAction(
+                id = "gift_card",
+                title = "Gift Card",
+                icon = Icons.Outlined.CardGiftcard,
+                backgroundColor = ActionColors.GiftCard,
+                enabled = false,
+                badge = "Pronto",
+                onClick = { /* Disabled */ }
+            )
         )
-    )
+        add(
+            ShortcutAction(
+                id = "descuentos",
+                title = "Descuentos",
+                icon = Icons.Outlined.Percent,
+                backgroundColor = ActionColors.Discounts,
+                enabled = hasItems,
+                onClick = { currentNav = ActionsNavigation.DiscountsSubNav }
+            )
+        )
+        add(
+            ShortcutAction(
+                id = "cupones",
+                title = "Cupones",
+                icon = Icons.Outlined.ConfirmationNumber,
+                backgroundColor = ActionColors.Coupons,
+                enabled = hasItems,
+                onClick = { currentNav = ActionsNavigation.CouponsSubNav }
+            )
+        )
+        // ⭐ FIX: Only show "Pagar Despues" if order is NOT already pay-later
+        if (!order.isPayLater) {
+            add(
+                ShortcutAction(
+                    id = "pagar_despues",
+                    title = "Pagar Despues",
+                    icon = Icons.Outlined.Schedule,
+                    backgroundColor = ActionColors.PayLater,
+                    enabled = hasItems,
+                    onClick = { dialogState = ActionsDialogState.PayLater }
+                )
+            )
+        }
+        add(
+            ShortcutAction(
+                id = "void_items",
+                title = "Void Items",
+                icon = Icons.Default.Delete,
+                backgroundColor = ActionColors.VoidItems,
+                enabled = hasItems,
+                onClick = { dialogState = ActionsDialogState.VoidItems }
+            )
+        )
+        add(
+            ShortcutAction(
+                id = "cortesia",
+                title = "Cortesia",
+                icon = Icons.Default.Favorite,
+                backgroundColor = ActionColors.Cortesia,
+                enabled = hasItems,
+                onClick = { dialogState = ActionsDialogState.Cortesia }
+            )
+        )
+    }
 
     // Main content based on navigation state
     Box(
@@ -350,6 +383,30 @@ fun ActionsTab(
                     onVoidItems(selectedIds, reason)
                     dialogState = ActionsDialogState.None
                 }
+            )
+        }
+
+        ActionsDialogState.PayLater -> {
+            // Load recent customers on dialog open (proactive UX like Toast/Square)
+            LaunchedEffect(Unit) {
+                onLoadRecentCustomers()
+            }
+
+            // Use existing CustomerSearchModal (fully implemented, optimized for 1GB RAM)
+            CustomerSearchModal(
+                searchState = customerSearchState,
+                recentCustomers = recentCustomers,
+                isLoadingRecent = isLoadingRecentCustomers,
+                onSearch = { query -> onSearchCustomers(query) },
+                onSelectCustomer = { customer ->
+                    onCreatePayLaterOrder(customer.id)
+                    dialogState = ActionsDialogState.None  // Close dialog
+                },
+                onDismiss = {
+                    dialogState = ActionsDialogState.None
+                    onClearCustomerSearch()  // Reset search state
+                },
+                loyaltyActive = loyaltyActive
             )
         }
 
@@ -1211,6 +1268,13 @@ private fun CortesiaDialog(
 
 /**
  * Void Items Dialog - Select items to void with checkboxes
+ *
+ * ⚠️ KEYBOARD HANDLING: Follows pattern from docs/COMPOSE_KEYBOARD_HANDLING.md
+ * - Uses Dialog instead of AlertDialog for better keyboard control
+ * - Captures LocalFocusManager INSIDE Dialog (not outside)
+ * - Uses .imePadding() for keyboard spacing
+ * - Tap outside TextField dismisses keyboard
+ * - Enter key (Done) dismisses keyboard
  */
 @Composable
 private fun VoidItemsDialog(
@@ -1221,66 +1285,98 @@ private fun VoidItemsDialog(
     var selectedItems by remember { mutableStateOf<Set<String>>(emptySet()) }
     var reason by remember { mutableStateOf("") }
     val redColor = ActionColors.VoidItems
+    val focusRequester = remember { FocusRequester() }
 
-    AlertDialog(
+    Dialog(
         onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                imageVector = Icons.Default.Delete,
-                contentDescription = null,
-                tint = redColor,
-                modifier = Modifier.size(32.dp)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        // ✅ STEP 2: Capture FocusManager INSIDE Dialog
+        val focusManager = LocalFocusManager.current
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.9f)
+                .fillMaxHeight(0.85f)
+                .imePadding(),  // ✅ STEP 3: IME padding
+            shape = MaterialTheme.shapes.large,
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
             )
-        },
-        title = {
-            Text(
-                text = "Anular Items",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold
-            )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())  // ✅ STEP 4: Scrollable
+                    .padding(24.dp)
+                    .pointerInput(Unit) {  // ✅ STEP 5: Tap outside to dismiss keyboard
+                        detectTapGestures(onTap = {
+                            focusManager.clearFocus()
+                        })
+                    },
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Icon + Title
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = null,
+                        tint = redColor,
+                        modifier = Modifier.size(40.dp)
+                    )
+
+                    Text(
+                        text = "Anular Items",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                // Subtitle
                 Text(
                     text = "Selecciona los items a anular:",
-                    style = MaterialTheme.typography.bodyMedium
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
                 // Items list with checkboxes
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 200.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    items(items, key = { it.id }) { item ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    selectedItems = if (item.id in selectedItems) {
-                                        selectedItems - item.id
-                                    } else {
-                                        selectedItems + item.id
-                                    }
+                items.forEach { item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                selectedItems = if (item.id in selectedItems) {
+                                    selectedItems - item.id
+                                } else {
+                                    selectedItems + item.id
                                 }
-                                .padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Checkbox(
-                                checked = item.id in selectedItems,
-                                onCheckedChange = null // Handled by row click
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "${item.quantity}x ${item.productName}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Text(
-                                text = item.formattedTotalPrice,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
+                            }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = item.id in selectedItems,
+                            onCheckedChange = null // Handled by row click
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "${item.quantity}x ${item.productName}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            text = item.formattedTotalPrice,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
 
@@ -1293,27 +1389,47 @@ private fun VoidItemsDialog(
                     label = { Text("Razon (requerida)") },
                     placeholder = { Text("Ej: Cliente cambio de opinion") },
                     singleLine = false,
-                    maxLines = 2,
+                    maxLines = 3,
                     isError = reason.isBlank() && selectedItems.isNotEmpty(),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Sentences,
+                        imeAction = ImeAction.Done  // ✅ STEP 6: Done button
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            focusManager.clearFocus()  // ✅ Clear focus on Done
+                        }
+                    )
                 )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = { onConfirm(selectedItems.toList(), reason) },
-                enabled = selectedItems.isNotEmpty() && reason.isNotBlank(),
-                colors = ButtonDefaults.buttonColors(containerColor = redColor)
-            ) {
-                Text("Anular ${selectedItems.size} ${if (selectedItems.size == 1) "item" else "items"}")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancelar")
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Buttons Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancelar")
+                    }
+
+                    Button(
+                        onClick = {
+                            focusManager.clearFocus()  // ✅ STEP 7: Clear on button
+                            onConfirm(selectedItems.toList(), reason)
+                        },
+                        enabled = selectedItems.isNotEmpty() && reason.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = redColor)
+                    ) {
+                        Text("Anular ${selectedItems.size} ${if (selectedItems.size == 1) "item" else "items"}")
+                    }
+                }
             }
         }
-    )
+    }
 }
 
 /**

@@ -14,7 +14,7 @@ import retrofit2.http.*
  *
  * **Base URL:**
  * - PROD: https://api.avoqado.io/api/v1/
- * - DEV: https://humane-immortal-pika.ngrok-free.app/api/v1/
+ * - DEV: https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/
  *
  * **Response Handling:**
  * Use Result<T> wrapper in repositories:
@@ -344,12 +344,16 @@ interface ApiService {
      * @param venueId Venue identifier
      * @param status Optional status filter (OPEN, CLOSED, CANCELLED)
      * @param tableId Optional table filter
+     * @param includePayLater If true, include pay-later orders (orders with customers)
+     * @param onlyPayLater If true, ONLY return pay-later orders
      */
     @GET("tpv/venues/{venueId}/orders")
     suspend fun getOrders(
         @Path("venueId") venueId: String,
         @Query("status") status: String? = null,
-        @Query("tableId") tableId: String? = null
+        @Query("tableId") tableId: String? = null,
+        @Query("includePayLater") includePayLater: Boolean? = null,
+        @Query("onlyPayLater") onlyPayLater: Boolean? = null
     ): Response<List<Order>>
 
     /**

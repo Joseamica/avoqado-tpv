@@ -21,7 +21,7 @@ import retrofit2.http.Query
  * Retrofit service interface for order management endpoints.
  *
  * **Base URL:** https://api.avoqado.io/api/v1/ (production)
- *              https://humane-immortal-pika.ngrok-free.app/api/v1/ (development)
+ *              https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/ (development)
  *
  * **Authentication:** All requests require Bearer token in header.
  * ```
@@ -62,11 +62,15 @@ interface OrderApiService {
      * - 500: Internal server error
      *
      * @param venueId ID of the venue (for tenant isolation)
+     * @param includePayLater If true, include pay-later orders (orders with customers)
+     * @param onlyPayLater If true, ONLY return pay-later orders
      * @return Response with list of open orders
      */
     @GET("tpv/venues/{venueId}/orders")
     suspend fun getOrders(
-        @Path("venueId") venueId: String
+        @Path("venueId") venueId: String,
+        @Query("includePayLater") includePayLater: Boolean? = null,
+        @Query("onlyPayLater") onlyPayLater: Boolean? = null
     ): Response<ApiResponse<List<OrderDto>>>
 
     /**

@@ -39,6 +39,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     onBack: () -> Unit = {},
     onNavigateToShifts: () -> Unit = {},
+    onNavigateToSelfUpdate: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -319,6 +320,14 @@ fun SettingsScreen(
                             description = "Obtener ajustes del servidor",
                             onClick = { viewModel.refreshSettings() },
                             isLoading = state.isRefreshing
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        SettingsActionRow(
+                            icon = Icons.Outlined.SystemUpdate,
+                            label = "Buscar Actualizaciones",
+                            description = "Versión actual: ${BuildConfig.VERSION_NAME}",
+                            onClick = { onNavigateToSelfUpdate() },
+                            isLoading = false
                         )
                     }
                 }

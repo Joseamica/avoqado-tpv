@@ -5,6 +5,7 @@ plugins {
     id("com.google.devtools.ksp")  // KSP instead of kapt (2x faster) - version managed in root
     id("com.google.dagger.hilt.android")
     id("com.google.gms.google-services")  // Firebase
+    id("com.google.firebase.crashlytics")  // Firebase Crashlytics
 }
 
 android {
@@ -15,8 +16,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv"
         minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -29,9 +30,9 @@ android {
 
         // Environment variables (NEVER hardcode secrets in code)
         buildConfigField("String", "API_BASE_URL", "\"https://api.avoqado.io/api/v1/\"")
-        buildConfigField("String", "API_BASE_URL_DEV", "\"https://humane-immortal-pika.ngrok-free.app/api/v1/\"")
+        buildConfigField("String", "API_BASE_URL_DEV", "\"https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/\"")
         buildConfigField("String", "SOCKET_URL", "\"https://api.avoqado.io\"")
-        buildConfigField("String", "SOCKET_URL_DEV", "\"https://humane-immortal-pika.ngrok-free.app\"")
+        buildConfigField("String", "SOCKET_URL_DEV", "\"https://patchiest-noncommemorational-willia.ngrok-free.dev\"")
 
         // ⚠️ REMOVED: Hardcoded terminal configuration (2025-11-05)
         // Serial numbers and merchant accounts now fetched dynamically from backend
@@ -238,11 +239,13 @@ dependencies {
     // QR Code
     implementation("com.google.zxing:core:3.5.3")
 
-    // Firebase (App Distribution for OTA updates)
+    // Firebase (App Distribution for OTA updates + Crashlytics for error tracking)
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
     implementation("com.google.firebase:firebase-appdistribution-api:16.0.0-beta14")
     implementation("com.google.firebase:firebase-appdistribution:16.0.0-beta14")
     implementation("com.google.firebase:firebase-storage-ktx")  // Step 4: Verification photos
+    implementation("com.google.firebase:firebase-crashlytics-ktx")  // Crash reporting for production
+    implementation("com.google.firebase:firebase-analytics-ktx")  // Analytics (required by Crashlytics)
 
     // CameraX (Step 4: Verification photo capture)
     val cameraxVersion = "1.4.0"

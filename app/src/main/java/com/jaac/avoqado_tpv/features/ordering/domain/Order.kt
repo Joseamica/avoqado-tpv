@@ -43,7 +43,8 @@ data class Order(
     val merchantAccountName: String? = null,  // Display name for user-friendly split payment errors
     val lastSplitType: SplitType? = null,  // ⭐ Split type of last payment (restricts future split options)
     val paidItemIds: List<String> = emptyList(),  // ⭐ Items already paid (for SplitByProduct screen)
-    val discounts: List<OrderDiscount> = emptyList()  // 🎟️ Applied discounts on this order
+    val discounts: List<OrderDiscount> = emptyList(),  // 🎟️ Applied discounts on this order
+    val orderCustomers: List<OrderCustomer> = emptyList()  // 💳 Customers linked to order (for pay-later tracking)
 ) {
     /**
      * Convenience property: Number of items in order
@@ -103,6 +104,15 @@ data class Order(
      */
     val hasPendingKitchenItems: Boolean
         get() = pendingKitchenItems.isNotEmpty()
+
+    /**
+     * Convenience property: Is this a pay-later order?
+     * Pay-later orders have PENDING/PARTIAL payment status AND at least one customer linked.
+     * Used to filter orders in OrderListScreen and identify deferred payments.
+     */
+    val isPayLater: Boolean
+        get() = orderCustomers.isNotEmpty() &&
+                (paymentStatus == PaymentStatus.PENDING || paymentStatus == PaymentStatus.PARTIAL)
 }
 
 /**

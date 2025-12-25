@@ -59,4 +59,9 @@
     <string name="unpaid_takeout_banner_plural">Hay %d órdenes rápidas sin pagar</string>
     <string name="unpaid_takeout_banner_action">Toca para ver</string>
     <string name="unpaid_takeout_empty_state">No hay órdenes para llevar sin pagar</string>
+
+    <!-- Pay Later Orders Info Banner -->
+    <string name="pay_later_banner_singular">Hay 1 cuenta por cobrar</string>
+    <string name="pay_later_banner_plural">Hay %d cuentas por cobrar</string>
+    <string name="pay_later_banner_action">Toca para ver</string>
 </resources>

@@ -47,7 +47,8 @@ fun OrderDto.toOrder(): Order {
         version = version,
         lastSplitType = lastSplitType?.toSplitType(),  // ⭐ Split type restriction (nullable for graceful degradation)
         paidItemIds = paidItemIds ?: emptyList(),  // ⭐ Items already paid (for SplitByProduct screen)
-        discounts = orderDiscounts?.map { it.toOrderDiscount() } ?: emptyList()  // 🎟️ Applied discounts
+        discounts = orderDiscounts?.map { it.toOrderDiscount() } ?: emptyList(),  // 🎟️ Applied discounts
+        orderCustomers = orderCustomers?.map { it.toOrderCustomer() } ?: emptyList()  // 💳 Customers linked to order (for pay-later)
     )
 }
 

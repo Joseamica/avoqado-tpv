@@ -45,6 +45,9 @@ class OrderingWelcomeViewModel @Inject constructor(
     private val _unpaidTakeoutCount = MutableStateFlow(0)
     val unpaidTakeoutCount: StateFlow<Int> = _unpaidTakeoutCount.asStateFlow()
 
+    private val _payLaterCount = MutableStateFlow(0)
+    val payLaterCount: StateFlow<Int> = _payLaterCount.asStateFlow()
+
     init {
         loadOrders()
     }
@@ -69,6 +72,7 @@ class OrderingWelcomeViewModel @Inject constructor(
                 if (venueId == null) {
                     Timber.e("🔔 [OrderingWelcome] Venue not configured")
                     _unpaidTakeoutCount.value = 0
+                    _payLaterCount.value = 0
                     return@launch
                 }
 
@@ -92,26 +96,39 @@ class OrderingWelcomeViewModel @Inject constructor(
 
                         Timber.i("✅ [OrderingWelcome] Total orders after merge: ${allOrders.size}")
 
-                        // Count unpaid TAKEOUT orders
-                        val count = allOrders.count { order ->
+                        // Count unpaid TAKEOUT orders (anonymous, no customer)
+                        val unpaidTakeoutCount = allOrders.count { order ->
                             order.orderType == OrderType.TAKEOUT &&
                             order.paymentStatus in listOf(PaymentStatus.PENDING, PaymentStatus.PARTIAL) &&
-                            order.remainingBalance > BigDecimal.ZERO
+                            order.remainingBalance > BigDecimal.ZERO &&
+                            order.orderCustomers.isEmpty()  // ← Exclude orders with customers (they are PAY_LATER)
                         }
 
-                        _unpaidTakeoutCount.value = count
+                        // Count pay-later orders (identified customers, any order type)
+                        val payLaterCount = allOrders.count { order -> order.isPayLater }
 
-                        Timber.d("🔔 [OrderingWelcome] Unpaid TAKEOUT orders: $count")
+                        _unpaidTakeoutCount.value = unpaidTakeoutCount
+                        _payLaterCount.value = payLaterCount
 
-                        if (count > 0) {
-                            Timber.w("⚠️ [OrderingWelcome] Warning: $count unpaid TAKEOUT orders detected")
+                        Timber.d("📊 [OrderingWelcome] Unpaid orders | TAKEOUT: $unpaidTakeoutCount | PAY_LATER: $payLaterCount")
+
+                        if (unpaidTakeoutCount > 0) {
+                            Timber.w("⚠️ [OrderingWelcome] Warning: $unpaidTakeoutCount unpaid TAKEOUT orders detected")
                             // HIGH #1 FIX: Use consistent filter criteria for logging
                             allOrders.filter {
                                 it.orderType == OrderType.TAKEOUT &&
                                 it.paymentStatus in listOf(PaymentStatus.PENDING, PaymentStatus.PARTIAL) &&
-                                it.remainingBalance > BigDecimal.ZERO
+                                it.remainingBalance > BigDecimal.ZERO &&
+                                it.orderCustomers.isEmpty()  // ← Exclude orders with customers (they are PAY_LATER)
                             }.forEach { order ->
                                 Timber.d("   - Order #${order.orderNumber} | Balance: $${order.remainingBalance}")
+                            }
+                        }
+
+                        if (payLaterCount > 0) {
+                            Timber.i("💳 [OrderingWelcome] Info: $payLaterCount pay-later orders detected")
+                            allOrders.filter { it.isPayLater }.forEach { order ->
+                                Timber.d("   - Order #${order.orderNumber} | Customer: ${order.orderCustomers.firstOrNull()?.customer?.firstName ?: "Unknown"} | Balance: $${order.remainingBalance}")
                             }
                         }
                     },
@@ -119,19 +136,25 @@ class OrderingWelcomeViewModel @Inject constructor(
                         Timber.e(error, "🔔 [OrderingWelcome] Backend error, using local orders only")
 
                         // Offline fallback: count local orders
-                        val count = localOrders.count { order ->
+                        val unpaidTakeoutCount = localOrders.count { order ->
                             order.orderType == OrderType.TAKEOUT &&
                             order.paymentStatus in listOf(PaymentStatus.PENDING, PaymentStatus.PARTIAL) &&
-                            order.remainingBalance > BigDecimal.ZERO
+                            order.remainingBalance > BigDecimal.ZERO &&
+                            order.orderCustomers.isEmpty()  // ← Exclude orders with customers (they are PAY_LATER)
                         }
 
-                        _unpaidTakeoutCount.value = count
-                        Timber.d("🔔 [OrderingWelcome] Offline mode: $count unpaid TAKEOUT orders from local DB")
+                        val payLaterCount = localOrders.count { order -> order.isPayLater }
+
+                        _unpaidTakeoutCount.value = unpaidTakeoutCount
+                        _payLaterCount.value = payLaterCount
+
+                        Timber.d("🔔 [OrderingWelcome] Offline mode | TAKEOUT: $unpaidTakeoutCount | PAY_LATER: $payLaterCount from local DB")
                     }
                 )
             } catch (e: Exception) {
                 Timber.e(e, "🔔 [OrderingWelcome] Unexpected error loading orders")
                 _unpaidTakeoutCount.value = 0
+                _payLaterCount.value = 0
             }
         }
     }

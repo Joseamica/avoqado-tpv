@@ -15,12 +15,20 @@
 # Blumon SDK uses reflection and dynamic loading
 # If these classes are obfuscated, SDK initialization will FAIL
 
+# ⚠️ CRITICAL: Production SDK uses com.blumonpay package
+-keep class com.blumonpay.** { *; }
+-keep interface com.blumonpay.** { *; }
+-dontwarn com.blumonpay.**
+
+# lib_services AAR
 -keep class com.example.clean_lib_services.** { *; }
+-keep interface com.example.clean_lib_services.** { *; }
+-dontwarn com.example.clean_lib_services.**
+
+# PAX SDK modules
 -keep class com.paxsz.module.** { *; }
 -keep class com.neptune.sdk.** { *; }
--keep interface com.example.clean_lib_services.** { *; }
 -dontwarn com.paxsz.module.**
--dontwarn com.example.clean_lib_services.**
 
 # Keep Blumon callback classes
 -keepclassmembers class * {

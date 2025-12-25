@@ -5,6 +5,7 @@ plugins {
     id("com.google.devtools.ksp") version "2.0.21-1.0.28" apply false  // Must match Kotlin version
     id("com.google.dagger.hilt.android") version "2.57" apply false
     id("com.google.gms.google-services") version "4.4.2" apply false  // Firebase
+    id("com.google.firebase.crashlytics") version "3.0.2" apply false  // Firebase Crashlytics
 }
 
 // Configure Java toolchain for all projects

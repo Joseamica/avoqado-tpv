@@ -406,6 +406,11 @@ fun AppNavigation(
                     navController.navigate(NavRoute.OrderList.createRoute("UNPAID_TAKEOUT"))
                     Timber.d("🔔 Navigating to Order List with UNPAID_TAKEOUT filter")
                 },
+                onViewPayLaterOrdersClick = {
+                    // Navigate to Order List screen with PAY_LATER filter
+                    navController.navigate(NavRoute.OrderList.createRoute("PAY_LATER"))
+                    Timber.d("💳 Navigating to Order List with PAY_LATER filter")
+                },
                 onNavigateBack = {
                     navController.popBackStack()
                 }
@@ -442,35 +447,45 @@ fun AppNavigation(
                     // ✅ FIX: Pass remainingBalance instead of total for split payments
                     // If order is fresh: remainingBalance = total (correct)
                     // If order has partial payment: remainingBalance = total - paidAmount (correct)
+                    val isPayLaterOrder = order.orderCustomers.isNotEmpty()
                     navController.currentBackStackEntry?.savedStateHandle?.apply {
                         set("initialAmount", order.remainingBalance.toString())
                         set("orderId", order.id)
                         set("orderNumber", order.orderNumber)
                         set("tableId", order.tableId)  // 🆕 Pass tableId for post-payment clearing
                         set("splitType", SplitType.FULLPAYMENT.value)
+                        // 💳 PAY-LATER CONTEXT: Detect if order has customers
+                        set("wasPayLaterOrder", isPayLaterOrder)
                     }
                     navController.navigate(NavRoute.Payment.route)
-                    Timber.d("💳 Navigating to payment: ${order.orderNumber} - Remaining: $${order.remainingBalance} (Total: $${order.total})")
+                    Timber.d("💳 Navigating to payment: ${order.orderNumber} - Remaining: $${order.remainingBalance} (Total: $${order.total}) | wasPayLater=$isPayLaterOrder | customers=${order.orderCustomers.size}")
                 },
                 onProcessPaymentWithAmount = { order, customAmount, splitType ->
                     // Custom amount payment with split type (CUSTOMAMOUNT)
+                    val isPayLaterOrder = order.orderCustomers.isNotEmpty()
                     navController.currentBackStackEntry?.savedStateHandle?.apply {
                         set("initialAmount", customAmount.toString())
                         set("orderId", order.id)
                         set("orderNumber", order.orderNumber)
                         set("tableId", order.tableId)
                         set("splitType", splitType.value)
+                        // 💳 PAY-LATER CONTEXT: Detect if order has customers
+                        set("wasPayLaterOrder", isPayLaterOrder)
                     }
                     navController.navigate(NavRoute.Payment.route)
-                    Timber.d("💰 Navigating to custom amount payment: $customAmount with splitType=${splitType.value}")
+                    Timber.d("💳 Navigating to custom amount payment: $customAmount with splitType=${splitType.value} | wasPayLater=$isPayLaterOrder | customers=${order.orderCustomers.size}")
                 },
-                onNavigateToSplitByProduct = { splitOrderId ->
+                onNavigateToSplitByProduct = { splitOrderId, hasCustomers ->
+                    // 💳 Pass wasPayLaterOrder through savedStateHandle for split screen to forward
+                    navController.currentBackStackEntry?.savedStateHandle?.set("wasPayLaterOrder", hasCustomers)
                     navController.navigate(NavRoute.SplitByProduct.createRoute(splitOrderId))
-                    Timber.d("📦 Navigating to SplitByProduct: $splitOrderId")
+                    Timber.d("📦 Navigating to SplitByProduct: $splitOrderId | wasPayLater=$hasCustomers")
                 },
-                onNavigateToSplitByPerson = { splitOrderId ->
+                onNavigateToSplitByPerson = { splitOrderId, hasCustomers ->
+                    // 💳 Pass wasPayLaterOrder through savedStateHandle for split screen to forward
+                    navController.currentBackStackEntry?.savedStateHandle?.set("wasPayLaterOrder", hasCustomers)
                     navController.navigate(NavRoute.SplitByPerson.createRoute(splitOrderId))
-                    Timber.d("👥 Navigating to SplitByPerson: $splitOrderId")
+                    Timber.d("👥 Navigating to SplitByPerson: $splitOrderId | wasPayLater=$hasCustomers")
                 }
             )
         }
@@ -562,6 +577,12 @@ fun AppNavigation(
             // 🏢 CRITICAL: Payment's venueId for refund API call (NOT auth context's venue!)
             val refundVenueId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("paymentVenueId")
 
+            // 💳 PAY-LATER CONTEXT PARAMS (from OrderListScreen/OrderDetailsBottomSheet)
+            val wasPayLaterOrder = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("wasPayLaterOrder") ?: false
+            val payLaterOrdersCount = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("payLaterOrdersCount") ?: 0
+
+            Timber.d("💳 [Payment] Pay-later context: wasPayLaterOrder=$wasPayLaterOrder, count=$payLaterOrdersCount")
+
             // 🔌 Get TableRepository via Hilt EntryPoint for clearing tables post-payment
             val context = LocalContext.current
             val tableRepository = remember {
@@ -598,6 +619,9 @@ fun AppNavigation(
                 originalOperationNumber = originalOperationNumber,
                 // 🏢 CRITICAL: Payment's venueId for refund API call (NOT auth context's venue!)
                 refundVenueId = refundVenueId,
+                // 💳 PAY-LATER CONTEXT PARAMS
+                wasPayLaterOrder = wasPayLaterOrder,
+                payLaterOrdersCount = payLaterOrdersCount,
                 onNavigateBack = {
                     // 🏠 Navigate directly to WelcomeScreen (clearing payment stack)
                     navController.popBackStack(NavRoute.Home.route, inclusive = false)
@@ -658,6 +682,14 @@ fun AppNavigation(
                         // Pop payment screen and return to menu with same order
                         popUpTo(NavRoute.Payment.route) { inclusive = true }
                     }
+                },
+                onNavigateToPayLaterOrders = {
+                    // 💳 Navigate to OrderListScreen with PAY_LATER filter
+                    Timber.i("💳 [Navigation] Navigating to pay-later orders list")
+                    navController.navigate(NavRoute.OrderList.createRoute(OrderStatusFilter.PAY_LATER.name)) {
+                        // Pop payment screen and go to OrderList with PAY_LATER filter
+                        popUpTo(NavRoute.OrderingWelcome.route) { inclusive = false }
+                    }
                 }
             )
         }
@@ -666,7 +698,8 @@ fun AppNavigation(
         composable(NavRoute.Settings.route) {
             com.jaac.avoqado_tpv.features.settings.presentation.SettingsScreen(
                 onBack = { navController.popBackStack() },
-                onNavigateToShifts = { navController.navigate(NavRoute.Shifts.route) }
+                onNavigateToShifts = { navController.navigate(NavRoute.Shifts.route) },
+                onNavigateToSelfUpdate = { navController.navigate(NavRoute.SelfUpdate.route) }
             )
         }
 
@@ -868,6 +901,15 @@ fun AppNavigation(
             )
         }
 
+        // Self-Update Screen - Check and install app updates via Blumon SDK
+        composable(NavRoute.SelfUpdate.route) {
+            com.jaac.avoqado_tpv.features.self_update.presentation.SelfUpdateScreen(
+                onNavigateBack = {
+                    navController.popBackStack()
+                }
+            )
+        }
+
         // Split by Product Screen - Select specific products to pay
         composable(
             route = NavRoute.SplitByProduct.route,
@@ -880,15 +922,20 @@ fun AppNavigation(
                     navController.popBackStack()
                 },
                 onProceedToPayment = { amount, productIds ->
+                    // 💳 Read wasPayLaterOrder from previous screen and forward to Payment
+                    val wasPayLaterOrder = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("wasPayLaterOrder") ?: false
+
                     // Navigate to PaymentScreen with PERPRODUCT split params
                     navController.currentBackStackEntry?.savedStateHandle?.apply {
                         set("initialAmount", amount.toString())
                         set("orderId", orderId)
                         set("splitType", SplitType.PERPRODUCT.value)
                         set("paidProductIds", productIds)
+                        // 💳 Forward pay-later context
+                        set("wasPayLaterOrder", wasPayLaterOrder)
                     }
                     navController.navigate(NavRoute.Payment.route)
-                    Timber.d("💳 Split PERPRODUCT: ${productIds.size} products, amount=$amount")
+                    Timber.d("💳 Split PERPRODUCT: ${productIds.size} products, amount=$amount | wasPayLater=$wasPayLaterOrder")
                 }
             )
         }
@@ -905,6 +952,9 @@ fun AppNavigation(
                     navController.popBackStack()
                 },
                 onProceedToPayment = { amount, partySize, payingFor ->
+                    // 💳 Read wasPayLaterOrder from previous screen and forward to Payment
+                    val wasPayLaterOrder = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("wasPayLaterOrder") ?: false
+
                     // Navigate to PaymentScreen with EQUALPARTS split params
                     navController.currentBackStackEntry?.savedStateHandle?.apply {
                         set("initialAmount", amount.toString())
@@ -912,9 +962,11 @@ fun AppNavigation(
                         set("splitType", SplitType.EQUALPARTS.value)
                         set("equalPartsPartySize", partySize)
                         set("equalPartsPayedFor", payingFor)
+                        // 💳 Forward pay-later context
+                        set("wasPayLaterOrder", wasPayLaterOrder)
                     }
                     navController.navigate(NavRoute.Payment.route)
-                    Timber.d("💳 Split EQUALPARTS: $payingFor/$partySize parts, amount=$amount")
+                    Timber.d("💳 Split EQUALPARTS: $payingFor/$partySize parts, amount=$amount | wasPayLater=$wasPayLaterOrder")
                 }
             )
         }

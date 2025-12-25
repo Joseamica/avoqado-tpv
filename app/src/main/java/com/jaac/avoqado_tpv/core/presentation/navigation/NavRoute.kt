@@ -146,6 +146,16 @@ sealed class NavRoute(val route: String) {
     data object Support : NavRoute("support")
 
     /**
+     * Self-Update screen - Check and install app updates
+     * Allows updating the app directly via Blumon SDK without using Blumon app
+     *
+     * Flow: CheckVersion → Download → Install via PAX SDK
+     *
+     * Note: After successful installation, terminal goes to PAX home menu
+     */
+    data object SelfUpdate : NavRoute("self_update")
+
+    /**
      * Split by Product screen - Select specific products to pay
      * Used when splitting payment by selecting individual items
      *

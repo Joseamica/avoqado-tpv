@@ -23,11 +23,14 @@ import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
+import com.jaac.avoqado_tpv.core.observability.ObservabilityTester
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -61,7 +64,9 @@ fun SuperAdminScreen(
         onTestPrinter = viewModel::testPrinter,
         onTestPayment = onTestPayment,
         onClearCache = viewModel::clearCache,
-        onTestBackend = viewModel::testBackend
+        onTestBackend = viewModel::testBackend,
+        onTestFirebaseCrash = viewModel::testFirebaseCrash,
+        onTestFirebaseError = viewModel::testFirebaseError
     )
 }
 
@@ -78,7 +83,9 @@ private fun SuperAdminScreenContent(
     onTestPrinter: () -> Unit,
     onTestPayment: () -> Unit,
     onClearCache: () -> Unit,
-    onTestBackend: () -> Unit
+    onTestBackend: () -> Unit,
+    onTestFirebaseCrash: () -> Unit = {},
+    onTestFirebaseError: () -> Unit = {}
 ) {
     Scaffold(
         topBar = {
@@ -169,6 +176,32 @@ private fun SuperAdminScreenContent(
                         onClick = onClearCache,
                         enabled = !state.isLoading,
                         destructive = true
+                    )
+                }
+
+                // Observability Testing Section
+                item {
+                    SectionHeader(title = "Observability Testing")
+                }
+
+                item {
+                    TestButton(
+                        icon = Icons.Default.CrisisAlert,
+                        title = "Test Firebase Crash",
+                        description = "Send fatal crash to Firebase",
+                        onClick = onTestFirebaseCrash,
+                        enabled = !state.isLoading,
+                        destructive = true
+                    )
+                }
+
+                item {
+                    TestButton(
+                        icon = Icons.Default.Warning,
+                        title = "Test Firebase Error",
+                        description = "Send non-fatal error to Firebase",
+                        onClick = onTestFirebaseError,
+                        enabled = !state.isLoading
                     )
                 }
 
@@ -382,7 +415,9 @@ data class SuperAdminState(
 @HiltViewModel
 class SuperAdminViewModel @Inject constructor(
     private val printerManager: PrinterManager,
-    private val deviceInfoManager: DeviceInfoManager
+    private val deviceInfoManager: DeviceInfoManager,
+    private val observability: ObservabilityManager,
+    private val observabilityTester: ObservabilityTester
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SuperAdminState())
@@ -490,6 +525,90 @@ class SuperAdminViewModel @Inject constructor(
                 _state.value = _state.value.copy(
                     isLoading = false,
                     message = "❌ Backend connection failed: ${e.message}",
+                    isError = true
+                )
+            }
+        }
+    }
+
+    /**
+     * Test Firebase Crashlytics - Fatal Crash
+     */
+    fun testFirebaseCrash() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isLoading = true, message = null)
+
+            Timber.d("🔥 [SuperAdmin] Testing Firebase fatal crash...")
+
+            try {
+                // Initialize observability
+                observability.initialize(
+                    venueId = "test-venue-crash",
+                    terminalId = _state.value.serialNumber,
+                    userId = "superadmin-test",
+                    enableInDebug = true
+                )
+
+                delay(500)
+
+                // This will crash the app and send to Firebase
+                throw RuntimeException("🧪 SUPERADMIN TEST CRASH - Firebase Crashlytics from ${_state.value.deviceModel}")
+
+            } catch (e: Exception) {
+                Timber.e(e, "🔥 Test crash executed")
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    message = "🔥 Crash sent to Firebase! Check console in 5-10 min",
+                    isError = false
+                )
+            }
+        }
+    }
+
+    /**
+     * Test Firebase Crashlytics - Non-Fatal Error
+     */
+    fun testFirebaseError() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isLoading = true, message = null)
+
+            Timber.d("⚠️ [SuperAdmin] Testing Firebase non-fatal error...")
+
+            try {
+                // Initialize observability
+                observability.initialize(
+                    venueId = "test-venue-error",
+                    terminalId = _state.value.serialNumber,
+                    userId = "superadmin-test",
+                    enableInDebug = true
+                )
+
+                delay(500)
+
+                // Send non-fatal error (app doesn't crash)
+                observability.logCritical(
+                    tag = "SuperAdminTest",
+                    message = "🧪 TEST NON-FATAL ERROR from ${_state.value.deviceModel}",
+                    error = Exception("Test error from SuperAdmin screen"),
+                    metadata = mapOf(
+                        "test" to true,
+                        "device" to _state.value.deviceModel,
+                        "serial" to _state.value.serialNumber,
+                        "source" to "superadmin_screen"
+                    )
+                )
+
+                Timber.i("✅ [SuperAdmin] Non-fatal error sent to Firebase")
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    message = "✅ Error sent! Check Firebase in 5-10 min & Backend logs now",
+                    isError = false
+                )
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [SuperAdmin] Firebase error test failed")
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    message = "❌ Test failed: ${e.message}",
                     isError = true
                 )
             }

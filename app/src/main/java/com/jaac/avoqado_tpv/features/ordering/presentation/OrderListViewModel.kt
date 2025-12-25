@@ -41,6 +41,10 @@ class OrderListViewModel @Inject constructor(
     private val _selectedFilter = MutableStateFlow(OrderStatusFilter.ALL)
     val selectedFilter: StateFlow<OrderStatusFilter> = _selectedFilter.asStateFlow()
 
+    // Pull-to-refresh state (separate from Loading/Success/Error)
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
     private val _state = MutableStateFlow<OrderListState>(OrderListState.Loading)
     val state: StateFlow<OrderListState> = _state.asStateFlow()
 
@@ -61,58 +65,71 @@ class OrderListViewModel @Inject constructor(
      * Offline Fallback:
      * - If backend fails but local orders exist → show local orders
      * - If both fail → show error
+     *
+     * @param showLoading If true, show Loading state. If false, keep current state (for silent refresh)
      */
-    private fun loadOrders() {
+    private fun loadOrders(showLoading: Boolean = true) {
         viewModelScope.launch {
-            _state.value = OrderListState.Loading
-
-            val venueId = deviceInfoManager.getVenueId()
-            if (venueId == null) {
-                Timber.e("❌ [OrderList] Venue not configured")
-                _state.value = OrderListState.Error("Venue no configurado.\n\nPor favor inicia sesión nuevamente.")
-                return@launch
-            }
-
-            Timber.d("📋 [OrderList] Loading orders for venue=$venueId")
-
-            // 🚀 PARALLEL FETCH: Backend + Local
-            // Reduces loading time by running I/O and Network concurrently
-            val backendDeferred = async { orderRepository.getOrders(venueId, null) }
-            val localDeferred = async { orderSyncCoordinator.getLocalOnlyOrders(venueId) }
-
-            // 1. Fetch from backend
-            val backendResult = backendDeferred.await()
-
-            // 2. Get local-only orders (Quick Orders not yet synced to backend)
-            val localOrders = localDeferred.await()
-            Timber.d("📋 [OrderList] Local-only orders: ${localOrders.size}")
-
-            backendResult.fold(
-                onSuccess = { backendOrders ->
-                    Timber.i("✅ [OrderList] Backend returned ${backendOrders.size} orders")
-
-                    // Merge: backend + local (avoiding duplicates)
-                    val allOrders = (backendOrders + localOrders)
-                        .distinctBy { it.id }
-                        .sortedByDescending { it.createdAt }
-
-                    Timber.i("✅ [OrderList] Total orders after merge: ${allOrders.size}")
-                    _allOrders.value = allOrders
-                },
-                onFailure = { error ->
-                    Timber.e(error, "❌ [OrderList] Backend fetch failed")
-
-                    // Offline fallback: show local orders only
-                    if (localOrders.isNotEmpty()) {
-                        Timber.w("⚠️ [OrderList] Offline mode - showing ${localOrders.size} local orders")
-                        _allOrders.value = localOrders.sortedByDescending { it.createdAt }
-                    } else {
-                        _state.value = OrderListState.Error(
-                            "No se pudieron cargar las órdenes.\n\n${error.message ?: "Error de conexión"}"
-                        )
-                    }
+            try {
+                // Only show Loading if we don't have data yet (initial load)
+                // For refresh (when data already exists), keep showing current list
+                if (showLoading) {
+                    _state.value = OrderListState.Loading
                 }
-            )
+
+                val venueId = deviceInfoManager.getVenueId()
+                if (venueId == null) {
+                    Timber.e("❌ [OrderList] Venue not configured")
+                    _state.value = OrderListState.Error("Venue no configurado.\n\nPor favor inicia sesión nuevamente.")
+                    return@launch
+                }
+
+                Timber.d("📋 [OrderList] Loading orders for venue=$venueId")
+
+                // 🚀 PARALLEL FETCH: Backend + Local
+                // Reduces loading time by running I/O and Network concurrently
+                val backendDeferred = async { orderRepository.getOrders(venueId, null) }
+                val localDeferred = async { orderSyncCoordinator.getLocalOnlyOrders(venueId) }
+
+                // 1. Fetch from backend
+                val backendResult = backendDeferred.await()
+
+                // 2. Get local-only orders (Quick Orders not yet synced to backend)
+                val localOrders = localDeferred.await()
+                Timber.d("📋 [OrderList] Local-only orders: ${localOrders.size}")
+
+                backendResult.fold(
+                    onSuccess = { backendOrders ->
+                        Timber.i("✅ [OrderList] Backend returned ${backendOrders.size} orders")
+
+                        // Merge: backend + local (avoiding duplicates)
+                        val allOrders = (backendOrders + localOrders)
+                            .distinctBy { it.id }
+                            .sortedByDescending { it.createdAt }
+
+                        Timber.i("✅ [OrderList] Total orders after merge: ${allOrders.size}")
+                        _allOrders.value = allOrders
+                    },
+                    onFailure = { error ->
+                        Timber.e(error, "❌ [OrderList] Backend fetch failed")
+
+                        // Offline fallback: show local orders only
+                        if (localOrders.isNotEmpty()) {
+                            Timber.w("⚠️ [OrderList] Offline mode - showing ${localOrders.size} local orders")
+                            _allOrders.value = localOrders.sortedByDescending { it.createdAt }
+                        } else {
+                            // ✅ FIX: Clear orders to trigger combine flow emission
+                            _allOrders.value = emptyList()
+                            _state.value = OrderListState.Error(
+                                "No se pudieron cargar las órdenes.\n\n${error.message ?: "Error de conexión"}"
+                            )
+                        }
+                    }
+                )
+            } finally {
+                // ✅ FIX: Always reset refresh state, even on exception
+                _isRefreshing.value = false
+            }
         }
     }
 
@@ -149,10 +166,14 @@ class OrderListViewModel @Inject constructor(
      * - User pulls to refresh
      * - Order is created/updated elsewhere
      * - App comes back to foreground
+     *
+     * Uses silent refresh (showLoading = false) to avoid showing Loading state
+     * when data already exists (better UX for pull-to-refresh).
      */
     fun refreshOrders() {
         Timber.d("🔄 [OrderList] Refreshing orders...")
-        loadOrders()
+        _isRefreshing.value = true
+        loadOrders(showLoading = false)
     }
 }
 

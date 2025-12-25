@@ -30,6 +30,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.res.stringResource
@@ -116,8 +119,8 @@ fun MenuScreen(
     onNavigateBack: () -> Unit,
     onProcessPayment: (Order) -> Unit,
     onProcessPaymentWithAmount: (Order, BigDecimal, SplitType) -> Unit = { order, _, _ -> onProcessPayment(order) },
-    onNavigateToSplitByProduct: (String) -> Unit = {},
-    onNavigateToSplitByPerson: (String) -> Unit = {},
+    onNavigateToSplitByProduct: (String, Boolean) -> Unit = { _, _ -> },  // 💳 (orderId, hasCustomers)
+    onNavigateToSplitByPerson: (String, Boolean) -> Unit = { _, _ -> },  // 💳 (orderId, hasCustomers)
     modifier: Modifier = Modifier,
     viewModel: MenuViewModel = hiltViewModel()
 ) {
@@ -132,6 +135,37 @@ fun MenuScreen(
 
     // 💳 Payment preparation state (force sync before navigating to payment)
     val isPreparingPayment by viewModel.isPreparingPayment.collectAsStateWithLifecycle()
+
+    // 👤 Customer search state (for Pay Later in ActionsTab)
+    val customerSearchState by viewModel.customerSearchState.collectAsStateWithLifecycle()
+    val recentCustomers by viewModel.recentCustomers.collectAsStateWithLifecycle()
+    val isLoadingRecentCustomers by viewModel.isLoadingRecentCustomers.collectAsStateWithLifecycle()
+
+    // 👥 Order customers (separate StateFlow - merge with order for UI)
+    val orderCustomers by viewModel.orderCustomers.collectAsStateWithLifecycle()
+
+    // 🎯 Snackbar for UX events (success/error feedback)
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // 🎯 Collect UX events from ViewModel (snackbar, navigation)
+    LaunchedEffect(Unit) {
+        viewModel.uiEvents.collect { event ->
+            when (event) {
+                is MenuViewModel.MenuUiEvent.ShowSnackbar -> {
+                    snackbarHostState.showSnackbar(
+                        message = event.message,
+                        duration = if (event.isError)
+                            SnackbarDuration.Long
+                        else
+                            SnackbarDuration.Short
+                    )
+                }
+                is MenuViewModel.MenuUiEvent.NavigateBack -> {
+                    onNavigateBack()  // Navigate back to table selection
+                }
+            }
+        }
+    }
 
     // Tab state (local to MenuScreen - pure UI concern)
     var currentTab by remember { mutableStateOf(OrderTab.MENU) }
@@ -167,8 +201,12 @@ fun MenuScreen(
 
     // Extract order and syncError from state (simplified smart cast)
     val successState = menuState as? MenuState.Success
-    val order = successState?.order
+    val baseOrder = successState?.order
     val syncError = successState?.syncError
+
+    // ⭐ FIX: Merge orderCustomers into order for UI (ActionsTab, title)
+    // Order from Room DB doesn't have orderCustomers, but they're loaded separately
+    val order = baseOrder?.copy(orderCustomers = orderCustomers)
 
     // Conditional rendering: Full-screen ProductSelector OR normal Scaffold with tabs
     if (showProductSelector && selectedProduct != null) {
@@ -194,8 +232,14 @@ fun MenuScreen(
         Scaffold(
             topBar = {
                 val titleText = order?.let {
-                    // Show table name for table service, "Pedido Rápido" for quick orders
-                    it.tableName ?: "${stringResource(R.string.ordering_quick_order_title)} #${it.orderNumber.takeLast(4)}"
+                    when {
+                        // Pay-later orders: Show "Cuenta por cobrar"
+                        it.isPayLater -> "Cuenta por cobrar #${it.orderNumber.takeLast(4)}"
+                        // Table service: Show table name
+                        it.tableName != null -> it.tableName
+                        // Quick orders: Show "Pedido Rápido"
+                        else -> "${stringResource(R.string.ordering_quick_order_title)} #${it.orderNumber.takeLast(4)}"
+                    }
                 } ?: "Nueva Orden"
                 AvoqadoTopBar(
                     title = titleText,
@@ -247,7 +291,8 @@ fun MenuScreen(
                     }
                 )
             },
-        modifier = modifier
+            snackbarHost = { SnackbarHost(snackbarHostState) },
+            modifier = modifier
     ) { paddingValues ->
         // Calculate ResponsiveSizes early for use in all children (including error banner)
         val configuration = LocalConfiguration.current
@@ -417,6 +462,11 @@ fun MenuScreen(
                                 appliedDiscounts = appliedDiscounts,
                                 isLoadingDiscounts = isLoadingDiscounts,
                                 couponValidationState = couponValidationState,
+                                // Customer search for Pay Later
+                                customerSearchState = customerSearchState,
+                                recentCustomers = recentCustomers,
+                                isLoadingRecentCustomers = isLoadingRecentCustomers,
+                                loyaltyActive = viewModel.loyaltyActive,
                                 onApplyPredefinedDiscount = { discountId, itemIds, reason ->
                                     viewModel.applyPredefinedDiscount(
                                         discountId = discountId,
@@ -446,6 +496,18 @@ fun MenuScreen(
                                 },
                                 onVoidItems = { itemIds, reason ->
                                     viewModel.voidItems(itemIds, reason)
+                                },
+                                onSearchCustomers = { query ->
+                                    viewModel.searchCustomers(query)
+                                },
+                                onLoadRecentCustomers = {
+                                    viewModel.loadRecentCustomers()
+                                },
+                                onClearCustomerSearch = {
+                                    viewModel.clearCustomerSearch()
+                                },
+                                onCreatePayLaterOrder = { customerId ->
+                                    viewModel.createPayLaterOrder(customerId)
                                 }
                             )
                         }
@@ -527,19 +589,21 @@ fun MenuScreen(
                         onProductsSplit = {
                             // ⭐ FIX: Force sync before navigation to ensure backend has all items
                             showSplitOptions = false
-                            Timber.d("📦 Split by products selected - syncing before navigation | orderId=${order.id}")
+                            val hasCustomers = order.orderCustomers.isNotEmpty()
+                            Timber.d("📦 Split by products selected - syncing before navigation | orderId=${order.id} | hasCustomers=$hasCustomers")
                             viewModel.syncBeforeNavigate { syncedOrderId ->
                                 Timber.d("📦 Sync complete, navigating to SplitByProduct | orderId=$syncedOrderId")
-                                onNavigateToSplitByProduct(syncedOrderId)
+                                onNavigateToSplitByProduct(syncedOrderId, hasCustomers)
                             }
                         },
                         onPersonsSplit = {
                             // ⭐ FIX: Force sync before navigation to ensure backend has all items
                             showSplitOptions = false
-                            Timber.d("👥 Split by persons selected - syncing before navigation | orderId=${order.id}")
+                            val hasCustomers = order.orderCustomers.isNotEmpty()
+                            Timber.d("👥 Split by persons selected - syncing before navigation | orderId=${order.id} | hasCustomers=$hasCustomers")
                             viewModel.syncBeforeNavigate { syncedOrderId ->
                                 Timber.d("👥 Sync complete, navigating to SplitByPerson | orderId=$syncedOrderId")
-                                onNavigateToSplitByPerson(syncedOrderId)
+                                onNavigateToSplitByPerson(syncedOrderId, hasCustomers)
                             }
                         },
                         onCustomAmount = {

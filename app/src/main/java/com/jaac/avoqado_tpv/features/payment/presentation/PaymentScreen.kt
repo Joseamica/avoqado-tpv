@@ -104,12 +104,16 @@ fun PaymentScreen(
     refundBlumonSerialNumber: String? = null,  // 💸 Original payment's terminal serial
     originalOperationNumber: Int? = null,  // 🎫 CRITICAL: Blumon operation number for CancelIcc (from webhook)
     refundVenueId: String? = null,  // 🏢 CRITICAL: Payment's venueId for refund API call (NOT auth context's venue!)
+    // 💳 PAY-LATER CONTEXT PARAMS
+    wasPayLaterOrder: Boolean = false,  // 💳 True = order had customers (for contextual button)
+    payLaterOrdersCount: Int = 0,  // 💳 Remaining pay-later orders count
     onNavigateBack: () -> Unit,
     onNavigateToShifts: () -> Unit = {},  // 🆕 Navigate to Shifts screen (for "No shift open" errors)
     onNavigateToNewOrder: () -> Unit = {},  // 🆕 Navigate to new order (Toast/Square pattern)
     onNavigateToNewFastPayment: () -> Unit = {},  // 🆕 Navigate to new fast payment (open WelcomeScreen modal)
     onClearTableAndReturnToFloorPlan: (String) -> Unit = {},  // 🆕 Clear table and return to floor plan (tableId)
     onNavigateToOrder: (String, String?) -> Unit = { _, _ -> },  // ⭐ NEW: Navigate to order for split payment (orderId, tableId)
+    onNavigateToPayLaterOrders: () -> Unit = {},  // 💳 Navigate to pay-later orders list
     viewModel: PaymentViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -512,6 +516,8 @@ fun PaymentScreen(
                                 remainingBalance = currentState.remainingBalance,
                                 showReceiptOptions = viewModel.showReceiptScreen,
                                 isRefund = currentState.isRefund,  // 💸 Show refund-specific UI
+                                wasPayLaterOrder = wasPayLaterOrder,  // 💳 Pay-later context
+                                payLaterOrdersCount = payLaterOrdersCount,  // 💳 Remaining count
                                 onPrintReceipt = viewModel::printReceipt,
                                 onPrintKitchenTicket = {
                                     currentState.orderItems?.let { items ->
@@ -541,6 +547,10 @@ fun PaymentScreen(
                                         onNavigateToOrder(orderIdValue, tableId)
                                     }
                                 },
+                                onNavigateToPayLaterOrders = {
+                                    viewModel.resetPayment()
+                                    onNavigateToPayLaterOrders()
+                                },  // 💳 Navigate to pay-later list
                                 onSendReceipt = viewModel::sendReceiptByEmail,
                                 isSendingReceipt = isSendingReceipt,
                                 // 👤 Customer search for email receipt dialog
@@ -954,6 +964,8 @@ private fun PaymentSuccessContent(
     remainingBalance: java.math.BigDecimal? = null,  // ⭐ NEW: Amount left to pay (for split payments)
     showReceiptOptions: Boolean = true,  // ⚙️ TPV Settings: Show/hide QR code & print button
     isRefund: Boolean = false,  // 💸 True = show refund-specific UI text
+    wasPayLaterOrder: Boolean = false,  // 💳 True = order had customers (pay-later)
+    payLaterOrdersCount: Int = 0,  // 💳 Remaining pay-later orders count
     onPrintReceipt: () -> Unit = {},
     onPrintKitchenTicket: () -> Unit = {},  // 🆕 Print kitchen ticket (comanda)
     onNavigateBack: () -> Unit,  // 🆕 Navigate to WelcomeScreen (home button)
@@ -961,6 +973,7 @@ private fun PaymentSuccessContent(
     onNewFastPayment: () -> Unit,  // 🆕 Navigate to new fast payment (for fast payments)
     onClearTableAndReturnToFloorPlan: (String) -> Unit = {},  // 🆕 Clear table and return to floor plan
     onContinuePayment: () -> Unit = {},  // ⭐ NEW: Continue paying remaining balance
+    onNavigateToPayLaterOrders: () -> Unit = {},  // 💳 Navigate to pay-later orders list
     onSendReceipt: (email: String) -> Unit = {},  // 📧 Send receipt by email
     isSendingReceipt: Boolean = false,  // 📧 Loading state for sending receipt
     // 👤 Customer search for email receipt dialog
@@ -1056,12 +1069,24 @@ private fun PaymentSuccessContent(
                                 )
                             }
                         }
-                        // Normal flow: "Nueva Orden" or "Nuevo Pago"
+                        // Normal flow: "Pagar cuenta (X)", "Nueva Orden", or "Nuevo Pago"
                         else -> {
+                            // 💳 Determine button text and action
+                            val buttonText = when {
+                                wasPayLaterOrder && payLaterOrdersCount > 0 -> "Pagar cuenta ($payLaterOrdersCount)"
+                                wasPayLaterOrder -> "Pagar cuenta"  // Show even without count
+                                orderId != null -> "Nueva Orden"
+                                else -> "Nuevo Pago"
+                            }
+
+                            Timber.d("💳 [PaymentSuccess] Button: $buttonText | wasPayLater=$wasPayLaterOrder | count=$payLaterOrdersCount | orderId=$orderId")
+
                             Button(
                                 onClick = {
                                     val currentTableId = tableId
                                     when {
+                                        // 💳 Pay-later: Navigate to pay-later orders list
+                                        wasPayLaterOrder -> onNavigateToPayLaterOrders()
                                         // 🪑 Table order → Clear table and return to floor plan
                                         currentTableId != null -> onClearTableAndReturnToFloorPlan(currentTableId)
                                         // 📋 Quick order → Create new quick order
@@ -1077,10 +1102,7 @@ private fun PaymentSuccessContent(
                                 ),
                                 modifier = Modifier.height(48.dp)
                             ) {
-                                Text(
-                                    // ✅ Dynamic text based on payment type
-                                    if (orderId != null) "Nueva Orden" else "Nuevo Pago"
-                                )
+                                Text(buttonText)
                             }
                         }
                     }

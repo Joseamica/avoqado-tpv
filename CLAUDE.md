@@ -62,6 +62,15 @@ Kotlin, Jetpack Compose, POS terminals, payments, offline-first architecture, an
 | `docs/DOMAIN_RULES.md`               | Backend integration, Socket.IO, security patterns |
 | `docs/TPV_COMMAND_FLOW.md`           | Remote command system (lock, maintenance, ACK)    |
 
+### Features & Business Logic
+
+| Document                                 | Description                                              |
+| ---------------------------------------- | -------------------------------------------------------- |
+| `docs/PAY_LATER_README.md`               | **Pay Later Overview**: Index of all pay-later docs      |
+| `docs/PAY_LATER_IMPLEMENTATION.md`       | **Pay Later (Android)**: Bug fix + banner implementation |
+| `docs/PAY_LATER_TESTING_CHECKLIST.md`    | Pay Later QA manual + automated tests                    |
+| `avoqado-server/docs/PAY_LATER_ORDER_CLASSIFICATION.md` | **Pay Later (Backend)**: Classification logic |
+
 ### Development & Operations
 
 | Document                                 | Description                                              |
@@ -235,6 +244,7 @@ val orders = orderRepository.getOrders(limit = 20, cursor = cursor)
 | Items lose "printed" status     | Backend overwrites local fields | Load from local DB after cache                |
 | 401 "Usuario no encontrado"     | Wrong variant                   | Use `sandboxDebug` for testing                |
 | Sandbox/Production sync issues  | Modified only one variant       | Sync changes between both variants            |
+| Blumon rechaza APK              | APK enviado sin firmar          | Firmar con debug key antes de enviar          |
 
 **Full troubleshooting**: See individual guides in `docs/`
 
@@ -350,6 +360,40 @@ Actions: read, create, update, delete, refund, comp, void, settings, execute
 ./gradlew assembleProductionRelease
 ```
 
+### Paso 4: ⚠️ CRÍTICO - Firmar APK para Blumon
+
+**Blumon REQUIERE recibir un APK FIRMADO** (aunque sea con debug key) para poder re-firmarlo con el certificado PAX.
+
+```bash
+# Firmar con debug keystore
+jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 \
+  -keystore ~/.android/debug.keystore \
+  -storepass android \
+  -keypass android \
+  app/build/outputs/apk/production/release/app-production-release-unsigned.apk \
+  androiddebugkey
+
+# Renombrar para claridad
+mv app/build/outputs/apk/production/release/app-production-release-unsigned.apk \
+   app/build/outputs/apk/production/release/app-production-release-signed.apk
+```
+
+### Paso 5: Enviar a Blumon
+
+1. Enviar `app-production-release-signed.apk` a Blumon
+2. Blumon lo re-firma con certificado PAX
+3. Recibir APK final firmado por PAX
+4. Ese APK se puede instalar en terminales de producción
+
+### ❌ ERROR COMÚN: Enviar APK Unsigned
+
+| APK Enviado | Resultado |
+|-------------|-----------|
+| **Firmado (debug key)** | ✅ Blumon puede procesarlo |
+| **Unsigned** | ❌ Blumon NO puede procesarlo |
+
+**Causa**: El sistema de firma de PAX requiere un APK con firma válida para poder re-firmarlo.
+
 ### Versión actual en build.gradle
 
 Ubicación: `app/build.gradle` → `android.defaultConfig`
@@ -365,6 +409,6 @@ versionName "1.2.3"   // Semántico: MAJOR.MINOR.PATCH
 
 ---
 
-**Last Updated:** 2025-12-17
+**Last Updated:** 2025-12-23
 **Maintainer:** Development Team
-**Version:** 4.1 (Added: Release Build Checklist)
+**Version:** 4.2 (Added: Blumon APK Signing Requirement)

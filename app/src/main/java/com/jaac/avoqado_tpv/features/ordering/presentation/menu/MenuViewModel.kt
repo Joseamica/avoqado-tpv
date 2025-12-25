@@ -28,9 +28,12 @@ import com.jaac.avoqado_tpv.features.ordering.domain.OrderDiscount
 import com.jaac.avoqado_tpv.features.ordering.domain.CouponCode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
@@ -156,6 +159,24 @@ class MenuViewModel @Inject constructor(
      */
     private val _isPreparingPayment = MutableStateFlow(false)
     val isPreparingPayment: StateFlow<Boolean> = _isPreparingPayment.asStateFlow()
+
+    // ============================================================================
+    // 🎯 UX Events (Snackbar, Navigation)
+    // ============================================================================
+
+    /**
+     * UI events for one-time actions (snackbar, navigation).
+     * Uses SharedFlow instead of StateFlow to prevent event replay on recomposition.
+     *
+     * @see MenuScreen for event collection and handling
+     */
+    sealed class MenuUiEvent {
+        data class ShowSnackbar(val message: String, val isError: Boolean = false) : MenuUiEvent()
+        data object NavigateBack : MenuUiEvent()
+    }
+
+    private val _uiEvents = MutableSharedFlow<MenuUiEvent>(replay = 0)
+    val uiEvents: SharedFlow<MenuUiEvent> = _uiEvents.asSharedFlow()
 
     // ============================================================================
     // 👤 Customer Search State (GuestTab)
@@ -504,6 +525,9 @@ class MenuViewModel @Inject constructor(
         }
 
         val order = currentState.order
+        // 💳 Capture orderCustomers at start to avoid race conditions
+        // Defensive pattern: ensures consistency even if _orderCustomers is updated during payment prep
+        val customersSnapshot = _orderCustomers.value
 
         return try {
             // Step 1: Force sync pending changes (bypass 2s debounce)
@@ -521,7 +545,11 @@ class MenuViewModel @Inject constructor(
 
             // Step 3: Cache and update local state
             orderSyncCoordinator.cacheBackendOrder(backendOrder)
-            val mergedOrder = orderSyncCoordinator.getLocalOrder(syncedOrderId) ?: backendOrder
+            // 💳 FIX: Merge orderCustomers from StateFlow with backend order
+            // API doesn't return orderCustomers, but we already loaded them in _orderCustomers
+            val mergedOrder = backendOrder.copy(orderCustomers = customersSnapshot)
+
+            Timber.d("💳 [Payment Prep] Merged customers | backend=${backendOrder.orderCustomers.size} | snapshot=${customersSnapshot.size} | final=${mergedOrder.orderCustomers.size}")
 
             // Step 4: Update UI state with correct amounts
             // ⭐ FIX: Only update _appliedDiscounts if backend has discount data
@@ -1740,7 +1768,7 @@ class MenuViewModel @Inject constructor(
                 return@launch
             }
 
-            val order = currentState.order
+            var order = currentState.order
             val venueId = deviceInfoManager.getVenueId()
             val staffId = secureStorage.getStaffId()  // Get staffId internally
 
@@ -1757,28 +1785,133 @@ class MenuViewModel @Inject constructor(
             try {
                 Timber.d("🗑️ Voiding items: ${itemIds.size} items, reason: $reason, staffId: $staffId")
 
+                // ⭐ FIX: Sync order to backend BEFORE voiding to get valid backend item IDs
+                // Local item IDs are NOT CUIDs and will be rejected by backend validation
+                Timber.d("🔄 [VoidItems] Syncing order to get backend item IDs...")
+                val syncedOrderId = orderSyncCoordinator.syncOrderImmediately(order.id)
+
+                if (syncedOrderId != order.id) {
+                    Timber.i("✅ [VoidItems] Order synced | original=${order.id} → synced=$syncedOrderId")
+                    order = order.copy(id = syncedOrderId)
+                }
+
+                // ⭐ FIX: Fetch order DIRECTLY from backend to get real item IDs (not local cache)
+                // Local DB still has local_item_ IDs even after sync
+                Timber.d("🔄 [VoidItems] Fetching order from backend to get real item IDs...")
+                val freshOrder = orderRepository.getOrder(venueId, syncedOrderId).getOrElse { error ->
+                    Timber.e(error, "❌ Failed to fetch order from backend")
+                    _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                        message = "Error al cargar orden: ${error.message}",
+                        isError = true
+                    ))
+                    return@launch
+                }
+                Timber.d("🔄 [VoidItems] Backend order loaded | items=${freshOrder.items.size}")
+
+                // ⭐ Guard: If order has no items, it was already voided
+                if (freshOrder.items.isEmpty()) {
+                    Timber.w("⚠️ [VoidItems] Order has no items - already voided")
+
+                    // ⭐ FIX: Sync local DB with backend state (remove local items, update status)
+                    updateStateWithOrder(freshOrder)
+                    Timber.i("🔄 [VoidItems] Local DB synced with backend (0 items)")
+
+                    _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                        message = "La orden ya fue anulada",
+                        isError = true
+                    ))
+                    _uiEvents.emit(MenuUiEvent.NavigateBack)
+                    return@launch
+                }
+
+                // Map local itemIds to backend itemIds by matching productId + quantity
+                // (In case user selected items before sync)
+                val backendItemIds = itemIds.mapNotNull { localId ->
+                    val localItem = order.items.find { it.id == localId }
+                    if (localItem != null) {
+                        // Find matching item in fresh order by productId
+                        val backendItem = freshOrder.items.find {
+                            it.productId == localItem.productId &&
+                            it.quantity == localItem.quantity &&
+                            it.unitPrice == localItem.unitPrice
+                        }
+                        if (backendItem != null) {
+                            Timber.d("🔄 [VoidItems] Mapped local ID $localId → backend ID ${backendItem.id}")
+                            backendItem.id
+                        } else {
+                            Timber.w("⚠️ [VoidItems] Could not find backend match for local item $localId")
+                            null
+                        }
+                    } else {
+                        // ID is already a backend ID (order was already synced)
+                        localId
+                    }
+                }
+
+                if (backendItemIds.isEmpty()) {
+                    Timber.e("❌ [VoidItems] No valid backend IDs found for selected items")
+                    _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                        message = "Error: No se pudieron identificar los items",
+                        isError = true
+                    ))
+                    return@launch
+                }
+
+                // ⚠️ Check if voiding all items (Toast/Square pattern: auto-closes order)
+                val remainingItems = freshOrder.items.filter { it.id !in backendItemIds }
+                val isVoidingAllItems = remainingItems.isEmpty()
+
+                if (isVoidingAllItems) {
+                    Timber.w("⚠️ [VoidItems] Voiding ALL items - order will be auto-closed")
+                }
+
+                Timber.d("🗑️ [VoidItems] Calling backend with ${backendItemIds.size} backend IDs")
+
                 // Call repository with version for optimistic concurrency control
                 orderRepository.voidItems(
                     venueId = venueId,
-                    orderId = order.id,
-                    itemIds = itemIds,
+                    orderId = syncedOrderId,
+                    itemIds = backendItemIds,
                     reason = reason,
                     staffId = staffId,
-                    currentVersion = order.version
+                    currentVersion = freshOrder.version
                 ).fold(
                     onSuccess = { updatedOrder ->
                         updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts
-                        Timber.d("✅ Items voided successfully")
-                        // TODO Step 10: Show success Snackbar
+
+                        // ⭐ Show appropriate message based on void scope
+                        val message = if (isVoidingAllItems) {
+                            "Orden cancelada (todos los items anulados)"
+                        } else {
+                            "Items anulados correctamente"
+                        }
+
+                        Timber.i("✅ [VoidItems] Items voided successfully | voidedAll=$isVoidingAllItems")
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                            message = message,
+                            isError = false
+                        ))
+
+                        // ⭐ If voided all items, navigate back to order list
+                        if (isVoidingAllItems) {
+                            Timber.d("🔙 [VoidItems] Navigating back - order was cancelled")
+                            _uiEvents.emit(MenuUiEvent.NavigateBack)
+                        }
                     },
                     onFailure = { error ->
                         Timber.e(error, "❌ Error voiding items")
-                        // TODO Step 10: Show error Snackbar
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                            message = "Error al anular items: ${error.message}",
+                            isError = true
+                        ))
                     }
                 )
             } catch (e: Exception) {
-                Timber.e(e, "❌ Error voiding items")
-                // TODO Step 10: Show error Snackbar
+                Timber.e(e, "❌ Exception in voidItems")
+                _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                    message = "Error inesperado: ${e.message}",
+                    isError = true
+                ))
             }
         }
     }
@@ -2288,6 +2421,14 @@ class MenuViewModel @Inject constructor(
     }
 
     /**
+     * Clear customer search state - reset to Idle.
+     * Called when dismissing customer search modals.
+     */
+    fun clearCustomerSearch() {
+        _customerSearchState.value = com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState.Idle
+    }
+
+    /**
      * @DEPRECATED: Use addCustomerToOrder() instead.
      * Select a customer for the order - kept for backward compatibility.
      */
@@ -2661,6 +2802,140 @@ class MenuViewModel @Inject constructor(
         _selectedCustomer.value = null
         _customerSearchState.value = com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState.Idle
         Timber.d("👥 [Order Customers] Cleared")
+    }
+
+    // ============================================================================
+    // Pay Later (Pagar Después)
+    // ============================================================================
+
+    /**
+     * Create a pay-later order by syncing current order to backend and linking customer.
+     *
+     * **Flow:**
+     * 1. Validate order has items
+     * 2. Sync local order to backend (if needed)
+     * 3. Link customer to order (marks as pay-later)
+     * 4. Clear current order from UI
+     *
+     * **Pay-later Definition:**
+     * An order with PENDING payment status AND customer linkage.
+     * This allows tracking who owes money without aggregating balances.
+     *
+     * @param customerId The customer ID to link to the order
+     */
+    fun createPayLaterOrder(customerId: String) {
+        val currentState = _state.value
+        if (currentState !is MenuState.Success) {
+            Timber.w("⚠️ [createPayLaterOrder] Cannot create pay-later order: no order loaded")
+            return
+        }
+
+        val order = currentState.order
+        if (order.items.isEmpty()) {
+            Timber.w("⚠️ [createPayLaterOrder] Cannot create pay-later order: order has no items")
+            return
+        }
+
+        // ⚠️ Guard: Prevent adding customer to pay-later order
+        if (_orderCustomers.value.isNotEmpty()) {
+            Timber.w("⚠️ [createPayLaterOrder] Order already has ${_orderCustomers.value.size} customer(s)")
+            viewModelScope.launch {
+                _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                    message = "Esta orden ya tiene un cliente asignado",
+                    isError = true
+                ))
+            }
+            return
+        }
+
+        var orderId = order.id
+
+        viewModelScope.launch {
+            val venueId = deviceInfoManager.getVenueId()
+            if (venueId == null) {
+                Timber.e("❌ [createPayLaterOrder] Cannot create pay-later order: venueId is null")
+                return@launch
+            }
+
+            _isAddingCustomer.value = true
+
+            try {
+                // 🔄 If order is local, sync first before linking customer
+                if (orderId.startsWith("local_")) {
+                    Timber.d("🔄 [createPayLaterOrder] Order is local, syncing to backend...")
+
+                    // Check if local order still exists (might have been synced by debounce)
+                    val localOrder = orderSyncCoordinator.getLocalOrder(orderId)
+                    if (localOrder == null) {
+                        // Order was already synced by debounce - check current state for new ID
+                        val latestState = _state.value
+                        if (latestState is MenuState.Success && !latestState.order.id.startsWith("local_")) {
+                            orderId = latestState.order.id
+                            Timber.i("✅ [createPayLaterOrder] Order was already synced by debounce | id=$orderId")
+                        } else {
+                            // Can't find the synced order - abort
+                            Timber.e("❌ [createPayLaterOrder] Order not found after debounce sync")
+                            _isAddingCustomer.value = false
+                            return@launch
+                        }
+                    } else {
+                        // Order still local, sync it now
+                        val syncedOrderId = orderSyncCoordinator.syncOrderImmediately(orderId)
+                        Timber.i("✅ [createPayLaterOrder] Order synced | $orderId → $syncedOrderId")
+                        orderId = syncedOrderId
+
+                        // Update state with synced order
+                        val syncedOrder = orderSyncCoordinator.getLocalOrder(syncedOrderId)
+                        if (syncedOrder != null) {
+                            updateStateWithOrder(syncedOrder)
+                        }
+                    }
+                }
+
+                // ✅ Link customer to order (marks as pay-later)
+                Timber.d("💳 [createPayLaterOrder] Linking customer to order | customerId=$customerId | orderId=$orderId")
+
+                orderRepository.addCustomerToOrder(
+                    venueId = venueId,
+                    orderId = orderId,
+                    customerId = customerId
+                ).onSuccess { updatedCustomers ->
+                    Timber.i("✅ [createPayLaterOrder] Pay-later order created | orderId=$orderId | customer=${updatedCustomers.firstOrNull()?.customer?.displayName}")
+
+                    // ✅ Emit success event and navigate back (like "Send to Kitchen")
+                    viewModelScope.launch {
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                            message = "Orden guardada para pagar después",
+                            isError = false
+                        ))
+
+                        // ✅ Clear state + navigate back (Room Flow stops observing)
+                        _currentOrderId.value = null  // Triggers Room Flow to stop observing
+                        _state.value = MenuState.Loading
+                        _uiEvents.emit(MenuUiEvent.NavigateBack)
+                    }
+                }.onFailure { error ->
+                    Timber.e(error, "❌ [createPayLaterOrder] Failed to link customer")
+                    viewModelScope.launch {
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                            message = "Error al crear orden: ${error.message}",
+                            isError = true
+                        ))
+                    }
+                }
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [createPayLaterOrder] Failed")
+                viewModelScope.launch {
+                    _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                        message = "Error: ${e.message}",
+                        isError = true
+                    ))
+                }
+            } finally {
+                _isAddingCustomer.value = false
+            }
+        }
     }
 
     // ============================================================================

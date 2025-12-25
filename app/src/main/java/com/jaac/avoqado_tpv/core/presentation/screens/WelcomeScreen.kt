@@ -315,8 +315,13 @@ private fun WelcomeScreenContent(
     // 🔐 Check if user has permission to access Settings
     var hasSettingsAccess by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        val result = permissionsRepository.getPermissions()
-        hasSettingsAccess = result.getOrNull()?.contains("tpv-terminal:settings") ?: false
+        val result = permissionsRepository.getPermissions(forceRefresh = true) // Force refresh to ensure fresh permissions
+        val permissions = result.getOrNull()
+        hasSettingsAccess = permissions?.contains("tpv-terminal:settings") ?: false
+        timber.log.Timber.i("🔐 [Settings] User role: $currentUserRole, hasSettingsAccess: $hasSettingsAccess, permissions count: ${permissions?.size ?: 0}")
+        if (!hasSettingsAccess && permissions != null) {
+            timber.log.Timber.w("🔐 [Settings] Missing tpv-terminal:settings. TPV permissions: ${permissions.filter { it.startsWith("tpv") }}")
+        }
     }
 
     // Modal states

@@ -96,7 +96,11 @@ class OrderRepositoryImpl @Inject constructor(
         return try {
             Timber.d("📋 [OrderList] Fetching orders for venueId=$venueId")
 
-            val response = apiService.getOrders(venueId)
+            // Include pay-later orders (orders with customers linked)
+            val response = apiService.getOrders(
+                venueId = venueId,
+                includePayLater = true
+            )
 
             if (response.isSuccessful) {
                 val body = response.body()

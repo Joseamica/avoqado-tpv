@@ -42,6 +42,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.features.ordering.presentation.components.PayLaterBanner
 import com.jaac.avoqado_tpv.features.ordering.presentation.components.UnpaidTakeoutBanner
 import timber.log.Timber
 
@@ -88,10 +89,12 @@ fun OrderingWelcomeScreen(
     onTableServiceClick: () -> Unit = {},
     onViewOrdersClick: () -> Unit = {},
     onViewUnpaidOrdersClick: () -> Unit = {},
+    onViewPayLaterOrdersClick: () -> Unit = {},
     onNavigateBack: () -> Unit = {},
     viewModel: OrderingWelcomeViewModel = hiltViewModel()
 ) {
     val unpaidTakeoutCount by viewModel.unpaidTakeoutCount.collectAsStateWithLifecycle()
+    val payLaterCount by viewModel.payLaterCount.collectAsStateWithLifecycle()
 
     // Refresh orders when screen is displayed
     LaunchedEffect(Unit) {
@@ -128,13 +131,25 @@ fun OrderingWelcomeScreen(
             CompositionLocalProvider(LocalResponsiveSizes provides sizes) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     // ═══════════════════════════════════════════════════════════
-                    // SECTION: Unpaid Takeout Banner (Warning) - FullWidth
+                    // SECTION: Unpaid Takeout Banner (Warning - Red) - FullWidth
                     // ═══════════════════════════════════════════════════════════
                     UnpaidTakeoutBanner(
                         count = unpaidTakeoutCount,
                         onClick = {
-                            Timber.d("🔔 [OrderingWelcome] Banner tapped | Navigating to unpaid TAKEOUT orders")
+                            Timber.d("🔔 [OrderingWelcome] UNPAID_TAKEOUT banner tapped")
                             onViewUnpaidOrdersClick()
+                        },
+                        modifier = Modifier.fillMaxWidth()  // FullWidth, sin padding
+                    )
+
+                    // ═══════════════════════════════════════════════════════════
+                    // SECTION: Pay Later Banner (Info - Blue) - FullWidth
+                    // ═══════════════════════════════════════════════════════════
+                    PayLaterBanner(
+                        count = payLaterCount,
+                        onClick = {
+                            Timber.d("💳 [OrderingWelcome] PAY_LATER banner tapped")
+                            onViewPayLaterOrdersClick()
                         },
                         modifier = Modifier.fillMaxWidth()  // FullWidth, sin padding
                     )

@@ -16,25 +16,32 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
@@ -57,6 +64,8 @@ import java.math.BigDecimal
  * - Real-time order updates via ViewModel
  * - Tap order to view details (navigate to MenuScreen)
  * - Empty state when no orders
+ * - **Pull-to-refresh** to manually reload orders
+ * - **Auto-refresh** when returning from MenuScreen
  *
  * Design:
  * - Filter chips at top (horizontal scroll)
@@ -68,6 +77,7 @@ import java.math.BigDecimal
  * @param modifier Modifier for customization
  * @param viewModel OrderListViewModel
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OrderListScreen(
     onNavigateBack: () -> Unit,
@@ -78,6 +88,7 @@ fun OrderListScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val selectedFilter by viewModel.selectedFilter.collectAsStateWithLifecycle()
+    val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
 
     // Set initial filter on first composition
     LaunchedEffect(initialFilter) {
@@ -85,6 +96,32 @@ fun OrderListScreen(
         if (initialFilter != OrderStatusFilter.ALL) {
             viewModel.selectFilter(initialFilter)
             Timber.d("✅ [OrderList] Applied filter: ${initialFilter.label}")
+        }
+    }
+
+    // ⭐ FIX 1: Auto-refresh when returning from MenuScreen (ON_RESUME)
+    // Skip first ON_RESUME (initial composition) to avoid double-loading
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val currentRefreshOrders = rememberUpdatedState(viewModel::refreshOrders)
+    var isFirstResume by remember { mutableStateOf(true) }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (isFirstResume) {
+                    // Skip first ON_RESUME (initial screen load)
+                    Timber.d("🔄 [OrderList] First resume - skipping auto-refresh")
+                    isFirstResume = false
+                } else {
+                    // Subsequent ON_RESUME = returning from another screen
+                    Timber.d("🔄 [OrderList] Screen resumed - refreshing orders")
+                    currentRefreshOrders.value()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
@@ -104,8 +141,10 @@ fun OrderListScreen(
             OrderListContent(
                 state = state,
                 selectedFilter = selectedFilter,
+                isRefreshing = isRefreshing,
                 onFilterChange = { viewModel.selectFilter(it) },
-                onOrderClick = onOrderClick
+                onOrderClick = onOrderClick,
+                onRefresh = { viewModel.refreshOrders() }
             )
         }
     }
@@ -113,20 +152,25 @@ fun OrderListScreen(
 
 /**
  * OrderListContent - Main content for order list
+ *
+ * ⭐ FIX 2: Added pull-to-refresh functionality
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun OrderListContent(
     state: OrderListState,
     selectedFilter: OrderStatusFilter,
+    isRefreshing: Boolean,
     onFilterChange: (OrderStatusFilter) -> Unit,
-    onOrderClick: (Order) -> Unit
+    onOrderClick: (Order) -> Unit,
+    onRefresh: () -> Unit
 ) {
     val sizes = LocalResponsiveSizes.current
 
     Column(
         modifier = Modifier.fillMaxSize()
     ) {
-        // Filter chips
+        // Filter chips (outside pull-to-refresh to stay fixed)
         FilterChipsRow(
             selectedFilter = selectedFilter,
             onFilterChange = onFilterChange
@@ -134,38 +178,52 @@ private fun OrderListContent(
 
         Spacer(modifier = Modifier.height(sizes.spacingMedium))
 
-        // Order list
-        when (state) {
-            is OrderListState.Loading -> {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator()
+        // ⭐ FIX 2: Wrap content in PullToRefreshBox
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = {
+                Timber.d("🔄 [OrderList] Pull-to-refresh triggered")
+                onRefresh()
+            },
+            modifier = Modifier.fillMaxSize()
+        ) {
+            // Order list
+            when (state) {
+                is OrderListState.Loading -> {
+                    // ⭐ FIX: Don't show spinner when pull-to-refresh is active
+                    // (PullToRefreshBox already shows its own indicator)
+                    if (!isRefreshing) {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    }
                 }
-            }
 
-            is OrderListState.Success -> {
-                if (state.orders.isEmpty()) {
-                    EmptyState(filter = selectedFilter)
-                } else {
-                    OrderList(
-                        orders = state.orders,
-                        onOrderClick = onOrderClick
-                    )
+                is OrderListState.Success -> {
+                    if (state.orders.isEmpty()) {
+                        EmptyState(filter = selectedFilter)
+                    } else {
+                        OrderList(
+                            orders = state.orders,
+                            onOrderClick = onOrderClick
+                        )
+                    }
                 }
-            }
 
-            is OrderListState.Error -> {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = state.message,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.error
-                    )
+                is OrderListState.Error -> {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = state.message,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
             }
         }
@@ -261,6 +319,7 @@ private fun EmptyState(
                     OrderStatusFilter.IN_PROGRESS -> "No hay órdenes en cocina"
                     OrderStatusFilter.COMPLETED -> "No hay órdenes completadas"
                     OrderStatusFilter.UNPAID_TAKEOUT -> stringResource(R.string.unpaid_takeout_empty_state)
+                    OrderStatusFilter.PAY_LATER -> "No hay órdenes pendientes de pago"
                 },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Medium,
@@ -287,7 +346,8 @@ enum class OrderStatusFilter(val label: String) {
     OPEN("Abiertas"),
     IN_PROGRESS("En Cocina"),
     COMPLETED("Completadas"),
-    UNPAID_TAKEOUT("Para Llevar sin Pagar");
+    UNPAID_TAKEOUT("Para Llevar sin Pagar"),
+    PAY_LATER("Pendientes de Pago");
 
     /**
      * Check if order matches this filter
@@ -301,8 +361,10 @@ enum class OrderStatusFilter(val label: String) {
             UNPAID_TAKEOUT -> {
                 order.orderType == OrderType.TAKEOUT &&
                 order.paymentStatus in listOf(PaymentStatus.PENDING, PaymentStatus.PARTIAL) &&
-                order.remainingBalance > BigDecimal.ZERO
+                order.remainingBalance > BigDecimal.ZERO &&
+                order.orderCustomers.isEmpty()  // ← Exclude orders with customers (they are PAY_LATER)
             }
+            PAY_LATER -> order.isPayLater
         }
     }
 }
@@ -319,8 +381,10 @@ private fun OrderListScreenPreview() {
             OrderListContent(
                 state = OrderListState.Success(emptyList()),
                 selectedFilter = OrderStatusFilter.ALL,
+                isRefreshing = false,
                 onFilterChange = {},
-                onOrderClick = {}
+                onOrderClick = {},
+                onRefresh = {}
             )
         }
     }
@@ -334,8 +398,10 @@ private fun OrderListScreenLoadingPreview() {
             OrderListContent(
                 state = OrderListState.Loading,
                 selectedFilter = OrderStatusFilter.ALL,
+                isRefreshing = false,
                 onFilterChange = {},
-                onOrderClick = {}
+                onOrderClick = {},
+                onRefresh = {}
             )
         }
     }

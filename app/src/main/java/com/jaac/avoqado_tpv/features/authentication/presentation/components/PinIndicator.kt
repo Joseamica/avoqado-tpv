@@ -14,6 +14,9 @@ import androidx.compose.ui.unit.dp
 /**
  * PIN Indicator Component
  *
+ * @deprecated Use [PinDisplay] instead. This component only supports fixed 4-digit PINs.
+ * PinDisplay supports variable length PINs (4-10 digits) with show/hide toggle.
+ *
  * Visual indicator showing how many PIN digits have been entered.
  * Follows Square POS and Toast POS pattern of filled/unfilled circles.
  *
@@ -35,6 +38,10 @@ import androidx.compose.ui.unit.dp
  * @param maxLength Maximum PIN length (typically 4)
  * @param modifier Modifier for the indicator container
  */
+@Deprecated(
+    message = "Use PinDisplay instead. PinIndicator only supports fixed 4-digit PINs.",
+    replaceWith = ReplaceWith("PinDisplay(pin = \"\", maxLength = 10)", "com.jaac.avoqado_tpv.features.authentication.presentation.components.PinDisplay")
+)
 @Composable
 fun PinIndicator(
     pinLength: Int,

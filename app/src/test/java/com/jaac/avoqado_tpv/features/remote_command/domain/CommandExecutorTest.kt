@@ -1,14 +1,11 @@
 package com.jaac.avoqado_tpv.features.remote_command.domain
 
 import android.content.Context
-import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
 import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
-import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
-import com.jaac.avoqado_tpv.features.remote_command.data.model.CommandResult
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommand
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandPriority
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus
@@ -39,7 +36,6 @@ class CommandExecutorTest {
 
     // Mocks
     private lateinit var mockContext: Context
-    private lateinit var mockSocketManager: SocketManager
     private lateinit var mockLockScreenManager: LockScreenManager
     private lateinit var mockMaintenanceManager: MaintenanceManager
     private lateinit var mockSecureStorage: SecureStorage
@@ -55,7 +51,6 @@ class CommandExecutorTest {
     fun setup() {
         // Create mocks
         mockContext = mockk(relaxed = true)
-        mockSocketManager = mockk(relaxed = true)
         mockLockScreenManager = mockk(relaxed = true)
         mockMaintenanceManager = mockk(relaxed = true)
         mockSecureStorage = mockk(relaxed = true)
@@ -78,7 +73,6 @@ class CommandExecutorTest {
         // Create CommandExecutor
         commandExecutor = CommandExecutor(
             context = mockContext,
-            socketManager = mockSocketManager,
             lockScreenManager = mockLockScreenManager,
             maintenanceManager = mockMaintenanceManager,
             secureStorage = mockSecureStorage
@@ -110,57 +104,6 @@ class CommandExecutorTest {
             requestedBy = "test@example.com",
             requestedByName = "Test Admin"
         )
-    }
-
-    // ========================================
-    // ACK EMISSION TESTS
-    // ========================================
-
-    @Test
-    fun `execute() should emit ACK immediately`() = runTest {
-        // Given
-        val command = createCommand(TpvCommandType.LOCK)
-
-        // When
-        commandExecutor.execute(command)
-
-        // Then
-        verify { mockSocketManager.emitCommandAck(command.commandId, testTerminalId) }
-    }
-
-    @Test
-    fun `execute() should emit STARTED after ACK`() = runTest {
-        // Given
-        val command = createCommand(TpvCommandType.LOCK)
-
-        // When
-        commandExecutor.execute(command)
-
-        // Then
-        verifyOrder {
-            mockSocketManager.emitCommandAck(command.commandId, testTerminalId)
-            mockSocketManager.emitCommandStarted(command.commandId, testTerminalId)
-        }
-    }
-
-    @Test
-    fun `execute() should emit RESULT after completion`() = runTest {
-        // Given
-        val command = createCommand(TpvCommandType.LOCK)
-
-        // When
-        commandExecutor.execute(command)
-
-        // Then
-        verify {
-            mockSocketManager.emitCommandResult(
-                commandId = command.commandId,
-                terminalId = testTerminalId,
-                resultStatus = TpvCommandResultStatus.SUCCESS.name,
-                message = any(),
-                resultData = any()
-            )
-        }
     }
 
     // ========================================
@@ -569,20 +512,4 @@ class CommandExecutorTest {
         assertThat(result.status).isEqualTo(TpvCommandResultStatus.REJECTED)
     }
 
-    // ========================================
-    // TERMINAL ID TESTS
-    // ========================================
-
-    @Test
-    fun `execute() should use UNKNOWN if serial number is null`() = runTest {
-        // Given
-        every { mockSecureStorage.getSerialNumber() } returns null
-        val command = createCommand(TpvCommandType.LOCK)
-
-        // When
-        commandExecutor.execute(command)
-
-        // Then
-        verify { mockSocketManager.emitCommandAck(command.commandId, "UNKNOWN") }
-    }
 }

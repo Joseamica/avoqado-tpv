@@ -16,8 +16,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv"
         minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.1.1"
+        versionCode = 4
+        versionName = "1.1.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -43,6 +43,7 @@ android {
         // buildConfigField("String", "TERMINAL_MODEL", "\"A910S\"")       // ← REMOVED
         // buildConfigField("String", "BLUMON_ENV", "\"SAND\"")            // ← REMOVED
     }
+
 
     // ⭐ PRODUCTION MIGRATION (2025-11-19): Build Variants for Sandbox + Production
     flavorDimensions += "environment"

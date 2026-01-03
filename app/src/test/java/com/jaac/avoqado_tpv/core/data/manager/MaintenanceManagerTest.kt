@@ -2,8 +2,13 @@ package com.jaac.avoqado_tpv.core.data.manager
 
 import app.cash.turbine.test
 import com.google.common.truth.Truth.assertThat
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.unmockkAll
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
+import org.junit.After
 import org.junit.Before
 import org.junit.Test
 
@@ -22,10 +27,21 @@ import org.junit.Test
 class MaintenanceManagerTest {
 
     private lateinit var maintenanceManager: MaintenanceManager
+    private lateinit var mockSecureStorage: SecureStorage
 
     @Before
     fun setup() {
-        maintenanceManager = MaintenanceManager()
+        mockSecureStorage = mockk(relaxed = true)
+        // Return not in maintenance by default
+        every { mockSecureStorage.getIsInMaintenance() } returns false
+        every { mockSecureStorage.getMaintenanceReason() } returns null
+        every { mockSecureStorage.getMaintenanceInitiatedBy() } returns null
+        maintenanceManager = MaintenanceManager(mockSecureStorage)
+    }
+
+    @After
+    fun tearDown() {
+        unmockkAll()
     }
 
     // ========================================

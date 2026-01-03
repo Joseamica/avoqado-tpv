@@ -61,38 +61,30 @@ object NetworkModule {
     /**
      * Certificate Pinner for SSL pinning
      *
-     * ⚠️ PRODUCTION ONLY - Disabled in DEBUG to allow testing with dev servers
+     * **DISABLED (2025-12-26):**
+     * Certificate pinning is disabled for all builds. HTTPS provides sufficient
+     * security for a POS app communicating with its own backend.
      *
-     * **Security:** Prevents man-in-the-middle attacks by validating server certificates
-     * Pattern used by Square POS, Toast POS, Stripe, etc.
+     * **Why disabled:**
+     * - Let's Encrypt certificates rotate every 90 days
+     * - Requires app updates to maintain pins (operational burden)
+     * - Risk of bricking deployed terminals if pins expire
+     * - HTTPS already prevents MITM attacks for trusted CAs
      *
-     * **Certificate Rotation:**
-     * - Pin MULTIPLE certificates (current + backup) to avoid downtime during rotation
-     * - Backend should rotate certificates 30 days before expiration
-     * - App should be updated with new pins before old certificates expire
+     * **If you need to re-enable pinning:**
+     * 1. Get current pin: openssl s_client -connect api.avoqado.io:443 | openssl x509 -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | openssl enc -base64
+     * 2. Add BOTH current AND backup pins (root CA)
+     * 3. Set up monitoring for certificate expiration
+     * 4. Have a process to update pins before expiration
      *
-     * **Current Pins (Example - MUST UPDATE BEFORE PRODUCTION):**
-     * - sha256/AAAA... → Primary certificate (api.avoqado.io)
-     * - sha256/BBBB... → Backup certificate (for rotation)
-     *
-     * @return CertificatePinner instance or null (DEBUG)
+     * @return null (pinning disabled)
      */
     @Provides
     @Singleton
     fun provideCertificatePinner(): CertificatePinner? {
-        // Skip certificate pinning in DEBUG builds
-        if (BuildConfig.DEBUG) {
-            return null
-        }
-
-        // ⚠️ TODO: UPDATE THESE PINS BEFORE PRODUCTION DEPLOYMENT
-        // Get real pins using: openssl s_client -connect api.avoqado.io:443 | openssl x509 -pubkey -noout | ...
-        return CertificatePinner.Builder()
-            // Primary certificate (current)
-            .add("api.avoqado.io", "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=") // ← PLACEHOLDER
-            // Backup certificate (for rotation - prevents downtime)
-            .add("api.avoqado.io", "sha256/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=") // ← PLACEHOLDER
-            .build()
+        // Certificate pinning disabled - HTTPS is sufficient for our use case
+        // This prevents app failures when Render rotates certificates
+        return null
     }
 
     /**

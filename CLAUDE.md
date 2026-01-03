@@ -360,46 +360,51 @@ Actions: read, create, update, delete, refund, comp, void, settings, execute
 ./gradlew assembleProductionRelease
 ```
 
-### Paso 4: ⚠️ CRÍTICO - Firmar APK para Blumon
+### Paso 4: ⚠️ CRÍTICO - Firmar APK con Signature Scheme v2
 
-**Blumon REQUIERE recibir un APK FIRMADO** (aunque sea con debug key) para poder re-firmarlo con el certificado PAX.
+**IMPORTANTE**: targetSdk 34+ REQUIERE APK Signature Scheme v2. Usar `apksigner` (NO `jarsigner`).
 
 ```bash
-# Firmar con debug keystore
-jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 \
-  -keystore ~/.android/debug.keystore \
-  -storepass android \
-  -keypass android \
-  app/build/outputs/apk/production/release/app-production-release-unsigned.apk \
-  androiddebugkey
+# ✅ CORRECTO: Usar apksigner para firma v2/v3
+~/Library/Android/sdk/build-tools/34.0.0/apksigner sign \
+  --ks ~/.android/debug.keystore \
+  --ks-pass pass:android \
+  --key-pass pass:android \
+  --out ~/Desktop/avoqado-tpv-VERSION-production-signed.apk \
+  app/build/outputs/apk/production/release/app-production-release-unsigned.apk
 
-# Renombrar para claridad
-mv app/build/outputs/apk/production/release/app-production-release-unsigned.apk \
-   app/build/outputs/apk/production/release/app-production-release-signed.apk
+# ❌ INCORRECTO: jarsigner solo hace v1 (falla en Android 11+)
+# jarsigner ... ← NO USAR
 ```
 
-### Paso 5: Enviar a Blumon
+### Paso 5: Verificar firma
 
-1. Enviar `app-production-release-signed.apk` a Blumon
+```bash
+~/Library/Android/sdk/build-tools/34.0.0/apksigner verify --verbose APK_FILE.apk
+# Debe mostrar: "Verified using v2 scheme: true"
+```
+
+### Paso 6: Enviar a Blumon
+
+1. Enviar APK firmado a Blumon
 2. Blumon lo re-firma con certificado PAX
 3. Recibir APK final firmado por PAX
 4. Ese APK se puede instalar en terminales de producción
 
-### ❌ ERROR COMÚN: Enviar APK Unsigned
+### ❌ ERRORES COMUNES
 
-| APK Enviado | Resultado |
-|-------------|-----------|
-| **Firmado (debug key)** | ✅ Blumon puede procesarlo |
-| **Unsigned** | ❌ Blumon NO puede procesarlo |
-
-**Causa**: El sistema de firma de PAX requiere un APK con firma válida para poder re-firmarlo.
+| Error | Causa | Solución |
+|-------|-------|----------|
+| "Error análisis paquete" | Firma v1 only (jarsigner) | Usar `apksigner` |
+| "Error análisis paquete" | APK corrupto | Verificar con `aapt2 dump badging` |
+| Blumon rechaza APK | APK unsigned | Firmar antes de enviar |
 
 ### Versión actual en build.gradle
 
-Ubicación: `app/build.gradle` → `android.defaultConfig`
+Ubicación: `app/build.gradle.kts` → `android.defaultConfig`
 ```kotlin
-versionCode 45        // Número único, siempre incrementa
-versionName "1.2.3"   // Semántico: MAJOR.MINOR.PATCH
+versionCode = 3       // Número único, siempre incrementa
+versionName = "1.1.1" // Semántico: MAJOR.MINOR.PATCH
 ```
 
 ### Regla de Oro
@@ -409,6 +414,6 @@ versionName "1.2.3"   // Semántico: MAJOR.MINOR.PATCH
 
 ---
 
-**Last Updated:** 2025-12-23
+**Last Updated:** 2025-12-26
 **Maintainer:** Development Team
-**Version:** 4.2 (Added: Blumon APK Signing Requirement)
+**Version:** 4.3 (Fixed: APK must use apksigner for v2 signature, not jarsigner)

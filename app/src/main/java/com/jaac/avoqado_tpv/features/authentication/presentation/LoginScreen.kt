@@ -27,7 +27,7 @@ import coil.compose.AsyncImage
 import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
-import com.jaac.avoqado_tpv.features.authentication.presentation.components.PinIndicator
+import com.jaac.avoqado_tpv.features.authentication.presentation.components.PinDisplay
 import com.jaac.avoqado_tpv.features.authentication.presentation.components.PinPad
 
 /**
@@ -38,7 +38,9 @@ import com.jaac.avoqado_tpv.features.authentication.presentation.components.PinP
  *
  * **Features:**
  * - Custom numeric PIN pad (no system keyboard)
- * - Visual PIN indicator (4 filled circles)
+ * - Variable length PIN support (4-10 digits)
+ * - Visual PIN display with show/hide toggle
+ * - Character counter always visible
  * - Two action buttons: Timeclock (⏱) and Ir (Login)
  * - Large touch targets for busy environments
  *
@@ -85,7 +87,7 @@ private fun LoginContent(
     onDismissError: () -> Unit
 ) {
     var pin by remember { mutableStateOf("") }
-    val isPinComplete = pin.length == 4
+    val isPinComplete = pin.length >= 4 // Minimum 4 digits to enable buttons
     val isInteractionEnabled = state !is LoginState.Loading && state !is LoginState.Success
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -113,10 +115,11 @@ private fun LoginContent(
 
                     Spacer(modifier = Modifier.height(sizes.spacingMedium))
 
-                    // PIN Indicator (circles showing how many digits entered)
-                    PinIndicator(
-                        pinLength = pin.length,
-                        maxLength = 4
+                    // PIN Display (masked digits with show/hide toggle and counter)
+                    PinDisplay(
+                        pin = pin,
+                        maxLength = 10,
+                        isError = state is LoginState.Error
                     )
 
                     Spacer(modifier = Modifier.height(sizes.spacingMedium))
@@ -124,7 +127,7 @@ private fun LoginContent(
                     // Custom PIN Pad (Square/Toast style)
                     PinPad(
                         onNumberClick = { digit ->
-                            if (pin.length < 4 && isInteractionEnabled) {
+                            if (pin.length < 10 && isInteractionEnabled) {
                                 pin += digit
                             }
                         },

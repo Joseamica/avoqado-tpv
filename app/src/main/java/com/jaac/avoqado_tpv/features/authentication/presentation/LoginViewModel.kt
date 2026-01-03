@@ -45,7 +45,7 @@ class LoginViewModel @Inject constructor(
     /**
      * Login with PIN
      *
-     * @param pin 4-6 digit PIN
+     * @param pin 4-10 digit PIN
      * @param venueId Venue ID from activation
      */
     fun loginWithPin(pin: String, venueId: String) {

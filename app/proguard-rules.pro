@@ -16,19 +16,36 @@
 # If these classes are obfuscated, SDK initialization will FAIL
 
 # ⚠️ CRITICAL: Production SDK uses com.blumonpay package
--keep class com.blumonpay.** { *; }
--keep interface com.blumonpay.** { *; }
+# The SDK performs DEX INTEGRITY CHECK - ANY modification causes crash
+# Must completely exclude from ALL optimizations
+-keep,allowoptimization class com.blumonpay.** { *; }
+-keep,allowoptimization interface com.blumonpay.** { *; }
+-keepclassmembers class com.blumonpay.** { *; }
+-keepnames class com.blumonpay.**
+-keepnames interface com.blumonpay.**
 -dontwarn com.blumonpay.**
 
-# lib_services AAR
--keep class com.example.clean_lib_services.** { *; }
--keep interface com.example.clean_lib_services.** { *; }
+# lib_services AAR (PAX payment processing)
+-keep,allowoptimization class com.example.clean_lib_services.** { *; }
+-keep,allowoptimization interface com.example.clean_lib_services.** { *; }
+-keepclassmembers class com.example.clean_lib_services.** { *; }
+-keepnames class com.example.clean_lib_services.**
 -dontwarn com.example.clean_lib_services.**
 
-# PAX SDK modules
--keep class com.paxsz.module.** { *; }
--keep class com.neptune.sdk.** { *; }
--dontwarn com.paxsz.module.**
+# PAX SDK modules - complete exclusion
+-keep,allowoptimization class com.paxsz.** { *; }
+-keep,allowoptimization class com.neptune.** { *; }
+-keepclassmembers class com.paxsz.** { *; }
+-keepclassmembers class com.neptune.** { *; }
+-keepnames class com.paxsz.**
+-keepnames class com.neptune.**
+-dontwarn com.paxsz.**
+-dontwarn com.neptune.**
+
+# PAX native libraries used by SDK
+-keep class com.pax.** { *; }
+-keepclassmembers class com.pax.** { *; }
+-dontwarn com.pax.**
 
 # Keep Blumon callback classes
 -keepclassmembers class * {
@@ -46,12 +63,20 @@
 -keep,allowobfuscation class com.jaac.avoqado_tpv.features.authorization.** { *; }
 
 # Repackage everything to generic names
+# EXCEPT payment SDKs which do DEX integrity checks
 -repackageclasses 'a.b.c'
 -allowaccessmodification
 
-# Aggressive optimization
+# Aggressive optimization - but exclude payment SDK classes
 -optimizationpasses 7
--optimizations !code/simplification/arithmetic,!field/*,!class/merging/*
+-optimizations !code/simplification/arithmetic,!field/*,!class/merging/*,!class/unboxing/enum
+
+# CRITICAL: Exclude Blumon/PAX SDK from all optimizations
+# These SDKs perform DEX integrity verification
+-keep,allowshrinking class com.blumonpay.** { *; }
+-keep,allowshrinking class com.pax.** { *; }
+-keep,allowshrinking class com.paxsz.** { *; }
+-keep,allowshrinking class com.neptune.** { *; }
 
 # ==========================================
 # 3. REMOVE ALL LOGS (SECURITY CRITICAL!)
@@ -246,8 +271,8 @@
 # ==========================================
 
 # Merge classes to reduce DEX count
+# NOTE: -mergeinterfacesaggressively removed because it breaks Blumon SDK DEX integrity check
 -allowaccessmodification
--mergeinterfacesaggressively
 
 # Remove debug info
 -assumenosideeffects class kotlin.jvm.internal.Intrinsics {

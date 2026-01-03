@@ -2,8 +2,13 @@ package com.jaac.avoqado_tpv.core.data.manager
 
 import app.cash.turbine.test
 import com.google.common.truth.Truth.assertThat
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.unmockkAll
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
+import org.junit.After
 import org.junit.Before
 import org.junit.Test
 
@@ -22,10 +27,22 @@ import org.junit.Test
 class LockScreenManagerTest {
 
     private lateinit var lockScreenManager: LockScreenManager
+    private lateinit var mockSecureStorage: SecureStorage
 
     @Before
     fun setup() {
-        lockScreenManager = LockScreenManager()
+        mockSecureStorage = mockk(relaxed = true)
+        // Return unlocked state by default
+        every { mockSecureStorage.getIsLocked() } returns false
+        every { mockSecureStorage.getLockReason() } returns null
+        every { mockSecureStorage.getLockMessage() } returns null
+        every { mockSecureStorage.getLockedBy() } returns null
+        lockScreenManager = LockScreenManager(mockSecureStorage)
+    }
+
+    @After
+    fun tearDown() {
+        unmockkAll()
     }
 
     // ========================================

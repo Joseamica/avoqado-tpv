@@ -76,6 +76,7 @@ interface OrderRepository {
      * @param covers Number of people (optional)
      * @param waiterId Waiter who created order
      * @param orderType DINE_IN, TAKEOUT, etc.
+     * @param skipCaching If true, skip caching order to local DB (used by OrderSyncCoordinator)
      * @return Result with created Order
      *
      * Backend: POST /tpv/venues/{venueId}/orders
@@ -85,7 +86,8 @@ interface OrderRepository {
         tableId: String?,
         covers: Int,
         waiterId: String?,
-        orderType: OrderType
+        orderType: OrderType,
+        skipCaching: Boolean = false
     ): Result<Order>
 
     /**
@@ -125,7 +127,8 @@ interface OrderRepository {
         venueId: String,
         orderId: String,
         items: List<AddOrderItemRequest>,
-        currentVersion: Int
+        currentVersion: Int,
+        skipCaching: Boolean = false
     ): Result<Order>
 
     /**

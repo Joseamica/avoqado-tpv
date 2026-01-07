@@ -191,4 +191,41 @@ sealed class NavRoute(val route: String) {
     data object RefundConfirmation : NavRoute("refund_confirmation/{paymentId}") {
         fun createRoute(paymentId: String) = "refund_confirmation/$paymentId"
     }
+
+    // ==================== KIOSK MODE ROUTES ====================
+
+    /**
+     * Kiosk Welcome screen - "Touch to Start" entry point
+     * Fullscreen customer-facing welcome with venue branding
+     *
+     * Contains hidden exit gesture (5 taps on logo) for staff
+     */
+    data object KioskWelcome : NavRoute("kiosk/welcome")
+
+    /**
+     * Kiosk Menu screen - Self-service product selection
+     * Grid of products with category filter bar and floating cart button
+     *
+     * Pattern: McDonald's kiosk style
+     * - Category bar at top
+     * - Large product cards with photos
+     * - Floating cart FAB with item count
+     */
+    data object KioskMenu : NavRoute("kiosk/menu")
+
+    /**
+     * Kiosk Cart screen - Order summary before payment
+     * Shows cart items with +/- controls, total, and "Pay Now" button
+     */
+    data object KioskCart : NavRoute("kiosk/cart")
+
+    /**
+     * Kiosk Success screen - Thank you after payment
+     * Shows order number and auto-resets to welcome after countdown
+     *
+     * @param orderNumber Display order number for customer
+     */
+    data object KioskSuccess : NavRoute("kiosk/success/{orderNumber}") {
+        fun createRoute(orderNumber: String) = "kiosk/success/$orderNumber"
+    }
 }

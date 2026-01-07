@@ -3,10 +3,12 @@ package com.jaac.avoqado_tpv.features.settings.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.manager.KioskModeManager
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -29,7 +31,9 @@ class SettingsViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val tpvSettingsRepository: TpvSettingsRepository,
     private val printerManager: PrinterManager,
-    private val shiftRepository: ShiftRepository
+    private val shiftRepository: ShiftRepository,
+    private val kioskModeManager: KioskModeManager,
+    private val permissionsRepository: PermissionsRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsState())
@@ -38,6 +42,7 @@ class SettingsViewModel @Inject constructor(
     init {
         loadSettings()
         observeTpvSettings()
+        observeKioskMode()
     }
 
     /**
@@ -47,6 +52,17 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             tpvSettingsRepository.settings.collect { settings ->
                 _state.update { it.copy(tpvSettings = settings) }
+            }
+        }
+    }
+
+    /**
+     * Observe kiosk mode changes from KioskModeManager
+     */
+    private fun observeKioskMode() {
+        viewModelScope.launch {
+            kioskModeManager.isKioskMode.collect { isKiosk ->
+                _state.update { it.copy(isKioskModeEnabled = isKiosk) }
             }
         }
     }
@@ -69,6 +85,9 @@ class SettingsViewModel @Inject constructor(
                 // Use tpvSettings.enableShifts as source of truth (synced from backend)
                 val isShiftSystemEnabled = tpvSettings.enableShifts
 
+                // Check kiosk permission
+                val hasKioskPermission = permissionsRepository.hasPermission("tpv-kiosk:enable")
+
                 _state.update {
                     it.copy(
                         serialNumber = serialNumber,
@@ -76,11 +95,12 @@ class SettingsViewModel @Inject constructor(
                         venueId = venueId,
                         venueStatus = venueStatus,
                         tpvSettings = tpvSettings,
-                        isShiftSystemEnabled = isShiftSystemEnabled
+                        isShiftSystemEnabled = isShiftSystemEnabled,
+                        hasKioskPermission = hasKioskPermission
                     )
                 }
 
-                Timber.d("⚙️ Settings loaded: serial=$serialNumber, venue=$venueName, status=$venueStatus")
+                Timber.d("⚙️ Settings loaded: serial=$serialNumber, venue=$venueName, status=$venueStatus, kioskPermission=$hasKioskPermission")
             } catch (e: Exception) {
                 Timber.e(e, "Failed to load settings")
                 _state.update {
@@ -232,6 +252,100 @@ class SettingsViewModel @Inject constructor(
      */
     fun dismissActiveShiftBlockedDialog() {
         _state.update { it.copy(showActiveShiftBlockedDialog = false, activeShiftStaffName = null) }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // KIOSK MODE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Toggle kiosk mode on/off.
+     *
+     * When enabled, terminal switches to self-service kiosk UI.
+     * Requires `tpv-kiosk:enable` permission (checked in loadSettings).
+     * Exits kiosk mode require staff PIN authentication.
+     *
+     * **Shift Validation**: If shift system is enabled, requires an open shift
+     * before activating kiosk mode. This prevents kiosk from being activated
+     * when there's no one to manage it.
+     */
+    fun toggleKioskMode() {
+        val newValue = !_state.value.isKioskModeEnabled
+        val venueId = _state.value.venueId
+
+        if (newValue) {
+            // Entering kiosk mode - need to validate shift if shift system is enabled
+            val isShiftSystemEnabled = _state.value.isShiftSystemEnabled
+
+            if (isShiftSystemEnabled && venueId != null) {
+                // Check for open shift before enabling kiosk
+                viewModelScope.launch {
+                    _state.update { it.copy(isSaving = true) }
+
+                    val shiftResult = shiftRepository.getCurrentShift(venueId)
+                    when (shiftResult) {
+                        is com.jaac.avoqado_tpv.core.domain.models.Result.Success -> {
+                            val currentShift = shiftResult.data
+                            if (currentShift == null || currentShift.status != ShiftStatus.OPEN) {
+                                // Block: No open shift exists
+                                _state.update {
+                                    it.copy(
+                                        isSaving = false,
+                                        showOpenShiftFirstDialog = true
+                                    )
+                                }
+                                Timber.w("🥝 [KIOSK] Cannot enable kiosk mode - no open shift")
+                                return@launch
+                            }
+
+                            // Shift is open - proceed with activation
+                            activateKioskMode(venueId)
+                        }
+                        is com.jaac.avoqado_tpv.core.domain.models.Result.Error -> {
+                            // Network error checking shift - show error
+                            _state.update {
+                                it.copy(
+                                    isSaving = false,
+                                    message = "Error al verificar turno. Intenta de nuevo."
+                                )
+                            }
+                            Timber.e(shiftResult.exception, "🥝 [KIOSK] Error checking shift before kiosk activation")
+                        }
+                    }
+                }
+            } else {
+                // No shift system or no venue ID - activate directly
+                activateKioskMode(venueId)
+            }
+        } else {
+            // Exiting kiosk mode
+            kioskModeManager.exitKioskMode()
+            _state.update {
+                it.copy(message = "Modo kiosko desactivado")
+            }
+            Timber.i("🥝 [KIOSK] Kiosk mode DISABLED from settings")
+        }
+    }
+
+    /**
+     * Internal function to activate kiosk mode after validation passes
+     */
+    private fun activateKioskMode(venueId: String?) {
+        kioskModeManager.enterKioskMode(venueId ?: "")
+        _state.update {
+            it.copy(
+                isSaving = false,
+                message = "Modo kiosko activado"
+            )
+        }
+        Timber.i("🥝 [KIOSK] Kiosk mode ENABLED from settings (venueId: $venueId)")
+    }
+
+    /**
+     * Dismiss the "open shift first" dialog
+     */
+    fun dismissOpenShiftFirstDialog() {
+        _state.update { it.copy(showOpenShiftFirstDialog = false) }
     }
 
     /**
@@ -419,6 +533,10 @@ data class SettingsState(
     // Local Settings
     val isShiftSystemEnabled: Boolean = true,
 
+    // Kiosk Mode
+    val isKioskModeEnabled: Boolean = false,
+    val hasKioskPermission: Boolean = false,
+
     // Loading states
     val isRefreshing: Boolean = false,
     val isPrinting: Boolean = false,
@@ -427,6 +545,7 @@ data class SettingsState(
     // Dialog states
     val showActiveShiftBlockedDialog: Boolean = false,
     val activeShiftStaffName: String? = null,
+    val showOpenShiftFirstDialog: Boolean = false,
 
     // Feedback message
     val message: String? = null

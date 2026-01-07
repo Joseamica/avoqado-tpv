@@ -7,6 +7,7 @@ import androidx.compose.material.icons.automirrored.filled.Help
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material3.*
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -47,6 +48,8 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
  * @param onRestartApp Callback when "Reiniciar App" is clicked
  * @param onSettings Callback when "Configuración" is clicked (optional, disabled if null)
  * @param onHelp Callback when "Ayuda" is clicked (optional, disabled if null)
+ * @param isKioskModeEnabled Current kiosk mode state (for switch)
+ * @param onKioskModeToggle Callback when kiosk toggle is clicked (optional, disabled if null)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,7 +58,9 @@ fun SettingsBottomSheet(
     onLogout: () -> Unit,
     onRestartApp: () -> Unit,
     onSettings: (() -> Unit)? = null,
-    onHelp: (() -> Unit)? = null
+    onHelp: (() -> Unit)? = null,
+    isKioskModeEnabled: Boolean = false,
+    onKioskModeToggle: (() -> Unit)? = null
 ) {
     // ✅ Skip partially expanded state - open fully
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -103,7 +108,17 @@ fun SettingsBottomSheet(
                 onClick = onRestartApp
             )
 
-            // Option 3: Configuración (Future)
+            // Option 3: Modo Kiosk (Self-service mode)
+            SettingsToggleOption(
+                icon = Icons.Default.Storefront,
+                label = "Modo Kiosk",
+                description = "Activar modo autoservicio para clientes",
+                enabled = onKioskModeToggle != null,
+                checked = isKioskModeEnabled,
+                onToggle = { onKioskModeToggle?.invoke() }
+            )
+
+            // Option 4: Configuración
             SettingsOption(
                 icon = Icons.Default.Settings,
                 label = "Configuración",
@@ -112,7 +127,7 @@ fun SettingsBottomSheet(
                 onClick = { onSettings?.invoke() }
             )
 
-            // Option 4: Ayuda (Future)
+            // Option 5: Ayuda (Future)
             SettingsOption(
                 icon = Icons.AutoMirrored.Filled.Help,
                 label = "Ayuda",
@@ -192,6 +207,73 @@ private fun SettingsOption(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+/**
+ * Settings option item with toggle switch (for kiosk mode)
+ */
+@Composable
+private fun SettingsToggleOption(
+    icon: ImageVector,
+    label: String,
+    description: String,
+    enabled: Boolean,
+    checked: Boolean,
+    onToggle: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onToggle)
+            .padding(horizontal = 24.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Icon
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            modifier = Modifier.size(24.dp),
+            tint = if (enabled) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+            }
+        )
+
+        Spacer(modifier = Modifier.width(16.dp))
+
+        // Text content
+        Column(
+            modifier = Modifier.weight(1f)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                }
+            )
+
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (enabled) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                }
+            )
+        }
+
+        // Switch
+        Switch(
+            checked = checked,
+            onCheckedChange = { onToggle() },
+            enabled = enabled
+        )
     }
 }
 

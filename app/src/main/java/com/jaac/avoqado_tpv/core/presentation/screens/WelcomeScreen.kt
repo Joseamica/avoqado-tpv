@@ -303,16 +303,20 @@ private fun WelcomeScreenContent(
     val secureStorage = remember { SecureStorage(context) }
     val currentUserRole = remember { secureStorage.getRole() }
 
-    // 🔐 Get permissions repository via EntryPoint for permission checks
-    val permissionsRepository = remember {
-        val hiltEntryPoint = EntryPointAccessors.fromApplication(
+    // 🔐 Get permissions repository and kiosk mode manager via EntryPoint
+    val hiltEntryPoint = remember {
+        EntryPointAccessors.fromApplication(
             context.applicationContext,
             PermissionsEntryPoint::class.java
         )
-        hiltEntryPoint.permissionsRepository()
     }
+    val permissionsRepository = remember { hiltEntryPoint.permissionsRepository() }
+    val kioskModeManager = remember { hiltEntryPoint.kioskModeManager() }
 
-    // 🔐 Check if user has permission to access Settings
+    // 🥝 Kiosk mode state
+    val isKioskModeEnabled by kioskModeManager.isKioskMode.collectAsStateWithLifecycle()
+
+    // 🔐 Check if user has permission to access Settings (and Kiosk Mode)
     var hasSettingsAccess by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         val result = permissionsRepository.getPermissions(forceRefresh = true) // Force refresh to ensure fresh permissions
@@ -497,7 +501,24 @@ private fun WelcomeScreenContent(
                     onNavigateToSettings()
                 }
             } else null,
-            onHelp = null // Disabled - future feature
+            onHelp = null, // Disabled - future feature
+            // 🥝 Kiosk Mode Toggle - same permission as Settings
+            isKioskModeEnabled = isKioskModeEnabled,
+            onKioskModeToggle = if (hasSettingsAccess) {
+                {
+                    showSettingsModal = false
+                    val venueId = secureStorage.getVenueId()
+                    if (venueId != null) {
+                        if (isKioskModeEnabled) {
+                            // Exit kiosk mode
+                            kioskModeManager.exitKioskMode()
+                        } else {
+                            // Enter kiosk mode
+                            kioskModeManager.enterKioskMode(venueId)
+                        }
+                    }
+                }
+            } else null
         )
     }
 

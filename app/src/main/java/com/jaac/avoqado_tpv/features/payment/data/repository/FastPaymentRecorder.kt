@@ -219,7 +219,7 @@ class FastPaymentRecorder @Inject constructor(
         return FastPaymentRequest(
             // Venue ID (required in body in addition to URL path)
             venueId = context.venueId,
-
+            
             // Amounts: Convert pesos to cents
             amount = (context.amount * 100.toBigDecimal()).toInt(),
             tip = (context.tip * 100.toBigDecimal()).toInt(),

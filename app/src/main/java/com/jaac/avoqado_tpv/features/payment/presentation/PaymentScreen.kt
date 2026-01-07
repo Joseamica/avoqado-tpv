@@ -16,6 +16,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Print
@@ -107,6 +108,9 @@ fun PaymentScreen(
     // 💳 PAY-LATER CONTEXT PARAMS
     wasPayLaterOrder: Boolean = false,  // 💳 True = order had customers (for contextual button)
     payLaterOrdersCount: Int = 0,  // 💳 Remaining pay-later orders count
+    // 🥝 KIOSK MODE PARAMS
+    isKioskPayment: Boolean = false,  // 🥝 True = payment from kiosk self-service flow
+    onKioskPaymentSuccess: ((String, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt?, List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>?) -> Unit)? = null,  // 🥝 Callback with orderNumber + receipt + orderItems when kiosk payment succeeds
     onNavigateBack: () -> Unit,
     onNavigateToShifts: () -> Unit = {},  // 🆕 Navigate to Shifts screen (for "No shift open" errors)
     onNavigateToNewOrder: () -> Unit = {},  // 🆕 Navigate to new order (Toast/Square pattern)
@@ -371,15 +375,20 @@ fun PaymentScreen(
                             viewModel.updateSelectedMerchant(merchant)
                         },
                         onStartPayment = {
-                            viewModel.startPayment(currentState.totalAmount)
+                            // ✅ FIX: Pass SUBTOTAL (not totalAmount) - tip is tracked separately in currentTip
+                            // Backend receives: amount (subtotal) + tip (currentTip) separately
+                            viewModel.startPayment(currentState.subtotal)
                         },
                         onStartCashPayment = {
-                            viewModel.processCashPayment(currentState.totalAmount)
+                            // ✅ FIX: Pass SUBTOTAL - processCashPayment reads subtotal from state anyway
+                            viewModel.processCashPayment(currentState.subtotal)
                         },
                         onNavigateBack = {
                             // Go back to tip selection
                             viewModel.goBackOneStep()
-                        }
+                        },
+                        // 🥝 KIOSK MODE: Cash is enabled (customers may want to pay in cash)
+                        showCashOption = true
                     )
                 }
 
@@ -490,21 +499,40 @@ fun PaymentScreen(
                         mutableStateOf(true)
                     }
 
+                    // 🥝 KIOSK: Auto-navigate to KioskSuccessScreen when receipt is ready
+                    if (isKioskPayment && onKioskPaymentSuccess != null && currentState.receipt != null) {
+                        LaunchedEffect(currentState.receipt) {
+                            Timber.i("🥝 [KIOSK] Receipt ready - navigating to KioskSuccessScreen | URL=${currentState.receipt?.receiptUrl}, items=${currentState.orderItems?.size}")
+                            val displayOrderNumber = currentState.orderNumber ?: orderNumber ?: "0000"
+                            viewModel.resetPayment()
+                            onKioskPaymentSuccess(displayOrderNumber, currentState.receipt, currentState.orderItems)
+                        }
+                    }
+
                     when {
                         // 🎉 Phase 1: Show approved animation
                         showApprovedAnimation -> {
                             PaymentApprovedScreen(
                                 amount = currentState.amount,
                                 onAnimationComplete = {
-                                    Timber.d("🎉 [Approved] Animation complete, showing success content")
-                                    showApprovedAnimation = false
+                                    if (isKioskPayment && onKioskPaymentSuccess != null) {
+                                        // 🥝 KIOSK: Wait for receipt (handled by LaunchedEffect above)
+                                        // Just log that animation completed
+                                        Timber.d("🥝 [KIOSK] Approved animation complete - waiting for receipt...")
+                                    } else {
+                                        // Staff: Show PaymentSuccessContent as normal
+                                        Timber.d("🎉 [Approved] Animation complete, showing success content")
+                                        showApprovedAnimation = false
+                                    }
                                 },
                                 isRefund = currentState.isRefund  // 💸 Show "Reembolso Aprobado" for refunds
                             )
                         }
 
-                        // ✅ Phase 2: Show success content
+                        // ✅ Phase 2: Show success content (unified for staff and kiosk)
                         else -> {
+                            // 🥝 KIOSK: Determine if this is kiosk mode
+                            val showKioskMode = isKioskPayment && onKioskPaymentSuccess != null
                             PaymentSuccessContent(
                                 authCode = currentState.authCode,
                                 amount = currentState.amount,
@@ -518,6 +546,17 @@ fun PaymentScreen(
                                 isRefund = currentState.isRefund,  // 💸 Show refund-specific UI
                                 wasPayLaterOrder = wasPayLaterOrder,  // 💳 Pay-later context
                                 payLaterOrdersCount = payLaterOrdersCount,  // 💳 Remaining count
+                                // 🥝 KIOSK MODE PARAMS
+                                isKioskPayment = showKioskMode,
+                                kioskCountdownSeconds = 12,
+                                onKioskTimeout = {
+                                    if (showKioskMode && onKioskPaymentSuccess != null) {
+                                        Timber.i("🥝 [KIOSK] Auto-dismiss from unified success screen")
+                                        val displayOrderNumber = currentState.orderNumber ?: orderNumber ?: "0000"
+                                        viewModel.resetPayment()
+                                        onKioskPaymentSuccess(displayOrderNumber, currentState.receipt, currentState.orderItems)
+                                    }
+                                },
                                 onPrintReceipt = viewModel::printReceipt,
                                 onPrintKitchenTicket = {
                                     currentState.orderItems?.let { items ->
@@ -966,6 +1005,10 @@ private fun PaymentSuccessContent(
     isRefund: Boolean = false,  // 💸 True = show refund-specific UI text
     wasPayLaterOrder: Boolean = false,  // 💳 True = order had customers (pay-later)
     payLaterOrdersCount: Int = 0,  // 💳 Remaining pay-later orders count
+    // 🥝 KIOSK MODE PARAMS
+    isKioskPayment: Boolean = false,  // 🥝 True = kiosk mode with auto-dismiss
+    kioskCountdownSeconds: Int = 12,  // 🥝 Seconds before auto-dismiss
+    onKioskTimeout: () -> Unit = {},  // 🥝 Callback when kiosk countdown finishes
     onPrintReceipt: () -> Unit = {},
     onPrintKitchenTicket: () -> Unit = {},  // 🆕 Print kitchen ticket (comanda)
     onNavigateBack: () -> Unit,  // 🆕 Navigate to WelcomeScreen (home button)
@@ -985,7 +1028,7 @@ private fun PaymentSuccessContent(
     onResetCustomerSearch: () -> Unit = {}
 ) {
     // Parse amounts (prefer receipt data if available)
-    val totalAmount = receipt?.amount ?: (amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)
+    val totalAmount = receipt?.totalAmount ?: (amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)  // ✅ FIX: Use totalAmount (includes tip)
     val tipAmount = receipt?.tipAmount ?: java.math.BigDecimal.ZERO
     val subtotalAmount = receipt?.baseAmount ?: totalAmount
 
@@ -998,121 +1041,58 @@ private fun PaymentSuccessContent(
     // 📧 State for email receipt dialog
     var showEmailDialog by remember { mutableStateOf(false) }
 
+    // 🥝 KIOSK MODE: Auto-dismiss countdown
+    var kioskSecondsRemaining by remember { mutableIntStateOf(kioskCountdownSeconds) }
+
+    if (isKioskPayment) {
+        LaunchedEffect(Unit) {
+            Timber.i("🥝 [KIOSK-SUCCESS] Starting auto-dismiss countdown ($kioskCountdownSeconds seconds)")
+            while (kioskSecondsRemaining > 0) {
+                delay(1000)
+                kioskSecondsRemaining--
+                if (kioskSecondsRemaining <= 3) {
+                    Timber.d("🥝 [KIOSK-SUCCESS] Countdown: $kioskSecondsRemaining seconds remaining")
+                }
+            }
+            Timber.i("🥝 [KIOSK-SUCCESS] Auto-dismiss triggered")
+            onKioskTimeout()
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // Custom toolbar with individual buttons (matching AvoqadoPOS design)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 8.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+        // 🥝 KIOSK MODE: Show simplified toolbar with countdown
+        if (isKioskPayment) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 16.dp),
+                contentAlignment = Alignment.Center
             ) {
-                // Home button (left) - Navigate to WelcomeScreen
-                IconButton(
-                    onClick = onNavigateBack,  // ✅ Navigate to WelcomeScreen
-                    modifier = Modifier
-                        .size(48.dp)
-                        .border(
-                            width = 1.dp,
-                            color = MaterialTheme.colorScheme.outline,
-                            shape = RoundedCornerShape(12.dp)
-                        )
+                Text(
+                    text = "Nueva orden en $kioskSecondsRemaining segundos...",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            // Custom toolbar with individual buttons (matching AvoqadoPOS design)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.Home,  // ✅ Home icon
-                        contentDescription = "Inicio",
-                        tint = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-
-                // Center button - "Listo" (refund), "Continuar pagando" (remaining balance), or "Nueva Orden"/"Nuevo Pago"
-                // ✅ Centered using Box alignment
-                Box(
-                    modifier = Modifier.weight(1f),
-                    contentAlignment = Alignment.Center
-                ) {
-                    when {
-                        // 💸 Refund: Show "Listo" button that navigates back
-                        isRefund -> {
-                            Button(
-                                onClick = onNavigateBack,
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primary,
-                                    contentColor = MaterialTheme.colorScheme.onPrimary
-                                ),
-                                modifier = Modifier.height(48.dp)
-                            ) {
-                                Text(text = "Listo")
-                            }
-                        }
-                        // ⭐ Split payment: Show "Continuar pagando" button with remaining amount
-                        hasRemainingBalance -> {
-                            Button(
-                                onClick = onContinuePayment,
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primary,  // Highlighted color
-                                    contentColor = MaterialTheme.colorScheme.onPrimary
-                                ),
-                                modifier = Modifier.height(48.dp)
-                            ) {
-                                Text(
-                                    text = "Continuar pagando $${String.format(java.util.Locale.US, "%.2f", remainingBalance)}"
-                                )
-                            }
-                        }
-                        // Normal flow: "Pagar cuenta (X)", "Nueva Orden", or "Nuevo Pago"
-                        else -> {
-                            // 💳 Determine button text and action
-                            val buttonText = when {
-                                wasPayLaterOrder && payLaterOrdersCount > 0 -> "Pagar cuenta ($payLaterOrdersCount)"
-                                wasPayLaterOrder -> "Pagar cuenta"  // Show even without count
-                                orderId != null -> "Nueva Orden"
-                                else -> "Nuevo Pago"
-                            }
-
-                            Timber.d("💳 [PaymentSuccess] Button: $buttonText | wasPayLater=$wasPayLaterOrder | count=$payLaterOrdersCount | orderId=$orderId")
-
-                            Button(
-                                onClick = {
-                                    val currentTableId = tableId
-                                    when {
-                                        // 💳 Pay-later: Navigate to pay-later orders list
-                                        wasPayLaterOrder -> onNavigateToPayLaterOrders()
-                                        // 🪑 Table order → Clear table and return to floor plan
-                                        currentTableId != null -> onClearTableAndReturnToFloorPlan(currentTableId)
-                                        // 📋 Quick order → Create new quick order
-                                        orderId != null -> onNewOrder()
-                                        // ⚡ Fast payment → New fast payment
-                                        else -> onNewFastPayment()
-                                    }
-                                },
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.surface,
-                                    contentColor = MaterialTheme.colorScheme.onSurface
-                                ),
-                                modifier = Modifier.height(48.dp)
-                            ) {
-                                Text(buttonText)
-                            }
-                        }
-                    }
-                }
-
-                // Order details sheet button (only if there are order items)
-                // ✅ Keeps right side balanced with left home button
-                if (!orderItems.isNullOrEmpty()) {
+                    // Home button (left) - Navigate to WelcomeScreen
                     IconButton(
-                        onClick = { showOrderDetailsModal = true },
+                        onClick = onNavigateBack,  // ✅ Navigate to WelcomeScreen
                         modifier = Modifier
                             .size(48.dp)
                             .border(
@@ -1122,14 +1102,111 @@ private fun PaymentSuccessContent(
                             )
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Receipt,
-                            contentDescription = "Ver detalles de la orden",
+                            imageVector = Icons.Filled.Home,  // ✅ Home icon
+                            contentDescription = "Inicio",
                             tint = MaterialTheme.colorScheme.onSurface
                         )
                     }
-                } else {
-                    // Spacer to balance layout when no receipt button
-                    Spacer(modifier = Modifier.size(48.dp))
+
+                    // Center button - "Listo" (refund), "Continuar pagando" (remaining balance), or "Nueva Orden"/"Nuevo Pago"
+                    // ✅ Centered using Box alignment
+                    Box(
+                        modifier = Modifier.weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        when {
+                            // 💸 Refund: Show "Listo" button that navigates back
+                            isRefund -> {
+                                Button(
+                                    onClick = onNavigateBack,
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
+                                    ),
+                                    modifier = Modifier.height(48.dp)
+                                ) {
+                                    Text(text = "Listo")
+                                }
+                            }
+                            // ⭐ Split payment: Show "Continuar pagando" button with remaining amount
+                            hasRemainingBalance -> {
+                                Button(
+                                    onClick = onContinuePayment,
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary,  // Highlighted color
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
+                                    ),
+                                    modifier = Modifier.height(48.dp)
+                                ) {
+                                    Text(
+                                        text = "Continuar pagando $${String.format(java.util.Locale.US, "%.2f", remainingBalance)}"
+                                    )
+                                }
+                            }
+                            // Normal flow: "Pagar cuenta (X)", "Nueva Orden", or "Nuevo Pago"
+                            else -> {
+                                // 💳 Determine button text and action
+                                val buttonText = when {
+                                    wasPayLaterOrder && payLaterOrdersCount > 0 -> "Pagar cuenta ($payLaterOrdersCount)"
+                                    wasPayLaterOrder -> "Pagar cuenta"  // Show even without count
+                                    orderId != null -> "Nueva Orden"
+                                    else -> "Nuevo Pago"
+                                }
+
+                                Timber.d("💳 [PaymentSuccess] Button: $buttonText | wasPayLater=$wasPayLaterOrder | count=$payLaterOrdersCount | orderId=$orderId")
+
+                                Button(
+                                    onClick = {
+                                        val currentTableId = tableId
+                                        when {
+                                            // 💳 Pay-later: Navigate to pay-later orders list
+                                            wasPayLaterOrder -> onNavigateToPayLaterOrders()
+                                            // 🪑 Table order → Clear table and return to floor plan
+                                            currentTableId != null -> onClearTableAndReturnToFloorPlan(currentTableId)
+                                            // 📋 Quick order → Create new quick order
+                                            orderId != null -> onNewOrder()
+                                            // ⚡ Fast payment → New fast payment
+                                            else -> onNewFastPayment()
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.surface,
+                                        contentColor = MaterialTheme.colorScheme.onSurface
+                                    ),
+                                    modifier = Modifier.height(48.dp)
+                                ) {
+                                    Text(buttonText)
+                                }
+                            }
+                        }
+                    }
+
+                    // Order details sheet button (only if there are order items)
+                    // ✅ Keeps right side balanced with left home button
+                    if (!orderItems.isNullOrEmpty()) {
+                        IconButton(
+                            onClick = { showOrderDetailsModal = true },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .border(
+                                    width = 1.dp,
+                                    color = MaterialTheme.colorScheme.outline,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Receipt,
+                                contentDescription = "Ver detalles de la orden",
+                                tint = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    } else {
+                        // Spacer to balance layout when no receipt button
+                        Spacer(modifier = Modifier.size(48.dp))
+                    }
                 }
             }
         }
@@ -1274,13 +1351,13 @@ private fun PaymentSuccessContent(
 
                     Spacer(modifier = Modifier.height(12.dp))  // Reduced from 16dp to 12dp
 
-                    // Breakdown: Total
+                    // Breakdown: Monto
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "Total",
+                            text = "Monto",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -2024,6 +2101,10 @@ private fun PaymentDetectingCardPreview() {
         PaymentDetectingCard(amount = "79.66")
     }
 }
+
+// ============================================================
+// PREVIEW SECTION
+// ============================================================
 
 @androidx.compose.ui.tooling.preview.Preview(name = "Loading - Dark Theme", showBackground = true)
 @Composable

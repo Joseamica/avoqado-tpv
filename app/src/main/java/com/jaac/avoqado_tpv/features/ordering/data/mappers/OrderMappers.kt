@@ -59,9 +59,9 @@ fun OrderItemDetailDto.toOrderItem(): OrderItem {
     return OrderItem(
         id = id,
         orderId = orderId,
-        productId = productId,
-        productName = product.name,  // ✅ Extract from nested product object
-        productSku = product.sku,     // ✅ Extract from nested product object
+        productId = productId ?: "",  // ✅ Handle nullable productId
+        productName = product?.name ?: "Producto eliminado",  // ✅ Handle nullable product
+        productSku = product?.sku ?: "",  // ✅ Handle nullable product
         quantity = quantity,
         unitPrice = BigDecimal(unitPrice.toString()),
         totalPrice = BigDecimal(totalPrice.toString()),
@@ -79,7 +79,7 @@ fun OrderItemDetailDto.toOrderItem(): OrderItem {
 fun ProductModifierDto.toProductModifier(): ProductModifier {
     return ProductModifier(
         id = id,
-        name = name,
+        name = name ?: "Modificador desconocido",  // ← Fallback para modifiers eliminados/sin nombre
         priceAdjustment = BigDecimal(priceAdjustment.toString()),
         type = (type ?: "MULTIPLE_CHOICE").toModifierType(),
         required = required ?: false,

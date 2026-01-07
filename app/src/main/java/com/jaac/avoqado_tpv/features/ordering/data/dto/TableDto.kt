@@ -57,8 +57,8 @@ data class ProductInfoDto(
 data class OrderItemDetailDto(
     @SerializedName("id") val id: String,
     @SerializedName("orderId") val orderId: String,
-    @SerializedName("productId") val productId: String,
-    @SerializedName("product") val product: ProductInfoDto,  // ✅ NESTED: Backend returns product object
+    @SerializedName("productId") val productId: String? = null,  // ✅ NULLABLE: Backend may return null for deleted/orphaned items
+    @SerializedName("product") val product: ProductInfoDto? = null,  // ✅ NULLABLE: Backend may return null for deleted products
     @SerializedName("quantity") val quantity: Int,
     @SerializedName("unitPrice") val unitPrice: Double,
     @SerializedName("total") val totalPrice: Double,  // ✅ Backend uses "total" not "totalPrice"
@@ -92,7 +92,7 @@ data class OrderItemDetailDto(
  */
 data class ProductModifierDto(
     @SerializedName("id") val id: String,
-    @SerializedName("name") val name: String,
+    @SerializedName("name") val name: String?,  // ← Nullable: backend puede devolver null si modifier fue eliminado
     @SerializedName("price") val priceAdjustment: Double,  // ✅ Backend sends "price"
     @SerializedName("type") val type: String? = "MULTIPLE_CHOICE",
     @SerializedName("required") val required: Boolean? = false,

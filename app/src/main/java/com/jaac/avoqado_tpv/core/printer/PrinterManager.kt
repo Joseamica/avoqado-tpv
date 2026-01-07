@@ -1233,6 +1233,160 @@ class PrinterManager @Inject constructor(
     }
 
     /**
+     * Print simplified kiosk receipt for self-service customers.
+     *
+     * **Purpose:** Simple receipt for kiosk customers - shows order number, QR code, and totals.
+     * More compact than full staff receipt since kiosk customers don't need detailed card info.
+     *
+     * **Ticket Layout:**
+     * ```
+     * ================================
+     *       RECIBO DE COMPRA
+     * ================================
+     * Orden #ORD-123
+     *
+     * Fecha: 15/01/2025  14:30:22
+     * --------------------------------
+     *
+     * Subtotal:        $480.00 MXN
+     * Propina:          $50.00 MXN
+     * ================================
+     * TOTAL:           $530.00 MXN
+     * ================================
+     *
+     *        [QR CODE]
+     *
+     * Escanea para ver tu recibo
+     * ================================
+     *    Gracias por tu compra
+     * ================================
+     * ```
+     *
+     * @param orderNumber Order number for display
+     * @param receiptUrl URL of digital receipt (for QR code)
+     * @param amount Total payment amount (formatted, e.g. "530.00")
+     * @param tipAmount Tip amount (formatted, e.g. "50.00")
+     * @return Result.success if printed, Result.failure if error
+     */
+    fun printKioskReceipt(
+        orderNumber: String,
+        receiptUrl: String?,
+        amount: String,
+        tipAmount: String? = null
+    ): Result<Unit> {
+        return try {
+            val printerInstance = printer ?: return Result.failure(
+                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+            )
+
+            Timber.i("🖨️ [Printer] Printing kiosk receipt for order: $orderNumber")
+
+            // Reset printer state
+            printerInstance.init()
+
+            // ========================================
+            // HEADER - Logo
+            // ========================================
+            try {
+                val originalLogo = android.graphics.BitmapFactory.decodeResource(
+                    context.resources,
+                    R.drawable.logo_avoqado_black
+                )
+                if (originalLogo != null) {
+                    val targetWidth = 220
+                    val aspectRatio = originalLogo.height.toFloat() / originalLogo.width.toFloat()
+                    val targetHeight = (targetWidth * aspectRatio).toInt()
+
+                    val scaledLogo = Bitmap.createScaledBitmap(originalLogo, targetWidth, targetHeight, true)
+                    val logoWithWhiteBg = Bitmap.createBitmap(scaledLogo.width, scaledLogo.height, Bitmap.Config.RGB_565)
+                    val canvas = android.graphics.Canvas(logoWithWhiteBg)
+                    canvas.drawColor(android.graphics.Color.WHITE)
+                    canvas.drawBitmap(scaledLogo, 0f, 0f, null)
+                    val centeredLogo = centerBitmap(logoWithWhiteBg, targetWidth = 384)
+                    printerInstance.printBitmap(centeredLogo)
+                    printerInstance.printStr("\n", null)
+                } else {
+                    printerInstance.printStr("          AVOQADO\n", null)
+                }
+            } catch (e: Exception) {
+                Timber.w(e, "⚠️ [Printer] Could not print logo, using text fallback")
+                printerInstance.printStr("          AVOQADO\n", null)
+            }
+
+            printerInstance.printStr("    Comprobante de Venta\n\n", null)
+            printerInstance.printStr("================================\n\n", null)
+
+            // Order number
+            if (orderNumber.isNotBlank()) {
+                printerInstance.printStr("Orden #$orderNumber\n\n", null)
+            }
+
+            // Timestamp
+            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", java.util.Locale("es", "MX"))
+            val currentDateTime = dateFormat.format(java.util.Date())
+            printerInstance.printStr("Fecha: $currentDateTime\n", null)
+            printerInstance.printStr("--------------------------------\n\n", null)
+
+            // ========================================
+            // AMOUNTS
+            // ========================================
+            val amountValue = amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+            val tipValue = tipAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+            val subtotal = amountValue - tipValue
+
+            // Only show subtotal if there's a tip
+            if (tipValue > java.math.BigDecimal.ZERO) {
+                printerInstance.printStr("Subtotal:       \$${subtotal.setScale(2, java.math.RoundingMode.HALF_UP)} MXN\n", null)
+                printerInstance.printStr("Propina:        \$${tipValue.setScale(2, java.math.RoundingMode.HALF_UP)} MXN\n", null)
+            }
+
+            printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("TOTAL:          \$${amountValue.setScale(2, java.math.RoundingMode.HALF_UP)} MXN\n", null)
+            printerInstance.printStr("================================\n\n", null)
+
+            // ========================================
+            // QR CODE (if receipt URL available)
+            // ========================================
+            if (receiptUrl != null) {
+                try {
+                    val qrBitmap = generateQrBitmap(receiptUrl, size = 200)
+                    if (qrBitmap != null) {
+                        val centeredQr = centerBitmap(qrBitmap, targetWidth = 384)
+                        printerInstance.printBitmap(centeredQr)
+                        printerInstance.printStr("\n", null)
+                        Timber.d("✅ [Printer] Kiosk receipt QR printed")
+                    }
+                } catch (e: Exception) {
+                    Timber.w(e, "⚠️ [Printer] Could not print QR code")
+                }
+                printerInstance.printStr(" Escanea para ver tu recibo\n\n", null)
+            }
+
+            // ========================================
+            // FOOTER
+            // ========================================
+            printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("   Gracias por tu compra\n", null)
+            printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("\n\n\n", null) // Feed paper
+
+            // Execute print
+            val result = printerInstance.start()
+
+            if (result == 0) {
+                Timber.i("✅ [Printer] Kiosk receipt printed successfully")
+                Result.success(Unit)
+            } else {
+                Timber.e("❌ [Printer] Print failed with code: $result")
+                Result.failure(Exception("Error al imprimir recibo (código: $result)"))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Printer] Failed to print kiosk receipt")
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Check if printer is available and ready.
      *
      * @return true if printer is available, false otherwise

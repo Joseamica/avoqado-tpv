@@ -4,6 +4,27 @@ This file is the **index** for Claude Code. It provides quick context and points
 
 ---
 
+## 🔴 MANDATORY: Documentation Update Rule (READ FIRST)
+
+**When implementing or modifying ANY feature, you MUST:**
+
+1. **Check if documentation exists** for the feature/area you're modifying
+2. **Update the documentation** if your changes affect documented behavior
+3. **Create new documentation** if implementing a new significant feature
+4. **Update references in this CLAUDE.md** if you create new docs
+5. **Cross-repo features** → Update `avoqado-server/docs/` (central hub)
+
+**This is NOT optional.** Documentation debt causes confusion and bugs.
+
+```
+✅ DO: Implement feature → Update docs → Commit both together
+❌ DON'T: Implement feature → "I'll document it later" → Never document it
+```
+
+**Central hub:** `avoqado-server/docs/README.md` is the master index for ALL cross-repo documentation.
+
+---
+
 ## 1. CRITICAL: Blumon Has TWO Separate Integrations
 
 **BEFORE working on anything Blumon**, identify which integration:
@@ -224,11 +245,56 @@ val orders = orderRepository.getOrders(limit = 20, cursor = cursor)
 2. Tests are living documentation
 3. If code + tests explain it clearly → don't document
 4. ALL new docs go in `docs/` directory, never in root
-5. **CRITICAL: Update documentation after every significant change**
-   - When fixing bugs → Document root cause and solution in relevant `.md` files
-   - When adding features → Update architecture docs if needed
-   - Blumon/payment changes → Update `avoqado-server/docs/blumon-tpv/BLUMON_MULTI_MERCHANT_ANALYSIS.md`
-   - This prevents knowledge loss and helps future developers understand the system
+
+### Documentation Update Checklist
+
+> **See "🔴 MANDATORY: Documentation Update Rule" at the top of this file.**
+
+**Checklist before committing:**
+- [ ] Does this change affect any existing documentation?
+- [ ] Did I update line number references if file structure changed?
+- [ ] Did I update progress percentages if completing phases?
+- [ ] Did I add new documentation if this is a new feature?
+
+**Avoid fragile line number references.** Instead of `"See file.kt lines 100-200"`, use:
+- Function/class names: `"See processPayment() in PaymentProcessor.kt"`
+- Section headers: `"See ## Bluetooth section in HARDWARE.md"`
+
+**Cross-repo updates:**
+- Blumon/payment changes → Update `avoqado-server/docs/blumon-tpv/`
+- API contract changes → Coordinate with backend team
+
+### Centralized Documentation (Multi-Repo)
+
+**`avoqado-server/docs/` is the SINGLE SOURCE OF TRUTH for cross-repo documentation.**
+
+**Master Index:** `avoqado-server/docs/README.md`
+
+```
+avoqado-server/docs/           ← CENTRAL HUB
+├── README.md                  ← Master index of ALL documentation
+├── features/                  ← Cross-repo features
+├── blumon-tpv/               ← Blumon TPV integration
+└── ...
+
+avoqado-tpv/docs/              ← Android-specific ONLY (this repo)
+├── android/                  ← Kotlin/Compose patterns
+└── devices/                  ← PAX hardware guides
+
+avoqado-web-dashboard/docs/    ← Frontend-specific ONLY
+└── ...
+```
+
+| Topic | Location |
+|-------|----------|
+| **Browse all docs** | `avoqado-server/docs/README.md` |
+| Backend architecture, APIs, DB | `avoqado-server/docs/` |
+| Blumon TPV integration | `avoqado-server/docs/blumon-tpv/` |
+| Blumon E-commerce | `avoqado-server/docs/blumon-ecommerce/` |
+| Business Types & MCC | `avoqado-server/docs/BUSINESS_TYPES.md` |
+| Database schema | `avoqado-server/docs/DATABASE_SCHEMA.md` |
+| Payment architecture | `avoqado-server/docs/PAYMENT_ARCHITECTURE.md` |
+| TPV Android specific | `docs/` (this repo) |
 
 ---
 
@@ -254,6 +320,7 @@ val orders = orderRepository.getOrders(limit = 20, cursor = cursor)
 
 | Need to...                    | Go to...                                 |
 | ----------------------------- | ---------------------------------------- |
+| **Browse ALL docs**           | `avoqado-server/docs/README.md`          |
 | Understand Kotlin patterns    | `docs/KOTLIN_BEST_PRACTICES.md`          |
 | Make decisions on UI/errors   | `docs/DECISION_MATRIX.md`                |
 | Work on Blumon payments       | `avoqado-server/docs/blumon-tpv/BLUMON_MULTI_MERCHANT_ANALYSIS.md` **(READ FIRST)** |

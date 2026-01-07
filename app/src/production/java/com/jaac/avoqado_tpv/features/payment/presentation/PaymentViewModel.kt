@@ -1467,7 +1467,10 @@ class PaymentViewModel @Inject constructor(
                 _state.value = PaymentState.ConfiguringKernel
                 Timber.i("[PHASE 1] PreTrans - Configuring EMV kernel...")
                 // 💸 REFUND SUPPORT: Use currentTransactionType (SALE or REFUND) instead of hardcoded SALE
-                val preParams = PreTransParams(currentAmountInCents, "0", currentTransactionType, CountryConstants.MEX)
+                // 💰 TIP FIX: Pass tip in cents to Blumon SDK (was hardcoded to "0")
+                val tipInCents = convertToCents(currentTip)
+                Timber.d("💰 [PreTrans] Amount: $currentAmountInCents cents | Tip: $tipInCents cents (from currentTip=$currentTip)")
+                val preParams = PreTransParams(currentAmountInCents, tipInCents, currentTransactionType, CountryConstants.MEX)
                 preTransUseCase.runInfallible(preParams)
                 Timber.d("✅ [PHASE 1] PreTrans completed")
 
@@ -1728,9 +1731,12 @@ class PaymentViewModel @Inject constructor(
 
                 Timber.i("🎉 PAYMENT APPROVED WITH ONLINE AUTHORIZATION!")
 
+                // ✅ FIX: Display total (subtotal + tip) in Success screen
+                // currentAmount = subtotal, currentTip = tip
                 _state.value = PaymentState.Success(
                     authCode = saleData.authorization ?: "",
-                    amount = currentAmount
+                    amount = calculateTotal(currentAmount, currentTip),
+                    tipAmount = currentTip
                 )
 
                 // ⭐ NEW: Record payment to backend (in background)
@@ -2244,15 +2250,20 @@ class PaymentViewModel @Inject constructor(
                 TransResultEnum.RESULT_REQ_ONLINE -> {
                     // Card requires online authorization with bank
                     Timber.i("[CONTACTLESS PHASE 3] RESULT_REQ_ONLINE → Extracting EMV tags and calling SaleIcc...")
-                    processContactlessOnlineAuthorization(formatAmountDecimal(currentAmount))  // ✅ Decimal format for SaleIcc
+                    // 💰 TIP FIX: Pass total (subtotal + tip) to SaleIcc
+                    val totalAmount = calculateTotal(currentAmount, currentTip)
+                    Timber.d("💰 [Contactless Online] Passing total to SaleIcc: $totalAmount (subtotal=$currentAmount + tip=$currentTip)")
+                    processContactlessOnlineAuthorization(formatAmountDecimal(totalAmount))  // ✅ Decimal format for SaleIcc
                 }
 
                 TransResultEnum.RESULT_OFFLINE_APPROVED -> {
                     // Card approved offline (no online authorization needed)
                     Timber.i("🎉 [CONTACTLESS PHASE 3] RESULT_OFFLINE_APPROVED → Payment approved offline!")
+                    // ✅ FIX: Display total (subtotal + tip)
                     _state.value = PaymentState.Success(
                         authCode = "OFFLINE_APPROVED",
-                        amount = currentAmount  // ✅ Use decimal format for display
+                        amount = calculateTotal(currentAmount, currentTip),
+                        tipAmount = currentTip
                     )
                 }
 
@@ -2412,9 +2423,11 @@ class PaymentViewModel @Inject constructor(
 
             Timber.i("🎉 CONTACTLESS PAYMENT APPROVED WITH ONLINE AUTHORIZATION!")
 
+            // ✅ FIX: Display total (subtotal + tip)
             _state.value = PaymentState.Success(
                 authCode = saleData.authorization ?: "",
-                amount = currentAmount  // ✅ Use decimal format for display
+                amount = calculateTotal(currentAmount, currentTip),
+                tipAmount = currentTip
             )
 
             // ⭐ NEW: Record payment to backend (in background)
@@ -2566,7 +2579,7 @@ class PaymentViewModel @Inject constructor(
 
                     _state.value = PaymentState.Success(
                         authCode = "EFECTIVO",
-                        amount = currentState.subtotal,
+                        amount = currentState.totalAmount,  // ✅ FIX: Use totalAmount (subtotal + tip) for display
                         tipAmount = currentState.tipAmount,
                         rating = currentState.rating,
                         receipt = receipt,
@@ -2586,7 +2599,7 @@ class PaymentViewModel @Inject constructor(
                     _state.value = PaymentState.Error(
                         message = "Error registrando pago en efectivo:\n\n${error.message ?: "Error desconocido"}",
                         context = RetryContext(
-                            amount = currentState.subtotal,
+                            amount = currentState.totalAmount,  // ✅ FIX: Use totalAmount for consistency
                             tipAmount = currentState.tipAmount,
                             rating = currentState.rating,
                             merchantAccountId = ""  // No merchant for cash
@@ -4699,7 +4712,10 @@ class PaymentViewModel @Inject constructor(
                 // ═══════════════════════════════════════════════════════════════════════════
                 _state.value = PaymentState.ConfiguringKernel
                 Timber.i("[REFUND PHASE 1] PreTrans - Configuring EMV kernel for REFUND...")
-                val preParams = PreTransParams(currentAmountInCents, "0", currentTransactionType, CountryConstants.MEX)
+                // 💰 TIP FIX: Pass tip in cents to Blumon SDK (was hardcoded to "0")
+                val tipInCents = convertToCents(currentTip)
+                Timber.d("💰 [PreTrans REFUND] Amount: $currentAmountInCents cents | Tip: $tipInCents cents")
+                val preParams = PreTransParams(currentAmountInCents, tipInCents, currentTransactionType, CountryConstants.MEX)
                 preTransUseCase.runInfallible(preParams)
                 Timber.d("✅ [REFUND PHASE 1] PreTrans completed with TransType.REFUND")
 
@@ -4906,7 +4922,10 @@ class PaymentViewModel @Inject constructor(
             when (transResultEnum) {
                 TransResultEnum.RESULT_REQ_ONLINE -> {
                     Timber.i("[CONTACTLESS REFUND] RESULT_REQ_ONLINE → Online authorization")
-                    processContactlessRefundOnlineAuth(formatAmountDecimal(currentAmount))
+                    // 💰 TIP FIX: Pass total (subtotal + tip) for refund
+                    val totalAmount = calculateTotal(currentAmount, currentTip)
+                    Timber.d("💰 [Contactless Refund Online] Passing total: $totalAmount (subtotal=$currentAmount + tip=$currentTip)")
+                    processContactlessRefundOnlineAuth(formatAmountDecimal(totalAmount))
                 }
                 TransResultEnum.RESULT_OFFLINE_APPROVED -> {
                     Timber.i("🎉 [CONTACTLESS REFUND] Offline approved!")

@@ -849,12 +849,14 @@ class OrderSyncCoordinator @Inject constructor(
         Timber.d("🆕 [Sync] Creating order on server | localId=${draftOrder.id}")
 
         // Step 1: Create order on server
+        // 🔄 [SYNC-FIX] Pass skipCaching=true to prevent race condition with ID replacement
         val result = orderRepository.createOrder(
             venueId = venueId,
             tableId = draftOrder.tableId,
             covers = draftOrder.covers,
             waiterId = draftOrder.waiterId,
-            orderType = OrderType.valueOf(draftOrder.orderType)
+            orderType = OrderType.valueOf(draftOrder.orderType),
+            skipCaching = true
         )
 
         if (result.isFailure) {
@@ -910,7 +912,8 @@ class OrderSyncCoordinator @Inject constructor(
                 venueId = venueId,
                 orderId = serverOrder.id,
                 items = addItemRequests,
-                currentVersion = serverOrder.version
+                currentVersion = serverOrder.version,
+                skipCaching = true  // 🔄 [SYNC-FIX] Prevent race with ID mapping
             )
 
             if (addItemsResult.isFailure) {

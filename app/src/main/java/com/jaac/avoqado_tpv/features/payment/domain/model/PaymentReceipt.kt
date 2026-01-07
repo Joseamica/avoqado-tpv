@@ -12,8 +12,12 @@ import java.math.BigDecimal
  * - paymentId: ID único del Payment en database
  * - receiptUrl: URL pública del recibo (ej. https://api.avoqado.io/api/v1/public/receipt/{accessKey})
  * - accessKey: Token seguro para acceder al recibo sin login
- * - amount: Monto pagado (para confirmación rápida en UI)
+ * - amount: Monto BASE pagado (subtotal SIN tip - así lo guarda el backend)
  * - tipAmount: Propina incluida (para confirmación rápida en UI)
+ *
+ * **IMPORTANTE - Backend Schema:**
+ * El backend guarda `payment.amount = subtotal` (sin tip) y `payment.tipAmount = tip` por separado.
+ * Por eso `totalAmount = amount + tipAmount` y `baseAmount = amount`.
  *
  * **Uso:**
  * ```kotlin
@@ -36,7 +40,7 @@ import java.math.BigDecimal
  * @param paymentId ID del payment en database (ej. "clxxx...")
  * @param receiptUrl URL completa del recibo público
  * @param accessKey Token de acceso único (CUID)
- * @param amount Monto total pagado (incluye tip)
+ * @param amount Monto BASE pagado (subtotal SIN propina)
  * @param tipAmount Propina incluida en el pago
  */
 data class PaymentReceipt(
@@ -47,17 +51,18 @@ data class PaymentReceipt(
     val tipAmount: BigDecimal,
 ) {
     /**
-     * Monto total del pago (amount ya incluye tip en el backend).
-     * Este getter es por conveniencia para UI.
+     * Monto total del pago (base + propina).
+     * ✅ FIX: Backend guarda subtotal en `amount`, tip en `tipAmount` por separado.
      */
     val totalAmount: BigDecimal
-        get() = amount
+        get() = amount + tipAmount
 
     /**
      * Monto sin propina (solo base payment).
+     * ✅ FIX: `amount` del backend YA ES el base (subtotal).
      */
     val baseAmount: BigDecimal
-        get() = amount - tipAmount
+        get() = amount
 
     /**
      * Verifica si el pago incluye propina.

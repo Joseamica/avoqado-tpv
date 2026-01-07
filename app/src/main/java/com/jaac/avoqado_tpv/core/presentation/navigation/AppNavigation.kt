@@ -78,7 +78,7 @@ import timber.log.Timber
 import java.time.Instant
 
 /**
- * EntryPoint for accessing TableRepository in AppNavigation
+ * EntryPoint for accessing dependencies in AppNavigation
  *
  * Required because AppNavigation is not a ViewModel and cannot use @Inject directly.
  * EntryPoints allow access to Hilt-provided dependencies from non-injected classes.
@@ -87,6 +87,9 @@ import java.time.Instant
 @InstallIn(SingletonComponent::class)
 interface AppNavigationEntryPoint {
     fun tableRepository(): TableRepository
+    fun kioskModeManager(): com.jaac.avoqado_tpv.core.data.manager.KioskModeManager
+    fun printerManager(): com.jaac.avoqado_tpv.core.printer.PrinterManager
+    fun paymentApiService(): com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
 }
 
 /**
@@ -112,31 +115,72 @@ fun AppNavigation(
     navController: NavHostController = rememberNavController(),
     startDestination: String = NavRoute.Splash.route
 ) {
+    // 📺 Observe session expiring state for loading overlay
+    val isSessionExpiring by sessionManager.isSessionExpiring.collectAsStateWithLifecycle()
+
+    // 🌐 CONNECTION MONITORING (Square/Toast pattern)
+    // Shows discrete banner when backend is unreachable, doesn't block operations
+    val connectionViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.ConnectionViewModel = hiltViewModel()
+    val connectionState by connectionViewModel.state.collectAsStateWithLifecycle()
+
+    // 🥝 KIOSK MODE OBSERVATION
+    // When in kiosk mode, show simplified customer-facing navigation instead of staff UI
+    val context = LocalContext.current
+    val kioskEntryPoint = remember {
+        EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            AppNavigationEntryPoint::class.java
+        )
+    }
+    val kioskModeManager = remember { kioskEntryPoint.kioskModeManager() }
+    val isKioskMode by kioskModeManager.isKioskMode.collectAsStateWithLifecycle()
+
     // 🔐 GLOBAL SESSION EXPIRATION LISTENER
     // Observes session events from TokenAuthenticator and navigates accordingly
+    // NOTE: Placed AFTER kiosk mode observation so we can exit kiosk mode if needed
     LaunchedEffect(Unit) {
         sessionManager.sessionEvents.collect { event ->
             when (event) {
                 is SessionEvent.Expired -> {
-                    // ✅ Guard: Don't navigate if already on Login screen
-                    // This prevents race condition where LoginViewModel is recreated
-                    // and loses VenueNotOperational state (e.g., venue suspended error)
-                    val currentRoute = navController.currentBackStackEntry?.destination?.route
-                    if (currentRoute != NavRoute.Login.route) {
-                        Timber.w("🚪 [AppNavigation] Session expired - navigating to Login")
-                        navController.navigate(NavRoute.Login.route) {
-                            popUpTo(0) { inclusive = true } // Clear entire back stack
-                        }
+                    // 🥝 If in kiosk mode, exit it first before navigating
+                    // The navController in kiosk mode uses KioskNavigation's NavHost
+                    // which doesn't have Login route, causing crash
+                    if (kioskModeManager.isKioskMode.value) {
+                        Timber.w("🚪 [AppNavigation] Session expired in kiosk mode - exiting kiosk first")
+                        kioskModeManager.exitKioskMode()
+                        // After exiting kiosk mode, the staff NavHost will render
+                        // and SplashScreen will navigate to Login (user not authenticated)
                     } else {
-                        Timber.d("🔐 [AppNavigation] Already on Login screen - ignoring SessionEvent.Expired")
+                        // ✅ Guard: Don't navigate if already on Login screen
+                        // This prevents race condition where LoginViewModel is recreated
+                        // and loses VenueNotOperational state (e.g., venue suspended error)
+                        val currentRoute = navController.currentBackStackEntry?.destination?.route
+                        if (currentRoute != NavRoute.Login.route) {
+                            Timber.w("🚪 [AppNavigation] Session expired - navigating to Login")
+                            navController.navigate(NavRoute.Login.route) {
+                                popUpTo(0) { inclusive = true } // Clear entire back stack
+                            }
+                        } else {
+                            Timber.d("🔐 [AppNavigation] Already on Login screen - ignoring SessionEvent.Expired")
+                        }
                     }
                     // Reset the expiring state after navigation completes
                     sessionManager.resetSessionExpiringState()
                 }
                 is SessionEvent.TerminalDeactivated -> {
-                    Timber.e("🔐 [AppNavigation] Terminal deactivated - navigating to Activation")
-                    navController.navigate(NavRoute.Activation.route) {
-                        popUpTo(0) { inclusive = true } // Clear entire back stack
+                    // 🥝 If in kiosk mode, exit it first before navigating
+                    // The navController in kiosk mode uses KioskNavigation's NavHost
+                    // which doesn't have Activation route, causing crash
+                    if (kioskModeManager.isKioskMode.value) {
+                        Timber.e("🔐 [AppNavigation] Terminal deactivated in kiosk mode - exiting kiosk first")
+                        kioskModeManager.exitKioskMode()
+                        // After exiting kiosk mode, the staff NavHost will render
+                        // and SplashScreen will navigate to Activation (terminal not activated)
+                    } else {
+                        Timber.e("🔐 [AppNavigation] Terminal deactivated - navigating to Activation")
+                        navController.navigate(NavRoute.Activation.route) {
+                            popUpTo(0) { inclusive = true } // Clear entire back stack
+                        }
                     }
                     // Reset the expiring state after navigation completes
                     sessionManager.resetSessionExpiringState()
@@ -145,13 +189,194 @@ fun AppNavigation(
         }
     }
 
-    // 📺 Observe session expiring state for loading overlay
-    val isSessionExpiring by sessionManager.isSessionExpiring.collectAsStateWithLifecycle()
+    // 🥝 KIOSK PAYMENT STATE
+    // Track when we're in the middle of a kiosk payment to show staff PaymentScreen
+    var kioskPaymentOrderId by remember { mutableStateOf<String?>(null) }
+    var kioskPaymentAmount by remember { mutableStateOf<Long?>(null) }
+    var kioskPaymentOrderNumber by remember { mutableStateOf<String?>(null) }
+    val isKioskPaymentInProgress = kioskPaymentOrderId != null
 
-    // 🌐 CONNECTION MONITORING (Square/Toast pattern)
-    // Shows discrete banner when backend is unreachable, doesn't block operations
-    val connectionViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.ConnectionViewModel = hiltViewModel()
-    val connectionState by connectionViewModel.state.collectAsStateWithLifecycle()
+    // 🥝 KIOSK SUCCESS STATE
+    // Track when to show success screen after kiosk payment
+    var kioskSuccessOrderNumber by remember { mutableStateOf<String?>(null) }
+    var kioskSuccessReceipt by remember { mutableStateOf<com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt?>(null) }
+    var kioskSuccessOrderItems by remember { mutableStateOf<List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>?>(null) }
+    val isKioskSuccessInProgress = kioskSuccessOrderNumber != null
+
+    // 🥝 KIOSK CART CLEARING
+    // Store clearCart function from KioskNavigation to clear cart after payment success
+    var kioskClearCart by remember { mutableStateOf<(() -> Unit)?>(null) }
+
+    // 🥝 KIOSK SUCCESS SCREEN - Render directly when payment completed
+    // This bypasses the staff NavHost to avoid navigation race conditions
+    if (isKioskMode && isKioskSuccessInProgress) {
+        // 🖨️ Get printer and API service from EntryPoint for receipt printing/email
+        val printerManager = remember { kioskEntryPoint.printerManager() }
+        val paymentApiService = remember { kioskEntryPoint.paymentApiService() }
+        val coroutineScopeForKiosk = rememberCoroutineScope()
+
+        com.jaac.avoqado_tpv.features.kiosk.presentation.screens.KioskSuccessScreen(
+            orderNumber = kioskSuccessOrderNumber!!,
+            receipt = kioskSuccessReceipt,
+            orderItems = kioskSuccessOrderItems,
+            onTimeout = {
+                Timber.i("🥝 [KIOSK] Success timeout - clearing cart and returning to welcome")
+                // Clear cart after successful payment
+                kioskClearCart?.invoke()
+                kioskSuccessOrderNumber = null
+                kioskSuccessReceipt = null
+                kioskSuccessOrderItems = null
+                // Will automatically show KioskNavigation (kiosk mode still active)
+            },
+            onPrintReceipt = {
+                // 🖨️ Print receipt using simplified kiosk receipt format
+                kioskSuccessReceipt?.let { receipt ->
+                    coroutineScopeForKiosk.launch {
+                        Timber.i("🥝 [KIOSK] Printing receipt for order: $kioskSuccessOrderNumber")
+                        printerManager.printKioskReceipt(
+                            orderNumber = kioskSuccessOrderNumber ?: "",
+                            receiptUrl = receipt.receiptUrl,
+                            amount = receipt.amount.toString(),
+                            tipAmount = receipt.tipAmount.toString()
+                        )
+                    }
+                } ?: Timber.w("🥝 [KIOSK] Cannot print - no receipt available")
+            },
+            onSendReceipt = { email ->
+                // 📧 Send receipt by email
+                kioskSuccessReceipt?.let { receipt ->
+                    coroutineScopeForKiosk.launch {
+                        Timber.i("🥝 [KIOSK] Sending receipt to: $email")
+                        try {
+                            val venueId = secureStorage.getVenueId()
+                            if (venueId != null) {
+                                val request = com.jaac.avoqado_tpv.features.payment.data.dto.SendReceiptRequest(
+                                    recipientEmail = email
+                                )
+                                val response = paymentApiService.sendReceipt(
+                                    venueId = venueId,
+                                    paymentId = receipt.paymentId,
+                                    request = request
+                                )
+                                if (response.isSuccessful && response.body()?.success == true) {
+                                    Timber.i("✅ [KIOSK] Receipt sent successfully to: $email")
+                                } else {
+                                    Timber.e("❌ [KIOSK] Failed to send receipt: ${response.errorBody()?.string()}")
+                                }
+                            } else {
+                                Timber.e("❌ [KIOSK] Cannot send receipt - no venueId")
+                            }
+                        } catch (e: Exception) {
+                            Timber.e(e, "❌ [KIOSK] Error sending receipt")
+                        }
+                    }
+                } ?: Timber.w("🥝 [KIOSK] Cannot send receipt - no receipt available")
+            }
+        )
+        return // Don't show anything else during kiosk success
+    }
+
+    // 🥝 KIOSK PAYMENT SCREEN - Render PaymentScreen directly
+    // This bypasses the staff NavHost to avoid race with SplashScreen
+    if (isKioskMode && isKioskPaymentInProgress) {
+        // Amount is already in pesos (DB stores pesos)
+        val amountPesos = remember(kioskPaymentAmount) {
+            java.math.BigDecimal(kioskPaymentAmount!!)
+        }
+
+        PaymentScreen(
+            initialAmount = amountPesos.toString(),
+            orderId = kioskPaymentOrderId,
+            orderNumber = kioskPaymentOrderNumber,
+            tableId = null,  // Kiosk orders don't have tables
+            skipReview = false,  // Show rating/tip if enabled
+            // Split payment params (not applicable for kiosk)
+            splitType = null,
+            equalPartsPartySize = null,
+            equalPartsPayedFor = null,
+            paidProductIds = emptyList(),
+            // Refund params (not applicable for kiosk)
+            isRefundMode = false,
+            refundAmount = null,
+            refundReason = null,
+            originalPaymentId = null,
+            originalOrderId = null,
+            originalTotalAmount = null,
+            originalTipAmount = null,
+            refundMerchantAccountId = null,
+            refundBlumonSerialNumber = null,
+            originalOperationNumber = null,
+            refundVenueId = null,
+            // Pay-later context (not applicable for kiosk)
+            wasPayLaterOrder = false,
+            payLaterOrdersCount = 0,
+            // 🥝 KIOSK MODE PARAMS
+            isKioskPayment = true,
+            onKioskPaymentSuccess = { displayOrderNumber, receipt, orderItems ->
+                // Clear kiosk payment state and show success screen with receipt
+                Timber.i("🥝 [KIOSK] Payment success - showing success screen with order: $displayOrderNumber, receipt: ${receipt != null}, items: ${orderItems?.size}")
+                kioskPaymentOrderId = null
+                kioskPaymentAmount = null
+                kioskPaymentOrderNumber = null
+                kioskSuccessOrderNumber = displayOrderNumber
+                kioskSuccessReceipt = receipt
+                kioskSuccessOrderItems = orderItems
+            },
+            onNavigateBack = {
+                // Cancel payment - return to kiosk navigation (cart)
+                Timber.i("🥝 [KIOSK] Payment cancelled - returning to kiosk")
+                kioskPaymentOrderId = null
+                kioskPaymentAmount = null
+                kioskPaymentOrderNumber = null
+                // Will automatically show KioskNavigation (kiosk mode still active)
+            },
+            onNavigateToShifts = {
+                // 🥝 In kiosk mode, we can't navigate to shifts (route doesn't exist in kiosk NavHost)
+                // Instead, exit kiosk mode - staff will need to open shift from normal UI
+                Timber.w("🥝 [KIOSK] Shift required but not available in kiosk mode - exiting kiosk")
+                Timber.w("🥝 [KIOSK] → Staff should open shift from normal UI, then re-enable kiosk mode")
+                kioskModeManager.exitKioskMode()
+                kioskPaymentOrderId = null
+                kioskPaymentAmount = null
+                kioskPaymentOrderNumber = null
+                // After exiting kiosk mode, staff NavHost will render at Splash
+                // which will navigate to Home (if authenticated) where they can open shift
+            },
+            // These callbacks are not applicable for kiosk mode
+            onNavigateToNewOrder = { /* Not used in kiosk */ },
+            onNavigateToNewFastPayment = { /* Not used in kiosk */ },
+            onClearTableAndReturnToFloorPlan = { /* Not used in kiosk */ },
+            onNavigateToOrder = { _, _ -> /* Not used in kiosk */ },
+            onNavigateToPayLaterOrders = { /* Not used in kiosk */ }
+        )
+        return // Don't show anything else during kiosk payment
+    }
+
+    // 🥝 KIOSK MODE - Separate navigation graph for self-service
+    if (isKioskMode) {
+        com.jaac.avoqado_tpv.features.kiosk.presentation.KioskNavigation(
+            navController = navController,
+            onExitKiosk = {
+                // Just exit kiosk mode - the recomposition will render the main NavHost
+                // No need to navigate since the kiosk graph doesn't have "home" route
+                kioskModeManager.exitKioskMode()
+            },
+            onNavigateToPayment = { orderId, amount, orderNumber ->
+                // Set kiosk payment state to trigger PaymentScreen render
+                kioskPaymentOrderId = orderId
+                kioskPaymentAmount = amount
+                kioskPaymentOrderNumber = orderNumber
+                Timber.i("🥝 [KIOSK] Starting payment: orderId=$orderId, amount=$amount, orderNumber=$orderNumber")
+            },
+            onClearCartRequest = { clearCartFn ->
+                // Store the clearCart function from KioskNavigation's ViewModel
+                // Called after payment success to clear cart items
+                kioskClearCart = clearCartFn
+                Timber.d("🥝 [KIOSK] Cart clear function registered from KioskNavigation")
+            }
+        )
+        return // Don't show staff navigation when in kiosk mode
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // 🌐 CONNECTION BANNER (pushes content down when visible)
@@ -581,7 +806,10 @@ fun AppNavigation(
             val wasPayLaterOrder = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("wasPayLaterOrder") ?: false
             val payLaterOrdersCount = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("payLaterOrdersCount") ?: 0
 
-            Timber.d("💳 [Payment] Pay-later context: wasPayLaterOrder=$wasPayLaterOrder, count=$payLaterOrdersCount")
+            // 🥝 KIOSK MODE PARAMS
+            val isKioskPayment = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("isKioskPayment") ?: false
+
+            Timber.d("💳 [Payment] Pay-later context: wasPayLaterOrder=$wasPayLaterOrder, count=$payLaterOrdersCount, isKiosk=$isKioskPayment")
 
             // 🔌 Get TableRepository via Hilt EntryPoint for clearing tables post-payment
             val context = LocalContext.current
@@ -622,6 +850,20 @@ fun AppNavigation(
                 // 💳 PAY-LATER CONTEXT PARAMS
                 wasPayLaterOrder = wasPayLaterOrder,
                 payLaterOrdersCount = payLaterOrdersCount,
+                // 🥝 KIOSK MODE PARAMS
+                isKioskPayment = isKioskPayment,
+                onKioskPaymentSuccess = if (isKioskPayment) { displayOrderNumber, receipt, orderItems ->
+                    // Clear kiosk payment state and show success screen
+                    // NOTE: For kiosk mode, payment is rendered directly in AppNavigation (bypassing NavHost)
+                    // This callback is kept for consistency but shouldn't be reached in normal kiosk flow
+                    Timber.i("🥝 [KIOSK] Payment success (NavHost) - showing success screen with order: $displayOrderNumber, items: ${orderItems?.size}")
+                    kioskPaymentOrderId = null
+                    kioskPaymentAmount = null
+                    kioskPaymentOrderNumber = null
+                    kioskSuccessOrderNumber = displayOrderNumber
+                    kioskSuccessReceipt = receipt
+                    kioskSuccessOrderItems = orderItems
+                } else null,
                 onNavigateBack = {
                     // 🏠 Navigate directly to WelcomeScreen (clearing payment stack)
                     navController.popBackStack(NavRoute.Home.route, inclusive = false)
@@ -1007,6 +1249,44 @@ fun AppNavigation(
                     // Navigate to home
                     navController.navigate(NavRoute.Home.route) {
                         popUpTo(NavRoute.Timeclock.route) { inclusive = true }
+                    }
+                }
+            )
+        }
+
+        // 🥝 KIOSK SUCCESS SCREEN (accessible from staff navigation after kiosk payment)
+        // This route is also in KioskNavigation, but we need it here for payment flow
+        composable(
+            route = NavRoute.KioskSuccess.route,
+            arguments = listOf(
+                navArgument("orderNumber") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val displayOrderNumber = backStackEntry.arguments?.getString("orderNumber") ?: ""
+
+            com.jaac.avoqado_tpv.features.kiosk.presentation.screens.KioskSuccessScreen(
+                orderNumber = displayOrderNumber,
+                onTimeout = {
+                    // Clear cart and navigate to KioskWelcome
+                    Timber.i("🥝 [KIOSK] Success timeout - returning to welcome")
+                    navController.navigate(NavRoute.KioskWelcome.route) {
+                        popUpTo(0) { inclusive = true }
+                    }
+                }
+            )
+        }
+
+        // 🥝 KIOSK WELCOME SCREEN (for kiosk mode reset after success)
+        composable(NavRoute.KioskWelcome.route) {
+            // When we reach here, kiosk mode should be active, so show the kiosk welcome
+            com.jaac.avoqado_tpv.features.kiosk.presentation.screens.KioskWelcomeScreen(
+                onStart = {
+                    navController.navigate(NavRoute.KioskMenu.route)
+                },
+                onExitKiosk = {
+                    kioskModeManager.exitKioskMode()
+                    navController.navigate(NavRoute.Home.route) {
+                        popUpTo(0) { inclusive = true }
                     }
                 }
             )

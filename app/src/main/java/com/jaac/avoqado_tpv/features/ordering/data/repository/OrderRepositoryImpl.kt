@@ -11,6 +11,8 @@ import com.jaac.avoqado_tpv.features.ordering.data.dto.UpdateGuestRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.VoidItemsRequest
 import com.jaac.avoqado_tpv.features.ordering.data.mappers.toOrder
 import com.jaac.avoqado_tpv.features.ordering.data.mappers.toOrderCustomers
+import com.jaac.avoqado_tpv.core.data.local.mappers.toEntity
+import com.jaac.avoqado_tpv.core.data.local.mappers.toEntities
 import com.jaac.avoqado_tpv.features.ordering.domain.AddOrderItemRequest
 import com.jaac.avoqado_tpv.features.ordering.domain.ConflictException
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
@@ -18,6 +20,8 @@ import com.jaac.avoqado_tpv.features.ordering.domain.OrderCustomer
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -31,7 +35,9 @@ import javax.inject.Singleton
 @Singleton
 class OrderRepositoryImpl @Inject constructor(
     private val apiService: OrderApiService,
-    private val customerApiService: CustomerApiService
+    private val customerApiService: CustomerApiService,
+    private val draftOrderDao: com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderDao,
+    private val draftOrderItemDao: com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderItemDao
 ) : OrderRepository {
 
     /**
@@ -150,7 +156,8 @@ class OrderRepositoryImpl @Inject constructor(
         tableId: String?,
         covers: Int,
         waiterId: String?,
-        orderType: OrderType
+        orderType: OrderType,
+        skipCaching: Boolean
     ): Result<Order> {
         return try {
             val request = CreateOrderRequest(
@@ -175,6 +182,43 @@ class OrderRepositoryImpl @Inject constructor(
                 if (body != null && body.success) {
                     val order = body.data.toOrder()
                     Timber.i("✅ Order created | id=${order.id} | number=${order.orderNumber}")
+
+                    // 💾 Cache order in local DB so PaymentViewModel can find it
+                    // 🔄 [SYNC-FIX] Skip caching when called by OrderSyncCoordinator (prevents race condition)
+                    if (!skipCaching) {
+                        withContext(Dispatchers.IO) {
+                            try {
+                                Timber.d("💾 [Cache] Caching backend order to local DB | id=${order.id} | items=${order.items.size}")
+
+                                // Convert order to entity
+                                val draftOrderEntity = order.toEntity(
+                                    syncStatus = com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity.SYNC_STATUS_SYNCED,
+                                    isServerCreated = true
+                                )
+
+                                // Convert items to entities
+                                val draftItemEntities = order.items.toEntities(
+                                    syncStatus = com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity.SYNC_STATUS_SYNCED,
+                                    isServerCreated = true
+                                )
+
+                                // Insert order first (parent)
+                                draftOrderDao.insert(draftOrderEntity)
+
+                                // Then insert items (children)
+                                draftItemEntities.forEach { item ->
+                                    draftOrderItemDao.insert(item)
+                                }
+
+                                Timber.i("✅ [Cache] Backend order cached successfully | id=${order.id}")
+                            } catch (e: Exception) {
+                                Timber.e(e, "❌ [Cache] Failed to cache backend order: ${order.id}")
+                            }
+                        }
+                    } else {
+                        Timber.d("⏭️ [Cache] Skipping order caching (sync coordinator will handle it)")
+                    }
+
                     Result.success(order)
                 } else {
                     val errorMsg = "Failed to create order: Invalid response"
@@ -212,7 +256,8 @@ class OrderRepositoryImpl @Inject constructor(
         venueId: String,
         orderId: String,
         items: List<AddOrderItemRequest>,
-        currentVersion: Int
+        currentVersion: Int,
+        skipCaching: Boolean
     ): Result<Order> {
         return try {
             // Convert domain AddOrderItemRequest to DTO AddItemDto
@@ -252,6 +297,42 @@ class OrderRepositoryImpl @Inject constructor(
                                 Timber.d("     - ${modifier.name}: \$${modifier.priceAdjustment}")
                             }
                         }
+                    }
+
+                    // 💾 Update order in local DB so PaymentViewModel can find it with items
+                    // 🔄 [SYNC-FIX] Only cache if not skipped (prevents race with OrderSyncCoordinator)
+                    if (!skipCaching) {
+                        withContext(Dispatchers.IO) {
+                            try {
+                                Timber.d("💾 [Cache] Updating backend order in local DB | id=${order.id} | items=${order.items.size}")
+
+                                // Convert order to entity
+                                val draftOrderEntity = order.toEntity(
+                                    syncStatus = com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity.SYNC_STATUS_SYNCED,
+                                    isServerCreated = true
+                                )
+
+                                // Convert items to entities
+                                val draftItemEntities = order.items.toEntities(
+                                    syncStatus = com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity.SYNC_STATUS_SYNCED,
+                                    isServerCreated = true
+                                )
+
+                                // Insert order first (parent)
+                                draftOrderDao.insert(draftOrderEntity)
+
+                                // Then insert items (children)
+                                draftItemEntities.forEach { item ->
+                                    draftOrderItemDao.insert(item)
+                                }
+
+                                Timber.i("✅ [Cache] Backend order updated in local DB | id=${order.id}")
+                            } catch (e: Exception) {
+                                Timber.e(e, "❌ [Cache] Failed to update backend order: ${order.id}")
+                            }
+                        }
+                    } else {
+                        Timber.d("⏭️ [Cache] Skipping caching (sync coordinator will handle it)")
                     }
 
                     Result.success(order)

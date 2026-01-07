@@ -253,7 +253,7 @@ class OrderPaymentRecorder @Inject constructor(
             // Venue ID (requerido en body además del path)
             venueId = context.venueId,
 
-            // Amounts: Convert pesos to cents
+            // Amounts: Backend expects centavos (10000 = $100.00)
             amount = (context.amount * 100.toBigDecimal()).toInt(),
             tip = (context.tip * 100.toBigDecimal()).toInt(),
 

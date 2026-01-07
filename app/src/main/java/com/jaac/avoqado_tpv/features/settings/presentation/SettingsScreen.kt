@@ -105,6 +105,52 @@ fun SettingsScreen(
         )
     }
 
+    // Open Shift First Dialog (Kiosk activation requires open shift)
+    if (state.showOpenShiftFirstDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissOpenShiftFirstDialog() },
+            icon = {
+                Icon(
+                    imageVector = Icons.Outlined.Storefront,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            },
+            title = {
+                Text("Abre un Turno Primero")
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "Para activar el modo kiosko, primero debes abrir un turno.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "El kiosko necesita un turno abierto para procesar pedidos correctamente.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                FilledTonalButton(
+                    onClick = {
+                        viewModel.dismissOpenShiftFirstDialog()
+                        onNavigateToShifts()
+                    }
+                ) {
+                    Text("Ir a Turnos")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissOpenShiftFirstDialog() }) {
+                    Text("Cancelar")
+                }
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             AvoqadoTopBar(
@@ -192,6 +238,32 @@ fun SettingsScreen(
                             isSaving = false,
                             onToggle = { viewModel.toggleShiftSystem() }
                         )
+                    }
+                }
+
+                // ═══════════════════════════════════════════════════════════════
+                // KIOSK MODE (only if user has permission)
+                // ═══════════════════════════════════════════════════════════════
+                if (state.hasKioskPermission) {
+                    item {
+                        Spacer(modifier = Modifier.height(sizes.spacingMedium))
+                        SectionHeader(
+                            title = "Modo Kiosko",
+                            icon = Icons.Outlined.Storefront,
+                            subtitle = "Auto-servicio para clientes"
+                        )
+                    }
+
+                    item {
+                        SettingsCard {
+                            SettingsToggleRow(
+                                label = "Activar Modo Kiosko",
+                                description = "Convierte el terminal en autoservicio",
+                                enabled = state.isKioskModeEnabled,
+                                isSaving = false,
+                                onToggle = { viewModel.toggleKioskMode() }
+                            )
+                        }
                     }
                 }
 

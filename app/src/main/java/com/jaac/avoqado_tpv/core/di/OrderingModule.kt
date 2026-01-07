@@ -138,9 +138,11 @@ object OrderingModule {
     @Singleton
     fun provideOrderRepository(
         apiService: OrderApiService,
-        customerApiService: CustomerApiService
+        customerApiService: CustomerApiService,
+        draftOrderDao: com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderDao,
+        draftOrderItemDao: com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderItemDao
     ): OrderRepository {
-        return OrderRepositoryImpl(apiService, customerApiService)
+        return OrderRepositoryImpl(apiService, customerApiService, draftOrderDao, draftOrderItemDao)
     }
 
     // ==========================================

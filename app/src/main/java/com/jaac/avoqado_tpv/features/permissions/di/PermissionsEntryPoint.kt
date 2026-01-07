@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.permissions.di
 
+import com.jaac.avoqado_tpv.core.data.manager.KioskModeManager
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -56,4 +57,11 @@ interface PermissionsEntryPoint {
      * @return Singleton instance of PermissionsRepository
      */
     fun permissionsRepository(): PermissionsRepository
+
+    /**
+     * Get KioskModeManager instance
+     *
+     * @return Singleton instance of KioskModeManager
+     */
+    fun kioskModeManager(): KioskModeManager
 }

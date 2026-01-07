@@ -49,6 +49,7 @@ fun MerchantSelectionContent(
     onStartPayment: () -> Unit,
     onStartCashPayment: () -> Unit,
     onNavigateBack: (() -> Unit)? = null,
+    showCashOption: Boolean = true,  // 🥝 Hide cash button in kiosk mode (self-service = card only)
 
 ) {
     Box(modifier = modifier.fillMaxSize()) {
@@ -218,7 +219,7 @@ fun MerchantSelectionContent(
                                 shape = buttonShape
                             )
                     ) {
-                        // Card payment button (left)
+                        // Card payment button (left or full width if no cash option)
                         Box(
                             modifier = Modifier
                                 .weight(1f)
@@ -239,33 +240,37 @@ fun MerchantSelectionContent(
                             )
                         }
 
-                        // Divider
-                        Box(
-                            modifier = Modifier
-                                .width(1.dp)
-                                .fillMaxHeight()
-                                .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
-                        )
-
-                        // Cash payment button (right)
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                                .background(
-                                    if (cashEnabled) MaterialTheme.colorScheme.surfaceVariant
-                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
-                                )
-                                .clickable(enabled = cashEnabled) { onStartCashPayment() },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "Efectivo",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = if (cashEnabled) MaterialTheme.colorScheme.onSurfaceVariant
-                                       else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        // 🥝 Only show divider and cash button if showCashOption is true
+                        // Kiosk mode = card only (self-service doesn't handle cash)
+                        if (showCashOption) {
+                            // Divider
+                            Box(
+                                modifier = Modifier
+                                    .width(1.dp)
+                                    .fillMaxHeight()
+                                    .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
                             )
+
+                            // Cash payment button (right)
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .background(
+                                        if (cashEnabled) MaterialTheme.colorScheme.surfaceVariant
+                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                    )
+                                    .clickable(enabled = cashEnabled) { onStartCashPayment() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Efectivo",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (cashEnabled) MaterialTheme.colorScheme.onSurfaceVariant
+                                           else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                )
+                            }
                         }
                     }
 

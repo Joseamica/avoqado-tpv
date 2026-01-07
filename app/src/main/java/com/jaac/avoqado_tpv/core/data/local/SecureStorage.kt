@@ -99,6 +99,13 @@ class SecureStorage @Inject constructor(
         private const val KEY_IS_IN_MAINTENANCE = "is_in_maintenance"
         private const val KEY_MAINTENANCE_REASON = "maintenance_reason"
         private const val KEY_MAINTENANCE_INITIATED_BY = "maintenance_initiated_by"
+
+        // Kiosk mode keys (self-service terminal)
+        private const val KEY_IS_KIOSK_MODE = "is_kiosk_mode"
+        private const val KEY_KIOSK_VENUE_ID = "kiosk_venue_id"
+        private const val KEY_KIOSK_TIPS_ENABLED = "kiosk_tips_enabled"
+        private const val KEY_KIOSK_REVIEW_ENABLED = "kiosk_review_enabled"
+        private const val KEY_KIOSK_VERIFICATION_ENABLED = "kiosk_verification_enabled"
     }
 
     /**
@@ -1022,8 +1029,107 @@ class SecureStorage @Inject constructor(
         return encryptedPrefs.getString(KEY_MAINTENANCE_INITIATED_BY, null)
     }
 
+    // ==================== KIOSK MODE STATE ====================
+
     /**
-     * Clear all terminal state (lock + maintenance)
+     * Persist kiosk mode state
+     *
+     * Kiosk mode transforms the terminal into a customer-facing self-service kiosk.
+     * State persists across:
+     * - App restart
+     * - Device reboot
+     *
+     * @param isEnabled Whether kiosk mode is enabled
+     */
+    fun saveKioskMode(isEnabled: Boolean) {
+        encryptedPrefs.edit().putBoolean(KEY_IS_KIOSK_MODE, isEnabled).apply()
+        Timber.d("🥝 Kiosk mode persisted: isEnabled=$isEnabled")
+    }
+
+    /**
+     * Get persisted kiosk mode state
+     * @return true if terminal is in kiosk mode
+     */
+    fun getIsKioskMode(): Boolean {
+        return encryptedPrefs.getBoolean(KEY_IS_KIOSK_MODE, false)
+    }
+
+    /**
+     * Persist kiosk venue ID
+     *
+     * The venue ID is stored separately from the main auth context
+     * so kiosk can operate even after staff session ends.
+     *
+     * @param venueId The venue ID for kiosk operations
+     */
+    fun saveKioskVenueId(venueId: String) {
+        encryptedPrefs.edit().putString(KEY_KIOSK_VENUE_ID, venueId).apply()
+        Timber.d("🥝 Kiosk venue ID persisted")
+    }
+
+    /**
+     * Get persisted kiosk venue ID
+     * @return venue ID for kiosk operations or null if not set
+     */
+    fun getKioskVenueId(): String? {
+        return encryptedPrefs.getString(KEY_KIOSK_VENUE_ID, null)
+    }
+
+    // ==================== KIOSK PAYMENT SETTINGS ====================
+
+    /**
+     * Save tips enabled setting for kiosk
+     * @param enabled Whether tips are enabled
+     */
+    fun saveTipsEnabled(enabled: Boolean) {
+        encryptedPrefs.edit().putBoolean(KEY_KIOSK_TIPS_ENABLED, enabled).apply()
+        Timber.d("🥝 Kiosk tips enabled: $enabled")
+    }
+
+    /**
+     * Check if tips are enabled for kiosk
+     * @return true if tips are enabled (default true)
+     */
+    fun isTipsEnabled(): Boolean {
+        return encryptedPrefs.getBoolean(KEY_KIOSK_TIPS_ENABLED, true)
+    }
+
+    /**
+     * Save review enabled setting for kiosk
+     * @param enabled Whether review prompts are enabled
+     */
+    fun saveReviewEnabled(enabled: Boolean) {
+        encryptedPrefs.edit().putBoolean(KEY_KIOSK_REVIEW_ENABLED, enabled).apply()
+        Timber.d("🥝 Kiosk review enabled: $enabled")
+    }
+
+    /**
+     * Check if review prompts are enabled for kiosk
+     * @return true if review is enabled (default true)
+     */
+    fun isReviewEnabled(): Boolean {
+        return encryptedPrefs.getBoolean(KEY_KIOSK_REVIEW_ENABLED, true)
+    }
+
+    /**
+     * Save verification enabled setting for kiosk
+     * @param enabled Whether customer verification is enabled
+     */
+    fun saveVerificationEnabled(enabled: Boolean) {
+        encryptedPrefs.edit().putBoolean(KEY_KIOSK_VERIFICATION_ENABLED, enabled).apply()
+        Timber.d("🥝 Kiosk verification enabled: $enabled")
+    }
+
+    /**
+     * Check if verification is enabled for kiosk
+     * @return true if verification is enabled (default false)
+     */
+    fun isVerificationEnabled(): Boolean {
+        return encryptedPrefs.getBoolean(KEY_KIOSK_VERIFICATION_ENABLED, false)
+    }
+
+    /**
+     * Clear all terminal state (lock + maintenance + kiosk)
      * Called during factory reset or venue change
      */
     fun clearTerminalState() {
@@ -1035,7 +1141,12 @@ class SecureStorage @Inject constructor(
             remove(KEY_IS_IN_MAINTENANCE)
             remove(KEY_MAINTENANCE_REASON)
             remove(KEY_MAINTENANCE_INITIATED_BY)
+            remove(KEY_IS_KIOSK_MODE)
+            remove(KEY_KIOSK_VENUE_ID)
+            remove(KEY_KIOSK_TIPS_ENABLED)
+            remove(KEY_KIOSK_REVIEW_ENABLED)
+            remove(KEY_KIOSK_VERIFICATION_ENABLED)
         }.apply()
-        Timber.d("Terminal state cleared (lock + maintenance)")
+        Timber.d("Terminal state cleared (lock + maintenance + kiosk)")
     }
 }

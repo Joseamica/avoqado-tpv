@@ -87,6 +87,8 @@ Kotlin, Jetpack Compose, POS terminals, payments, offline-first architecture, an
 
 | Document                                 | Description                                              |
 | ---------------------------------------- | -------------------------------------------------------- |
+| `docs/MODULES_SYSTEM.md`                 | **Modules**: VenueModule config, StateFlow pattern       |
+| `docs/ATTENDANCE_VERIFICATION.md`        | **Timeclock**: Clock-in/out photo + GPS verification     |
 | `docs/PAY_LATER_README.md`               | **Pay Later Overview**: Index of all pay-later docs      |
 | `docs/PAY_LATER_IMPLEMENTATION.md`       | **Pay Later (Android)**: Bug fix + banner implementation |
 | `docs/PAY_LATER_TESTING_CHECKLIST.md`    | Pay Later QA manual + automated tests                    |
@@ -220,6 +222,22 @@ val orders = orderRepository.getOrders(limit = 20, cursor = cursor)
 
 **Full guide**: `PERFORMANCE_GUIDE.md`
 
+### API Endpoint Paths (CRITICAL)
+
+**Base URL is already `/api/v1/`**, so TPV endpoints should NOT include `/v1/` again:
+
+```kotlin
+// ✅ CORRECT - Base URL + "tpv/modules" = /api/v1/tpv/modules
+@GET("tpv/modules")
+suspend fun getModules(): Response<ModulesApiResponse>
+
+// ❌ WRONG - Creates /api/v1/tpv/v1/modules (double v1!)
+@GET("tpv/v1/modules")
+suspend fun getModules(): Response<ModulesApiResponse>
+```
+
+**Rule**: When backend defines route at `/tpv/something`, use `@GET("tpv/something")` NOT `@GET("tpv/v1/something")`
+
 ---
 
 ## 7. Documentation Policy
@@ -311,6 +329,9 @@ avoqado-web-dashboard/docs/    ← Frontend-specific ONLY
 | 401 "Usuario no encontrado"     | Wrong variant                   | Use `sandboxDebug` for testing                |
 | Sandbox/Production sync issues  | Modified only one variant       | Sync changes between both variants            |
 | Blumon rechaza APK              | APK enviado sin firmar          | Firmar con debug key antes de enviar          |
+| 404 on new API endpoint         | Double `/v1/` in path           | Use `tpv/endpoint` NOT `tpv/v1/endpoint`      |
+| TpvSettings field not persisted | Missing from SecureStorage      | Add key + save/load/clear in SecureStorage    |
+| Module config stale after logout| UI uses `remember {}` not Flow  | Use `collectAsStateWithLifecycle()` on StateFlow |
 
 **Full troubleshooting**: See individual guides in `docs/`
 

@@ -57,9 +57,16 @@ data class TpvSettingsDto(
     @SerializedName("enableShifts")
     val enableShifts: Boolean?,
 
-    // Clock-in photo verification (anti-fraud, from VenueSettings)
+    // Attendance verification (clock-in/out with selfie + GPS)
     @SerializedName("requireClockInPhoto")
-    val requireClockInPhoto: Boolean?
+    val requireClockInPhoto: Boolean?,
+
+    @SerializedName("requireClockOutPhoto")
+    val requireClockOutPhoto: Boolean?,
+
+    // Session security: require active clock-in to access system
+    @SerializedName("requireClockInToLogin")
+    val requireClockInToLogin: Boolean?
 )
 
 /**
@@ -78,8 +85,11 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     requireVerificationBarcode = requireVerificationBarcode ?: false,
     // Shift system defaults to enabled
     enableShifts = enableShifts ?: true,
-    // Clock-in photo verification defaults to disabled
-    requireClockInPhoto = requireClockInPhoto ?: false
+    // Attendance verification defaults to disabled
+    requireClockInPhoto = requireClockInPhoto ?: false,
+    requireClockOutPhoto = requireClockOutPhoto ?: false,
+    // Session security defaults to disabled
+    requireClockInToLogin = requireClockInToLogin ?: false
 )
 
 /**
@@ -96,7 +106,9 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     requireVerificationPhoto = requireVerificationPhoto,
     requireVerificationBarcode = requireVerificationBarcode,
     enableShifts = enableShifts,
-    requireClockInPhoto = requireClockInPhoto
+    requireClockInPhoto = requireClockInPhoto,
+    requireClockOutPhoto = requireClockOutPhoto,
+    requireClockInToLogin = requireClockInToLogin
 )
 
 /**

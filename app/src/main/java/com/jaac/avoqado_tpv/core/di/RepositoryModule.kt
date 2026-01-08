@@ -6,6 +6,10 @@ import com.jaac.avoqado_tpv.features.payment.data.MerchantRepositoryImpl
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import com.jaac.avoqado_tpv.features.reports.data.repository.ReportsRepositoryImpl
 import com.jaac.avoqado_tpv.features.reports.domain.repository.ReportsRepository
+import com.jaac.avoqado_tpv.features.modules.data.repository.ModulesRepositoryImpl
+import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
+import com.jaac.avoqado_tpv.features.serialized_sale.data.repository.SerializedSaleRepositoryImpl
+import com.jaac.avoqado_tpv.features.serialized_sale.domain.repository.SerializedSaleRepository
 import com.jaac.avoqado_tpv.features.timeclock.data.repository.TimeEntryRepositoryImpl
 import com.jaac.avoqado_tpv.features.timeclock.domain.repository.TimeEntryRepository
 import dagger.Binds
@@ -126,4 +130,50 @@ abstract class RepositoryModule {
     abstract fun bindTimeEntryRepository(
         impl: TimeEntryRepositoryImpl
     ): TimeEntryRepository
+
+    /**
+     * Bind ModulesRepository to its implementation
+     *
+     * **Usage:**
+     * ```kotlin
+     * @HiltViewModel
+     * class WelcomeViewModel @Inject constructor(
+     *     private val modulesRepository: ModulesRepository
+     * ) : ViewModel() {
+     *     // Check if simplified flow is enabled
+     *     val config = modulesRepository.getModuleConfig("SERIALIZED_INVENTORY")
+     *     val useSimplifiedFlow = config?.ui?.simplifiedOrderFlow == true
+     * }
+     * ```
+     *
+     * @param impl ModulesRepositoryImpl instance (Hilt creates automatically)
+     * @return ModulesRepository interface
+     */
+    @Binds
+    @Singleton
+    abstract fun bindModulesRepository(
+        impl: ModulesRepositoryImpl
+    ): ModulesRepository
+
+    /**
+     * Bind SerializedSaleRepository to its implementation
+     *
+     * **Usage:**
+     * ```kotlin
+     * @HiltViewModel
+     * class SerializedSaleViewModel @Inject constructor(
+     *     private val serializedSaleRepository: SerializedSaleRepository
+     * ) : ViewModel() {
+     *     // Scan items, quick sell, register batch
+     * }
+     * ```
+     *
+     * @param impl SerializedSaleRepositoryImpl instance (Hilt creates automatically)
+     * @return SerializedSaleRepository interface
+     */
+    @Binds
+    @Singleton
+    abstract fun bindSerializedSaleRepository(
+        impl: SerializedSaleRepositoryImpl
+    ): SerializedSaleRepository
 }

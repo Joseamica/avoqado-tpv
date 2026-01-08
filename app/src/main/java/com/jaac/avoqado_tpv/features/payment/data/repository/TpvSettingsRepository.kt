@@ -88,7 +88,7 @@ class TpvSettingsRepository @Inject constructor(
                 secureStorage.setShiftSystemEnabled(settings.enableShifts)
                 Timber.i("✅ Synced enableShifts from backend: ${settings.enableShifts}")
 
-                Timber.i("✅ TPV settings loaded: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, enableShifts=${settings.enableShifts}")
+                Timber.i("✅ TPV settings loaded: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, enableShifts=${settings.enableShifts}, requireClockInPhoto=${settings.requireClockInPhoto}, requireClockOutPhoto=${settings.requireClockOutPhoto}")
                 Result.success(settings)
             } else {
                 val errorCode = response.code()

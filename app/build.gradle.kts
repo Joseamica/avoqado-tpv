@@ -248,6 +248,9 @@ dependencies {
     implementation("com.google.firebase:firebase-crashlytics-ktx")  // Crash reporting for production
     implementation("com.google.firebase:firebase-analytics-ktx")  // Analytics (required by Crashlytics)
 
+    // Google Play Services Location (GPS for clock-in/out)
+    implementation("com.google.android.gms:play-services-location:21.3.0")
+
     // CameraX (Step 4: Verification photo capture)
     val cameraxVersion = "1.4.0"
     implementation("androidx.camera:camera-core:$cameraxVersion")

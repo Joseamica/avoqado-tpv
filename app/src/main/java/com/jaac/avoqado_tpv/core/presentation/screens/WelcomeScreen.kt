@@ -20,6 +20,8 @@ import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material3.MaterialTheme
@@ -52,6 +54,7 @@ import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel
 import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
+import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
 import com.jaac.avoqado_tpv.features.permissions.di.PermissionsEntryPoint
 import com.jaac.avoqado_tpv.features.remote_command.presentation.LockScreenOverlay
 import com.jaac.avoqado_tpv.features.remote_command.presentation.MaintenanceOverlay
@@ -91,6 +94,8 @@ fun WelcomeScreen(
     onNavigateToSupport: () -> Unit = {},  // ⭐ NEW: Navigate to Support screen
     onNavigateToSettings: () -> Unit = {},  // ⚙️ Navigate to Settings screen
     onNavigateToSuperAdmin: () -> Unit = {},
+    onNavigateToSerializedSale: () -> Unit = {},  // 📱 Telecom: Vender flow (barcode → price → payment)
+    onNavigateToInventoryRegister: () -> Unit = {},  // 📦 Telecom: Alta de productos flow
     onLogout: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
     shiftViewModel: com.jaac.avoqado_tpv.features.shift.presentation.ShiftViewModel = hiltViewModel()
@@ -180,6 +185,8 @@ fun WelcomeScreen(
         onNavigateToSupport = onNavigateToSupport,  // ⭐ NEW: Pass support navigation
         onNavigateToSettings = onNavigateToSettings,  // ⚙️ Pass settings navigation
         onNavigateToSuperAdmin = onNavigateToSuperAdmin,
+        onNavigateToSerializedSale = onNavigateToSerializedSale,  // 📱 Telecom: Vender
+        onNavigateToInventoryRegister = onNavigateToInventoryRegister,  // 📦 Telecom: Alta
         onLogout = {
             viewModel.logout()
             onLogout()
@@ -292,6 +299,8 @@ private fun WelcomeScreenContent(
     onNavigateToSupport: () -> Unit,  // ⭐ NEW: Navigate to Support screen
     onNavigateToSettings: () -> Unit,  // ⚙️ Navigate to Settings screen
     onNavigateToSuperAdmin: () -> Unit,
+    onNavigateToSerializedSale: () -> Unit = {},  // 📱 Telecom: Vender flow
+    onNavigateToInventoryRegister: () -> Unit = {},  // 📦 Telecom: Alta de productos
     onLogout: () -> Unit
 ) {
     // ══════════════════════════════════════════════════════════════════════
@@ -303,7 +312,7 @@ private fun WelcomeScreenContent(
     val secureStorage = remember { SecureStorage(context) }
     val currentUserRole = remember { secureStorage.getRole() }
 
-    // 🔐 Get permissions repository and kiosk mode manager via EntryPoint
+    // 🔐 Get permissions repository, kiosk mode manager, and modules repository via EntryPoint
     val hiltEntryPoint = remember {
         EntryPointAccessors.fromApplication(
             context.applicationContext,
@@ -312,6 +321,23 @@ private fun WelcomeScreenContent(
     }
     val permissionsRepository = remember { hiltEntryPoint.permissionsRepository() }
     val kioskModeManager = remember { hiltEntryPoint.kioskModeManager() }
+    val modulesRepository = remember { hiltEntryPoint.modulesRepository() }
+
+    // 📱 Check for simplified order flow (telecom/serialized inventory mode)
+    // Use StateFlow so changes (e.g., on logout) trigger recomposition
+    val currentModules by modulesRepository.modules.collectAsStateWithLifecycle()
+    val serializedInventoryConfig = currentModules
+        .find { it.moduleCode == ModulesRepository.MODULE_SERIALIZED_INVENTORY }
+        ?.config
+    val isSimplifiedMode = serializedInventoryConfig?.ui?.simplifiedOrderFlow == true
+
+    // 📦 Check if user has serialized inventory permission (for "Alta de Productos" button)
+    var hasInventoryRegisterPermission by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        val result = permissionsRepository.getPermissions(forceRefresh = false)
+        val permissions = result.getOrNull()
+        hasInventoryRegisterPermission = permissions?.contains("serialized-inventory:register") ?: false
+    }
 
     // 🥝 Kiosk mode state
     val isKioskModeEnabled by kioskModeManager.isKioskMode.collectAsStateWithLifecycle()
@@ -341,74 +367,115 @@ private fun WelcomeScreenContent(
     val hasOpenShift = currentShift?.status == ShiftStatus.OPEN
     val canOperate = hasOpenShift || !isShiftSystemEnabled // Unlock if disabled
 
-    val allButtons = listOf(
-        // ✅ ENABLED FEATURES
-        ActionButton(
-            icon = Icons.Default.CreditCard,
-            label = "Pago rápido",
-            enabled = canOperate,  // ⭐ Only enabled when shift is open (or disabled)
-            badge = if (!canOperate) "Abre el turno primero" else null,  // ⭐ Show hint when disabled
-            onClick = { showAmountBottomSheet = true }  // ✅ Open modal (first-time flow)
-        ),
-        ActionButton(
-            icon = Icons.Default.Restaurant,
-            label = "Órdenes",
-            enabled = canOperate,  // ⭐ Only enabled when shift is open (or disabled)
-            badge = if (!canOperate) "Abre el turno primero" else null,
-            onClick = onNavigateToOrdering
-        ),
-        ActionButton(
-            icon = Icons.Default.BarChart,
-            label = "Reportes",
-            enabled = true,
-            onClick = onNavigateToReports
-        ),
-        ActionButton(
-            icon = Icons.Default.Schedule,
-            label = "Turnos",
-            enabled = true,
-            onClick = onNavigateToShifts
-        ),
-        ActionButton(
-            icon = Icons.Default.Receipt,
-            label = "Pagos",
-            enabled = true,  // ⭐ ENABLED: Payment history is now implemented
-            onClick = onNavigateToPayments  // ⭐ Navigate to Payments screen
-        ),
+    // 📱 Get module labels for simplified mode
+    val moduleLabels = serializedInventoryConfig?.labels
 
-        // ActionButton(
-        //     icon = Icons.Default.History,
-        //     label = "Historial",
-        //     enabled = false,
-        //     badge = "Próximamente",
-        //     onClick = { /* TODO: Navigate to transaction history */ }
-        // ),
-
-        ActionButton(
-            icon = Icons.AutoMirrored.Filled.Help,
-            label = "Soporte",
-            enabled = true,
-            onClick = onNavigateToSupport
-        )
-    )
-
-    // 🔐 AUTHORIZATION-BASED FILTERING
-    val actionButtons = allButtons.toMutableList().apply {
-        // Add SuperAdmin button ONLY if user has SUPERADMIN role
-        if (currentUserRole == StaffRole.SUPERADMIN) {
+    // Build action buttons based on mode (simplified for telecom vs normal)
+    val actionButtons = if (isSimplifiedMode) {
+        // ════════════════════════════════════════════════════════════════════
+        // 📱 SIMPLIFIED MODE (Telecom/Serialized Inventory)
+        // Only shows: "Vender" + "Alta de Productos" (if permission) + Soporte
+        // ════════════════════════════════════════════════════════════════════
+        timber.log.Timber.d("📱 WelcomeScreen: Simplified mode enabled, hasInventoryPermission=$hasInventoryRegisterPermission")
+        mutableListOf<ActionButton>().apply {
+            // Primary action: Vender (barcode → price → payment)
             add(
                 ActionButton(
-                    icon = Icons.Default.AdminPanelSettings,
-                    label = "SuperAdmin",
+                    icon = Icons.Default.QrCodeScanner,
+                    label = "Vender",
                     enabled = true,
-                    onClick = onNavigateToSuperAdmin
+                    onClick = onNavigateToSerializedSale
+                )
+            )
+
+            // Secondary action: Alta de Productos (inventory registration)
+            // Only shown if user has serialized-inventory:register permission
+            if (hasInventoryRegisterPermission) {
+                add(
+                    ActionButton(
+                        icon = Icons.Default.Inventory2,
+                        label = moduleLabels?.register ?: "Alta de Productos",
+                        enabled = true,
+                        onClick = onNavigateToInventoryRegister
+                    )
+                )
+            }
+
+            // Support always available
+            add(
+                ActionButton(
+                    icon = Icons.AutoMirrored.Filled.Help,
+                    label = "Soporte",
+                    enabled = true,
+                    onClick = onNavigateToSupport
                 )
             )
         }
+    } else {
+        // ════════════════════════════════════════════════════════════════════
+        // 📦 NORMAL MODE (Restaurant/Retail)
+        // Full feature set: Pago rápido, Órdenes, Reportes, Turnos, Pagos, Soporte
+        // ════════════════════════════════════════════════════════════════════
+        val allButtons = listOf(
+            // ✅ ENABLED FEATURES
+            ActionButton(
+                icon = Icons.Default.CreditCard,
+                label = "Pago rápido",
+                enabled = canOperate,  // ⭐ Only enabled when shift is open (or disabled)
+                badge = if (!canOperate) "Abre el turno primero" else null,  // ⭐ Show hint when disabled
+                onClick = { showAmountBottomSheet = true }  // ✅ Open modal (first-time flow)
+            ),
+            ActionButton(
+                icon = Icons.Default.Restaurant,
+                label = "Órdenes",
+                enabled = canOperate,  // ⭐ Only enabled when shift is open (or disabled)
+                badge = if (!canOperate) "Abre el turno primero" else null,
+                onClick = onNavigateToOrdering
+            ),
+            ActionButton(
+                icon = Icons.Default.BarChart,
+                label = "Reportes",
+                enabled = true,
+                onClick = onNavigateToReports
+            ),
+            ActionButton(
+                icon = Icons.Default.Schedule,
+                label = "Turnos",
+                enabled = true,
+                onClick = onNavigateToShifts
+            ),
+            ActionButton(
+                icon = Icons.Default.Receipt,
+                label = "Pagos",
+                enabled = true,  // ⭐ ENABLED: Payment history is now implemented
+                onClick = onNavigateToPayments  // ⭐ Navigate to Payments screen
+            ),
+            ActionButton(
+                icon = Icons.AutoMirrored.Filled.Help,
+                label = "Soporte",
+                enabled = true,
+                onClick = onNavigateToSupport
+            )
+        )
 
-        // Filter out "Turnos" button if shift system is disabled
-        if (!isShiftSystemEnabled) {
-            removeAll { it.label == "Turnos" }
+        // 🔐 AUTHORIZATION-BASED FILTERING (normal mode only)
+        allButtons.toMutableList().apply {
+            // Add SuperAdmin button ONLY if user has SUPERADMIN role
+            if (currentUserRole == StaffRole.SUPERADMIN) {
+                add(
+                    ActionButton(
+                        icon = Icons.Default.AdminPanelSettings,
+                        label = "SuperAdmin",
+                        enabled = true,
+                        onClick = onNavigateToSuperAdmin
+                    )
+                )
+            }
+
+            // Filter out "Turnos" button if shift system is disabled
+            if (!isShiftSystemEnabled) {
+                removeAll { it.label == "Turnos" }
+            }
         }
     }
 
@@ -440,7 +507,10 @@ private fun WelcomeScreenContent(
                     VenueStatusBanner(status = venueStatus)
 
                     // Shift status banner (with offline state support) - FullWidth
-                    if (isShiftSystemEnabled) {
+                    // Hidden in simplified mode when module config disables shifts
+                    val moduleEnableShifts = serializedInventoryConfig?.ui?.enableShifts ?: true
+                    val shouldShowShiftBanner = isShiftSystemEnabled && moduleEnableShifts && !isSimplifiedMode
+                    if (shouldShowShiftBanner) {
                         ShiftStatusBanner(
                             shift = currentShift,
                             isOffline = isOffline,

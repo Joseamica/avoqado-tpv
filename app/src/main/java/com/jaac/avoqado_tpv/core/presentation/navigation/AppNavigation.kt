@@ -66,6 +66,8 @@ import com.jaac.avoqado_tpv.features.ordering.presentation.OrderListScreen
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderStatusFilter
 import com.jaac.avoqado_tpv.features.ordering.presentation.menu.MenuScreen
 import com.jaac.avoqado_tpv.features.timeclock.presentation.TimeclockScreen
+import com.jaac.avoqado_tpv.features.serialized_sale.presentation.SerializedSaleScreen
+import com.jaac.avoqado_tpv.features.serialized_inventory.presentation.SerializedInventoryScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.split.SplitByProductScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.split.SplitByPersonScreen
 import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
@@ -90,6 +92,7 @@ interface AppNavigationEntryPoint {
     fun kioskModeManager(): com.jaac.avoqado_tpv.core.data.manager.KioskModeManager
     fun printerManager(): com.jaac.avoqado_tpv.core.printer.PrinterManager
     fun paymentApiService(): com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
+    fun modulesRepository(): com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
 }
 
 /**
@@ -134,6 +137,7 @@ fun AppNavigation(
     }
     val kioskModeManager = remember { kioskEntryPoint.kioskModeManager() }
     val isKioskMode by kioskModeManager.isKioskMode.collectAsStateWithLifecycle()
+    val modulesRepository = remember { kioskEntryPoint.modulesRepository() }
 
     // 🔐 GLOBAL SESSION EXPIRATION LISTENER
     // Observes session events from TokenAuthenticator and navigates accordingly
@@ -394,10 +398,12 @@ fun AppNavigation(
                 startDestination = startDestination
             ) {
         // Splash Screen - Determines initial route based on activation status
+        // Also fetches venue modules at startup so features are available from the beginning
         composable(NavRoute.Splash.route) {
             SplashScreen(
                 deviceInfoManager = deviceInfoManager,
                 secureStorage = secureStorage,
+                modulesRepository = modulesRepository,
                 onNavigateToActivation = {
                     navController.navigate(NavRoute.Activation.route) {
                         popUpTo(NavRoute.Splash.route) { inclusive = true }
@@ -565,6 +571,14 @@ fun AppNavigation(
                 onNavigateToSuperAdmin = {
                     // Navigate to SuperAdmin screen
                     navController.navigate(NavRoute.SuperAdmin.route)
+                },
+                onNavigateToSerializedSale = {
+                    // 📱 Navigate to Serialized Sale screen (Vender flow)
+                    navController.navigate(NavRoute.SerializedSale.route)
+                },
+                onNavigateToInventoryRegister = {
+                    // 📦 Navigate to Serialized Inventory Register screen (Alta flow)
+                    navController.navigate(NavRoute.SerializedInventoryRegister.route)
                 },
                 onLogout = {
                     // ✅ Square/Toast Pattern: DO NOT stop heartbeat on logout
@@ -1254,6 +1268,34 @@ fun AppNavigation(
             )
         }
 
+        // 📱 Serialized Sale Screen - Quick sell flow for serialized items (SIMs, etc.)
+        composable(NavRoute.SerializedSale.route) {
+            SerializedSaleScreen(
+                onNavigateBack = {
+                    navController.popBackStack()
+                },
+                onNavigateToPayment = { orderId, orderTotal ->
+                    // Navigate to PaymentScreen with order details
+                    navController.currentBackStackEntry?.savedStateHandle?.apply {
+                        set("initialAmount", orderTotal.toString())
+                        set("orderId", orderId)
+                        set("skipReview", true)  // Skip tip/review for serialized sales
+                    }
+                    navController.navigate(NavRoute.Payment.route)
+                    Timber.d("💳 Serialized sale: Navigating to payment for order $orderId, amount $orderTotal")
+                }
+            )
+        }
+
+        // 📦 Serialized Inventory Register Screen - Batch registration of items
+        composable(NavRoute.SerializedInventoryRegister.route) {
+            SerializedInventoryScreen(
+                onNavigateBack = {
+                    navController.popBackStack()
+                }
+            )
+        }
+
         // 🥝 KIOSK SUCCESS SCREEN (accessible from staff navigation after kiosk payment)
         // This route is also in KioskNavigation, but we need it here for payment flow
         composable(
@@ -1318,6 +1360,7 @@ fun AppNavigation(
 private fun SplashScreen(
     deviceInfoManager: DeviceInfoManager,
     secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+    modulesRepository: com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository,
     onNavigateToActivation: () -> Unit,
     onNavigateToLogin: () -> Unit,
     onNavigateToHome: () -> Unit
@@ -1326,7 +1369,7 @@ private fun SplashScreen(
         // ✅ Square/Toast Pattern: Check activation status with BACKEND first
         // This prevents routing to LoginScreen when terminal has venueId locally
         // but activatedAt = NULL on backend (happens after DB reset)
-        
+
         // 🚀 Optimization: Run network call on IO thread to prevent freezing Splash animation
         // Previously caused ~2.6s UI freeze (160 skipped frames)
         val backendStatusResult = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -1342,8 +1385,13 @@ private fun SplashScreen(
                     Timber.w("🔐 Backend reports not activated - navigating to activation")
                     onNavigateToActivation()
                 } else {
-                    // ✅ Backend confirms activation → check session
-                    Timber.d("✅ Backend confirms activation - checking session")
+                    // ✅ Backend confirms activation → fetch modules BEFORE navigating
+                    Timber.d("✅ Backend confirms activation - fetching modules")
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        modulesRepository.fetchAndCache()
+                    }
+
+                    // Now check session and navigate
                     val hasValidSession = secureStorage.isAuthenticated()
                     if (hasValidSession) {
                         Timber.d("🔑 Valid session found - navigating to Home")
@@ -1363,8 +1411,12 @@ private fun SplashScreen(
                     Timber.d("🔐 No local venueId - navigating to activation")
                     onNavigateToActivation()
                 } else {
-                    // Trust local venueId when offline
-                    Timber.d("📱 Offline mode - trusting local venueId")
+                    // Trust local venueId when offline - try to fetch modules anyway
+                    Timber.d("📱 Offline mode - trusting local venueId, trying to fetch modules")
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        modulesRepository.fetchAndCache()
+                    }
+
                     val hasValidSession = secureStorage.isAuthenticated()
                     if (hasValidSession) {
                         Timber.d("🔑 Valid session found - navigating to Home")

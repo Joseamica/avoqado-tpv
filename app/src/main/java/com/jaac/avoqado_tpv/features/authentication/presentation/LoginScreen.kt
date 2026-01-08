@@ -4,6 +4,8 @@ import android.content.res.Configuration
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.AccessTime
+import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.foundation.background
@@ -43,11 +45,13 @@ import com.jaac.avoqado_tpv.features.authentication.presentation.components.PinP
  * - Character counter always visible
  * - Two action buttons: Timeclock (⏱) and Ir (Login)
  * - Large touch targets for busy environments
+ * - Clock-in enforcement: shows blocking UI when requireClockInToLogin is enabled
  *
  * @param venueId Venue ID from activation
  * @param onLoginSuccess Callback when login succeeds
  * @param onNavigateToActivation Callback when terminal is deactivated (requires re-activation)
  * @param onTimeclockClick Callback when Timeclock button is pressed with the entered PIN
+ * @param onNavigateToTimeclockForClockIn Callback when user needs to clock-in before accessing system
  */
 @Composable
 fun LoginScreen(
@@ -55,6 +59,7 @@ fun LoginScreen(
     onLoginSuccess: () -> Unit,
     onNavigateToActivation: () -> Unit,
     onTimeclockClick: (String) -> Unit,
+    onNavigateToTimeclockForClockIn: (staffId: String) -> Unit = {},
     viewModel: LoginViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -74,7 +79,8 @@ fun LoginScreen(
         venueLogo = venueLogo,
         onPinEntered = { pin -> viewModel.loginWithPin(pin, venueId) },
         onTimeclockClick = onTimeclockClick,
-        onDismissError = { viewModel.resetState() }
+        onDismissError = { viewModel.resetState() },
+        onNavigateToTimeclockForClockIn = onNavigateToTimeclockForClockIn
     )
 }
 
@@ -84,7 +90,8 @@ private fun LoginContent(
     venueLogo: String?,
     onPinEntered: (String) -> Unit,
     onTimeclockClick: (String) -> Unit,
-    onDismissError: () -> Unit
+    onDismissError: () -> Unit,
+    onNavigateToTimeclockForClockIn: (staffId: String) -> Unit = {}
 ) {
     var pin by remember { mutableStateOf("") }
     val isPinComplete = pin.length >= 4 // Minimum 4 digits to enable buttons
@@ -305,6 +312,153 @@ private fun LoginContent(
                     }
                 }
 
+                // ✅ Requires Clock-In overlay - Staff must clock in before accessing the system
+                if (state is LoginState.RequiresClockIn) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.85f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth(0.9f)
+                                .padding(16.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                // Clock icon
+                                Icon(
+                                    imageVector = Icons.Filled.AccessTime,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(48.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+
+                                // Greeting
+                                Text(
+                                    text = "¡Hola, ${state.staffName}!",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    textAlign = TextAlign.Center,
+                                    fontWeight = FontWeight.Bold
+                                )
+
+                                // Message
+                                Text(
+                                    text = "Debes registrar tu entrada antes de acceder al sistema.",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    textAlign = TextAlign.Center
+                                )
+
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                // Go to Timeclock button
+                                Button(
+                                    onClick = {
+                                        onNavigateToTimeclockForClockIn(state.staffId)
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.AccessTime,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Ir a Reloj Checador")
+                                }
+
+                                // Dismiss button
+                                TextButton(onClick = onDismissError) {
+                                    Text("Cancelar")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ✅ On Break overlay - Staff is on break and cannot access the system
+                if (state is LoginState.OnBreak) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.85f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth(0.9f)
+                                .padding(16.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                // Coffee icon (break)
+                                Icon(
+                                    imageVector = Icons.Filled.Coffee,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(48.dp),
+                                    tint = MaterialTheme.colorScheme.tertiary
+                                )
+
+                                // Greeting
+                                Text(
+                                    text = "¡Hola, ${state.staffName}!",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    textAlign = TextAlign.Center,
+                                    fontWeight = FontWeight.Bold
+                                )
+
+                                // Message
+                                Text(
+                                    text = "Actualmente estás en descanso.\n\nDebes terminar tu descanso para acceder al sistema.",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    textAlign = TextAlign.Center
+                                )
+
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                // Go to Timeclock button
+                                Button(
+                                    onClick = {
+                                        onNavigateToTimeclockForClockIn(state.staffId)
+                                    },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.tertiary
+                                    )
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Filled.AccessTime,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Ir a Reloj Checador")
+                                }
+
+                                // Dismiss button
+                                TextButton(onClick = onDismissError) {
+                                    Text("Cancelar")
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // ✅ Error banner overlay (Square/Toast pattern) - Non-blocking banner at top
                 if (state is LoginState.Error) {
                     Card(
@@ -368,7 +522,8 @@ private fun LoginScreenIdlePreview() {
             venueLogo = null,
             onPinEntered = {},
             onTimeclockClick = {},
-            onDismissError = {}
+            onDismissError = {},
+            onNavigateToTimeclockForClockIn = {}
         )
     }
 }
@@ -386,7 +541,8 @@ private fun LoginScreenIdleDarkPreview() {
             venueLogo = null,
             onPinEntered = {},
             onTimeclockClick = {},
-            onDismissError = {}
+            onDismissError = {},
+            onNavigateToTimeclockForClockIn = {}
         )
     }
 }
@@ -404,7 +560,8 @@ private fun LoginScreenLoadingPreview() {
             venueLogo = null,
             onPinEntered = {},
             onTimeclockClick = {},
-            onDismissError = {}
+            onDismissError = {},
+            onNavigateToTimeclockForClockIn = {}
         )
     }
 }
@@ -422,7 +579,8 @@ private fun LoginScreenLoadingDarkPreview() {
             venueLogo = null,
             onPinEntered = {},
             onTimeclockClick = {},
-            onDismissError = {}
+            onDismissError = {},
+            onNavigateToTimeclockForClockIn = {}
         )
     }
 }
@@ -440,7 +598,8 @@ private fun LoginScreenErrorPreview() {
             venueLogo = null,
             onPinEntered = {},
             onTimeclockClick = {},
-            onDismissError = {}
+            onDismissError = {},
+            onNavigateToTimeclockForClockIn = {}
         )
     }
 }
@@ -458,7 +617,8 @@ private fun LoginScreenErrorDarkPreview() {
             venueLogo = null,
             onPinEntered = {},
             onTimeclockClick = {},
-            onDismissError = {}
+            onDismissError = {},
+            onNavigateToTimeclockForClockIn = {}
         )
     }
 }
@@ -479,7 +639,52 @@ private fun LoginScreenRateLimitErrorDarkPreview() {
             venueLogo = null,
             onPinEntered = {},
             onTimeclockClick = {},
-            onDismissError = {}
+            onDismissError = {},
+            onNavigateToTimeclockForClockIn = {}
+        )
+    }
+}
+
+@Preview(
+    name = "Requires Clock-In",
+    showBackground = true,
+    uiMode = Configuration.UI_MODE_NIGHT_NO
+)
+@Composable
+private fun LoginScreenRequiresClockInPreview() {
+    AvoqadoTheme(darkTheme = false) {
+        LoginContent(
+            state = LoginState.RequiresClockIn(
+                staffName = "Juan García",
+                staffId = "staff-123"
+            ),
+            venueLogo = null,
+            onPinEntered = {},
+            onTimeclockClick = {},
+            onDismissError = {},
+            onNavigateToTimeclockForClockIn = {}
+        )
+    }
+}
+
+@Preview(
+    name = "On Break",
+    showBackground = true,
+    uiMode = Configuration.UI_MODE_NIGHT_NO
+)
+@Composable
+private fun LoginScreenOnBreakPreview() {
+    AvoqadoTheme(darkTheme = false) {
+        LoginContent(
+            state = LoginState.OnBreak(
+                staffName = "María López",
+                staffId = "staff-456"
+            ),
+            venueLogo = null,
+            onPinEntered = {},
+            onTimeclockClick = {},
+            onDismissError = {},
+            onNavigateToTimeclockForClockIn = {}
         )
     }
 }

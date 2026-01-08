@@ -15,6 +15,9 @@ interface TimeEntryRepository {
      * @param pin Staff PIN for verification
      * @param jobRole Optional job role for this shift
      * @param checkInPhotoUrl Optional Firebase Storage URL of clock-in photo (anti-fraud)
+     * @param clockInLatitude Optional GPS latitude for location verification
+     * @param clockInLongitude Optional GPS longitude for location verification
+     * @param clockInAccuracy Optional GPS accuracy in meters
      * @return Result with created TimeEntry or error
      */
     suspend fun clockIn(
@@ -22,7 +25,10 @@ interface TimeEntryRepository {
         staffId: String,
         pin: String,
         jobRole: String? = null,
-        checkInPhotoUrl: String? = null
+        checkInPhotoUrl: String? = null,
+        clockInLatitude: Double? = null,
+        clockInLongitude: Double? = null,
+        clockInAccuracy: Float? = null
     ): Result<TimeEntry>
 
     /**
@@ -31,12 +37,20 @@ interface TimeEntryRepository {
      * @param venueId Venue identifier
      * @param staffId Staff member identifier
      * @param pin Staff PIN for verification
+     * @param checkOutPhotoUrl Optional Firebase Storage URL of clock-out photo (anti-fraud)
+     * @param clockOutLatitude Optional GPS latitude for location verification
+     * @param clockOutLongitude Optional GPS longitude for location verification
+     * @param clockOutAccuracy Optional GPS accuracy in meters
      * @return Result with updated TimeEntry or error
      */
     suspend fun clockOut(
         venueId: String,
         staffId: String,
-        pin: String
+        pin: String,
+        checkOutPhotoUrl: String? = null,
+        clockOutLatitude: Double? = null,
+        clockOutLongitude: Double? = null,
+        clockOutAccuracy: Float? = null
     ): Result<TimeEntry>
 
     /**

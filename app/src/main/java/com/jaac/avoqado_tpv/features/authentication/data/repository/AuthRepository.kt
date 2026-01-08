@@ -10,6 +10,7 @@ import com.jaac.avoqado_tpv.features.authentication.domain.models.AuthResponse
 import com.jaac.avoqado_tpv.features.authentication.domain.models.PinLoginRequest
 import com.jaac.avoqado_tpv.features.authentication.domain.models.RefreshTokenResponse
 import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
+import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import org.json.JSONObject
 import timber.log.Timber
@@ -53,7 +54,8 @@ class AuthRepository @Inject constructor(
     private val apiService: ApiService,
     private val secureStorage: SecureStorage,
     private val tpvSettingsRepository: TpvSettingsRepository,
-    private val permissionsRepository: com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
+    private val permissionsRepository: com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository,
+    private val modulesRepository: ModulesRepository
 ) {
 
     /**
@@ -117,6 +119,9 @@ class AuthRepository @Inject constructor(
                     Timber.w(e, "⚠️ Failed to fetch permissions - will retry on demand")
                     // Don't block login on permission fetch failure
                 }
+
+                // NOTE: Modules are now fetched at app startup (SplashScreen) instead of at login
+                // This ensures features are available from the beginning, before login
 
                 Timber.d("✅ Login successful: ${authResponse.staff.displayName}")
                 Result.Success(authResponse)
@@ -294,6 +299,9 @@ class AuthRepository @Inject constructor(
 
         // 🔐 Clear permissions cache
         permissionsRepository.clearCache()
+
+        // 📦 Clear modules cache
+        modulesRepository.clearCache()
 
         Timber.d("✅ Session cleared")
     }

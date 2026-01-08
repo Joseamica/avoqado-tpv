@@ -801,6 +801,36 @@ interface ApiService {
         @Query("limit") limit: Int = 10
     ): Response<com.jaac.avoqado_tpv.features.timeclock.data.dto.TimeEntriesListResponseDto>
 
+    // ========== Venue Modules ==========
+
+    /**
+     * Get enabled modules for venue
+     *
+     * GET /tpv/modules
+     *
+     * Returns all enabled modules for the venue with merged config.
+     * Called at app startup (SplashScreen) to determine available functionality and UI configuration.
+     *
+     * Semi-public endpoint:
+     * - If user is logged in: Backend uses authContext.venueId
+     * - If no session (pre-login): Backend uses X-Venue-Id header from activated device
+     *
+     * Each module contains:
+     * - code: Module identifier (e.g., "SERIALIZED_INVENTORY")
+     * - config: Merged configuration (default + preset + custom)
+     *   - labels: Industry-specific terminology
+     *   - features: Feature toggles
+     *   - ui: UI/flow configuration (skipTipScreen, simplifiedOrderFlow, etc.)
+     *   - attendance: Clock-in/out requirements (photo, GPS)
+     *
+     * @param venueId Venue ID from device activation (passed as X-Venue-Id header)
+     * @return List of enabled modules with their configurations
+     */
+    @GET("tpv/modules")
+    suspend fun getModules(
+        @Header("X-Venue-Id") venueId: String
+    ): Response<com.jaac.avoqado_tpv.features.modules.data.dto.ModulesApiResponse>
+
     // ========== Shifts (Timeclock) - DEPRECATED ==========
     // TODO: Remove these after shift management migration complete
 
@@ -895,6 +925,77 @@ interface ApiService {
     suspend fun sendFeedback(
         @Body request: TpvFeedbackRequest
     ): Response<TpvFeedbackResponse>
+
+    // ========== Serialized Inventory (Telecom/Jewelry/Electronics) ==========
+
+    /**
+     * Scan a serialized item by barcode
+     *
+     * POST /tpv/serialized-inventory/scan
+     *
+     * Looks up a serial number (ICCID, certificate, etc.) and returns:
+     * - 'available': Item exists and can be sold
+     * - 'already_sold': Item was already sold
+     * - 'not_registered': Item doesn't exist (can be registered on-the-fly)
+     * - 'module_disabled': Serialized inventory module not enabled
+     *
+     * @param request Serial number to scan
+     * @return ScanResult with status, item info, and suggested price
+     */
+    @POST("tpv/serialized-inventory/scan")
+    suspend fun scanSerializedItem(
+        @Body request: com.jaac.avoqado_tpv.features.serialized_sale.data.dto.ScanRequestDto
+    ): Response<com.jaac.avoqado_tpv.features.serialized_sale.data.dto.ScanResponseDto>
+
+    /**
+     * Get item categories with stock counts
+     *
+     * GET /tpv/serialized-inventory/categories
+     *
+     * Returns all categories (SIM types, jewelry types, etc.) with available/sold counts.
+     * Used for category selection during registration and sale.
+     *
+     * @return List of categories with stock information
+     */
+    @GET("tpv/serialized-inventory/categories")
+    suspend fun getSerializedCategories(): Response<com.jaac.avoqado_tpv.features.serialized_sale.data.dto.CategoriesResponseDto>
+
+    /**
+     * Quick sell a serialized item
+     *
+     * POST /tpv/serialized-inventory/sell
+     *
+     * Creates an order with a single serialized item in one shot.
+     * If the item is not registered, it will be registered automatically
+     * if categoryId is provided.
+     *
+     * Requires: serialized-inventory:sell permission
+     *
+     * @param request Serial number, categoryId (optional), price, paymentMethodId, notes
+     * @return Created order with order number
+     */
+    @POST("tpv/serialized-inventory/sell")
+    suspend fun quickSellSerializedItem(
+        @Body request: com.jaac.avoqado_tpv.features.serialized_sale.data.dto.QuickSellRequestDto
+    ): Response<com.jaac.avoqado_tpv.features.serialized_sale.data.dto.QuickSellResponseDto>
+
+    /**
+     * Register batch of serialized items
+     *
+     * POST /tpv/serialized-inventory/register-batch
+     *
+     * Registers multiple items (e.g., scanning box of SIMs).
+     * Returns count of created items and list of duplicates.
+     *
+     * Requires: serialized-inventory:create permission
+     *
+     * @param request Category ID and list of serial numbers
+     * @return Count of created items and duplicate serial numbers
+     */
+    @POST("tpv/serialized-inventory/register-batch")
+    suspend fun registerSerializedBatch(
+        @Body request: com.jaac.avoqado_tpv.features.serialized_sale.data.dto.RegisterBatchRequestDto
+    ): Response<com.jaac.avoqado_tpv.features.serialized_sale.data.dto.RegisterBatchResponseDto>
 }
 
 // ========== Request/Response DTOs ==========

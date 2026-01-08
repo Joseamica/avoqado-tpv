@@ -1,7 +1,10 @@
 package com.jaac.avoqado_tpv.features.verification.presentation.components
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -11,6 +14,7 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -21,15 +25,22 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
@@ -40,6 +51,20 @@ import java.util.*
 import java.util.concurrent.Executor
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
+
+/**
+ * Intent action for volume button camera capture.
+ * MainActivity broadcasts this when volume up is pressed and camera is active.
+ */
+const val ACTION_CAPTURE_PHOTO = "com.jaac.avoqado_tpv.CAPTURE_PHOTO"
+
+/**
+ * Companion object to track if camera is currently active.
+ * MainActivity checks this before broadcasting CAPTURE_PHOTO intent.
+ */
+object CameraState {
+    var isActive: Boolean = false
+}
 
 /**
  * Camera Preview Screen for Step 4 verification photo capture.
@@ -69,31 +94,117 @@ fun CameraPreviewScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
-    // Camera state
+    // Camera and Location state
     var hasCameraPermission by remember { mutableStateOf(false) }
+    var hasLocationPermission by remember { mutableStateOf(false) }
     var flashEnabled by remember { mutableStateOf(false) }
     var isCapturing by remember { mutableStateOf(false) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
 
-    // Permission launcher
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        hasCameraPermission = granted
+    // Capture function that can be called from multiple sources (button or volume key)
+    val performCapture: () -> Unit = {
+        val capture = imageCapture
+        if (capture != null && !isCapturing) {
+            isCapturing = true
+            scope.launch {
+                try {
+                    val photoFile = capturePhoto(
+                        context = context,
+                        imageCapture = capture,
+                        outputDirectory = outputDirectory,
+                        flashEnabled = flashEnabled
+                    )
+                    onPhotoCaptured(photoFile.absolutePath)
+                } catch (e: Exception) {
+                    Timber.e(e, "Failed to capture photo")
+                } finally {
+                    isCapturing = false
+                }
+            }
+        }
     }
 
-    // Check permission on launch
-    LaunchedEffect(Unit) {
-        val permission = Manifest.permission.CAMERA
-        val granted = ContextCompat.checkSelfPermission(
+    // Track camera active state for MainActivity volume button handling
+    DisposableEffect(Unit) {
+        CameraState.isActive = true
+        Timber.d("📸 [CameraPreview] Camera active - volume button will capture photo")
+        onDispose {
+            CameraState.isActive = false
+            Timber.d("📸 [CameraPreview] Camera inactive")
+        }
+    }
+
+    // BroadcastReceiver for volume button capture
+    DisposableEffect(context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                if (intent?.action == ACTION_CAPTURE_PHOTO) {
+                    Timber.d("📸 [CameraPreview] Volume button capture triggered")
+                    performCapture()
+                }
+            }
+        }
+
+        val filter = IntentFilter(ACTION_CAPTURE_PHOTO)
+        ContextCompat.registerReceiver(
             context,
-            permission
+            receiver,
+            filter,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+
+        onDispose {
+            context.unregisterReceiver(receiver)
+        }
+    }
+
+    // Permission launcher for both Camera and Location
+    // Location is needed because GPS is automatically captured when taking clock-in/out photos
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        hasCameraPermission = permissions[Manifest.permission.CAMERA] == true
+        hasLocationPermission = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                                permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+
+        Timber.d("📸 Permissions granted - Camera: $hasCameraPermission, Location: $hasLocationPermission")
+    }
+
+    // Check permissions on launch
+    LaunchedEffect(Unit) {
+        val cameraGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.CAMERA
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
-        if (granted) {
-            hasCameraPermission = true
-        } else {
-            permissionLauncher.launch(permission)
+        val fineLocationGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        val coarseLocationGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        hasCameraPermission = cameraGranted
+        hasLocationPermission = fineLocationGranted || coarseLocationGranted
+
+        Timber.d("📸 Initial permissions - Camera: $cameraGranted, Fine Location: $fineLocationGranted, Coarse Location: $coarseLocationGranted")
+
+        // Request all missing permissions at once
+        val permissionsToRequest = mutableListOf<String>()
+        if (!cameraGranted) {
+            permissionsToRequest.add(Manifest.permission.CAMERA)
+        }
+        if (!fineLocationGranted && !coarseLocationGranted) {
+            permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            permissionsToRequest.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+
+        if (permissionsToRequest.isNotEmpty()) {
+            Timber.d("📸 Requesting permissions: $permissionsToRequest")
+            permissionLauncher.launch(permissionsToRequest.toTypedArray())
         }
     }
 
@@ -117,34 +228,20 @@ fun CameraPreviewScreen(
                 flashEnabled = flashEnabled,
                 isCapturing = isCapturing,
                 onFlashToggle = { flashEnabled = !flashEnabled },
-                onCapture = {
-                    val capture = imageCapture ?: return@CameraControls
-                    isCapturing = true
-
-                    scope.launch {
-                        try {
-                            val photoFile = capturePhoto(
-                                context = context,
-                                imageCapture = capture,
-                                outputDirectory = outputDirectory,
-                                flashEnabled = flashEnabled
-                            )
-                            onPhotoCaptured(photoFile.absolutePath)
-                        } catch (e: Exception) {
-                            Timber.e(e, "Failed to capture photo")
-                        } finally {
-                            isCapturing = false
-                        }
-                    }
-                },
+                onCapture = performCapture,
                 onClose = onClose,
                 modifier = Modifier.fillMaxSize()
             )
         } else {
-            // Permission denied
+            // Permission denied - request both camera and location
             PermissionDeniedContent(
                 onRequestPermission = {
-                    permissionLauncher.launch(Manifest.permission.CAMERA)
+                    val permissions = arrayOf(
+                        Manifest.permission.CAMERA,
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                    )
+                    permissionLauncher.launch(permissions)
                 },
                 onClose = onClose
             )
@@ -281,6 +378,13 @@ private fun CameraControls(
             }
         }
 
+        // Volume button hint - positioned on the LEFT side, ~25% from top (where PAX volume buttons are)
+        VolumeButtonHint(
+            modifier = Modifier
+                .align(BiasAlignment(horizontalBias = -1f, verticalBias = -0.5f))  // -0.5 = 25% from top
+                .padding(start = 16.dp)
+        )
+
         // Bottom: Capture button
         Box(
             modifier = Modifier
@@ -324,7 +428,7 @@ private fun CameraControls(
 
         // Instructions
         Text(
-            text = "Toma una foto de la venta",
+            text = "Toma una foto de verificacion",
             color = Color.White,
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier
@@ -336,6 +440,85 @@ private fun CameraControls(
                 )
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         )
+    }
+}
+
+/**
+ * Volume button hint with arrow pointing to the physical volume up button location.
+ * On PAX terminals, volume buttons are on the LEFT side, near the top.
+ * Shows a pill-shaped badge with volume icon and instruction text.
+ */
+@Composable
+private fun VolumeButtonHint(
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.Start  // Align to left
+    ) {
+        // Arrow pointing UP-LEFT toward volume button (PAX has buttons on left side)
+        Canvas(
+            modifier = Modifier
+                .width(40.dp)
+                .height(50.dp)
+                .padding(start = 8.dp)
+        ) {
+            val arrowColor = Color(0xFF4CAF50) // Green color for visibility
+
+            // Draw curved arrow pointing UP-LEFT
+            val path = Path().apply {
+                // Start from bottom-right of the canvas
+                moveTo(size.width * 0.8f, size.height * 0.9f)
+                // Curve up and to the LEFT
+                quadraticTo(
+                    size.width * 0.5f, size.height * 0.3f,  // Control point
+                    size.width * 0.1f, size.height * 0.1f   // End point (top-LEFT)
+                )
+            }
+            drawPath(
+                path = path,
+                color = arrowColor,
+                style = Stroke(width = 4f)
+            )
+
+            // Arrowhead pointing up-left
+            val arrowHeadPath = Path().apply {
+                moveTo(size.width * 0.1f, size.height * 0.1f)
+                lineTo(size.width * 0.35f, size.height * 0.15f)  // Right arm
+                moveTo(size.width * 0.1f, size.height * 0.1f)
+                lineTo(size.width * 0.15f, size.height * 0.35f)  // Down arm
+            }
+            drawPath(
+                path = arrowHeadPath,
+                color = arrowColor,
+                style = Stroke(width = 4f)
+            )
+        }
+
+        // Hint badge
+        Row(
+            modifier = Modifier
+                .background(
+                    color = Color(0xFF4CAF50),  // Green background
+                    shape = RoundedCornerShape(20.dp)
+                )
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.VolumeUp,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                text = "Botón de Volumen = Foto",
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
     }
 }
 
@@ -362,7 +545,7 @@ private fun PermissionDeniedContent(
         Spacer(modifier = Modifier.height(24.dp))
 
         Text(
-            text = "Permiso de Camara Requerido",
+            text = "Permisos Requeridos",
             style = MaterialTheme.typography.titleLarge,
             color = Color.White,
             textAlign = TextAlign.Center
@@ -371,7 +554,7 @@ private fun PermissionDeniedContent(
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(
-            text = "Para capturar fotos de verificacion necesitamos acceso a la camara.",
+            text = "Para capturar fotos de verificación con ubicación GPS necesitamos acceso a la cámara y ubicación.",
             style = MaterialTheme.typography.bodyMedium,
             color = Color.White.copy(alpha = 0.8f),
             textAlign = TextAlign.Center
@@ -385,7 +568,7 @@ private fun PermissionDeniedContent(
                 containerColor = MaterialTheme.colorScheme.primary
             )
         ) {
-            Text("Permitir Acceso")
+            Text("Permitir Permisos")
         }
 
         Spacer(modifier = Modifier.height(16.dp))

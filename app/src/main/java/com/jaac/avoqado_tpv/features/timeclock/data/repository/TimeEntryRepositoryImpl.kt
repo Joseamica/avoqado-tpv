@@ -23,16 +23,23 @@ class TimeEntryRepositoryImpl @Inject constructor(
         staffId: String,
         pin: String,
         jobRole: String?,
-        checkInPhotoUrl: String?
+        checkInPhotoUrl: String?,
+        clockInLatitude: Double?,
+        clockInLongitude: Double?,
+        clockInAccuracy: Float?
     ): Result<TimeEntry> = withContext(Dispatchers.IO) {
         try {
-            Timber.d("⏱ Clocking in staff: $staffId at venue: $venueId, hasPhoto: ${checkInPhotoUrl != null}")
+            val hasGps = clockInLatitude != null && clockInLongitude != null
+            Timber.d("⏱ Clocking in staff: $staffId at venue: $venueId, hasPhoto: ${checkInPhotoUrl != null}, hasGps: $hasGps")
 
             val request = ClockInRequestDto(
                 staffId = staffId,
                 pin = pin,
                 jobRole = jobRole,
-                checkInPhotoUrl = checkInPhotoUrl
+                checkInPhotoUrl = checkInPhotoUrl,
+                clockInLatitude = clockInLatitude,
+                clockInLongitude = clockInLongitude,
+                clockInAccuracy = clockInAccuracy
             )
 
             val response = apiService.timeEntryClockIn(venueId, request)
@@ -55,14 +62,24 @@ class TimeEntryRepositoryImpl @Inject constructor(
     override suspend fun clockOut(
         venueId: String,
         staffId: String,
-        pin: String
+        pin: String,
+        checkOutPhotoUrl: String?,
+        clockOutLatitude: Double?,
+        clockOutLongitude: Double?,
+        clockOutAccuracy: Float?
     ): Result<TimeEntry> = withContext(Dispatchers.IO) {
         try {
-            Timber.d("⏱ Clocking out staff: $staffId at venue: $venueId")
+            val hasGps = clockOutLatitude != null && clockOutLongitude != null
+            val hasPhoto = checkOutPhotoUrl != null
+            Timber.d("⏱ Clocking out staff: $staffId at venue: $venueId, hasGps: $hasGps, hasPhoto: $hasPhoto")
 
             val request = ClockOutRequestDto(
                 staffId = staffId,
-                pin = pin
+                pin = pin,
+                checkOutPhotoUrl = checkOutPhotoUrl,
+                clockOutLatitude = clockOutLatitude,
+                clockOutLongitude = clockOutLongitude,
+                clockOutAccuracy = clockOutAccuracy
             )
 
             val response = apiService.timeEntryClockOut(venueId, request)

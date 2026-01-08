@@ -20,6 +20,10 @@ package com.jaac.avoqado_tpv.features.payment.domain.model
  * @param showVerificationScreen Whether to show Step 4 verification screen (photo/barcode capture) after successful payment
  * @param requireVerificationPhoto Whether photo capture is mandatory in verification step
  * @param requireVerificationBarcode Whether barcode scanning is mandatory in verification step
+ * @param requireClockInPhoto Whether selfie + GPS is required at clock-in
+ * @param requireClockOutPhoto Whether selfie + GPS is required at clock-out
+ * @param requireClockInToLogin Whether staff must have an active clock-in to access the system.
+ *                              If enabled, staff on break or not clocked in cannot log in.
  */
 data class TpvSettings(
     val showReviewScreen: Boolean = true,
@@ -34,8 +38,11 @@ data class TpvSettings(
     val requireVerificationBarcode: Boolean = false,
     // Venue-level shift system toggle (from VenueSettings)
     val enableShifts: Boolean = true,
-    // Clock-in photo verification (anti-fraud, prevents WhatsApp photo recycling)
-    val requireClockInPhoto: Boolean = false
+    // Attendance verification (clock-in/out with selfie + GPS)
+    val requireClockInPhoto: Boolean = false,
+    val requireClockOutPhoto: Boolean = false,
+    // Session security: require active clock-in to access system
+    val requireClockInToLogin: Boolean = false
 ) {
     companion object {
         /**

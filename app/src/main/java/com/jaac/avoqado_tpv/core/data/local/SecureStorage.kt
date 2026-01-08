@@ -4,7 +4,10 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
+import com.jaac.avoqado_tpv.features.modules.data.dto.VenueModuleDto
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -90,6 +93,11 @@ class SecureStorage @Inject constructor(
         private const val KEY_TPV_REQUIRE_VERIFICATION_PHOTO = "tpv_require_verification_photo"
         private const val KEY_TPV_REQUIRE_VERIFICATION_BARCODE = "tpv_require_verification_barcode"
         private const val KEY_ENABLE_SHIFTS = "enable_shifts"
+        // Attendance verification (clock-in/out with selfie + GPS)
+        private const val KEY_TPV_REQUIRE_CLOCK_IN_PHOTO = "tpv_require_clock_in_photo"
+        private const val KEY_TPV_REQUIRE_CLOCK_OUT_PHOTO = "tpv_require_clock_out_photo"
+        // Session security: require active clock-in to access system
+        private const val KEY_TPV_REQUIRE_CLOCK_IN_TO_LOGIN = "tpv_require_clock_in_to_login"
 
         // Terminal state keys (persisted across app restarts)
         private const val KEY_IS_LOCKED = "is_locked"
@@ -106,6 +114,9 @@ class SecureStorage @Inject constructor(
         private const val KEY_KIOSK_TIPS_ENABLED = "kiosk_tips_enabled"
         private const val KEY_KIOSK_REVIEW_ENABLED = "kiosk_review_enabled"
         private const val KEY_KIOSK_VERIFICATION_ENABLED = "kiosk_verification_enabled"
+
+        // Module cache keys
+        private const val KEY_CACHED_MODULES = "cached_modules"
     }
 
     /**
@@ -821,8 +832,13 @@ class SecureStorage @Inject constructor(
             putBoolean(KEY_TPV_REQUIRE_VERIFICATION_BARCODE, settings.requireVerificationBarcode)
             // Shift system toggle
             putBoolean(KEY_ENABLE_SHIFTS, settings.enableShifts)
+            // Attendance verification (clock-in/out with selfie + GPS)
+            putBoolean(KEY_TPV_REQUIRE_CLOCK_IN_PHOTO, settings.requireClockInPhoto)
+            putBoolean(KEY_TPV_REQUIRE_CLOCK_OUT_PHOTO, settings.requireClockOutPhoto)
+            // Session security: require active clock-in to access system
+            putBoolean(KEY_TPV_REQUIRE_CLOCK_IN_TO_LOGIN, settings.requireClockInToLogin)
         }.apply()
-        Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, showVerification=${settings.showVerificationScreen}, enableShifts=${settings.enableShifts}")
+        Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, showVerification=${settings.showVerificationScreen}, enableShifts=${settings.enableShifts}, requireClockInPhoto=${settings.requireClockInPhoto}, requireClockOutPhoto=${settings.requireClockOutPhoto}, requireClockInToLogin=${settings.requireClockInToLogin}")
     }
 
     /**
@@ -859,7 +875,12 @@ class SecureStorage @Inject constructor(
             requireVerificationPhoto = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_VERIFICATION_PHOTO, false),
             requireVerificationBarcode = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_VERIFICATION_BARCODE, false),
             // Shift system toggle (default: enabled)
-            enableShifts = encryptedPrefs.getBoolean(KEY_ENABLE_SHIFTS, true)
+            enableShifts = encryptedPrefs.getBoolean(KEY_ENABLE_SHIFTS, true),
+            // Attendance verification (default: disabled)
+            requireClockInPhoto = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_CLOCK_IN_PHOTO, false),
+            requireClockOutPhoto = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_CLOCK_OUT_PHOTO, false),
+            // Session security (default: disabled)
+            requireClockInToLogin = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_CLOCK_IN_TO_LOGIN, false)
         )
     }
 
@@ -880,6 +901,11 @@ class SecureStorage @Inject constructor(
             remove(KEY_TPV_REQUIRE_VERIFICATION_BARCODE)
             // Shift system toggle
             remove(KEY_ENABLE_SHIFTS)
+            // Attendance verification
+            remove(KEY_TPV_REQUIRE_CLOCK_IN_PHOTO)
+            remove(KEY_TPV_REQUIRE_CLOCK_OUT_PHOTO)
+            // Session security
+            remove(KEY_TPV_REQUIRE_CLOCK_IN_TO_LOGIN)
         }.apply()
         Timber.d("TPV settings cleared")
     }
@@ -1148,5 +1174,73 @@ class SecureStorage @Inject constructor(
             remove(KEY_KIOSK_VERIFICATION_ENABLED)
         }.apply()
         Timber.d("Terminal state cleared (lock + maintenance + kiosk)")
+    }
+
+    // ==================== MODULE CACHE ====================
+
+    private val gson = Gson()
+
+    /**
+     * Save modules to local cache
+     *
+     * Caches venue modules for offline access and quick lookups.
+     * Modules are serialized as JSON and stored encrypted.
+     *
+     * @param modules List of VenueModuleDto to cache
+     */
+    fun saveModules(modules: List<VenueModuleDto>) {
+        try {
+            val json = gson.toJson(modules)
+            encryptedPrefs.edit().putString(KEY_CACHED_MODULES, json).apply()
+            Timber.d("📦 Modules cached: ${modules.size} modules (${modules.map { it.code }})")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Failed to cache modules")
+        }
+    }
+
+    /**
+     * Get cached modules
+     *
+     * Retrieves modules from local cache.
+     * Returns empty list if no modules are cached or parsing fails.
+     *
+     * @return List of cached VenueModuleDto
+     */
+    fun getCachedModules(): List<VenueModuleDto> {
+        return try {
+            val json = encryptedPrefs.getString(KEY_CACHED_MODULES, null)
+            if (json.isNullOrBlank()) {
+                Timber.d("📦 No cached modules found")
+                emptyList()
+            } else {
+                val type = object : TypeToken<List<VenueModuleDto>>() {}.type
+                val modules = gson.fromJson<List<VenueModuleDto>>(json, type)
+                Timber.d("📦 Retrieved ${modules.size} cached modules")
+                modules
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Failed to read cached modules")
+            emptyList()
+        }
+    }
+
+    /**
+     * Get a specific cached module by code
+     *
+     * @param moduleCode Module code to find (e.g., "SERIALIZED_INVENTORY")
+     * @return VenueModuleDto or null if not found
+     */
+    fun getCachedModule(moduleCode: String): VenueModuleDto? {
+        return getCachedModules().find { it.code == moduleCode }
+    }
+
+    /**
+     * Clear cached modules
+     *
+     * Called on logout to remove stale module data.
+     */
+    fun clearCachedModules() {
+        encryptedPrefs.edit().remove(KEY_CACHED_MODULES).apply()
+        Timber.d("📦 Cached modules cleared")
     }
 }

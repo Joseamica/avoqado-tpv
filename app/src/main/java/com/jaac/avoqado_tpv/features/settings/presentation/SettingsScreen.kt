@@ -366,6 +366,46 @@ fun SettingsScreen(
                 }
 
                 // ═══════════════════════════════════════════════════════════════
+                // SECURITY & ATTENDANCE SETTINGS
+                // ═══════════════════════════════════════════════════════════════
+                item {
+                    Spacer(modifier = Modifier.height(sizes.spacingMedium))
+                    SectionHeader(
+                        title = "Seguridad y Verificación",
+                        icon = Icons.Outlined.Security,
+                        subtitle = "Control de asistencia y acceso al sistema"
+                    )
+                }
+
+                item {
+                    SettingsCard {
+                        SettingsToggleRow(
+                            label = "Foto al Registrar Entrada",
+                            description = "Requiere selfie con GPS al hacer clock-in",
+                            enabled = state.tpvSettings.requireClockInPhoto,
+                            isSaving = state.isSaving,
+                            onToggle = { viewModel.toggleRequireClockInPhoto() }
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        SettingsToggleRow(
+                            label = "Foto al Registrar Salida",
+                            description = "Requiere selfie con GPS al hacer clock-out",
+                            enabled = state.tpvSettings.requireClockOutPhoto,
+                            isSaving = state.isSaving,
+                            onToggle = { viewModel.toggleRequireClockOutPhoto() }
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        SettingsToggleRow(
+                            label = "Requiere Clock-in para Iniciar Sesión",
+                            description = "El personal debe tener entrada activa para acceder",
+                            enabled = state.tpvSettings.requireClockInToLogin,
+                            isSaving = state.isSaving,
+                            onToggle = { viewModel.toggleRequireClockInToLogin() }
+                        )
+                    }
+                }
+
+                // ═══════════════════════════════════════════════════════════════
                 // ACTIONS
                 // ═══════════════════════════════════════════════════════════════
                 item {

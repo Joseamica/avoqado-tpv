@@ -33,15 +33,17 @@ sealed class TimeclockState {
     data class Processing(val message: String) : TimeclockState()
 
     /**
-     * Photo required - venue requires check-in photo before clocking in
-     * @param staffId Staff member attempting to clock in
+     * Photo required - venue requires photo before clocking in/out
+     * @param staffId Staff member attempting to clock in/out
      * @param staffName Staff member's name for display
      * @param canSkip Whether current user can skip (ADMIN/MANAGER)
+     * @param isClockOut true if this is for clock-out, false for clock-in
      */
     data class RequiresPhoto(
         val staffId: String,
         val staffName: String,
-        val canSkip: Boolean = false
+        val canSkip: Boolean = false,
+        val isClockOut: Boolean = false
     ) : TimeclockState()
 
     /**
@@ -49,6 +51,21 @@ sealed class TimeclockState {
      * @param staffId Staff member taking the photo
      */
     data class CapturingPhoto(val staffId: String) : TimeclockState()
+
+    /**
+     * Photo preview - showing captured photo for confirmation
+     * User can confirm to proceed with upload or retake the photo.
+     * @param staffId Staff member who took the photo
+     * @param staffName Staff member's name for display
+     * @param localPath Local file path of the captured photo
+     * @param isClockOut true if this is for clock-out, false for clock-in
+     */
+    data class PhotoPreview(
+        val staffId: String,
+        val staffName: String,
+        val localPath: String,
+        val isClockOut: Boolean = false
+    ) : TimeclockState()
 
     /**
      * Uploading photo - sending captured photo to Firebase Storage

@@ -4,6 +4,8 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager
+import com.jaac.avoqado_tpv.core.location.LocationResult
+import com.jaac.avoqado_tpv.core.location.LocationService
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
@@ -28,8 +30,9 @@ import javax.inject.Inject
 class TimeclockViewModel @Inject constructor(
     private val timeEntryRepository: TimeEntryRepository,
     private val authRepository: AuthRepository,
-    private val tpvSettingsRepository: TpvSettingsRepository,
     private val verificationUploadManager: VerificationUploadManager,
+    private val locationService: LocationService,
+    private val tpvSettingsRepository: TpvSettingsRepository,
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -48,6 +51,8 @@ class TimeclockViewModel @Inject constructor(
 
     // Photo flow state (anti-fraud)
     private var pendingClockInPhotoUrl: String? = null
+    private var pendingClockOutPhotoUrl: String? = null
+    private var isClockOutPhotoFlow: Boolean = false // Tracks if we're in clock-out photo flow
 
     init {
         if (venueId.isNotEmpty() && pin.isNotEmpty()) {
@@ -153,35 +158,42 @@ class TimeclockViewModel @Inject constructor(
      * Clock in the current staff member.
      *
      * **Photo Verification Flow (anti-fraud):**
-     * 1. Check if venue requires clock-in photo (TpvSettings.requireClockInPhoto)
+     * 1. Check if TpvSettings requires clock-in photo (requireClockInPhoto)
      * 2. If required and no photo captured → Show RequiresPhoto state
      * 3. If required and user is ADMIN/MANAGER/OWNER → Allow skip option
      * 4. After photo captured or skipped → Proceed with actual clock-in
+     * 5. GPS is automatically captured when photo is required (no separate toggle)
      */
     fun clockIn() {
         val staffId = currentStaffId ?: return
         val staffName = currentStaffName ?: return
 
         viewModelScope.launch {
-            // Check if venue requires clock-in photo (anti-fraud feature)
+            // Check TpvSettings for clock-in photo requirement (configured via Dashboard)
             val settings = tpvSettingsRepository.getCurrentSettings()
+            val requirePhoto = settings.requireClockInPhoto
 
-            if (settings.requireClockInPhoto && pendingClockInPhotoUrl == null) {
+            // Debug logging
+            Timber.d("⏱️ [CLOCK-IN] TpvSettings check:")
+            Timber.d("   - requireClockInPhoto: ${settings.requireClockInPhoto}")
+            Timber.d("   - requirePhoto (final): $requirePhoto")
+
+            if (requirePhoto && pendingClockInPhotoUrl == null) {
                 // Photo required but not yet captured
-                // Check if current user can skip (ADMIN/MANAGER/OWNER)
+                // Check if current user can skip (only ADMIN/OWNER/SUPERADMIN - not MANAGER or below)
                 val currentRole = authRepository.getRole()
                 val canSkip = currentRole in listOf(
                     StaffRole.ADMIN,
-                    StaffRole.MANAGER,
                     StaffRole.OWNER,
                     StaffRole.SUPERADMIN
                 )
 
-                Timber.d("⏱️ Photo required for clock-in | canSkip=$canSkip | role=$currentRole")
+                Timber.d("⏱️ Photo required for clock-in (TpvSettings) | canSkip=$canSkip | role=$currentRole")
                 _state.value = TimeclockState.RequiresPhoto(
                     staffId = staffId,
                     staffName = staffName,
-                    canSkip = canSkip
+                    canSkip = canSkip,
+                    isClockOut = false
                 )
                 return@launch
             }
@@ -203,16 +215,41 @@ class TimeclockViewModel @Inject constructor(
 
     /**
      * Handle captured photo from camera.
-     * Uploads to Firebase Storage and then proceeds with clock-in.
+     * Shows preview for confirmation before uploading.
      *
      * @param localPath Local file path of the captured photo
      */
     fun onPhotoCaptured(localPath: String) {
         val staffId = currentStaffId ?: return
         val staffName = currentStaffName ?: return
+        val isClockOut = isClockOutPhotoFlow
+
+        val actionType = if (isClockOut) "clock-out" else "clock-in"
+        Timber.d("📸 Photo captured for $actionType, showing preview: $localPath")
+
+        // Show photo preview for confirmation
+        _state.value = TimeclockState.PhotoPreview(
+            staffId = staffId,
+            staffName = staffName,
+            localPath = localPath,
+            isClockOut = isClockOut
+        )
+    }
+
+    /**
+     * Confirm the captured photo and proceed with upload.
+     * Called when user clicks "Confirmar" on the preview screen.
+     */
+    fun confirmPhoto() {
+        val previewState = _state.value as? TimeclockState.PhotoPreview ?: return
+        val localPath = previewState.localPath
+        val staffId = previewState.staffId
+        val staffName = previewState.staffName
+        val isClockOut = previewState.isClockOut
 
         viewModelScope.launch {
-            Timber.d("📸 Photo captured, starting upload: $localPath")
+            val actionType = if (isClockOut) "clock-out" else "clock-in"
+            Timber.d("📸 Photo confirmed for $actionType, starting upload: $localPath")
             _state.value = TimeclockState.UploadingPhoto(localPath, 0f)
 
             // Get venue slug for Firebase Storage path
@@ -224,18 +261,32 @@ class TimeclockViewModel @Inject constructor(
             val storagePath = venueSlug ?: authRepository.getVenueId() ?: "unknown-venue"
             val timestamp = System.currentTimeMillis()
 
-            verificationUploadManager.uploadClockInPhoto(
-                localPath = localPath,
-                venueSlug = storagePath,
-                staffId = staffId,
-                timestamp = timestamp,
-                onProgress = { progress ->
-                    _state.value = TimeclockState.UploadingPhoto(localPath, progress)
-                }
-            ).fold(
+            // Use appropriate upload method based on flow type
+            val uploadResult = if (isClockOut) {
+                verificationUploadManager.uploadClockOutPhoto(
+                    localPath = localPath,
+                    venueSlug = storagePath,
+                    staffId = staffId,
+                    timestamp = timestamp,
+                    onProgress = { progress ->
+                        _state.value = TimeclockState.UploadingPhoto(localPath, progress)
+                    }
+                )
+            } else {
+                verificationUploadManager.uploadClockInPhoto(
+                    localPath = localPath,
+                    venueSlug = storagePath,
+                    staffId = staffId,
+                    timestamp = timestamp,
+                    onProgress = { progress ->
+                        _state.value = TimeclockState.UploadingPhoto(localPath, progress)
+                    }
+                )
+            }
+
+            uploadResult.fold(
                 onSuccess = { downloadUrl ->
-                    Timber.i("📸 Clock-in photo uploaded: $downloadUrl")
-                    pendingClockInPhotoUrl = downloadUrl
+                    Timber.i("📸 $actionType photo uploaded: $downloadUrl")
 
                     // Clean up local file after successful upload (storage optimization for PAX devices)
                     try {
@@ -245,36 +296,68 @@ class TimeclockViewModel @Inject constructor(
                         Timber.w(e, "📸 Failed to clean up local photo file")
                     }
 
-                    // Auto-proceed with clock-in after successful upload
-                    performClockIn(staffId, staffName, downloadUrl)
+                    // Auto-proceed with clock-in/out after successful upload
+                    if (isClockOut) {
+                        pendingClockOutPhotoUrl = downloadUrl
+                        performClockOut(staffId, staffName, downloadUrl)
+                    } else {
+                        pendingClockInPhotoUrl = downloadUrl
+                        performClockIn(staffId, staffName, downloadUrl)
+                    }
                 },
                 onFailure = { error ->
-                    Timber.e(error, "📸 Failed to upload clock-in photo")
+                    Timber.e(error, "📸 Failed to upload $actionType photo")
                     _events.emit(TimeclockEvent.Error("Error al subir foto: ${error.message}"))
                     // Go back to RequiresPhoto state so user can retry
                     val canSkip = authRepository.getRole() in listOf(
                         StaffRole.ADMIN,
-                        StaffRole.MANAGER,
                         StaffRole.OWNER,
                         StaffRole.SUPERADMIN
                     )
-                    _state.value = TimeclockState.RequiresPhoto(staffId, staffName, canSkip)
+                    _state.value = TimeclockState.RequiresPhoto(staffId, staffName, canSkip, isClockOut)
                 }
             )
         }
     }
 
     /**
-     * Skip photo verification (only for ADMIN/MANAGER/OWNER).
-     * Proceeds with clock-in without photo.
+     * Retake the photo - go back to camera preview.
+     * Called when user clicks "Volver a tomar" on the preview screen.
+     */
+    fun retakePhoto() {
+        val previewState = _state.value as? TimeclockState.PhotoPreview ?: return
+
+        // Clean up the current photo file
+        try {
+            java.io.File(previewState.localPath).delete()
+            Timber.d("📸 Cleaned up rejected photo file")
+        } catch (e: Exception) {
+            Timber.w(e, "📸 Failed to clean up photo file")
+        }
+
+        // Go back to camera
+        Timber.d("📸 Retaking photo for staff: ${previewState.staffId}")
+        _state.value = TimeclockState.CapturingPhoto(previewState.staffId)
+    }
+
+    /**
+     * Skip photo verification (only for ADMIN/OWNER/SUPERADMIN).
+     * Proceeds with clock-in/out without photo.
      */
     fun skipPhoto() {
         val staffId = currentStaffId ?: return
         val staffName = currentStaffName ?: return
+        val isClockOut = isClockOutPhotoFlow
 
-        Timber.d("⏱️ Skipping photo verification (admin override)")
+        val actionType = if (isClockOut) "clock-out" else "clock-in"
+        Timber.d("⏱️ Skipping $actionType photo verification (admin override)")
+
         viewModelScope.launch {
-            performClockIn(staffId, staffName, null)
+            if (isClockOut) {
+                performClockOut(staffId, staffName, null)
+            } else {
+                performClockIn(staffId, staffName, null)
+            }
         }
     }
 
@@ -285,8 +368,17 @@ class TimeclockViewModel @Inject constructor(
         val staffId = currentStaffId ?: return
         val staffName = currentStaffName ?: return
 
-        Timber.d("⏱️ Photo capture cancelled")
-        pendingClockInPhotoUrl = null
+        val actionType = if (isClockOutPhotoFlow) "clock-out" else "clock-in"
+        Timber.d("⏱️ $actionType photo capture cancelled")
+
+        // Clear photo state
+        if (isClockOutPhotoFlow) {
+            pendingClockOutPhotoUrl = null
+            isClockOutPhotoFlow = false
+        } else {
+            pendingClockInPhotoUrl = null
+        }
+
         viewModelScope.launch {
             loadTimeclockStatus(staffId, staffName)
         }
@@ -295,6 +387,9 @@ class TimeclockViewModel @Inject constructor(
     /**
      * Perform the actual clock-in API call.
      *
+     * **GPS Logic:** GPS is automatically captured when photo is required.
+     * No separate GPS toggle - if photo enabled, GPS is captured with it.
+     *
      * @param staffId Staff member ID
      * @param staffName Staff member name (for reloading status)
      * @param photoUrl Optional Firebase Storage URL of clock-in photo
@@ -302,16 +397,45 @@ class TimeclockViewModel @Inject constructor(
     private suspend fun performClockIn(staffId: String, staffName: String, photoUrl: String?) {
         _state.value = TimeclockState.Processing("Registrando entrada...")
 
+        // GPS is automatically captured when photo is required (no separate toggle)
+        val settings = tpvSettingsRepository.getCurrentSettings()
+        val captureGps = settings.requireClockInPhoto
+
+        // Capture GPS if photo verification is enabled
+        var location: LocationResult? = null
+        if (captureGps) {
+            Timber.d("📍 GPS auto-capture for clock-in (photo enabled)...")
+            
+            // BEST EFFORT NON-BLOCKING STRATEGY
+            // Try to get location for max 3 seconds. If not found, proceed without it.
+            try {
+                // Use a short timeout for the UI blocking part
+                kotlinx.coroutines.withTimeout(3000) {
+                    // Internal timeout slightly shorter to allow clean return
+                    location = locationService.getCurrentLocation(timeoutMs = 2500)
+                }
+            } catch (e: Exception) {
+                Timber.w("📍 GPS capture timed out (3s), proceeding without location")
+            }
+            
+            if (location != null) {
+                Timber.d("📍 GPS captured: ${location?.latitude}, ${location?.longitude}")
+            }
+        }
+
         val result = timeEntryRepository.clockIn(
             venueId = venueId,
             staffId = staffId,
             pin = pin,
-            checkInPhotoUrl = photoUrl
+            checkInPhotoUrl = photoUrl,
+            clockInLatitude = location?.latitude,
+            clockInLongitude = location?.longitude,
+            clockInAccuracy = location?.accuracy
         )
 
         result.fold(
             onSuccess = { entry ->
-                Timber.i("✅ Clock in successful | hasPhoto=${photoUrl != null}")
+                Timber.i("✅ Clock in successful | hasPhoto=${photoUrl != null} | hasGps=${location != null}")
                 pendingClockInPhotoUrl = null // Clear for next clock-in
                 _events.emit(TimeclockEvent.ClockInSuccess(entry))
                 loadTimeclockStatus(staffId, staffName)
@@ -327,34 +451,117 @@ class TimeclockViewModel @Inject constructor(
     }
 
     /**
-     * Clock out the current staff member
+     * Clock out the current staff member.
+     *
+     * **Photo Verification Flow (anti-fraud):**
+     * 1. Check if TpvSettings requires clock-out photo (requireClockOutPhoto)
+     * 2. If required and no photo captured → Show RequiresPhoto state (isClockOut=true)
+     * 3. If required and user is ADMIN/MANAGER/OWNER → Allow skip option
+     * 4. After photo captured or skipped → Proceed with actual clock-out
+     * 5. GPS is automatically captured when photo is required (no separate toggle)
      */
     fun clockOut() {
         val staffId = currentStaffId ?: return
         val staffName = currentStaffName ?: return
 
         viewModelScope.launch {
-            _state.value = TimeclockState.Processing("Registrando salida...")
+            // Check TpvSettings for clock-out photo requirement (configured via Dashboard)
+            val settings = tpvSettingsRepository.getCurrentSettings()
+            val requirePhoto = settings.requireClockOutPhoto
 
-            val result = timeEntryRepository.clockOut(
-                venueId = venueId,
-                staffId = staffId,
-                pin = pin
-            )
+            // Debug logging
+            Timber.d("⏱️ [CLOCK-OUT] TpvSettings check:")
+            Timber.d("   - requireClockOutPhoto: ${settings.requireClockOutPhoto}")
+            Timber.d("   - requirePhoto (final): $requirePhoto")
 
-            result.fold(
-                onSuccess = { entry ->
-                    Timber.i("✅ Clock out successful, hours: ${entry.totalHours}")
-                    _events.emit(TimeclockEvent.ClockOutSuccess(entry, entry.totalHours))
-                    loadTimeclockStatus(staffId, staffName)
-                },
-                onFailure = { error ->
-                    Timber.e("❌ Clock out failed: ${error.message}")
-                    _events.emit(TimeclockEvent.Error(error.message ?: "Error al registrar salida"))
-                    loadTimeclockStatus(staffId, staffName)
-                }
-            )
+            if (requirePhoto && pendingClockOutPhotoUrl == null) {
+                // Photo required but not yet captured
+                // Check if current user can skip (only ADMIN/OWNER/SUPERADMIN - not MANAGER or below)
+                val currentRole = authRepository.getRole()
+                val canSkip = currentRole in listOf(
+                    StaffRole.ADMIN,
+                    StaffRole.OWNER,
+                    StaffRole.SUPERADMIN
+                )
+
+                Timber.d("⏱️ Photo required for clock-out (TpvSettings) | canSkip=$canSkip | role=$currentRole")
+                isClockOutPhotoFlow = true
+                _state.value = TimeclockState.RequiresPhoto(
+                    staffId = staffId,
+                    staffName = staffName,
+                    canSkip = canSkip,
+                    isClockOut = true
+                )
+                return@launch
+            }
+
+            // Proceed with clock-out (with or without photo)
+            performClockOut(staffId, staffName, pendingClockOutPhotoUrl)
         }
+    }
+
+    /**
+     * Perform the actual clock-out API call.
+     *
+     * **GPS Logic:** GPS is automatically captured when photo is required.
+     * No separate GPS toggle - if photo enabled, GPS is captured with it.
+     *
+     * @param staffId Staff member ID
+     * @param staffName Staff member name (for reloading status)
+     * @param photoUrl Optional Firebase Storage URL of clock-out photo
+     */
+    private suspend fun performClockOut(staffId: String, staffName: String, photoUrl: String?) {
+        _state.value = TimeclockState.Processing("Registrando salida...")
+
+        // GPS is automatically captured when photo is required (no separate toggle)
+        val settings = tpvSettingsRepository.getCurrentSettings()
+        val captureGps = settings.requireClockOutPhoto
+
+        // Capture GPS if photo verification is enabled
+        var location: LocationResult? = null
+        if (captureGps) {
+            Timber.d("📍 GPS auto-capture for clock-out (photo enabled)...")
+            
+            // BEST EFFORT NON-BLOCKING STRATEGY
+            try {
+                kotlinx.coroutines.withTimeout(3000) {
+                    location = locationService.getCurrentLocation(timeoutMs = 2500)
+                }
+            } catch (e: Exception) {
+                Timber.w("📍 GPS capture timed out (3s), proceeding without location")
+            }
+            
+            if (location != null) {
+                Timber.d("📍 GPS captured: ${location?.latitude}, ${location?.longitude}")
+            }
+        }
+
+        val result = timeEntryRepository.clockOut(
+            venueId = venueId,
+            staffId = staffId,
+            pin = pin,
+            checkOutPhotoUrl = photoUrl,
+            clockOutLatitude = location?.latitude,
+            clockOutLongitude = location?.longitude,
+            clockOutAccuracy = location?.accuracy
+        )
+
+        result.fold(
+            onSuccess = { entry ->
+                Timber.i("✅ Clock out successful, hours: ${entry.totalHours} | hasPhoto=${photoUrl != null} | hasGps=${location != null}")
+                pendingClockOutPhotoUrl = null // Clear for next clock-out
+                isClockOutPhotoFlow = false
+                _events.emit(TimeclockEvent.ClockOutSuccess(entry, entry.totalHours))
+                loadTimeclockStatus(staffId, staffName)
+            },
+            onFailure = { error ->
+                Timber.e("❌ Clock out failed: ${error.message}")
+                pendingClockOutPhotoUrl = null
+                isClockOutPhotoFlow = false
+                _events.emit(TimeclockEvent.Error(error.message ?: "Error al registrar salida"))
+                loadTimeclockStatus(staffId, staffName)
+            }
+        )
     }
 
     /**

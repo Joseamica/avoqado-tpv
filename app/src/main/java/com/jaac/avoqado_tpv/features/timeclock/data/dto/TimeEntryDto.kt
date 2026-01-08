@@ -5,7 +5,10 @@ import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntry
 import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntryBreak
 import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntryStatus
 import java.math.BigDecimal
+import java.time.Instant
 import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
 // ========== Response DTOs ==========
@@ -62,12 +65,21 @@ data class ClockInRequestDto(
     val staffId: String,
     val pin: String,
     val jobRole: String? = null,
-    val checkInPhotoUrl: String? = null // Firebase Storage URL of clock-in photo (anti-fraud)
+    val checkInPhotoUrl: String? = null, // Firebase Storage URL of clock-in photo (anti-fraud)
+    // GPS location verification fields
+    val clockInLatitude: Double? = null,
+    val clockInLongitude: Double? = null,
+    val clockInAccuracy: Float? = null
 )
 
 data class ClockOutRequestDto(
     val staffId: String,
-    val pin: String
+    val pin: String,
+    val checkOutPhotoUrl: String? = null, // Firebase Storage URL of clock-out photo (anti-fraud)
+    // GPS location verification fields
+    val clockOutLatitude: Double? = null,
+    val clockOutLongitude: Double? = null,
+    val clockOutAccuracy: Float? = null
 )
 
 data class PinVerificationRequestDto(
@@ -111,10 +123,21 @@ fun TimeEntryBreakDto.toDomain(): TimeEntryBreak {
 
 private fun parseDateTime(isoString: String): LocalDateTime {
     return try {
-        LocalDateTime.parse(isoString, isoFormatter)
+        // 1. Try as Instant (standard ISO-8601 with Z) - This converts UTC to Local System Time
+        // Example: 2025-01-07T12:00:00Z -> 2025-01-07T06:00:00 (if CST)
+        val instant = Instant.parse(isoString)
+        LocalDateTime.ofInstant(instant, ZoneId.systemDefault())
     } catch (e: Exception) {
-        // Handle formats like "2025-01-22T18:30:00.000Z"
-        LocalDateTime.parse(isoString.replace("Z", ""), DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+        try {
+            // 2. Try with Offset (e.g. +05:00)
+            val zdt = ZonedDateTime.parse(isoString, DateTimeFormatter.ISO_DATE_TIME)
+            zdt.withZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime()
+        } catch (e2: Exception) {
+            // 3. Fallback: Treat as Local Time (no conversion)
+            // Remove 'Z' if present to prevent parser error if we fell through
+            val localIso = isoString.replace("Z", "")
+            LocalDateTime.parse(localIso, DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+        }
     }
 }
 

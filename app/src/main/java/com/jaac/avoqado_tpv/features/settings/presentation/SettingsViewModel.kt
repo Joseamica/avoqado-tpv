@@ -411,6 +411,38 @@ class SettingsViewModel @Inject constructor(
         updateSetting { it.copy(requireVerificationBarcode = newValue) }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SECURITY & ATTENDANCE SETTINGS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Toggle require clock-in photo setting.
+     * When enabled, staff must take a selfie (with GPS) when clocking in.
+     */
+    fun toggleRequireClockInPhoto() {
+        val newValue = !_state.value.tpvSettings.requireClockInPhoto
+        updateSetting { it.copy(requireClockInPhoto = newValue) }
+    }
+
+    /**
+     * Toggle require clock-out photo setting.
+     * When enabled, staff must take a selfie (with GPS) when clocking out.
+     */
+    fun toggleRequireClockOutPhoto() {
+        val newValue = !_state.value.tpvSettings.requireClockOutPhoto
+        updateSetting { it.copy(requireClockOutPhoto = newValue) }
+    }
+
+    /**
+     * Toggle require clock-in to login setting.
+     * When enabled, staff must have an active clock-in to access the system.
+     * Staff on break or without clock-in cannot log in.
+     */
+    fun toggleRequireClockInToLogin() {
+        val newValue = !_state.value.tpvSettings.requireClockInToLogin
+        updateSetting { it.copy(requireClockInToLogin = newValue) }
+    }
+
     /**
      * Update default tip percentage
      */

@@ -1,0 +1,74 @@
+package com.jaac.avoqado_tpv.features.modules.domain.model
+
+/**
+ * VenueModule represents a feature module enabled for a venue.
+ *
+ * Modules are configuration-driven features that allow the TPV to adapt
+ * to different industries (telecom, jewelry, retail) without hardcoded checks.
+ *
+ * Example: SERIALIZED_INVENTORY module for PlayTelecom
+ * - Labels: "SIM" instead of "Product", "ICCID" instead of "Barcode"
+ * - UI: Simplified flow (single "Vender" button)
+ * - Attendance: GPS + Photo required at clock-in
+ */
+data class VenueModule(
+    val id: String,
+    val moduleCode: String,          // e.g., "SERIALIZED_INVENTORY"
+    val moduleName: String,          // e.g., "Inventario Serializado"
+    val config: ModuleConfig,        // Merged config (default + preset + custom)
+    val active: Boolean = true
+)
+
+/**
+ * ModuleConfig contains all configurable settings for a module.
+ * This is the merged result of defaultConfig + presetConfig + customConfig from backend.
+ */
+data class ModuleConfig(
+    val labels: ModuleLabels = ModuleLabels(),
+    val features: ModuleFeatures = ModuleFeatures(),
+    val ui: ModuleUi = ModuleUi(),
+    val attendance: ModuleAttendance = ModuleAttendance()
+)
+
+/**
+ * Industry-specific labels for UI elements.
+ * Allows adapting terminology per business type.
+ */
+data class ModuleLabels(
+    val item: String = "Producto",           // "SIM", "Pieza", "Dispositivo"
+    val barcode: String = "Código de Barras", // "ICCID", "Certificado", "Número de Serie"
+    val category: String = "Categoría",       // "Tipo de SIM", "Tipo de Piedra"
+    val scan: String = "Escanear",            // "Escanear SIM"
+    val register: String = "Registrar"        // "Alta de SIM"
+)
+
+/**
+ * Feature toggles for module behavior.
+ */
+data class ModuleFeatures(
+    val allowUnregisteredSale: Boolean = true,
+    val requireCategorySelection: Boolean = true,
+    val showStockCounts: Boolean = true
+)
+
+/**
+ * UI configuration for payment/order flow.
+ * Controls which screens are shown/skipped.
+ */
+data class ModuleUi(
+    val simplifiedOrderFlow: Boolean = false,  // Single "Vender" button on welcome
+    val skipTipScreen: Boolean = false,        // No tips for telecom
+    val skipReviewScreen: Boolean = false,     // Skip order review, go direct to payment
+    val enableShifts: Boolean = true           // Shift system on/off
+)
+
+/**
+ * Attendance/timeclock configuration.
+ * Controls anti-fraud measures for clock-in/out.
+ */
+data class ModuleAttendance(
+    val requireClockInPhoto: Boolean = false,  // Photo capture at clock-in
+    val requireClockInGps: Boolean = false,    // GPS location at clock-in
+    val requireClockOutPhoto: Boolean = false, // Photo capture at clock-out
+    val requireClockOutGps: Boolean = false    // GPS location at clock-out
+)

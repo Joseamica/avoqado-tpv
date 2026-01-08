@@ -18,6 +18,12 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
+    <!-- Location Permissions (Clock-in/out GPS tracking) -->
+    <!-- Required for venues that enable attendance GPS verification via VenueModule config -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+
     <!-- Storage Permissions (Self-Update Feature) -->
     <!-- Required for downloading APK updates to external storage -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"

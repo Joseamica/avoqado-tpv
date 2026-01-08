@@ -28,6 +28,8 @@ import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
+import com.jaac.avoqado_tpv.features.verification.presentation.components.ACTION_CAPTURE_PHOTO
+import com.jaac.avoqado_tpv.features.verification.presentation.components.CameraState
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -172,8 +174,16 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Intercept VOLUME_UP button to open barcode scanner (Square POS pattern)
-     * ✅ BARCODE QUICK ADD: Hardware button shortcut for "Scan & Go" mode
+     * Intercept VOLUME_UP button for multiple actions:
+     *
+     * **Priority 1: Camera Photo Capture**
+     * - When camera preview is active (CameraState.isActive = true)
+     * - Broadcasts ACTION_CAPTURE_PHOTO for selfie capture
+     * - Used for clock-in/out photo verification
+     *
+     * **Priority 2: Barcode Scanner (Square POS pattern)**
+     * - When camera is NOT active
+     * - Broadcasts OPEN_BARCODE_SCANNER for "Scan & Go" mode
      *
      * **Android Hardware Button Handling:**
      * - VOLUME_UP and VOLUME_DOWN can be intercepted (documented in Android Developers)
@@ -185,21 +195,22 @@ class MainActivity : ComponentActivity() {
      * - No special PAX SDK required for volume buttons
      * - Works on PAX A910S and all PAX Android terminals
      *
-     * **Flow:**
-     * 1. User presses VOLUME+ while on MenuScreen with active order
-     * 2. Broadcast intent "com.jaac.avoqado_tpv.OPEN_BARCODE_SCANNER"
-     * 3. MenuViewModel receives broadcast and opens BarcodeQuickAddScreen
-     *
      * **Limitations:**
      * - Only works when app is in foreground
      * - Cannot intercept HOME or POWER buttons (system-level)
-     * - MenuViewModel must register BroadcastReceiver to listen for intent
      */
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
         if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) {
-            Timber.d("🔊 [MainActivity] VOLUME_UP pressed - broadcasting scanner intent")
+            // Priority 1: If camera is active, trigger photo capture
+            if (CameraState.isActive) {
+                Timber.d("📸 [MainActivity] VOLUME_UP pressed - camera active, broadcasting capture intent")
+                val intent = Intent(ACTION_CAPTURE_PHOTO)
+                sendBroadcast(intent)
+                return true  // Consume event (don't change volume)
+            }
 
-            // Broadcast intent for MenuViewModel to open barcode scanner
+            // Priority 2: Open barcode scanner (default behavior)
+            Timber.d("🔊 [MainActivity] VOLUME_UP pressed - broadcasting scanner intent")
             val intent = Intent("com.jaac.avoqado_tpv.OPEN_BARCODE_SCANNER")
             sendBroadcast(intent)
 

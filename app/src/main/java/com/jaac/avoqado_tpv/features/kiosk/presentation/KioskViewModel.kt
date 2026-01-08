@@ -20,9 +20,12 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -61,24 +64,16 @@ class KioskViewModel @Inject constructor(
     val cartItems: StateFlow<List<KioskCartItem>> = _cartItems.asStateFlow()
 
     // Cart item count for FAB badge
-    val cartItemCount: StateFlow<Int>
-        get() = MutableStateFlow(_cartItems.value.sumOf { it.quantity }).also { flow ->
-            viewModelScope.launch {
-                _cartItems.collect { items ->
-                    (flow as MutableStateFlow).value = items.sumOf { it.quantity }
-                }
-            }
-        }
+    // Uses stateIn with Eagerly to maintain same behavior as before, but without memory leak
+    val cartItemCount: StateFlow<Int> = _cartItems
+        .map { items -> items.sumOf { it.quantity } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
     // Cart total
-    val cartTotal: StateFlow<BigDecimal>
-        get() = MutableStateFlow(_cartItems.value.fold(BigDecimal.ZERO) { acc, item -> acc.add(item.lineTotal) }).also { flow ->
-            viewModelScope.launch {
-                _cartItems.collect { items ->
-                    (flow as MutableStateFlow).value = items.fold(BigDecimal.ZERO) { acc, item -> acc.add(item.lineTotal) }
-                }
-            }
-        }
+    // Uses stateIn with Eagerly to maintain same behavior as before, but without memory leak
+    val cartTotal: StateFlow<BigDecimal> = _cartItems
+        .map { items -> items.fold(BigDecimal.ZERO) { acc, item -> acc.add(item.lineTotal) } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, BigDecimal.ZERO)
 
     // 🥝 KIOSK: Prioritize kioskVenueId (configured separately for kiosk mode)
     // Falls back to regular venueId for backwards compatibility

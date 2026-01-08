@@ -228,4 +228,24 @@ sealed class NavRoute(val route: String) {
     data object KioskSuccess : NavRoute("kiosk/success/{orderNumber}") {
         fun createRoute(orderNumber: String) = "kiosk/success/$orderNumber"
     }
+
+    // ==================== SERIALIZED INVENTORY ROUTES ====================
+
+    /**
+     * Serialized Sale screen - Quick sell flow for serialized items
+     * Scan barcode → Enter price → Create order → Payment
+     *
+     * Used for telecom SIMs, jewelry, electronics with unique serial numbers.
+     * Flow: Barcode → Price → Payment (skips tip/review based on module config)
+     */
+    data object SerializedSale : NavRoute("serialized_sale")
+
+    /**
+     * Serialized Inventory Register screen - Batch registration of items
+     * Select category → Scan multiple barcodes → Register batch
+     *
+     * Used for "Alta de Productos" flow to add inventory.
+     * Allows registering multiple serial numbers at once.
+     */
+    data object SerializedInventoryRegister : NavRoute("serialized_inventory_register")
 }

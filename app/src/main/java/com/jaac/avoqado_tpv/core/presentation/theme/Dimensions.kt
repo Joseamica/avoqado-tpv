@@ -153,6 +153,28 @@ object Size {
 
     /** Comfortable touch target (56dp) - Easy to tap */
     val TouchTargetComfortable: Dp = 56.dp
+
+    // ========== Serialized Inventory (PAX A910S optimized) ==========
+    /** Category selector height (50dp) - Compact dropdown for small screens */
+    val SerializedCategorySelectorHeight: Dp = 50.dp
+
+    /** Scanner input height (48dp) - Standard touch target */
+    val SerializedScannerInputHeight: Dp = 48.dp
+
+    /** Item row height (40dp) - Compact for listing many items */
+    val SerializedItemRowHeight: Dp = 40.dp
+
+    /** List max height (400dp) - Fixed height to prevent unbounded growth */
+    val SerializedListMaxHeight: Dp = 400.dp
+
+    /** Counter badge height (32dp) - Compact status display */
+    val SerializedCounterHeight: Dp = 32.dp
+
+    /** Product card width (260dp) - Centered card for sale preview */
+    val SerializedProductCardWidth: Dp = 260.dp
+
+    /** Product card height (160dp) - Compact product display */
+    val SerializedProductCardHeight: Dp = 160.dp
 }
 
 /**

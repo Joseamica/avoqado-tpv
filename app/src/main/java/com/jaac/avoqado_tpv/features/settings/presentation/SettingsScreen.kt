@@ -242,32 +242,6 @@ fun SettingsScreen(
                 }
 
                 // ═══════════════════════════════════════════════════════════════
-                // KIOSK MODE (only if user has permission)
-                // ═══════════════════════════════════════════════════════════════
-                if (state.hasKioskPermission) {
-                    item {
-                        Spacer(modifier = Modifier.height(sizes.spacingMedium))
-                        SectionHeader(
-                            title = "Modo Kiosko",
-                            icon = Icons.Outlined.Storefront,
-                            subtitle = "Auto-servicio para clientes"
-                        )
-                    }
-
-                    item {
-                        SettingsCard {
-                            SettingsToggleRow(
-                                label = "Activar Modo Kiosko",
-                                description = "Convierte el terminal en autoservicio",
-                                enabled = state.isKioskModeEnabled,
-                                isSaving = false,
-                                onToggle = { viewModel.toggleKioskMode() }
-                            )
-                        }
-                    }
-                }
-
-                // ═══════════════════════════════════════════════════════════════
                 // TPV SETTINGS (editable, per-terminal)
                 // ═══════════════════════════════════════════════════════════════
                 item {
@@ -321,6 +295,30 @@ fun SettingsScreen(
                             enabled = state.tpvSettings.requirePinLogin,
                             isSaving = state.isSaving,
                             onToggle = { viewModel.toggleRequirePinLogin() }
+                        )
+                    }
+                }
+
+                // ═══════════════════════════════════════════════════════════════
+                // KIOSK MODE FUNCTIONALITY
+                // ═══════════════════════════════════════════════════════════════
+                item {
+                    Spacer(modifier = Modifier.height(sizes.spacingMedium))
+                    SectionHeader(
+                        title = "Modo Kiosko",
+                        icon = Icons.Outlined.Storefront,
+                        subtitle = "Funcionalidad de autoservicio"
+                    )
+                }
+
+                item {
+                    SettingsCard {
+                        SettingsToggleRow(
+                            label = "Habilitar Kiosko",
+                            description = "Permite activar modo autoservicio en este terminal",
+                            enabled = state.tpvSettings.kioskModeEnabled,
+                            isSaving = state.isSaving,
+                            onToggle = { viewModel.toggleKioskModeEnabled() }
                         )
                     }
                 }

@@ -129,9 +129,22 @@ class SerializedSaleRepositoryImpl @Inject constructor(
                     Result.failure(Exception("Empty response from server"))
                 }
             } else {
-                val error = response.errorBody()?.string() ?: "Unknown error"
-                Log.e(TAG, "Quick sell failed: ${response.code()} - $error")
-                Result.failure(Exception("Sale failed: $error"))
+                val errorBody = response.errorBody()?.string() ?: "Unknown error"
+                Log.e(TAG, "Quick sell failed: ${response.code()} - $errorBody")
+
+                // Parse permission errors for better UX
+                val userMessage = when {
+                    response.code() == 403 && errorBody.contains("Permission") -> {
+                        "No tienes permiso para vender. Contacta al administrador."
+                    }
+                    response.code() == 401 -> {
+                        "Sesión expirada. Por favor inicia sesión de nuevo."
+                    }
+                    else -> {
+                        "Error al procesar venta: ${response.code()}"
+                    }
+                }
+                Result.failure(Exception(userMessage))
             }
         } catch (e: Exception) {
             Log.e(TAG, "Quick sell error", e)

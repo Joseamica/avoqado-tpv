@@ -328,6 +328,38 @@ private fun ScanAreaOverlay(
             blendMode = BlendMode.Clear
         )
 
+        // ═══════════════════════════════════════════════════════════════════
+        // Barcode hint illustration (semi-transparent guide for user)
+        // ═══════════════════════════════════════════════════════════════════
+        val barcodeColor = Color.White.copy(alpha = 0.15f)  // Very subtle
+        val barcodeWidth = scanAreaWidth * 0.6f  // 60% of scan area
+        val barcodeHeight = scanAreaHeight * 0.4f  // 40% of scan area height
+        val barcodeLeft = scanAreaLeft + (scanAreaWidth - barcodeWidth) / 2
+        val barcodeTop = scanAreaTop + (scanAreaHeight - barcodeHeight) / 2
+
+        // Barcode pattern - alternating thin and thick bars
+        // Pattern simulates a typical EAN/UPC barcode
+        val barPattern = listOf(
+            2f, 1f, 1f, 2f, 1f, 2f, 1f, 1f, 2f, 1f,  // Left section
+            1f, 1f,  // Center guard
+            1f, 2f, 1f, 1f, 2f, 1f, 2f, 1f, 1f, 2f   // Right section
+        )
+        val totalUnits = barPattern.sum()
+        val unitWidth = barcodeWidth / totalUnits
+
+        var currentX = barcodeLeft
+        barPattern.forEachIndexed { index, units ->
+            // Alternate between bars and spaces (bars on even indices)
+            if (index % 2 == 0) {
+                drawRect(
+                    color = barcodeColor,
+                    topLeft = Offset(currentX, barcodeTop),
+                    size = Size(unitWidth * units, barcodeHeight)
+                )
+            }
+            currentX += unitWidth * units
+        }
+
         // Scan area border
         drawRoundRect(
             color = Color.White,
@@ -451,35 +483,21 @@ private fun ScannerControls(
             }
         }
 
-        // Instructions
-        Column(
+        // Instructions (text only, no icon)
+        Text(
+            text = "Coloca el código de barras dentro del área",
+            color = Color.White,
+            style = MaterialTheme.typography.bodySmall,
+            textAlign = TextAlign.Center,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 48.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Icon(
-                imageVector = Icons.Default.QrCodeScanner,
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(32.dp)
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Text(
-                text = "Coloca el codigo de barras dentro del area",
-                color = Color.White,
-                style = MaterialTheme.typography.bodyMedium,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .background(
-                        color = Color.Black.copy(alpha = 0.5f),
-                        shape = RoundedCornerShape(8.dp)
-                    )
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-            )
-        }
+                .padding(bottom = 48.dp)
+                .background(
+                    color = Color.Black.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(8.dp)
+                )
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        )
     }
 }
 

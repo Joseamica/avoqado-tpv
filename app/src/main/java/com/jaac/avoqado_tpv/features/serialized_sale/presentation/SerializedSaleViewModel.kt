@@ -65,29 +65,52 @@ class SerializedSaleViewModel @Inject constructor(
     }
 
     /**
-     * Handle barcode scan result from scanner.
+     * Show camera scanner dialog.
+     */
+    fun showCameraScanner() {
+        _uiState.update { it.copy(showCameraScanner = true) }
+    }
+
+    /**
+     * Hide camera scanner dialog.
+     */
+    fun hideCameraScanner() {
+        _uiState.update { it.copy(showCameraScanner = false) }
+    }
+
+    /**
+     * Handle barcode scan result from scanner (physical or camera).
      *
      * @param serialNumber The scanned barcode/serial number
      */
     fun onBarcodeScanned(serialNumber: String) {
-        Timber.d("Barcode scanned: $serialNumber")
+        Timber.d("📦 [SerializedSale] Barcode scanned: '$serialNumber'")
 
+        // Validate serial number
+        if (serialNumber.isBlank()) {
+            Timber.w("📦 [SerializedSale] Ignoring blank serial number")
+            return
+        }
+
+        Timber.d("📦 [SerializedSale] Setting isLoading=true, calling API...")
         _uiState.update {
             it.copy(
                 isLoading = true,
-                isScanning = false,
+                showCameraScanner = false,
                 error = null,
                 currentSerialNumber = serialNumber
             )
         }
 
         viewModelScope.launch {
+            Timber.d("📦 [SerializedSale] Calling scanItem API for: $serialNumber")
             serializedSaleRepository.scanItem(serialNumber)
                 .onSuccess { result ->
+                    Timber.d("📦 [SerializedSale] API SUCCESS - Result: $result")
                     handleScanResult(result, serialNumber)
                 }
                 .onFailure { error ->
-                    Timber.e(error, "Scan failed")
+                    Timber.e(error, "📦 [SerializedSale] API FAILED - Error: ${error.message}")
                     _uiState.update {
                         it.copy(
                             isLoading = false,
@@ -99,8 +122,10 @@ class SerializedSaleViewModel @Inject constructor(
     }
 
     private fun handleScanResult(result: ScanResult, serialNumber: String) {
+        Timber.d("📦 [SerializedSale] handleScanResult: ${result::class.simpleName}")
         when (result) {
             is ScanResult.Available -> {
+                Timber.d("📦 [SerializedSale] Item AVAILABLE - Category: ${result.category?.name}, Price: ${result.suggestedPrice}")
                 _uiState.update {
                     it.copy(
                         isLoading = false,
@@ -110,6 +135,7 @@ class SerializedSaleViewModel @Inject constructor(
                 }
             }
             is ScanResult.NotRegistered -> {
+                Timber.d("📦 [SerializedSale] Item NOT_REGISTERED - Will show category selector")
                 _uiState.update {
                     it.copy(
                         isLoading = false,
@@ -119,6 +145,7 @@ class SerializedSaleViewModel @Inject constructor(
                 }
             }
             is ScanResult.AlreadySold -> {
+                Timber.d("📦 [SerializedSale] Item ALREADY_SOLD - soldAt: ${result.soldAt}")
                 _uiState.update {
                     it.copy(
                         isLoading = false,
@@ -128,6 +155,7 @@ class SerializedSaleViewModel @Inject constructor(
                 }
             }
             is ScanResult.ModuleDisabled -> {
+                Timber.d("📦 [SerializedSale] MODULE_DISABLED")
                 _uiState.update {
                     it.copy(
                         isLoading = false,
@@ -137,6 +165,7 @@ class SerializedSaleViewModel @Inject constructor(
                 }
             }
         }
+        Timber.d("📦 [SerializedSale] State updated - scanResult is now: ${_uiState.value.scanResult}")
     }
 
     /**
@@ -225,11 +254,11 @@ class SerializedSaleViewModel @Inject constructor(
 
     /**
      * Reset state to scan another item.
+     * Does NOT auto-open camera - keeps the scanner input ready.
      */
     fun resetForNewScan() {
         _uiState.update {
             SerializedSaleUiState(
-                isScanning = true,
                 categories = it.categories // Keep categories loaded
             )
         }
@@ -243,12 +272,13 @@ class SerializedSaleViewModel @Inject constructor(
     }
 
     /**
-     * Return to scanning mode.
+     * Reset to scan another item.
+     * Does NOT auto-open camera - keeps the scanner input ready for physical scanner.
      */
     fun returnToScanner() {
         _uiState.update {
             it.copy(
-                isScanning = true,
+                showCameraScanner = false,
                 scanResult = null,
                 enteredPrice = "",
                 selectedCategory = null,

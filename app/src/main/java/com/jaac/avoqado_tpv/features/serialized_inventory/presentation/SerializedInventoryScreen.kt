@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import com.jaac.avoqado_tpv.core.presentation.theme.Size
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,6 +41,7 @@ import com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.Inventory
 import timber.log.Timber
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.CategoryWithStock
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 
 /**
  * SerializedInventoryScreen (Alta de Productos flow)
@@ -83,21 +85,9 @@ fun SerializedInventoryScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text(registerLabel) },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Volver"
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                    navigationIconContentColor = MaterialTheme.colorScheme.onPrimary
-                )
+            AvoqadoTopBar(
+                title = registerLabel,
+                onNavigationClick = onNavigateBack
             )
         }
     ) { paddingValues ->
@@ -206,6 +196,10 @@ fun SerializedInventoryScreen(
     }
 }
 
+/**
+ * Compact overlay for camera scanning mode
+ * Shows scan feedback and count with done button
+ */
 @Composable
 private fun ScannedCountOverlay(
     count: Int,
@@ -217,52 +211,70 @@ private fun ScannedCountOverlay(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Feedback text
+        // Feedback text (compact pill)
         if (lastFeedback != null) {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = Color.Black.copy(alpha = 0.7f)
-                )
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = if (lastFeedback.startsWith("✓")) {
+                    Color(0xFF4CAF50).copy(alpha = 0.9f)  // Green for success
+                } else {
+                    Color(0xFFFF9800).copy(alpha = 0.9f)  // Orange for warning
+                }
             ) {
                 Text(
                     text = lastFeedback,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                     color = Color.White,
-                    style = MaterialTheme.typography.bodyMedium
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Medium
                 )
             }
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(12.dp))
         }
 
-        // Count badge and done button
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        // Count + Done button in a single card
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = Color.Black.copy(alpha = 0.85f)
         ) {
-            // Count badge
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.primary
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    text = "$count",
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimary
-                )
-            }
+                // Count badge (circular)
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        Text(
+                            text = "$count",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
+                }
 
-            // Done button
-            Button(
-                onClick = onDone,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.secondary
-                )
-            ) {
-                Icon(Icons.Default.Done, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Listo")
+                // Done button (prominent)
+                Button(
+                    onClick = onDone,
+                    modifier = Modifier.height(40.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    ),
+                    contentPadding = PaddingValues(horizontal = 16.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Listo", style = MaterialTheme.typography.labelLarge)
+                }
             }
         }
     }
@@ -344,37 +356,38 @@ private fun InventoryFormContent(
                 })
             }
     ) {
-        // Step 1: Category Selection
+        // Step 1: Category Selection (Compact dropdown)
         Text(
             text = "1. Selecciona categoría",
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold
         )
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
-        CategorySelectorGrid(
+        CategorySelectorDropdown(
             categories = uiState.categories,
             selectedCategory = uiState.selectedCategory,
             onCategorySelected = onCategorySelected,
             modifier = Modifier.fillMaxWidth()
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // Step 2: Scan barcodes
+        // Step 2: Scan barcodes (Compact)
         Text(
             text = "2. Escanea $itemLabelPlural",
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold
         )
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
-        // 📱 Physical scanner input field
+        // 📱 Physical scanner input field (compact for PAX A910S)
         OutlinedTextField(
             value = physicalScannerInput,
             onValueChange = { physicalScannerInput = it },
             modifier = Modifier
                 .fillMaxWidth()
+                .height(Size.SerializedScannerInputHeight)
                 .focusRequester(focusRequester)
                 .onFocusChanged { focusState ->
                     // When TextField receives focus and we're NOT in manual keyboard mode,
@@ -385,12 +398,17 @@ private fun InventoryFormContent(
                     }
                 },
             enabled = uiState.selectedCategory != null,
-            label = { Text("Código de barras") },
-            placeholder = { Text("Escanea con pistola o escribe") },
+            placeholder = {
+                Text(
+                    "Escanea o escribe código",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            },
             leadingIcon = {
                 Icon(
                     imageVector = Icons.Default.QrCode,
                     contentDescription = null,
+                    modifier = Modifier.size(18.dp),
                     tint = if (uiState.selectedCategory != null) {
                         MaterialTheme.colorScheme.primary
                     } else {
@@ -408,35 +426,39 @@ private fun InventoryFormContent(
                                     val barcode = physicalScannerInput.trim()
                                     val result = onBarcodeScanned(barcode)
                                     scanFeedback = when (result) {
-                                        is InventoryScanResult.Added -> "✓ Agregado: $barcode"
+                                        is InventoryScanResult.Added -> "✓ $barcode"
                                         is InventoryScanResult.AlreadyScanned -> "⚠ Ya escaneado"
-                                        is InventoryScanResult.Duplicate -> "⚠ Duplicado en sistema"
+                                        is InventoryScanResult.Duplicate -> "⚠ Duplicado"
                                     }
                                     physicalScannerInput = ""
-                                    // Back to scanner mode, hide keyboard
                                     showKeyboardManually = false
                                     keyboardController?.hide()
                                 }
-                            }
+                            },
+                            modifier = Modifier.size(32.dp)
                         ) {
-                            Icon(Icons.Default.Add, contentDescription = "Agregar")
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = "Agregar",
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
                     }
                     // Keyboard toggle button (always visible when enabled)
                     if (uiState.selectedCategory != null) {
                         IconButton(
                             onClick = {
-                                // Enable manual keyboard mode and show keyboard
                                 showKeyboardManually = true
                                 focusRequester.requestFocus()
                                 keyboardController?.show()
                                 Timber.d("📦 Manual keyboard mode enabled")
                             },
-                            modifier = Modifier.size(40.dp)
+                            modifier = Modifier.size(32.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Keyboard,
                                 contentDescription = "Mostrar teclado",
+                                modifier = Modifier.size(18.dp),
                                 tint = if (showKeyboardManually) {
                                     MaterialTheme.colorScheme.primary
                                 } else {
@@ -459,35 +481,34 @@ private fun InventoryFormContent(
                         Timber.d("📦 Processing barcode: $barcode")
                         val result = onBarcodeScanned(barcode)
                         scanFeedback = when (result) {
-                            is InventoryScanResult.Added -> "✓ Agregado: $barcode"
+                            is InventoryScanResult.Added -> "✓ $barcode"
                             is InventoryScanResult.AlreadyScanned -> "⚠ Ya escaneado"
-                            is InventoryScanResult.Duplicate -> "⚠ Duplicado en sistema"
+                            is InventoryScanResult.Duplicate -> "⚠ Duplicado"
                         }
                         Timber.d("📦 Scan result: $scanFeedback")
                         physicalScannerInput = ""
                     }
-                    // 🔑 Back to scanner mode - hide keyboard but keep focus
                     showKeyboardManually = false
                     keyboardController?.hide()
-                    // Do NOT call focusManager.clearFocus() - that breaks physical scanner flow!
                 }
             ),
             singleLine = true,
-            supportingText = if (scanFeedback != null) {
-                {
-                    Text(
-                        text = scanFeedback!!,
-                        color = if (scanFeedback!!.startsWith("✓")) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.error
-                        }
-                    )
-                }
-            } else {
-                { Text("Pistola: escanea y listo | Teclado: toca ⌨") }
-            }
+            textStyle = MaterialTheme.typography.bodySmall
         )
+
+        // Scan feedback (compact, separate line)
+        if (scanFeedback != null) {
+            Text(
+                text = scanFeedback!!,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (scanFeedback!!.startsWith("✓")) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp)
+            )
+        }
 
         Spacer(modifier = Modifier.height(12.dp))
 
@@ -526,46 +547,71 @@ private fun InventoryFormContent(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Scanned items list
+        // Scanned items counter badge (compact)
         if (uiState.scannedSerialNumbers.isNotEmpty()) {
+            // Counter badge row
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(Size.SerializedCounterHeight)
+                    .background(
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+                        RoundedCornerShape(8.dp)
+                    )
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    text = "$barcodeLabel escaneados (${uiState.scannedCount}):",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-                TextButton(onClick = onClearList) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.Inventory2,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "${uiState.scannedCount} $itemLabelPlural escaneados",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                TextButton(
+                    onClick = onClearList,
+                    modifier = Modifier.height(28.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                ) {
                     Icon(
                         Icons.Default.Clear,
                         contentDescription = null,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(14.dp)
                     )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("Limpiar")
+                    Spacer(modifier = Modifier.width(2.dp))
+                    Text("Limpiar", style = MaterialTheme.typography.labelSmall)
                 }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // List of scanned barcodes (using Column instead of LazyColumn for nested scroll compatibility)
+            // List of scanned barcodes with FIXED HEIGHT (prevents unbounded growth)
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant
                 )
             ) {
-                Column(
+                LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .heightIn(max = Size.SerializedListMaxHeight)
                         .padding(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    uiState.scannedSerialNumbers.forEachIndexed { index, serialNumber ->
-                        ScannedItemRow(
+                    itemsIndexed(
+                        items = uiState.scannedSerialNumbers,
+                        key = { _, serial -> serial }
+                    ) { index, serialNumber ->
+                        ScannedItemRowCompact(
                             index = index + 1,
                             serialNumber = serialNumber,
                             onRemove = { onRemoveSerialNumber(serialNumber) }
@@ -574,26 +620,22 @@ private fun InventoryFormContent(
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
-            // Step 3: Register
-            Text(
-                text = "3. Registrar ${uiState.scannedCount} $itemLabelPlural",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-
+            // Step 3: Register (compact button)
             Button(
                 onClick = onRegisterBatch,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp),
+                    .height(Size.ButtonHeightLarge),
                 enabled = uiState.canRegister
             ) {
                 Icon(Icons.Default.Save, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Registrar $itemLabelPlural", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Registrar ${uiState.scannedCount} $itemLabelPlural",
+                    style = MaterialTheme.typography.titleMedium
+                )
             }
         }
 
@@ -608,37 +650,94 @@ private fun InventoryFormContent(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CategorySelectorGrid(
+private fun CategorySelectorDropdown(
     categories: List<CategoryWithStock>,
     selectedCategory: CategoryWithStock?,
     onCategorySelected: (CategoryWithStock) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var expanded by remember { mutableStateOf(false) }
+
     if (categories.isEmpty()) {
-        Box(
+        OutlinedTextField(
+            value = "Cargando categorías...",
+            onValueChange = {},
             modifier = modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = "Cargando categorías...",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
+                .height(Size.SerializedCategorySelectorHeight),
+            enabled = false,
+            readOnly = true,
+            singleLine = true
+        )
     } else {
-        LazyColumn(
-            modifier = modifier.heightIn(max = 180.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { expanded = it },
+            modifier = modifier
         ) {
-            items(categories) { category ->
-                CategoryChip(
-                    category = category,
-                    isSelected = category.id == selectedCategory?.id,
-                    onClick = { onCategorySelected(category) }
-                )
+            OutlinedTextField(
+                value = selectedCategory?.name ?: "Seleccionar categoría",
+                onValueChange = {},
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(Size.SerializedCategorySelectorHeight)
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                readOnly = true,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium,
+                trailingIcon = {
+                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+                },
+                colors = if (selectedCategory != null) {
+                    OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.primary
+                    )
+                } else {
+                    OutlinedTextFieldDefaults.colors()
+                }
+            )
+            ExposedDropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                categories.forEach { category ->
+                    DropdownMenuItem(
+                        text = {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = category.name,
+                                    fontWeight = if (category.id == selectedCategory?.id) FontWeight.Bold else FontWeight.Normal
+                                )
+                                Text(
+                                    text = "${category.availableCount} disp.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        },
+                        onClick = {
+                            onCategorySelected(category)
+                            expanded = false
+                        },
+                        leadingIcon = if (category.id == selectedCategory?.id) {
+                            {
+                                Icon(
+                                    Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        } else null
+                    )
+                }
             }
         }
     }
@@ -700,6 +799,59 @@ private fun CategoryChip(
                 text = "${category.availableCount} disponibles",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/**
+ * Compact item row for scanned serial numbers (40dp height)
+ * Optimized for PAX A910S small screen
+ */
+@Composable
+private fun ScannedItemRowCompact(
+    index: Int,
+    serialNumber: String,
+    onRemove: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(Size.SerializedItemRowHeight)
+            .background(
+                MaterialTheme.colorScheme.surface,
+                RoundedCornerShape(4.dp)
+            )
+            .padding(horizontal = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "$index.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.width(24.dp)
+            )
+            Text(
+                text = serialNumber,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        IconButton(
+            onClick = onRemove,
+            modifier = Modifier.size(28.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = "Eliminar",
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(14.dp)
             )
         }
     }

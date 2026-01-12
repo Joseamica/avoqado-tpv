@@ -108,10 +108,17 @@ data class QuickSellResult(
 
 /**
  * UI state for SerializedSaleScreen
+ *
+ * **Flow with dual scanner support:**
+ * 1. Screen starts with scanner input ready (physical scanner)
+ * 2. User can tap camera button to use camera scanner
+ * 3. After scan, show item info and price
+ * 4. Confirm sale → navigate to payment
  */
 data class SerializedSaleUiState(
     val isLoading: Boolean = false,
-    val isScanning: Boolean = true,
+    /** True when camera scanner dialog is shown */
+    val showCameraScanner: Boolean = false,
     val scanResult: ScanResult? = null,
     val categories: List<CategoryWithStock> = emptyList(),
     val selectedCategory: CategoryWithStock? = null,

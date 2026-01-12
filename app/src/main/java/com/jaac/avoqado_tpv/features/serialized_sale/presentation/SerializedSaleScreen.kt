@@ -4,42 +4,42 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Error
-import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import com.jaac.avoqado_tpv.core.presentation.theme.Size
+import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.CategoryWithStock
-import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.QuickSellResult
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
+import timber.log.Timber
 
 /**
- * SerializedSaleScreen (Vender flow)
+ * SerializedSaleScreen (Vender flow) - Optimized for PAX A910S
  *
- * Flow:
- * 1. Scan barcode
- * 2. Show item info (or category selector if not registered)
- * 3. Enter/confirm price
+ * **Dual Scanner Support:**
+ * - Physical scanner (pistol): TextField captures keyboard input
+ * - Camera scanner: Button opens camera dialog
+ *
+ * **Flow:**
+ * 1. Select category (optional, shows suggested price)
+ * 2. Scan barcode (physical or camera)
+ * 3. Show item info + price input
  * 4. Confirm sale → Navigate to payment
  *
  * @param onNavigateBack Navigation callback to go back
@@ -59,221 +59,311 @@ fun SerializedSaleScreen(
     val itemLabel = labels?.item ?: "Artículo"
     val barcodeLabel = labels?.barcode ?: "Código"
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Vender $itemLabel") },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Volver"
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                    navigationIconContentColor = MaterialTheme.colorScheme.onPrimary
-                )
-            )
+    // Scanner input state (for physical scanner)
+    var scannerInput by remember { mutableStateOf("") }
+    val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+
+    // Log UI state changes for debugging
+    LaunchedEffect(uiState) {
+        Timber.d("📦 [Screen] UI State changed: isLoading=${uiState.isLoading}, scanResult=${uiState.scanResult?.let { it::class.simpleName }}, error=${uiState.error}, serial=${uiState.currentSerialNumber}")
+    }
+
+    // Request focus on scanner input when screen loads and after scanning
+    LaunchedEffect(uiState.scanResult) {
+        Timber.d("📦 [Screen] scanResult changed to: ${uiState.scanResult?.let { it::class.simpleName } ?: "null"}")
+        if (uiState.scanResult == null && !uiState.showCameraScanner) {
+            Timber.d("📦 [Screen] Requesting focus on scanner input")
+            focusRequester.requestFocus()
         }
-    ) { paddingValues ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-        ) {
-            when {
-                uiState.isScanning -> {
-                    // Show barcode scanner
-                    BarcodeScannerScreen(
-                        onBarcodeScanned = { barcode, _ ->
-                            viewModel.onBarcodeScanned(barcode)
-                        },
-                        onClose = onNavigateBack,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-                uiState.isLoading -> {
-                    // Loading state
+    }
+
+    // Camera scanner dialog (fullscreen)
+    if (uiState.showCameraScanner) {
+        BarcodeScannerScreen(
+            onBarcodeScanned = { barcode, _ ->
+                viewModel.onBarcodeScanned(barcode)
+            },
+            onClose = { viewModel.hideCameraScanner() },
+            modifier = Modifier.fillMaxSize()
+        )
+    } else {
+        Scaffold(
+            topBar = {
+                AvoqadoTopBar(
+                    title = "Vender $itemLabel",
+                    onNavigationClick = onNavigateBack
+                )
+            }
+        ) { paddingValues ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+            ) {
+                if (uiState.isLoading) {
+                    // Loading overlay
                     Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             CircularProgressIndicator()
-                            Spacer(modifier = Modifier.height(16.dp))
+                            Spacer(modifier = Modifier.height(Spacing.Space4))
                             Text("Procesando...")
                         }
                     }
-                }
-                else -> {
-                    // Show scan result and sale form
-                    SaleFormContent(
-                        uiState = uiState,
-                        itemLabel = itemLabel,
-                        barcodeLabel = barcodeLabel,
-                        onPriceChanged = viewModel::onPriceChanged,
-                        onCategorySelected = viewModel::onCategorySelected,
-                        onConfirmSale = {
-                            viewModel.onConfirmSale { result ->
-                                onNavigateToPayment(result.orderId, result.total.toPlainString())
-                            }
-                        },
-                        onScanAnother = viewModel::returnToScanner,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-            }
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(Spacing.Space4)
+                    ) {
+                        // ══════════════════════════════════════════════════════════
+                        // Scanner Input (physical scanner + camera button)
+                        // Only shown before scanning - category is auto-detected
+                        // ══════════════════════════════════════════════════════════
+                        if (uiState.scanResult == null) {
+                            // Log current UI state for debugging
+                            Timber.d("📦 [Screen] Showing scanner input - scanResult is null")
 
-            // Error Snackbar
-            if (uiState.error != null) {
-                Snackbar(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(16.dp),
-                    action = {
-                        TextButton(onClick = { viewModel.dismissError() }) {
-                            Text("OK")
+                            OutlinedTextField(
+                                value = scannerInput,
+                                onValueChange = { newValue ->
+                                    try {
+                                        // Log raw input for debugging (show control chars)
+                                        val debugValue = newValue.map { c ->
+                                            when {
+                                                c == '\n' -> "\\n"
+                                                c == '\r' -> "\\r"
+                                                c == '\t' -> "\\t"
+                                                c.code < 32 -> "\\x${c.code.toString(16)}"
+                                                else -> c.toString()
+                                            }
+                                        }.joinToString("")
+                                        Timber.d("📦 [Screen] Input changed: '$debugValue' (len=${newValue.length})")
+
+                                        // Physical scanner sends text + Enter/CR
+                                        if (newValue.contains("\n") || newValue.contains("\r")) {
+                                            val serial = newValue.trim()
+                                                .replace("\n", "")
+                                                .replace("\r", "")
+                                                .replace("\t", "")
+                                                .filter { it.code >= 32 } // Remove control chars
+                                            Timber.d("📦 [Screen] Detected scanner input with Enter - serial: '$serial' (len=${serial.length})")
+                                            if (serial.isNotBlank()) {
+                                                Timber.d("📦 [Screen] Calling viewModel.onBarcodeScanned('$serial')")
+                                                viewModel.onBarcodeScanned(serial)
+                                                scannerInput = ""
+                                            } else {
+                                                Timber.w("📦 [Screen] Serial was blank after cleaning, ignoring")
+                                                scannerInput = ""
+                                            }
+                                        } else {
+                                            scannerInput = newValue
+                                        }
+                                    } catch (e: Exception) {
+                                        Timber.e(e, "📦 [Screen] ERROR in onValueChange")
+                                        scannerInput = ""
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(Size.SerializedScannerInputHeight)
+                                    .focusRequester(focusRequester),
+                                placeholder = {
+                                    Text(
+                                        "Escanear $barcodeLabel...",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.QrCodeScanner,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                trailingIcon = {
+                                    IconButton(
+                                        onClick = { viewModel.showCameraScanner() },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.CameraAlt,
+                                            contentDescription = "Usar cámara",
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                },
+                                textStyle = MaterialTheme.typography.bodySmall,
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Text,
+                                    imeAction = ImeAction.Done
+                                ),
+                                keyboardActions = KeyboardActions(
+                                    onDone = {
+                                        if (scannerInput.isNotBlank()) {
+                                            viewModel.onBarcodeScanned(scannerInput.trim())
+                                            scannerInput = ""
+                                        }
+                                    }
+                                )
+                            )
+
+                            Spacer(modifier = Modifier.height(Spacing.Space3))
+
+                            // Hint text
+                            Text(
+                                text = "Escanea con pistola o toca 📷 para usar cámara",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        // ══════════════════════════════════════════════════════════
+                        // Scan Result Card (when item is scanned)
+                        // ══════════════════════════════════════════════════════════
+                        if (uiState.scanResult != null) {
+                            Timber.d("📦 [Screen] Showing scan result: ${uiState.scanResult!!::class.simpleName}")
+                            ScanResultCard(
+                                scanResult = uiState.scanResult,
+                                serialNumber = uiState.currentSerialNumber,
+                                itemLabel = itemLabel,
+                                barcodeLabel = barcodeLabel,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            Spacer(modifier = Modifier.height(Spacing.Space3))
+
+                            // Category selector for unregistered items
+                            if (uiState.scanResult is ScanResult.NotRegistered) {
+                                Text(
+                                    text = "Selecciona categoría",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(Spacing.Space1))
+
+                                CategorySelectorDropdown(
+                                    categories = uiState.categories,
+                                    selectedCategory = uiState.selectedCategory,
+                                    onCategorySelected = viewModel::onCategorySelected,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
+                                Spacer(modifier = Modifier.height(Spacing.Space3))
+                            }
+
+                            // Price input (for available or not_registered with category)
+                            if (uiState.scanResult is ScanResult.Available ||
+                                (uiState.scanResult is ScanResult.NotRegistered && uiState.selectedCategory != null)
+                            ) {
+                                Text(
+                                    text = "Precio de venta",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(Spacing.Space1))
+
+                                OutlinedTextField(
+                                    value = uiState.enteredPrice,
+                                    onValueChange = viewModel::onPriceChanged,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    label = { Text("Precio (MXN)") },
+                                    leadingIcon = {
+                                        Text(
+                                            "$",
+                                            style = MaterialTheme.typography.titleLarge
+                                        )
+                                    },
+                                    keyboardOptions = KeyboardOptions(
+                                        keyboardType = KeyboardType.Decimal,
+                                        imeAction = ImeAction.Done
+                                    ),
+                                    keyboardActions = KeyboardActions(
+                                        onDone = { focusManager.clearFocus() }
+                                    ),
+                                    singleLine = true,
+                                    textStyle = MaterialTheme.typography.headlineMedium
+                                )
+
+                                Spacer(modifier = Modifier.height(Spacing.Space4))
+
+                                // Confirm sale button
+                                Button(
+                                    onClick = {
+                                        focusManager.clearFocus()
+                                        viewModel.onConfirmSale { result ->
+                                            onNavigateToPayment(
+                                                result.orderId,
+                                                result.total.toPlainString()
+                                            )
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(Size.ButtonHeightLarge),
+                                    enabled = uiState.canProceedToSell
+                                ) {
+                                    Icon(Icons.Default.Check, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(Spacing.Space2))
+                                    Text(
+                                        text = "Vender $${uiState.enteredPrice.ifEmpty { "0" }}",
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                }
+                            }
+
+                            // Already sold - show scan another button
+                            if (uiState.scanResult is ScanResult.AlreadySold) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+
+                            Spacer(modifier = Modifier.height(Spacing.Space3))
+
+                            // Scan another button
+                            OutlinedButton(
+                                onClick = {
+                                    scannerInput = ""
+                                    viewModel.returnToScanner()
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(Size.ButtonHeight)
+                            ) {
+                                Icon(Icons.Default.QrCodeScanner, contentDescription = null)
+                                Spacer(modifier = Modifier.width(Spacing.Space2))
+                                Text("Escanear Otro")
+                            }
                         }
                     }
-                ) {
-                    Text(uiState.error!!)
+                }
+
+                // Error Snackbar
+                if (uiState.error != null) {
+                    Snackbar(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(Spacing.Space4),
+                        action = {
+                            TextButton(onClick = { viewModel.dismissError() }) {
+                                Text("OK")
+                            }
+                        }
+                    ) {
+                        Text(uiState.error!!)
+                    }
                 }
             }
         }
     }
 }
 
-@Composable
-private fun SaleFormContent(
-    uiState: com.jaac.avoqado_tpv.features.serialized_sale.domain.model.SerializedSaleUiState,
-    itemLabel: String,
-    barcodeLabel: String,
-    onPriceChanged: (String) -> Unit,
-    onCategorySelected: (CategoryWithStock) -> Unit,
-    onConfirmSale: () -> Unit,
-    onScanAnother: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val focusManager = LocalFocusManager.current
-
-    Column(
-        modifier = modifier
-            .padding(16.dp)
-    ) {
-        // Scan result card
-        ScanResultCard(
-            scanResult = uiState.scanResult,
-            serialNumber = uiState.currentSerialNumber,
-            itemLabel = itemLabel,
-            barcodeLabel = barcodeLabel,
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Category selector (only for unregistered items)
-        if (uiState.scanResult is ScanResult.NotRegistered) {
-            Text(
-                text = "Selecciona categoría",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-
-            CategorySelector(
-                categories = uiState.categories,
-                selectedCategory = uiState.selectedCategory,
-                onCategorySelected = onCategorySelected,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f, fill = false)
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-        }
-
-        // Price input (only for available or not_registered)
-        if (uiState.scanResult is ScanResult.Available ||
-            (uiState.scanResult is ScanResult.NotRegistered && uiState.selectedCategory != null)) {
-
-            Text(
-                text = "Precio de venta",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-
-            OutlinedTextField(
-                value = uiState.enteredPrice,
-                onValueChange = onPriceChanged,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Precio (MXN)") },
-                leadingIcon = { Text("$", style = MaterialTheme.typography.titleLarge) },
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Decimal,
-                    imeAction = ImeAction.Done
-                ),
-                keyboardActions = KeyboardActions(
-                    onDone = { focusManager.clearFocus() }
-                ),
-                singleLine = true,
-                textStyle = MaterialTheme.typography.headlineMedium
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Confirm sale button
-            Button(
-                onClick = {
-                    focusManager.clearFocus()
-                    onConfirmSale()
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
-                enabled = uiState.canProceedToSell
-            ) {
-                Icon(Icons.Default.Check, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Confirmar Venta", style = MaterialTheme.typography.titleMedium)
-            }
-        }
-
-        // Already sold - show scan another button
-        if (uiState.scanResult is ScanResult.AlreadySold) {
-            Spacer(modifier = Modifier.weight(1f))
-
-            Button(
-                onClick = onScanAnother,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-            ) {
-                Icon(Icons.Default.QrCodeScanner, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Escanear Otro", style = MaterialTheme.typography.titleMedium)
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Scan another button (secondary action)
-        if (uiState.scanResult !is ScanResult.AlreadySold) {
-            OutlinedButton(
-                onClick = onScanAnother,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Default.QrCodeScanner, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Escanear Otro")
-            }
-        }
-    }
-}
-
+/**
+ * Scan result card showing item status
+ */
 @Composable
 private fun ScanResultCard(
     scanResult: ScanResult?,
@@ -295,7 +385,7 @@ private fun ScanResultCard(
         )
     ) {
         Column(
-            modifier = Modifier.padding(16.dp)
+            modifier = Modifier.padding(Spacing.Space4)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
@@ -315,7 +405,7 @@ private fun ScanResultCard(
                         null -> MaterialTheme.colorScheme.onSurfaceVariant
                     }
                 )
-                Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(Spacing.Space3))
                 Column {
                     Text(
                         text = when (scanResult) {
@@ -337,9 +427,9 @@ private fun ScanResultCard(
 
             // Show category for available items
             if (scanResult is ScanResult.Available && scanResult.category != null) {
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(Spacing.Space2))
                 HorizontalDivider()
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(Spacing.Space2))
                 Row {
                     Text(
                         text = "Categoría: ",
@@ -368,9 +458,9 @@ private fun ScanResultCard(
 
             // Show sold info for already sold items
             if (scanResult is ScanResult.AlreadySold) {
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(Spacing.Space2))
                 HorizontalDivider()
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(Spacing.Space2))
                 if (scanResult.soldAt != null) {
                     Text(
                         text = "Vendido: ${scanResult.soldAt}",
@@ -382,115 +472,127 @@ private fun ScanResultCard(
     }
 }
 
+/**
+ * Compact category selector dropdown for PAX A910S small screen
+ * Shows category name and suggested price in dropdown
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CategorySelector(
+private fun CategorySelectorDropdown(
     categories: List<CategoryWithStock>,
     selectedCategory: CategoryWithStock?,
     onCategorySelected: (CategoryWithStock) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var expanded by remember { mutableStateOf(false) }
+
     if (categories.isEmpty()) {
-        Box(
+        OutlinedTextField(
+            value = "Cargando categorías...",
+            onValueChange = {},
             modifier = modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = "No hay categorías disponibles",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
+                .height(Size.SerializedCategorySelectorHeight),
+            enabled = false,
+            readOnly = true,
+            singleLine = true
+        )
     } else {
-        LazyColumn(
-            modifier = modifier,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { expanded = it },
+            modifier = modifier
         ) {
-            items(categories) { category ->
-                CategoryItem(
-                    category = category,
-                    isSelected = category.id == selectedCategory?.id,
-                    onClick = { onCategorySelected(category) }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun CategoryItem(
-    category: CategoryWithStock,
-    isSelected: Boolean,
-    onClick: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
-            .then(
-                if (isSelected) {
-                    Modifier.border(
-                        width = 2.dp,
-                        color = MaterialTheme.colorScheme.primary,
-                        shape = RoundedCornerShape(8.dp)
+            OutlinedTextField(
+                value = selectedCategory?.name ?: "Seleccionar categoría",
+                onValueChange = {},
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(Size.SerializedCategorySelectorHeight)
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                readOnly = true,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium,
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.Category,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                },
+                trailingIcon = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // Show price if category selected
+                        selectedCategory?.suggestedPrice?.let { price ->
+                            Text(
+                                text = "$$price",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(Spacing.Space1))
+                        }
+                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+                    }
+                },
+                colors = if (selectedCategory != null) {
+                    OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.primary
                     )
                 } else {
-                    Modifier
+                    OutlinedTextFieldDefaults.colors()
                 }
-            ),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant
-            }
-        )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = category.name,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                if (category.description != null) {
-                    Text(
-                        text = category.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            ExposedDropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                categories.forEach { category ->
+                    DropdownMenuItem(
+                        text = {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = category.name,
+                                        fontWeight = if (category.id == selectedCategory?.id) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                    Text(
+                                        text = "${category.availableCount} disponibles",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                category.suggestedPrice?.let { price ->
+                                    Text(
+                                        text = "$$price",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        },
+                        onClick = {
+                            onCategorySelected(category)
+                            expanded = false
+                        },
+                        leadingIcon = if (category.id == selectedCategory?.id) {
+                            {
+                                Icon(
+                                    Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        } else null
                     )
                 }
-            }
-            Column(horizontalAlignment = Alignment.End) {
-                if (category.suggestedPrice != null) {
-                    Text(
-                        text = "$${category.suggestedPrice}",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-                Text(
-                    text = "${category.availableCount} disponibles",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            if (isSelected) {
-                Spacer(modifier = Modifier.width(8.dp))
-                Icon(
-                    imageVector = Icons.Default.Check,
-                    contentDescription = "Seleccionado",
-                    tint = MaterialTheme.colorScheme.primary
-                )
             }
         }
     }

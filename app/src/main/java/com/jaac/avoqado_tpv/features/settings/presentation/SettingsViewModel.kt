@@ -443,6 +443,29 @@ class SettingsViewModel @Inject constructor(
         updateSetting { it.copy(requireClockInToLogin = newValue) }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // KIOSK MODE FUNCTIONALITY (controlled from dashboard or TPV settings)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Toggle kiosk mode enabled setting.
+     *
+     * This controls whether kiosk functionality is AVAILABLE on this terminal.
+     * Different from toggleKioskMode() which ACTIVATES the kiosk UI.
+     *
+     * When enabled (kioskModeEnabled = true):
+     * - Kiosk mode option appears in Settings bottom sheet
+     * - Staff can activate kiosk mode for self-service
+     *
+     * When disabled (kioskModeEnabled = false):
+     * - Kiosk mode option is hidden
+     * - Terminal cannot enter kiosk mode
+     */
+    fun toggleKioskModeEnabled() {
+        val newValue = !_state.value.tpvSettings.kioskModeEnabled
+        updateSetting { it.copy(kioskModeEnabled = newValue) }
+    }
+
     /**
      * Update default tip percentage
      */

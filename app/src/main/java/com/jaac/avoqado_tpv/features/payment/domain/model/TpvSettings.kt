@@ -24,6 +24,8 @@ package com.jaac.avoqado_tpv.features.payment.domain.model
  * @param requireClockOutPhoto Whether selfie + GPS is required at clock-out
  * @param requireClockInToLogin Whether staff must have an active clock-in to access the system.
  *                              If enabled, staff on break or not clocked in cannot log in.
+ * @param kioskModeEnabled Whether this terminal can enter self-service kiosk mode.
+ *                         Controlled from dashboard settings.
  */
 data class TpvSettings(
     val showReviewScreen: Boolean = true,
@@ -42,7 +44,9 @@ data class TpvSettings(
     val requireClockInPhoto: Boolean = false,
     val requireClockOutPhoto: Boolean = false,
     // Session security: require active clock-in to access system
-    val requireClockInToLogin: Boolean = false
+    val requireClockInToLogin: Boolean = false,
+    // Kiosk Mode: allows terminal to enter self-service mode (controlled from dashboard)
+    val kioskModeEnabled: Boolean = false
 ) {
     companion object {
         /**

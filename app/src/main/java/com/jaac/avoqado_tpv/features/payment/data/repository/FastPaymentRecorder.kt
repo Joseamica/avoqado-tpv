@@ -270,6 +270,10 @@ class FastPaymentRecorder @Inject constructor(
             // 💸 Blumon Operation Number (2025-12-16) - For refunds without webhook
             // This comes from response.operation in SaleIccResponse
             blumonOperationNumber = context.blumonOperationNumber,
+
+            // ⭐ Device Serial Number for Terminal attribution (2026-01-08)
+            // Links payment to the Terminal that processed it (for device-based reporting)
+            deviceSerialNumber = context.deviceSerialNumber,
         )
     }
 }

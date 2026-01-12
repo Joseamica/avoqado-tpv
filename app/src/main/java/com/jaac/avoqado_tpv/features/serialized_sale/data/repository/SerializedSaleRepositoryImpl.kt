@@ -74,9 +74,7 @@ class SerializedSaleRepositoryImpl @Inject constructor(
                             name = dto.name,
                             description = dto.description,
                             suggestedPrice = dto.suggestedPrice?.toBigDecimalOrNull(),
-                            availableCount = dto.availableCount,
-                            soldCount = dto.soldCount,
-                            totalCount = dto.totalCount
+                            availableCount = dto.availableCount
                         )
                     }
                     Log.d(TAG, "Fetched ${categories.size} categories")

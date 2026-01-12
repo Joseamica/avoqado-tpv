@@ -31,6 +31,11 @@ sealed class PaymentContext {
     abstract val merchantAccountId: String?  // 🆕 PRIMARY: Merchant account ID (null = cash payment, no processor)
     abstract val blumonSerialNumber: String // ⚠️ LEGACY: Blumon-specific serial (deprecated, kept for fallback)
 
+    // ⭐ Device Serial Number for Terminal attribution (2026-01-08)
+    // Links payment to the Terminal that processed it (for device-based reporting)
+    // This is the Terminal.serialNumber (e.g., "AVQD-2841548417"), NOT blumonSerialNumber
+    abstract val deviceSerialNumber: String?
+
     /**
      * Fast Payment: Pago directo sin orden existente.
      *
@@ -61,6 +66,7 @@ sealed class PaymentContext {
         override val rating: Int? = null, // 🆕 Optional rating (1-5 stars, null if skipped)
         override val merchantAccountId: String?, // ✅ NULLABLE: null for cash (no processor, proper reconciliation)
         override val blumonSerialNumber: String = "", // ⚠️ LEGACY: Blumon serial (deprecated)
+        override val deviceSerialNumber: String? = null, // ⭐ Terminal attribution (2026-01-08)
         // 📸 PRE-PAYMENT VERIFICATION (2025-01-14)
         // Order reference generated ONCE when entering VerifyingPrePayment state
         // Ensures Firebase photos match the order number created in backend
@@ -111,6 +117,7 @@ sealed class PaymentContext {
         override val rating: Int? = null, // 🆕 Optional rating (1-5 stars, null if skipped)
         override val merchantAccountId: String?, // ✅ NULLABLE: null for cash (no processor, proper reconciliation)
         override val blumonSerialNumber: String = "", // ⚠️ LEGACY: Blumon serial (deprecated)
+        override val deviceSerialNumber: String? = null, // ⭐ Terminal attribution (2026-01-08)
         // ⭐ SPLIT PAYMENT FIELDS
         val splitType: SplitType = SplitType.FULLPAYMENT,
         val paidProductIds: List<String> = emptyList(), // Product IDs for PERPRODUCT mode
@@ -161,6 +168,7 @@ sealed class PaymentContext {
         override val rating: Int? = null, // Not used for refunds
         override val merchantAccountId: String?, // ⚠️ CRITICAL: MUST match original payment!
         override val blumonSerialNumber: String, // ⚠️ REQUIRED: For SDK merchant switch
+        override val deviceSerialNumber: String? = null, // ⭐ Terminal attribution (2026-01-08)
 
         // Refund-specific fields
         val originalPaymentId: String, // Payment being refunded

@@ -74,7 +74,7 @@ class LoginViewModel @Inject constructor(
                     val clockInRequired = tpvSettingsRepository.getCurrentSettings().requireClockInToLogin
                     if (clockInRequired) {
                         Timber.d("🕐 Clock-in required to login - checking status...")
-                        checkClockInStatus(result.data)
+                        checkClockInStatus(result.data, pin)
                     } else {
                         // NOTE: Blumon SDK init moved to HomeViewModel
                         // (LoginViewModel gets destroyed on navigation, cancelling coroutines)
@@ -147,9 +147,10 @@ class LoginViewModel @Inject constructor(
      * Checks the staff's time entry status and returns appropriate state.
      *
      * @param authResponse Authentication response with staff info
+     * @param pin Staff PIN (needed for navigation to timeclock if clock-in required)
      * @return LoginState based on clock-in status
      */
-    private suspend fun checkClockInStatus(authResponse: AuthResponse): LoginState {
+    private suspend fun checkClockInStatus(authResponse: AuthResponse, pin: String): LoginState {
         val staffId = authResponse.staff.id
         val staffName = authResponse.staff.displayName
         val venueId = authResponse.venueId
@@ -165,12 +166,12 @@ class LoginViewModel @Inject constructor(
                         activeEntry == null -> {
                             // No active clock-in
                             Timber.w("🕐 Staff $staffName has no active clock-in")
-                            LoginState.RequiresClockIn(staffName, staffId)
+                            LoginState.RequiresClockIn(staffName, staffId, pin)
                         }
                         activeEntry.status == TimeEntryStatus.ON_BREAK -> {
                             // Currently on break
                             Timber.w("🕐 Staff $staffName is on break")
-                            LoginState.OnBreak(staffName, staffId)
+                            LoginState.OnBreak(staffName, staffId, pin)
                         }
                         activeEntry.status == TimeEntryStatus.CLOCKED_IN -> {
                             // Actively working - allow login
@@ -180,7 +181,7 @@ class LoginViewModel @Inject constructor(
                         else -> {
                             // Any other status (completed, etc.) - no active clock-in
                             Timber.w("🕐 Staff $staffName has entry with status: ${activeEntry.status}")
-                            LoginState.RequiresClockIn(staffName, staffId)
+                            LoginState.RequiresClockIn(staffName, staffId, pin)
                         }
                     }
                 }
@@ -303,10 +304,12 @@ sealed class LoginState {
      *
      * @param staffName Staff member's name for display
      * @param staffId Staff ID (needed to navigate to timeclock)
+     * @param pin Staff PIN (needed to navigate to timeclock)
      */
     data class RequiresClockIn(
         val staffName: String,
-        val staffId: String
+        val staffId: String,
+        val pin: String
     ) : LoginState()
 
     /**
@@ -323,9 +326,11 @@ sealed class LoginState {
      *
      * @param staffName Staff member's name for display
      * @param staffId Staff ID (needed to navigate to timeclock)
+     * @param pin Staff PIN (needed to navigate to timeclock)
      */
     data class OnBreak(
         val staffName: String,
-        val staffId: String
+        val staffId: String,
+        val pin: String
     ) : LoginState()
 }

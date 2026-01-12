@@ -8,6 +8,7 @@ import android.net.Uri
 import android.media.ExifInterface
 import com.google.firebase.storage.FirebaseStorage
 import com.google.firebase.storage.StorageReference
+import com.jaac.avoqado_tpv.BuildConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.tasks.await
@@ -28,15 +29,16 @@ import kotlin.coroutines.resumeWithException
  *
  * **Architecture:**
  * - Photos are compressed before upload (max 1920px, 80% JPEG quality)
- * - Uploaded to: gs://avoqado-d0a24.appspot.com/venues/{venueSlug}/verifications/{date}/{orderRef}.jpg
+ * - Uploaded to: gs://avoqado-d0a24.appspot.com/{env}/venues/{venueSlug}/verifications/{date}/{orderRef}.jpg
  * - Returns public download URL for backend storage
  *
  * **Path Structure:**
- * venues/{venueSlug}/verifications/{YYYY-MM-DD}/{orderRef}_{index}.jpg
+ * {env}/venues/{venueSlug}/verifications/{YYYY-MM-DD}/{orderRef}_{index}.jpg
+ * Where {env} is "dev" (sandbox) or "prod" (production)
  *
  * Examples:
- * - venues/avoqado-full/verifications/2025-12-12/ORDER-12345_1.jpg
- * - venues/avoqado-full/verifications/2025-12-12/CASH-1765547922_1.jpg
+ * - dev/venues/avoqado-full/verifications/2025-12-12/ORDER-12345_1.jpg
+ * - prod/venues/avoqado-full/verifications/2025-12-12/CASH-1765547922_1.jpg
  *
  * **Why Firebase Storage?**
  * 1. Native Android SDK with resumable uploads
@@ -61,8 +63,24 @@ class VerificationUploadManager @Inject constructor(
         private const val JPEG_QUALITY = 80     // 80% quality (good balance)
         private const val TARGET_SIZE_KB = 500  // Target ~500KB per photo
 
-        // Storage path: venues/{venueSlug}/verifications/{date}/{orderRef}_{index}.jpg
+        // Storage path: {env}/venues/{venueSlug}/verifications/{date}/{orderRef}_{index}.jpg
         private const val DATE_FORMAT = "yyyy-MM-dd"
+
+        /**
+         * Get the storage environment prefix based on build flavor.
+         * - sandbox → "dev"
+         * - production → "prod"
+         */
+        private val STORAGE_ENV_PREFIX: String = BuildConfig.STORAGE_ENV_PREFIX
+
+        /**
+         * Build a storage path with environment prefix.
+         * @param path Path without env prefix (e.g., "venues/my-venue/verifications/...")
+         * @return Path with env prefix (e.g., "dev/venues/my-venue/verifications/...")
+         */
+        fun buildStoragePath(path: String): String {
+            return "$STORAGE_ENV_PREFIX/$path"
+        }
     }
 
     /**
@@ -99,10 +117,10 @@ class VerificationUploadManager @Inject constructor(
             Timber.d("📸 [$TAG] Compressed to ${compressedBytes.size / 1024}KB")
 
             // Step 2: Generate storage path
-            // Format: venues/{venueSlug}/verifications/{date}/{orderRef}_{index}.jpg
+            // Format: {env}/venues/{venueSlug}/verifications/{date}/{orderRef}_{index}.jpg
             val dateStr = SimpleDateFormat(DATE_FORMAT, Locale.US).format(Date())
             val fileName = "${orderReference}_${photoIndex}.jpg"
-            val storagePath = "venues/$venueSlug/verifications/$dateStr/$fileName"
+            val storagePath = buildStoragePath("venues/$venueSlug/verifications/$dateStr/$fileName")
 
             Timber.d("📸 [$TAG] Uploading to: $storagePath")
 
@@ -358,10 +376,10 @@ class VerificationUploadManager @Inject constructor(
             Timber.d("📸 [$TAG] Compressed to ${compressedBytes.size / 1024}KB")
 
             // Step 2: Generate storage path
-            // Format: venues/{venueSlug}/clockin/{date}/{staffId}_{timestamp}.jpg
+            // Format: {env}/venues/{venueSlug}/clockin/{date}/{staffId}_{timestamp}.jpg
             val dateStr = SimpleDateFormat(DATE_FORMAT, Locale.US).format(Date())
             val fileName = "${staffId}_${timestamp}.jpg"
-            val storagePath = "venues/$venueSlug/clockin/$dateStr/$fileName"
+            val storagePath = buildStoragePath("venues/$venueSlug/clockin/$dateStr/$fileName")
 
             Timber.d("📸 [$TAG] Uploading clock-in photo to: $storagePath")
 
@@ -417,10 +435,10 @@ class VerificationUploadManager @Inject constructor(
             Timber.d("📸 [$TAG] Compressed to ${compressedBytes.size / 1024}KB")
 
             // Step 2: Generate storage path
-            // Format: venues/{venueSlug}/clockout/{date}/{staffId}_{timestamp}.jpg
+            // Format: {env}/venues/{venueSlug}/clockout/{date}/{staffId}_{timestamp}.jpg
             val dateStr = SimpleDateFormat(DATE_FORMAT, Locale.US).format(Date())
             val fileName = "${staffId}_${timestamp}.jpg"
-            val storagePath = "venues/$venueSlug/clockout/$dateStr/$fileName"
+            val storagePath = buildStoragePath("venues/$venueSlug/clockout/$dateStr/$fileName")
 
             Timber.d("📸 [$TAG] Uploading clock-out photo to: $storagePath")
 

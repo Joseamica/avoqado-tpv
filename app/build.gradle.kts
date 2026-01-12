@@ -55,6 +55,9 @@ android {
             versionNameSuffix = "-sandbox"
             isDefault = true  // Make sandboxDebug the default variant in IDE
 
+            // Firebase Storage environment prefix (dev/prod)
+            buildConfigField("String", "STORAGE_ENV_PREFIX", "\"dev\"")
+
             // Blumon Sandbox Environment
             buildConfigField("String", "BLUMON_ENV", "\"SAND\"")
             buildConfigField("String", "TOKEN_SERVER_URL", "\"https://sandbox-tokener.blumonpay.net\"")
@@ -68,6 +71,9 @@ android {
 
         create("production") {
             dimension = "environment"
+
+            // Firebase Storage environment prefix (dev/prod)
+            buildConfigField("String", "STORAGE_ENV_PREFIX", "\"prod\"")
 
             // Blumon Production Environment
             buildConfigField("String", "BLUMON_ENV", "\"PROD\"")

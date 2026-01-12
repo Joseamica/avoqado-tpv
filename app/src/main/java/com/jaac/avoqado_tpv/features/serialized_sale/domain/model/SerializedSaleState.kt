@@ -93,9 +93,7 @@ data class CategoryWithStock(
     val name: String,
     val description: String?,
     val suggestedPrice: BigDecimal?,
-    val availableCount: Int,
-    val soldCount: Int,
-    val totalCount: Int
+    val availableCount: Int
 )
 
 /**

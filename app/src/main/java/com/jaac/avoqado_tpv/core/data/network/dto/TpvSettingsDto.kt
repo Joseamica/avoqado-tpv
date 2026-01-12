@@ -66,7 +66,11 @@ data class TpvSettingsDto(
 
     // Session security: require active clock-in to access system
     @SerializedName("requireClockInToLogin")
-    val requireClockInToLogin: Boolean?
+    val requireClockInToLogin: Boolean?,
+
+    // Kiosk Mode: allows terminal to enter self-service mode
+    @SerializedName("kioskModeEnabled")
+    val kioskModeEnabled: Boolean?
 )
 
 /**
@@ -89,7 +93,9 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     requireClockInPhoto = requireClockInPhoto ?: false,
     requireClockOutPhoto = requireClockOutPhoto ?: false,
     // Session security defaults to disabled
-    requireClockInToLogin = requireClockInToLogin ?: false
+    requireClockInToLogin = requireClockInToLogin ?: false,
+    // Kiosk Mode defaults to disabled
+    kioskModeEnabled = kioskModeEnabled ?: false
 )
 
 /**
@@ -108,7 +114,8 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     enableShifts = enableShifts,
     requireClockInPhoto = requireClockInPhoto,
     requireClockOutPhoto = requireClockOutPhoto,
-    requireClockInToLogin = requireClockInToLogin
+    requireClockInToLogin = requireClockInToLogin,
+    kioskModeEnabled = kioskModeEnabled
 )
 
 /**

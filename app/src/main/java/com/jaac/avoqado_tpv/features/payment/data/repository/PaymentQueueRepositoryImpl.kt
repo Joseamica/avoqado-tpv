@@ -148,6 +148,7 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             rating = rating, // 🆕 Optional user rating (1-5 stars or null)
             merchantAccountId = merchantAccountId, // 🆕 PRIMARY: Provider-agnostic merchant ID
             blumonSerialNumber = blumonSerialNumber, // ⚠️ LEGACY: Fallback
+            deviceSerialNumber = deviceSerialNumber, // ⭐ Terminal attribution (2026-01-08)
             maskedPan = maskedPan,
             cardBrand = cardBrand,
             entryMode = entryMode,
@@ -179,6 +180,7 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             rating = rating, // 🆕 Optional user rating (1-5 stars or null)
             merchantAccountId = merchantAccountId, // 🆕 PRIMARY: Provider-agnostic merchant ID
             blumonSerialNumber = blumonSerialNumber, // ⚠️ LEGACY: Fallback
+            deviceSerialNumber = deviceSerialNumber, // ⭐ Terminal attribution (2026-01-08)
             maskedPan = maskedPan,
             cardBrand = cardBrand,
             entryMode = entryMode,

@@ -102,6 +102,11 @@ class TimeclockViewModel @Inject constructor(
      */
     private suspend fun loadTimeclockStatus(staffId: String, staffName: String) {
         try {
+            // Get TpvSettings to check if clock-in is required for login
+            val settings = tpvSettingsRepository.getCurrentSettings()
+            val requireClockInToLogin = settings.requireClockInToLogin
+            Timber.d("⏱️ [TIMECLOCK] requireClockInToLogin: $requireClockInToLogin")
+
             // Get today's date range for filtering
             val today = LocalDate.now()
             val startDate = today.atStartOfDay().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
@@ -134,7 +139,8 @@ class TimeclockViewModel @Inject constructor(
                         staffName = staffName,
                         currentEntry = activeEntry,
                         recentEntries = entries,
-                        totalHoursToday = totalHours
+                        totalHoursToday = totalHours,
+                        requireClockInToLogin = requireClockInToLogin
                     )
                 },
                 onFailure = { error ->
@@ -144,7 +150,8 @@ class TimeclockViewModel @Inject constructor(
                         staffName = staffName,
                         currentEntry = null,
                         recentEntries = emptyList(),
-                        totalHoursToday = BigDecimal.ZERO
+                        totalHoursToday = BigDecimal.ZERO,
+                        requireClockInToLogin = requireClockInToLogin
                     )
                 }
             )
@@ -405,19 +412,18 @@ class TimeclockViewModel @Inject constructor(
         var location: LocationResult? = null
         if (captureGps) {
             Timber.d("📍 GPS auto-capture for clock-in (photo enabled)...")
-            
-            // BEST EFFORT NON-BLOCKING STRATEGY
-            // Try to get location for max 3 seconds. If not found, proceed without it.
+
+            // GPS COLD START STRATEGY
+            // PAX devices need 30-60 seconds for first GPS fix (no Google Play Services)
+            // Cold start = no recent fix = must download satellite almanac data
             try {
-                // Use a short timeout for the UI blocking part
-                kotlinx.coroutines.withTimeout(3000) {
-                    // Internal timeout slightly shorter to allow clean return
-                    location = locationService.getCurrentLocation(timeoutMs = 2500)
+                kotlinx.coroutines.withTimeout(45000) {
+                    location = locationService.getCurrentLocation(timeoutMs = 45000)
                 }
             } catch (e: Exception) {
-                Timber.w("📍 GPS capture timed out (3s), proceeding without location")
+                Timber.w("📍 GPS capture timed out (45s), proceeding without location")
             }
-            
+
             if (location != null) {
                 Timber.d("📍 GPS captured: ${location?.latitude}, ${location?.longitude}")
             }
@@ -521,16 +527,18 @@ class TimeclockViewModel @Inject constructor(
         var location: LocationResult? = null
         if (captureGps) {
             Timber.d("📍 GPS auto-capture for clock-out (photo enabled)...")
-            
-            // BEST EFFORT NON-BLOCKING STRATEGY
+
+            // GPS COLD START STRATEGY
+            // PAX devices need 30-60 seconds for first GPS fix (no Google Play Services)
+            // Cold start = no recent fix = must download satellite almanac data
             try {
-                kotlinx.coroutines.withTimeout(3000) {
-                    location = locationService.getCurrentLocation(timeoutMs = 2500)
+                kotlinx.coroutines.withTimeout(45000) {
+                    location = locationService.getCurrentLocation(timeoutMs = 45000)
                 }
             } catch (e: Exception) {
-                Timber.w("📍 GPS capture timed out (3s), proceeding without location")
+                Timber.w("📍 GPS capture timed out (45s), proceeding without location")
             }
-            
+
             if (location != null) {
                 Timber.d("📍 GPS captured: ${location?.latitude}, ${location?.longitude}")
             }

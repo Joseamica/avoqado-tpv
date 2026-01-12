@@ -24,6 +24,11 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
+    <!-- WiFi Permission (Network Location API) -->
+    <!-- Required for WiFi scanning to improve geolocation accuracy via Google Geolocation API -->
+    <!-- Cell towers alone: ~100-1000m accuracy | Cell + WiFi: ~20-50m accuracy -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
     <!-- Storage Permissions (Self-Update Feature) -->
     <!-- Required for downloading APK updates to external storage -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"

@@ -219,6 +219,7 @@ private fun PulseContent(
         // 3. Thumb Zone (Actions)
         ThumbZoneActions(
             status = status,
+            canProceedToLogin = state.canProceedToLogin,
             onClockIn = onClockIn,
             onClockOut = onClockOut,
             onStartBreak = onStartBreak,
@@ -232,33 +233,45 @@ private fun PulseContent(
 private fun StaffHeader(name: String, hoursToday: BigDecimal) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(top = 8.dp)
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 16.dp, bottom = 8.dp) // Added breathing room
     ) {
         Surface(
             shape = CircleShape,
-            color = MaterialTheme.colorScheme.primaryContainer,
-            modifier = Modifier.size(40.dp)
+            color = MaterialTheme.colorScheme.surfaceVariant, // Slightly lighter/distinct background
+            modifier = Modifier.size(56.dp) // Increased from 40.dp for better visibility
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Text(
                     text = name.take(1).uppercase(),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                    style = MaterialTheme.typography.headlineSmall, // Larger initial
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
-        Spacer(modifier = Modifier.width(12.dp))
-        Column {
+        Spacer(modifier = Modifier.width(16.dp)) // Increased spacing
+        Column(
+            verticalArrangement = Arrangement.Center
+        ) {
             Text(
-                text = name.split(" ").firstOrNull() ?: "",
+                text = name, // Display FULL name
                 style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
             if (hoursToday > BigDecimal.ZERO) {
                 Text(
-                    text = "${hoursToday.setScale(2)}h hoy",
+                    text = "${hoursToday.setScale(2)}h trabajadas hoy", // More descriptive text
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.secondary
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f) // Better contrast
+                )
+            } else {
+                 Text(
+                    text = "Comenzando turno",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                 )
             }
         }
@@ -429,9 +442,18 @@ private fun ElapsedTimeHero(startTime: LocalDateTime, color: Color) {
     }
 }
 
+/**
+ * Action buttons in the thumb zone (lower part of screen for easy access).
+ *
+ * @param status Current clock-in/out status
+ * @param canProceedToLogin Whether the "LISTO" button should be shown.
+ *        False when requireClockInToLogin is enabled AND user has no active clock-in.
+ *        This prevents users from bypassing the clock-in requirement to login.
+ */
 @Composable
 private fun ThumbZoneActions(
     status: TimeEntryStatus,
+    canProceedToLogin: Boolean,
     onClockIn: () -> Unit,
     onClockOut: () -> Unit,
     onStartBreak: () -> Unit,
@@ -495,15 +517,19 @@ private fun ThumbZoneActions(
                 )
             }
         }
-        
-        OutlinedButton(
-            onClick = onDone,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp),
-            shape = RoundedCornerShape(16.dp)
-        ) {
-            Text("LISTO", fontWeight = FontWeight.Bold)
+
+        // Only show "LISTO" button if user can proceed to login
+        // Hidden when requireClockInToLogin is enabled and user has no active clock-in
+        if (canProceedToLogin) {
+            OutlinedButton(
+                onClick = onDone,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("LISTO", fontWeight = FontWeight.Bold)
+            }
         }
     }
 }

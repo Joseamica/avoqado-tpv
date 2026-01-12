@@ -62,6 +62,10 @@ data class PendingPaymentEntity(
     @ColumnInfo(name = "blumon_serial_number")
     val blumonSerialNumber: String, // e.g., "2841548417" or "9876543210"
 
+    // ⭐ Device Serial Number for Terminal attribution (2026-01-08)
+    @ColumnInfo(name = "device_serial_number")
+    val deviceSerialNumber: String? = null, // e.g., "AVQD-2841548417"
+
     // Card Details (from CardDetails domain model)
     @ColumnInfo(name = "masked_pan")
     val maskedPan: String?, // e.g., "411111******1111"

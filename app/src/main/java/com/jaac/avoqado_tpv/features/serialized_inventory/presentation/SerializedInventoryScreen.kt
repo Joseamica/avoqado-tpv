@@ -7,8 +7,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -17,12 +21,23 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.activity.compose.BackHandler
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.InventoryScanResult
+import timber.log.Timber
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.CategoryWithStock
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
 
@@ -55,6 +70,16 @@ fun SerializedInventoryScreen(
 
     // Snackbar state for feedback
     var lastScanFeedback by remember { mutableStateOf<String?>(null) }
+
+    // 🛡️ BackHandler to prevent accidental back navigation from physical scanner Enter key
+    // Enable when category is selected (scanner mode active) OR have items OR is camera scanning
+    // This prevents physical scanner's Enter key from being interpreted as back navigation
+    val shouldInterceptBack = uiState.selectedCategory != null || uiState.scannedCount > 0 || uiState.isScanning
+    BackHandler(enabled = shouldInterceptBack) {
+        Timber.d("📦 BackHandler intercepted - category: ${uiState.selectedCategory?.name}, scannedCount: ${uiState.scannedCount}, isScanning: ${uiState.isScanning}")
+        // Don't navigate back automatically - user must explicitly tap back arrow button in TopAppBar
+        // This prevents physical scanner's Enter/back key events from causing navigation
+    }
 
     Scaffold(
         topBar = {
@@ -128,6 +153,7 @@ fun SerializedInventoryScreen(
                         itemLabelPlural = itemLabelPlural,
                         barcodeLabel = barcodeLabel,
                         onCategorySelected = viewModel::onCategorySelected,
+                        onBarcodeScanned = viewModel::onBarcodeScanned,
                         onStartScanning = viewModel::startScanning,
                         onRemoveSerialNumber = viewModel::removeSerialNumber,
                         onClearList = viewModel::clearScannedList,
@@ -249,14 +275,74 @@ private fun InventoryFormContent(
     itemLabelPlural: String,
     barcodeLabel: String,
     onCategorySelected: (CategoryWithStock) -> Unit,
+    onBarcodeScanned: (String) -> InventoryScanResult,
     onStartScanning: () -> Unit,
     onRemoveSerialNumber: (String) -> Unit,
     onClearList: () -> Unit,
     onRegisterBatch: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // State for physical scanner input
+    var physicalScannerInput by remember { mutableStateOf("") }
+    var scanFeedback by remember { mutableStateOf<String?>(null) }
+    val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    // 🎹 State to control if user WANTS to show keyboard (manual input mode)
+    // By default false = physical scanner mode (no keyboard)
+    var showKeyboardManually by remember { mutableStateOf(false) }
+
+    // 🔑 CRITICAL: Auto-focus TextField when category is selected
+    // Physical scanner NEEDS focus on TextField to receive input!
+    // Without focus, scanner input goes nowhere and Enter triggers back navigation
+    LaunchedEffect(uiState.selectedCategory) {
+        if (uiState.selectedCategory != null) {
+            Timber.d("📦 Category selected, requesting focus for physical scanner input")
+            showKeyboardManually = false // Reset to scanner mode
+            kotlinx.coroutines.delay(150) // Small delay for layout
+            try {
+                focusRequester.requestFocus()
+                Timber.d("📦 Focus requested")
+            } catch (e: Exception) {
+                Timber.w("📦 Failed to request focus: ${e.message}")
+            }
+        }
+    }
+
+    // 🎹 Aggressively hide keyboard when NOT in manual keyboard mode
+    // This runs whenever focus changes and we're in scanner mode
+    LaunchedEffect(showKeyboardManually) {
+        if (!showKeyboardManually && uiState.selectedCategory != null) {
+            // Multiple attempts to hide keyboard (Android can be stubborn)
+            repeat(3) {
+                kotlinx.coroutines.delay(100)
+                keyboardController?.hide()
+            }
+            Timber.d("📦 Keyboard hidden (scanner mode)")
+        }
+    }
+
+    // Clear feedback after 2 seconds
+    LaunchedEffect(scanFeedback) {
+        if (scanFeedback != null) {
+            kotlinx.coroutines.delay(2000)
+            scanFeedback = null
+        }
+    }
+
+    val scrollState = rememberScrollState()
+
     Column(
-        modifier = modifier.padding(16.dp)
+        modifier = modifier
+            .verticalScroll(scrollState)
+            .padding(16.dp)
+            // Tap outside TextField to dismiss keyboard
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = {
+                    focusManager.clearFocus()
+                })
+            }
     ) {
         // Step 1: Category Selection
         Text(
@@ -283,19 +369,157 @@ private fun InventoryFormContent(
         )
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Scan button
-        Button(
+        // 📱 Physical scanner input field
+        OutlinedTextField(
+            value = physicalScannerInput,
+            onValueChange = { physicalScannerInput = it },
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusRequester(focusRequester)
+                .onFocusChanged { focusState ->
+                    // When TextField receives focus and we're NOT in manual keyboard mode,
+                    // aggressively hide the keyboard for physical scanner use
+                    if (focusState.isFocused && !showKeyboardManually) {
+                        Timber.d("📦 TextField focused in scanner mode - hiding keyboard")
+                        keyboardController?.hide()
+                    }
+                },
+            enabled = uiState.selectedCategory != null,
+            label = { Text("Código de barras") },
+            placeholder = { Text("Escanea con pistola o escribe") },
+            leadingIcon = {
+                Icon(
+                    imageVector = Icons.Default.QrCode,
+                    contentDescription = null,
+                    tint = if (uiState.selectedCategory != null) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+            },
+            trailingIcon = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Add button (when text is present)
+                    if (physicalScannerInput.isNotEmpty()) {
+                        IconButton(
+                            onClick = {
+                                if (physicalScannerInput.isNotBlank()) {
+                                    val barcode = physicalScannerInput.trim()
+                                    val result = onBarcodeScanned(barcode)
+                                    scanFeedback = when (result) {
+                                        is InventoryScanResult.Added -> "✓ Agregado: $barcode"
+                                        is InventoryScanResult.AlreadyScanned -> "⚠ Ya escaneado"
+                                        is InventoryScanResult.Duplicate -> "⚠ Duplicado en sistema"
+                                    }
+                                    physicalScannerInput = ""
+                                    // Back to scanner mode, hide keyboard
+                                    showKeyboardManually = false
+                                    keyboardController?.hide()
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "Agregar")
+                        }
+                    }
+                    // Keyboard toggle button (always visible when enabled)
+                    if (uiState.selectedCategory != null) {
+                        IconButton(
+                            onClick = {
+                                // Enable manual keyboard mode and show keyboard
+                                showKeyboardManually = true
+                                focusRequester.requestFocus()
+                                keyboardController?.show()
+                                Timber.d("📦 Manual keyboard mode enabled")
+                            },
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Keyboard,
+                                contentDescription = "Mostrar teclado",
+                                tint = if (showKeyboardManually) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
+                    }
+                }
+            },
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Text,
+                imeAction = ImeAction.Done
+            ),
+            keyboardActions = KeyboardActions(
+                onDone = {
+                    Timber.d("📦 onDone triggered - input: '$physicalScannerInput'")
+                    if (physicalScannerInput.isNotBlank()) {
+                        val barcode = physicalScannerInput.trim()
+                        Timber.d("📦 Processing barcode: $barcode")
+                        val result = onBarcodeScanned(barcode)
+                        scanFeedback = when (result) {
+                            is InventoryScanResult.Added -> "✓ Agregado: $barcode"
+                            is InventoryScanResult.AlreadyScanned -> "⚠ Ya escaneado"
+                            is InventoryScanResult.Duplicate -> "⚠ Duplicado en sistema"
+                        }
+                        Timber.d("📦 Scan result: $scanFeedback")
+                        physicalScannerInput = ""
+                    }
+                    // 🔑 Back to scanner mode - hide keyboard but keep focus
+                    showKeyboardManually = false
+                    keyboardController?.hide()
+                    // Do NOT call focusManager.clearFocus() - that breaks physical scanner flow!
+                }
+            ),
+            singleLine = true,
+            supportingText = if (scanFeedback != null) {
+                {
+                    Text(
+                        text = scanFeedback!!,
+                        color = if (scanFeedback!!.startsWith("✓")) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        }
+                    )
+                }
+            } else {
+                { Text("Pistola: escanea y listo | Teclado: toca ⌨") }
+            }
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Divider with "o" text
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            HorizontalDivider(modifier = Modifier.weight(1f))
+            Text(
+                text = "  o usa la cámara  ",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            HorizontalDivider(modifier = Modifier.weight(1f))
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // 📷 Camera scan button (alternative method)
+        OutlinedButton(
             onClick = onStartScanning,
             modifier = Modifier.fillMaxWidth(),
             enabled = uiState.selectedCategory != null
         ) {
-            Icon(Icons.Default.QrCodeScanner, contentDescription = null)
+            Icon(Icons.Default.CameraAlt, contentDescription = null)
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = if (uiState.scannedCount > 0) {
-                    "Continuar Escaneando (${uiState.scannedCount})"
+                    "Escanear con Cámara (${uiState.scannedCount})"
                 } else {
-                    "Iniciar Escaneo"
+                    "Escanear con Cámara"
                 }
             )
         }
@@ -327,23 +551,20 @@ private fun InventoryFormContent(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // List of scanned barcodes
+            // List of scanned barcodes (using Column instead of LazyColumn for nested scroll compatibility)
             Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f, fill = false),
+                modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant
                 )
             ) {
-                LazyColumn(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 200.dp),
-                    contentPadding = PaddingValues(8.dp),
+                        .padding(8.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    itemsIndexed(uiState.scannedSerialNumbers) { index, serialNumber ->
+                    uiState.scannedSerialNumbers.forEachIndexed { index, serialNumber ->
                         ScannedItemRow(
                             index = index + 1,
                             serialNumber = serialNumber,
@@ -476,7 +697,7 @@ private fun CategoryChip(
                 )
             }
             Text(
-                text = "${category.totalCount} total",
+                text = "${category.availableCount} disponibles",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

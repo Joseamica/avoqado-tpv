@@ -162,7 +162,9 @@ class PaymentViewModel @Inject constructor(
     // 📧 PaymentApiService - For sending receipt by email
     private val paymentApiService: com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService,
     // 👤 CustomerRepository - For searching customers in email receipt dialog
-    private val customerRepository: CustomerRepository
+    private val customerRepository: CustomerRepository,
+    // 🔐 SecureStorage - For deviceSerialNumber (Terminal attribution for reports)
+    private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentState>(PaymentState.Idle)
@@ -243,6 +245,7 @@ class PaymentViewModel @Inject constructor(
     // 🆕 Order context (for order payment with inventory deduction)
     private var currentOrderId: String? = null  // Order ID (null = fast payment, non-null = order payment)
     private var currentOrderNumber: String? = null  // Order number (for display in receipt)
+    private var skipLocalOrderValidation: Boolean = false  // 📱 SERIALIZED SALE: Skip local order lookup
 
     // ⭐ Split payment params (from SplitByPersonScreen or SplitByProductScreen)
     private var currentSplitType: String? = null  // EQUALPARTS, PERPRODUCT, CUSTOMAMOUNT, FULLPAYMENT
@@ -698,6 +701,7 @@ class PaymentViewModel @Inject constructor(
      * @param equalPartsPartySize Total people for EQUALPARTS mode
      * @param equalPartsPayedFor How many parts being paid now
      * @param paidProductIds Product IDs for PERPRODUCT mode
+     * @param skipLocalOrderValidation 📱 SERIALIZED SALE: Skip local order lookup (order exists only on backend)
      */
     fun submitAmount(
         amount: String,
@@ -706,12 +710,14 @@ class PaymentViewModel @Inject constructor(
         splitType: String? = null,
         equalPartsPartySize: Int? = null,
         equalPartsPayedFor: Int? = null,
-        paidProductIds: List<String> = emptyList()
+        paidProductIds: List<String> = emptyList(),
+        skipLocalOrderValidation: Boolean = false
     ) {
         Timber.d("💰 [Payment Flow] Amount entered: $$amount")
         // Save order context
         currentOrderId = orderId
         currentOrderNumber = orderNumber
+        this.skipLocalOrderValidation = skipLocalOrderValidation  // 📱 SERIALIZED SALE
 
         // ⭐ Save split payment params
         currentSplitType = splitType
@@ -948,9 +954,9 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
-     * ⭐ TEST PAYMENT: Submit amount and skip directly to merchant selection
+     * ⭐ TEST PAYMENT / SERIALIZED SALE: Submit amount and skip directly to merchant selection
      *
-     * Used for test payments from SuperAdmin screen.
+     * Used for test payments from SuperAdmin screen and serialized sales.
      * Skips rating and tip collection, goes directly to SelectingMerchant state.
      *
      * @param amount Payment amount (e.g., "10.00")
@@ -960,6 +966,7 @@ class PaymentViewModel @Inject constructor(
      * @param equalPartsPartySize Total people for EQUALPARTS mode
      * @param equalPartsPayedFor How many parts being paid now
      * @param paidProductIds Product IDs for PERPRODUCT mode
+     * @param skipLocalOrderValidation 📱 SERIALIZED SALE: Skip local order lookup (order exists only on backend)
      */
     fun submitAmountDirectToMerchant(
         amount: String,
@@ -968,13 +975,15 @@ class PaymentViewModel @Inject constructor(
         splitType: String? = null,
         equalPartsPartySize: Int? = null,
         equalPartsPayedFor: Int? = null,
-        paidProductIds: List<String> = emptyList()
+        paidProductIds: List<String> = emptyList(),
+        skipLocalOrderValidation: Boolean = false
     ) {
         Timber.d("🧪 [Test Payment] Skipping rating/tip, going directly to merchant selection: $$amount")
 
         // Save order context
         currentOrderId = orderId
         currentOrderNumber = orderNumber
+        this.skipLocalOrderValidation = skipLocalOrderValidation  // 📱 SERIALIZED SALE
 
         // ⭐ Save split payment params
         currentSplitType = splitType
@@ -1316,7 +1325,8 @@ class PaymentViewModel @Inject constructor(
 
             // ⭐ P0 FIX: Merchant Account Validation (Split Payment Protection)
             // Validates that split payments use the same merchant account to avoid reconciliation issues
-            if (currentOrderId != null) {
+            // 📱 SERIALIZED SALE: Skip local validation when order was created by backend quick-sell API
+            if (currentOrderId != null && !skipLocalOrderValidation) {
                 try {
                     val order = orderSyncCoordinator.getLocalOrder(currentOrderId!!)
 
@@ -1361,6 +1371,10 @@ class PaymentViewModel @Inject constructor(
                     )
                     return@launch
                 }
+            } else if (currentOrderId != null && skipLocalOrderValidation) {
+                // 📱 SERIALIZED SALE: Order was created by backend quick-sell API, not synced locally
+                Timber.i("📱 [Merchant Validation] Skipping local order validation (serialized sale - order exists on backend only)")
+                Timber.d("   orderId=$currentOrderId | skipLocalOrderValidation=true")
             }
 
             // Continue with payment flow
@@ -1387,8 +1401,11 @@ class PaymentViewModel @Inject constructor(
                 // 2. Inventory deduction happens correctly
                 // 3. Payment can be properly linked to the order
                 // 4. Multi-terminal consistency (other terminals see synced order)
+                //
+                // 📱 SERIALIZED SALE EXCEPTION: Skip sync when order was created by backend
+                // quick-sell API (order already exists on backend, not in local DB)
 
-                if (currentOrderId != null) {
+                if (currentOrderId != null && !skipLocalOrderValidation) {
                     Timber.d("💾 [Local-First] Order payment detected - syncing to backend before payment")
                     Timber.d("   📦 Order ID: $currentOrderId")
 
@@ -1409,6 +1426,11 @@ class PaymentViewModel @Inject constructor(
                         )
                         return@launch
                     }
+                } else if (currentOrderId != null && skipLocalOrderValidation) {
+                    // 📱 SERIALIZED SALE: Order was created by backend quick-sell API
+                    // No local sync needed - order already exists on backend
+                    Timber.i("📱 [Serialized Sale] Skipping order sync - order created by backend API")
+                    Timber.d("   📦 Order ID: $currentOrderId | skipLocalOrderValidation=true")
                 } else {
                     Timber.d("⚡ [Local-First] Fast payment mode - no order sync needed")
                 }
@@ -3003,6 +3025,7 @@ class PaymentViewModel @Inject constructor(
                         rating = currentState.rating,
                         merchantAccountId = null,  // ✅ null = cash (no processor, no commission)
                         blumonSerialNumber = "",   // No Blumon SDK for cash payments
+                        deviceSerialNumber = secureStorage.getSerialNumber(),  // ⭐ Terminal attribution (2026-01-08)
                         // ⭐ Split payment params
                         splitType = splitTypeEnum,
                         paidProductIds = currentPaidProductIds,
@@ -3019,6 +3042,7 @@ class PaymentViewModel @Inject constructor(
                         rating = currentState.rating,
                         merchantAccountId = null,  // ✅ null = cash (no processor, no commission)
                         blumonSerialNumber = "",  // No Blumon SDK for cash payments
+                        deviceSerialNumber = secureStorage.getSerialNumber(),  // ⭐ Terminal attribution (2026-01-08)
                         // 📸 PRE-PAYMENT VERIFICATION (2025-01-14)
                         orderReference = prePaymentOrderReference,
                         verificationPhotos = prePaymentVerificationPhotos,
@@ -3551,6 +3575,7 @@ class PaymentViewModel @Inject constructor(
                         rating = currentRating, // 🆕 NEW: Include user rating (1-5 stars or null)
                         merchantAccountId = merchantAccountId, // 🆕 PRIMARY: Merchant account ID
                         blumonSerialNumber = blumonSerial, // ⚠️ LEGACY: Fallback (FIXED: virtual serial)
+                        deviceSerialNumber = secureStorage.getSerialNumber(),  // ⭐ Terminal attribution (2026-01-08)
                         // ⭐ Split payment params
                         splitType = splitTypeEnum,
                         paidProductIds = currentPaidProductIds,
@@ -3569,6 +3594,7 @@ class PaymentViewModel @Inject constructor(
                         rating = currentRating, // 🆕 NEW: Include user rating (1-5 stars or null)
                         merchantAccountId = merchantAccountId, // 🆕 PRIMARY: Merchant account ID
                         blumonSerialNumber = blumonSerial, // ⚠️ LEGACY: Fallback (FIXED: virtual serial)
+                        deviceSerialNumber = secureStorage.getSerialNumber(),  // ⭐ Terminal attribution (2026-01-08)
                         // 📸 PRE-PAYMENT VERIFICATION (2025-01-14)
                         orderReference = prePaymentOrderReference,
                         verificationPhotos = prePaymentVerificationPhotos,

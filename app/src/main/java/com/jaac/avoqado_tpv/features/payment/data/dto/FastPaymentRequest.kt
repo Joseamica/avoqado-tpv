@@ -112,4 +112,10 @@ data class FastPaymentRequest(
     // Example: 12945658 (fits in Int, unlike the 12-digit referenceNumber)
     @SerializedName("blumonOperationNumber")
     val blumonOperationNumber: Int? = null,
+
+    // ⭐ Device Serial Number for Terminal attribution (2026-01-08)
+    // Links payment to the Terminal that processed it (for device-based reporting)
+    // This is the Terminal.serialNumber (e.g., "AVQD-2841548417"), NOT blumonSerialNumber
+    @SerializedName("deviceSerialNumber")
+    val deviceSerialNumber: String? = null,
 )

@@ -26,6 +26,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import timber.log.Timber
 import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
@@ -51,7 +52,7 @@ import com.jaac.avoqado_tpv.features.authentication.presentation.components.PinP
  * @param onLoginSuccess Callback when login succeeds
  * @param onNavigateToActivation Callback when terminal is deactivated (requires re-activation)
  * @param onTimeclockClick Callback when Timeclock button is pressed with the entered PIN
- * @param onNavigateToTimeclockForClockIn Callback when user needs to clock-in before accessing system
+ * @param onNavigateToTimeclockForClockIn Callback when user needs to clock-in before accessing system (receives PIN)
  */
 @Composable
 fun LoginScreen(
@@ -59,7 +60,7 @@ fun LoginScreen(
     onLoginSuccess: () -> Unit,
     onNavigateToActivation: () -> Unit,
     onTimeclockClick: (String) -> Unit,
-    onNavigateToTimeclockForClockIn: (staffId: String) -> Unit = {},
+    onNavigateToTimeclockForClockIn: (pin: String) -> Unit = {},
     viewModel: LoginViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -91,7 +92,7 @@ private fun LoginContent(
     onPinEntered: (String) -> Unit,
     onTimeclockClick: (String) -> Unit,
     onDismissError: () -> Unit,
-    onNavigateToTimeclockForClockIn: (staffId: String) -> Unit = {}
+    onNavigateToTimeclockForClockIn: (pin: String) -> Unit = {}
 ) {
     var pin by remember { mutableStateOf("") }
     val isPinComplete = pin.length >= 4 // Minimum 4 digits to enable buttons
@@ -363,7 +364,8 @@ private fun LoginContent(
                                 // Go to Timeclock button
                                 Button(
                                     onClick = {
-                                        onNavigateToTimeclockForClockIn(state.staffId)
+                                        Timber.d("🕐 [RequiresClockIn] Button clicked - pin=${state.pin}")
+                                        onNavigateToTimeclockForClockIn(state.pin)
                                     }
                                 ) {
                                     Icon(
@@ -435,7 +437,8 @@ private fun LoginContent(
                                 // Go to Timeclock button
                                 Button(
                                     onClick = {
-                                        onNavigateToTimeclockForClockIn(state.staffId)
+                                        Timber.d("🕐 [OnBreak] Button clicked - pin=${state.pin}")
+                                        onNavigateToTimeclockForClockIn(state.pin)
                                     },
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = MaterialTheme.colorScheme.tertiary
@@ -656,7 +659,8 @@ private fun LoginScreenRequiresClockInPreview() {
         LoginContent(
             state = LoginState.RequiresClockIn(
                 staffName = "Juan García",
-                staffId = "staff-123"
+                staffId = "staff-123",
+                pin = "1234"
             ),
             venueLogo = null,
             onPinEntered = {},
@@ -678,7 +682,8 @@ private fun LoginScreenOnBreakPreview() {
         LoginContent(
             state = LoginState.OnBreak(
                 staffName = "María López",
-                staffId = "staff-456"
+                staffId = "staff-456",
+                pin = "5678"
             ),
             venueLogo = null,
             onPinEntered = {},

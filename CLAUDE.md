@@ -332,6 +332,8 @@ avoqado-web-dashboard/docs/    ← Frontend-specific ONLY
 | 404 on new API endpoint         | Double `/v1/` in path           | Use `tpv/endpoint` NOT `tpv/v1/endpoint`      |
 | TpvSettings field not persisted | Missing from SecureStorage      | Add key + save/load/clear in SecureStorage    |
 | Module config stale after logout| UI uses `remember {}` not Flow  | Use `collectAsStateWithLifecycle()` on StateFlow |
+| Feature button not appearing    | Permission not in DEFAULT_PERMISSIONS | Add permission to `permissions.ts` DEFAULT_PERMISSIONS + INDIVIDUAL_PERMISSIONS_BY_RESOURCE |
+| Permission check fails silently | Name mismatch TPV vs Backend    | Verify EXACT permission name in both: backend `checkPermission()` AND TPV `hasPermission()` |
 
 **Full troubleshooting**: See individual guides in `docs/`
 
@@ -413,6 +415,21 @@ Actions: read, create, update, delete, refund, comp, void, settings, execute
 3. Usar `checkPermission()` en backend
 4. Validar en TPV UI con `hasPermission()`
 5. Probar con diferentes roles
+
+### 🚨 ERRORES COMUNES (Real Bug - Enero 2026)
+
+**Bug encontrado**: El botón "Alta de Productos" no aparecía para Super Admin porque:
+
+1. **Permiso no definido en DEFAULT_PERMISSIONS** - El endpoint usaba `checkPermission('serialized-inventory:create')` pero el permiso NUNCA se agregó a `DEFAULT_PERMISSIONS` en `permissions.ts`
+
+2. **Nombre inconsistente** - Backend usaba `serialized-inventory:create`, TPV validaba `serialized-inventory:register`
+
+**Checklist antes de PR:**
+- [ ] Permiso agregado a `DEFAULT_PERMISSIONS` para roles apropiados
+- [ ] Permiso agregado a `INDIVIDUAL_PERMISSIONS_BY_RESOURCE` si usas wildcards
+- [ ] **MISMO nombre exacto** en backend (`checkPermission()`) y TPV (`hasPermission()`)
+- [ ] Probado con rol que NO tiene el permiso (debe ocultar/deshabilitar)
+- [ ] Probado con rol que SÍ tiene el permiso (debe funcionar)
 
 ---
 

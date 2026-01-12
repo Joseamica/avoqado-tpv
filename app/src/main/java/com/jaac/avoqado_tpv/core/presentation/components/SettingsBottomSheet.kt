@@ -50,6 +50,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
  * @param onHelp Callback when "Ayuda" is clicked (optional, disabled if null)
  * @param isKioskModeEnabled Current kiosk mode state (for switch)
  * @param onKioskModeToggle Callback when kiosk toggle is clicked (optional, disabled if null)
+ * @param kioskModeAvailable Whether kiosk mode option should be shown (from TpvSettings.kioskModeEnabled)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,7 +61,8 @@ fun SettingsBottomSheet(
     onSettings: (() -> Unit)? = null,
     onHelp: (() -> Unit)? = null,
     isKioskModeEnabled: Boolean = false,
-    onKioskModeToggle: (() -> Unit)? = null
+    onKioskModeToggle: (() -> Unit)? = null,
+    kioskModeAvailable: Boolean = false
 ) {
     // ✅ Skip partially expanded state - open fully
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -109,14 +111,17 @@ fun SettingsBottomSheet(
             )
 
             // Option 3: Modo Kiosk (Self-service mode)
-            SettingsToggleOption(
-                icon = Icons.Default.Storefront,
-                label = "Modo Kiosk",
-                description = "Activar modo autoservicio para clientes",
-                enabled = onKioskModeToggle != null,
-                checked = isKioskModeEnabled,
-                onToggle = { onKioskModeToggle?.invoke() }
-            )
+            // Only show if kioskModeEnabled is true in TpvSettings (dashboard config)
+            if (kioskModeAvailable) {
+                SettingsToggleOption(
+                    icon = Icons.Default.Storefront,
+                    label = "Modo Kiosk",
+                    description = "Activar modo autoservicio para clientes",
+                    enabled = onKioskModeToggle != null,
+                    checked = isKioskModeEnabled,
+                    onToggle = { onKioskModeToggle?.invoke() }
+                )
+            }
 
             // Option 4: Configuración
             SettingsOption(

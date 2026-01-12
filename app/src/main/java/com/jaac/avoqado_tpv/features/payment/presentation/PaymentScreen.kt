@@ -88,6 +88,7 @@ fun PaymentScreen(
     orderNumber: String? = null,  // 🆕 Order number (for display in receipt)
     tableId: String? = null,  // 🆕 Table ID (for clearing table post-payment)
     skipReview: Boolean = false,  // 🧪 Skip rating/tip (test payment from SuperAdmin)
+    skipLocalOrderValidation: Boolean = false,  // 📱 SERIALIZED SALE: Order exists only on backend, skip local lookup AND sync
     // ⭐ Split payment params (from SplitByPersonScreen or SplitByProductScreen)
     splitType: String? = null,  // EQUALPARTS, PERPRODUCT, CUSTOMAMOUNT, FULLPAYMENT
     equalPartsPartySize: Int? = null,  // Total people for EQUALPARTS mode
@@ -427,7 +428,7 @@ fun PaymentScreen(
                         } else if (initialAmount != null) {
                             // 💳 NORMAL PAYMENT MODE
                             if (skipReview) {
-                                // 🧪 Test payment from SuperAdmin → skip rating/tip, go directly to merchant selection
+                                // 🧪 Test payment from SuperAdmin OR 📱 Serialized Sale → skip rating/tip
                                 viewModel.submitAmountDirectToMerchant(
                                     amount = initialAmount,
                                     orderId = orderId,
@@ -435,7 +436,8 @@ fun PaymentScreen(
                                     splitType = splitType,
                                     equalPartsPartySize = equalPartsPartySize,
                                     equalPartsPayedFor = equalPartsPayedFor,
-                                    paidProductIds = paidProductIds
+                                    paidProductIds = paidProductIds,
+                                    skipLocalOrderValidation = skipLocalOrderValidation  // 📱 SERIALIZED SALE
                                 )
                             } else {
                                 // ✅ Coming from WelcomeScreen/MenuScreen with amount → start payment flow
@@ -446,7 +448,8 @@ fun PaymentScreen(
                                     splitType = splitType,
                                     equalPartsPartySize = equalPartsPartySize,
                                     equalPartsPayedFor = equalPartsPayedFor,
-                                    paidProductIds = paidProductIds
+                                    paidProductIds = paidProductIds,
+                                    skipLocalOrderValidation = skipLocalOrderValidation  // 📱 SERIALIZED SALE
                                 )
                             }
                         } else {

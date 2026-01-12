@@ -47,6 +47,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.screens.FastPaymentEntryScreen
 import com.jaac.avoqado_tpv.core.presentation.screens.WelcomeScreen
 import com.jaac.avoqado_tpv.core.session.SessionEvent
@@ -93,6 +94,7 @@ interface AppNavigationEntryPoint {
     fun printerManager(): com.jaac.avoqado_tpv.core.printer.PrinterManager
     fun paymentApiService(): com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
     fun modulesRepository(): com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
+    fun initializationManager(): com.jaac.avoqado_tpv.features.payment.data.InitializationManager
 }
 
 /**
@@ -468,6 +470,7 @@ fun AppNavigation(
         // Login Screen - PIN authentication
         composable(NavRoute.Login.route) {
             val context = LocalContext.current
+            val loginCoroutineScope = rememberCoroutineScope()
             // Get venueId from DeviceInfoManager (saved during activation)
             val venueId = deviceInfoManager.getVenueId() ?: ""
 
@@ -498,9 +501,19 @@ fun AppNavigation(
                     Timber.d("💾 Login successful - Starting payment sync")
                     PaymentSyncScheduler.start(context)
 
-                    // Navigate to home
-                    navController.navigate(NavRoute.Home.route) {
-                        popUpTo(NavRoute.Login.route) { inclusive = true }
+                    // 📦 Fetch modules before navigating to Home
+                    // This is critical when user logs out and logs back in without app restart
+                    // Modules are cleared on logout but must be reloaded for WelcomeScreen
+                    loginCoroutineScope.launch {
+                        Timber.d("📦 Login: Fetching modules before navigating to Home")
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            modulesRepository.fetchAndCache()
+                        }
+
+                        // Navigate to home (must be on Main thread)
+                        navController.navigate(NavRoute.Home.route) {
+                            popUpTo(NavRoute.Login.route) { inclusive = true }
+                        }
                     }
                 },
                 onNavigateToActivation = {
@@ -514,6 +527,12 @@ fun AppNavigation(
                     // Navigate to Timeclock screen with venueId and PIN
                     Timber.d("⏱ Timeclock button clicked - Navigating to Timeclock screen")
                     navController.navigate(NavRoute.Timeclock.createRoute(venueId, pin))
+                },
+                onNavigateToTimeclockForClockIn = { pin ->
+                    // Navigate to Timeclock screen when clock-in is required before accessing system
+                    val route = NavRoute.Timeclock.createRoute(venueId, pin)
+                    Timber.d("⏱ Clock-in required - Navigating to Timeclock | venueId=$venueId | pin=$pin | route=$route")
+                    navController.navigate(route)
                 }
             )
         }
@@ -521,6 +540,19 @@ fun AppNavigation(
         // Home Screen - Main dashboard
         composable(NavRoute.Home.route) {
             val homeViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel = hiltViewModel()
+            val homeContext = LocalContext.current
+            val homeCoroutineScope = rememberCoroutineScope()
+
+            // 🔧 SDK Initialization for Serialized Sale ("Vender" button)
+            // Get InitializationManager to await SDK init before navigating to payment flow
+            val initializationManager = remember {
+                val entryPoint = EntryPointAccessors.fromApplication(
+                    homeContext.applicationContext,
+                    AppNavigationEntryPoint::class.java
+                )
+                entryPoint.initializationManager()
+            }
+            var isInitializingSdk by remember { mutableStateOf(false) }
 
             // 🚨 SECURITY: Monitor activation status (Square/Toast pattern)
             // If terminal gets RETIRED by admin, HeartbeatWorker clears venueId
@@ -538,6 +570,8 @@ fun AppNavigation(
                 }
             }
 
+            // 🔧 Loading overlay for SDK initialization
+            Box(modifier = Modifier.fillMaxSize()) {
             WelcomeScreen(
                 onStartPaymentWithAmount = { amount ->
                     // ✅ Modal flow: Navigate to PaymentScreen with amount
@@ -573,8 +607,20 @@ fun AppNavigation(
                     navController.navigate(NavRoute.SuperAdmin.route)
                 },
                 onNavigateToSerializedSale = {
-                    // 📱 Navigate to Serialized Sale screen (Vender flow)
-                    navController.navigate(NavRoute.SerializedSale.route)
+                    // 📱 Vender flow: Await Blumon SDK initialization, then navigate
+                    // This ensures SDK is ready before user scans barcode and proceeds to payment
+                    homeCoroutineScope.launch {
+                        isInitializingSdk = true
+                        Timber.d("🔧 [Vender] Awaiting Blumon SDK initialization...")
+
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            initializationManager.awaitInitialization()
+                        }
+
+                        Timber.d("✅ [Vender] SDK ready - navigating to SerializedSale")
+                        isInitializingSdk = false
+                        navController.navigate(NavRoute.SerializedSale.route)
+                    }
                 },
                 onNavigateToInventoryRegister = {
                     // 📦 Navigate to Serialized Inventory Register screen (Alta flow)
@@ -605,6 +651,12 @@ fun AppNavigation(
                     }
                 }
             )
+
+                // 🔧 Loading overlay while awaiting Blumon SDK initialization
+                if (isInitializingSdk) {
+                    AvoqadoLoadingOverlay(message = "Inicializando Blumon...")
+                }
+            } // End Box
         }
 
         // Fast Payment Entry Screen - Dedicated screen for amount input
@@ -794,6 +846,8 @@ fun AppNavigation(
             val orderId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderId")
             val orderNumber = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderNumber")
             val tableId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("tableId")
+            // 📱 SERIALIZED SALE: Skip local order validation (order exists only on backend)
+            val skipLocalOrderValidation = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("skipLocalOrderValidation") ?: false
 
             // ⭐ Split payment params (from SplitByPersonScreen or SplitByProductScreen)
             val splitType = navController.previousBackStackEntry?.savedStateHandle?.get<String>("splitType")
@@ -842,6 +896,7 @@ fun AppNavigation(
                 orderNumber = orderNumber,
                 tableId = tableId,  // 🆕 Pass tableId to determine post-payment flow
                 skipReview = skipReview,
+                skipLocalOrderValidation = skipLocalOrderValidation,  // 📱 SERIALIZED SALE: Order exists only on backend
                 // ⭐ Split payment params
                 splitType = splitType,
                 equalPartsPartySize = equalPartsPartySize,
@@ -1236,6 +1291,7 @@ fun AppNavigation(
             )
         ) {
             val context = LocalContext.current
+            val timeclockCoroutineScope = rememberCoroutineScope()
 
             TimeclockScreen(
                 onNavigateBack = {
@@ -1260,9 +1316,19 @@ fun AppNavigation(
                     Timber.d("💾 Auto-login after timeclock - Starting payment sync")
                     PaymentSyncScheduler.start(context)
 
-                    // Navigate to home
-                    navController.navigate(NavRoute.Home.route) {
-                        popUpTo(NavRoute.Timeclock.route) { inclusive = true }
+                    // 📦 FIX: Ensure modules are loaded before navigating to Home
+                    // Without this, WelcomeScreen shows wrong UI (full instead of simplified)
+                    // because the modules StateFlow might be empty when coming from Timeclock
+                    timeclockCoroutineScope.launch {
+                        Timber.d("📦 Auto-login: Fetching modules before navigating to Home")
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            modulesRepository.fetchAndCache()
+                        }
+
+                        // Navigate to home (must be on Main thread)
+                        navController.navigate(NavRoute.Home.route) {
+                            popUpTo(NavRoute.Timeclock.route) { inclusive = true }
+                        }
                     }
                 }
             )
@@ -1276,13 +1342,17 @@ fun AppNavigation(
                 },
                 onNavigateToPayment = { orderId, orderTotal ->
                     // Navigate to PaymentScreen with order details
+                    // ⚠️ SERIALIZED SALE: Order was created by backend quick-sell API
+                    // and doesn't exist locally. Pass skipLocalOrderValidation flag
+                    // so PaymentViewModel skips the local order lookup.
                     navController.currentBackStackEntry?.savedStateHandle?.apply {
                         set("initialAmount", orderTotal.toString())
                         set("orderId", orderId)
                         set("skipReview", true)  // Skip tip/review for serialized sales
+                        set("skipLocalOrderValidation", true)  // 🆕 Order exists only on backend
                     }
                     navController.navigate(NavRoute.Payment.route)
-                    Timber.d("💳 Serialized sale: Navigating to payment for order $orderId, amount $orderTotal")
+                    Timber.d("💳 Serialized sale: Navigating to payment for order $orderId, amount $orderTotal (skipLocalValidation=true)")
                 }
             )
         }

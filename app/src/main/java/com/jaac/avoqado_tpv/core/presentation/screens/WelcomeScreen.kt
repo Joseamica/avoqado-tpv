@@ -322,6 +322,7 @@ private fun WelcomeScreenContent(
     val permissionsRepository = remember { hiltEntryPoint.permissionsRepository() }
     val kioskModeManager = remember { hiltEntryPoint.kioskModeManager() }
     val modulesRepository = remember { hiltEntryPoint.modulesRepository() }
+    val tpvSettingsRepository = remember { hiltEntryPoint.tpvSettingsRepository() }
 
     // 📱 Check for simplified order flow (telecom/serialized inventory mode)
     // Use StateFlow so changes (e.g., on logout) trigger recomposition
@@ -336,11 +337,14 @@ private fun WelcomeScreenContent(
     LaunchedEffect(Unit) {
         val result = permissionsRepository.getPermissions(forceRefresh = false)
         val permissions = result.getOrNull()
-        hasInventoryRegisterPermission = permissions?.contains("serialized-inventory:register") ?: false
+        hasInventoryRegisterPermission = permissions?.contains("serialized-inventory:create") ?: false
     }
 
     // 🥝 Kiosk mode state
     val isKioskModeEnabled by kioskModeManager.isKioskMode.collectAsStateWithLifecycle()
+
+    // ⚙️ TPV Settings (for kioskModeAvailable check)
+    val tpvSettings by tpvSettingsRepository.settings.collectAsStateWithLifecycle()
 
     // 🔐 Check if user has permission to access Settings (and Kiosk Mode)
     var hasSettingsAccess by remember { mutableStateOf(false) }
@@ -573,6 +577,9 @@ private fun WelcomeScreenContent(
             } else null,
             onHelp = null, // Disabled - future feature
             // 🥝 Kiosk Mode Toggle - same permission as Settings
+            // kioskModeAvailable: controlled from dashboard TpvSettings (shows/hides the toggle)
+            // isKioskModeEnabled: local state (whether kiosk mode is currently active)
+            kioskModeAvailable = tpvSettings.kioskModeEnabled,
             isKioskModeEnabled = isKioskModeEnabled,
             onKioskModeToggle = if (hasSettingsAccess) {
                 {

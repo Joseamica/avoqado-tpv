@@ -996,6 +996,29 @@ interface ApiService {
     suspend fun registerSerializedBatch(
         @Body request: com.jaac.avoqado_tpv.features.serialized_sale.data.dto.RegisterBatchRequestDto
     ): Response<com.jaac.avoqado_tpv.features.serialized_sale.data.dto.RegisterBatchResponseDto>
+
+    // ========== Geolocation (Cell ID) ==========
+
+    /**
+     * Get location from cell tower + WiFi info
+     *
+     * POST /tpv/geolocation/cell-towers
+     *
+     * Converts cell tower + WiFi information to GPS coordinates.
+     * Uses Google Geolocation API on the backend.
+     *
+     * **Use case:** Indoor location for PAX devices (no GPS satellite visibility)
+     * **Accuracy:**
+     * - Cell only: ~100-1000 meters
+     * - Cell + WiFi: ~20-50 meters (MUCH BETTER!)
+     *
+     * @param request Cell tower + WiFi information
+     * @return Location with latitude, longitude, and accuracy
+     */
+    @POST("tpv/geolocation/cell-towers")
+    suspend fun getLocationFromCellTowers(
+        @Body request: com.jaac.avoqado_tpv.core.location.NetworkLocationRequest
+    ): Response<com.jaac.avoqado_tpv.core.location.CellLocationResponse>
 }
 
 // ========== Request/Response DTOs ==========

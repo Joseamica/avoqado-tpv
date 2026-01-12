@@ -15,16 +15,21 @@ sealed class TimeclockState {
 
     /**
      * Ready state - staff verified, showing current status
+     * @param requireClockInToLogin If true and user has no active clock-in, the "LISTO" button
+     *        should be hidden to prevent bypassing the clock-in requirement for login.
      */
     data class Ready(
         val staffId: String,
         val staffName: String,
         val currentEntry: TimeEntry?, // null = not clocked in
         val recentEntries: List<TimeEntry>,
-        val totalHoursToday: BigDecimal
+        val totalHoursToday: BigDecimal,
+        val requireClockInToLogin: Boolean = false
     ) : TimeclockState() {
         val isClockedIn: Boolean get() = currentEntry != null
         val isOnBreak: Boolean get() = currentEntry?.isOnBreak == true
+        /** True if the user can proceed to login (has clock-in OR setting is disabled) */
+        val canProceedToLogin: Boolean get() = !requireClockInToLogin || isClockedIn
     }
 
     /**

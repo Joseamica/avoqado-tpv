@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.permissions.di
 
 import com.jaac.avoqado_tpv.core.data.manager.KioskModeManager
 import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
+import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -74,4 +75,13 @@ interface PermissionsEntryPoint {
      * @return Singleton instance of ModulesRepository
      */
     fun modulesRepository(): ModulesRepository
+
+    /**
+     * Get TpvSettingsRepository instance
+     *
+     * Used for accessing TPV settings (e.g., kioskModeEnabled, showReviewScreen)
+     *
+     * @return Singleton instance of TpvSettingsRepository
+     */
+    fun tpvSettingsRepository(): TpvSettingsRepository
 }

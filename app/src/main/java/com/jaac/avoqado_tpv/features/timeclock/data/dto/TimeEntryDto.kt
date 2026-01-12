@@ -67,8 +67,12 @@ data class ClockInRequestDto(
     val jobRole: String? = null,
     val checkInPhotoUrl: String? = null, // Firebase Storage URL of clock-in photo (anti-fraud)
     // GPS location verification fields
+    // Backend expects: latitude, longitude, accuracy (not clockInLatitude, etc.)
+    @SerializedName("latitude")
     val clockInLatitude: Double? = null,
+    @SerializedName("longitude")
     val clockInLongitude: Double? = null,
+    @SerializedName("accuracy")
     val clockInAccuracy: Float? = null
 )
 
@@ -77,8 +81,12 @@ data class ClockOutRequestDto(
     val pin: String,
     val checkOutPhotoUrl: String? = null, // Firebase Storage URL of clock-out photo (anti-fraud)
     // GPS location verification fields
+    // Backend expects: latitude, longitude, accuracy (not clockOutLatitude, etc.)
+    @SerializedName("latitude")
     val clockOutLatitude: Double? = null,
+    @SerializedName("longitude")
     val clockOutLongitude: Double? = null,
+    @SerializedName("accuracy")
     val clockOutAccuracy: Float? = null
 )
 

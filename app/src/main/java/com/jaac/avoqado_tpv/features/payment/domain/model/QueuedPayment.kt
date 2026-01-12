@@ -42,6 +42,7 @@ data class QueuedPayment(
     // ⭐ PROVIDER-AGNOSTIC MERCHANT TRACKING (2025-01-10)
     val merchantAccountId: String, // 🆕 PRIMARY: Merchant account ID (e.g., "cuid_abc123")
     val blumonSerialNumber: String, // ⚠️ LEGACY: Blumon serial (deprecated, kept for fallback)
+    val deviceSerialNumber: String? = null, // ⭐ Terminal attribution (2026-01-08)
 
     // Card Details
     val maskedPan: String?,
@@ -71,7 +72,8 @@ data class QueuedPayment(
             tip = tip,
             rating = rating, // 🆕 Preserve user rating for retry
             merchantAccountId = merchantAccountId, // 🆕 PRIMARY: Preserve merchant account ID
-            blumonSerialNumber = blumonSerialNumber // ⚠️ LEGACY: Fallback for old records
+            blumonSerialNumber = blumonSerialNumber, // ⚠️ LEGACY: Fallback for old records
+            deviceSerialNumber = deviceSerialNumber // ⭐ Terminal attribution (2026-01-08)
         )
     }
 

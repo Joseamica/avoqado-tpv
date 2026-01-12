@@ -1,6 +1,9 @@
 package com.jaac.avoqado_tpv.core.di
 
 import android.content.Context
+import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.location.CellLocationApi
+import com.jaac.avoqado_tpv.core.location.CellLocationApiImpl
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -22,5 +25,15 @@ object AppModule {
     @Singleton
     fun provideApplicationContext(@ApplicationContext context: Context): Context {
         return context
+    }
+
+    /**
+     * Provee la implementación de CellLocationApi
+     * Usado por LocationService para fallback de ubicación por Cell ID
+     */
+    @Provides
+    @Singleton
+    fun provideCellLocationApi(apiService: ApiService): CellLocationApi {
+        return CellLocationApiImpl(apiService)
     }
 }

@@ -106,9 +106,7 @@ data class CategoryWithStockDto(
     val name: String,
     val description: String?,
     val suggestedPrice: String?,
-    val availableCount: Int,
-    val soldCount: Int,
-    val totalCount: Int
+    val availableCount: Int
 )
 
 // ========== Register Batch DTOs ==========

@@ -7,13 +7,15 @@ import com.jaac.avoqado_tpv.core.domain.TerminalConfig
 import com.jaac.avoqado_tpv.features.kiosk.domain.model.KioskCartItem
 import com.jaac.avoqado_tpv.features.kiosk.domain.model.KioskCategory
 import com.jaac.avoqado_tpv.features.kiosk.domain.model.KioskProduct
+import com.jaac.avoqado_tpv.features.kiosk.domain.model.KioskStaffSession
 import com.jaac.avoqado_tpv.features.kiosk.domain.model.KioskState
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.AddOrderItemRequest
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
-import com.jaac.avoqado_tpv.core.domain.models.Result
+import com.jaac.avoqado_tpv.features.ordering.domain.Customer
+import com.jaac.avoqado_tpv.features.ordering.domain.CustomerRepository
 import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
 import com.jaac.avoqado_tpv.features.payment.domain.use_case.GetMerchantsUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -48,6 +50,7 @@ import javax.inject.Inject
 class KioskViewModel @Inject constructor(
     private val productRepository: ProductRepository,
     private val orderRepository: OrderRepository,
+    private val customerRepository: CustomerRepository,
     private val secureStorage: SecureStorage,
     // 🔧 Blumon SDK Initialization - Required when entering Kiosk directly (bypassing HomeViewModel)
     private val initializationManager: InitializationManager,
@@ -75,6 +78,44 @@ class KioskViewModel @Inject constructor(
         .map { items -> items.fold(BigDecimal.ZERO) { acc, item -> acc.add(item.lineTotal) } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, BigDecimal.ZERO)
 
+    // 🥝 Staff session for sales attribution (commissions/tips)
+    // - In-memory only (not persisted - each shift starts fresh)
+    // - Card payments use staffSession.staffId automatically
+    // - Cash payments always require PIN (for physical money confirmation)
+    private val _staffSession = MutableStateFlow<KioskStaffSession?>(null)
+    val staffSession: StateFlow<KioskStaffSession?> = _staffSession.asStateFlow()
+
+    // 👥 Customer search state for KioskCustomerDialog
+    private val _customerSearchResults = MutableStateFlow<List<Customer>>(emptyList())
+    val customerSearchResults: StateFlow<List<Customer>> = _customerSearchResults.asStateFlow()
+
+    private val _recentCustomers = MutableStateFlow<List<Customer>>(emptyList())
+    val recentCustomers: StateFlow<List<Customer>> = _recentCustomers.asStateFlow()
+
+    private val _isSearchingCustomers = MutableStateFlow(false)
+    val isSearchingCustomers: StateFlow<Boolean> = _isSearchingCustomers.asStateFlow()
+
+    private val _isCreatingCustomer = MutableStateFlow(false)
+    val isCreatingCustomer: StateFlow<Boolean> = _isCreatingCustomer.asStateFlow()
+
+    // Current order ID (set after order creation, before customer assignment)
+    private var currentOrderId: String? = null
+
+    // ==================== ORDER REUSE STATE (FIX: Avoid duplicate orders) ====================
+    // These track the created order to prevent creating new orders when user goes back and returns
+    // Bug: Previously, each "Pay Now" click created a NEW order, causing "cuentas por cobrar"
+
+    // Created order ID (persists until payment success or explicit clear)
+    private val _createdOrderId = MutableStateFlow<String?>(null)
+    val createdOrderId: StateFlow<String?> = _createdOrderId.asStateFlow()
+
+    // Created order number (for display)
+    private val _createdOrderNumber = MutableStateFlow<String?>(null)
+    val createdOrderNumber: StateFlow<String?> = _createdOrderNumber.asStateFlow()
+
+    // Cart hash when order was created (to detect cart changes)
+    private var cartHashWhenOrderCreated: Int = 0
+
     // 🥝 KIOSK: Prioritize kioskVenueId (configured separately for kiosk mode)
     // Falls back to regular venueId for backwards compatibility
     private val venueId: String
@@ -90,8 +131,8 @@ class KioskViewModel @Inject constructor(
     /**
      * 🔧 Initialize Blumon SDK after entering Kiosk mode
      *
-     * Starts SDK initialization in background so it's ready when user completes order and goes to payment.
-     * Uses 3 second delay to let other operations settle first.
+     * **BLOCKS UI** until SDK is ready - shows loader to prevent user from going to payment
+     * before SDK is initialized.
      *
      * **Why in KioskViewModel?**
      * - When user enters Kiosk mode directly (bypassing HomeScreen), HomeViewModel is not created
@@ -99,23 +140,22 @@ class KioskViewModel @Inject constructor(
      * - This replicates the initialization that HomeViewModel does
      *
      * **Flow:**
-     * 1. Wait 3 seconds for other operations to settle
+     * 1. Set isBlumonInitializing = true (shows loader)
      * 2. Fetch merchants from backend (to get real serial numbers)
      * 3. Use first merchant's serial for TerminalConfig
      * 4. Initialize SDK with correct serial
+     * 5. Set isBlumonReady = true (hides loader, enables payment)
      *
      * Benefits:
-     * - SDK ready before user completes order (no loading delay)
-     * - OAuth + DUKPT keys downloaded in advance
-     * - Uses real merchant serial (not hardcoded default)
-     * - If initialization fails, payment screen will retry (graceful fallback)
+     * - User cannot proceed to payment until SDK is ready
+     * - No "NO AUTORIZADO" errors from uninitialized SDK
+     * - Clear feedback to user that system is preparing
      */
     private fun initializeBlumonSDK() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // ⏳ Wait 3 seconds for other operations to settle
-                // This prevents resource contention that causes GenericFailure
-                delay(3000)
+                // 🔄 Start initialization - show loader
+                _state.update { it.copy(isBlumonInitializing = true, isBlumonReady = false, blumonInitError = null) }
 
                 Timber.i("🥝 [KIOSK-VM] Starting Blumon SDK initialization...")
 
@@ -138,17 +178,35 @@ class KioskViewModel @Inject constructor(
                 initializationManager.ensureInitialized(defaultMerchantPosId = defaultMerchant?.posId)
                     .onSuccess {
                         Timber.i("🥝 [KIOSK-VM] ✅ Blumon SDK initialized successfully - ready for payments")
+                        _state.update { it.copy(isBlumonInitializing = false, isBlumonReady = true, blumonInitError = null) }
                     }
                     .onFailure { error ->
-                        Timber.w(error, "🥝 [KIOSK-VM] ⚠️ Blumon SDK initialization failed - will retry when opening payment")
-                        // Don't block kiosk flow - payment screen will retry if needed
+                        Timber.e(error, "🥝 [KIOSK-VM] ❌ Blumon SDK initialization failed")
+                        _state.update { it.copy(
+                            isBlumonInitializing = false,
+                            isBlumonReady = false,
+                            blumonInitError = "Error al inicializar sistema de pagos. Intente reiniciar."
+                        ) }
                     }
 
             } catch (e: Exception) {
                 Timber.e(e, "🥝 [KIOSK-VM] ❌ Unexpected error during Blumon SDK initialization")
-                // Don't block kiosk flow - app can work, payment will retry
+                _state.update { it.copy(
+                    isBlumonInitializing = false,
+                    isBlumonReady = false,
+                    blumonInitError = "Error inesperado: ${e.message}"
+                ) }
             }
         }
+    }
+
+    /**
+     * 🔄 Retry Blumon SDK initialization
+     * Called from UI when user taps "Reintentar" after init failure
+     */
+    fun retryBlumonInit() {
+        Timber.i("🥝 [KIOSK-VM] Retrying Blumon SDK initialization...")
+        initializeBlumonSDK()
     }
 
     /**
@@ -160,15 +218,18 @@ class KioskViewModel @Inject constructor(
             _state.update { it.copy(isLoading = true, error = null) }
 
             try {
-                // Load categories
+                // Load categories (filter out inactive categories)
                 val categoriesResult = productRepository.getCategories(venueId)
-                val categories = categoriesResult.getOrNull()?.map { cat ->
-                    KioskCategory(
-                        id = cat.id,
-                        name = cat.name,
-                        sortOrder = cat.displayOrder
-                    )
-                }?.sortedBy { it.sortOrder } ?: emptyList()
+                val categories = categoriesResult.getOrNull()
+                    ?.filter { it.isActive }  // Only show active categories
+                    ?.map { cat ->
+                        KioskCategory(
+                            id = cat.id,
+                            name = cat.name,
+                            sortOrder = cat.displayOrder
+                        )
+                    }
+                    ?.sortedBy { it.sortOrder } ?: emptyList()
 
                 // Load products
                 val productsResult = productRepository.getProducts(venueId)
@@ -207,17 +268,26 @@ class KioskViewModel @Inject constructor(
     }
 
     /**
-     * Add product to cart
+     * Add product to cart (NO modifiers)
+     *
+     * Used for products without modifier groups.
+     * For products WITH modifiers, use addToCartWithModifiers() instead.
      */
     fun addToCart(product: KioskProduct) {
-        val existingItem = _cartItems.value.find { it.productId == product.id }
+        // 🚫 Prevent direct add for products with modifiers
+        if (product.hasModifiers) {
+            Timber.w("🥝 [KIOSK-VM] addToCart() called for product WITH modifiers - should use addToCartWithModifiers()")
+            return
+        }
+
+        val existingItem = _cartItems.value.find { it.productId == product.id && !it.hasSelectedModifiers }
         val newQty = if (existingItem != null) existingItem.quantity + 1 else 1
 
         _cartItems.update { currentItems ->
             if (existingItem != null) {
                 // Increase quantity
                 currentItems.map {
-                    if (it.productId == product.id) {
+                    if (it.productId == product.id && !it.hasSelectedModifiers) {
                         it.copy(quantity = it.quantity + 1)
                     } else {
                         it
@@ -234,6 +304,41 @@ class KioskViewModel @Inject constructor(
             }
         }
         Timber.i("🥝 [KIOSK-VM] addToCart() - product: ${product.name}, newQty: $newQty, cartSize: ${_cartItems.value.size}")
+    }
+
+    /**
+     * Add product to cart WITH selected modifiers
+     *
+     * Used when user selects modifiers from KioskModifierDialog.
+     * Each unique combination of modifiers creates a separate cart item.
+     *
+     * @param product The product being added
+     * @param selectedModifiers List of modifiers the user selected
+     * @param unitPriceWithModifiers Total price (base price + modifier adjustments)
+     */
+    fun addToCartWithModifiers(
+        product: KioskProduct,
+        selectedModifiers: List<com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier>,
+        unitPriceWithModifiers: BigDecimal
+    ) {
+        // For items with modifiers, always add as new item (different combinations = different items)
+        // This follows Toast/Square pattern where each modifier selection is a unique line item
+        _cartItems.update { currentItems ->
+            currentItems + KioskCartItem(
+                productId = product.id,
+                productName = product.name,
+                unitPrice = unitPriceWithModifiers,  // Includes modifier price adjustments
+                quantity = 1,
+                imageUrl = product.imageUrl,
+                selectedModifiers = selectedModifiers
+            )
+        }
+
+        val modifierNames = selectedModifiers.joinToString(", ") { it.name }
+        Timber.i("🥝 [KIOSK-VM] addToCartWithModifiers() - product: ${product.name}, " +
+                "modifiers: [$modifierNames], " +
+                "price: $unitPriceWithModifiers, " +
+                "cartSize: ${_cartItems.value.size}")
     }
 
     /**
@@ -282,11 +387,45 @@ class KioskViewModel @Inject constructor(
 
     /**
      * Clear entire cart
+     *
+     * Also clears any created order state since it's no longer valid
      */
     fun clearCart() {
         val previousSize = _cartItems.value.size
         _cartItems.value = emptyList()
-        Timber.i("🥝 [KIOSK-VM] clearCart() - cleared $previousSize items")
+        // 🔧 FIX: Also clear order state when cart is cleared (order no longer valid)
+        clearCreatedOrder()
+        Timber.i("🥝 [KIOSK-VM] clearCart() - cleared $previousSize items and order state")
+    }
+
+    /**
+     * Set staff session for sales attribution
+     *
+     * Called when staff enters PIN in KioskStaffAssignDialog.
+     * The staffId will be used for Card payments (processedById).
+     *
+     * @param session The staff session with staffId, name, initials, and role
+     */
+    fun setStaffSession(session: KioskStaffSession) {
+        val previousStaff = _staffSession.value?.staffName
+        _staffSession.value = session
+        if (previousStaff != null) {
+            Timber.i("🥝 [KIOSK-VM] Staff session CHANGED: $previousStaff → ${session.staffName} (${session.role})")
+        } else {
+            Timber.i("🥝 [KIOSK-VM] Staff session SET: ${session.staffName} (${session.role})")
+        }
+    }
+
+    /**
+     * Clear staff session
+     *
+     * Typically not used (staff changes by entering new PIN).
+     * Provided for completeness if needed for logout/reset scenarios.
+     */
+    fun clearStaffSession() {
+        val previousStaff = _staffSession.value?.staffName
+        _staffSession.value = null
+        Timber.i("🥝 [KIOSK-VM] Staff session CLEARED (was: ${previousStaff ?: "none"})")
     }
 
     /**
@@ -333,13 +472,17 @@ class KioskViewModel @Inject constructor(
                     productId = cartItem.productId,
                     quantity = cartItem.quantity,
                     notes = null,
-                    modifierIds = null
+                    // 🔧 Include modifier IDs if any were selected
+                    modifierIds = cartItem.selectedModifiers
+                        .map { it.id }
+                        .ifEmpty { null }  // null if no modifiers selected
                 )
             }
 
             // 🔍 Log each item being added for debugging
             addItemRequests.forEachIndexed { index, item ->
-                Timber.d("🥝 [KIOSK-VM] Item[$index]: productId=${item.productId}, qty=${item.quantity}")
+                val modifiersInfo = item.modifierIds?.joinToString(",") ?: "none"
+                Timber.d("🥝 [KIOSK-VM] Item[$index]: productId=${item.productId}, qty=${item.quantity}, modifiers=[$modifiersInfo]")
             }
             Timber.i("🥝 [KIOSK-VM] Adding ${addItemRequests.size} items to order ${order.id} (venueId: $venueId, version: ${order.version})...")
 
@@ -362,6 +505,15 @@ class KioskViewModel @Inject constructor(
             }
 
             Timber.i("🥝 [KIOSK-VM] ✅ createOrder() SUCCESS - orderId: ${order.id}, orderNumber: ${order.orderNumber}, items: ${updatedOrder.items.size}, total: ${updatedOrder.total}")
+            // Save order ID for customer assignment
+            currentOrderId = order.id
+
+            // 🔧 FIX: Save order for reuse (prevents duplicate orders on back navigation)
+            _createdOrderId.value = order.id
+            _createdOrderNumber.value = order.orderNumber
+            cartHashWhenOrderCreated = computeCartHash()
+            Timber.i("🥝 [KIOSK-VM] Order saved for reuse (cartHash=$cartHashWhenOrderCreated)")
+
             Pair(order.id, order.orderNumber)
         } catch (e: Exception) {
             Timber.e(e, "🥝 [KIOSK-VM] createOrder() EXCEPTION")
@@ -370,9 +522,220 @@ class KioskViewModel @Inject constructor(
     }
 
     /**
+     * Get existing order or create new one
+     *
+     * **FIX for duplicate orders bug:**
+     * - If order exists AND cart hasn't changed → reuse existing order
+     * - If order exists AND cart changed → create new order (old one becomes orphan but better than duplicate)
+     * - If no order exists → create new order
+     *
+     * @return Pair(orderId, orderNumber) or null if failed
+     */
+    suspend fun getOrCreateOrder(): Pair<String, String>? {
+        val existingOrderId = _createdOrderId.value
+        val existingOrderNumber = _createdOrderNumber.value
+        val currentCartHash = computeCartHash()
+
+        // Case 1: Order exists and cart hasn't changed → reuse
+        if (existingOrderId != null && existingOrderNumber != null && currentCartHash == cartHashWhenOrderCreated) {
+            Timber.i("🥝 [KIOSK-VM] getOrCreateOrder() - REUSING existing order (id=$existingOrderId, cartHash unchanged)")
+            currentOrderId = existingOrderId  // Ensure currentOrderId is set for customer assignment
+            return Pair(existingOrderId, existingOrderNumber)
+        }
+
+        // Case 2: Order exists but cart changed → log warning and create new
+        if (existingOrderId != null) {
+            Timber.w("🥝 [KIOSK-VM] getOrCreateOrder() - Cart changed since order creation! Creating NEW order (old order $existingOrderId may become orphan)")
+            // Note: The old order will remain in backend as unpaid. In the future, we could add logic to cancel/void it.
+        }
+
+        // Case 3: Create new order
+        return createOrder()
+    }
+
+    /**
+     * Clear the created order state
+     *
+     * Called after:
+     * - Payment SUCCESS (order is complete, no need to track)
+     * - User explicitly cancels order flow
+     * - Cart is cleared
+     */
+    fun clearCreatedOrder() {
+        val orderId = _createdOrderId.value
+        _createdOrderId.value = null
+        _createdOrderNumber.value = null
+        cartHashWhenOrderCreated = 0
+        Timber.i("🥝 [KIOSK-VM] clearCreatedOrder() - Cleared order state (was: $orderId)")
+    }
+
+    /**
+     * Check if we should show the customer dialog or go directly to payment
+     *
+     * @return true if we have a valid order ready for payment
+     */
+    fun hasValidOrder(): Boolean {
+        return _createdOrderId.value != null && _createdOrderNumber.value != null
+    }
+
+    /**
+     * Compute a hash of the current cart contents
+     * Used to detect if cart has changed since order was created
+     */
+    private fun computeCartHash(): Int {
+        val items = _cartItems.value
+        return items.sumOf { item ->
+            // Hash based on product ID, quantity, and modifiers
+            val modifiersHash = item.selectedModifiers.sumOf { it.id.hashCode() }
+            item.productId.hashCode() * 31 + item.quantity * 17 + modifiersHash
+        }
+    }
+
+    // ==================== CUSTOMER FUNCTIONS ====================
+
+    /**
+     * Load recent customers for quick selection in KioskCustomerDialog
+     */
+    fun loadRecentCustomers() {
+        viewModelScope.launch(Dispatchers.IO) {
+            Timber.d("👥 [KIOSK-VM] loadRecentCustomers() - venueId: $venueId")
+            try {
+                customerRepository.getRecentCustomers(venueId, limit = 5)
+                    .onSuccess { customers ->
+                        _recentCustomers.value = customers
+                        Timber.i("👥 [KIOSK-VM] Loaded ${customers.size} recent customers")
+                    }
+                    .onFailure { error ->
+                        Timber.e(error, "👥 [KIOSK-VM] Failed to load recent customers")
+                        _recentCustomers.value = emptyList()
+                    }
+            } catch (e: Exception) {
+                Timber.e(e, "👥 [KIOSK-VM] Exception loading recent customers")
+                _recentCustomers.value = emptyList()
+            }
+        }
+    }
+
+    /**
+     * Search customers by name or email
+     * Called with debounce (300ms) from KioskCustomerDialog
+     */
+    fun searchCustomers(query: String) {
+        if (query.length < 2) {
+            _customerSearchResults.value = emptyList()
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            Timber.d("👥 [KIOSK-VM] searchCustomers() - query: '$query'")
+            _isSearchingCustomers.value = true
+            try {
+                customerRepository.searchCustomers(venueId, query, limit = 5)
+                    .onSuccess { customers ->
+                        _customerSearchResults.value = customers
+                        Timber.i("👥 [KIOSK-VM] Search found ${customers.size} customers for '$query'")
+                    }
+                    .onFailure { error ->
+                        Timber.e(error, "👥 [KIOSK-VM] Search failed for '$query'")
+                        _customerSearchResults.value = emptyList()
+                    }
+            } catch (e: Exception) {
+                Timber.e(e, "👥 [KIOSK-VM] Exception searching customers")
+                _customerSearchResults.value = emptyList()
+            } finally {
+                _isSearchingCustomers.value = false
+            }
+        }
+    }
+
+    /**
+     * Add existing customer to current order
+     */
+    fun addCustomerToCurrentOrder(customer: Customer, onComplete: (Boolean) -> Unit) {
+        val orderId = currentOrderId
+        if (orderId == null) {
+            Timber.e("👥 [KIOSK-VM] addCustomerToCurrentOrder() - No current order ID!")
+            onComplete(false)
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            Timber.i("👥 [KIOSK-VM] addCustomerToCurrentOrder() - orderId: $orderId, customerId: ${customer.id}")
+            try {
+                orderRepository.addCustomerToOrder(venueId, orderId, customer.id)
+                    .onSuccess {
+                        Timber.i("👥 [KIOSK-VM] ✅ Customer ${customer.displayName} added to order $orderId")
+                        launch(Dispatchers.Main) { onComplete(true) }
+                    }
+                    .onFailure { error ->
+                        Timber.e(error, "👥 [KIOSK-VM] ❌ Failed to add customer to order")
+                        launch(Dispatchers.Main) { onComplete(false) }
+                    }
+            } catch (e: Exception) {
+                Timber.e(e, "👥 [KIOSK-VM] Exception adding customer to order")
+                launch(Dispatchers.Main) { onComplete(false) }
+            }
+        }
+    }
+
+    /**
+     * Create new customer and add to current order
+     */
+    fun createAndAddCustomerToOrder(name: String?, email: String, onComplete: (Boolean) -> Unit) {
+        val orderId = currentOrderId
+        if (orderId == null) {
+            Timber.e("👥 [KIOSK-VM] createAndAddCustomerToOrder() - No current order ID!")
+            onComplete(false)
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            Timber.i("👥 [KIOSK-VM] createAndAddCustomerToOrder() - orderId: $orderId, name: $name, email: $email")
+            _isCreatingCustomer.value = true
+            try {
+                orderRepository.createAndAddCustomerToOrder(
+                    venueId = venueId,
+                    orderId = orderId,
+                    firstName = name,
+                    phone = null,
+                    email = email
+                )
+                    .onSuccess {
+                        Timber.i("👥 [KIOSK-VM] ✅ Customer created and added to order $orderId")
+                        launch(Dispatchers.Main) { onComplete(true) }
+                    }
+                    .onFailure { error ->
+                        Timber.e(error, "👥 [KIOSK-VM] ❌ Failed to create/add customer")
+                        launch(Dispatchers.Main) { onComplete(false) }
+                    }
+            } catch (e: Exception) {
+                Timber.e(e, "👥 [KIOSK-VM] Exception creating customer")
+                launch(Dispatchers.Main) { onComplete(false) }
+            } finally {
+                _isCreatingCustomer.value = false
+            }
+        }
+    }
+
+    /**
+     * Clear customer state (called when resetting the cart)
+     */
+    fun clearCustomerState() {
+        _customerSearchResults.value = emptyList()
+        _recentCustomers.value = emptyList()
+        _isSearchingCustomers.value = false
+        _isCreatingCustomer.value = false
+        currentOrderId = null
+        Timber.d("👥 [KIOSK-VM] Customer state cleared")
+    }
+
+    // ==================== HELPER FUNCTIONS ====================
+
+    /**
      * Convert domain Product to KioskProduct
      *
      * Note: Backend returns prices in pesos (78.00 = $78.00)
+     * Includes modifierGroups for products that have customization options
      */
     private fun Product.toKioskProduct(): KioskProduct {
         return KioskProduct(
@@ -381,7 +744,8 @@ class KioskViewModel @Inject constructor(
             price = this.price,
             categoryId = this.categoryId,
             imageUrl = this.imageUrl,
-            isAvailable = this.available
+            isAvailable = this.available,
+            modifierGroups = this.modifierGroups  // 🔧 Include modifiers for kiosk selection
         )
     }
 }

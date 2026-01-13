@@ -115,21 +115,27 @@ fun ProductSelectorBottomSheet(
     val modifiersTotal = selectedModifiers.values.sumOf { it.priceAdjustment }
     val totalPrice = (product.price + modifiersTotal) * BigDecimal(quantity.toString())
 
-    // ✅ VALIDATION: Check if all required modifier groups are selected (Toast POS pattern)
-    val allRequiredGroupsFilled = modifierGroups
-        .filter { it.required }
-        .all { group ->
-            when (group.type) {
-                ModifierType.SINGLE_CHOICE -> {
-                    // For single choice: must have exactly one selection with group.id as key
-                    selectedModifiers.containsKey(group.id)
-                }
-                ModifierType.MULTIPLE_CHOICE -> {
-                    // For multiple choice: must have at least one selection with group.id prefix
-                    selectedModifiers.keys.any { it.startsWith("${group.id}_") }
-                }
-            }
+    // Helper function: Count selections for a group
+    fun countSelectionsForGroup(groupId: String, type: ModifierType): Int {
+        return when (type) {
+            ModifierType.SINGLE_CHOICE -> if (selectedModifiers.containsKey(groupId)) 1 else 0
+            ModifierType.MULTIPLE_CHOICE -> selectedModifiers.keys.count { it.startsWith("${groupId}_") }
         }
+    }
+
+    // ✅ VALIDATION: Check if all groups meet their min/max selection requirements
+    val allSelectionRulesMet = modifierGroups.all { group ->
+        val count = countSelectionsForGroup(group.id, group.type)
+        val minMet = count >= group.effectiveMinSelections
+        val maxMet = group.effectiveMaxSelections?.let { count <= it } ?: true
+        minMet && maxMet
+    }
+
+    // Find groups that don't meet minimum requirements (for warning message)
+    val groupsNotMeetingMin = modifierGroups.filter { group ->
+        val count = countSelectionsForGroup(group.id, group.type)
+        count < group.effectiveMinSelections
+    }
 
     // Handle back button press
     BackHandler(enabled = true) {
@@ -172,20 +178,20 @@ fun ProductSelectorBottomSheet(
                     color = MaterialTheme.colorScheme.onSurface
                 )
 
-                // Add to cart button (enabled only when all required modifiers selected)
+                // Add to cart button (enabled only when all selection rules are met)
                 IconButton(
                     onClick = {
-                        if (allRequiredGroupsFilled) {
+                        if (allSelectionRulesMet) {
                             onAddToCart(quantity, selectedModifiers.values.toList(), notes)
                             onDismiss()
                         }
                     },
-                    enabled = allRequiredGroupsFilled
+                    enabled = allSelectionRulesMet
                 ) {
                     Icon(
                         imageVector = Icons.Default.AddShoppingCart,
                         contentDescription = "Agregar al pedido",
-                        tint = if (allRequiredGroupsFilled) {
+                        tint = if (allSelectionRulesMet) {
                             MaterialTheme.colorScheme.primary
                         } else {
                             MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
@@ -284,16 +290,50 @@ fun ProductSelectorBottomSheet(
                 // Modifier groups
                 modifierGroups.forEach { group ->
                     item {
+                        // Calculate current selection count for this group
+                        val currentCount = countSelectionsForGroup(group.id, group.type)
+                        val minRequired = group.effectiveMinSelections
+                        val maxAllowed = group.effectiveMaxSelections
+
                         Column(
                             modifier = Modifier.fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text(
-                                text = group.name + if (group.required) " *" else "",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onBackground
-                            )
+                            // Group name with selection requirements
+                            val selectionHint = when {
+                                minRequired > 0 && maxAllowed != null && minRequired == maxAllowed ->
+                                    "(Elige $minRequired)"
+                                minRequired > 0 && maxAllowed != null ->
+                                    "(Elige $minRequired-$maxAllowed)"
+                                minRequired > 0 ->
+                                    "(Mínimo $minRequired)"
+                                maxAllowed != null ->
+                                    "(Máximo $maxAllowed)"
+                                else -> ""
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = group.name + if (minRequired > 0) " *" else "",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                                if (selectionHint.isNotEmpty()) {
+                                    Text(
+                                        text = "$selectionHint $currentCount/${maxAllowed ?: "∞"}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (currentCount < minRequired)
+                                            MaterialTheme.colorScheme.error
+                                        else
+                                            MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
 
                             when (group.type) {
                                 ModifierType.SINGLE_CHOICE -> {
@@ -340,24 +380,30 @@ fun ProductSelectorBottomSheet(
                                 }
                                 ModifierType.MULTIPLE_CHOICE -> {
                                     // Chips for multiple choice (checkbox behavior)
+                                    // Check if max selections reached
+                                    val canSelectMore = maxAllowed?.let { currentCount < it } ?: true
+
                                     FlowRow(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                                         verticalArrangement = Arrangement.spacedBy(4.dp)
                                     ) {
                                         group.modifiers.forEach { modifier ->
+                                            val isSelected = selectedModifiers.values.any { it.id == modifier.id }
                                             FilterChip(
-                                                selected = selectedModifiers.values.any { it.id == modifier.id },
+                                                selected = isSelected,
                                                 onClick = {
                                                     selectedModifiers = selectedModifiers.toMutableMap().apply {
                                                         val key = "${group.id}_${modifier.id}"
                                                         if (containsKey(key)) {
                                                             remove(key)
-                                                        } else {
+                                                        } else if (canSelectMore) {
+                                                            // Only add if under max limit
                                                             put(key, modifier)
                                                         }
                                                     }
                                                 },
+                                                enabled = isSelected || canSelectMore,  // Disable if max reached and not selected
                                                 label = {
                                                     Column {
                                                         Text(
@@ -379,7 +425,9 @@ fun ProductSelectorBottomSheet(
                                                 colors = FilterChipDefaults.filterChipColors(
                                                     selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
                                                     selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                                                    labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                                    disabledLabelColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
                                                 )
                                             )
                                         }
@@ -429,10 +477,18 @@ fun ProductSelectorBottomSheet(
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // ⚠️ Warning message when required modifiers are missing
-                if (!allRequiredGroupsFilled) {
+                // ⚠️ Dynamic warning message when selection requirements not met
+                if (groupsNotMeetingMin.isNotEmpty()) {
+                    val warningText = if (groupsNotMeetingMin.size == 1) {
+                        val group = groupsNotMeetingMin.first()
+                        val current = countSelectionsForGroup(group.id, group.type)
+                        val needed = group.effectiveMinSelections - current
+                        "⚠️ Faltan $needed en ${group.name}"
+                    } else {
+                        "⚠️ Selecciona modificadores obligatorios (*)"
+                    }
                     Text(
-                        text = "⚠️ Selecciona todos los modificadores obligatorios (*)",
+                        text = warningText,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.fillMaxWidth(),
@@ -463,12 +519,12 @@ fun ProductSelectorBottomSheet(
                 // Botón Agregar
                 Button(
                     onClick = {
-                        if (allRequiredGroupsFilled) {
+                        if (allSelectionRulesMet) {
                             onAddToCart(quantity, selectedModifiers.values.toList(), notes)
                             onDismiss()
                         }
                     },
-                    enabled = allRequiredGroupsFilled,
+                    enabled = allSelectionRulesMet,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(

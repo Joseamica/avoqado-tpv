@@ -10,6 +10,7 @@ import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.SerializedSaleUiState
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.repository.SerializedSaleRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,6 +40,9 @@ class SerializedSaleViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(SerializedSaleUiState())
     val uiState: StateFlow<SerializedSaleUiState> = _uiState.asStateFlow()
+
+    // Job for scan operation - allows cancellation when user scans rapidly
+    private var scanJob: Job? = null
 
     // Labels from module config (e.g., "SIM", "ICCID")
     val labels: ModuleLabels?
@@ -92,6 +96,9 @@ class SerializedSaleViewModel @Inject constructor(
             return
         }
 
+        // Cancel any previous scan in progress (prevents race condition)
+        scanJob?.cancel()
+
         Timber.d("📦 [SerializedSale] Setting isLoading=true, calling API...")
         _uiState.update {
             it.copy(
@@ -102,7 +109,7 @@ class SerializedSaleViewModel @Inject constructor(
             )
         }
 
-        viewModelScope.launch {
+        scanJob = viewModelScope.launch {
             Timber.d("📦 [SerializedSale] Calling scanItem API for: $serialNumber")
             serializedSaleRepository.scanItem(serialNumber)
                 .onSuccess { result ->
@@ -136,12 +143,25 @@ class SerializedSaleViewModel @Inject constructor(
             }
             is ScanResult.NotRegistered -> {
                 Timber.d("📦 [SerializedSale] Item NOT_REGISTERED - Will show category selector")
-                _uiState.update {
-                    it.copy(
-                        isLoading = false,
-                        scanResult = result,
-                        enteredPrice = ""
-                    )
+                // Check if categories are available
+                val categories = _uiState.value.categories
+                if (categories.isEmpty()) {
+                    Timber.w("📦 [SerializedSale] No categories available for registration")
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            scanResult = result,
+                            error = "No hay categorías configuradas. Contacta al administrador."
+                        )
+                    }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            scanResult = result,
+                            enteredPrice = ""
+                        )
+                    }
                 }
             }
             is ScanResult.AlreadySold -> {
@@ -280,6 +300,7 @@ class SerializedSaleViewModel @Inject constructor(
             it.copy(
                 showCameraScanner = false,
                 scanResult = null,
+                sellResult = null,
                 enteredPrice = "",
                 selectedCategory = null,
                 error = null,

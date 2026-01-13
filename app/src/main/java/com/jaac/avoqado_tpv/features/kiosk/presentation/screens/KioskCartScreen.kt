@@ -62,6 +62,7 @@ import com.jaac.avoqado_tpv.features.kiosk.presentation.KioskViewModel
 import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskAdminAuth
 import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskAdminBottomSheet
 import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskAdminPinDialog
+import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskCustomerDialog
 import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskExitPinDialog
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -104,6 +105,20 @@ fun KioskCartScreen(
     // Order creation state
     var isCreatingOrder by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // Customer dialog state
+    var showCustomerDialog by remember { mutableStateOf(false) }
+
+    // 🔧 FIX: Use ViewModel's order state instead of local remember
+    // This persists across navigation and prevents duplicate orders
+    val createdOrderId by viewModel.createdOrderId.collectAsStateWithLifecycle()
+    val createdOrderNumber by viewModel.createdOrderNumber.collectAsStateWithLifecycle()
+
+    // Customer state from ViewModel
+    val recentCustomers by viewModel.recentCustomers.collectAsStateWithLifecycle()
+    val customerSearchResults by viewModel.customerSearchResults.collectAsStateWithLifecycle()
+    val isSearchingCustomers by viewModel.isSearchingCustomers.collectAsStateWithLifecycle()
+    val isCreatingCustomer by viewModel.isCreatingCustomer.collectAsStateWithLifecycle()
 
     val currencyFormat = remember {
         NumberFormat.getCurrencyInstance(Locale("es", "MX"))
@@ -226,7 +241,8 @@ fun KioskCartScreen(
                 ) {
                     items(
                         items = cartItems,
-                        key = { it.productId }
+                        // 🔧 Use productId + modifiers hash as key (same product with different modifiers = different items)
+                        key = { "${it.productId}_${it.selectedModifiers.hashCode()}" }
                     ) { item ->
                         CartItemRow(
                             item = item,
@@ -300,18 +316,23 @@ fun KioskCartScreen(
                         Button(
                             onClick = {
                                 if (isCreatingOrder) return@Button // Prevent double-click
-                                Timber.i("🥝 [KIOSK-CART] Pay Now clicked - creating order (items: ${cartItems.size}, total: $cartTotal)")
+                                Timber.i("🥝 [KIOSK-CART] Pay Now clicked - getting/creating order (items: ${cartItems.size}, total: $cartTotal)")
                                 isCreatingOrder = true
                                 scope.launch {
                                     try {
-                                        // Create order and navigate to payment
-                                        val orderResult = viewModel.createOrder()
+                                        // 🔧 FIX: Use getOrCreateOrder() to reuse existing order if cart unchanged
+                                        // This prevents duplicate orders (cuentas por cobrar) when user goes back and returns
+                                        val orderResult = viewModel.getOrCreateOrder()
                                         if (orderResult != null) {
                                             val (orderId, orderNumber) = orderResult
-                                            // Amount in pesos (Long) - DB stores pesos
-                                            val amountPesos = cartTotal.toLong()
-                                            Timber.i("🥝 [KIOSK-CART] Order created successfully! orderId=$orderId, orderNumber=$orderNumber, amount=\$${amountPesos} - navigating to payment")
-                                            onPayNow(orderId, amountPesos, orderNumber)
+                                            Timber.i("🥝 [KIOSK-CART] Order ready! orderId=$orderId, orderNumber=$orderNumber, amount=\$${cartTotal.toLong()}")
+
+                                            // Load recent customers for quick selection
+                                            viewModel.loadRecentCustomers()
+
+                                            // Show customer dialog
+                                            Timber.i("🥝 [KIOSK-CART] Showing customer dialog before payment")
+                                            showCustomerDialog = true
                                         } else {
                                             Timber.e("🥝 [KIOSK-CART] Failed to create order!")
                                             snackbarHostState.showSnackbar(
@@ -413,8 +434,75 @@ fun KioskCartScreen(
             }
         )
     }
+
+    // Customer Dialog (shown after order creation, before payment)
+    // 🔧 FIX: Use ViewModel's order state (createdOrderId) instead of local pendingOrderId
+    if (showCustomerDialog && createdOrderId != null && createdOrderNumber != null) {
+        // 🔧 FIX: Always use current cartTotal for amount (not cached pendingAmount)
+        // This ensures amount is correct even if user went back and modified cart
+        val currentAmountPesos = cartTotal.toLong()
+
+        Timber.d("🥝 [KIOSK-CART] Showing Customer Dialog (orderId=$createdOrderId, amount=$currentAmountPesos)")
+        KioskCustomerDialog(
+            recentCustomers = recentCustomers,
+            searchResults = customerSearchResults,
+            isSearching = isSearchingCustomers,
+            isCreating = isCreatingCustomer,
+            onSearchQueryChanged = { query ->
+                Timber.d("🥝 [KIOSK-CART] Customer search query: $query")
+                viewModel.searchCustomers(query)
+            },
+            onCustomerSelected = { customer ->
+                Timber.i("🥝 [KIOSK-CART] Customer selected: ${customer.displayName} (id=${customer.id})")
+                viewModel.addCustomerToCurrentOrder(customer) { success ->
+                    if (success) {
+                        Timber.i("🥝 [KIOSK-CART] Customer assigned to order, proceeding to payment")
+                    } else {
+                        Timber.w("🥝 [KIOSK-CART] Failed to assign customer, proceeding anyway")
+                    }
+                    showCustomerDialog = false
+                    viewModel.clearCustomerState()
+                    // 🔧 FIX: Use current cartTotal for amount
+                    onPayNow(createdOrderId!!, currentAmountPesos, createdOrderNumber!!)
+                }
+            },
+            onCreateCustomer = { name, email ->
+                Timber.i("🥝 [KIOSK-CART] Creating new customer: name=$name, email=$email")
+                viewModel.createAndAddCustomerToOrder(name, email) { success ->
+                    if (success) {
+                        Timber.i("🥝 [KIOSK-CART] Customer created and assigned, proceeding to payment")
+                    } else {
+                        Timber.w("🥝 [KIOSK-CART] Failed to create customer, proceeding anyway")
+                    }
+                    showCustomerDialog = false
+                    viewModel.clearCustomerState()
+                    // 🔧 FIX: Use current cartTotal for amount
+                    onPayNow(createdOrderId!!, currentAmountPesos, createdOrderNumber!!)
+                }
+            },
+            onSkip = {
+                Timber.i("🥝 [KIOSK-CART] Customer skipped, proceeding to payment without customer")
+                showCustomerDialog = false
+                viewModel.clearCustomerState()
+                // 🔧 FIX: Use current cartTotal for amount
+                onPayNow(createdOrderId!!, currentAmountPesos, createdOrderNumber!!)
+            },
+            onDismiss = {
+                Timber.d("🥝 [KIOSK-CART] Customer dialog dismissed")
+                showCustomerDialog = false
+                viewModel.clearCustomerState()
+                // Note: Order still exists in ViewModel, will be reused on next "Pay Now" click
+            }
+        )
+    }
 }
 
+/**
+ * Cart Item Row
+ *
+ * Displays a single cart item with product name, selected modifiers,
+ * unit price, quantity controls, and line total.
+ */
 @Composable
 private fun CartItemRow(
     item: KioskCartItem,
@@ -435,7 +523,7 @@ private fun CartItemRow(
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Product name and price
+            // Product name, modifiers, and price
             Column(
                 modifier = Modifier.weight(1f)
             ) {
@@ -445,6 +533,15 @@ private fun CartItemRow(
                     fontWeight = FontWeight.Medium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
+                // 🔧 Show selected modifiers if any
+                if (item.hasSelectedModifiers) {
+                    Text(
+                        text = item.modifiersSummary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                        maxLines = 2
+                    )
+                }
                 Text(
                     text = currencyFormat.format(item.unitPrice),
                     style = MaterialTheme.typography.bodySmall,

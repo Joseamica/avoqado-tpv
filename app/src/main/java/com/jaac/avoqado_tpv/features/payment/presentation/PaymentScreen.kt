@@ -55,6 +55,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTextField
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
+import com.jaac.avoqado_tpv.features.payment.presentation.components.KioskCashConfirmationContent
 import com.jaac.avoqado_tpv.features.payment.presentation.components.PaymentApprovedScreen
 import com.jaac.avoqado_tpv.features.verification.presentation.VerificationScreen
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
@@ -111,6 +112,7 @@ fun PaymentScreen(
     payLaterOrdersCount: Int = 0,  // 💳 Remaining pay-later orders count
     // 🥝 KIOSK MODE PARAMS
     isKioskPayment: Boolean = false,  // 🥝 True = payment from kiosk self-service flow
+    kioskStaffId: String? = null,  // 🥝 Staff ID from kiosk session for sales attribution (commissions/tips). If null, uses authContext staffId.
     onKioskPaymentSuccess: ((String, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt?, List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>?) -> Unit)? = null,  // 🥝 Callback with orderNumber + receipt + orderItems when kiosk payment succeeds
     onNavigateBack: () -> Unit,
     onNavigateToShifts: () -> Unit = {},  // 🆕 Navigate to Shifts screen (for "No shift open" errors)
@@ -143,6 +145,12 @@ fun PaymentScreen(
             android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
             viewModel.clearSendReceiptMessage()
         }
+    }
+
+    // 🥝 KIOSK MODE: Set kiosk payment mode in ViewModel for secure cash flow
+    // Pass kioskStaffId for sales attribution (commissions/tips)
+    LaunchedEffect(isKioskPayment, kioskStaffId) {
+        viewModel.setKioskPaymentMode(isKioskPayment, kioskStaffId)
     }
 
     // 📊 Dynamic step counter based on TPV settings
@@ -197,6 +205,8 @@ fun PaymentScreen(
             // Post-payment verification - separate from pre-payment steps
             "Verificación" to "Post-pago · $${currentState.amount}"
         }
+        // 🥝 KIOSK: Cash confirmation shows different title
+        is PaymentState.AwaitingCashConfirmation -> "Pago en Efectivo" to null
         // 💸 Different title for refund mode vs regular payment
         else -> if (isRefundMode) "Reembolso con Tarjeta" to null else "Pago con Tarjeta" to null
     }
@@ -214,6 +224,9 @@ fun PaymentScreen(
                         // Try to go back one step in payment flow first
                         // If at first step (returns false), navigate back to home
                         if (!viewModel.goBackOneStep()) {
+                            // 🔧 FIX: Reset ViewModel to Idle so next payment uses new initialAmount
+                            // Without this, the LaunchedEffect in Idle block won't re-run
+                            viewModel.resetPayment()
                             onNavigateBack()
                         }
                     }
@@ -261,6 +274,8 @@ fun PaymentScreen(
                             // ✅ NEW: goBackOneStep() returns false (first step)
                             // Navigate back to WelcomeScreen
                             if (!viewModel.goBackOneStep()) {
+                                // 🔧 FIX: Reset ViewModel to Idle so next payment uses new initialAmount
+                                viewModel.resetPayment()
                                 onNavigateBack()
                             }
                         }
@@ -704,6 +719,24 @@ fun PaymentScreen(
                             }
                         )
                     }
+                }
+
+                // 🥝 KIOSK CASH: Awaiting staff confirmation
+                is PaymentState.AwaitingCashConfirmation -> {
+                    KioskCashConfirmationContent(
+                        totalAmount = currentState.totalAmount,
+                        tipAmount = currentState.tipAmount,
+                        orderNumber = currentState.orderNumber,
+                        printerWarning = currentState.printerWarning,  // 🖨️ Show printer warning if any
+                        onConfirm = { staffId ->
+                            Timber.i("🥝 [KIOSK CASH] Staff $staffId confirmed payment")
+                            viewModel.confirmCashPayment(staffId)
+                        },
+                        onCancel = {
+                            Timber.i("🥝 [KIOSK CASH] Payment cancelled by staff")
+                            viewModel.cancelCashPayment()
+                        }
+                    )
                 }
 
                 is PaymentState.Cancelled -> {

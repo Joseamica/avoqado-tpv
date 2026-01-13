@@ -85,7 +85,8 @@ class ProductRepositoryImpl @Inject constructor(
                                 name = product.categoryName,
                                 displayOrder = 0,  // Will be set based on first product
                                 productCount = 0,  // Will be calculated
-                                emoji = product.emoji
+                                emoji = product.emoji,
+                                isActive = product.categoryIsActive  // ✅ Pass active status from product
                             )
                         }
                     }

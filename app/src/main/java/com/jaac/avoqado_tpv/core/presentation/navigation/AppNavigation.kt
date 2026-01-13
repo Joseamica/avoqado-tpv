@@ -200,6 +200,7 @@ fun AppNavigation(
     var kioskPaymentOrderId by remember { mutableStateOf<String?>(null) }
     var kioskPaymentAmount by remember { mutableStateOf<Long?>(null) }
     var kioskPaymentOrderNumber by remember { mutableStateOf<String?>(null) }
+    var kioskPaymentStaffId by remember { mutableStateOf<String?>(null) }  // 🥝 Staff ID for sales attribution
     val isKioskPaymentInProgress = kioskPaymentOrderId != null
 
     // 🥝 KIOSK SUCCESS STATE
@@ -226,13 +227,19 @@ fun AppNavigation(
             receipt = kioskSuccessReceipt,
             orderItems = kioskSuccessOrderItems,
             onTimeout = {
-                Timber.i("🥝 [KIOSK] Success timeout - clearing cart and returning to welcome")
+                Timber.i("🥝 [KIOSK] Success timeout - clearing cart and navigating to menu for new order")
                 // Clear cart after successful payment
                 kioskClearCart?.invoke()
                 kioskSuccessOrderNumber = null
                 kioskSuccessReceipt = null
                 kioskSuccessOrderItems = null
-                // Will automatically show KioskNavigation (kiosk mode still active)
+                // 🥝 Navigate to Menu for new order (not Cart which was the previous destination)
+                // Using kioskModeManager to set order in progress, then navigate
+                kioskModeManager.setOrderInProgress(true)
+                navController.navigate(NavRoute.KioskMenu.route) {
+                    // Clear entire backstack and start fresh with Menu
+                    popUpTo(0) { inclusive = true }
+                }
             },
             onPrintReceipt = {
                 // 🖨️ Print receipt using simplified kiosk receipt format
@@ -318,12 +325,14 @@ fun AppNavigation(
             payLaterOrdersCount = 0,
             // 🥝 KIOSK MODE PARAMS
             isKioskPayment = true,
+            kioskStaffId = kioskPaymentStaffId,  // 🥝 Staff ID for sales attribution (commissions/tips)
             onKioskPaymentSuccess = { displayOrderNumber, receipt, orderItems ->
                 // Clear kiosk payment state and show success screen with receipt
                 Timber.i("🥝 [KIOSK] Payment success - showing success screen with order: $displayOrderNumber, receipt: ${receipt != null}, items: ${orderItems?.size}")
                 kioskPaymentOrderId = null
                 kioskPaymentAmount = null
                 kioskPaymentOrderNumber = null
+                kioskPaymentStaffId = null
                 kioskSuccessOrderNumber = displayOrderNumber
                 kioskSuccessReceipt = receipt
                 kioskSuccessOrderItems = orderItems
@@ -334,6 +343,7 @@ fun AppNavigation(
                 kioskPaymentOrderId = null
                 kioskPaymentAmount = null
                 kioskPaymentOrderNumber = null
+                kioskPaymentStaffId = null
                 // Will automatically show KioskNavigation (kiosk mode still active)
             },
             onNavigateToShifts = {
@@ -345,6 +355,7 @@ fun AppNavigation(
                 kioskPaymentOrderId = null
                 kioskPaymentAmount = null
                 kioskPaymentOrderNumber = null
+                kioskPaymentStaffId = null
                 // After exiting kiosk mode, staff NavHost will render at Splash
                 // which will navigate to Home (if authenticated) where they can open shift
             },
@@ -367,12 +378,13 @@ fun AppNavigation(
                 // No need to navigate since the kiosk graph doesn't have "home" route
                 kioskModeManager.exitKioskMode()
             },
-            onNavigateToPayment = { orderId, amount, orderNumber ->
+            onNavigateToPayment = { orderId, amount, orderNumber, staffId ->
                 // Set kiosk payment state to trigger PaymentScreen render
                 kioskPaymentOrderId = orderId
                 kioskPaymentAmount = amount
                 kioskPaymentOrderNumber = orderNumber
-                Timber.i("🥝 [KIOSK] Starting payment: orderId=$orderId, amount=$amount, orderNumber=$orderNumber")
+                kioskPaymentStaffId = staffId  // 🥝 Staff ID for sales attribution
+                Timber.i("🥝 [KIOSK] Starting payment: orderId=$orderId, amount=$amount, orderNumber=$orderNumber, staffId=$staffId")
             },
             onClearCartRequest = { clearCartFn ->
                 // Store the clearCart function from KioskNavigation's ViewModel

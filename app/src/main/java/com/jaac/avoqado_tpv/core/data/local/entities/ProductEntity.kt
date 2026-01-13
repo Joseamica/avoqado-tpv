@@ -92,6 +92,11 @@ data class ProductEntity(
     @ColumnInfo(name = "category_color")
     val categoryColor: String? = null,
 
+    // Category active status from dashboard toggle
+    // Used to filter inactive categories when extracting from products
+    @ColumnInfo(name = "category_is_active")
+    val categoryIsActive: Boolean = true,
+
     @ColumnInfo(name = "cached_at")
     val cachedAt: Long  // Unix timestamp (for TTL expiration)
 )

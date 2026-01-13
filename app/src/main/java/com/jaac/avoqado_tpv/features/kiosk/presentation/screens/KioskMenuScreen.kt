@@ -25,8 +25,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -62,11 +64,17 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.jaac.avoqado_tpv.features.kiosk.domain.model.KioskProduct
 import com.jaac.avoqado_tpv.features.kiosk.presentation.KioskViewModel
 import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskAdminAuth
 import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskAdminBottomSheet
 import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskAdminPinDialog
 import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskExitPinDialog
+import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskModifierDialog
+import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskSearchDialog
+import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskStaffAssignDialog
+import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskStaffButton
+import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskStaffInfoDialog
 import timber.log.Timber
 import java.math.BigDecimal
 import java.text.NumberFormat
@@ -96,6 +104,7 @@ fun KioskMenuScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val cartItemCount by viewModel.cartItemCount.collectAsStateWithLifecycle()
+    val staffSession by viewModel.staffSession.collectAsStateWithLifecycle()
 
     // Secret exit gesture state (emergency fallback)
     var tapCount by remember { mutableIntStateOf(0) }
@@ -106,6 +115,17 @@ fun KioskMenuScreen(
     var showAdminPinDialog by remember { mutableStateOf(false) }
     var showAdminBottomSheet by remember { mutableStateOf(false) }
     var adminAuth by remember { mutableStateOf<KioskAdminAuth?>(null) }
+
+    // 🔧 Modifier selection dialog state
+    var showModifierDialog by remember { mutableStateOf(false) }
+    var selectedProductForModifiers by remember { mutableStateOf<KioskProduct?>(null) }
+
+    // 🔍 Search dialog state
+    var showSearchDialog by remember { mutableStateOf(false) }
+
+    // 🥝 Staff assignment dialog state
+    var showStaffAssignDialog by remember { mutableStateOf(false) }
+    var showStaffInfoDialog by remember { mutableStateOf(false) }
 
     Timber.d("🥝 [KIOSK-MENU] Composing MenuScreen (categories: ${state.categories.size}, products: ${state.filteredProducts.size}, cartItems: $cartItemCount, isLoading: ${state.isLoading})")
 
@@ -158,6 +178,23 @@ fun KioskMenuScreen(
                     }
                 },
                 actions = {
+                    // 🥝 Staff assignment button
+                    KioskStaffButton(
+                        staffSession = staffSession,
+                        onClick = {
+                            if (staffSession != null) {
+                                // Staff assigned - show info dialog
+                                Timber.i("🥝 [KIOSK-MENU] Staff button clicked - showing info for ${staffSession?.staffName}")
+                                showStaffInfoDialog = true
+                            } else {
+                                // No staff - show assign dialog
+                                Timber.i("🥝 [KIOSK-MENU] Staff button clicked - showing assign dialog")
+                                showStaffAssignDialog = true
+                            }
+                        },
+                        modifier = Modifier.padding(end = 4.dp)
+                    )
+
                     // Admin gear icon
                     IconButton(
                         onClick = {
@@ -187,7 +224,7 @@ fun KioskMenuScreen(
                         Timber.i("🥝 [KIOSK-MENU] Cart FAB clicked (cartItems: $cartItemCount) - navigating to cart")
                         onCartClick()
                     },
-                    containerColor = MaterialTheme.colorScheme.primary,
+                    containerColor = Color(0xFF4CAF50),  // Green color for cart
                     modifier = Modifier.size(72.dp)
                 ) {
                     Box {
@@ -226,37 +263,65 @@ fun KioskMenuScreen(
                 .padding(paddingValues)
                 .background(MaterialTheme.colorScheme.surface) // Ensure background is light
         ) {
-            // Category filter bar
-            LazyRow(
+            // Category filter bar with search button
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.surfaceVariant)
                     .padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = PaddingValues(horizontal = 16.dp)
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                item {
-                    FilterChip(
-                        selected = state.selectedCategoryId == null,
-                        onClick = { viewModel.selectCategory(null) },
-                        label = { Text("Todo") },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primary,
-                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary
-                        )
+                // 🔍 Search button (fixed left) - same height as FilterChips (32.dp)
+                Box(
+                    modifier = Modifier
+                        .padding(start = 12.dp)
+                        .height(32.dp)
+                        .width(40.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.primary)
+                        .clickable {
+                            Timber.i("🔍 [KIOSK-MENU] Search button clicked")
+                            showSearchDialog = true
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Buscar producto",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
 
-                items(state.categories) { category ->
-                    FilterChip(
-                        selected = state.selectedCategoryId == category.id,
-                        onClick = { viewModel.selectCategory(category.id) },
-                        label = { Text(category.name) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primary,
-                            selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                // Category chips
+                LazyRow(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp)
+                ) {
+                    item {
+                        FilterChip(
+                            selected = state.selectedCategoryId == null,
+                            onClick = { viewModel.selectCategory(null) },
+                            label = { Text("Todo") },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                            )
                         )
-                    )
+                    }
+
+                    items(state.categories) { category ->
+                        FilterChip(
+                            selected = state.selectedCategoryId == category.id,
+                            onClick = { viewModel.selectCategory(category.id) },
+                            label = { Text(category.name) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                            )
+                        )
+                    }
                 }
             }
 
@@ -300,7 +365,19 @@ fun KioskMenuScreen(
                                 name = product.name,
                                 price = product.price,
                                 imageUrl = product.imageUrl,
-                                onAdd = { viewModel.addToCart(product) }
+                                hasModifiers = product.hasModifiers,  // 🔧 Show indicator if has modifiers
+                                onAdd = {
+                                    // 🔧 Check if product has modifiers
+                                    if (product.hasModifiers) {
+                                        // Show modifier selection dialog
+                                        Timber.d("🥝 [KIOSK-MENU] Product '${product.name}' has modifiers - showing dialog")
+                                        selectedProductForModifiers = product
+                                        showModifierDialog = true
+                                    } else {
+                                        // Add directly to cart (no modifiers)
+                                        viewModel.addToCart(product)
+                                    }
+                                }
                             )
                         }
                     }
@@ -360,13 +437,173 @@ fun KioskMenuScreen(
             }
         )
     }
+
+    // 🔧 Modifier Selection Dialog
+    if (showModifierDialog && selectedProductForModifiers != null) {
+        Timber.d("🥝 [KIOSK-MENU] Showing Modifier Dialog for: ${selectedProductForModifiers!!.name}")
+        KioskModifierDialog(
+            product = selectedProductForModifiers!!,
+            onDismiss = {
+                Timber.d("🥝 [KIOSK-MENU] Modifier dialog dismissed")
+                showModifierDialog = false
+                selectedProductForModifiers = null
+            },
+            onConfirm = { selectedModifiers, totalPrice ->
+                Timber.i("🥝 [KIOSK-MENU] Modifiers confirmed for ${selectedProductForModifiers!!.name}: " +
+                        "${selectedModifiers.joinToString { it.name }}, price: $totalPrice")
+                viewModel.addToCartWithModifiers(
+                    product = selectedProductForModifiers!!,
+                    selectedModifiers = selectedModifiers,
+                    unitPriceWithModifiers = totalPrice
+                )
+                showModifierDialog = false
+                selectedProductForModifiers = null
+            }
+        )
+    }
+
+    // 🔍 Search Dialog
+    KioskSearchDialog(
+        visible = showSearchDialog,
+        products = state.allProducts,  // Search across ALL products (not filtered)
+        onDismiss = {
+            Timber.d("🔍 [KIOSK-MENU] Search dialog dismissed")
+            showSearchDialog = false
+        },
+        onProductClick = { product ->
+            Timber.i("🔍 [KIOSK-MENU] Product selected from search: ${product.name}")
+            showSearchDialog = false
+            // Check if product has modifiers
+            if (product.hasModifiers) {
+                selectedProductForModifiers = product
+                showModifierDialog = true
+            } else {
+                viewModel.addToCart(product)
+            }
+        }
+    )
+
+    // 🥝 Staff Assignment Dialog
+    if (showStaffAssignDialog) {
+        Timber.d("🥝 [KIOSK-MENU] Showing Staff Assign Dialog")
+        KioskStaffAssignDialog(
+            onDismiss = {
+                Timber.d("🥝 [KIOSK-MENU] Staff assign dialog dismissed")
+                showStaffAssignDialog = false
+            },
+            onStaffAssigned = { session ->
+                Timber.i("🥝 [KIOSK-MENU] Staff assigned: ${session.staffName} (${session.role})")
+                viewModel.setStaffSession(session)
+                showStaffAssignDialog = false
+            }
+        )
+    }
+
+    // 🥝 Staff Info Dialog
+    if (showStaffInfoDialog && staffSession != null) {
+        Timber.d("🥝 [KIOSK-MENU] Showing Staff Info Dialog for: ${staffSession?.staffName}")
+        KioskStaffInfoDialog(
+            staffSession = staffSession!!,
+            onDismiss = {
+                Timber.d("🥝 [KIOSK-MENU] Staff info dialog dismissed")
+                showStaffInfoDialog = false
+            },
+            onChangeStaff = {
+                Timber.i("🥝 [KIOSK-MENU] Change staff requested from info dialog")
+                showStaffInfoDialog = false
+                showStaffAssignDialog = true
+            }
+        )
+    }
+
+    // 🔧 Blumon SDK Initialization Overlay
+    // Shows loader while SDK initializes, blocks user from proceeding to payment
+    if (state.isBlumonInitializing || state.blumonInitError != null) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.7f))
+                .clickable(enabled = false) { /* Block clicks */ },
+            contentAlignment = Alignment.Center
+        ) {
+            Card(
+                modifier = Modifier
+                    .padding(32.dp)
+                    .width(300.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(24.dp)
+                        .fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    if (state.isBlumonInitializing) {
+                        // Loading state
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(48.dp),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Preparando sistema de pagos...",
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = "Por favor espere",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                    } else if (state.blumonInitError != null) {
+                        // Error state
+                        Text(
+                            text = "⚠️",
+                            style = MaterialTheme.typography.headlineLarge
+                        )
+                        Text(
+                            text = "Error de Inicialización",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = state.blumonInitError!!,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Button(
+                            onClick = { viewModel.retryBlumonInit() },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Reintentar")
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
+/**
+ * Kiosk Product Card
+ *
+ * @param name Product name
+ * @param price Product base price
+ * @param imageUrl Optional product image URL
+ * @param hasModifiers Whether product has modifier groups (shows indicator)
+ * @param onAdd Callback when user taps to add product
+ */
 @Composable
 private fun KioskProductCard(
     name: String,
     price: BigDecimal,
     imageUrl: String?,
+    hasModifiers: Boolean = false,
     onAdd: () -> Unit
 ) {
     val currencyFormat = remember {
@@ -376,7 +613,7 @@ private fun KioskProductCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .height(150.dp)
+            .height(180.dp)  // Increased from 150dp to fit price text
             .clickable(onClick = onAdd),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
@@ -434,6 +671,27 @@ private fun KioskProductCard(
                         tint = MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier.size(20.dp)
                     )
+                }
+
+                // 🔧 Modifier indicator badge (top-left corner)
+                if (hasModifiers) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(4.dp)
+                            .background(
+                                color = MaterialTheme.colorScheme.tertiaryContainer,
+                                shape = RoundedCornerShape(4.dp)
+                            )
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = "Personalizable",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
                 }
             }
 

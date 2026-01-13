@@ -71,7 +71,7 @@ interface KioskNavigationEntryPoint {
 fun KioskNavigation(
     navController: NavHostController,
     onExitKiosk: () -> Unit,
-    onNavigateToPayment: (orderId: String, amount: Long, orderNumber: String) -> Unit,
+    onNavigateToPayment: (orderId: String, amount: Long, orderNumber: String, staffId: String?) -> Unit,  // 🥝 Added staffId for sales attribution
     onClearCartRequest: ((clearCart: () -> Unit) -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -192,6 +192,9 @@ fun KioskNavigation(
                 // Cart screen - Order summary before payment
                 composable(NavRoute.KioskCart.route) {
                     Timber.d("🥝 [KIOSK-NAV] → Cart screen")
+                    // 🥝 Observe staff session for sales attribution
+                    val staffSession by kioskViewModel.staffSession.collectAsStateWithLifecycle()
+
                     KioskCartScreen(
                         viewModel = kioskViewModel,
                         onBack = {
@@ -199,8 +202,10 @@ fun KioskNavigation(
                             navController.popBackStack()
                         },
                         onPayNow = { orderId, amount, orderNumber ->
-                            Timber.i("🥝 [KIOSK-NAV] Cart → Payment (order: $orderNumber, amount: $amount)")
-                            onNavigateToPayment(orderId, amount, orderNumber)
+                            // 🥝 Pass staffId from current staff session (if any) for sales attribution
+                            val staffId = staffSession?.staffId
+                            Timber.i("🥝 [KIOSK-NAV] Cart → Payment (order: $orderNumber, amount: $amount, staffId: $staffId)")
+                            onNavigateToPayment(orderId, amount, orderNumber, staffId)
                         },
                         onExitKiosk = {
                             Timber.i("🥝 [KIOSK-NAV] Exit from Cart screen")
@@ -243,6 +248,9 @@ fun KioskNavigation(
                     startDestination = NavRoute.KioskCart.route
                 ) {
                     composable(NavRoute.KioskCart.route) {
+                        // 🥝 Observe staff session for sales attribution
+                        val staffSession by kioskViewModel.staffSession.collectAsStateWithLifecycle()
+
                         KioskCartScreen(
                             viewModel = kioskViewModel,
                             onBack = {
@@ -250,7 +258,9 @@ fun KioskNavigation(
                                 kioskModeManager.setOrderInProgress(false)
                             },
                             onPayNow = { orderId, amount, orderNumber ->
-                                onNavigateToPayment(orderId, amount, orderNumber)
+                                // 🥝 Pass staffId from current staff session
+                                val staffId = staffSession?.staffId
+                                onNavigateToPayment(orderId, amount, orderNumber, staffId)
                             },
                             onExitKiosk = onExitKiosk
                         )

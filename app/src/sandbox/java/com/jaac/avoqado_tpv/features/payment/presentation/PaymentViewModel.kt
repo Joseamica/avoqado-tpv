@@ -264,6 +264,14 @@ class PaymentViewModel @Inject constructor(
     private var pinDialogFlowsStarted = false  // Track if PIN dialog collectors are running
     private var merchantsLoaded = false  // Track if merchants have been loaded
 
+    // 🥝 KIOSK MODE: Deferred cash payment recording (McDonald's/Cinépolis pattern)
+    // When true, cash payments go to AwaitingCashConfirmation state instead of recording immediately
+    // Staff must confirm they received cash before payment is recorded
+    private var isKioskPayment: Boolean = false
+    // 🥝 Staff ID from kiosk session for sales attribution (commissions/tips)
+    // If set, used for `processedById` instead of authContext staffId
+    private var kioskStaffId: String? = null
+
     // 🔒 CRITICAL: Signal when merchants are fully loaded (prevents race condition)
     // Used by skipTip()/submitTip() to await merchants before reading _merchants.value
     private var merchantsLoadingDeferred = kotlinx.coroutines.CompletableDeferred<Unit>()
@@ -607,6 +615,27 @@ class PaymentViewModel @Inject constructor(
      */
     fun clearMerchantSwitchMessage() {
         _merchantSwitchMessage.value = null
+    }
+
+    /**
+     * 🥝 KIOSK MODE: Enable/disable kiosk cash payment flow
+     *
+     * When enabled (true), cash payments go to AwaitingCashConfirmation state
+     * instead of recording immediately. Staff must confirm they received
+     * the cash before the payment is recorded to backend.
+     *
+     * **McDonald's/Cinépolis Pattern:**
+     * - Customer selects "Efectivo" → Shows "Espera al empleado" screen
+     * - Receipt auto-prints with amount owed
+     * - Staff enters PIN to confirm they received cash
+     * - ONLY THEN payment is recorded to backend
+     *
+     * @param isKiosk true = kiosk mode (deferred recording), false = normal flow
+     */
+    fun setKioskPaymentMode(isKiosk: Boolean, staffId: String? = null) {
+        Timber.i("🥝 [KIOSK] Payment mode set: isKiosk=$isKiosk, staffId=$staffId")
+        isKioskPayment = isKiosk
+        kioskStaffId = staffId  // 🥝 Store staff ID for sales attribution
     }
 
     /**
@@ -3000,6 +3029,65 @@ class PaymentViewModel @Inject constructor(
                     Timber.i("ℹ️ [Cash Payment] Shift system disabled - bypassing shift check")
                 }
 
+                // 🥝 KIOSK MODE: Defer recording until staff confirms cash received
+                // McDonald's/Cinépolis pattern - prevents walk-away fraud
+                if (isKioskPayment) {
+                    Timber.i("🥝 [KIOSK CASH] Deferring payment recording - awaiting staff confirmation")
+                    Timber.d("   💵 Subtotal: ${currentState.subtotal}, Tip: ${currentState.tipAmount}, Total: ${currentState.totalAmount}")
+
+                    // 🖨️ Auto-print cash receipt for staff (shows amount customer owes)
+                    // Check printer status and capture warning for UI display
+                    var printerWarning: String? = null
+                    try {
+                        Timber.d("🖨️ [KIOSK CASH] Auto-printing cash confirmation receipt...")
+
+                        // 🖨️ Check printer status before printing
+                        val printerStatus = printerManager.checkPrinterStatus()
+                        if (!printerStatus.hasPaper) {
+                            Timber.w("⚠️ [KIOSK CASH] No paper in printer - skipping receipt print")
+                            printerWarning = "Sin papel en impresora"
+                        } else if (!printerStatus.isReady && !printerStatus.isPaperLow) {
+                            Timber.w("⚠️ [KIOSK CASH] Printer not ready: ${printerStatus.message} - skipping receipt print")
+                            printerWarning = "Impresora no disponible: ${printerStatus.message}"
+                        } else {
+                            // Printer is ready, attempt to print
+                            val printResult = printerManager.printCashConfirmationReceipt(
+                                totalAmount = currentState.totalAmount,
+                                tipAmount = currentState.tipAmount,
+                                orderNumber = currentOrderNumber
+                            )
+
+                            printResult.onSuccess {
+                                Timber.d("🖨️ [KIOSK CASH] Receipt printed successfully")
+                            }.onFailure { error ->
+                                Timber.e(error, "⚠️ [KIOSK CASH] Failed to print receipt - continuing anyway")
+                                printerWarning = "Error al imprimir recibo"
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Timber.e(e, "⚠️ [KIOSK CASH] Failed to print receipt - continuing anyway")
+                        printerWarning = "Error de impresora: ${e.message}"
+                    }
+
+                    // Transition to AwaitingCashConfirmation state
+                    // Payment data is stored but NOT recorded to backend yet
+                    _state.value = PaymentState.AwaitingCashConfirmation(
+                        subtotal = currentState.subtotal,
+                        tipAmount = currentState.tipAmount,
+                        totalAmount = currentState.totalAmount,
+                        rating = currentState.rating,
+                        orderId = currentOrderId,
+                        orderNumber = currentOrderNumber,
+                        printerWarning = printerWarning
+                    )
+
+                    Timber.i("🥝 [KIOSK CASH] Now in AwaitingCashConfirmation - staff must confirm to record payment")
+                    if (printerWarning != null) {
+                        Timber.w("⚠️ [KIOSK CASH] Printer warning will be shown in UI: $printerWarning")
+                    }
+                    return@launch  // Exit early - don't record until confirmed
+                }
+
                 // Now change state to Processing
                 _state.value = PaymentState.Processing("Registrando pago en efectivo...")
 
@@ -3119,6 +3207,175 @@ class PaymentViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    /**
+     * 🥝 KIOSK CASH: Staff confirms they received cash payment
+     *
+     * Called when staff enters PIN and confirms they received the cash.
+     * This ACTUALLY records the payment to backend (deferred from processCashPayment).
+     *
+     * **Flow:**
+     * 1. Customer selects "Efectivo" → AwaitingCashConfirmation state
+     * 2. Staff sees amount on screen + printed receipt
+     * 3. Staff collects cash from customer
+     * 4. Staff enters PIN → This function is called
+     * 5. Payment is recorded to backend → Success state
+     *
+     * **Security:**
+     * - Only callable from AwaitingCashConfirmation state
+     * - Staff must already be authenticated (PIN validated in UI layer)
+     *
+     * @param confirmedByStaffId Optional: The staff ID who confirmed (for audit trail)
+     */
+    fun confirmCashPayment(confirmedByStaffId: String? = null) {
+        Timber.i("🥝 [KIOSK CASH] Staff confirmed cash payment received")
+
+        val currentState = _state.value as? PaymentState.AwaitingCashConfirmation
+        if (currentState == null) {
+            Timber.e("❌ [KIOSK CASH] Invalid state for confirmCashPayment. Expected AwaitingCashConfirmation, got: ${_state.value}")
+            _state.value = PaymentState.Error(
+                message = "Error interno: Estado inválido para confirmar pago.",
+                context = null,
+                canRetry = false
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                _state.value = PaymentState.Processing("Registrando pago confirmado...")
+
+                Timber.d("🥝 [KIOSK CASH] Recording confirmed payment to backend")
+                Timber.d("   💵 Subtotal: ${currentState.subtotal}, Tip: ${currentState.tipAmount}, Total: ${currentState.totalAmount}")
+                Timber.d("   👤 Confirmed by staff: ${confirmedByStaffId ?: currentStaffId}")
+
+                // Create payment context (same as processCashPayment)
+                val context = if (currentState.orderId != null) {
+                    val splitTypeEnum = currentSplitType?.let {
+                        try { SplitType.valueOf(it.uppercase()) } catch (e: Exception) { SplitType.FULLPAYMENT }
+                    } ?: SplitType.FULLPAYMENT
+
+                    PaymentContext.OrderPayment(
+                        venueId = currentVenueId!!,
+                        staffId = confirmedByStaffId ?: currentStaffId!!,  // Use confirming staff if provided
+                        shiftId = currentShiftId,
+                        orderId = currentState.orderId,
+                        amount = currentState.subtotal.toBigDecimal(),
+                        tip = currentState.tipAmount.toBigDecimal(),
+                        rating = currentState.rating,
+                        merchantAccountId = null,  // Cash has no processor
+                        blumonSerialNumber = "",
+                        deviceSerialNumber = secureStorage.getSerialNumber(),
+                        splitType = splitTypeEnum,
+                        paidProductIds = currentPaidProductIds,
+                        equalPartsPartySize = currentEqualPartsPartySize,
+                        equalPartsPayedFor = currentEqualPartsPayedFor
+                    )
+                } else {
+                    PaymentContext.FastPayment(
+                        venueId = currentVenueId!!,
+                        staffId = confirmedByStaffId ?: currentStaffId!!,
+                        shiftId = currentShiftId,
+                        amount = currentState.subtotal.toBigDecimal(),
+                        tip = currentState.tipAmount.toBigDecimal(),
+                        rating = currentState.rating,
+                        merchantAccountId = null,
+                        blumonSerialNumber = "",
+                        deviceSerialNumber = secureStorage.getSerialNumber(),
+                        orderReference = prePaymentOrderReference,
+                        verificationPhotos = prePaymentVerificationPhotos,
+                        verificationBarcodes = prePaymentVerificationBarcodes.map { it.barcode },
+                    )
+                }
+
+                val cashReference = "CASH-KIOSK-${System.currentTimeMillis()}"
+
+                // Record payment to backend
+                val result = recordPaymentUseCase(
+                    context = context,
+                    cardDetails = CardDetails.CASH,
+                    authorizationNumber = "EFECTIVO-CONFIRMADO",
+                    referenceNumber = cashReference
+                )
+
+                result.onSuccess { receipt ->
+                    Timber.d("✅ [KIOSK CASH] Payment successfully recorded to backend")
+                    Timber.d("   🧾 Payment ID: ${receipt.paymentId}")
+
+                    // Load order data for success screen
+                    val orderData = loadOrderData(currentState.orderId)
+
+                    _state.value = PaymentState.Success(
+                        authCode = "EFECTIVO",
+                        amount = currentState.totalAmount,
+                        tipAmount = currentState.tipAmount,
+                        rating = currentState.rating,
+                        receipt = receipt,
+                        cardDetails = CardDetails.CASH,
+                        referenceNumber = cashReference,
+                        orderId = currentState.orderId,
+                        orderNumber = currentState.orderNumber,
+                        orderItems = orderData?.items,
+                        remainingBalance = orderData?.remainingBalance,
+                        discountAmount = orderData?.discountAmount?.toPlainString()
+                    )
+
+                    Timber.i("💚 [KIOSK CASH] Staff-confirmed cash payment completed successfully")
+
+                }.onFailure { error ->
+                    Timber.e(error, "❌ [KIOSK CASH] Failed to record confirmed payment")
+
+                    _state.value = PaymentState.Error(
+                        message = "Error registrando pago confirmado:\n\n${error.message ?: "Error desconocido"}",
+                        context = RetryContext(
+                            amount = currentState.totalAmount,
+                            tipAmount = currentState.tipAmount,
+                            rating = currentState.rating,
+                            merchantAccountId = ""
+                        ),
+                        canRetry = true
+                    )
+                }
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [KIOSK CASH] Unexpected error during confirmation")
+                _state.value = PaymentState.Error(
+                    message = "Error inesperado:\n\n${e.message}",
+                    context = null,
+                    canRetry = false
+                )
+            }
+        }
+    }
+
+    /**
+     * 🥝 KIOSK CASH: Cancel pending cash payment (customer left without paying)
+     *
+     * Called when:
+     * - Staff presses "Cancelar" on the confirmation screen
+     * - 3-minute timeout expires without confirmation
+     * - Customer decides not to pay in cash
+     *
+     * **Security:**
+     * - Only callable from AwaitingCashConfirmation state
+     * - No backend call needed (payment was never recorded)
+     */
+    fun cancelCashPayment() {
+        Timber.i("🥝 [KIOSK CASH] Cancelling pending cash payment")
+
+        val currentState = _state.value as? PaymentState.AwaitingCashConfirmation
+        if (currentState == null) {
+            Timber.w("⚠️ [KIOSK CASH] cancelCashPayment called in invalid state: ${_state.value}")
+            return
+        }
+
+        Timber.d("🥝 [KIOSK CASH] Cancelled payment: Total=${currentState.totalAmount}, OrderId=${currentState.orderId}")
+
+        // Return to cancelled state
+        // Since payment was never recorded, we can simply cancel
+        _state.value = PaymentState.Cancelled
+        Timber.i("🚫 [KIOSK CASH] Cash payment cancelled - no backend record created")
     }
 
     /**
@@ -3391,7 +3648,9 @@ class PaymentViewModel @Inject constructor(
             is PaymentState.Printing,
             is PaymentState.PrintError,
             // 📸 Step 4: Verification - no back (must confirm or skip)
-            is PaymentState.Verifying -> {
+            is PaymentState.Verifying,
+            // 🥝 KIOSK: Cash confirmation - no back (staff must confirm or cancel)
+            is PaymentState.AwaitingCashConfirmation -> {
                 Timber.d("⬅️  [Payment Flow] Back from final state → Return to home")
                 false
             }
@@ -3564,10 +3823,19 @@ class PaymentViewModel @Inject constructor(
                     try { SplitType.valueOf(it.uppercase()) } catch (e: Exception) { SplitType.FULLPAYMENT }
                 } ?: SplitType.FULLPAYMENT
 
+                // 🥝 KIOSK: Use kiosk staff ID if available (for sales attribution/commissions)
+                // Otherwise use auth context staff ID
+                val effectiveStaffId = if (isKioskPayment && !kioskStaffId.isNullOrBlank()) {
+                    Timber.i("🥝 [KIOSK] Using kiosk staff ID for payment attribution: $kioskStaffId")
+                    kioskStaffId!!
+                } else {
+                    currentStaffId
+                }
+
                 val context = if (currentOrderId != null) {
                     PaymentContext.OrderPayment(
                         venueId = currentVenueId,
-                        staffId = currentStaffId,
+                        staffId = effectiveStaffId,  // 🥝 Use effective staff ID (kiosk or auth)
                         shiftId = currentShiftId, // 🆕 CRITICAL: Shift ID for cash reconciliation (Square/Toast pattern)
                         orderId = currentOrderId!!, // 🆕 Order ID for backend
                         amount = currentAmount.toBigDecimal(),
@@ -3587,7 +3855,7 @@ class PaymentViewModel @Inject constructor(
                 } else {
                     PaymentContext.FastPayment(
                         venueId = currentVenueId,
-                        staffId = currentStaffId,
+                        staffId = effectiveStaffId,  // 🥝 Use effective staff ID (kiosk or auth)
                         shiftId = currentShiftId, // 🆕 CRITICAL: Shift ID for cash reconciliation (Square/Toast pattern)
                         amount = currentAmount.toBigDecimal(),
                         tip = currentTip.toBigDecimal(),
@@ -4319,6 +4587,33 @@ class PaymentViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 Timber.i("🖨️ [Print] Starting receipt print")
+
+                // 🖨️ Check printer status before printing
+                val printerStatus = printerManager.checkPrinterStatus()
+                Timber.d("🖨️ [Print] Printer status: code=${printerStatus.code}, ready=${printerStatus.isReady}, paper=${printerStatus.hasPaper}")
+
+                if (!printerStatus.hasPaper) {
+                    Timber.w("⚠️ [Print] No paper in printer")
+                    _state.value = PaymentState.PrintError(
+                        message = "Sin papel en la impresora. Por favor recarga el papel e intenta de nuevo.",
+                        previousState = currentState
+                    )
+                    return@launch
+                }
+
+                if (!printerStatus.isReady && !printerStatus.isPaperLow) {
+                    Timber.w("⚠️ [Print] Printer not ready: ${printerStatus.message}")
+                    _state.value = PaymentState.PrintError(
+                        message = printerStatus.message,
+                        previousState = currentState
+                    )
+                    return@launch
+                }
+
+                if (printerStatus.isPaperLow) {
+                    Timber.w("⚠️ [Print] Paper low - proceeding with print")
+                }
+
                 _state.value = PaymentState.Printing
 
                 val result = printerManager.printReceipt(

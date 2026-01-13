@@ -48,7 +48,10 @@ fun ProductDto.toDomain(): Product {
         modifierGroups = modifierGroups?.map { it.group.toDomain() } ?: emptyList(),
         // Category color for visual distinction (Square/Toast pattern)
         // If backend doesn't provide, Product.effectiveCategoryColor auto-generates
-        categoryColor = category.color
+        categoryColor = category.color,
+        // Category active status (from dashboard toggle)
+        // Used to filter inactive categories in getCategories()
+        categoryIsActive = category.isActive
     )
 }
 
@@ -65,7 +68,8 @@ fun CategoryDto.toDomain(): ProductCategory {
         displayOrder = displayOrder ?: 0,
         productCount = 0,  // Will be calculated when loading products
         emoji = emoji ?: getCategoryEmojiByName(name),
-        color = color  // Pass through from backend (null = auto-generate in domain)
+        color = color,  // Pass through from backend (null = auto-generate in domain)
+        isActive = isActive  // Active status from dashboard toggle
     )
 }
 
@@ -85,6 +89,11 @@ fun ModifierDto.toDomain(type: ModifierType): ProductModifier {
 
 /**
  * Map ModifierGroupDto to ModifierGroup domain model
+ *
+ * Selection rules:
+ * - required: Basic flag (at least 1 selection)
+ * - minSelections: Override minimum (e.g., 2 means must pick at least 2)
+ * - maxSelections: Maximum allowed (e.g., 3 means can pick up to 3)
  */
 fun ModifierGroupDto.toDomain(): ModifierGroup {
     val modifierType = when (type?.uppercase()) {  // ✅ Safe null check
@@ -99,7 +108,9 @@ fun ModifierGroupDto.toDomain(): ModifierGroup {
         modifiers = modifiers?.map { it.toDomain(modifierType) } ?: emptyList(),
         type = modifierType,
         required = required,
-        displayOrder = displayOrder
+        displayOrder = displayOrder,
+        minSelections = minSelections,
+        maxSelections = maxSelections
     )
 }
 

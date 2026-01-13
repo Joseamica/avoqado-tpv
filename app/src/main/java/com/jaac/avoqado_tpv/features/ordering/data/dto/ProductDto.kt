@@ -108,7 +108,12 @@ data class CategoryDto(
     // UI theming - hex color string (e.g., "#4CAF50")
     // Backend: MenuCategory.color (already exists in Prisma schema)
     @SerializedName("color")
-    val color: String? = null
+    val color: String? = null,
+
+    // Active status - determines if category is visible in menus
+    // Backend: MenuCategory.active (toggle in dashboard)
+    @SerializedName("active")
+    val isActive: Boolean = true
 )
 
 /**
@@ -165,7 +170,14 @@ data class ModifierGroupDto(
     val displayOrder: Int,
 
     @SerializedName("modifiers")
-    val modifiers: List<ModifierDto>?
+    val modifiers: List<ModifierDto>?,
+
+    // Selection rules from dashboard
+    @SerializedName("minSelections")
+    val minSelections: Int? = null,  // Minimum selections required (null = no min, use 'required' for at least 1)
+
+    @SerializedName("maxSelections")
+    val maxSelections: Int? = null   // Maximum selections allowed (null = no limit)
 )
 
 /**

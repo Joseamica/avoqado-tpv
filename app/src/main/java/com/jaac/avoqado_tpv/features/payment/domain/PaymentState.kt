@@ -228,6 +228,45 @@ sealed class PaymentState {
         val rating: Int?           // null = skipped, 1-5 = rated
     ) : PaymentState()
 
+    /**
+     * 🥝 KIOSK CASH CONFIRMATION: Awaiting staff to confirm cash received.
+     *
+     * **Purpose (McDonald's/Cinépolis Pattern):**
+     * In kiosk mode, cash payments are NOT recorded until a staff member
+     * confirms they actually received the money. This prevents walk-away fraud
+     * where customer selects cash, order is marked paid, but customer leaves
+     * without paying.
+     *
+     * **Flow:**
+     * 1. Customer selects "Efectivo" in kiosk
+     * 2. System shows "Espera al empleado" screen (this state)
+     * 3. Receipt auto-prints with amount owed
+     * 4. Staff enters PIN to confirm cash received
+     * 5. ONLY THEN payment is recorded to backend
+     * 6. Success screen shown
+     *
+     * **Timeout:**
+     * After 3 minutes without confirmation, order can be cancelled.
+     *
+     * @param subtotal Original payment amount
+     * @param tipAmount Tip amount (usually 0 for kiosk)
+     * @param totalAmount subtotal + tip
+     * @param rating Customer rating (usually null for kiosk)
+     * @param orderId Order ID (for order payment)
+     * @param orderNumber Display order number
+     * @param orderItems Items in the order (for receipt printing)
+     */
+    data class AwaitingCashConfirmation(
+        val subtotal: String,
+        val tipAmount: String,
+        val totalAmount: String,
+        val rating: Int?,
+        val orderId: String?,
+        val orderNumber: String?,
+        val orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null,
+        val printerWarning: String? = null  // 🖨️ Warning message if printer has issues (no paper, etc.)
+    ) : PaymentState()
+
     // Legacy: Kept for backward compatibility (redirects to EnteringAmount)
     data object Idle : PaymentState()
 

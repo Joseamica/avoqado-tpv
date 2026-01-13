@@ -16,6 +16,7 @@ import com.jaac.avoqado_tpv.features.serialized_sale.domain.repository.Serialize
 import java.math.BigDecimal
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Implementation of SerializedSaleRepository.
@@ -53,6 +54,8 @@ class SerializedSaleRepositoryImpl @Inject constructor(
                 Log.e(TAG, "Scan failed: ${response.code()} - $error")
                 Result.failure(Exception("Scan failed: $error"))
             }
+        } catch (e: CancellationException) {
+            throw e // Must re-throw to allow coroutine cancellation
         } catch (e: Exception) {
             Log.e(TAG, "Scan error", e)
             Result.failure(e)
@@ -87,6 +90,8 @@ class SerializedSaleRepositoryImpl @Inject constructor(
                 Log.e(TAG, "Categories fetch failed: ${response.code()} - $error")
                 Result.failure(Exception("Failed to fetch categories: $error"))
             }
+        } catch (e: CancellationException) {
+            throw e // Must re-throw to allow coroutine cancellation
         } catch (e: Exception) {
             Log.e(TAG, "Categories error", e)
             Result.failure(e)
@@ -132,20 +137,19 @@ class SerializedSaleRepositoryImpl @Inject constructor(
                 val errorBody = response.errorBody()?.string() ?: "Unknown error"
                 Log.e(TAG, "Quick sell failed: ${response.code()} - $errorBody")
 
-                // Parse permission errors for better UX
-                val userMessage = when {
-                    response.code() == 403 && errorBody.contains("Permission") -> {
-                        "No tienes permiso para vender. Contacta al administrador."
-                    }
-                    response.code() == 401 -> {
-                        "Sesión expirada. Por favor inicia sesión de nuevo."
-                    }
-                    else -> {
-                        "Error al procesar venta: ${response.code()}"
-                    }
+                // Parse errors for better UX
+                val userMessage = when (response.code()) {
+                    401 -> "Sesión expirada. Por favor inicia sesión de nuevo."
+                    403 -> "No tienes permiso para vender. Contacta al administrador."
+                    409 -> "Este artículo ya fue vendido por otro usuario."
+                    422 -> "Datos inválidos. Verifica el precio y categoría."
+                    in 500..599 -> "Error del servidor. Intenta de nuevo en unos momentos."
+                    else -> "Error de conexión (${response.code()}). Verifica tu red."
                 }
                 Result.failure(Exception(userMessage))
             }
+        } catch (e: CancellationException) {
+            throw e // Must re-throw to allow coroutine cancellation
         } catch (e: Exception) {
             Log.e(TAG, "Quick sell error", e)
             Result.failure(e)
@@ -180,6 +184,8 @@ class SerializedSaleRepositoryImpl @Inject constructor(
                 Log.e(TAG, "Register batch failed: ${response.code()} - $error")
                 Result.failure(Exception("Registration failed: $error"))
             }
+        } catch (e: CancellationException) {
+            throw e // Must re-throw to allow coroutine cancellation
         } catch (e: Exception) {
             Log.e(TAG, "Register batch error", e)
             Result.failure(e)
@@ -198,7 +204,7 @@ class SerializedSaleRepositoryImpl @Inject constructor(
         return when (status) {
             "available" -> {
                 val item = itemDto?.let { mapItem(it) }
-                    ?: throw IllegalStateException("Item missing for available status")
+                    ?: throw IllegalStateException("Error del servidor. Intenta escanear de nuevo.")
                 val category = categoryDto?.let { mapCategory(it) }
                 ScanResult.Available(
                     item = item,
@@ -208,7 +214,7 @@ class SerializedSaleRepositoryImpl @Inject constructor(
             }
             "already_sold" -> {
                 val item = itemDto?.let { mapItem(it) }
-                    ?: throw IllegalStateException("Item missing for already_sold status")
+                    ?: throw IllegalStateException("Error del servidor. Intenta escanear de nuevo.")
                 ScanResult.AlreadySold(
                     item = item,
                     soldAt = item.soldAt

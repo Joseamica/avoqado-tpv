@@ -48,7 +48,11 @@ data class Product(
     // Category color for visual distinction (Square/Toast pattern)
     // Used to render subtle left border in ProductCard
     // If null, auto-generated from categoryId
-    val categoryColor: String? = null
+    val categoryColor: String? = null,
+
+    // Category active status (from dashboard toggle)
+    // Used to filter out inactive categories when extracting from products
+    val categoryIsActive: Boolean = true
 ) {
     /**
      * Convenience property: Formatted price for UI
@@ -92,7 +96,8 @@ data class ProductCategory(
     val displayOrder: Int,
     val productCount: Int,
     val emoji: String = "",
-    val color: String? = null  // Hex color (e.g., "#4CAF50") or null for auto-color
+    val color: String? = null,  // Hex color (e.g., "#4CAF50") or null for auto-color
+    val isActive: Boolean = true  // Active status from dashboard toggle
 ) {
     /**
      * Get the effective color for this category.
@@ -108,7 +113,8 @@ data class ProductCategory(
             displayOrder = 0,
             productCount = 0,
             emoji = "🍽️",
-            color = null  // No border for "All" category
+            color = null,  // No border for "All" category
+            isActive = true
         )
     }
 }
@@ -184,6 +190,16 @@ enum class ModifierType {
 
 /**
  * Modifier group (e.g., "Término", "Extras", "Guarnición")
+ *
+ * Selection rules:
+ * - required: If true, at least 1 selection is required
+ * - minSelections: Minimum selections required (overrides required if set)
+ * - maxSelections: Maximum selections allowed (null = unlimited)
+ *
+ * Examples:
+ * - Término (single choice, required): minSelections=1, maxSelections=1
+ * - Extras (multiple choice, optional): minSelections=null, maxSelections=null
+ * - Toppings (multiple choice, pick 2-3): minSelections=2, maxSelections=3
  */
 data class ModifierGroup(
     val id: String,
@@ -191,8 +207,22 @@ data class ModifierGroup(
     val modifiers: List<ProductModifier>,
     val type: ModifierType,
     val required: Boolean = false,
-    val displayOrder: Int = 0
-)
+    val displayOrder: Int = 0,
+    val minSelections: Int? = null,  // null = use 'required' logic (0 or 1)
+    val maxSelections: Int? = null   // null = unlimited
+) {
+    /**
+     * Effective minimum selections considering both 'required' and 'minSelections'
+     */
+    val effectiveMinSelections: Int
+        get() = minSelections ?: if (required) 1 else 0
+
+    /**
+     * Effective maximum selections (null = unlimited)
+     */
+    val effectiveMaxSelections: Int?
+        get() = maxSelections
+}
 
 /**
  * Mock product data for rapid UI development

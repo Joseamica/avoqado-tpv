@@ -818,11 +818,13 @@ class MenuViewModel @Inject constructor(
             withContext(Dispatchers.IO) {
                 val cachedProducts = productDao.getAllProducts(venueId).toDomain()
                 val cachedCategories = productCategoryDao.getAllCategories(venueId).toCategoryDomain()
+                // Filter only active categories for display
+                val activeCachedCategories = cachedCategories.filter { it.isActive }
 
                 if (cachedProducts.isNotEmpty()) {
                     _products.value = cachedProducts
-                    _categories.value = listOf(com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory.ALL) + cachedCategories
-                    Timber.i("⚡ [Cache Hit] Loaded ${cachedProducts.size} products from cache (~10ms)")
+                    _categories.value = listOf(com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory.ALL) + activeCachedCategories
+                    Timber.i("⚡ [Cache Hit] Loaded ${cachedProducts.size} products, ${activeCachedCategories.size} active categories from cache (~10ms)")
 
                     // 🔍 DEBUG: Log inventory for each product
                     Timber.i("═══════════════════════════════════════════════════════════")
@@ -866,14 +868,17 @@ class MenuViewModel @Inject constructor(
                 }
             )
 
-            // Fetch categories from backend
+            // Fetch categories from backend (filter out inactive categories)
             productRepository.getCategories(venueId).fold(
                 onSuccess = { freshCategories ->
+                    // Filter only active categories for display
+                    val activeCategories = freshCategories.filter { it.isActive }
                     withContext(Dispatchers.IO) {
+                        // Cache all categories (active and inactive) for potential admin use
                         productCategoryDao.upsertCategories(freshCategories.toCategoryEntities(venueId, cachedAt))
                     }
-                    _categories.value = listOf(com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory.ALL) + freshCategories
-                    Timber.i("✅ [Backend] Loaded ${freshCategories.size} categories and updated cache")
+                    _categories.value = listOf(com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory.ALL) + activeCategories
+                    Timber.i("✅ [Backend] Loaded ${freshCategories.size} categories (${activeCategories.size} active) and updated cache")
                 },
                 onFailure = { error ->
                     Timber.e(error, "❌ [Backend] Failed to load categories (using cached data)")

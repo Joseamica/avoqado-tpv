@@ -53,6 +53,11 @@ data class ProductCategoryEntity(
     @ColumnInfo(name = "color")
     val color: String? = null,
 
+    // Active status - determines if category is visible in menus
+    // Categories can be deactivated from dashboard toggle
+    @ColumnInfo(name = "is_active", defaultValue = "1")
+    val isActive: Boolean = true,
+
     @ColumnInfo(name = "cached_at")
     val cachedAt: Long  // Unix timestamp (for TTL expiration)
 )

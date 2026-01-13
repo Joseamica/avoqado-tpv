@@ -89,7 +89,9 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_10_11, // 💰 Split payments (paidAmount/remainingBalance tracking)
                 AvoqadoDatabase.MIGRATION_11_12, // 🔀 Split type restriction (lastSplitType)
                 AvoqadoDatabase.MIGRATION_12_13, // 🎨 Color fields for products/categories
-                AvoqadoDatabase.MIGRATION_13_14  // 📸 Step 4 verification queue (photos + barcodes)
+                AvoqadoDatabase.MIGRATION_13_14, // 📸 Step 4 verification queue (photos + barcodes)
+                AvoqadoDatabase.MIGRATION_14_15, // 🚫 Filter inactive categories (isActive field in ProductCategory)
+                AvoqadoDatabase.MIGRATION_15_16  // 🚫 Category active status in products (categoryIsActive field)
             )
 
             // ⚠️ DEVELOPMENT ONLY: Destructive migration (data loss on schema change)

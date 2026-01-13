@@ -12,11 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import com.jaac.avoqado_tpv.features.authentication.presentation.components.PinDisplay
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material3.Button
@@ -43,60 +39,31 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
+import com.jaac.avoqado_tpv.features.authentication.presentation.components.PinDisplay
+import com.jaac.avoqado_tpv.features.kiosk.domain.model.KIOSK_ASSIGNABLE_ROLES
+import com.jaac.avoqado_tpv.features.kiosk.domain.model.KioskStaffSession
 import dagger.hilt.android.EntryPointAccessors
-import dagger.hilt.EntryPoint
-import dagger.hilt.InstallIn
-import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
 /**
- * EntryPoint for accessing AuthRepository in KioskAdminPinDialog
- */
-@EntryPoint
-@InstallIn(SingletonComponent::class)
-interface KioskAdminPinEntryPoint {
-    fun authRepository(): com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
-    fun secureStorage(): com.jaac.avoqado_tpv.core.data.local.SecureStorage
-}
-
-/**
- * Roles authorized to access admin mode in kiosk
- */
-private val KIOSK_ADMIN_AUTHORIZED_ROLES = setOf(
-    StaffRole.SUPERADMIN,
-    StaffRole.OWNER,
-    StaffRole.ADMIN,
-    StaffRole.MANAGER
-)
-
-/**
- * Authenticated staff info passed to admin bottom sheet
- */
-data class KioskAdminAuth(
-    val staffId: String,
-    val staffName: String,
-    val role: StaffRole
-)
-
-/**
- * Kiosk Admin PIN Dialog
+ * Kiosk Staff Assign Dialog
  *
- * Dialog for staff to authenticate and access admin mode within kiosk.
- * Similar to KioskExitPinDialog but on success shows admin options instead of exiting.
+ * Dialog for staff to enter their PIN and assign themselves to the kiosk.
+ * Used for sales attribution (commissions/tips).
  *
  * @param onDismiss Callback when dialog is dismissed
- * @param onAuthSuccess Callback with staff auth info when successfully authenticated
+ * @param onStaffAssigned Callback with staff session when successfully assigned
  */
 @Composable
-fun KioskAdminPinDialog(
+fun KioskStaffAssignDialog(
     onDismiss: () -> Unit,
-    onAuthSuccess: (KioskAdminAuth) -> Unit
+    onStaffAssigned: (KioskStaffSession) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // Get dependencies
+    // Get dependencies via EntryPoint (same pattern as KioskAdminPinDialog)
     val entryPoint = remember {
         EntryPointAccessors.fromApplication(
             context.applicationContext,
@@ -105,45 +72,37 @@ fun KioskAdminPinDialog(
     }
     val authRepository = remember { entryPoint.authRepository() }
     val secureStorage = remember { entryPoint.secureStorage() }
-    // 🥝 KIOSK: Prioritize kioskVenueId (configured separately for kiosk mode)
     val venueId = remember { secureStorage.getKioskVenueId() ?: secureStorage.getVenueId() ?: "" }
 
     var pin by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    Timber.d("🥝 [KIOSK-ADMIN] Admin PIN dialog opened")
+    Timber.d("🥝 [KIOSK-STAFF] Staff assign dialog opened")
 
-    Dialog(
-        onDismissRequest = {
-            Timber.d("🥝 [KIOSK-ADMIN] Admin PIN dialog dismissed via outside click")
-            onDismiss()
-        },
-        properties = androidx.compose.ui.window.DialogProperties(
-            usePlatformDefaultWidth = false // Allow custom width beyond platform defaults
-        )
-    ) {
+    Dialog(onDismissRequest = {
+        Timber.d("🥝 [KIOSK-STAFF] Assign dialog dismissed via outside click")
+        onDismiss()
+    }) {
         Card(
             modifier = Modifier
-                .fillMaxWidth(0.95f) // Occupy most of the screen width
-                .padding(vertical = 16.dp),
+                .fillMaxWidth()
+                .padding(16.dp),
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.surface
             ),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-            shape = RoundedCornerShape(24.dp)
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
                     .padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // Title
                 Text(
-                    text = "Modo Administrador",
-                    style = MaterialTheme.typography.headlineSmall, // Consistent with other dialog
+                    text = "Asignar Empleado",
+                    style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
 
@@ -151,13 +110,13 @@ fun KioskAdminPinDialog(
 
                 Text(
                     text = "Ingresa tu PIN",
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                // PIN display (matches LoginScreen design)
+                // PIN display
                 PinDisplay(
                     pin = pin,
                     maxLength = 10,
@@ -168,21 +127,19 @@ fun KioskAdminPinDialog(
 
                 // Number pad
                 Column(
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Row 1-3
+                    // Rows 1-3
                     listOf(
                         listOf("1", "2", "3"),
                         listOf("4", "5", "6"),
                         listOf("7", "8", "9")
                     ).forEach { row ->
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             row.forEach { digit ->
-                                AdminNumberButton(
+                                StaffNumberButton(
                                     text = digit,
                                     onClick = {
                                         if (pin.length < 10) {
@@ -197,11 +154,9 @@ fun KioskAdminPinDialog(
 
                     // Row 4: Clear, 0, Backspace
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Clear button
-                        AdminNumberButton(
+                        StaffNumberButton(
                             text = "C",
                             onClick = {
                                 pin = ""
@@ -209,8 +164,7 @@ fun KioskAdminPinDialog(
                             }
                         )
 
-                        // 0
-                        AdminNumberButton(
+                        StaffNumberButton(
                             text = "0",
                             onClick = {
                                 if (pin.length < 10) {
@@ -223,7 +177,7 @@ fun KioskAdminPinDialog(
                         // Backspace
                         Box(
                             modifier = Modifier
-                                .size(72.dp) // Consistent with other dialog
+                                .size(64.dp)
                                 .clip(CircleShape)
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
                                 .clickable {
@@ -254,36 +208,31 @@ fun KioskAdminPinDialog(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(32.dp))
+                Spacer(modifier = Modifier.height(24.dp))
 
                 // Action buttons
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    horizontalArrangement = Arrangement.End
                 ) {
-                    androidx.compose.material3.OutlinedButton(
-                        onClick = {
-                            Timber.d("🥝 [KIOSK-ADMIN] Admin PIN dialog canceled")
-                            onDismiss()
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(56.dp),
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)
-                    ) {
-                        Text("Cancelar", fontWeight = FontWeight.Bold)
+                    TextButton(onClick = {
+                        Timber.d("🥝 [KIOSK-STAFF] Assign dialog canceled")
+                        onDismiss()
+                    }) {
+                        Text("Cancelar")
                     }
+
+                    Spacer(modifier = Modifier.width(8.dp))
 
                     Button(
                         onClick = {
                             if (pin.length >= 4) {
-                                Timber.i("🥝 [KIOSK-ADMIN] PIN submitted (${pin.length} digits) - validating...")
+                                Timber.i("🥝 [KIOSK-STAFF] PIN submitted (${pin.length} digits) - validating...")
                                 isLoading = true
                                 errorMessage = null
 
                                 scope.launch {
                                     try {
-                                        // Validate PIN against backend
                                         val result = authRepository.loginWithPin(pin, venueId)
 
                                         when (result) {
@@ -291,25 +240,24 @@ fun KioskAdminPinDialog(
                                                 val response = result.data
                                                 val role = response.role
 
-                                                // Check if role is authorized for admin mode
-                                                if (role in KIOSK_ADMIN_AUTHORIZED_ROLES) {
-                                                    Timber.i("🥝 [KIOSK-ADMIN] Admin access authorized for role: $role")
+                                                // Check if role can be assigned to kiosk
+                                                if (role in KIOSK_ASSIGNABLE_ROLES) {
+                                                    Timber.i("🥝 [KIOSK-STAFF] Staff assigned: ${response.staff.displayName} ($role)")
 
-                                                    // Pass auth info to callback
-                                                    val adminAuth = KioskAdminAuth(
+                                                    val session = KioskStaffSession(
                                                         staffId = response.staffId,
                                                         staffName = response.staff.displayName,
+                                                        staffInitials = KioskStaffSession.generateInitials(response.staff.displayName),
                                                         role = role
                                                     )
-                                                    onAuthSuccess(adminAuth)
+                                                    onStaffAssigned(session)
                                                 } else {
-                                                    Timber.w("🥝 [KIOSK-ADMIN] Admin access denied - role $role not authorized")
-                                                    errorMessage = "Tu rol no tiene permiso de administrador"
+                                                    Timber.w("🥝 [KIOSK-STAFF] Role $role cannot be assigned to kiosk")
+                                                    errorMessage = "Tu rol no puede asignarse al kiosk"
                                                 }
                                             }
                                             is Result.Error -> {
-                                                Timber.e(result.exception, "🥝 [KIOSK-ADMIN] PIN validation failed")
-                                                // Check error type to show appropriate message
+                                                Timber.e(result.exception, "🥝 [KIOSK-STAFF] PIN validation failed")
                                                 val errorMsg = result.exception.message ?: ""
                                                 errorMessage = when {
                                                     errorMsg.contains("502") ||
@@ -319,14 +267,12 @@ fun KioskAdminPinDialog(
                                                     errorMsg.contains("network", ignoreCase = true) ||
                                                     errorMsg.contains("connection", ignoreCase = true) ->
                                                         "Sin conexión a internet"
-                                                    errorMsg.contains("401") || errorMsg.contains("403") ->
-                                                        "PIN incorrecto"
                                                     else -> "PIN incorrecto"
                                                 }
                                             }
                                         }
                                     } catch (e: Exception) {
-                                        Timber.e(e, "🥝 [KIOSK-ADMIN] Error validating PIN")
+                                        Timber.e(e, "🥝 [KIOSK-STAFF] Error validating PIN")
                                         errorMessage = "Sin conexión a internet"
                                     } finally {
                                         isLoading = false
@@ -335,24 +281,16 @@ fun KioskAdminPinDialog(
                             }
                         },
                         enabled = pin.length >= 4 && !isLoading,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(56.dp),
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)
+                        modifier = Modifier.width(100.dp)
                     ) {
                         if (isLoading) {
                             CircularProgressIndicator(
-                                modifier = Modifier.size(24.dp),
+                                modifier = Modifier.size(20.dp),
                                 strokeWidth = 2.dp,
                                 color = MaterialTheme.colorScheme.onPrimary
                             )
                         } else {
-                            Text(
-                                "Acceder",
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Visible
-                            )
+                            Text("Asignar")
                         }
                     }
                 }
@@ -362,13 +300,13 @@ fun KioskAdminPinDialog(
 }
 
 @Composable
-private fun AdminNumberButton(
+private fun StaffNumberButton(
     text: String,
     onClick: () -> Unit
 ) {
     Box(
         modifier = Modifier
-            .size(72.dp) // Consistent with other dialog
+            .size(64.dp)
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .clickable(onClick = onClick),

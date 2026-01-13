@@ -1387,6 +1387,121 @@ class PrinterManager @Inject constructor(
     }
 
     /**
+     * 🥝 KIOSK CASH: Print cash confirmation receipt for staff
+     *
+     * Prints a receipt showing the amount the customer owes in cash.
+     * Staff uses this receipt to verify they received the correct amount.
+     *
+     * **Receipt Layout:**
+     * ```
+     * ================================
+     *    PAGO EN EFECTIVO
+     * ================================
+     *
+     * Orden #123456
+     * Fecha: 12/01/2026  14:30:00
+     *
+     * ================================
+     *   MONTO A COBRAR:
+     *      $150.00 MXN
+     * ================================
+     *
+     * Propina: $15.00 MXN
+     *
+     * ENTREGUE ESTE RECIBO AL
+     * EMPLEADO JUNTO CON EL DINERO
+     *
+     * ================================
+     * ```
+     *
+     * @param totalAmount Total amount to collect (formatted, e.g. "150.00")
+     * @param tipAmount Optional tip amount (formatted)
+     * @param orderNumber Optional order number for reference
+     * @return Result.success if printed, Result.failure if error
+     */
+    fun printCashConfirmationReceipt(
+        totalAmount: String,
+        tipAmount: String? = null,
+        orderNumber: String? = null
+    ): Result<Unit> {
+        return try {
+            val printerInstance = printer ?: return Result.failure(
+                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+            )
+
+            Timber.i("🖨️ [Printer] Printing kiosk cash confirmation receipt")
+
+            // Reset printer state
+            printerInstance.init()
+
+            // ========================================
+            // HEADER - Cash Payment Notice
+            // ========================================
+            printerInstance.printStr("\n", null)
+            printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("     PAGO EN EFECTIVO\n", null)
+            printerInstance.printStr("================================\n\n", null)
+
+            // Order number (if available)
+            if (!orderNumber.isNullOrBlank()) {
+                // Show only last 6 digits if order number is long
+                val displayOrderNumber = if (orderNumber.length > 6) {
+                    orderNumber.takeLast(6)
+                } else {
+                    orderNumber
+                }
+                printerInstance.printStr("Orden #$displayOrderNumber\n", null)
+            }
+
+            // Timestamp
+            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", java.util.Locale("es", "MX"))
+            val currentDateTime = dateFormat.format(java.util.Date())
+            printerInstance.printStr("Fecha: $currentDateTime\n\n", null)
+
+            // ========================================
+            // AMOUNT TO COLLECT (Large & Bold)
+            // ========================================
+            val amountValue = totalAmount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+            val tipValue = tipAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+
+            printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("    MONTO A COBRAR:\n", null)
+            printerInstance.printStr("\n", null)
+            printerInstance.printStr("    \$${amountValue.setScale(2, java.math.RoundingMode.HALF_UP)} MXN\n", null)
+            printerInstance.printStr("\n", null)
+            printerInstance.printStr("================================\n\n", null)
+
+            // Show tip if present
+            if (tipValue > java.math.BigDecimal.ZERO) {
+                printerInstance.printStr("Propina incluida: \$${tipValue.setScale(2, java.math.RoundingMode.HALF_UP)} MXN\n\n", null)
+            }
+
+            // ========================================
+            // INSTRUCTIONS FOR CUSTOMER
+            // ========================================
+            printerInstance.printStr("--------------------------------\n", null)
+            printerInstance.printStr("  ENTREGUE ESTE RECIBO AL\n", null)
+            printerInstance.printStr(" EMPLEADO JUNTO CON EL DINERO\n", null)
+            printerInstance.printStr("--------------------------------\n", null)
+            printerInstance.printStr("\n\n\n", null) // Feed paper
+
+            // Execute print
+            val result = printerInstance.start()
+
+            if (result == 0) {
+                Timber.i("✅ [Printer] Cash confirmation receipt printed successfully")
+                Result.success(Unit)
+            } else {
+                Timber.e("❌ [Printer] Print failed with code: $result")
+                Result.failure(Exception("Error al imprimir recibo (código: $result)"))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Printer] Failed to print cash confirmation receipt")
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Check if printer is available and ready.
      *
      * @return true if printer is available, false otherwise
@@ -1407,4 +1522,116 @@ class PrinterManager @Inject constructor(
             else -> "Impresora lista"
         }
     }
+
+    /**
+     * 🖨️ Check detailed printer status including paper level.
+     *
+     * PAX IPrinter.getStatus() return codes:
+     * - 0: OK / Ready
+     * - 1: Busy
+     * - 2: Out of paper
+     * - 3: Format print data error
+     * - 4: Voltage too low
+     * - 8: Paper almost running out (low paper)
+     * - 9: Printer head too hot
+     *
+     * @return PrinterStatusResult with status code and human-readable message
+     */
+    fun checkPrinterStatus(): PrinterStatusResult {
+        val printerInstance = printer
+        if (printerInstance == null) {
+            return PrinterStatusResult(
+                code = -1,
+                isReady = false,
+                hasPaper = false,
+                message = "Impresora no disponible"
+            )
+        }
+
+        return try {
+            val statusCode = printerInstance.getStatus()
+            Timber.d("🖨️ [Printer] Status code: $statusCode")
+
+            when (statusCode) {
+                0 -> PrinterStatusResult(
+                    code = 0,
+                    isReady = true,
+                    hasPaper = true,
+                    message = "Impresora lista"
+                )
+                1 -> PrinterStatusResult(
+                    code = 1,
+                    isReady = false,
+                    hasPaper = true,
+                    message = "Impresora ocupada"
+                )
+                2 -> PrinterStatusResult(
+                    code = 2,
+                    isReady = false,
+                    hasPaper = false,
+                    message = "Sin papel"
+                )
+                3 -> PrinterStatusResult(
+                    code = 3,
+                    isReady = false,
+                    hasPaper = true,
+                    message = "Error de formato"
+                )
+                4 -> PrinterStatusResult(
+                    code = 4,
+                    isReady = false,
+                    hasPaper = true,
+                    message = "Voltaje bajo"
+                )
+                8 -> PrinterStatusResult(
+                    code = 8,
+                    isReady = true,
+                    hasPaper = true,
+                    isPaperLow = true,
+                    message = "Papel bajo"
+                )
+                9 -> PrinterStatusResult(
+                    code = 9,
+                    isReady = false,
+                    hasPaper = true,
+                    message = "Cabezal caliente"
+                )
+                else -> PrinterStatusResult(
+                    code = statusCode,
+                    isReady = false,
+                    hasPaper = true,
+                    message = "Error desconocido ($statusCode)"
+                )
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Printer] Failed to get status")
+            PrinterStatusResult(
+                code = -1,
+                isReady = false,
+                hasPaper = false,
+                message = "Error al verificar: ${e.message}"
+            )
+        }
+    }
+
+    /**
+     * Quick check if printer has paper and is ready to print.
+     *
+     * @return true if printer is ready and has paper, false otherwise
+     */
+    fun canPrint(): Boolean {
+        val status = checkPrinterStatus()
+        return status.isReady && status.hasPaper
+    }
 }
+
+/**
+ * Result of printer status check.
+ */
+data class PrinterStatusResult(
+    val code: Int,
+    val isReady: Boolean,
+    val hasPaper: Boolean,
+    val isPaperLow: Boolean = false,
+    val message: String
+)

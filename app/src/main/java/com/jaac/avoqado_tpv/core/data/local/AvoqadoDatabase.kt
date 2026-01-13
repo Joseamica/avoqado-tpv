@@ -40,6 +40,8 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
  * - v11 → v12: Added lastSplitType for split payment type restriction (2025-11-28)
  * - v12 → v13: Added color fields to ProductCategoryEntity and ProductEntity (2025-12-01)
  * - v13 → v14: Added VerificationQueueEntity for Step 4 sale verification queue (2025-12-11)
+ * - v14 → v15: Added isActive to ProductCategoryEntity (filter inactive categories - 2025-01-13)
+ * - v15 → v16: Added categoryIsActive to ProductEntity (category status in product cache - 2025-01-13)
  *
  * **Entities:**
  * - PendingPaymentEntity: Offline queue for failed payment recordings
@@ -92,7 +94,7 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
         CachedShiftEntity::class,
         VerificationQueueEntity::class
     ],
-    version = 14, // ⭐ Version 14: Added VerificationQueueEntity for Step 4 sale verification
+    version = 16, // ⭐ Version 16: Added categoryIsActive to ProductEntity (category status in product cache)
     exportSchema = false // Set to true when adding migrations for production
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -953,6 +955,65 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                 // Create index for sync status queries (find pending items)
                 database.execSQL(
                     "CREATE INDEX IF NOT EXISTS index_verification_queue_syncStatus ON verification_queue(syncStatus)"
+                )
+            }
+        }
+
+        /**
+         * Migration from version 14 to version 15: Add isActive column to product_categories.
+         *
+         * **Filter Inactive Categories (2025-01-13)**
+         * - Adds is_active column to product_categories table
+         * - Allows filtering out categories that have been deactivated from the dashboard
+         * - Default value: 1 (true) for backward compatibility with existing cached data
+         *
+         * **Why This Migration:**
+         * - Bug fix: Inactive categories (toggle off in dashboard) were still appearing in Kiosk/Menu
+         * - Backend sends isActive field in category response
+         * - TPV now filters categories by isActive before displaying
+         *
+         * **Affected Screens:**
+         * - KioskScreen: Categories filtered by isActive in KioskViewModel
+         * - MenuScreen: Categories filtered by isActive in MenuViewModel
+         *
+         * **SQL:**
+         * ```sql
+         * ALTER TABLE product_categories ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1;
+         * ```
+         */
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Add is_active column (default 1 = true for backward compatibility)
+                database.execSQL(
+                    "ALTER TABLE product_categories ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"
+                )
+            }
+        }
+
+        /**
+         * Migration from version 15 to version 16: Add categoryIsActive column to products.
+         *
+         * **Category Active Status in Product Cache (2025-01-13)**
+         * - Adds category_is_active column to products table
+         * - Enables filtering inactive categories when extracting from cached products
+         * - Default value: 1 (true) for backward compatibility with existing cached data
+         *
+         * **Why This Migration:**
+         * - Bug fix: Inactive categories were still appearing because getCategories() extracts
+         *   categories from products, but the Product domain model didn't have categoryIsActive
+         * - Now Product.categoryIsActive carries the category's active status from the API
+         * - ProductRepositoryImpl.getCategories() uses this field when building ProductCategory
+         *
+         * **SQL:**
+         * ```sql
+         * ALTER TABLE products ADD COLUMN category_is_active INTEGER NOT NULL DEFAULT 1;
+         * ```
+         */
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Add category_is_active column (default 1 = true for backward compatibility)
+                database.execSQL(
+                    "ALTER TABLE products ADD COLUMN category_is_active INTEGER NOT NULL DEFAULT 1"
                 )
             }
         }

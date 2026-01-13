@@ -521,9 +521,9 @@ fun KioskSuccessScreen(
                     .fillMaxWidth()
                     .padding(16.dp)
             ) {
-                // Header
+                // Header - Show only last 6 digits for cleaner display
                 Text(
-                    text = "Orden #$orderNumber",
+                    text = "Orden #${orderNumber.takeLast(6)}",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(bottom = 16.dp)

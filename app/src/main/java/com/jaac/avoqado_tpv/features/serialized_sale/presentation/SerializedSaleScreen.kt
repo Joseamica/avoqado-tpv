@@ -23,6 +23,10 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.CategoryWithStock
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
@@ -462,13 +466,29 @@ private fun ScanResultCard(
                 HorizontalDivider()
                 Spacer(modifier = Modifier.height(Spacing.Space2))
                 if (scanResult.soldAt != null) {
+                    val formattedDate = formatSoldAtDate(scanResult.soldAt)
                     Text(
-                        text = "Vendido: ${scanResult.soldAt}",
+                        text = "Vendido: $formattedDate",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
             }
         }
+    }
+}
+
+/**
+ * Format ISO timestamp to localized date/time with fallback to raw string
+ */
+private fun formatSoldAtDate(isoTimestamp: String): String {
+    return try {
+        val instant = Instant.parse(isoTimestamp)
+        DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT)
+            .withZone(ZoneId.systemDefault())
+            .format(instant)
+    } catch (e: Exception) {
+        // Fallback to raw string if parsing fails
+        isoTimestamp
     }
 }
 

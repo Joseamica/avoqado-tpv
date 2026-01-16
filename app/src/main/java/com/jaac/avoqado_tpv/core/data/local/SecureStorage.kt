@@ -80,6 +80,8 @@ class SecureStorage @Inject constructor(
 
         // Terminal activation keys
         private const val KEY_SERIAL_NUMBER = "serial_number"
+        private const val KEY_TERMINAL_ID = "terminal_id"  // Server-assigned terminal ID
+        private const val KEY_VENUE_TIMEZONE = "venue_timezone"  // Venue timezone for datetime display
 
         // TPV Settings keys (configurable payment flow screens)
         private const val KEY_TPV_SHOW_REVIEW = "tpv_show_review"
@@ -685,6 +687,42 @@ class SecureStorage @Inject constructor(
      */
     fun isTerminalActivated(): Boolean {
         return getSerialNumber() != null
+    }
+
+    /**
+     * Save terminal ID (server-assigned CUID)
+     * Set during activation (code or remote)
+     * @param terminalId Server-assigned terminal ID
+     */
+    fun saveTerminalId(terminalId: String) {
+        encryptedPrefs.edit().putString(KEY_TERMINAL_ID, terminalId).apply()
+        Timber.d("Terminal ID saved securely")
+    }
+
+    /**
+     * Get terminal ID
+     * @return Terminal ID or null if not activated
+     */
+    fun getTerminalId(): String? {
+        return encryptedPrefs.getString(KEY_TERMINAL_ID, null)
+    }
+
+    /**
+     * Save venue timezone
+     * Used for displaying dates/times in venue's local timezone
+     * @param timezone IANA timezone string (e.g., "America/Mexico_City")
+     */
+    fun saveVenueTimezone(timezone: String) {
+        encryptedPrefs.edit().putString(KEY_VENUE_TIMEZONE, timezone).apply()
+        Timber.d("Venue timezone saved: $timezone")
+    }
+
+    /**
+     * Get venue timezone
+     * @return IANA timezone string or null if not set
+     */
+    fun getVenueTimezone(): String? {
+        return encryptedPrefs.getString(KEY_VENUE_TIMEZONE, null)
     }
 
     // ========== Utility Methods ==========

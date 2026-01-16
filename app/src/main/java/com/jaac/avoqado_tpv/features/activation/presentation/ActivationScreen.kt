@@ -4,10 +4,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -52,6 +55,7 @@ fun ActivationScreen(
     errorMessage: String? = null,
     configErrorMessage: String? = null,
     onRetryConfig: (() -> Unit)? = null,
+    onOpenQrScanner: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var activationCode by remember { mutableStateOf("") }
@@ -129,7 +133,37 @@ fun ActivationScreen(
                 modifier = Modifier.padding(horizontal = 16.dp)
             )
 
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // QR Scanner Button - Small circular button above serial number
+            if (onOpenQrScanner != null) {
+                IconButton(
+                    onClick = onOpenQrScanner,
+                    enabled = !isLoading,
+                    modifier = Modifier
+                        .size(48.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.QrCodeScanner,
+                                contentDescription = "Escanear código QR",
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+            }
 
             // Device Serial Number - Pill shaped card
             Card(
@@ -265,7 +299,8 @@ private fun ActivationScreenIdlePreview() {
             serialNumber = "AVQD-1A2B3C4D5E6F",
             onActivate = {},
             isLoading = false,
-            errorMessage = null
+            errorMessage = null,
+            onOpenQrScanner = {}
         )
     }
 }

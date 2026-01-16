@@ -106,6 +106,7 @@ class CommandExecutor @Inject constructor(
             TpvCommandType.MAINTENANCE_MODE -> executeMaintenanceMode(command.payload, command.requestedByName)
             TpvCommandType.EXIT_MAINTENANCE -> executeExitMaintenance()
             TpvCommandType.REACTIVATE -> executeReactivate()
+            TpvCommandType.REMOTE_ACTIVATE -> executeRemoteActivate(command.payload)
 
             // App Lifecycle Commands
             TpvCommandType.RESTART -> executeRestart()
@@ -238,6 +239,90 @@ class CommandExecutor @Inject constructor(
         // TODO: Implement reactivation logic when terminal status management is added
         // This would clear any disabled state and refresh authentication
         return CommandResult.success("Terminal reactivated successfully")
+    }
+
+    /**
+     * REMOTE_ACTIVATE - Remote activation by SUPERADMIN
+     *
+     * This command activates a pre-registered terminal without using an activation code.
+     * The terminal must have been pre-registered in the dashboard and must have sent
+     * at least one heartbeat (proof of physical device).
+     *
+     * Flow:
+     * 1. SUPERADMIN pre-registers terminal in dashboard (creates Terminal record)
+     * 2. Physical terminal starts up and sends heartbeat (with serial number)
+     * 3. SUPERADMIN sends REMOTE_ACTIVATE command from dashboard
+     * 4. Terminal receives command via pending commands in heartbeat response
+     * 5. Terminal activates itself using the venue info in the payload
+     *
+     * @param payload Contains: venueId, venueName, venueSlug, venueTimezone,
+     *                         terminalId, terminalName, serialNumber
+     */
+    private suspend fun executeRemoteActivate(payload: Map<String, Any>?): CommandResult {
+        Timber.w("⚡ [$TAG] Executing REMOTE_ACTIVATE command")
+
+        if (payload.isNullOrEmpty()) {
+            return CommandResult.rejected("No activation data provided")
+        }
+
+        // Extract venue info from payload
+        val venueId = payload["venueId"] as? String
+        val venueName = payload["venueName"] as? String
+        val venueSlug = payload["venueSlug"] as? String
+        val venueTimezone = payload["venueTimezone"] as? String
+        val terminalId = payload["terminalId"] as? String
+        val terminalName = payload["terminalName"] as? String
+        val serialNumber = payload["serialNumber"] as? String
+
+        // Validate required fields
+        if (venueId.isNullOrEmpty() || venueName.isNullOrEmpty() || venueSlug.isNullOrEmpty()) {
+            Timber.e("❌ [$TAG] Missing required venue info in REMOTE_ACTIVATE payload")
+            return CommandResult.rejected("Missing required venue info (venueId, venueName, venueSlug)")
+        }
+
+        if (terminalId.isNullOrEmpty() || serialNumber.isNullOrEmpty()) {
+            Timber.e("❌ [$TAG] Missing terminal info in REMOTE_ACTIVATE payload")
+            return CommandResult.rejected("Missing terminal info (terminalId, serialNumber)")
+        }
+
+        try {
+            // Save activation data to secure storage
+            secureStorage.saveVenueId(venueId)
+            secureStorage.saveVenueName(venueName)
+            secureStorage.saveVenueSlug(venueSlug)
+            secureStorage.saveSerialNumber(serialNumber)
+
+            // Save terminal ID if available
+            if (!terminalId.isNullOrEmpty()) {
+                secureStorage.saveTerminalId(terminalId)
+            }
+
+            // Save timezone if available
+            if (!venueTimezone.isNullOrEmpty()) {
+                secureStorage.saveVenueTimezone(venueTimezone)
+            }
+
+            Timber.i("✅ [$TAG] Terminal remotely activated successfully")
+            Timber.i("   📍 Venue: $venueName ($venueSlug)")
+            Timber.i("   🔢 Serial: $serialNumber")
+            Timber.i("   🆔 Terminal ID: $terminalId")
+
+            return CommandResult.success(
+                message = "Terminal activated remotely by SUPERADMIN",
+                data = mapOf(
+                    "venueId" to venueId,
+                    "venueName" to venueName,
+                    "venueSlug" to venueSlug,
+                    "terminalId" to terminalId,
+                    "serialNumber" to serialNumber,
+                    "activatedAt" to Instant.now().toString(),
+                    "activationType" to "REMOTE"
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [$TAG] Failed to save activation data")
+            return CommandResult.failed("Failed to save activation data: ${e.message}")
+        }
     }
 
     // ========================================

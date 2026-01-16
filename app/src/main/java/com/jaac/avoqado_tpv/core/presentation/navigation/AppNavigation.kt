@@ -436,10 +436,13 @@ fun AppNavigation(
             )
         }
 
-        // Activation Screen - Enter 6-char activation code
+        // Activation Screen - Enter 6-char activation code or scan QR
         composable(NavRoute.Activation.route) {
             val viewModel: ActivationViewModel = hiltViewModel()
             val state by viewModel.state.collectAsStateWithLifecycle()
+
+            // 📱 QR Scanner state
+            var showQrScanner by remember { mutableStateOf(false) }
 
             // Navigate to Login after successful activation or auto-detected activation
             LaunchedEffect(state) {
@@ -468,15 +471,31 @@ fun AppNavigation(
                 }
             }
 
-            // Render UI
-            ActivationScreen(
-                serialNumber = viewModel.serialNumber,
-                onActivate = viewModel::activate,
-                isLoading = state is ActivationState.Loading,
-                errorMessage = (state as? ActivationState.Error)?.message,
-                configErrorMessage = (state as? ActivationState.ConfigError)?.message,
-                onRetryConfig = if (state is ActivationState.ConfigError) viewModel::retryConfigFetch else null
-            )
+            // 📱 Show dedicated QR Scanner for activation
+            if (showQrScanner) {
+                com.jaac.avoqado_tpv.features.activation.presentation.components.ActivationQrScannerScreen(
+                    onQrScanned = { qrData ->
+                        Timber.d("📱 [Activation] QR scanned: $qrData")
+                        // Parse QR data and extract activation code
+                        viewModel.processQrActivation(qrData)
+                        showQrScanner = false
+                    },
+                    onClose = {
+                        showQrScanner = false
+                    }
+                )
+            } else {
+                // Render UI
+                ActivationScreen(
+                    serialNumber = viewModel.serialNumber,
+                    onActivate = viewModel::activate,
+                    isLoading = state is ActivationState.Loading,
+                    errorMessage = (state as? ActivationState.Error)?.message,
+                    configErrorMessage = (state as? ActivationState.ConfigError)?.message,
+                    onRetryConfig = if (state is ActivationState.ConfigError) viewModel::retryConfigFetch else null,
+                    onOpenQrScanner = { showQrScanner = true }
+                )
+            }
         }
 
         // Login Screen - PIN authentication

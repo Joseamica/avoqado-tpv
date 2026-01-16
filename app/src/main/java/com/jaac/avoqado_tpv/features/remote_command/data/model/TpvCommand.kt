@@ -25,12 +25,13 @@ data class TpvCommand(
  * @see avoqado-server/prisma/schema.prisma:TpvCommandType
  */
 enum class TpvCommandType {
-    // Device State (5)
+    // Device State (6)
     LOCK,
     UNLOCK,
     MAINTENANCE_MODE,
     EXIT_MAINTENANCE,
     REACTIVATE,
+    REMOTE_ACTIVATE,  // Remote activation by SUPERADMIN (pre-registered terminal)
 
     // App Lifecycle (4)
     RESTART,

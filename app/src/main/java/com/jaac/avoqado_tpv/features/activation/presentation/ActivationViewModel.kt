@@ -158,6 +158,90 @@ class ActivationViewModel @Inject constructor(
     }
 
     /**
+     * Process QR code scanned from dashboard activation dialog
+     *
+     * Supports TWO QR data formats:
+     *
+     * **Simplified format (recommended - smaller QR, easier to scan):**
+     * {
+     *   "t": "a",           // type: "a" = avoqado_activation (shortened)
+     *   "c": "A3F9K2"       // code: activation code
+     * }
+     *
+     * **Legacy format (backward compatible):**
+     * {
+     *   "type": "avoqado_activation",
+     *   "code": "A3F9K2",
+     *   "venueId": "uuid",
+     *   "venueName": "Venue Name",
+     *   "serialNumber": "AVQD-...",
+     *   "expiresAt": "2025-01-20T..."
+     * }
+     *
+     * @param qrData Raw QR code data string
+     */
+    fun processQrActivation(qrData: String) {
+        Timber.d("📱 [Activation] Processing QR data: $qrData")
+
+        try {
+            // Parse JSON
+            val jsonObject = com.google.gson.JsonParser.parseString(qrData).asJsonObject
+
+            // Validate type - support both "t":"a" (simplified) and "type":"avoqado_activation" (legacy)
+            val typeShort = jsonObject.get("t")?.asString
+            val typeLong = jsonObject.get("type")?.asString
+
+            val isValidType = typeShort == "a" || typeLong == "avoqado_activation"
+            if (!isValidType) {
+                Timber.w("📱 [Activation] Invalid QR type: t=$typeShort, type=$typeLong")
+                _state.value = ActivationState.Error(
+                    message = "Código QR inválido. Escanee un código de activación de Avoqado."
+                )
+                return
+            }
+
+            // Extract activation code - support both "c" (simplified) and "code" (legacy)
+            val activationCode = jsonObject.get("c")?.asString
+                ?: jsonObject.get("code")?.asString
+            if (activationCode.isNullOrBlank()) {
+                Timber.w("📱 [Activation] QR missing activation code")
+                _state.value = ActivationState.Error(
+                    message = "El código QR no contiene un código de activación válido."
+                )
+                return
+            }
+
+            // Optional: Validate serial number matches (if present in QR - only in legacy format)
+            val qrSerialNumber = jsonObject.get("serialNumber")?.asString
+            if (!qrSerialNumber.isNullOrBlank() && qrSerialNumber != serialNumber) {
+                Timber.w("📱 [Activation] Serial number mismatch: QR=$qrSerialNumber, Device=$serialNumber")
+                _state.value = ActivationState.Error(
+                    message = "Este código QR es para otro terminal.\n\n" +
+                            "QR: $qrSerialNumber\n" +
+                            "Este dispositivo: $serialNumber"
+                )
+                return
+            }
+
+            Timber.i("📱 [Activation] QR validated - activating with code: $activationCode")
+
+            // Proceed with activation using extracted code
+            activate(activationCode)
+
+        } catch (e: com.google.gson.JsonSyntaxException) {
+            Timber.e(e, "📱 [Activation] Failed to parse QR JSON")
+            _state.value = ActivationState.Error(
+                message = "El código QR no tiene el formato esperado. Intente con la entrada manual."
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "📱 [Activation] Error processing QR")
+            _state.value = ActivationState.Error(
+                message = "Error al procesar el código QR: ${e.message}"
+            )
+        }
+    }
+
+    /**
      * Check if terminal is already activated on backend
      *
      * **Auto-Retry Pattern:**

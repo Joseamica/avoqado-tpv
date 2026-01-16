@@ -80,6 +80,10 @@ class ConnectionViewModel @Inject constructor(
     // ══════════════════════════════════════════════════════════════════════
 
     init {
+        // Send immediate heartbeat when app starts/restarts
+        // This ensures dashboard knows terminal is back online quickly after RESTART command
+        // The startMonitoring() function calls checkConnection() BEFORE any delay
+        Timber.i("🚀 [Connection] ViewModel initialized - sending immediate heartbeat")
         startMonitoring()
     }
 

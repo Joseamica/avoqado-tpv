@@ -128,6 +128,7 @@ fun PaymentScreen(
     val currentMerchant by viewModel.currentMerchant.collectAsStateWithLifecycle()
     val merchantSwitchingLoading by viewModel.merchantSwitchingLoading.collectAsStateWithLifecycle()
     val merchantSwitchMessage by viewModel.merchantSwitchMessage.collectAsStateWithLifecycle()
+    val hideKioskMerchantSelector by viewModel.hideKioskMerchantSelector.collectAsStateWithLifecycle()  // 🥝 Hide merchant list in kiosk mode
     val tpvSettings by viewModel.tpvSettings.collectAsStateWithLifecycle()
     val pinEntryState by viewModel.pinEntryState.collectAsStateWithLifecycle()  // PIN asterisks feedback
     val isPinDialogVisible by viewModel.isPinDialogVisible.collectAsStateWithLifecycle()  // PIN dialog visibility
@@ -404,7 +405,9 @@ fun PaymentScreen(
                             viewModel.goBackOneStep()
                         },
                         // 🥝 KIOSK MODE: Cash is enabled (customers may want to pay in cash)
-                        showCashOption = true
+                        showCashOption = true,
+                        // 🥝 KIOSK MODE: Hide merchant selector when admin pre-configured a default merchant
+                        hideAccountSelector = hideKioskMerchantSelector
                     )
                 }
 

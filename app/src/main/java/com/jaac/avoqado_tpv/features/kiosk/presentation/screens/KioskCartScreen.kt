@@ -109,10 +109,9 @@ fun KioskCartScreen(
     // Customer dialog state
     var showCustomerDialog by remember { mutableStateOf(false) }
 
-    // 🔧 FIX: Use ViewModel's order state instead of local remember
-    // This persists across navigation and prevents duplicate orders
-    val createdOrderId by viewModel.createdOrderId.collectAsStateWithLifecycle()
-    val createdOrderNumber by viewModel.createdOrderNumber.collectAsStateWithLifecycle()
+    // 🔴 CRITICAL FIX: Removed createdOrderId/createdOrderNumber observations
+    // Order is now created AFTER payment success, not before.
+    // This prevents "cuentas por cobrar" when user abandons kiosk flow.
 
     // Customer state from ViewModel
     val recentCustomers by viewModel.recentCustomers.collectAsStateWithLifecycle()
@@ -316,34 +315,25 @@ fun KioskCartScreen(
                         Button(
                             onClick = {
                                 if (isCreatingOrder) return@Button // Prevent double-click
-                                Timber.i("🥝 [KIOSK-CART] Pay Now clicked - getting/creating order (items: ${cartItems.size}, total: $cartTotal)")
-                                isCreatingOrder = true
-                                scope.launch {
-                                    try {
-                                        // 🔧 FIX: Use getOrCreateOrder() to reuse existing order if cart unchanged
-                                        // This prevents duplicate orders (cuentas por cobrar) when user goes back and returns
-                                        val orderResult = viewModel.getOrCreateOrder()
-                                        if (orderResult != null) {
-                                            val (orderId, orderNumber) = orderResult
-                                            Timber.i("🥝 [KIOSK-CART] Order ready! orderId=$orderId, orderNumber=$orderNumber, amount=\$${cartTotal.toLong()}")
+                                Timber.i("🥝 [KIOSK-CART] Pay Now clicked - showing customer dialog (items: ${cartItems.size}, total: $cartTotal)")
 
-                                            // Load recent customers for quick selection
-                                            viewModel.loadRecentCustomers()
-
-                                            // Show customer dialog
-                                            Timber.i("🥝 [KIOSK-CART] Showing customer dialog before payment")
-                                            showCustomerDialog = true
-                                        } else {
-                                            Timber.e("🥝 [KIOSK-CART] Failed to create order!")
-                                            snackbarHostState.showSnackbar(
-                                                message = "Error al crear la orden. Por favor intenta de nuevo.",
-                                                withDismissAction = true
-                                            )
-                                        }
-                                    } finally {
-                                        isCreatingOrder = false
+                                if (cartItems.isEmpty()) {
+                                    Timber.e("🥝 [KIOSK-CART] Cannot proceed - cart is empty")
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(
+                                            message = "El carrito está vacío",
+                                            withDismissAction = true
+                                        )
                                     }
+                                    return@Button
                                 }
+
+                                // 🥝 KIOSK: Show customer dialog first
+                                // Order will be created AFTER customer selection with source="KIOSK"
+                                // This marks abandoned orders so they're excluded from "cuentas por cobrar"
+                                viewModel.loadRecentCustomers()
+                                Timber.i("🥝 [KIOSK-CART] Showing customer dialog before order creation")
+                                showCustomerDialog = true
                             },
                             enabled = !isCreatingOrder,
                             modifier = Modifier
@@ -435,14 +425,12 @@ fun KioskCartScreen(
         )
     }
 
-    // Customer Dialog (shown after order creation, before payment)
-    // 🔧 FIX: Use ViewModel's order state (createdOrderId) instead of local pendingOrderId
-    if (showCustomerDialog && createdOrderId != null && createdOrderNumber != null) {
-        // 🔧 FIX: Always use current cartTotal for amount (not cached pendingAmount)
-        // This ensures amount is correct even if user went back and modified cart
+    // Customer Dialog (shown BEFORE payment)
+    // 🥝 FIX: Order is created HERE with source="KIOSK" so abandoned orders are excluded from "cuentas por cobrar"
+    if (showCustomerDialog) {
         val currentAmountPesos = cartTotal.toLong()
 
-        Timber.d("🥝 [KIOSK-CART] Showing Customer Dialog (orderId=$createdOrderId, amount=$currentAmountPesos)")
+        Timber.d("🥝 [KIOSK-CART] Showing Customer Dialog (amount=$currentAmountPesos)")
         KioskCustomerDialog(
             recentCustomers = recentCustomers,
             searchResults = customerSearchResults,
@@ -454,44 +442,107 @@ fun KioskCartScreen(
             },
             onCustomerSelected = { customer ->
                 Timber.i("🥝 [KIOSK-CART] Customer selected: ${customer.displayName} (id=${customer.id})")
-                viewModel.addCustomerToCurrentOrder(customer) { success ->
-                    if (success) {
-                        Timber.i("🥝 [KIOSK-CART] Customer assigned to order, proceeding to payment")
+                showCustomerDialog = false
+                isCreatingOrder = true
+
+                // 🥝 Create order FIRST with source="KIOSK", then add customer
+                scope.launch {
+                    val orderResult = viewModel.getOrCreateOrder()
+                    if (orderResult != null) {
+                        val (orderId, orderNumber) = orderResult
+                        Timber.i("🥝 [KIOSK-CART] Order created: $orderId ($orderNumber) - adding customer")
+
+                        // Add customer to order
+                        viewModel.addCustomerToCurrentOrder(customer) { success ->
+                            if (success) {
+                                Timber.i("🥝 [KIOSK-CART] Customer added to order - navigating to payment")
+                            } else {
+                                Timber.w("🥝 [KIOSK-CART] Failed to add customer (non-critical) - proceeding anyway")
+                            }
+                            viewModel.clearCustomerState()
+                            isCreatingOrder = false
+                            onPayNow(orderId, currentAmountPesos, orderNumber)
+                        }
                     } else {
-                        Timber.w("🥝 [KIOSK-CART] Failed to assign customer, proceeding anyway")
+                        Timber.e("🥝 [KIOSK-CART] Failed to create order!")
+                        viewModel.clearCustomerState()
+                        isCreatingOrder = false
+                        scope.launch {
+                            snackbarHostState.showSnackbar(
+                                message = "Error al crear la orden. Por favor intenta de nuevo.",
+                                withDismissAction = true
+                            )
+                        }
                     }
-                    showCustomerDialog = false
-                    viewModel.clearCustomerState()
-                    // 🔧 FIX: Use current cartTotal for amount
-                    onPayNow(createdOrderId!!, currentAmountPesos, createdOrderNumber!!)
                 }
             },
             onCreateCustomer = { name, email ->
                 Timber.i("🥝 [KIOSK-CART] Creating new customer: name=$name, email=$email")
-                viewModel.createAndAddCustomerToOrder(name, email) { success ->
-                    if (success) {
-                        Timber.i("🥝 [KIOSK-CART] Customer created and assigned, proceeding to payment")
+                showCustomerDialog = false
+                isCreatingOrder = true
+
+                // 🥝 Create order FIRST with source="KIOSK", then create customer and add
+                scope.launch {
+                    val orderResult = viewModel.getOrCreateOrder()
+                    if (orderResult != null) {
+                        val (orderId, orderNumber) = orderResult
+                        Timber.i("🥝 [KIOSK-CART] Order created: $orderId ($orderNumber) - creating customer")
+
+                        // Create customer and add to order
+                        viewModel.createAndAddCustomerToOrder(name, email) { success ->
+                            if (success) {
+                                Timber.i("🥝 [KIOSK-CART] Customer created and added - navigating to payment")
+                            } else {
+                                Timber.w("🥝 [KIOSK-CART] Failed to create/add customer (non-critical) - proceeding anyway")
+                            }
+                            viewModel.clearCustomerState()
+                            isCreatingOrder = false
+                            onPayNow(orderId, currentAmountPesos, orderNumber)
+                        }
                     } else {
-                        Timber.w("🥝 [KIOSK-CART] Failed to create customer, proceeding anyway")
+                        Timber.e("🥝 [KIOSK-CART] Failed to create order!")
+                        viewModel.clearCustomerState()
+                        isCreatingOrder = false
+                        scope.launch {
+                            snackbarHostState.showSnackbar(
+                                message = "Error al crear la orden. Por favor intenta de nuevo.",
+                                withDismissAction = true
+                            )
+                        }
                     }
-                    showCustomerDialog = false
-                    viewModel.clearCustomerState()
-                    // 🔧 FIX: Use current cartTotal for amount
-                    onPayNow(createdOrderId!!, currentAmountPesos, createdOrderNumber!!)
                 }
             },
             onSkip = {
-                Timber.i("🥝 [KIOSK-CART] Customer skipped, proceeding to payment without customer")
+                Timber.i("🥝 [KIOSK-CART] Customer skipped - creating order without customer")
                 showCustomerDialog = false
-                viewModel.clearCustomerState()
-                // 🔧 FIX: Use current cartTotal for amount
-                onPayNow(createdOrderId!!, currentAmountPesos, createdOrderNumber!!)
+                isCreatingOrder = true
+
+                // 🥝 Create order with source="KIOSK" (no customer)
+                scope.launch {
+                    val orderResult = viewModel.getOrCreateOrder()
+                    if (orderResult != null) {
+                        val (orderId, orderNumber) = orderResult
+                        Timber.i("🥝 [KIOSK-CART] Order created: $orderId ($orderNumber) - navigating to payment")
+                        viewModel.clearCustomerState()
+                        isCreatingOrder = false
+                        onPayNow(orderId, currentAmountPesos, orderNumber)
+                    } else {
+                        Timber.e("🥝 [KIOSK-CART] Failed to create order!")
+                        viewModel.clearCustomerState()
+                        isCreatingOrder = false
+                        scope.launch {
+                            snackbarHostState.showSnackbar(
+                                message = "Error al crear la orden. Por favor intenta de nuevo.",
+                                withDismissAction = true
+                            )
+                        }
+                    }
+                }
             },
             onDismiss = {
                 Timber.d("🥝 [KIOSK-CART] Customer dialog dismissed")
                 showCustomerDialog = false
                 viewModel.clearCustomerState()
-                // Note: Order still exists in ViewModel, will be reused on next "Pay Now" click
             }
         )
     }

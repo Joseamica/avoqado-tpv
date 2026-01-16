@@ -43,6 +43,7 @@ interface KioskNavigationEntryPoint {
     fun kioskModeManager(): com.jaac.avoqado_tpv.core.data.manager.KioskModeManager
     fun secureStorage(): com.jaac.avoqado_tpv.core.data.local.SecureStorage
     fun shiftRepository(): com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
+    // Note: SDK pre-initialization moved to KioskViewModel for proper state management
 }
 
 /**
@@ -86,6 +87,7 @@ fun KioskNavigation(
     val kioskModeManager = remember { entryPoint.kioskModeManager() }
     val secureStorage = remember { entryPoint.secureStorage() }
     val shiftRepository = remember { entryPoint.shiftRepository() }
+    // Note: SDK pre-initialization is handled by KioskViewModel (see initializeBlumonSDK())
 
     // Create ViewModel scoped to this navigation graph - shared between all kiosk screens
     val kioskViewModel: KioskViewModel = hiltViewModel()
@@ -104,6 +106,8 @@ fun KioskNavigation(
     var adminAuth by remember { mutableStateOf<KioskAdminAuth?>(null) }
 
     // Check shift status periodically
+    // Note: SDK pre-initialization is handled by KioskViewModel.initializeBlumonSDK()
+    // which runs when the ViewModel is created and manages isBlumonInitializing/isBlumonReady states
     LaunchedEffect(Unit) {
         val venueId = secureStorage.getKioskVenueId() ?: secureStorage.getVenueId() ?: ""
         val isShiftSystemEnabled = secureStorage.isShiftSystemEnabled()

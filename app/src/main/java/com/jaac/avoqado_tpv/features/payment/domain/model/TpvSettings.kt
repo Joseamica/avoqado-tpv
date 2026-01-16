@@ -26,6 +26,8 @@ package com.jaac.avoqado_tpv.features.payment.domain.model
  *                              If enabled, staff on break or not clocked in cannot log in.
  * @param kioskModeEnabled Whether this terminal can enter self-service kiosk mode.
  *                         Controlled from dashboard settings.
+ * @param kioskDefaultMerchantId Default merchant account ID for kiosk payments.
+ *                               Skips merchant selection in kiosk mode if set.
  */
 data class TpvSettings(
     val showReviewScreen: Boolean = true,
@@ -46,7 +48,9 @@ data class TpvSettings(
     // Session security: require active clock-in to access system
     val requireClockInToLogin: Boolean = false,
     // Kiosk Mode: allows terminal to enter self-service mode (controlled from dashboard)
-    val kioskModeEnabled: Boolean = false
+    val kioskModeEnabled: Boolean = false,
+    // Kiosk Default Merchant: auto-select this merchant in kiosk payment flow
+    val kioskDefaultMerchantId: String? = null
 ) {
     companion object {
         /**

@@ -2,6 +2,10 @@ package com.jaac.avoqado_tpv.core.presentation.screens
 
 import android.content.Context
 import android.content.Intent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -9,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material.icons.Icons
@@ -24,8 +29,16 @@ import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.RestartAlt
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -132,6 +145,12 @@ fun WelcomeScreen(
     val maintenanceInitiatedBy by viewModel.maintenanceManager.initiatedBy.collectAsStateWithLifecycle()
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // BLUMON SDK INITIALIZATION STATE
+    // ═══════════════════════════════════════════════════════════════════════════
+    val isBlumonInitializing by viewModel.isBlumonInitializing.collectAsStateWithLifecycle()
+    val blumonInitError by viewModel.blumonInitError.collectAsStateWithLifecycle()
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // VENUE STATUS (for mid-session detection)
     // ═══════════════════════════════════════════════════════════════════════════
     val venueStatus by viewModel.venueStatus.collectAsStateWithLifecycle()
@@ -192,6 +211,77 @@ fun WelcomeScreen(
             onLogout()
         }
     )
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BLUMON SDK INITIALIZATION OVERLAY
+    // Shows loader while SDK initializes, blocks user from proceeding to payment
+    // ═══════════════════════════════════════════════════════════════════════════
+    if (isBlumonInitializing || blumonInitError != null) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.7f))
+                .clickable(enabled = false) { /* Block clicks */ },
+            contentAlignment = Alignment.Center
+        ) {
+            Card(
+                modifier = Modifier
+                    .padding(32.dp)
+                    .fillMaxWidth(0.85f),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(24.dp)
+                        .fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    if (isBlumonInitializing) {
+                        // Loading state
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(48.dp),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Preparando sistema de pagos...",
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = "Espere un momento mientras se configura el terminal",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                    } else if (blumonInitError != null) {
+                        // Error state
+                        Text(
+                            text = "⚠️ Error de Inicialización",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = blumonInitError!!,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Button(
+                            onClick = { viewModel.retryBlumonInit() },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Reintentar")
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // INITIAL SYNC LOADING OVERLAY

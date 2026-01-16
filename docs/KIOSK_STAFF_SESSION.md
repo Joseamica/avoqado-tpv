@@ -90,18 +90,30 @@ processedById = kioskStaffSession?.staffId  // null si no hay staff
 
 ```kotlin
 // Cash SIEMPRE pide PIN (confirma recepción de dinero físico)
-// El staffId viene del PIN del momento, NO de la sesión
-processedById = cashPinStaffId
+// Pero la atribución (comisión/propina) va al staff de SESIÓN si existe
+// Si no hay sesión, entonces sí va al staff del PIN
+
+// En confirmCashPayment:
+val effectiveStaffId = if (isKioskPayment && !kioskStaffId.isNullOrBlank()) {
+    kioskStaffId!!  // Sesión → comisión/propina
+} else {
+    confirmedByStaffId ?: currentStaffId!!  // PIN staff si no hay sesión
+}
 ```
 
 ### Tabla de Comportamiento
 
-| Staff Session | Método | processedById | Comisión |
-|---------------|--------|---------------|----------|
+| Staff Session | Método | processedById (comisión) | PIN requerido |
+|---------------|--------|--------------------------|---------------|
 | ❌ Sin asignar | Card | `null` | ❌ No |
-| ❌ Sin asignar | Cash | PIN del momento | ✅ Sí |
-| ✅ Asignado | Card | Session staffId | ✅ Sí |
-| ✅ Asignado | Cash | PIN del momento | ✅ Sí |
+| ❌ Sin asignar | Cash | Staff del PIN | ✅ Sí |
+| ✅ Asignado | Card | Session staffId | ❌ No |
+| ✅ Asignado | Cash | Session staffId | ✅ Sí (solo confirma recepción) |
+
+**Nota importante sobre Cash:**
+- PIN siempre es requerido para confirmar que alguien recibió el efectivo
+- Pero la **comisión/propina** va al usuario de **sesión** (si existe)
+- Si no hay sesión iniciada, entonces el staff del PIN recibe la atribución
 
 ---
 

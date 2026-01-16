@@ -136,26 +136,17 @@ fun KioskAdminPinDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(24.dp),
+                    .padding(20.dp),  // Reduced padding
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Title
+                // Title removed to fit buttons on small screens
                 Text(
-                    text = "Modo Administrador",
-                    style = MaterialTheme.typography.headlineSmall, // Consistent with other dialog
+                    text = "Ingresa tu PIN",
+                    style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Text(
-                    text = "Ingresa tu PIN",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
                 // PIN display (matches LoginScreen design)
                 PinDisplay(
@@ -164,11 +155,11 @@ fun KioskAdminPinDialog(
                     isError = errorMessage != null
                 )
 
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
                 // Number pad
                 Column(
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     // Row 1-3
@@ -178,7 +169,7 @@ fun KioskAdminPinDialog(
                         listOf("7", "8", "9")
                     ).forEach { row ->
                         Row(
-                            horizontalArrangement = Arrangement.spacedBy(16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             row.forEach { digit ->
@@ -197,7 +188,7 @@ fun KioskAdminPinDialog(
 
                     // Row 4: Clear, 0, Backspace
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         // Clear button
@@ -223,7 +214,7 @@ fun KioskAdminPinDialog(
                         // Backspace
                         Box(
                             modifier = Modifier
-                                .size(72.dp) // Consistent with other dialog
+                                .size(64.dp) // Consistent with other dialog
                                 .clip(CircleShape)
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
                                 .clickable {
@@ -254,7 +245,7 @@ fun KioskAdminPinDialog(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(32.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
                 // Action buttons
                 Row(
@@ -268,7 +259,7 @@ fun KioskAdminPinDialog(
                         },
                         modifier = Modifier
                             .weight(1f)
-                            .height(56.dp),
+                            .height(48.dp),
                         shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)
                     ) {
                         Text("Cancelar", fontWeight = FontWeight.Bold)
@@ -337,7 +328,7 @@ fun KioskAdminPinDialog(
                         enabled = pin.length >= 4 && !isLoading,
                         modifier = Modifier
                             .weight(1f)
-                            .height(56.dp),
+                            .height(48.dp),
                         shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)
                     ) {
                         if (isLoading) {
@@ -368,7 +359,7 @@ private fun AdminNumberButton(
 ) {
     Box(
         modifier = Modifier
-            .size(72.dp) // Consistent with other dialog
+            .size(64.dp) // Consistent with other dialog
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.surfaceVariant)
             .clickable(onClick = onClick),

@@ -77,6 +77,8 @@ interface OrderRepository {
      * @param waiterId Waiter who created order
      * @param orderType DINE_IN, TAKEOUT, etc.
      * @param skipCaching If true, skip caching order to local DB (used by OrderSyncCoordinator)
+     * @param source Order source: "TPV" for regular, "KIOSK" for self-service.
+     *               KIOSK orders are excluded from pay-later lists when abandoned.
      * @return Result with created Order
      *
      * Backend: POST /tpv/venues/{venueId}/orders
@@ -87,7 +89,8 @@ interface OrderRepository {
         covers: Int,
         waiterId: String?,
         orderType: OrderType,
-        skipCaching: Boolean = false
+        skipCaching: Boolean = false,
+        source: String = "TPV"
     ): Result<Order>
 
     /**

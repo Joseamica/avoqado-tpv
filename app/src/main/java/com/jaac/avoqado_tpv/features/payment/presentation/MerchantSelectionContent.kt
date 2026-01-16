@@ -49,7 +49,8 @@ fun MerchantSelectionContent(
     onStartPayment: () -> Unit,
     onStartCashPayment: () -> Unit,
     onNavigateBack: (() -> Unit)? = null,
-    showCashOption: Boolean = true,  // 🥝 Hide cash button in kiosk mode (self-service = card only)
+    showCashOption: Boolean = true,  // 🥝 Show/hide cash button
+    hideAccountSelector: Boolean = false,  // 🥝 KIOSK: Hide merchant list when default is pre-configured
 
 ) {
     Box(modifier = modifier.fillMaxSize()) {
@@ -79,9 +80,11 @@ fun MerchantSelectionContent(
                     verticalArrangement = Arrangement.spacedBy(sizes.spacingMedium),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    val isSingleMerchant = merchants.size <= 1
+                    // 🥝 KIOSK: When hideAccountSelector=true, show simplified UI (no merchant list)
+                    // This is used in kiosk mode when admin has pre-configured a default merchant
+                    val showSimplifiedView = merchants.size <= 1 || hideAccountSelector
 
-                    if (isSingleMerchant) {
+                    if (showSimplifiedView) {
                         // ✅ SINGLE MERCHANT: Modern fintech-style payment card
                         // 2025 UI trend: Single visual unit, inline details, minimal labels
 

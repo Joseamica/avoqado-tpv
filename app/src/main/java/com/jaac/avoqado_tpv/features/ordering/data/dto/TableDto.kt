@@ -140,12 +140,16 @@ data class TableDto(
  *
  * Request body for creating a new order.
  * Backend generates orderId (CUID) and orderNumber (sequential).
+ *
+ * @param source Order source: "TPV" for regular terminal, "KIOSK" for self-service.
+ *               KIOSK orders are excluded from pay-later/open orders lists when abandoned.
  */
 data class CreateOrderRequest(
     @SerializedName("tableId") val tableId: String? = null,
     @SerializedName("covers") val covers: Int = 1,
     @SerializedName("waiterId") val waiterId: String? = null,
-    @SerializedName("orderType") val orderType: String = "TAKEOUT"  // "DINE_IN" or "TAKEOUT"
+    @SerializedName("orderType") val orderType: String = "TAKEOUT",  // "DINE_IN" or "TAKEOUT"
+    @SerializedName("source") val source: String = "TPV"  // "TPV", "KIOSK", "QR", "WEB", etc.
 )
 
 /**

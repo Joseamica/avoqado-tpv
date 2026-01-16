@@ -6,8 +6,11 @@ import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.manager.KioskModeManager
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
+import com.jaac.avoqado_tpv.features.payment.data.MultiMerchantSDKManager
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
+import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
+import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
@@ -33,7 +36,9 @@ class SettingsViewModel @Inject constructor(
     private val printerManager: PrinterManager,
     private val shiftRepository: ShiftRepository,
     private val kioskModeManager: KioskModeManager,
-    private val permissionsRepository: PermissionsRepository
+    private val permissionsRepository: PermissionsRepository,
+    private val merchantRepository: MerchantRepository,
+    private val multiMerchantSDKManager: MultiMerchantSDKManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsState())
@@ -43,6 +48,7 @@ class SettingsViewModel @Inject constructor(
         loadSettings()
         observeTpvSettings()
         observeKioskMode()
+        observeMerchants()
     }
 
     /**
@@ -63,6 +69,18 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             kioskModeManager.isKioskMode.collect { isKiosk ->
                 _state.update { it.copy(isKioskModeEnabled = isKiosk) }
+            }
+        }
+    }
+
+    /**
+     * Observe merchant accounts for kiosk default merchant dropdown
+     */
+    private fun observeMerchants() {
+        viewModelScope.launch {
+            merchantRepository.getActiveMerchants().collect { merchants ->
+                _state.update { it.copy(merchants = merchants) }
+                Timber.d("⚙️ [SETTINGS] Loaded ${merchants.size} merchants for kiosk dropdown")
             }
         }
     }
@@ -328,17 +346,69 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
-     * Internal function to activate kiosk mode after validation passes
+     * Internal function to activate kiosk mode after validation passes.
+     *
+     * **CRITICAL: Pre-initialize Blumon SDK with default merchant**
+     *
+     * When entering kiosk mode, if a default merchant is configured (kioskDefaultMerchantId),
+     * we pre-initialize the Blumon SDK with that merchant BEFORE entering kiosk mode.
+     *
+     * This prevents the 30+ second SDK switch delay when the kiosk tries to make a payment.
+     * Without pre-initialization, the SDK switch happens at payment time, which:
+     * - Takes ~30 seconds (OAuth + key download + re-init)
+     * - Can fail with error 699 if timeout occurs
+     * - Creates a poor customer experience
+     *
+     * **Flow:**
+     * 1. Get kioskDefaultMerchantId from TpvSettings
+     * 2. Find matching MerchantAccount from the list
+     * 3. Call MultiMerchantSDKManager.switchMerchant() (takes 3-5 seconds)
+     * 4. Enter kiosk mode (UI ready, SDK already initialized)
+     *
+     * If SDK initialization fails, we still enter kiosk mode but show a warning.
+     * The payment flow will attempt to switch again if needed.
      */
     private fun activateKioskMode(venueId: String?) {
-        kioskModeManager.enterKioskMode(venueId ?: "")
-        _state.update {
-            it.copy(
-                isSaving = false,
-                message = "Modo kiosko activado"
-            )
+        viewModelScope.launch {
+            val tpvSettings = _state.value.tpvSettings
+            val defaultMerchantId = tpvSettings.kioskDefaultMerchantId
+            val merchants = _state.value.merchants
+
+            if (!defaultMerchantId.isNullOrEmpty()) {
+                // Find the merchant account for the configured default
+                val defaultMerchant = merchants.find { it.id == defaultMerchantId }
+
+                if (defaultMerchant != null) {
+                    Timber.i("🥝 [KIOSK] Pre-initializing Blumon SDK with default merchant: ${defaultMerchant.displayName}")
+                    _state.update { it.copy(message = "Inicializando cuenta de pago...") }
+
+                    val sdkResult = multiMerchantSDKManager.switchMerchant(defaultMerchant)
+
+                    if (sdkResult.isSuccess) {
+                        Timber.i("🥝 [KIOSK] ✅ Blumon SDK pre-initialized successfully")
+                    } else {
+                        // SDK initialization failed - log but continue with kiosk mode
+                        // The payment flow will try again if needed
+                        val error = sdkResult.exceptionOrNull()
+                        Timber.w(error, "🥝 [KIOSK] ⚠️ SDK pre-initialization failed - continuing with kiosk mode")
+                    }
+                } else {
+                    Timber.w("🥝 [KIOSK] Default merchant ID configured but merchant not found in list: $defaultMerchantId")
+                }
+            } else {
+                Timber.d("🥝 [KIOSK] No default merchant configured - SDK will initialize on first payment")
+            }
+
+            // Enter kiosk mode (regardless of SDK init result)
+            kioskModeManager.enterKioskMode(venueId ?: "")
+            _state.update {
+                it.copy(
+                    isSaving = false,
+                    message = "Modo kiosko activado"
+                )
+            }
+            Timber.i("🥝 [KIOSK] Kiosk mode ENABLED from settings (venueId: $venueId)")
         }
-        Timber.i("🥝 [KIOSK] Kiosk mode ENABLED from settings (venueId: $venueId)")
     }
 
     /**
@@ -467,6 +537,19 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
+     * Set default merchant for kiosk payments.
+     *
+     * When set, kiosk mode will skip merchant selection and use this merchant.
+     * When null, merchant selection will be shown (or first merchant used if only one).
+     *
+     * @param merchantId Merchant ID to use as default, or null to show selection
+     */
+    fun setKioskDefaultMerchant(merchantId: String?) {
+        updateSetting { it.copy(kioskDefaultMerchantId = merchantId) }
+        Timber.i("🥝 [KIOSK] Default merchant set to: ${merchantId ?: "none (show selection)"}")
+    }
+
+    /**
      * Update default tip percentage
      */
     fun setDefaultTipPercentage(percentage: Int?) {
@@ -591,6 +674,9 @@ data class SettingsState(
     // Kiosk Mode
     val isKioskModeEnabled: Boolean = false,
     val hasKioskPermission: Boolean = false,
+
+    // Merchants (for kiosk default merchant dropdown)
+    val merchants: List<MerchantAccount> = emptyList(),
 
     // Loading states
     val isRefreshing: Boolean = false,

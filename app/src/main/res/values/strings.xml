@@ -56,7 +56,7 @@
 
     <!-- Unpaid Takeout Orders Warning Banner -->
     <string name="unpaid_takeout_banner_singular">Hay 1 orden rápida sin pagar</string>
-    <string name="unpaid_takeout_banner_plural">Hay %d órdenes rápidas sin pagar</string>
+    <string name="unpaid_takeout_banner_plural">Hay %d pedidos rápidos sin pagar</string>
     <string name="unpaid_takeout_banner_action">Toca para ver</string>
     <string name="unpaid_takeout_empty_state">No hay órdenes para llevar sin pagar</string>
 

@@ -17,6 +17,8 @@ import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
 import com.jaac.avoqado_tpv.features.ordering.domain.Customer
 import com.jaac.avoqado_tpv.features.ordering.domain.CustomerRepository
 import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
+import com.jaac.avoqado_tpv.features.payment.data.MultiMerchantSDKManager
+import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.use_case.GetMerchantsUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -55,7 +57,10 @@ class KioskViewModel @Inject constructor(
     // 🔧 Blumon SDK Initialization - Required when entering Kiosk directly (bypassing HomeViewModel)
     private val initializationManager: InitializationManager,
     // 🏪 Get merchants from backend to use correct serial for SDK init
-    private val getMerchantsUseCase: GetMerchantsUseCase
+    private val getMerchantsUseCase: GetMerchantsUseCase,
+    // 🥝 Multi-merchant SDK switching - For kiosk default merchant pre-initialization
+    private val multiMerchantSDKManager: MultiMerchantSDKManager,
+    private val tpvSettingsRepository: TpvSettingsRepository
 ) : ViewModel() {
 
     // UI State
@@ -142,14 +147,16 @@ class KioskViewModel @Inject constructor(
      * **Flow:**
      * 1. Set isBlumonInitializing = true (shows loader)
      * 2. Fetch merchants from backend (to get real serial numbers)
-     * 3. Use first merchant's serial for TerminalConfig
+     * 3. Get kiosk default merchant from TpvSettings
      * 4. Initialize SDK with correct serial
-     * 5. Set isBlumonReady = true (hides loader, enables payment)
+     * 5. Switch to kiosk default merchant (OAuth + DUKPT key download)
+     * 6. Set isBlumonReady = true (hides loader, enables payment)
      *
      * Benefits:
      * - User cannot proceed to payment until SDK is ready
      * - No "NO AUTORIZADO" errors from uninitialized SDK
      * - Clear feedback to user that system is preparing
+     * - No 30+ second delay when customer taps "Pay" - SDK already switched
      */
     private fun initializeBlumonSDK() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -161,33 +168,64 @@ class KioskViewModel @Inject constructor(
 
                 // Step 1: Fetch merchants from backend to get real serial numbers
                 val merchants = getMerchantsUseCase().firstOrNull()
-                val defaultMerchant = if (merchants.isNullOrEmpty()) {
+                if (merchants.isNullOrEmpty()) {
                     Timber.w("🥝 [KIOSK-VM] No merchants found - SDK init will use default serial")
-                    null
-                } else {
-                    // Step 2: Use first merchant's serial for TerminalConfig
-                    val merchant = merchants.first()
-                    Timber.i("🥝 [KIOSK-VM] Using merchant for SDK init: ${merchant.displayName} (${merchant.serialNumber})")
-                    TerminalConfig.updateSerial(merchant.serialNumber)
-                    merchant
+                    // Still initialize basic SDK
+                    initializationManager.ensureInitialized(defaultMerchantPosId = null)
+                    _state.update { it.copy(isBlumonInitializing = false, isBlumonReady = true, blumonInitError = null) }
+                    return@launch
                 }
 
-                // Step 3: Initialize SDK with correct serial AND posId
-                // CRITICAL: Pass posId to handle app restart after merchant switch
-                // Without this, SDK database has stale posId → "NO AUTORIZADO" on first payment
-                initializationManager.ensureInitialized(defaultMerchantPosId = defaultMerchant?.posId)
-                    .onSuccess {
-                        Timber.i("🥝 [KIOSK-VM] ✅ Blumon SDK initialized successfully - ready for payments")
-                        _state.update { it.copy(isBlumonInitializing = false, isBlumonReady = true, blumonInitError = null) }
+                // Step 2: Get kiosk default merchant from TpvSettings
+                val tpvSettings = tpvSettingsRepository.getCurrentSettings()
+                val kioskDefaultMerchantId = tpvSettings.kioskDefaultMerchantId
+
+                // Step 3: Find the target merchant (kiosk default or first available)
+                val targetMerchant = if (!kioskDefaultMerchantId.isNullOrBlank()) {
+                    merchants.find { it.id == kioskDefaultMerchantId || it.merchantAccountId == kioskDefaultMerchantId }
+                        ?: merchants.first().also {
+                            Timber.w("🥝 [KIOSK-VM] Kiosk default merchant '$kioskDefaultMerchantId' not found, using first: ${it.displayName}")
+                        }
+                } else {
+                    merchants.first().also {
+                        Timber.d("🥝 [KIOSK-VM] No kiosk default merchant configured, using first: ${it.displayName}")
                     }
+                }
+
+                Timber.i("🥝 [KIOSK-VM] Target merchant for SDK init: ${targetMerchant.displayName} (${targetMerchant.serialNumber})")
+                TerminalConfig.updateSerial(targetMerchant.serialNumber)
+
+                // Step 4: Basic SDK initialization
+                initializationManager.ensureInitialized(defaultMerchantPosId = targetMerchant.posId)
                     .onFailure { error ->
-                        Timber.e(error, "🥝 [KIOSK-VM] ❌ Blumon SDK initialization failed")
+                        Timber.e(error, "🥝 [KIOSK-VM] ❌ Basic SDK initialization failed")
                         _state.update { it.copy(
                             isBlumonInitializing = false,
                             isBlumonReady = false,
                             blumonInitError = "Error al inicializar sistema de pagos. Intente reiniciar."
                         ) }
+                        return@launch
                     }
+
+                // Step 5: Switch to kiosk default merchant (OAuth + DUKPT key download)
+                // This is the CRITICAL step that takes 3-30 seconds and was previously done at payment time
+                if (multiMerchantSDKManager.isMerchantActive(targetMerchant)) {
+                    Timber.i("🥝 [KIOSK-VM] ✅ SDK already on correct merchant: ${targetMerchant.displayName}")
+                } else {
+                    Timber.i("🥝 [KIOSK-VM] Switching SDK to kiosk merchant: ${targetMerchant.displayName}...")
+                    val switchResult = multiMerchantSDKManager.switchMerchant(targetMerchant)
+
+                    if (switchResult.isFailure) {
+                        Timber.w(switchResult.exceptionOrNull(), "🥝 [KIOSK-VM] ⚠️ Merchant switch failed - payment flow will retry")
+                        // Don't fail completely - payment flow can retry
+                    } else {
+                        Timber.i("🥝 [KIOSK-VM] ✅ SDK switched to: ${targetMerchant.displayName}")
+                    }
+                }
+
+                // Step 6: Mark as ready
+                Timber.i("🥝 [KIOSK-VM] ✅ Blumon SDK initialized and ready for kiosk payments")
+                _state.update { it.copy(isBlumonInitializing = false, isBlumonReady = true, blumonInitError = null) }
 
             } catch (e: Exception) {
                 Timber.e(e, "🥝 [KIOSK-VM] ❌ Unexpected error during Blumon SDK initialization")
@@ -449,12 +487,14 @@ class KioskViewModel @Inject constructor(
             Timber.d("🥝 [KIOSK-VM] createOrder() - ${items.size} items, venueId: $venueId")
 
             // Step 1: Create empty order via backend
+            // 🥝 KIOSK source: Abandoned orders are excluded from pay-later/open orders lists
             val createResult = orderRepository.createOrder(
                 venueId = venueId,
                 tableId = null,  // TAKEOUT - no table
                 covers = 1,
                 waiterId = null,  // Self-service - no waiter
-                orderType = OrderType.TAKEOUT
+                orderType = OrderType.TAKEOUT,
+                source = "KIOSK"  // 🔑 Mark as KIOSK to exclude from "cuentas por cobrar" if abandoned
             )
 
             // Extract order from result

@@ -114,6 +114,8 @@ class SecureStorage @Inject constructor(
         private const val KEY_KIOSK_TIPS_ENABLED = "kiosk_tips_enabled"
         private const val KEY_KIOSK_REVIEW_ENABLED = "kiosk_review_enabled"
         private const val KEY_KIOSK_VERIFICATION_ENABLED = "kiosk_verification_enabled"
+        private const val KEY_TPV_KIOSK_MODE_ENABLED = "tpv_kiosk_mode_enabled"
+        private const val KEY_TPV_KIOSK_DEFAULT_MERCHANT_ID = "tpv_kiosk_default_merchant_id"
 
         // Module cache keys
         private const val KEY_CACHED_MODULES = "cached_modules"
@@ -837,8 +839,15 @@ class SecureStorage @Inject constructor(
             putBoolean(KEY_TPV_REQUIRE_CLOCK_OUT_PHOTO, settings.requireClockOutPhoto)
             // Session security: require active clock-in to access system
             putBoolean(KEY_TPV_REQUIRE_CLOCK_IN_TO_LOGIN, settings.requireClockInToLogin)
+            // Kiosk mode settings
+            putBoolean(KEY_TPV_KIOSK_MODE_ENABLED, settings.kioskModeEnabled)
+            if (settings.kioskDefaultMerchantId != null) {
+                putString(KEY_TPV_KIOSK_DEFAULT_MERCHANT_ID, settings.kioskDefaultMerchantId)
+            } else {
+                remove(KEY_TPV_KIOSK_DEFAULT_MERCHANT_ID)
+            }
         }.apply()
-        Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, showVerification=${settings.showVerificationScreen}, enableShifts=${settings.enableShifts}, requireClockInPhoto=${settings.requireClockInPhoto}, requireClockOutPhoto=${settings.requireClockOutPhoto}, requireClockInToLogin=${settings.requireClockInToLogin}")
+        Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, showVerification=${settings.showVerificationScreen}, enableShifts=${settings.enableShifts}, kioskEnabled=${settings.kioskModeEnabled}, kioskMerchant=${settings.kioskDefaultMerchantId}")
     }
 
     /**
@@ -880,7 +889,10 @@ class SecureStorage @Inject constructor(
             requireClockInPhoto = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_CLOCK_IN_PHOTO, false),
             requireClockOutPhoto = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_CLOCK_OUT_PHOTO, false),
             // Session security (default: disabled)
-            requireClockInToLogin = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_CLOCK_IN_TO_LOGIN, false)
+            requireClockInToLogin = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_CLOCK_IN_TO_LOGIN, false),
+            // Kiosk mode settings
+            kioskModeEnabled = encryptedPrefs.getBoolean(KEY_TPV_KIOSK_MODE_ENABLED, false),
+            kioskDefaultMerchantId = encryptedPrefs.getString(KEY_TPV_KIOSK_DEFAULT_MERCHANT_ID, null)
         )
     }
 
@@ -906,6 +918,9 @@ class SecureStorage @Inject constructor(
             remove(KEY_TPV_REQUIRE_CLOCK_OUT_PHOTO)
             // Session security
             remove(KEY_TPV_REQUIRE_CLOCK_IN_TO_LOGIN)
+            // Kiosk mode settings
+            remove(KEY_TPV_KIOSK_MODE_ENABLED)
+            remove(KEY_TPV_KIOSK_DEFAULT_MERCHANT_ID)
         }.apply()
         Timber.d("TPV settings cleared")
     }

@@ -191,6 +191,11 @@ class PaymentViewModel @Inject constructor(
     private val _merchantSwitchMessage = MutableStateFlow<String?>(null)
     val merchantSwitchMessage: StateFlow<String?> = _merchantSwitchMessage.asStateFlow()
 
+    // 🥝 KIOSK: Hide merchant selector when admin has pre-configured a default merchant
+    // This prevents customers from seeing multiple merchant accounts in kiosk mode
+    private val _hideKioskMerchantSelector = MutableStateFlow(false)
+    val hideKioskMerchantSelector: StateFlow<Boolean> = _hideKioskMerchantSelector.asStateFlow()
+
     // 📸 Step 4: TPV Settings for verification screen
     private val _tpvSettings = MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings?>(null)
     val tpvSettings: StateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings?> = _tpvSettings.asStateFlow()
@@ -818,6 +823,10 @@ class PaymentViewModel @Inject constructor(
 
     /**
      * Helper function to proceed to merchant selection (handles auto-skip for single merchant)
+     *
+     * 🥝 KIOSK MODE: When in kiosk mode with a configured default merchant,
+     * automatically selects that merchant and starts payment immediately.
+     * This prevents confusing customers with merchant selection.
      */
     private fun proceedToMerchantSelection(subtotal: String, tipAmount: String, totalAmount: String, rating: Int?) {
         viewModelScope.launch {
@@ -834,6 +843,31 @@ class PaymentViewModel @Inject constructor(
                     context = createPaymentContext()
                 )
                 return@launch
+            }
+
+            // 🥝 KIOSK MODE: Pre-select default merchant but STILL show Step 3
+            // This allows customers to see order summary and choose between Cash/Card
+            val tpvSettings = tpvSettingsRepository.getCurrentSettings()
+            val kioskDefaultMerchantId = tpvSettings.kioskDefaultMerchantId
+
+            if (isKioskPayment && !kioskDefaultMerchantId.isNullOrBlank()) {
+                // Find the default merchant by ID and pre-select it
+                val defaultKioskMerchant = merchants.find {
+                    it.merchantAccountId == kioskDefaultMerchantId || it.id == kioskDefaultMerchantId
+                }
+
+                if (defaultKioskMerchant != null) {
+                    Timber.i("🥝 [KIOSK] Pre-selecting default merchant: ${defaultKioskMerchant.displayName} - hiding merchant selector")
+                    _currentMerchant.value = defaultKioskMerchant
+                    // 🥝 Hide merchant selector in UI - customer doesn't need to see multiple accounts
+                    _hideKioskMerchantSelector.value = true
+                } else {
+                    Timber.w("🥝 [KIOSK] Default merchant ID '$kioskDefaultMerchantId' not found in available merchants - showing selection")
+                    _hideKioskMerchantSelector.value = false
+                }
+            } else {
+                // Not kiosk or no default configured - show normal merchant selection
+                _hideKioskMerchantSelector.value = false
             }
 
             // Pre-select if only 1 merchant (but still show Step 3 for user confirmation)
@@ -2775,9 +2809,22 @@ class PaymentViewModel @Inject constructor(
             try {
                 _state.value = PaymentState.Processing("Registrando pago confirmado...")
 
+                // 🥝 KIOSK CASH ATTRIBUTION LOGIC:
+                // - If kiosk session exists → commission/tip goes to SESSION user
+                // - If no kiosk session → commission/tip goes to PIN-confirming staff
+                // PIN is always required to confirm cash receipt, but attribution is separate
+                val effectiveStaffId = if (isKioskPayment && !kioskStaffId.isNullOrBlank()) {
+                    Timber.i("🥝 [KIOSK CASH] Using SESSION staff for attribution: $kioskStaffId")
+                    Timber.i("   👤 Confirmed by: ${confirmedByStaffId ?: "unknown"} (for audit only)")
+                    kioskStaffId!!  // Session user gets commission/tip
+                } else {
+                    Timber.i("🥝 [KIOSK CASH] No kiosk session - using PIN staff for attribution: ${confirmedByStaffId ?: currentStaffId}")
+                    confirmedByStaffId ?: currentStaffId!!  // PIN staff gets attribution
+                }
+
                 Timber.d("🥝 [KIOSK CASH] Recording confirmed payment to backend")
                 Timber.d("   💵 Subtotal: ${currentState.subtotal}, Tip: ${currentState.tipAmount}, Total: ${currentState.totalAmount}")
-                Timber.d("   👤 Confirmed by staff: ${confirmedByStaffId ?: currentStaffId}")
+                Timber.d("   👤 Attribution (processedById): $effectiveStaffId")
 
                 // Create payment context (same as processCashPayment)
                 val context = if (currentState.orderId != null) {
@@ -2787,7 +2834,7 @@ class PaymentViewModel @Inject constructor(
 
                     PaymentContext.OrderPayment(
                         venueId = currentVenueId!!,
-                        staffId = confirmedByStaffId ?: currentStaffId!!,  // Use confirming staff if provided
+                        staffId = effectiveStaffId,  // 🥝 Session staff for commission/tip
                         shiftId = currentShiftId,
                         orderId = currentState.orderId,
                         amount = currentState.subtotal.toBigDecimal(),
@@ -2804,7 +2851,7 @@ class PaymentViewModel @Inject constructor(
                 } else {
                     PaymentContext.FastPayment(
                         venueId = currentVenueId!!,
-                        staffId = confirmedByStaffId ?: currentStaffId!!,
+                        staffId = effectiveStaffId,  // 🥝 Session staff for commission/tip
                         shiftId = currentShiftId,
                         amount = currentState.subtotal.toBigDecimal(),
                         tip = currentState.tipAmount.toBigDecimal(),

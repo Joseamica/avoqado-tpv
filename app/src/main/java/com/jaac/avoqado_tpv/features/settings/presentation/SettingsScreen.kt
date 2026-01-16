@@ -19,6 +19,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
+import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.components.VenueStatusRow
@@ -320,6 +321,15 @@ fun SettingsScreen(
                             isSaving = state.isSaving,
                             onToggle = { viewModel.toggleKioskModeEnabled() }
                         )
+                        // Only show merchant dropdown when kiosk is enabled
+                        if (state.tpvSettings.kioskModeEnabled) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            MerchantDropdownRow(
+                                merchants = state.merchants,
+                                selectedMerchantId = state.tpvSettings.kioskDefaultMerchantId,
+                                onMerchantSelected = { viewModel.setKioskDefaultMerchant(it) }
+                            )
+                        }
                     }
                 }
 
@@ -344,22 +354,25 @@ fun SettingsScreen(
                             isSaving = state.isSaving,
                             onToggle = { viewModel.toggleShowVerificationScreen() }
                         )
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        SettingsToggleRow(
-                            label = "Requiere Foto",
-                            description = "Foto obligatoria para confirmar venta",
-                            enabled = state.tpvSettings.requireVerificationPhoto,
-                            isSaving = state.isSaving,
-                            onToggle = { viewModel.toggleRequireVerificationPhoto() }
-                        )
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        SettingsToggleRow(
-                            label = "Requiere Código de Barras",
-                            description = "Escaneo de código obligatorio para confirmar venta",
-                            enabled = state.tpvSettings.requireVerificationBarcode,
-                            isSaving = state.isSaving,
-                            onToggle = { viewModel.toggleRequireVerificationBarcode() }
-                        )
+                        // Only show sub-options when verification screen is enabled
+                        if (state.tpvSettings.showVerificationScreen) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            SettingsToggleRow(
+                                label = "Requiere Foto",
+                                description = "Foto obligatoria para confirmar venta",
+                                enabled = state.tpvSettings.requireVerificationPhoto,
+                                isSaving = state.isSaving,
+                                onToggle = { viewModel.toggleRequireVerificationPhoto() }
+                            )
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            SettingsToggleRow(
+                                label = "Requiere Código de Barras",
+                                description = "Escaneo de código obligatorio para confirmar venta",
+                                enabled = state.tpvSettings.requireVerificationBarcode,
+                                isSaving = state.isSaving,
+                                onToggle = { viewModel.toggleRequireVerificationBarcode() }
+                            )
+                        }
                     }
                 }
 
@@ -623,6 +636,132 @@ private fun SettingsActionRow(
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 Text("Ejecutar")
+            }
+        }
+    }
+}
+
+/**
+ * Dropdown row for selecting default merchant in kiosk mode.
+ * Shows available merchant accounts and allows selecting a default.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MerchantDropdownRow(
+    merchants: List<MerchantAccount>,
+    selectedMerchantId: String?,
+    onMerchantSelected: (String?) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selectedMerchant = merchants.find { it.merchantAccountId == selectedMerchantId || it.id == selectedMerchantId }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Text(
+            text = "Merchant Predeterminado",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Text(
+            text = "Selecciona la cuenta de pago para kiosko",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { expanded = !expanded }
+        ) {
+            OutlinedTextField(
+                value = selectedMerchant?.displayName ?: "Mostrar selección",
+                onValueChange = {},
+                readOnly = true,
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+                colors = OutlinedTextFieldDefaults.colors()
+            )
+
+            ExposedDropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                // Option to show selection (null = no default)
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(
+                                "Mostrar selección",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Text(
+                                "El cliente elige al pagar",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    },
+                    onClick = {
+                        onMerchantSelected(null)
+                        expanded = false
+                    },
+                    leadingIcon = {
+                        if (selectedMerchantId == null) {
+                            Icon(
+                                Icons.Filled.Check,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                )
+
+                // Divider between "show selection" and merchant options
+                if (merchants.isNotEmpty()) {
+                    HorizontalDivider()
+                }
+
+                // Merchant options
+                merchants.forEach { merchant ->
+                    val isSelected = merchant.merchantAccountId == selectedMerchantId || merchant.id == selectedMerchantId
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(
+                                    merchant.displayName,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                merchant.description?.let { desc ->
+                                    Text(
+                                        desc,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        },
+                        onClick = {
+                            // Prefer merchantAccountId (backend CUID) if available, otherwise use local id
+                            onMerchantSelected(merchant.merchantAccountId ?: merchant.id)
+                            expanded = false
+                        },
+                        leadingIcon = {
+                            if (isSelected) {
+                                Icon(
+                                    Icons.Filled.Check,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    )
+                }
             }
         }
     }

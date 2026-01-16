@@ -70,7 +70,11 @@ data class TpvSettingsDto(
 
     // Kiosk Mode: allows terminal to enter self-service mode
     @SerializedName("kioskModeEnabled")
-    val kioskModeEnabled: Boolean?
+    val kioskModeEnabled: Boolean?,
+
+    // Kiosk Default Merchant: auto-select this merchant in kiosk payment flow
+    @SerializedName("kioskDefaultMerchantId")
+    val kioskDefaultMerchantId: String?
 )
 
 /**
@@ -95,7 +99,9 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     // Session security defaults to disabled
     requireClockInToLogin = requireClockInToLogin ?: false,
     // Kiosk Mode defaults to disabled
-    kioskModeEnabled = kioskModeEnabled ?: false
+    kioskModeEnabled = kioskModeEnabled ?: false,
+    // Kiosk Default Merchant (null = show selection)
+    kioskDefaultMerchantId = kioskDefaultMerchantId
 )
 
 /**
@@ -115,7 +121,8 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     requireClockInPhoto = requireClockInPhoto,
     requireClockOutPhoto = requireClockOutPhoto,
     requireClockInToLogin = requireClockInToLogin,
-    kioskModeEnabled = kioskModeEnabled
+    kioskModeEnabled = kioskModeEnabled,
+    kioskDefaultMerchantId = kioskDefaultMerchantId
 )
 
 /**

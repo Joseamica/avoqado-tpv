@@ -107,12 +107,20 @@ data class Order(
 
     /**
      * Convenience property: Is this a pay-later order?
-     * Pay-later orders have PENDING/PARTIAL payment status AND at least one customer linked.
+     * Pay-later orders have:
+     * - At least one customer linked (identified customer for tracking)
+     * - PENDING/PARTIAL payment status
+     * - Remaining balance > 0 (actual debt)
+     * - Order not cancelled
+     *
      * Used to filter orders in OrderListScreen and identify deferred payments.
+     * Matches dashboard query in reports.dashboard.service.ts
      */
     val isPayLater: Boolean
         get() = orderCustomers.isNotEmpty() &&
-                (paymentStatus == PaymentStatus.PENDING || paymentStatus == PaymentStatus.PARTIAL)
+                (paymentStatus == PaymentStatus.PENDING || paymentStatus == PaymentStatus.PARTIAL) &&
+                remainingBalance > BigDecimal.ZERO &&
+                status != OrderStatus.CANCELLED
 }
 
 /**

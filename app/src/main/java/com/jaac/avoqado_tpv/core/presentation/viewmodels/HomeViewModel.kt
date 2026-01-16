@@ -69,6 +69,23 @@ class HomeViewModel @Inject constructor(
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // BLUMON SDK INITIALIZATION STATE
+    // Used to block UI until SDK is ready for payments
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // True while SDK is initializing (shows loader)
+    private val _isBlumonInitializing = MutableStateFlow(true)
+    val isBlumonInitializing: StateFlow<Boolean> = _isBlumonInitializing.asStateFlow()
+
+    // True when SDK is ready for payments
+    private val _isBlumonReady = MutableStateFlow(false)
+    val isBlumonReady: StateFlow<Boolean> = _isBlumonReady.asStateFlow()
+
+    // Error message if initialization failed (null if no error)
+    private val _blumonInitError = MutableStateFlow<String?>(null)
+    val blumonInitError: StateFlow<String?> = _blumonInitError.asStateFlow()
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // USER PROFILE STATE
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -260,8 +277,8 @@ class HomeViewModel @Inject constructor(
     /**
      * 🔧 Initialize Blumon SDK after successful login
      *
-     * Starts SDK initialization in background so it's ready when user opens payment screen.
-     * Uses 3 second delay to let other operations (Socket.IO, ShiftRepository) settle first.
+     * **BLOCKS UI** until SDK is ready - shows loader to prevent user from going to payment
+     * before SDK is initialized.
      *
      * **Why in HomeViewModel (not LoginViewModel)?**
      * - LoginViewModel gets destroyed when navigating to HomeScreen
@@ -269,26 +286,33 @@ class HomeViewModel @Inject constructor(
      * - No risk of coroutine cancellation due to navigation
      *
      * **Flow:**
-     * 1. Wait 3 seconds for other operations to settle
-     * 2. Fetch merchants from backend (to get real serial numbers)
-     * 3. Use first merchant's serial for TerminalConfig
-     * 4. Initialize SDK with correct serial
+     * 1. Set isBlumonInitializing = true (shows loader)
+     * 2. Wait 2 seconds for other operations to settle
+     * 3. Fetch merchants from backend (to get real serial numbers)
+     * 4. Use first merchant's serial for TerminalConfig
+     * 5. Initialize SDK with correct serial
+     * 6. Set isBlumonReady = true (hides loader, enables payment)
      *
      * Benefits:
-     * - SDK ready before user opens payment (no loading delay)
+     * - User cannot proceed to payment until SDK is ready
+     * - No "NO AUTORIZADO" errors from uninitialized SDK
+     * - Clear feedback to user that system is preparing
      * - OAuth + DUKPT keys downloaded in advance
-     * - Uses real merchant serial (not hardcoded default)
-     * - If initialization fails, payment screen will retry (graceful fallback)
      */
     private fun initializeBlumonSDK() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // ⏳ Wait 3 seconds for other operations to settle
+                // 🔄 Start initialization - show loader
+                _isBlumonInitializing.value = true
+                _isBlumonReady.value = false
+                _blumonInitError.value = null
+
+                Timber.i("🔧 [Blumon] Starting SDK initialization (blocking UI)...")
+
+                // ⏳ Wait 2 seconds for other operations to settle
                 // (Socket.IO, HeartbeatScheduler, ShiftRepository all start on login)
                 // This prevents resource contention that causes GenericFailure
-                delay(3000)
-
-                Timber.i("🔧 [Blumon] Starting SDK initialization after login...")
+                delay(2000)
 
                 // Step 1: Fetch merchants from backend to get real serial numbers
                 val merchants = getMerchantsUseCase().firstOrNull()
@@ -309,17 +333,33 @@ class HomeViewModel @Inject constructor(
                 initializationManager.ensureInitialized(defaultMerchantPosId = defaultMerchant?.posId)
                     .onSuccess {
                         Timber.i("✅ [Blumon] SDK initialized successfully - ready for payments")
+                        _isBlumonInitializing.value = false
+                        _isBlumonReady.value = true
+                        _blumonInitError.value = null
                     }
                     .onFailure { error ->
-                        Timber.w(error, "⚠️ [Blumon] SDK initialization failed - will retry when opening payment")
-                        // Don't block home screen - payment screen will retry if needed
+                        Timber.e(error, "❌ [Blumon] SDK initialization failed")
+                        _isBlumonInitializing.value = false
+                        _isBlumonReady.value = false
+                        _blumonInitError.value = "Error al inicializar sistema de pagos. Intente reiniciar."
                     }
 
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Blumon] Unexpected error during SDK initialization")
-                // Don't block home screen on SDK failure - app can work, payment will retry
+                _isBlumonInitializing.value = false
+                _isBlumonReady.value = false
+                _blumonInitError.value = "Error inesperado: ${e.message}"
             }
         }
+    }
+
+    /**
+     * 🔄 Retry Blumon SDK initialization
+     * Called from UI when user taps "Reintentar" after init failure
+     */
+    fun retryBlumonInit() {
+        Timber.i("🔧 [Blumon] Retrying SDK initialization...")
+        initializeBlumonSDK()
     }
 
     /**

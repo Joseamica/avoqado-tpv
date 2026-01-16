@@ -157,7 +157,8 @@ class OrderRepositoryImpl @Inject constructor(
         covers: Int,
         waiterId: String?,
         orderType: OrderType,
-        skipCaching: Boolean
+        skipCaching: Boolean,
+        source: String
     ): Result<Order> {
         return try {
             val request = CreateOrderRequest(
@@ -169,7 +170,8 @@ class OrderRepositoryImpl @Inject constructor(
                     OrderType.TAKEOUT -> "TAKEOUT"
                     OrderType.DELIVERY -> "DELIVERY"
                     OrderType.PICKUP -> "PICKUP"
-                }
+                },
+                source = source  // TPV, KIOSK, QR, WEB, etc.
             )
 
             // 🔍 [DIAGNOSTIC] Log venueId used to create order

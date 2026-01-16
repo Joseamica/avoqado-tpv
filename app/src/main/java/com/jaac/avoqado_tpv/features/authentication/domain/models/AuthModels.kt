@@ -50,7 +50,10 @@ data class AuthResponse(
     val issuedAt: String,
 
     // 🎁 Loyalty program status (Toast/Square pattern: hide UI if inactive)
-    val loyaltyActive: Boolean = false
+    val loyaltyActive: Boolean = false,
+
+    // 🔐 Master TOTP login flag - bypasses venue rules (clock-in, checkout, etc.)
+    val isMasterLogin: Boolean = false
 )
 
 /**

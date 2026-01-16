@@ -65,6 +65,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_VENUE_TYPE = "venue_type"
         private const val KEY_VENUE_STATUS = "venue_status"
         private const val KEY_LOYALTY_ACTIVE = "loyalty_active"  // Toast/Square pattern
+        private const val KEY_MASTER_LOGIN = "is_master_login"  // 🔐 Master TOTP bypass flag
 
         // Blumon keys
         private const val KEY_BLUMON_MERCHANT_ID = "blumon_merchant_id"
@@ -248,6 +249,7 @@ class SecureStorage @Inject constructor(
             remove(KEY_STAFF_NAME)
             remove(KEY_STAFF_ROLE)
             remove(KEY_PERMISSIONS)
+            remove(KEY_MASTER_LOGIN)  // 🔐 Clear master login flag on logout
         }.apply()
         Timber.d("Session cleared (venueId, venueSlug, and venueStatus preserved for device activation)")
     }
@@ -473,6 +475,37 @@ class SecureStorage @Inject constructor(
      */
     fun isLoyaltyActive(): Boolean {
         return encryptedPrefs.getBoolean(KEY_LOYALTY_ACTIVE, false)
+    }
+
+    // ========== Master Login (SUPERADMIN Emergency Access) ==========
+
+    /**
+     * Save master login flag
+     *
+     * 🔐 Master TOTP sessions bypass venue-specific rules:
+     * - Clock-in/out requirements
+     * - Checkout timeouts
+     * - Session restrictions
+     *
+     * @param isMaster true if this is a master TOTP login
+     */
+    fun saveMasterLogin(isMaster: Boolean) {
+        encryptedPrefs.edit().putBoolean(KEY_MASTER_LOGIN, isMaster).apply()
+        Timber.d("🔐 Master login flag saved: $isMaster")
+    }
+
+    /**
+     * Check if current session is a master login
+     *
+     * 🔐 Used to bypass venue rules for emergency support access:
+     * - Skip clock-in requirement
+     * - Skip checkout/session timeouts
+     * - Provide unrestricted access for diagnostics
+     *
+     * @return true if this is a master TOTP session (default false)
+     */
+    fun isMasterLogin(): Boolean {
+        return encryptedPrefs.getBoolean(KEY_MASTER_LOGIN, false)
     }
 
     /**

@@ -240,6 +240,36 @@ interface ApiService {
     ): Response<com.jaac.avoqado_tpv.features.authentication.data.dto.AuthResponseDto>
 
     /**
+     * Master TOTP Login (SUPERADMIN Emergency Access)
+     *
+     * POST /tpv/venues/{venueId}/master-login
+     *
+     * Emergency access for SUPERADMINs using Google Authenticator TOTP codes.
+     * This allows SUPERADMIN access to ANY terminal without knowing staff PINs.
+     *
+     * Flow:
+     * 1. Superadmin opens Google Authenticator
+     * 2. Enters 8-digit TOTP code on TPV login screen
+     * 3. TPV detects 8-digit code and calls master-login endpoint
+     * 4. Backend validates TOTP and returns SUPERADMIN session
+     * 5. All master logins are audit logged (IP, terminal, timestamp)
+     *
+     * Security:
+     * - 8-digit TOTP codes change every 60 seconds
+     * - All usage is audit logged in ActivityLog
+     * - Requires TOTP_MASTER_SECRET configured on backend
+     *
+     * @param venueId Venue identifier (grants access to THIS venue)
+     * @param request TOTP code + serial number
+     * @return Auth response with SUPERADMIN role
+     */
+    @POST("tpv/venues/{venueId}/auth/master")
+    suspend fun masterLogin(
+        @Path("venueId") venueId: String,
+        @Body request: com.jaac.avoqado_tpv.features.authentication.data.dto.MasterLoginRequestDto
+    ): Response<com.jaac.avoqado_tpv.features.authentication.data.dto.AuthResponseDto>
+
+    /**
      * Refresh access token
      *
      * POST /tpv/venues/{venueId}/auth/refresh

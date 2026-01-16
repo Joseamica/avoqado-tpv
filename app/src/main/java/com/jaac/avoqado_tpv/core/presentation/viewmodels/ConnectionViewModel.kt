@@ -161,11 +161,21 @@ class ConnectionViewModel @Inject constructor(
      * Check connection to backend
      *
      * Steps:
-     * 1. Check network connectivity (NetworkMonitor)
-     * 2. Send test heartbeat to backend
-     * 3. Update state based on result
+     * 1. Check if terminal is activated (venueId exists)
+     * 2. Check network connectivity (NetworkMonitor)
+     * 3. Send test heartbeat to backend
+     * 4. Update state based on result
      */
     private suspend fun checkConnection() {
+        // 🔐 Skip connection check if terminal is NOT activated yet
+        // Heartbeat will fail because terminal doesn't exist in backend
+        // This prevents false "Sin conexión" banner on Activation screen
+        if (!deviceInfoManager.isDeviceActivated()) {
+            Timber.d("🔐 [Connection] Terminal not activated - skipping heartbeat check")
+            _state.value = ConnectionState.Connected  // Don't show banner
+            return
+        }
+
         // Check network connectivity first
         val networkInfo = networkMonitor.getCurrentNetworkInfo()
         if (!networkInfo.isConnected) {

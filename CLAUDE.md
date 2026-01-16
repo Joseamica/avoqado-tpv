@@ -89,6 +89,7 @@ Kotlin, Jetpack Compose, POS terminals, payments, offline-first architecture, an
 | ---------------------------------------- | -------------------------------------------------------- |
 | `docs/MODULES_SYSTEM.md`                 | **Modules**: VenueModule config, StateFlow pattern       |
 | `docs/ATTENDANCE_VERIFICATION.md`        | **Timeclock**: Clock-in/out photo + GPS verification     |
+| `docs/MASTER_TOTP_LOGIN.md`              | **Master TOTP**: Emergency SUPERADMIN access, venue rule bypass |
 | `docs/PAY_LATER_README.md`               | **Pay Later Overview**: Index of all pay-later docs      |
 | `docs/PAY_LATER_IMPLEMENTATION.md`       | **Pay Later (Android)**: Bug fix + banner implementation |
 | `docs/PAY_LATER_TESTING_CHECKLIST.md`    | Pay Later QA manual + automated tests                    |

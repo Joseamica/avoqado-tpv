@@ -4,6 +4,7 @@ import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result
+import com.jaac.avoqado_tpv.features.authentication.data.dto.MasterLoginRequestDto
 import com.jaac.avoqado_tpv.features.authentication.data.dto.toDomain
 import com.jaac.avoqado_tpv.features.authentication.data.dto.toDto
 import com.jaac.avoqado_tpv.features.authentication.domain.models.AuthResponse
@@ -94,11 +95,24 @@ class AuthRepository @Inject constructor(
             val serialNumber = secureStorage.getSerialNumber()
                 ?: return Result.Error(ApiException.ValidationError("El dispositivo debe activarse primero. Por favor, active el terminal con un código de activación."))
 
-            val request = PinLoginRequest(
-                pin = pin,
-                serialNumber = serialNumber
-            ).toDto()
-            val response = apiService.loginWithPin(venueId, request)
+            // 🔐 Detect 8-digit TOTP code → Master SUPERADMIN login
+            // Regular staff PINs are 4-6 digits, master TOTP codes are 8 digits
+            val isMasterLogin = pin.length == 8 && pin.all { it.isDigit() }
+
+            val response = if (isMasterLogin) {
+                Timber.d("🔐 Detected 8-digit code → Master TOTP login")
+                val masterRequest = MasterLoginRequestDto(
+                    totpCode = pin,
+                    serialNumber = serialNumber
+                )
+                apiService.masterLogin(venueId, masterRequest)
+            } else {
+                val request = PinLoginRequest(
+                    pin = pin,
+                    serialNumber = serialNumber
+                ).toDto()
+                apiService.loginWithPin(venueId, request)
+            }
 
             if (response.isSuccessful && response.body() != null) {
                 val authDto = response.body()!!
@@ -213,7 +227,10 @@ class AuthRepository @Inject constructor(
         // 🎁 Save loyalty program status (Toast/Square pattern)
         secureStorage.saveLoyaltyActive(authResponse.loyaltyActive)
 
-        Timber.d("✅ Session saved: venueId=${authResponse.venueId}, staffId=${authResponse.staffId}, role=${authResponse.role}, venueSlug=${authResponse.venue.slug}, loyaltyActive=${authResponse.loyaltyActive}")
+        // 🔐 Save master login flag (bypasses venue rules)
+        secureStorage.saveMasterLogin(authResponse.isMasterLogin)
+
+        Timber.d("✅ Session saved: venueId=${authResponse.venueId}, staffId=${authResponse.staffId}, role=${authResponse.role}, venueSlug=${authResponse.venue.slug}, loyaltyActive=${authResponse.loyaltyActive}, isMasterLogin=${authResponse.isMasterLogin}")
     }
 
     /**
@@ -394,6 +411,23 @@ class AuthRepository @Inject constructor(
      */
     fun isLoyaltyActive(): Boolean {
         return secureStorage.isLoyaltyActive()
+    }
+
+    /**
+     * Check if current session is a Master TOTP login
+     *
+     * 🔐 Master sessions bypass venue-specific rules:
+     * - Clock-in/out requirements (not an actual shift)
+     * - Checkout/session timeouts
+     * - Other venue-specific restrictions
+     *
+     * Used for emergency support access where SUPERADMIN needs
+     * unrestricted access to diagnose issues.
+     *
+     * @return true if this is a master TOTP login session
+     */
+    fun isMasterSession(): Boolean {
+        return secureStorage.isMasterLogin()
     }
 
     /**

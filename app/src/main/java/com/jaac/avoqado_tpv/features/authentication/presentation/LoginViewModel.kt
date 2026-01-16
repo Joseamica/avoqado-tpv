@@ -70,15 +70,22 @@ class LoginViewModel @Inject constructor(
                     // 🔌 Connect Socket.IO with JWT token
                     connectSocketIO(result.data)
 
-                    // 🕐 Check if clock-in is required to access the system
-                    val clockInRequired = tpvSettingsRepository.getCurrentSettings().requireClockInToLogin
-                    if (clockInRequired) {
-                        Timber.d("🕐 Clock-in required to login - checking status...")
-                        checkClockInStatus(result.data, pin)
-                    } else {
-                        // NOTE: Blumon SDK init moved to HomeViewModel
-                        // (LoginViewModel gets destroyed on navigation, cancelling coroutines)
+                    // 🔐 Master TOTP sessions bypass ALL venue rules (clock-in, checkout, etc.)
+                    val isMasterSession = result.data.isMasterLogin
+                    if (isMasterSession) {
+                        Timber.i("🔐 Master session detected - bypassing all venue restrictions")
                         LoginState.Success(result.data)
+                    } else {
+                        // 🕐 Check if clock-in is required to access the system
+                        val clockInRequired = tpvSettingsRepository.getCurrentSettings().requireClockInToLogin
+                        if (clockInRequired) {
+                            Timber.d("🕐 Clock-in required to login - checking status...")
+                            checkClockInStatus(result.data, pin)
+                        } else {
+                            // NOTE: Blumon SDK init moved to HomeViewModel
+                            // (LoginViewModel gets destroyed on navigation, cancelling coroutines)
+                            LoginState.Success(result.data)
+                        }
                     }
                 }
                 is Result.Error -> {

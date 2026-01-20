@@ -1049,7 +1049,86 @@ interface ApiService {
     suspend fun getLocationFromCellTowers(
         @Body request: com.jaac.avoqado_tpv.core.location.NetworkLocationRequest
     ): Response<com.jaac.avoqado_tpv.core.location.CellLocationResponse>
+
+    // ==========================================
+    // APP UPDATE (Avoqado dual update system)
+    // ==========================================
+
+    /**
+     * Check for app updates from Avoqado backend
+     *
+     * **Dual Update System:**
+     * - Blumon: Provider-managed updates (via Blumon SDK)
+     * - Avoqado: Self-managed updates (via this endpoint)
+     *
+     * **No authentication required** - called before login
+     *
+     * @param currentVersion Current versionCode (e.g., 6)
+     * @param environment "SANDBOX" or "PRODUCTION"
+     * @return Update info if available
+     */
+    @GET("tpv/check-update")
+    suspend fun checkForAvoqadoUpdate(
+        @Query("currentVersion") currentVersion: Int,
+        @Query("environment") environment: String
+    ): Response<AvoqadoUpdateResponse>
+
+    /**
+     * Report that an update was successfully installed (analytics)
+     *
+     * @param request Update installation report
+     */
+    @POST("tpv/report-update-installed")
+    suspend fun reportUpdateInstalled(
+        @Body request: ReportUpdateInstalledRequest
+    ): Response<GenericResponse>
 }
+
+// ========== App Update DTOs ==========
+
+/**
+ * Response from Avoqado check-update endpoint
+ */
+data class AvoqadoUpdateResponse(
+    val success: Boolean,
+    val hasUpdate: Boolean,
+    val message: String? = null,
+    val update: AvoqadoUpdateInfo? = null
+)
+
+/**
+ * Update information from Avoqado backend
+ */
+data class AvoqadoUpdateInfo(
+    val id: String,
+    val versionName: String,
+    val versionCode: Int,
+    val downloadUrl: String,
+    val fileSize: String, // BigInt as string
+    val checksum: String,
+    val releaseNotes: String?,
+    val isRequired: Boolean,
+    val minAndroidSdk: Int,
+    val publishedAt: String
+)
+
+/**
+ * Request to report update installation
+ */
+data class ReportUpdateInstalledRequest(
+    val versionCode: Int,
+    val versionName: String,
+    val updateSource: String, // "AVOQADO" or "BLUMON"
+    val serialNumber: String?
+)
+
+/**
+ * Generic success/failure response
+ */
+data class GenericResponse(
+    val success: Boolean,
+    val message: String? = null
+)
 
 // ========== Request/Response DTOs ==========
 // These are placeholder classes - define full models later

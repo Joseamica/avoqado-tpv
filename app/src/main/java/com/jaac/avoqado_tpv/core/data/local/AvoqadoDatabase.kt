@@ -26,7 +26,7 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
 /**
  * Room database for Avoqado TPV local data persistence.
  *
- * **Current Version:** 12
+ * **Current Version:** 17
  * - v1 → v2: Added blumonSerialNumber to PendingPaymentEntity for merchant account tracking
  * - v2 → v3: Added merchantAccountId to PendingPaymentEntity (provider-agnostic migration)
  * - v3 → v4: Added rating to PendingPaymentEntity (user rating feature - 2025-01-11)
@@ -42,6 +42,7 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
  * - v13 → v14: Added VerificationQueueEntity for Step 4 sale verification queue (2025-12-11)
  * - v14 → v15: Added isActive to ProductCategoryEntity (filter inactive categories - 2025-01-13)
  * - v15 → v16: Added categoryIsActive to ProductEntity (category status in product cache - 2025-01-13)
+ * - v16 → v17: **🔴 CRITICAL FIX** - Added missing columns to PendingPaymentEntity (venue_id, blumon_serial_number, is_international, authorization_number, device_serial_number) - Fixes production crash on update from v1.1.x (2026-01-19)
  *
  * **Entities:**
  * - PendingPaymentEntity: Offline queue for failed payment recordings
@@ -94,7 +95,7 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
         CachedShiftEntity::class,
         VerificationQueueEntity::class
     ],
-    version = 16, // ⭐ Version 16: Added categoryIsActive to ProductEntity (category status in product cache)
+    version = 17, // ⭐ Version 17: CRITICAL FIX - Added missing columns to pending_payments (fixes production crash)
     exportSchema = false // Set to true when adding migrations for production
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -1015,6 +1016,105 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                 database.execSQL(
                     "ALTER TABLE products ADD COLUMN category_is_active INTEGER NOT NULL DEFAULT 1"
                 )
+            }
+        }
+
+        /**
+         * Migration from version 16 to version 17: Fix pending_payments table schema.
+         *
+         * **CRITICAL FIX (2026-01-19) - Production Crash**
+         * - Adds missing columns to pending_payments table
+         * - Fixes "Migration didn't properly handle" crash on app update
+         * - Preserves existing payment data
+         *
+         * **Root Cause:**
+         * - Fields were added to PendingPaymentEntity without corresponding migrations
+         * - Users updating from v1.1.x to v1.2.0 crashed immediately
+         * - fallbackToDestructiveMigration() works only with cache clear (data loss)
+         *
+         * **Why This Migration:**
+         * - Production users CANNOT clear cache (loses pending payments, draft orders)
+         * - Must preserve data integrity during update
+         * - Enables safe updates from v1.1.x → v1.3.0
+         *
+         * **Columns Added:**
+         * 1. venue_id: Tenant isolation (required for multi-venue support)
+         * 2. blumon_serial_number: Legacy merchant tracking
+         * 3. is_international: Card origin flag (domestic vs international)
+         * 4. authorization_number: Blumon auth code (e.g., "502511")
+         * 5. device_serial_number: Terminal attribution (e.g., "AVQD-2841548417")
+         *
+         * **Default Values (Backward Compatibility):**
+         * - venue_id: '' (empty string - will be set by PaymentSyncWorker)
+         * - blumon_serial_number: '' (empty string - fallback to merchant_account_id)
+         * - is_international: 0 (false - assume domestic)
+         * - authorization_number: NULL (optional field)
+         * - device_serial_number: NULL (optional field, added 2026-01-08)
+         *
+         * **Data Safety:**
+         * - All existing payments preserved
+         * - PaymentSyncWorker will populate empty venue_id on next sync attempt
+         * - No data loss during migration
+         *
+         * **SQL:**
+         * ```sql
+         * ALTER TABLE pending_payments ADD COLUMN venue_id TEXT NOT NULL DEFAULT '';
+         * ALTER TABLE pending_payments ADD COLUMN blumon_serial_number TEXT NOT NULL DEFAULT '';
+         * ALTER TABLE pending_payments ADD COLUMN is_international INTEGER NOT NULL DEFAULT 0;
+         * ALTER TABLE pending_payments ADD COLUMN authorization_number TEXT DEFAULT NULL;
+         * ALTER TABLE pending_payments ADD COLUMN device_serial_number TEXT DEFAULT NULL;
+         * ```
+         */
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Helper function to check if column exists
+                fun columnExists(tableName: String, columnName: String): Boolean {
+                    val cursor = database.query("PRAGMA table_info($tableName)")
+                    cursor.use {
+                        val nameIndex = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(nameIndex) == columnName) {
+                                return true
+                            }
+                        }
+                    }
+                    return false
+                }
+
+                // Add venue_id column (tenant isolation) - only if doesn't exist
+                if (!columnExists("pending_payments", "venue_id")) {
+                    database.execSQL(
+                        "ALTER TABLE pending_payments ADD COLUMN venue_id TEXT NOT NULL DEFAULT ''"
+                    )
+                }
+
+                // Add blumon_serial_number column (legacy merchant tracking) - only if doesn't exist
+                if (!columnExists("pending_payments", "blumon_serial_number")) {
+                    database.execSQL(
+                        "ALTER TABLE pending_payments ADD COLUMN blumon_serial_number TEXT NOT NULL DEFAULT ''"
+                    )
+                }
+
+                // Add is_international column (card origin flag) - only if doesn't exist
+                if (!columnExists("pending_payments", "is_international")) {
+                    database.execSQL(
+                        "ALTER TABLE pending_payments ADD COLUMN is_international INTEGER NOT NULL DEFAULT 0"
+                    )
+                }
+
+                // Add authorization_number column (Blumon auth code) - only if doesn't exist
+                if (!columnExists("pending_payments", "authorization_number")) {
+                    database.execSQL(
+                        "ALTER TABLE pending_payments ADD COLUMN authorization_number TEXT DEFAULT NULL"
+                    )
+                }
+
+                // Add device_serial_number column (terminal attribution) - only if doesn't exist
+                if (!columnExists("pending_payments", "device_serial_number")) {
+                    database.execSQL(
+                        "ALTER TABLE pending_payments ADD COLUMN device_serial_number TEXT DEFAULT NULL"
+                    )
+                }
             }
         }
     }

@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.BuildConfig
+import com.jaac.avoqado_tpv.core.data.network.AvoqadoUpdateInfo
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 
 /**
@@ -64,7 +65,8 @@ fun SelfUpdateScreen(
             when (val currentState = state) {
                 is SelfUpdateState.Idle -> {
                     IdleContent(
-                        onCheckUpdate = { viewModel.checkForUpdate() }
+                        onCheckBlumon = { viewModel.checkForUpdateBlumon() },
+                        onCheckAvoqado = { viewModel.checkForUpdateAvoqado() }
                     )
                 }
                 is SelfUpdateState.Checking -> {
@@ -73,11 +75,19 @@ fun SelfUpdateScreen(
                 is SelfUpdateState.UpToDate -> {
                     UpToDateContent(
                         version = currentState.currentVersion,
+                        source = currentState.source,
                         onBack = onNavigateBack
                     )
                 }
-                is SelfUpdateState.UpdateAvailable -> {
-                    UpdateAvailableContent(
+                is SelfUpdateState.BlumonUpdateAvailable -> {
+                    BlumonUpdateAvailableContent(
+                        update = currentState.update,
+                        onDownload = { viewModel.downloadUpdate() },
+                        onCancel = onNavigateBack
+                    )
+                }
+                is SelfUpdateState.AvoqadoUpdateAvailable -> {
+                    AvoqadoUpdateAvailableContent(
                         update = currentState.update,
                         onDownload = { viewModel.downloadUpdate() },
                         onCancel = onNavigateBack
@@ -86,12 +96,14 @@ fun SelfUpdateScreen(
                 is SelfUpdateState.Downloading -> {
                     DownloadingContent(
                         progress = currentState.progress,
+                        source = currentState.source,
                         onCancel = { viewModel.cancel() }
                     )
                 }
                 is SelfUpdateState.ReadyToInstall -> {
                     ReadyToInstallContent(
-                        update = currentState.update,
+                        versionName = currentState.versionName,
+                        source = currentState.source,
                         onInstall = {
                             // Check if we can install from unknown sources
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -130,7 +142,8 @@ fun SelfUpdateScreen(
 
 @Composable
 private fun IdleContent(
-    onCheckUpdate: () -> Unit
+    onCheckBlumon: () -> Unit,
+    onCheckAvoqado: () -> Unit
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -155,10 +168,33 @@ private fun IdleContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = "Selecciona una fuente de actualizaciones:",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Blumon (Provider) button
         Button(
-            onClick = onCheckUpdate,
+            onClick = onCheckBlumon,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.CloudDownload,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Buscar (Proveedor)")
+        }
+
+        // Avoqado (Self-managed) button
+        OutlinedButton(
+            onClick = onCheckAvoqado,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(56.dp)
@@ -169,7 +205,33 @@ private fun IdleContent(
                 modifier = Modifier.size(24.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
-            Text("Buscar Actualizaciones")
+            Text("Buscar (Avoqado)")
+        }
+
+        // Info card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Row(
+                modifier = Modifier.padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = "Proveedor: Actualizaciones oficiales de PAX\nAvoqado: Actualizaciones de emergencia",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
@@ -203,8 +265,14 @@ private fun CheckingContent() {
 @Composable
 private fun UpToDateContent(
     version: String,
+    source: UpdateSource,
     onBack: () -> Unit
 ) {
+    val sourceName = when (source) {
+        UpdateSource.BLUMON -> "Proveedor"
+        UpdateSource.AVOQADO -> "Avoqado"
+    }
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(24.dp)
@@ -228,6 +296,12 @@ private fun UpToDateContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
+        Text(
+            text = "Fuente: $sourceName",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
         Spacer(modifier = Modifier.height(16.dp))
 
         OutlinedButton(
@@ -242,7 +316,7 @@ private fun UpToDateContent(
 }
 
 @Composable
-private fun UpdateAvailableContent(
+private fun BlumonUpdateAvailableContent(
     update: UpdateInfo,
     onDownload: () -> Unit,
     onCancel: () -> Unit
@@ -262,6 +336,12 @@ private fun UpdateAvailableContent(
             text = "¡Nueva versión disponible!",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            text = "Fuente: Proveedor (PAX)",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         Card(
@@ -335,10 +415,185 @@ private fun UpdateAvailableContent(
 }
 
 @Composable
-private fun DownloadingContent(
-    progress: Int,
+private fun AvoqadoUpdateAvailableContent(
+    update: AvoqadoUpdateInfo,
+    onDownload: () -> Unit,
     onCancel: () -> Unit
 ) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(24.dp)
+    ) {
+        Icon(
+            imageVector = Icons.Default.NewReleases,
+            contentDescription = null,
+            modifier = Modifier.size(80.dp),
+            tint = MaterialTheme.colorScheme.primary
+        )
+
+        Text(
+            text = "¡Nueva versión disponible!",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            text = "Fuente: Avoqado",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Versión actual:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = BuildConfig.VERSION_NAME,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Nueva versión:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = update.versionName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                // Show file size
+                val fileSizeMB = (update.fileSize.toLongOrNull() ?: 0) / (1024 * 1024)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Tamaño:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        text = "$fileSizeMB MB",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        // Release notes if available
+        if (!update.releaseNotes.isNullOrBlank()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "Notas de la versión:",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = update.releaseNotes,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        // Required update warning
+        if (update.isRequired) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer
+                )
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "Esta actualización es obligatoria",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Button(
+            onClick = onDownload,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Download,
+                contentDescription = null,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Descargar")
+        }
+
+        OutlinedButton(
+            onClick = onCancel,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+        ) {
+            Text("Cancelar")
+        }
+    }
+}
+
+@Composable
+private fun DownloadingContent(
+    progress: Int,
+    source: UpdateSource,
+    onCancel: () -> Unit
+) {
+    val sourceName = when (source) {
+        UpdateSource.BLUMON -> "Proveedor"
+        UpdateSource.AVOQADO -> "Avoqado"
+    }
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(24.dp)
@@ -352,6 +607,12 @@ private fun DownloadingContent(
             text = "Descargando...",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            text = "Fuente: $sourceName",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         if (progress > 0) {
@@ -393,10 +654,16 @@ private fun DownloadingContent(
 
 @Composable
 private fun ReadyToInstallContent(
-    update: UpdateInfo,
+    versionName: String,
+    source: UpdateSource,
     onInstall: () -> Unit,
     onCancel: () -> Unit
 ) {
+    val sourceName = when (source) {
+        UpdateSource.BLUMON -> "Proveedor"
+        UpdateSource.AVOQADO -> "Avoqado"
+    }
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(24.dp)
@@ -412,6 +679,12 @@ private fun ReadyToInstallContent(
             text = "Listo para instalar",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            text = "Versión: $versionName ($sourceName)",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.primary
         )
 
         Card(

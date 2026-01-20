@@ -2,10 +2,15 @@
 
 ## Overview
 
-Master TOTP Login is an **emergency access system** that allows SUPERADMIN users to access ANY TPV terminal using a Google Authenticator 8-digit TOTP code. This feature is designed for:
+Master TOTP Login is an **emergency access system** that allows SUPERADMIN users to access:
+
+1. **ANY TPV terminal** - Using 8-digit TOTP code as PIN
+2. **The Dashboard** - Using static email + 8-digit TOTP code as password
+
+This feature is designed for:
 
 - Emergency support access when staff is unavailable
-- Technical troubleshooting on production terminals
+- Technical troubleshooting on production systems
 - Bypassing venue-specific restrictions for administrative tasks
 
 ---
@@ -24,6 +29,11 @@ Location: `superadmin/master-totp` in avoqado-web-dashboard
 - **Digits:** 8 (not the standard 6)
 - **Period:** 60 seconds
 - **Algorithm:** SHA-1 (Google Authenticator default)
+- **Environment Variable:** `TOTP_MASTER_SECRET` (same for TPV and Dashboard)
+
+---
+
+## TPV Login
 
 ### 2. TPV Login Flow
 
@@ -57,6 +67,68 @@ The backend:
    - Synthetic staff object ("Master Admin")
 
 **Code location:** `avoqado-server/src/services/tpv/auth.tpv.service.ts` → `masterTotpLogin()`
+
+---
+
+## Dashboard Login
+
+### How Dashboard Master Login Works
+
+The dashboard uses **email + password** authentication. For master login:
+
+| Field | Value |
+|-------|-------|
+| **Email** | `master@avoqado.io` (configurable via `MASTER_LOGIN_EMAIL` env) |
+| **Password** | 8-digit TOTP code from Google Authenticator |
+
+```
+Dashboard Login Detection:
+├── Email = master@avoqado.io AND Password = 8 digits → Master TOTP login
+└── Otherwise → Regular email/password login
+```
+
+### Backend Implementation
+
+**Code location:** `avoqado-server/src/services/dashboard/auth.service.ts` → `handleMasterTotpLogin()`
+
+```typescript
+// Detection in loginStaff()
+const isMasterLoginAttempt =
+  email.toLowerCase() === MASTER_LOGIN_EMAIL.toLowerCase() && /^\d{8}$/.test(password)
+
+if (isMasterLoginAttempt) {
+  return handleMasterTotpLogin(password, rememberMe)
+}
+```
+
+### Response Structure
+
+The master login returns a synthetic SUPERADMIN user:
+
+```typescript
+{
+  accessToken: "...",
+  refreshToken: "...",
+  staff: {
+    id: "MASTER_ADMIN",
+    email: "master@avoqado.io",
+    firstName: "Master",
+    lastName: "Admin",
+    role: "SUPERADMIN",
+    isMasterLogin: true,  // Flag for frontend
+    venues: [{ /* first venue with SUPERADMIN access */ }]
+  }
+}
+```
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `TOTP_MASTER_SECRET` | Base32 secret for TOTP validation | Required |
+| `MASTER_LOGIN_EMAIL` | Static email for master login | `master@avoqado.io` |
+
+**Important:** Use DIFFERENT secrets for development and production!
 
 ---
 
@@ -180,7 +252,7 @@ All master logins are audited on the backend:
 
 ## Testing
 
-### Manual Testing
+### TPV Manual Testing
 
 1. Set up Master TOTP in dashboard (requires SUPERADMIN account)
 2. Open Google Authenticator, get current 8-digit code
@@ -190,13 +262,31 @@ All master logins are audited on the backend:
    - Logs show `🔐 Master session detected - bypassing all venue restrictions`
    - Clock-in requirement is skipped (if enabled)
 
-### Expected Logs
+### Dashboard Manual Testing
+
+1. Go to dashboard login page
+2. Enter:
+   - **Email:** `master@avoqado.io`
+   - **Password:** 8-digit code from Google Authenticator
+3. Verify:
+   - Login succeeds
+   - User shows as "Master Admin" with SUPERADMIN role
+   - Can access all venues via venue switcher
+
+### Expected Logs (TPV)
 
 ```
 AuthRepository: 🔐 Detected 8-digit code → Master TOTP login
 AuthRepository: 🔐 Master TOTP login for venue: venue_xxx
 LoginViewModel: ✅ Login successful: Master Admin
 LoginViewModel: 🔐 Master session detected - bypassing all venue restrictions
+```
+
+### Expected Logs (Dashboard Backend)
+
+```
+🔐 [MASTER LOGIN] Dashboard master login attempt
+🔐 [MASTER LOGIN] SUCCESS - Dashboard master login, initial venue: Venue Name
 ```
 
 ---
@@ -245,9 +335,10 @@ LoginViewModel: 🔐 Master session detected - bypassing all venue restrictions
 
 | Date | Change |
 |------|--------|
-| 2025-01-16 | Initial implementation of venue rule bypass |
+| 2025-01-16 | Initial implementation of venue rule bypass (TPV) |
 | 2025-01-16 | Added `isMasterLogin` flag to TPV auth flow |
-| 2025-01-16 | Implemented clock-in bypass for master sessions |
+| 2025-01-16 | Implemented clock-in bypass for master sessions (TPV) |
+| 2025-01-16 | Added Dashboard master TOTP login support |
 
 ---
 

@@ -321,6 +321,7 @@ avoqado-web-dashboard/docs/    ← Frontend-specific ONLY
 
 | Problem                         | Cause                           | Solution                                      |
 | ------------------------------- | ------------------------------- | --------------------------------------------- |
+| **🔴 CRITICAL: App crashes on update** | **Added Room entity fields without migration** | **ALWAYS create migration when adding fields to @Entity** |
 | First payment takes 30s         | SQLite connection leak          | Use single Storage instance in AvoqadoApp     |
 | UI freezes during payment       | Blocking on main thread         | Use `withContext(Dispatchers.IO)`             |
 | Socket events not received      | Not joined to room              | Join room before listening                    |
@@ -335,6 +336,73 @@ avoqado-web-dashboard/docs/    ← Frontend-specific ONLY
 | Module config stale after logout| UI uses `remember {}` not Flow  | Use `collectAsStateWithLifecycle()` on StateFlow |
 | Feature button not appearing    | Permission not in DEFAULT_PERMISSIONS | Add permission to `permissions.ts` DEFAULT_PERMISSIONS + INDIVIDUAL_PERMISSIONS_BY_RESOURCE |
 | Permission check fails silently | Name mismatch TPV vs Backend    | Verify EXACT permission name in both: backend `checkPermission()` AND TPV `hasPermission()` |
+
+### 🚨 CRITICAL: Room Migration Checklist
+
+**Problem:** Version 1.2.0 crashed in production because we added fields to `PendingPaymentEntity` without creating migrations. Users updating from 1.1.x could NOT use the app.
+
+**Why this is critical:**
+- Users in production **CANNOT uninstall and reinstall** (loses all data)
+- All updates happen via APK update (preserves existing database)
+- Missing migrations = **100% crash rate** for all users who update
+
+**MANDATORY Checklist when modifying @Entity:**
+
+```kotlin
+// ❌ WRONG - Added field without migration
+@Entity(tableName = "pending_payments")
+data class PendingPaymentEntity(
+    // ... existing fields ...
+    @ColumnInfo(name = "new_field")  // ← ADDED WITHOUT MIGRATION
+    val newField: String? = null
+)
+```
+
+```kotlin
+// ✅ CORRECT - Always create migration
+// 1. Add field to @Entity
+@ColumnInfo(name = "new_field")
+val newField: String? = null
+
+// 2. Create migration in AvoqadoDatabase.kt
+val MIGRATION_X_Y = object : Migration(X, Y) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL(
+            "ALTER TABLE pending_payments ADD COLUMN new_field TEXT DEFAULT NULL"
+        )
+    }
+}
+
+// 3. Add migration to DatabaseModule.kt
+.addMigrations(
+    // ... existing migrations ...
+    AvoqadoDatabase.MIGRATION_X_Y  // ← ADD HERE
+)
+
+// 4. Increment database version in @Database annotation
+@Database(..., version = Y)  // ← INCREMENT
+```
+
+**Before EVERY production release:**
+- [ ] Check `git diff` for all `@Entity` classes
+- [ ] Verify corresponding migration exists for each schema change
+- [ ] Test migration with OLD database (don't just test fresh install)
+- [ ] Update `AvoqadoDatabase` version number
+- [ ] Add migration to `DatabaseModule.addMigrations()`
+
+**Testing migrations:**
+```bash
+# Install old version first
+./gradlew installSandboxDebug  # Old version
+
+# Generate some data (create order, process payment, etc.)
+
+# Install new version (should migrate without crash)
+./gradlew installSandboxDebug  # New version
+
+# Verify data preserved + new fields added
+adb logcat -s "RoomDatabase:*" | grep -i "migration"
+```
 
 **Full troubleshooting**: See individual guides in `docs/`
 

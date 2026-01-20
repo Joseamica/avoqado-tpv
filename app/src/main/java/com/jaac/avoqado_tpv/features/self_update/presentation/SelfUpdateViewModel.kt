@@ -14,6 +14,10 @@ import com.example.clean_lib_services.shared.core.domain.use_case.remote_downloa
 import com.example.clean_lib_services.shared.initializer.domain.use_case.get_init_data.GetInitDataParams
 import com.example.clean_lib_services.shared.initializer.domain.use_case.get_init_data.GetInitDataUseCase
 import com.jaac.avoqado_tpv.BuildConfig
+import com.jaac.avoqado_tpv.core.data.network.AvoqadoUpdateInfo
+import com.jaac.avoqado_tpv.features.self_update.data.AvoqadoUpdateRepository
+import com.jaac.avoqado_tpv.features.self_update.data.DownloadResult
+import com.jaac.avoqado_tpv.features.self_update.data.UpdateCheckResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,14 +30,18 @@ import java.io.File
 import javax.inject.Inject
 
 /**
- * SelfUpdateViewModel - Handles app self-update via Blumon SDK
+ * SelfUpdateViewModel - Handles app self-update via dual sources
+ *
+ * **Dual Update System:**
+ * - **Blumon (Provider)**: Updates managed by Blumon/PAX
+ * - **Avoqado (Self-managed)**: Updates uploaded via Superadmin dashboard
  *
  * Flow: CheckVersion → DownloadFile → InstallerApp
  *
- * Uses Blumon SDK use cases directly (already provided via Hilt):
- * - CheckVersionUseCase: Checks if update is available
- * - DownloadFileUseCase: Downloads APK to device storage
- * - InstallerAppUseCase: Installs APK via PAX SDK (silent install)
+ * Uses:
+ * - Blumon SDK use cases for provider updates
+ * - AvoqadoUpdateRepository for self-managed updates
+ * - PAX InstallerAppUseCase for silent APK installation
  *
  * Note: After successful installation, PAX terminal goes to home menu.
  * User must manually reopen the app.
@@ -43,7 +51,8 @@ class SelfUpdateViewModel @Inject constructor(
     private val checkVersionUseCase: CheckVersionUseCase,
     private val downloadFileUseCase: DownloadFileUseCase,
     private val installerAppUseCase: InstallerAppUseCase,
-    private val getInitDataUseCase: GetInitDataUseCase
+    private val getInitDataUseCase: GetInitDataUseCase,
+    private val avoqadoUpdateRepository: AvoqadoUpdateRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<SelfUpdateState>(SelfUpdateState.Idle)
@@ -51,12 +60,15 @@ class SelfUpdateViewModel @Inject constructor(
 
     // Store update info for download step
     private var currentUpdate: UpdateInfo? = null
+    private var currentAvoqadoUpdate: AvoqadoUpdateInfo? = null
     private var downloadedApkPath: String? = null
+    private var currentUpdateSource: UpdateSource = UpdateSource.BLUMON
 
     /**
-     * Check if an update is available from Blumon servers
+     * Check if an update is available from Blumon servers (Provider)
      */
-    fun checkForUpdate() {
+    fun checkForUpdateBlumon() {
+        currentUpdateSource = UpdateSource.BLUMON
         viewModelScope.launch {
             _state.value = SelfUpdateState.Checking
 
@@ -83,7 +95,7 @@ class SelfUpdateViewModel @Inject constructor(
                     version = cleanVersion
                 )
 
-                Timber.d("🔍 Checking for updates: posId=$posId, version=$cleanVersion (raw: ${BuildConfig.VERSION_NAME})")
+                Timber.d("🔍 [Blumon] Checking for updates: posId=$posId, version=$cleanVersion (raw: ${BuildConfig.VERSION_NAME})")
 
                 val result = withContext(Dispatchers.IO) {
                     checkVersionUseCase.run(params)
@@ -91,18 +103,18 @@ class SelfUpdateViewModel @Inject constructor(
 
                 if (result.isLeft) {
                     val failure = result.leftValue()
-                    Timber.e("❌ CheckVersion failed: $failure")
+                    Timber.e("❌ [Blumon] CheckVersion failed: $failure")
                     // GenericFailure usually means no update available or app not registered
                     // Treat as "up to date" instead of showing technical error
                     val failureString = failure.toString()
                     if (failureString.contains("GenericFailure")) {
-                        Timber.i("ℹ️ No updates registered for this app - treating as up to date")
-                        _state.value = SelfUpdateState.UpToDate(BuildConfig.VERSION_NAME)
+                        Timber.i("ℹ️ [Blumon] No updates registered for this app - treating as up to date")
+                        _state.value = SelfUpdateState.UpToDate(BuildConfig.VERSION_NAME, UpdateSource.BLUMON)
                     } else {
                         _state.value = SelfUpdateState.Error(
                             code = UpdateErrorCode.SERVER_ERROR,
                             message = "Error al verificar: $failure",
-                            retryAction = RetryAction.CHECK_VERSION
+                            retryAction = RetryAction.CHECK_VERSION_BLUMON
                         )
                     }
                     return@launch
@@ -112,7 +124,51 @@ class SelfUpdateViewModel @Inject constructor(
                 handleCheckVersionResponse(response)
 
             } catch (e: Exception) {
-                Timber.e(e, "❌ CheckVersion exception")
+                Timber.e(e, "❌ [Blumon] CheckVersion exception")
+                _state.value = SelfUpdateState.Error(
+                    code = UpdateErrorCode.UNKNOWN,
+                    message = "Error inesperado: ${e.message}"
+                )
+            }
+        }
+    }
+
+    /**
+     * Check if an update is available from Avoqado backend (Self-managed)
+     */
+    fun checkForUpdateAvoqado() {
+        currentUpdateSource = UpdateSource.AVOQADO
+        viewModelScope.launch {
+            _state.value = SelfUpdateState.Checking
+
+            try {
+                Timber.d("🔍 [Avoqado] Checking for updates...")
+
+                when (val result = avoqadoUpdateRepository.checkForUpdate()) {
+                    is UpdateCheckResult.UpToDate -> {
+                        Timber.i("✅ [Avoqado] App is up to date")
+                        _state.value = SelfUpdateState.UpToDate(
+                            currentVersion = result.currentVersion,
+                            source = UpdateSource.AVOQADO
+                        )
+                    }
+                    is UpdateCheckResult.UpdateAvailable -> {
+                        val update = result.updateInfo
+                        currentAvoqadoUpdate = update
+                        Timber.i("✅ [Avoqado] Update available: ${update.versionName} (${update.versionCode})")
+                        _state.value = SelfUpdateState.AvoqadoUpdateAvailable(update)
+                    }
+                    is UpdateCheckResult.Error -> {
+                        Timber.e("❌ [Avoqado] Check failed: ${result.message}")
+                        _state.value = SelfUpdateState.Error(
+                            code = UpdateErrorCode.SERVER_ERROR,
+                            message = result.message,
+                            retryAction = RetryAction.CHECK_VERSION_AVOQADO
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Avoqado] CheckVersion exception")
                 _state.value = SelfUpdateState.Error(
                     code = UpdateErrorCode.UNKNOWN,
                     message = "Error inesperado: ${e.message}"
@@ -129,8 +185,8 @@ class SelfUpdateViewModel @Inject constructor(
             val dataResponse = dataResponseField.get(response)
 
             if (dataResponse == null) {
-                Timber.i("✅ Already on latest version (no dataResponse)")
-                _state.value = SelfUpdateState.UpToDate(BuildConfig.VERSION_NAME)
+                Timber.i("✅ [Blumon] Already on latest version (no dataResponse)")
+                _state.value = SelfUpdateState.UpToDate(BuildConfig.VERSION_NAME, UpdateSource.BLUMON)
                 return
             }
 
@@ -157,31 +213,41 @@ class SelfUpdateViewModel @Inject constructor(
                     zipFile = zipFile
                 )
                 currentUpdate = update
-                Timber.i("✅ Update available: ${update.zipFile}")
-                _state.value = SelfUpdateState.UpdateAvailable(update)
+                Timber.i("✅ [Blumon] Update available: ${update.zipFile}")
+                _state.value = SelfUpdateState.BlumonUpdateAvailable(update)
             } else {
                 // No update or error message
                 if (description != null) {
-                    Timber.i("ℹ️ No update available: $description")
+                    Timber.i("ℹ️ [Blumon] No update available: $description")
                 } else {
-                    Timber.i("✅ Already on latest version")
+                    Timber.i("✅ [Blumon] Already on latest version")
                 }
-                _state.value = SelfUpdateState.UpToDate(BuildConfig.VERSION_NAME)
+                _state.value = SelfUpdateState.UpToDate(BuildConfig.VERSION_NAME, UpdateSource.BLUMON)
             }
         } catch (e: Exception) {
             Timber.e(e, "Error parsing CheckVersion response")
-            _state.value = SelfUpdateState.UpToDate(BuildConfig.VERSION_NAME)
+            _state.value = SelfUpdateState.UpToDate(BuildConfig.VERSION_NAME, UpdateSource.BLUMON)
         }
     }
 
     /**
-     * Download the available update
+     * Download the available update (routes to correct source)
      */
     fun downloadUpdate() {
+        when (currentUpdateSource) {
+            UpdateSource.BLUMON -> downloadUpdateBlumon()
+            UpdateSource.AVOQADO -> downloadUpdateAvoqado()
+        }
+    }
+
+    /**
+     * Download update from Blumon servers
+     */
+    private fun downloadUpdateBlumon() {
         val update = currentUpdate ?: return
 
         viewModelScope.launch {
-            _state.value = SelfUpdateState.Downloading(progress = 0)
+            _state.value = SelfUpdateState.Downloading(progress = 0, source = UpdateSource.BLUMON)
 
             try {
                 val downloadDir = Environment.getExternalStoragePublicDirectory(
@@ -194,7 +260,7 @@ class SelfUpdateViewModel @Inject constructor(
                     pathToDownloadFile = downloadDir
                 )
 
-                Timber.d("📥 Downloading update: ${update.urlFile}")
+                Timber.d("📥 [Blumon] Downloading update: ${update.urlFile}")
 
                 val result = withContext(Dispatchers.IO) {
                     downloadFileUseCase.run(params)
@@ -202,7 +268,7 @@ class SelfUpdateViewModel @Inject constructor(
 
                 if (result.isLeft) {
                     val failure = result.leftValue()
-                    Timber.e("❌ Download failed: $failure")
+                    Timber.e("❌ [Blumon] Download failed: $failure")
                     _state.value = SelfUpdateState.Error(
                         code = UpdateErrorCode.DOWNLOAD_FAILED,
                         message = "Error de descarga: $failure",
@@ -214,14 +280,61 @@ class SelfUpdateViewModel @Inject constructor(
                 // The downloaded file is the zipFile name in the download directory
                 val apkPath = File(downloadDir, update.zipFile).absolutePath
                 downloadedApkPath = apkPath
-                Timber.i("✅ Download complete: $apkPath")
+                Timber.i("✅ [Blumon] Download complete: $apkPath")
                 _state.value = SelfUpdateState.ReadyToInstall(
                     apkPath = apkPath,
-                    update = update
+                    versionName = update.newVersion,
+                    source = UpdateSource.BLUMON
                 )
 
             } catch (e: Exception) {
-                Timber.e(e, "❌ Download exception")
+                Timber.e(e, "❌ [Blumon] Download exception")
+                _state.value = SelfUpdateState.Error(
+                    code = UpdateErrorCode.DOWNLOAD_FAILED,
+                    message = "Error de descarga: ${e.message}"
+                )
+            }
+        }
+    }
+
+    /**
+     * Download update from Avoqado backend (Firebase Storage)
+     */
+    private fun downloadUpdateAvoqado() {
+        val update = currentAvoqadoUpdate ?: return
+
+        viewModelScope.launch {
+            _state.value = SelfUpdateState.Downloading(progress = 0, source = UpdateSource.AVOQADO)
+
+            try {
+                Timber.d("📥 [Avoqado] Downloading update: ${update.downloadUrl}")
+
+                val result = avoqadoUpdateRepository.downloadApk(update) { progress ->
+                    _state.value = SelfUpdateState.Downloading(progress = progress, source = UpdateSource.AVOQADO)
+                }
+
+                when (result) {
+                    is DownloadResult.Success -> {
+                        downloadedApkPath = result.filePath
+                        Timber.i("✅ [Avoqado] Download complete: ${result.filePath}")
+                        _state.value = SelfUpdateState.ReadyToInstall(
+                            apkPath = result.filePath,
+                            versionName = update.versionName,
+                            source = UpdateSource.AVOQADO
+                        )
+                    }
+                    is DownloadResult.Error -> {
+                        Timber.e("❌ [Avoqado] Download failed: ${result.message}")
+                        _state.value = SelfUpdateState.Error(
+                            code = UpdateErrorCode.DOWNLOAD_FAILED,
+                            message = result.message,
+                            retryAction = RetryAction.DOWNLOAD
+                        )
+                    }
+                }
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Avoqado] Download exception")
                 _state.value = SelfUpdateState.Error(
                     code = UpdateErrorCode.DOWNLOAD_FAILED,
                     message = "Error de descarga: ${e.message}"
@@ -281,6 +394,7 @@ class SelfUpdateViewModel @Inject constructor(
     fun cancel() {
         cleanupApk()
         currentUpdate = null
+        currentAvoqadoUpdate = null
         _state.value = SelfUpdateState.Idle
     }
 
@@ -291,7 +405,8 @@ class SelfUpdateViewModel @Inject constructor(
         when (val currentState = _state.value) {
             is SelfUpdateState.Error -> {
                 when (currentState.retryAction) {
-                    RetryAction.CHECK_VERSION -> checkForUpdate()
+                    RetryAction.CHECK_VERSION_BLUMON -> checkForUpdateBlumon()
+                    RetryAction.CHECK_VERSION_AVOQADO -> checkForUpdateAvoqado()
                     RetryAction.DOWNLOAD -> downloadUpdate()
                     RetryAction.INSTALL -> installUpdate()
                     null -> _state.value = SelfUpdateState.Idle
@@ -387,22 +502,32 @@ sealed class SelfUpdateState {
     /** Initial state - no check performed */
     data object Idle : SelfUpdateState()
 
-    /** Checking for updates with Blumon API */
+    /** Checking for updates with either source */
     data object Checking : SelfUpdateState()
 
     /** No update available - current version is latest */
-    data class UpToDate(val currentVersion: String) : SelfUpdateState()
+    data class UpToDate(
+        val currentVersion: String,
+        val source: UpdateSource = UpdateSource.BLUMON
+    ) : SelfUpdateState()
 
-    /** Update available - ready to download */
-    data class UpdateAvailable(val update: UpdateInfo) : SelfUpdateState()
+    /** Update available from Blumon - ready to download */
+    data class BlumonUpdateAvailable(val update: UpdateInfo) : SelfUpdateState()
+
+    /** Update available from Avoqado - ready to download */
+    data class AvoqadoUpdateAvailable(val update: AvoqadoUpdateInfo) : SelfUpdateState()
 
     /** Downloading APK with progress */
-    data class Downloading(val progress: Int) : SelfUpdateState()
+    data class Downloading(
+        val progress: Int,
+        val source: UpdateSource = UpdateSource.BLUMON
+    ) : SelfUpdateState()
 
     /** Download complete - ready to install */
     data class ReadyToInstall(
         val apkPath: String,
-        val update: UpdateInfo
+        val versionName: String,
+        val source: UpdateSource = UpdateSource.BLUMON
     ) : SelfUpdateState()
 
     /** Installing APK via PAX SDK */
@@ -417,6 +542,14 @@ sealed class SelfUpdateState {
         val message: String,
         val retryAction: RetryAction? = null
     ) : SelfUpdateState()
+}
+
+/**
+ * Update source for dual update system
+ */
+enum class UpdateSource {
+    BLUMON,   // Provider-managed updates
+    AVOQADO   // Self-managed updates
 }
 
 /**
@@ -446,7 +579,8 @@ enum class UpdateErrorCode {
  * Action to retry on error
  */
 enum class RetryAction {
-    CHECK_VERSION,
+    CHECK_VERSION_BLUMON,
+    CHECK_VERSION_AVOQADO,
     DOWNLOAD,
     INSTALL
 }

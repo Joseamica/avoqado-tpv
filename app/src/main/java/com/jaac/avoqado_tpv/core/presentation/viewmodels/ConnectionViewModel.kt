@@ -348,6 +348,7 @@ class ConnectionViewModel @Inject constructor(
             timestamp = java.time.Instant.now().toString(),
             status = com.jaac.avoqado_tpv.core.domain.models.TerminalStatus.ACTIVE,
             version = com.jaac.avoqado_tpv.BuildConfig.VERSION_NAME,
+            versionCode = com.jaac.avoqado_tpv.BuildConfig.VERSION_CODE,
             systemInfo = systemHealth,
             networkInfo = networkInfo
         )

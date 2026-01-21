@@ -10,6 +10,11 @@ import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
 import com.jaac.avoqado_tpv.features.remote_command.data.model.CommandResult
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommand
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandType
+import com.jaac.avoqado_tpv.features.self_update.data.AvoqadoUpdateRepository
+import com.jaac.avoqado_tpv.features.self_update.data.DownloadResult
+import com.jaac.avoqado_tpv.features.self_update.data.UpdateCheckResult as AvoqadoUpdateCheckResult
+import com.jaac.avoqado_tpv.features.self_update.domain.UpdateRequestManager
+import com.jaac.avoqado_tpv.features.self_update.domain.UpdateRequestResult
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -53,7 +58,9 @@ class CommandExecutor @Inject constructor(
     @ApplicationContext private val context: Context,
     private val lockScreenManager: LockScreenManager,
     private val maintenanceManager: MaintenanceManager,
-    private val secureStorage: SecureStorage
+    private val secureStorage: SecureStorage,
+    private val updateRequestManager: UpdateRequestManager,
+    private val avoqadoUpdateRepository: AvoqadoUpdateRepository
 ) {
     companion object {
         private const val TAG = "CommandExecutor"
@@ -113,6 +120,8 @@ class CommandExecutor @Inject constructor(
             TpvCommandType.SHUTDOWN -> executeShutdown()
             TpvCommandType.CLEAR_CACHE -> executeClearCache()
             TpvCommandType.FORCE_UPDATE -> executeForceUpdate()
+            TpvCommandType.REQUEST_UPDATE -> executeRequestUpdate(command)
+            TpvCommandType.INSTALL_VERSION -> executeInstallVersion(command)
 
             // Data Management Commands
             TpvCommandType.SYNC_DATA -> executeSyncData()
@@ -514,7 +523,350 @@ class CommandExecutor @Inject constructor(
     }
 
     /**
-     * Result of checking for updates
+     * REQUEST_UPDATE - Show update dialog to user (Avoqado APK updates)
+     *
+     * Unlike FORCE_UPDATE (Firebase check), this uses the Avoqado self-update system
+     * and shows a dialog where the user can accept or dismiss the update.
+     *
+     * Flow:
+     * 1. Check Avoqado backend for available updates
+     * 2. If update available, show dialog to user
+     * 3. User decides: Accept → download/install, Dismiss → close
+     *
+     * @param command The REQUEST_UPDATE command
+     * @see UpdateRequestManager
+     */
+    private suspend fun executeRequestUpdate(command: TpvCommand): CommandResult {
+        Timber.i("📲 [$TAG] Executing REQUEST_UPDATE command")
+
+        return try {
+            when (val result = updateRequestManager.handleUpdateRequest(command.commandId)) {
+                is UpdateRequestResult.DialogShown -> {
+                    CommandResult.success(
+                        message = "Update dialog shown: ${result.versionName}",
+                        data = mapOf(
+                            "versionName" to result.versionName,
+                            "versionCode" to result.versionCode,
+                            "dialogShown" to true
+                        )
+                    )
+                }
+
+                is UpdateRequestResult.AlreadyUpToDate -> {
+                    CommandResult.success(
+                        message = "App is already up to date",
+                        data = mapOf(
+                            "currentVersion" to result.currentVersion,
+                            "updateAvailable" to false
+                        )
+                    )
+                }
+
+                is UpdateRequestResult.Error -> {
+                    CommandResult.failed(
+                        message = result.message
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [$TAG] REQUEST_UPDATE failed")
+            CommandResult.failed(
+                message = "Error requesting update: ${e.message}"
+            )
+        }
+    }
+
+    /**
+     * INSTALL_VERSION - Install a specific version (SUPERADMIN rollback/upgrade)
+     *
+     * Unlike REQUEST_UPDATE (shows dialog), this command directly downloads and installs
+     * a specific version without user confirmation. Used by SUPERADMIN for:
+     * - Rolling back to a previous stable version
+     * - Upgrading to a specific target version
+     *
+     * Flow:
+     * 1. Extract versionCode from payload
+     * 2. Fetch specific version info from backend
+     * 3. Download APK from Firebase Storage
+     * 4. Verify SHA-256 checksum
+     * 5. Install APK silently (PAX SDK)
+     *
+     * @param command INSTALL_VERSION command with payload { versionCode: Int }
+     */
+    private suspend fun executeInstallVersion(command: TpvCommand): CommandResult {
+        Timber.w("📦 [$TAG] Executing INSTALL_VERSION command (SUPERADMIN rollback/upgrade)")
+
+        // Extract versionCode from payload
+        val versionCodeAny = command.payload?.get("versionCode")
+        Timber.d("📦 [$TAG] Raw versionCode from payload: $versionCodeAny (type: ${versionCodeAny?.javaClass?.name})")
+        Timber.d("📦 [$TAG] Full payload: ${command.payload}")
+
+        val versionCode = when (versionCodeAny) {
+            is Int -> versionCodeAny
+            is Long -> versionCodeAny.toInt()
+            is Double -> versionCodeAny.toInt()
+            is Float -> versionCodeAny.toInt()
+            is Number -> versionCodeAny.toInt()  // Handles Gson's LazilyParsedNumber
+            is String -> versionCodeAny.toIntOrNull()
+            else -> null
+        }
+
+        if (versionCode == null || versionCode < 1) {
+            Timber.e("❌ [$TAG] Invalid or missing versionCode in INSTALL_VERSION payload. Raw value: $versionCodeAny")
+            return CommandResult.rejected("Invalid or missing versionCode in payload")
+        }
+
+        Timber.i("📦 [$TAG] Target version code: $versionCode")
+
+        // 1. Get specific version info from backend
+        val versionResult = avoqadoUpdateRepository.getSpecificVersion(versionCode)
+
+        when (versionResult) {
+            is AvoqadoUpdateCheckResult.Error -> {
+                Timber.e("❌ [$TAG] Failed to get version $versionCode: ${versionResult.message}")
+                return CommandResult.failed(
+                    message = "Error obteniendo versión $versionCode: ${versionResult.message}"
+                )
+            }
+
+            is AvoqadoUpdateCheckResult.UpToDate -> {
+                // This shouldn't happen with getSpecificVersion, but handle gracefully
+                Timber.w("⚠️ [$TAG] Version $versionCode not found")
+                return CommandResult.failed(
+                    message = "Versión $versionCode no encontrada"
+                )
+            }
+
+            is AvoqadoUpdateCheckResult.UpdateAvailable -> {
+                val updateInfo = versionResult.updateInfo
+                Timber.i("✅ [$TAG] Found version: ${updateInfo.versionName} (${updateInfo.versionCode})")
+
+                // Check if this is a downgrade
+                val currentVersionCode = com.jaac.avoqado_tpv.BuildConfig.VERSION_CODE
+                val isDowngrade = updateInfo.versionCode < currentVersionCode
+                Timber.i("📦 [$TAG] Current version: $currentVersionCode, Target: ${updateInfo.versionCode}, isDowngrade: $isDowngrade")
+
+                // Downgrades require system-level permissions (PAXSTORE in production)
+                // In sandbox/testing, downgrades via standard Android intent will FAIL
+                if (isDowngrade) {
+                    Timber.w("⚠️ [$TAG] DOWNGRADE detected: ${currentVersionCode} → ${updateInfo.versionCode}")
+                    Timber.w("⚠️ [$TAG] Downgrades require PAXSTORE (production) or manual uninstall (testing)")
+                    // Still attempt - will fail on non-rooted devices but might work via PAXSTORE
+                }
+
+                // 2. Download APK
+                Timber.i("📥 [$TAG] Downloading APK: ${updateInfo.downloadUrl}")
+                val downloadResult = avoqadoUpdateRepository.downloadApk(updateInfo) { progress ->
+                    Timber.d("📥 [$TAG] Download progress: $progress%")
+                }
+
+                when (downloadResult) {
+                    is DownloadResult.Error -> {
+                        Timber.e("❌ [$TAG] Download failed: ${downloadResult.message}")
+                        return CommandResult.failed(
+                            message = "Error descargando APK: ${downloadResult.message}"
+                        )
+                    }
+
+                    is DownloadResult.Success -> {
+                        Timber.i("✅ [$TAG] APK downloaded: ${downloadResult.filePath}")
+
+                        // 3. Install APK
+                        try {
+                            // Try shell install first (allows downgrades with -d flag)
+                            val shellInstallSuccess = installViaShellCommand(downloadResult.filePath)
+
+                            if (shellInstallSuccess) {
+                                Timber.i("✅ [$TAG] APK installed successfully via shell - app will restart")
+
+                                // Report update installation for analytics
+                                avoqadoUpdateRepository.reportUpdateInstalled(
+                                    versionCode = updateInfo.versionCode,
+                                    versionName = updateInfo.versionName,
+                                    serialNumber = secureStorage.getSerialNumber()
+                                )
+
+                                return CommandResult.success(
+                                    message = "Versión ${updateInfo.versionName} instalada correctamente",
+                                    data = mapOf(
+                                        "versionName" to updateInfo.versionName,
+                                        "versionCode" to updateInfo.versionCode,
+                                        "installedAt" to Instant.now().toString(),
+                                        "installType" to if (isDowngrade) "ROLLBACK" else "UPGRADE"
+                                    )
+                                )
+                            }
+
+                            // Shell install failed - check if it's a downgrade
+                            if (isDowngrade) {
+                                // Downgrades CANNOT work via standard intent on non-rooted devices
+                                Timber.e("❌ [$TAG] DOWNGRADE BLOCKED: Android doesn't allow installing lower versionCode via standard installer")
+                                return CommandResult.failed(
+                                    message = "⚠️ DOWNGRADE no permitido. Android bloquea la instalación de versiones anteriores. " +
+                                            "En producción use PAXSTORE. En testing, desinstale la app primero."
+                                )
+                            }
+
+                            // For upgrades, fall back to standard intent (user must confirm)
+                            Timber.i("📲 [$TAG] Falling back to standard install intent for upgrade")
+                            installApkWithIntent(downloadResult.filePath)
+
+                            // Report update installation for analytics
+                            avoqadoUpdateRepository.reportUpdateInstalled(
+                                versionCode = updateInfo.versionCode,
+                                versionName = updateInfo.versionName,
+                                serialNumber = secureStorage.getSerialNumber()
+                            )
+
+                            return CommandResult.success(
+                                message = "Instalación iniciada. El usuario debe confirmar en el diálogo de Android.",
+                                data = mapOf(
+                                    "versionName" to updateInfo.versionName,
+                                    "versionCode" to updateInfo.versionCode,
+                                    "installType" to "UPGRADE_USER_CONFIRM"
+                                )
+                            )
+                        } catch (e: Exception) {
+                            Timber.e(e, "❌ [$TAG] Installation failed")
+                            return CommandResult.failed(
+                                message = "Error instalando APK: ${e.message}"
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Note: installApkSilently has been replaced with direct calls to
+    // installViaShellCommand() and installApkWithIntent() in executeInstallVersion()
+    // to properly handle downgrade detection and user-friendly error messages.
+
+    /**
+     * Install APK via shell command (pm install)
+     *
+     * Uses Runtime.exec() to call the package manager directly.
+     * This allows using the -d flag for downgrade support.
+     *
+     * NOTE: pm install cannot access /storage/emulated/0/ due to SELinux.
+     * We must first copy the APK to /data/local/tmp/ which is accessible.
+     *
+     * @param apkPath Path to the APK file
+     * @return true if installation succeeded, false otherwise
+     */
+    private fun installViaShellCommand(apkPath: String): Boolean {
+        return try {
+            Timber.d("📦 [$TAG] Attempting shell install: $apkPath")
+
+            // Step 1: Copy APK to /data/local/tmp/ (SELinux accessible location)
+            val tempPath = "/data/local/tmp/avoqado_update.apk"
+            val copyResult = copyFileToLocalTmp(apkPath, tempPath)
+            if (!copyResult) {
+                Timber.w("⚠️ [$TAG] Failed to copy APK to $tempPath")
+                return false
+            }
+
+            // Step 2: Use pm install with flags:
+            // -r: Replace existing application
+            // -d: Allow version code downgrade (critical for rollback!)
+            // -g: Grant all runtime permissions (API 23+)
+            val process = Runtime.getRuntime().exec(arrayOf(
+                "pm", "install", "-r", "-d", "-g", tempPath
+            ))
+
+            val exitCode = process.waitFor()
+            val output = process.inputStream.bufferedReader().readText()
+            val error = process.errorStream.bufferedReader().readText()
+
+            Timber.d("📦 [$TAG] pm install exit code: $exitCode")
+            Timber.d("📦 [$TAG] pm install output: $output")
+            if (error.isNotBlank()) {
+                Timber.w("📦 [$TAG] pm install error: $error")
+            }
+
+            // Step 3: Clean up temp file
+            try {
+                Runtime.getRuntime().exec(arrayOf("rm", "-f", tempPath)).waitFor()
+            } catch (e: Exception) {
+                Timber.d("📦 [$TAG] Could not delete temp file: ${e.message}")
+            }
+
+            if (exitCode == 0 || output.contains("Success", ignoreCase = true)) {
+                Timber.i("✅ [$TAG] Shell install successful")
+                true
+            } else {
+                Timber.w("⚠️ [$TAG] Shell install failed: $output $error")
+                false
+            }
+        } catch (e: SecurityException) {
+            Timber.w("⚠️ [$TAG] Shell install denied (no permission): ${e.message}")
+            false
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ [$TAG] Shell install error")
+            false
+        }
+    }
+
+    /**
+     * Copy file to /data/local/tmp/ using shell command
+     *
+     * This location is accessible by pm install (not blocked by SELinux).
+     *
+     * @param sourcePath Source file path
+     * @param destPath Destination path (should be in /data/local/tmp/)
+     * @return true if copy succeeded
+     */
+    private fun copyFileToLocalTmp(sourcePath: String, destPath: String): Boolean {
+        return try {
+            Timber.d("📦 [$TAG] Copying APK to $destPath")
+
+            // Use cat to copy (works better with SELinux than cp)
+            val process = Runtime.getRuntime().exec(arrayOf(
+                "sh", "-c", "cat '$sourcePath' > '$destPath' && chmod 644 '$destPath'"
+            ))
+
+            val exitCode = process.waitFor()
+            val error = process.errorStream.bufferedReader().readText()
+
+            if (exitCode == 0) {
+                Timber.d("📦 [$TAG] APK copied successfully to $destPath")
+                true
+            } else {
+                Timber.w("⚠️ [$TAG] Copy failed: $error")
+                false
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ [$TAG] Copy error")
+            false
+        }
+    }
+
+    /**
+     * Install APK using standard Intent (requires user confirmation)
+     *
+     * NOTE: This will NOT work for downgrades on non-rooted devices.
+     * Android blocks installing APKs with lower versionCode by default.
+     */
+    private fun installApkWithIntent(apkPath: String) {
+        val apkFile = java.io.File(apkPath)
+        val uri = androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.provider",
+            apkFile
+        )
+
+        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+        }
+
+        context.startActivity(intent)
+        Timber.i("📲 [$TAG] Install intent launched for user confirmation")
+    }
+
+    /**
+     * Result of checking for updates (Firebase App Distribution)
      */
     private sealed class UpdateCheckResult {
         data class Available(

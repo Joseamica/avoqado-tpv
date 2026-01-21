@@ -115,7 +115,12 @@ data class SystemInfoDto(
     val networkConnected: Boolean,
 
     @SerializedName("signalStrength")
-    val signalStrength: Int?
+    val signalStrength: Int?,
+
+    // Version code (for downgrade detection in dashboard)
+    // Added for INSTALL_VERSION command to detect downgrades
+    @SerializedName("versionCode")
+    val versionCode: Int
 )
 
 /**
@@ -259,7 +264,8 @@ fun Heartbeat.toDto(): HeartbeatRequestDto {
             networkType = networkInfo.type.name,
             networkMetered = networkInfo.isMetered,
             networkConnected = networkInfo.isConnected,
-            signalStrength = networkInfo.signalStrength
+            signalStrength = networkInfo.signalStrength,
+            versionCode = versionCode  // For dashboard downgrade detection
         )
     )
 }

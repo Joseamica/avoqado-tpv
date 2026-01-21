@@ -270,6 +270,7 @@ class HeartbeatWorker @AssistedInject constructor(
             timestamp = Instant.now().toString(),
             status = status,
             version = BuildConfig.VERSION_NAME,
+            versionCode = BuildConfig.VERSION_CODE,  // For dashboard downgrade detection
             systemInfo = systemHealth,
             networkInfo = networkInfo
         )

@@ -69,6 +69,9 @@ import com.jaac.avoqado_tpv.features.ordering.presentation.menu.MenuScreen
 import com.jaac.avoqado_tpv.features.timeclock.presentation.TimeclockScreen
 import com.jaac.avoqado_tpv.features.serialized_sale.presentation.SerializedSaleScreen
 import com.jaac.avoqado_tpv.features.serialized_inventory.presentation.SerializedInventoryScreen
+import com.jaac.avoqado_tpv.features.self_update.domain.UpdateRequestManager
+import com.jaac.avoqado_tpv.features.self_update.domain.UpdateRequestState
+import com.jaac.avoqado_tpv.features.self_update.presentation.UpdateRequestDialog
 import com.jaac.avoqado_tpv.features.payment.presentation.split.SplitByProductScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.split.SplitByPersonScreen
 import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
@@ -95,6 +98,7 @@ interface AppNavigationEntryPoint {
     fun paymentApiService(): com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
     fun modulesRepository(): com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
     fun initializationManager(): com.jaac.avoqado_tpv.features.payment.data.InitializationManager
+    fun updateRequestManager(): UpdateRequestManager
 }
 
 /**
@@ -140,6 +144,12 @@ fun AppNavigation(
     val kioskModeManager = remember { kioskEntryPoint.kioskModeManager() }
     val isKioskMode by kioskModeManager.isKioskMode.collectAsStateWithLifecycle()
     val modulesRepository = remember { kioskEntryPoint.modulesRepository() }
+
+    // 📥 UPDATE REQUEST OBSERVATION (Remote update commands from dashboard)
+    // When dashboard sends REQUEST_UPDATE command, show dialog to user
+    val updateRequestManager = remember { kioskEntryPoint.updateRequestManager() }
+    val updateRequestState by updateRequestManager.updateRequestState.collectAsStateWithLifecycle()
+    val updateCoroutineScope = rememberCoroutineScope()
 
     // 🔐 GLOBAL SESSION EXPIRATION LISTENER
     // Observes session events from TokenAuthenticator and navigates accordingly
@@ -1441,6 +1451,31 @@ fun AppNavigation(
             // Prevents jarring transition from current screen to Login
             if (isSessionExpiring) {
                 SessionExpiringOverlay()
+            }
+
+            // 📥 UPDATE REQUEST DIALOG (Remote update command from dashboard)
+            // Shows dialog when dashboard sends REQUEST_UPDATE command
+            // User can accept (download + install) or dismiss
+            if (updateRequestState !is UpdateRequestState.Idle) {
+                UpdateRequestDialog(
+                    state = updateRequestState,
+                    onAccept = {
+                        Timber.i("📥 [AppNavigation] User accepted update request")
+                        updateCoroutineScope.launch {
+                            updateRequestManager.acceptUpdate()
+                        }
+                    },
+                    onDismiss = {
+                        Timber.i("📥 [AppNavigation] User dismissed update request")
+                        updateRequestManager.resetState()
+                    },
+                    onRetry = {
+                        Timber.i("📥 [AppNavigation] User retrying update")
+                        updateCoroutineScope.launch {
+                            updateRequestManager.acceptUpdate()
+                        }
+                    }
+                )
             }
         }  // Close Box
     }  // Close Column

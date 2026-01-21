@@ -107,6 +107,74 @@ class AvoqadoUpdateRepository @Inject constructor(
     }
 
     /**
+     * Get a specific version by versionCode (for INSTALL_VERSION command)
+     *
+     * Used for rollback/upgrade to a specific version.
+     * SUPERADMIN can trigger this via INSTALL_VERSION command.
+     *
+     * @param versionCode Target versionCode (e.g., 5)
+     * @return UpdateCheckResult with version info if found and active
+     */
+    suspend fun getSpecificVersion(versionCode: Int): UpdateCheckResult {
+        return withContext(Dispatchers.IO) {
+            try {
+                // Determine environment from build variant
+                val environment = if (BuildConfig.BLUMON_ENV == "SAND") "SANDBOX" else "PRODUCTION"
+
+                Timber.d("🔍 [Avoqado] Getting specific version: versionCode=$versionCode, env=$environment")
+
+                val response = apiService.getSpecificVersion(
+                    versionCode = versionCode,
+                    environment = environment
+                )
+
+                if (!response.isSuccessful) {
+                    val errorBody = response.errorBody()?.string()
+                    Timber.e("❌ [Avoqado] Get version failed: ${response.code()} - $errorBody")
+                    return@withContext UpdateCheckResult.Error(
+                        message = "Error del servidor: ${response.code()}"
+                    )
+                }
+
+                val body = response.body()
+                if (body == null) {
+                    Timber.e("❌ [Avoqado] Empty response body")
+                    return@withContext UpdateCheckResult.Error(
+                        message = "Respuesta vacía del servidor"
+                    )
+                }
+
+                if (!body.success) {
+                    Timber.e("❌ [Avoqado] Server returned success=false: ${body.message}")
+                    return@withContext UpdateCheckResult.Error(
+                        message = body.message ?: "Error desconocido"
+                    )
+                }
+
+                if (!body.found || body.version == null) {
+                    Timber.w("⚠️ [Avoqado] Version $versionCode not found or not active")
+                    return@withContext UpdateCheckResult.Error(
+                        message = body.message ?: "Versión $versionCode no encontrada"
+                    )
+                }
+
+                val version = body.version
+                Timber.i("✅ [Avoqado] Found version: ${version.versionName} (${version.versionCode})")
+
+                return@withContext UpdateCheckResult.UpdateAvailable(
+                    updateInfo = version
+                )
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Avoqado] Exception getting specific version")
+                return@withContext UpdateCheckResult.Error(
+                    message = "Error de conexión: ${e.message}"
+                )
+            }
+        }
+    }
+
+    /**
      * Download APK from Firebase Storage URL
      *
      * @param updateInfo Update info with download URL

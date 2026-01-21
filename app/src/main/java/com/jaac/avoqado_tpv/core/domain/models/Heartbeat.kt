@@ -21,6 +21,7 @@ import java.time.Instant
  *     timestamp = Instant.now().toString(),
  *     status = TerminalStatus.ACTIVE,
  *     version = "1.0.0",
+ *     versionCode = 45,  // For dashboard downgrade detection
  *     systemInfo = systemHealth,
  *     networkInfo = networkInfo
  * )
@@ -54,6 +55,13 @@ data class Heartbeat(
      * Example: "1.0.0"
      */
     val version: String,
+
+    /**
+     * App version code (integer for comparison)
+     * Example: 45
+     * Used by dashboard for downgrade detection in INSTALL_VERSION command
+     */
+    val versionCode: Int,
 
     /**
      * System health metrics

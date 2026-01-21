@@ -33,11 +33,13 @@ enum class TpvCommandType {
     REACTIVATE,
     REMOTE_ACTIVATE,  // Remote activation by SUPERADMIN (pre-registered terminal)
 
-    // App Lifecycle (4)
+    // App Lifecycle (6)
     RESTART,
     SHUTDOWN,
     CLEAR_CACHE,
     FORCE_UPDATE,
+    REQUEST_UPDATE,  // Shows dialog for Avoqado APK update (user can accept/dismiss)
+    INSTALL_VERSION,  // Install specific version (SUPERADMIN rollback/upgrade) - payload: {versionCode: Int}
 
     // Data Management (3)
     SYNC_DATA,

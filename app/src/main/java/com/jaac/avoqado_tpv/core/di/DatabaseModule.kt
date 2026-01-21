@@ -99,6 +99,23 @@ object DatabaseModule {
             // Fallback for cases where explicit migration is missing
             .fallbackToDestructiveMigration()
 
+            // ⚠️ DOWNGRADE SUPPORT (INSTALL_VERSION command rollback)
+            // When installing an older version, the database schema will be newer than
+            // what the old app expects. This allows destructive downgrade (data loss).
+            //
+            // ⚠️ WARNING: This will DELETE all local data including:
+            // - pending_payments (queued payments not yet synced)
+            // - draft_orders (local orders)
+            // - verification_queue (pending verifications)
+            // - All cache tables (can be recovered from server)
+            //
+            // RECOMMENDATION: Before downgrading via INSTALL_VERSION:
+            // 1. Ensure all pending payments are synced (PaymentSyncWorker)
+            // 2. Ensure all draft orders are synced
+            // 3. Ensure all verifications are synced
+            // The dashboard should warn SUPERADMIN about potential data loss.
+            .fallbackToDestructiveMigrationOnDowngrade()
+
             // ✅ Enable Write-Ahead Logging for better concurrency
             // Allows reads while writes are happening (recommended for POS systems)
             .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)

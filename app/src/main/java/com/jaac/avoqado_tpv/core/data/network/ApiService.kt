@@ -1082,6 +1082,22 @@ interface ApiService {
     suspend fun reportUpdateInstalled(
         @Body request: ReportUpdateInstalledRequest
     ): Response<GenericResponse>
+
+    /**
+     * Get specific app version by versionCode (for INSTALL_VERSION command)
+     *
+     * Used for rollback/upgrade to a specific version.
+     * SUPERADMIN can trigger this via INSTALL_VERSION command.
+     *
+     * @param versionCode Target versionCode (e.g., 5)
+     * @param environment "SANDBOX" or "PRODUCTION"
+     * @return Version info if found and active
+     */
+    @GET("tpv/get-version")
+    suspend fun getSpecificVersion(
+        @Query("versionCode") versionCode: Int,
+        @Query("environment") environment: String
+    ): Response<SpecificVersionResponse>
 }
 
 // ========== App Update DTOs ==========
@@ -1120,6 +1136,16 @@ data class ReportUpdateInstalledRequest(
     val versionName: String,
     val updateSource: String, // "AVOQADO" or "BLUMON"
     val serialNumber: String?
+)
+
+/**
+ * Response from get-version endpoint (for INSTALL_VERSION command)
+ */
+data class SpecificVersionResponse(
+    val success: Boolean,
+    val found: Boolean,
+    val message: String? = null,
+    val version: AvoqadoUpdateInfo? = null
 )
 
 /**

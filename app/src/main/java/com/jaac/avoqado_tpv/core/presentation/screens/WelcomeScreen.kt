@@ -292,27 +292,10 @@ fun WelcomeScreen(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // REMOTE COMMAND OVERLAYS
-    // Full-screen overlays for Lock and Maintenance modes
-    // These have high zIndex and block all user interactions when active
+    // NOTE: Lock and Maintenance overlays moved to MainActivity (root level)
+    // This ensures they cover ALL screens, not just WelcomeScreen
+    // See: MainActivity.kt setContent {} block
     // ═══════════════════════════════════════════════════════════════════════════
-
-    // Maintenance Overlay (zIndex 90) - Staff can exit locally
-    MaintenanceOverlay(
-        visible = isInMaintenance,
-        maintenanceReason = maintenanceReason,
-        initiatedBy = maintenanceInitiatedBy,
-        onExitMaintenance = { viewModel.exitMaintenance() }
-    )
-
-    // Lock Screen Overlay (zIndex 100) - Highest priority, blocks everything
-    // Must be unlocked remotely by admin - no local exit option
-    LockScreenOverlay(
-        visible = isLocked,
-        lockReason = lockReason,
-        lockMessage = lockMessage,
-        lockedBy = lockedBy
-    )
 
     // ═══════════════════════════════════════════════════════════════════════════
     // VENUE STATUS DIALOGS
@@ -509,23 +492,38 @@ private fun WelcomeScreenContent(
         // ════════════════════════════════════════════════════════════════════
         // 📦 NORMAL MODE (Restaurant/Retail)
         // Full feature set: Pago rápido, Órdenes, Reportes, Turnos, Pagos, Soporte
+        // Visibility of "Pago rápido" and "Órdenes" controlled by tpvSettings
         // ════════════════════════════════════════════════════════════════════
-        val allButtons = listOf(
-            // ✅ ENABLED FEATURES
-            ActionButton(
-                icon = Icons.Default.CreditCard,
-                label = "Pago rápido",
-                enabled = canOperate,  // ⭐ Only enabled when shift is open (or disabled)
-                badge = if (!canOperate) "Abre el turno primero" else null,  // ⭐ Show hint when disabled
-                onClick = { showAmountBottomSheet = true }  // ✅ Open modal (first-time flow)
-            ),
-            ActionButton(
-                icon = Icons.Default.Restaurant,
-                label = "Órdenes",
-                enabled = canOperate,  // ⭐ Only enabled when shift is open (or disabled)
-                badge = if (!canOperate) "Abre el turno primero" else null,
-                onClick = onNavigateToOrdering
-            ),
+        val allButtons = mutableListOf<ActionButton>()
+
+        // ✅ "Pago rápido" - controlled by tpvSettings.showQuickPayment
+        if (tpvSettings.showQuickPayment) {
+            allButtons.add(
+                ActionButton(
+                    icon = Icons.Default.CreditCard,
+                    label = "Pago rápido",
+                    enabled = canOperate,  // ⭐ Only enabled when shift is open (or disabled)
+                    badge = if (!canOperate) "Abre el turno primero" else null,  // ⭐ Show hint when disabled
+                    onClick = { showAmountBottomSheet = true }  // ✅ Open modal (first-time flow)
+                )
+            )
+        }
+
+        // ✅ "Órdenes" - controlled by tpvSettings.showOrderManagement
+        if (tpvSettings.showOrderManagement) {
+            allButtons.add(
+                ActionButton(
+                    icon = Icons.Default.Restaurant,
+                    label = "Órdenes",
+                    enabled = canOperate,  // ⭐ Only enabled when shift is open (or disabled)
+                    badge = if (!canOperate) "Abre el turno primero" else null,
+                    onClick = onNavigateToOrdering
+                )
+            )
+        }
+
+        // Always visible buttons
+        allButtons.addAll(listOf(
             ActionButton(
                 icon = Icons.Default.BarChart,
                 label = "Reportes",
@@ -550,27 +548,27 @@ private fun WelcomeScreenContent(
                 enabled = true,
                 onClick = onNavigateToSupport
             )
-        )
+        ))
 
         // 🔐 AUTHORIZATION-BASED FILTERING (normal mode only)
-        allButtons.toMutableList().apply {
-            // Add SuperAdmin button ONLY if user has SUPERADMIN role
-            if (currentUserRole == StaffRole.SUPERADMIN) {
-                add(
-                    ActionButton(
-                        icon = Icons.Default.AdminPanelSettings,
-                        label = "SuperAdmin",
-                        enabled = true,
-                        onClick = onNavigateToSuperAdmin
-                    )
+        // Add SuperAdmin button ONLY if user has SUPERADMIN role
+        if (currentUserRole == StaffRole.SUPERADMIN) {
+            allButtons.add(
+                ActionButton(
+                    icon = Icons.Default.AdminPanelSettings,
+                    label = "SuperAdmin",
+                    enabled = true,
+                    onClick = onNavigateToSuperAdmin
                 )
-            }
-
-            // Filter out "Turnos" button if shift system is disabled
-            if (!isShiftSystemEnabled) {
-                removeAll { it.label == "Turnos" }
-            }
+            )
         }
+
+        // Filter out "Turnos" button if shift system is disabled
+        if (!isShiftSystemEnabled) {
+            allButtons.removeAll { it.label == "Turnos" }
+        }
+
+        allButtons
     }
 
     // ══════════════════════════════════════════════════════════════════════

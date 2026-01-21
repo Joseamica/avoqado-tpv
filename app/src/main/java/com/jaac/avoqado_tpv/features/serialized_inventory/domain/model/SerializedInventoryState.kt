@@ -31,6 +31,24 @@ data class RegistrationResult(
 ) {
     val hasSuccess: Boolean get() = created > 0
     val hasDuplicates: Boolean get() = duplicates.isNotEmpty()
+
+    /**
+     * Result type for UI styling:
+     * - SUCCESS: All items registered successfully (created > 0, no duplicates)
+     * - PARTIAL: Some items registered, some duplicates (created > 0, duplicates > 0)
+     * - INFO: All items were duplicates (created = 0, duplicates > 0) - NOT an error
+     */
+    val resultType: ResultType get() = when {
+        created > 0 && duplicates.isEmpty() -> ResultType.SUCCESS
+        created > 0 && duplicates.isNotEmpty() -> ResultType.PARTIAL
+        else -> ResultType.INFO // All duplicates - informational, not error
+    }
+
+    enum class ResultType {
+        SUCCESS,  // Green - all new
+        PARTIAL,  // Yellow - some new, some duplicates
+        INFO      // Blue - all duplicates (not an error)
+    }
 }
 
 /**

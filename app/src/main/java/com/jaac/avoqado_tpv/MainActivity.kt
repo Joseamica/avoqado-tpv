@@ -18,8 +18,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
+import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
 import com.jaac.avoqado_tpv.core.presentation.navigation.AppNavigation
@@ -28,6 +31,8 @@ import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
+import com.jaac.avoqado_tpv.features.remote_command.presentation.LockScreenOverlay
+import com.jaac.avoqado_tpv.features.remote_command.presentation.MaintenanceOverlay
 import com.jaac.avoqado_tpv.features.verification.presentation.components.ACTION_CAPTURE_PHOTO
 import com.jaac.avoqado_tpv.features.verification.presentation.components.CameraState
 import dagger.hilt.android.AndroidEntryPoint
@@ -77,6 +82,12 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var tpvSettingsRepository: TpvSettingsRepository
+
+    @Inject
+    lateinit var lockScreenManager: LockScreenManager
+
+    @Inject
+    lateinit var maintenanceManager: MaintenanceManager
 
     /**
      * State to track permission status
@@ -129,31 +140,64 @@ class MainActivity : ComponentActivity() {
             AvoqadoTheme {
                 val permissionStatus by permissionGranted
 
-                when (permissionStatus) {
-                    true -> {
-                        // Permission granted → Show normal app
-                        AppNavigation(
-                            deviceInfoManager = deviceInfoManager,
-                            secureStorage = secureStorage,
-                            sessionManager = sessionManager
-                        )
-                    }
-                    false -> {
-                        // Permission denied → Show error screen
-                        PermissionDeniedScreen(
-                            onOpenSettings = { openAppSettings() },
-                            onRequestAgain = { checkAndRequestPhoneStatePermission() }
-                        )
-                    }
-                    null -> {
-                        // Checking permission → Show loading
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator()
+                // 🔒 ROOT-LEVEL Lock/Maintenance state - covers ALL screens
+                val isLocked by lockScreenManager.isLocked.collectAsStateWithLifecycle()
+                val lockReason by lockScreenManager.lockReason.collectAsStateWithLifecycle()
+                val lockMessage by lockScreenManager.lockMessage.collectAsStateWithLifecycle()
+                val lockedBy by lockScreenManager.lockedBy.collectAsStateWithLifecycle()
+
+                val isInMaintenance by maintenanceManager.isInMaintenance.collectAsStateWithLifecycle()
+                val maintenanceReason by maintenanceManager.maintenanceReason.collectAsStateWithLifecycle()
+                val maintenanceInitiatedBy by maintenanceManager.initiatedBy.collectAsStateWithLifecycle()
+
+                // Use Box to layer overlays ABOVE all navigation content
+                Box(modifier = Modifier.fillMaxSize()) {
+                    when (permissionStatus) {
+                        true -> {
+                            // Permission granted → Show normal app
+                            AppNavigation(
+                                deviceInfoManager = deviceInfoManager,
+                                secureStorage = secureStorage,
+                                sessionManager = sessionManager
+                            )
+                        }
+                        false -> {
+                            // Permission denied → Show error screen
+                            PermissionDeniedScreen(
+                                onOpenSettings = { openAppSettings() },
+                                onRequestAgain = { checkAndRequestPhoneStatePermission() }
+                            )
+                        }
+                        null -> {
+                            // Checking permission → Show loading
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator()
+                            }
                         }
                     }
+
+                    // 🛠️ Maintenance Overlay - ROOT LEVEL (covers ALL screens)
+                    // Shows when admin sends MAINTENANCE_MODE command
+                    // Staff can exit locally via button
+                    MaintenanceOverlay(
+                        visible = isInMaintenance,
+                        maintenanceReason = maintenanceReason,
+                        initiatedBy = maintenanceInitiatedBy,
+                        onExitMaintenance = { maintenanceManager.exitMaintenance() }
+                    )
+
+                    // 🔒 Lock Screen Overlay - ROOT LEVEL (covers ALL screens)
+                    // Shows when admin sends LOCK command
+                    // Can ONLY be unlocked via remote UNLOCK command
+                    LockScreenOverlay(
+                        visible = isLocked,
+                        lockReason = lockReason,
+                        lockMessage = lockMessage,
+                        lockedBy = lockedBy
+                    )
                 }
             }
         }

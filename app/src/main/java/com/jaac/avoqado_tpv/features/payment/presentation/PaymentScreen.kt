@@ -290,20 +290,31 @@ fun PaymentScreen(
                         customTipAmount = if (currentState.selectedTipPercentage == null && currentState.tipAmount != "0") {
                             currentState.tipAmount
                         } else null,
+                        // 🎯 Pass tip settings from TPV configuration
+                        tipSuggestions = tpvSettings?.tipSuggestions ?: listOf(10, 15, 20),
+                        defaultTipPercentage = tpvSettings?.defaultTipPercentage,
+                        // 🎯 Called when user taps a tip option (updates header without advancing)
+                        onTipSelectionChanged = { percentage ->
+                            viewModel.updateTipPercentage(currentState.amount, currentState.rating, percentage)
+                        },
+                        // 🎯 Called when user confirms custom tip in modal (updates header without advancing)
+                        onCustomTipChanged = { customTip ->
+                            viewModel.updateCustomTip(currentState.amount, currentState.rating, customTip)
+                        },
                         onTipPercentageSelected = { percentage ->
-                            // ⭐ NEW: Use combined function to avoid state race condition
-                            // This ensures correct tip value when auto-advancing
+                            // 🎯 Called when user presses "Continuar" with percentage selected
                             viewModel.selectTipPercentageAndProceed(currentState.amount, currentState.rating, percentage)
                         },
                         onCustomTipSelected = { customTip ->
-                            // ⭐ NEW: Use combined function to avoid state race condition
+                            // 🎯 Called when user presses "Continuar" with custom tip
                             viewModel.selectCustomTipAndProceed(currentState.amount, currentState.rating, customTip)
                         },
                         onContinue = {
-                            // This is now only called by "Sin propina" button (kept for backward compatibility)
+                            // Legacy callback (kept for backward compatibility)
                             viewModel.submitTip(currentState.amount, currentState.tipAmount, currentState.rating)
                         },
                         onSkipTip = {
+                            // 🎯 Called when user presses "Continuar" with "Sin propina" selected
                             viewModel.skipTip(currentState.amount, currentState.rating)
                         },
                         onNavigateBack = {

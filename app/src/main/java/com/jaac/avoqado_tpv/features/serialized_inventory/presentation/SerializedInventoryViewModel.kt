@@ -104,29 +104,75 @@ class SerializedInventoryViewModel @Inject constructor(
 
     /**
      * Handle barcode scan result.
+     * Validates against database BEFORE adding to batch.
      *
      * @param serialNumber The scanned barcode/serial number
-     * @return ScanResult indicating if it was added, duplicate, or already scanned
+     * @param onResult Callback with scan result (added, duplicate, or already scanned)
      */
-    fun onBarcodeScanned(serialNumber: String): InventoryScanResult {
+    fun onBarcodeScanned(serialNumber: String, onResult: (InventoryScanResult) -> Unit) {
         val currentList = _uiState.value.scannedSerialNumbers
 
         // Check if already in current batch
         if (currentList.contains(serialNumber)) {
             Timber.d("Barcode already scanned in batch: $serialNumber")
-            return InventoryScanResult.AlreadyScanned(serialNumber)
+            onResult(InventoryScanResult.AlreadyScanned(serialNumber))
+            return
         }
 
-        // Add to list
-        _uiState.update {
-            it.copy(
-                scannedSerialNumbers = currentList + serialNumber,
-                error = null
-            )
+        // ✅ VALIDATE AGAINST DATABASE before adding
+        viewModelScope.launch {
+            serializedSaleRepository.scanItem(serialNumber)
+                .onSuccess { scanResult ->
+                    when (scanResult) {
+                        is com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult.Available -> {
+                            // Item already registered in DB - show error
+                            _uiState.update {
+                                it.copy(error = "Este ${getItemLabel()} ya fue registrado anteriormente")
+                            }
+                            onResult(InventoryScanResult.Duplicate(serialNumber))
+                        }
+                        is com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult.AlreadySold -> {
+                            // Item was sold - show error with sold status
+                            _uiState.update {
+                                it.copy(error = "Este ${getItemLabel()} ya fue registrado y vendido")
+                            }
+                            onResult(InventoryScanResult.Duplicate(serialNumber))
+                        }
+                        is com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult.NotRegistered -> {
+                            // ✅ Item is new - add to batch
+                            _uiState.update {
+                                it.copy(
+                                    scannedSerialNumbers = currentList + serialNumber,
+                                    error = null
+                                )
+                            }
+                            Timber.d("Barcode added to batch: $serialNumber (total: ${currentList.size + 1})")
+                            onResult(InventoryScanResult.Added(serialNumber))
+                        }
+                        is com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult.ModuleDisabled -> {
+                            _uiState.update {
+                                it.copy(error = "El módulo de inventario serializado no está habilitado")
+                            }
+                            onResult(InventoryScanResult.Duplicate(serialNumber))
+                        }
+                    }
+                }
+                .onFailure { error ->
+                    Timber.e(error, "Failed to validate serial number")
+                    _uiState.update {
+                        it.copy(error = "Error al validar ${getItemLabel()}: ${error.message}")
+                    }
+                    onResult(InventoryScanResult.Duplicate(serialNumber))
+                }
         }
+    }
 
-        Timber.d("Barcode added to batch: $serialNumber (total: ${currentList.size + 1})")
-        return InventoryScanResult.Added(serialNumber)
+    /**
+     * Get the singular item label from module config.
+     */
+    private fun getItemLabel(): String {
+        return modulesRepository.getModuleConfig(ModulesRepository.MODULE_SERIALIZED_INVENTORY)
+            ?.labels?.item ?: "artículo"
     }
 
     /**
@@ -181,19 +227,14 @@ class SerializedInventoryViewModel @Inject constructor(
                     Timber.d("Batch registration success: $created created, ${duplicates.size} duplicates")
 
                     val result = RegistrationResult(created, duplicates)
-                    val message = buildString {
-                        append("$created artículos registrados")
-                        if (duplicates.isNotEmpty()) {
-                            append(" (${duplicates.size} duplicados)")
-                        }
-                    }
 
+                    // ✅ FIX: Don't show Snackbar when we have registrationResult
+                    // The RegistrationResultCard banner provides better feedback
                     _uiState.update {
                         it.copy(
                             isLoading = false,
                             registrationResult = result,
-                            successMessage = message,
-                            // Clear list after successful registration
+                            // Clear list after registration attempt
                             scannedSerialNumbers = emptyList()
                         )
                     }

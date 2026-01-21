@@ -120,6 +120,10 @@ class SecureStorage @Inject constructor(
         private const val KEY_TPV_KIOSK_MODE_ENABLED = "tpv_kiosk_mode_enabled"
         private const val KEY_TPV_KIOSK_DEFAULT_MERCHANT_ID = "tpv_kiosk_default_merchant_id"
 
+        // Home screen button visibility keys
+        private const val KEY_TPV_SHOW_QUICK_PAYMENT = "tpv_show_quick_payment"
+        private const val KEY_TPV_SHOW_ORDER_MANAGEMENT = "tpv_show_order_management"
+
         // Module cache keys
         private const val KEY_CACHED_MODULES = "cached_modules"
     }
@@ -917,8 +921,11 @@ class SecureStorage @Inject constructor(
             } else {
                 remove(KEY_TPV_KIOSK_DEFAULT_MERCHANT_ID)
             }
+            // Home screen button visibility
+            putBoolean(KEY_TPV_SHOW_QUICK_PAYMENT, settings.showQuickPayment)
+            putBoolean(KEY_TPV_SHOW_ORDER_MANAGEMENT, settings.showOrderManagement)
         }.apply()
-        Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, showVerification=${settings.showVerificationScreen}, enableShifts=${settings.enableShifts}, kioskEnabled=${settings.kioskModeEnabled}, kioskMerchant=${settings.kioskDefaultMerchantId}")
+        Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, showVerification=${settings.showVerificationScreen}, enableShifts=${settings.enableShifts}, kioskEnabled=${settings.kioskModeEnabled}, showQuickPayment=${settings.showQuickPayment}, showOrderManagement=${settings.showOrderManagement}")
     }
 
     /**
@@ -963,7 +970,10 @@ class SecureStorage @Inject constructor(
             requireClockInToLogin = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_CLOCK_IN_TO_LOGIN, false),
             // Kiosk mode settings
             kioskModeEnabled = encryptedPrefs.getBoolean(KEY_TPV_KIOSK_MODE_ENABLED, false),
-            kioskDefaultMerchantId = encryptedPrefs.getString(KEY_TPV_KIOSK_DEFAULT_MERCHANT_ID, null)
+            kioskDefaultMerchantId = encryptedPrefs.getString(KEY_TPV_KIOSK_DEFAULT_MERCHANT_ID, null),
+            // Home screen button visibility (default: enabled)
+            showQuickPayment = encryptedPrefs.getBoolean(KEY_TPV_SHOW_QUICK_PAYMENT, true),
+            showOrderManagement = encryptedPrefs.getBoolean(KEY_TPV_SHOW_ORDER_MANAGEMENT, true)
         )
     }
 
@@ -992,6 +1002,9 @@ class SecureStorage @Inject constructor(
             // Kiosk mode settings
             remove(KEY_TPV_KIOSK_MODE_ENABLED)
             remove(KEY_TPV_KIOSK_DEFAULT_MERCHANT_ID)
+            // Home screen button visibility
+            remove(KEY_TPV_SHOW_QUICK_PAYMENT)
+            remove(KEY_TPV_SHOW_ORDER_MANAGEMENT)
         }.apply()
         Timber.d("TPV settings cleared")
     }

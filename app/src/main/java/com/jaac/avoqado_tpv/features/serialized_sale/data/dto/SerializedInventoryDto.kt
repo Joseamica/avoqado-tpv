@@ -62,7 +62,8 @@ data class QuickSellRequestDto(
     val categoryId: String?, // Optional if item is already registered
     val price: Double, // Price in pesos
     val paymentMethodId: String? = null,
-    val notes: String? = null
+    val notes: String? = null,
+    val terminalId: String? = null // Terminal that created this order (sales attribution)
 )
 
 /**
@@ -131,4 +132,31 @@ data class RegisterBatchResponseDto(
 data class RegisterBatchResultDto(
     val created: Int,
     val duplicates: List<String>
+)
+
+// ========== Create Category DTOs ==========
+
+/**
+ * Request body for creating a category
+ * POST /tpv/serialized-inventory/categories
+ */
+data class CreateCategoryRequestDto(
+    val name: String,
+    val description: String? = null,
+    val suggestedPrice: Double? = null
+)
+
+/**
+ * Response from create category endpoint
+ */
+data class CreateCategoryResponseDto(
+    val success: Boolean,
+    val data: CategoryDto?
+)
+
+data class CategoryDto(
+    val id: String,
+    val name: String,
+    val description: String?,
+    val suggestedPrice: String?
 )

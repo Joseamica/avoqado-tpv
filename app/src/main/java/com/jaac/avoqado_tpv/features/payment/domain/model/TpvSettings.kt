@@ -28,6 +28,10 @@ package com.jaac.avoqado_tpv.features.payment.domain.model
  *                         Controlled from dashboard settings.
  * @param kioskDefaultMerchantId Default merchant account ID for kiosk payments.
  *                               Skips merchant selection in kiosk mode if set.
+ * @param showQuickPayment Whether to show "Pago rápido" button on home screen.
+ *                         Controlled from dashboard settings.
+ * @param showOrderManagement Whether to show "Órdenes" button on home screen.
+ *                            Controlled from dashboard settings.
  */
 data class TpvSettings(
     val showReviewScreen: Boolean = true,
@@ -50,7 +54,10 @@ data class TpvSettings(
     // Kiosk Mode: allows terminal to enter self-service mode (controlled from dashboard)
     val kioskModeEnabled: Boolean = false,
     // Kiosk Default Merchant: auto-select this merchant in kiosk payment flow
-    val kioskDefaultMerchantId: String? = null
+    val kioskDefaultMerchantId: String? = null,
+    // Home screen button visibility (controlled from dashboard)
+    val showQuickPayment: Boolean = true,
+    val showOrderManagement: Boolean = true
 ) {
     companion object {
         /**

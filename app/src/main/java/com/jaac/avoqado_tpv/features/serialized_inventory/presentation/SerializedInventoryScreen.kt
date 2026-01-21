@@ -101,11 +101,12 @@ fun SerializedInventoryScreen(
                     // Barcode scanner overlay
                     BarcodeScannerScreen(
                         onBarcodeScanned = { barcode, _ ->
-                            val result = viewModel.onBarcodeScanned(barcode)
-                            lastScanFeedback = when (result) {
-                                is InventoryScanResult.Added -> "✓ Agregado: $barcode"
-                                is InventoryScanResult.AlreadyScanned -> "Ya escaneado: $barcode"
-                                is InventoryScanResult.Duplicate -> "Duplicado: $barcode"
+                            viewModel.onBarcodeScanned(barcode) { result ->
+                                lastScanFeedback = when (result) {
+                                    is InventoryScanResult.Added -> "✓ Agregado: $barcode"
+                                    is InventoryScanResult.AlreadyScanned -> "Ya escaneado: $barcode"
+                                    is InventoryScanResult.Duplicate -> "⚠ Ya registrado"
+                                }
                             }
                             // Don't close scanner - allow continuous scanning
                         },
@@ -287,7 +288,7 @@ private fun InventoryFormContent(
     itemLabelPlural: String,
     barcodeLabel: String,
     onCategorySelected: (CategoryWithStock) -> Unit,
-    onBarcodeScanned: (String) -> InventoryScanResult,
+    onBarcodeScanned: (String, (InventoryScanResult) -> Unit) -> Unit,
     onStartScanning: () -> Unit,
     onRemoveSerialNumber: (String) -> Unit,
     onClearList: () -> Unit,
@@ -424,11 +425,12 @@ private fun InventoryFormContent(
                             onClick = {
                                 if (physicalScannerInput.isNotBlank()) {
                                     val barcode = physicalScannerInput.trim()
-                                    val result = onBarcodeScanned(barcode)
-                                    scanFeedback = when (result) {
-                                        is InventoryScanResult.Added -> "✓ $barcode"
-                                        is InventoryScanResult.AlreadyScanned -> "⚠ Ya escaneado"
-                                        is InventoryScanResult.Duplicate -> "⚠ Duplicado"
+                                    onBarcodeScanned(barcode) { result ->
+                                        scanFeedback = when (result) {
+                                            is InventoryScanResult.Added -> "✓ $barcode"
+                                            is InventoryScanResult.AlreadyScanned -> "⚠ Ya escaneado"
+                                            is InventoryScanResult.Duplicate -> "⚠ Ya registrado"
+                                        }
                                     }
                                     physicalScannerInput = ""
                                     showKeyboardManually = false
@@ -479,13 +481,14 @@ private fun InventoryFormContent(
                     if (physicalScannerInput.isNotBlank()) {
                         val barcode = physicalScannerInput.trim()
                         Timber.d("📦 Processing barcode: $barcode")
-                        val result = onBarcodeScanned(barcode)
-                        scanFeedback = when (result) {
-                            is InventoryScanResult.Added -> "✓ $barcode"
-                            is InventoryScanResult.AlreadyScanned -> "⚠ Ya escaneado"
-                            is InventoryScanResult.Duplicate -> "⚠ Duplicado"
+                        onBarcodeScanned(barcode) { result ->
+                            scanFeedback = when (result) {
+                                is InventoryScanResult.Added -> "✓ $barcode"
+                                is InventoryScanResult.AlreadyScanned -> "⚠ Ya escaneado"
+                                is InventoryScanResult.Duplicate -> "⚠ Ya registrado"
+                            }
+                            Timber.d("📦 Scan result: $scanFeedback")
                         }
-                        Timber.d("📦 Scan result: $scanFeedback")
                         physicalScannerInput = ""
                     }
                     showKeyboardManually = false
@@ -910,14 +913,36 @@ private fun RegistrationResultCard(
     result: com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.RegistrationResult,
     itemLabelPlural: String
 ) {
+    // ✅ FIX: Use appropriate colors based on result type
+    val (containerColor, icon, iconTint) = when (result.resultType) {
+        com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.RegistrationResult.ResultType.SUCCESS -> {
+            // All items registered - green (success)
+            Triple(
+                MaterialTheme.colorScheme.primaryContainer,
+                Icons.Default.Check,
+                MaterialTheme.colorScheme.primary
+            )
+        }
+        com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.RegistrationResult.ResultType.PARTIAL -> {
+            // Some registered, some duplicates - yellow (warning)
+            Triple(
+                MaterialTheme.colorScheme.tertiaryContainer,
+                Icons.Default.Warning,
+                MaterialTheme.colorScheme.tertiary
+            )
+        }
+        com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.RegistrationResult.ResultType.INFO -> {
+            // All duplicates - blue (info, not error)
+            Triple(
+                MaterialTheme.colorScheme.secondaryContainer,
+                Icons.Default.Info,
+                MaterialTheme.colorScheme.secondary
+            )
+        }
+    }
+
     Card(
-        colors = CardDefaults.cardColors(
-            containerColor = if (result.hasSuccess) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                MaterialTheme.colorScheme.errorContainer
-            }
-        )
+        colors = CardDefaults.cardColors(containerColor = containerColor)
     ) {
         Column(
             modifier = Modifier
@@ -926,8 +951,9 @@ private fun RegistrationResultCard(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    imageVector = if (result.hasSuccess) Icons.Default.Check else Icons.Default.Warning,
-                    contentDescription = null
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = iconTint
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
@@ -939,28 +965,35 @@ private fun RegistrationResultCard(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            Text(
-                text = "${result.created} $itemLabelPlural registrados",
-                style = MaterialTheme.typography.bodyMedium
-            )
+            // ✅ FIX: Improve message clarity
+            if (result.created > 0) {
+                Text(
+                    text = "✅ ${result.created} $itemLabelPlural registrados exitosamente",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
 
             if (result.hasDuplicates) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "${result.duplicates.size} ya existían en el sistema:",
+                    text = if (result.created == 0) {
+                        "ℹ️ ${result.duplicates.size} $itemLabelPlural ya existían en el sistema:"
+                    } else {
+                        "⚠️ ${result.duplicates.size} ya estaban registrados:"
+                    },
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 result.duplicates.take(5).forEach { dup ->
                     Text(
-                        text = "• $dup",
+                        text = "  • $dup",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 if (result.duplicates.size > 5) {
                     Text(
-                        text = "... y ${result.duplicates.size - 5} más",
+                        text = "  ... y ${result.duplicates.size - 5} más",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

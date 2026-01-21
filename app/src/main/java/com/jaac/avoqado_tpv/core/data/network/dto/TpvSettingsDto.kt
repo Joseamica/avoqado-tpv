@@ -74,7 +74,14 @@ data class TpvSettingsDto(
 
     // Kiosk Default Merchant: auto-select this merchant in kiosk payment flow
     @SerializedName("kioskDefaultMerchantId")
-    val kioskDefaultMerchantId: String?
+    val kioskDefaultMerchantId: String?,
+
+    // Home screen button visibility (controlled from dashboard)
+    @SerializedName("showQuickPayment")
+    val showQuickPayment: Boolean?,
+
+    @SerializedName("showOrderManagement")
+    val showOrderManagement: Boolean?
 )
 
 /**
@@ -101,7 +108,10 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     // Kiosk Mode defaults to disabled
     kioskModeEnabled = kioskModeEnabled ?: false,
     // Kiosk Default Merchant (null = show selection)
-    kioskDefaultMerchantId = kioskDefaultMerchantId
+    kioskDefaultMerchantId = kioskDefaultMerchantId,
+    // Home screen buttons default to enabled
+    showQuickPayment = showQuickPayment ?: true,
+    showOrderManagement = showOrderManagement ?: true
 )
 
 /**
@@ -122,7 +132,9 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     requireClockOutPhoto = requireClockOutPhoto,
     requireClockInToLogin = requireClockInToLogin,
     kioskModeEnabled = kioskModeEnabled,
-    kioskDefaultMerchantId = kioskDefaultMerchantId
+    kioskDefaultMerchantId = kioskDefaultMerchantId,
+    showQuickPayment = showQuickPayment,
+    showOrderManagement = showOrderManagement
 )
 
 /**

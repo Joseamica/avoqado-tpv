@@ -991,6 +991,22 @@ interface ApiService {
     suspend fun getSerializedCategories(): Response<com.jaac.avoqado_tpv.features.serialized_sale.data.dto.CategoriesResponseDto>
 
     /**
+     * Create a new serialized inventory category
+     *
+     * POST /tpv/serialized-inventory/categories
+     *
+     * Creates a new category (e.g., "SIM Movistar", "Anillo de Oro").
+     * Used when no categories exist and user needs to create one from TPV.
+     *
+     * @param request Category name, description (optional), suggested price (optional)
+     * @return Created category with ID
+     */
+    @POST("tpv/serialized-inventory/categories")
+    suspend fun createSerializedCategory(
+        @Body request: com.jaac.avoqado_tpv.features.serialized_sale.data.dto.CreateCategoryRequestDto
+    ): Response<com.jaac.avoqado_tpv.features.serialized_sale.data.dto.CreateCategoryResponseDto>
+
+    /**
      * Quick sell a serialized item
      *
      * POST /tpv/serialized-inventory/sell

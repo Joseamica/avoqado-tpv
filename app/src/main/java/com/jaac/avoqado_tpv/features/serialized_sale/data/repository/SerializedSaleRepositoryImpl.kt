@@ -98,22 +98,79 @@ class SerializedSaleRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun createCategory(
+        name: String,
+        description: String?,
+        suggestedPrice: BigDecimal?
+    ): Result<CategoryWithStock> {
+        return try {
+            Log.d(TAG, "Creating category: $name")
+
+            val request = com.jaac.avoqado_tpv.features.serialized_sale.data.dto.CreateCategoryRequestDto(
+                name = name,
+                description = description,
+                suggestedPrice = suggestedPrice?.toDouble()
+            )
+
+            val response = apiService.createSerializedCategory(request)
+
+            if (response.isSuccessful) {
+                val body = response.body()
+                if (body?.success == true && body.data != null) {
+                    val category = CategoryWithStock(
+                        id = body.data.id,
+                        name = body.data.name,
+                        description = body.data.description,
+                        suggestedPrice = body.data.suggestedPrice?.toBigDecimalOrNull(),
+                        availableCount = 0 // New category has no items yet
+                    )
+                    Log.d(TAG, "Category created: ${category.name}")
+                    Result.success(category)
+                } else {
+                    Log.e(TAG, "Empty response body")
+                    Result.failure(Exception("Empty response from server"))
+                }
+            } else {
+                val errorBody = response.errorBody()?.string() ?: "Unknown error"
+                Log.e(TAG, "Category creation failed: ${response.code()} - $errorBody")
+
+                // Parse errors for better UX
+                val userMessage = when (response.code()) {
+                    401 -> "Sesión expirada. Por favor inicia sesión de nuevo."
+                    403 -> "No tienes permiso para crear categorías."
+                    409 -> "Ya existe una categoría con este nombre."
+                    422 -> "Nombre inválido. Verifica que no esté vacío."
+                    in 500..599 -> "Error del servidor. Intenta de nuevo."
+                    else -> "Error al crear categoría (${response.code()})."
+                }
+                Result.failure(Exception(userMessage))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Category creation error", e)
+            Result.failure(e)
+        }
+    }
+
     override suspend fun quickSell(
         serialNumber: String,
         categoryId: String?,
         price: BigDecimal,
         paymentMethodId: String?,
-        notes: String?
+        notes: String?,
+        terminalId: String?
     ): Result<QuickSellResult> {
         return try {
-            Log.d(TAG, "Quick sell: $serialNumber, price: $price, category: $categoryId")
+            Log.d(TAG, "Quick sell: $serialNumber, price: $price, category: $categoryId, terminalId: $terminalId")
 
             val request = QuickSellRequestDto(
                 serialNumber = serialNumber,
                 categoryId = categoryId,
                 price = price.toDouble(),
                 paymentMethodId = paymentMethodId,
-                notes = notes
+                notes = notes,
+                terminalId = terminalId
             )
 
             val response = apiService.quickSellSerializedItem(request)

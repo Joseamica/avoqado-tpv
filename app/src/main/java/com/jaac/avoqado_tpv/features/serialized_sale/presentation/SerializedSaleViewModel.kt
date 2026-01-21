@@ -35,7 +35,8 @@ import javax.inject.Inject
 @HiltViewModel
 class SerializedSaleViewModel @Inject constructor(
     private val serializedSaleRepository: SerializedSaleRepository,
-    private val modulesRepository: ModulesRepository
+    private val modulesRepository: ModulesRepository,
+    private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SerializedSaleUiState())
@@ -245,13 +246,17 @@ class SerializedSaleViewModel @Inject constructor(
         _uiState.update { it.copy(isLoading = true, error = null) }
 
         viewModelScope.launch {
+            // Get terminalId from settings for sales attribution
+            val terminalId = secureStorage.getTerminalId()
+
             serializedSaleRepository.quickSell(
                 serialNumber = state.currentSerialNumber,
                 categoryId = categoryId,
-                price = price
+                price = price,
+                terminalId = terminalId
             )
                 .onSuccess { result ->
-                    Timber.d("Quick sell success: ${result.orderNumber}")
+                    Timber.d("Quick sell success: ${result.orderNumber}, terminalId: $terminalId")
                     _uiState.update {
                         it.copy(
                             isLoading = false,
@@ -306,6 +311,59 @@ class SerializedSaleViewModel @Inject constructor(
                 error = null,
                 currentSerialNumber = ""
             )
+        }
+    }
+
+    /**
+     * Create a new category.
+     * Called when no categories exist and user creates one from TPV.
+     *
+     * @param name Category name (e.g., "SIM Movistar")
+     * @param description Optional description
+     * @param suggestedPrice Optional suggested price
+     * @param onSuccess Callback when category is created successfully
+     */
+    fun createCategory(
+        name: String,
+        description: String? = null,
+        suggestedPrice: BigDecimal? = null,
+        onSuccess: (CategoryWithStock) -> Unit = {}
+    ) {
+        Timber.d("📦 [SerializedSale] Creating category: $name")
+
+        _uiState.update { it.copy(isLoading = true, error = null) }
+
+        viewModelScope.launch {
+            serializedSaleRepository.createCategory(
+                name = name.trim(),
+                description = description?.trim(),
+                suggestedPrice = suggestedPrice
+            )
+                .onSuccess { category ->
+                    Timber.d("📦 [SerializedSale] Category created: ${category.name}")
+
+                    // Add category to list
+                    val updatedCategories = _uiState.value.categories + category
+
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            categories = updatedCategories,
+                            selectedCategory = category // Auto-select the new category
+                        )
+                    }
+
+                    onSuccess(category)
+                }
+                .onFailure { error ->
+                    Timber.e(error, "Failed to create category")
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            error = error.message ?: "Error al crear categoría"
+                        )
+                    }
+                }
         }
     }
 }

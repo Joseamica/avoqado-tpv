@@ -34,6 +34,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.R
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -1654,6 +1655,16 @@ private fun SplashScreenContent() {
                 color = MaterialTheme.colorScheme.primary
             )
         }
+
+        // Version text at the bottom
+        Text(
+            text = "v${BuildConfig.VERSION_NAME}",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color.Gray,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 24.dp)
+        )
     }
 }
 

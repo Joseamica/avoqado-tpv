@@ -23,6 +23,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import java.math.BigDecimal
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -67,6 +68,9 @@ fun SerializedSaleScreen(
     var scannerInput by remember { mutableStateOf("") }
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
+
+    // Create category dialog state
+    var showCreateCategoryDialog by remember { mutableStateOf(false) }
 
     // Log UI state changes for debugging
     LaunchedEffect(uiState) {
@@ -254,6 +258,7 @@ fun SerializedSaleScreen(
                                     categories = uiState.categories,
                                     selectedCategory = uiState.selectedCategory,
                                     onCategorySelected = viewModel::onCategorySelected,
+                                    onCreateCategory = { showCreateCategoryDialog = true },
                                     modifier = Modifier.fillMaxWidth()
                                 )
 
@@ -361,6 +366,24 @@ fun SerializedSaleScreen(
                     }
                 }
             }
+        }
+
+        // Create Category Dialog
+        if (showCreateCategoryDialog) {
+            CreateCategoryDialog(
+                onDismiss = { showCreateCategoryDialog = false },
+                onCreate = { name, description, suggestedPrice ->
+                    viewModel.createCategory(
+                        name = name,
+                        description = description,
+                        suggestedPrice = suggestedPrice,
+                        onSuccess = {
+                            showCreateCategoryDialog = false
+                        }
+                    )
+                },
+                categoryLabel = labels?.category ?: "Categoría"
+            )
         }
     }
 }
@@ -502,21 +525,27 @@ private fun CategorySelectorDropdown(
     categories: List<CategoryWithStock>,
     selectedCategory: CategoryWithStock?,
     onCategorySelected: (CategoryWithStock) -> Unit,
+    onCreateCategory: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var expanded by remember { mutableStateOf(false) }
 
     if (categories.isEmpty()) {
-        OutlinedTextField(
-            value = "Cargando categorías...",
-            onValueChange = {},
+        // When no categories exist, show "Create Category" button instead of loading
+        OutlinedButton(
+            onClick = onCreateCategory,
             modifier = modifier
                 .fillMaxWidth()
-                .height(Size.SerializedCategorySelectorHeight),
-            enabled = false,
-            readOnly = true,
-            singleLine = true
-        )
+                .height(Size.SerializedCategorySelectorHeight)
+        ) {
+            Icon(
+                Icons.Default.Add,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Crear categoría")
+        }
     } else {
         ExposedDropdownMenuBox(
             expanded = expanded,
@@ -612,6 +641,125 @@ private fun CategorySelectorDropdown(
                             }
                         } else null
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Dialog for creating a new category when no categories exist.
+ * Shows a form with name, description (optional), and suggested price (optional).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CreateCategoryDialog(
+    onDismiss: () -> Unit,
+    onCreate: (name: String, description: String?, suggestedPrice: BigDecimal?) -> Unit,
+    categoryLabel: String = "Categoría",
+    modifier: Modifier = Modifier
+) {
+    var name by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    var suggestedPrice by remember { mutableStateOf("") }
+    val focusManager = LocalFocusManager.current
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = modifier
+    ) {
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            tonalElevation = 6.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp)
+            ) {
+                // Title
+                Text(
+                    text = "Nueva $categoryLabel",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Name field (required)
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Nombre *") },
+                    placeholder = { Text("Ej: SIM Movistar, Anillo de Oro") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    isError = name.isBlank()
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Description field (optional)
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Descripción (opcional)") },
+                    placeholder = { Text("Detalles adicionales") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next)
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Suggested price field (optional)
+                OutlinedTextField(
+                    value = suggestedPrice,
+                    onValueChange = { suggestedPrice = it },
+                    label = { Text("Precio sugerido (opcional)") },
+                    placeholder = { Text("0.00") },
+                    leadingIcon = { Text("$", style = MaterialTheme.typography.titleMedium) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Decimal,
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = { focusManager.clearFocus() }
+                    )
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("Cancelar")
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    Button(
+                        onClick = {
+                            val price = suggestedPrice.toBigDecimalOrNull()
+                            onCreate(
+                                name.trim(),
+                                description.trim().ifBlank { null },
+                                price
+                            )
+                        },
+                        enabled = name.isNotBlank()
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Crear")
+                    }
                 }
             }
         }

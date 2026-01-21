@@ -27,6 +27,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import timber.log.Timber
+import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
@@ -217,6 +218,16 @@ private fun LoginContent(
                         }
                     }
                 }
+
+                // Version text at the bottom
+                Text(
+                    text = "v${BuildConfig.VERSION_NAME}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 16.dp)
+                )
 
                 // Terminal deactivated message
                 if (state is LoginState.TerminalNotActivated) {

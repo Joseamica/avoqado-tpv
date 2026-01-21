@@ -36,6 +36,22 @@ interface SerializedSaleRepository {
     suspend fun getCategories(): Result<List<CategoryWithStock>>
 
     /**
+     * Create a new category.
+     *
+     * Used when no categories exist and user needs to create one from TPV.
+     *
+     * @param name Category name (e.g., "SIM Movistar", "Anillo de Oro")
+     * @param description Optional category description
+     * @param suggestedPrice Optional suggested price for items in this category
+     * @return Result with the created CategoryWithStock
+     */
+    suspend fun createCategory(
+        name: String,
+        description: String? = null,
+        suggestedPrice: BigDecimal? = null
+    ): Result<CategoryWithStock>
+
+    /**
      * Execute a quick sell for a serialized item.
      *
      * This creates an order with a single item and prepares for payment.
@@ -45,6 +61,7 @@ interface SerializedSaleRepository {
      * @param price Sale price in venue currency
      * @param paymentMethodId Optional payment method
      * @param notes Optional sale notes
+     * @param terminalId Optional terminal ID for sales attribution
      * @return Result with QuickSellResult containing order info
      */
     suspend fun quickSell(
@@ -52,7 +69,8 @@ interface SerializedSaleRepository {
         categoryId: String?,
         price: BigDecimal,
         paymentMethodId: String? = null,
-        notes: String? = null
+        notes: String? = null,
+        terminalId: String? = null
     ): Result<QuickSellResult>
 
     /**

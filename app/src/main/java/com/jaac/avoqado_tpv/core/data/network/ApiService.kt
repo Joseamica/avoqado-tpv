@@ -543,6 +543,22 @@ interface ApiService {
         @Body request: PaymentRequest
     ): Response<Payment>
 
+    /**
+     * Upload proof-of-sale photo
+     *
+     * POST /tpv/verification/proof-of-sale
+     *
+     * Simple endpoint to attach proof-of-sale photo to a payment.
+     * Used when SERIALIZED_INVENTORY module is active.
+     *
+     * @param request Proof-of-sale request with paymentId and photo URLs
+     * @return Success response with verification ID
+     */
+    @POST("tpv/verification/proof-of-sale")
+    suspend fun uploadProofOfSale(
+        @Body request: ProofOfSaleRequest
+    ): Response<ProofOfSaleResponse>
+
     // ========== Tables ==========
 
     /**
@@ -1313,4 +1329,17 @@ data class ApiErrorResponse(
     val error: String?,
     val message: String?,
     val statusCode: Int?
+)
+
+// ========== Proof-of-Sale DTOs ==========
+
+data class ProofOfSaleRequest(
+    val paymentId: String,
+    val photoUrls: List<String>
+)
+
+data class ProofOfSaleResponse(
+    val success: Boolean,
+    val verificationId: String,
+    val message: String?
 )

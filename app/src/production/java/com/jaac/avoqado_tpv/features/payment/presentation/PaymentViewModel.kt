@@ -4192,6 +4192,80 @@ class PaymentViewModel @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // 📸 PROOF-OF-SALE (for SERIALIZED_INVENTORY module)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Upload proof-of-sale photo to Firebase and record in backend.
+     *
+     * **Flow:**
+     * 1. Upload photo to Firebase Storage
+     * 2. Call backend API to store photo URL in SaleVerification table
+     *
+     * **Called from:** PaymentScreen when user captures proof-of-sale photo
+     *
+     * @param photoPath Local file path of captured photo
+     * @param paymentId Payment ID from receipt
+     * @param orderNumber Order number for filename
+     * @param amount Payment amount for filename
+     */
+    fun uploadProofOfSale(
+        photoPath: String,
+        paymentId: String,
+        orderNumber: String,
+        amount: String
+    ) {
+        viewModelScope.launch {
+            try {
+                Timber.i("📸 [PROOF-OF-SALE] Starting upload | paymentId=$paymentId | order=$orderNumber")
+
+                // Step 1: Get venue slug from auth repository
+                val venueSlug = authRepository.getVenueSlug() ?: run {
+                    Timber.e("❌ [PROOF-OF-SALE] No venue slug available")
+                    return@launch
+                }
+
+                // Step 2: Upload to Firebase Storage
+                Timber.d("📸 [PROOF-OF-SALE] Uploading to Firebase Storage...")
+                val uploadResult = verificationUploadManager.uploadProofOfSale(
+                    localPath = photoPath,
+                    venueSlug = venueSlug,
+                    orderNumber = orderNumber,
+                    amount = amount
+                )
+
+                uploadResult.onSuccess { photoUrl ->
+                    Timber.i("📸 [PROOF-OF-SALE] Firebase upload success: $photoUrl")
+
+                    // Step 3: Call backend API to store URL
+                    val request = com.jaac.avoqado_tpv.core.data.network.ProofOfSaleRequest(
+                        paymentId = paymentId,
+                        photoUrls = listOf(photoUrl)
+                    )
+
+                    val response = paymentApiService.uploadProofOfSale(request)
+
+                    if (response.isSuccessful && response.body()?.success == true) {
+                        Timber.i("✅ [PROOF-OF-SALE] Backend record success")
+                        // TODO: Show success toast/snackbar
+                    } else {
+                        val errorMessage = response.body()?.message ?: "Error registrando foto"
+                        Timber.e("❌ [PROOF-OF-SALE] Backend failed: $errorMessage")
+                        // Still mark as success since photo is in Firebase
+                    }
+                }.onFailure { error ->
+                    Timber.e(error, "❌ [PROOF-OF-SALE] Firebase upload failed")
+                    // TODO: Show error toast/snackbar
+                }
+
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [PROOF-OF-SALE] Unexpected error")
+                // TODO: Show error toast/snackbar
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // 👤 CUSTOMER SEARCH (for email receipt dialog)
     // ═══════════════════════════════════════════════════════════════════════════
 

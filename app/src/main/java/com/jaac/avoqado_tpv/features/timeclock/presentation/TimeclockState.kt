@@ -29,7 +29,7 @@ sealed class TimeclockState {
         val isClockedIn: Boolean get() = currentEntry != null
         val isOnBreak: Boolean get() = currentEntry?.isOnBreak == true
         /** True if the user can proceed to login (has clock-in OR setting is disabled) */
-        val canProceedToLogin: Boolean get() = !requireClockInToLogin || isClockedIn
+        val canProceedToLogin: Boolean get() = !requireClockInToLogin || (isClockedIn && !isOnBreak)
     }
 
     /**

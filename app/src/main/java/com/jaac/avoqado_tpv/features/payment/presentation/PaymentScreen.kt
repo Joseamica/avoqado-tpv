@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.payment.presentation
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -16,9 +17,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material3.*
@@ -125,6 +129,19 @@ fun PaymentScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val merchants by viewModel.merchants.collectAsStateWithLifecycle()
+
+    // 📸 PROOF-OF-SALE: Check if SERIALIZED_INVENTORY module is active
+    val context = LocalContext.current
+    val hiltEntryPoint = remember {
+        dagger.hilt.android.EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            com.jaac.avoqado_tpv.features.permissions.di.PermissionsEntryPoint::class.java
+        )
+    }
+    val modulesRepository = remember { hiltEntryPoint.modulesRepository() }
+    val currentModules by modulesRepository.modules.collectAsStateWithLifecycle()
+    val isSerializedInventoryActive = currentModules
+        .any { it.moduleCode == com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository.MODULE_SERIALIZED_INVENTORY && it.active }
     val currentMerchant by viewModel.currentMerchant.collectAsStateWithLifecycle()
     val merchantSwitchingLoading by viewModel.merchantSwitchingLoading.collectAsStateWithLifecycle()
     val merchantSwitchMessage by viewModel.merchantSwitchMessage.collectAsStateWithLifecycle()
@@ -140,7 +157,6 @@ fun PaymentScreen(
     val isLoadingRecentCustomers by viewModel.isLoadingRecentCustomers.collectAsStateWithLifecycle()
 
     // 📧 Show toast when send receipt message changes
-    val context = LocalContext.current
     LaunchedEffect(sendReceiptMessage) {
         sendReceiptMessage?.let { message ->
             android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
@@ -630,7 +646,25 @@ fun PaymentScreen(
                                 isLoadingRecentCustomers = isLoadingRecentCustomers,
                                 onSearchCustomer = viewModel::searchCustomersForReceipt,
                                 onLoadRecentCustomers = viewModel::loadRecentCustomersForReceipt,
-                                onResetCustomerSearch = viewModel::resetCustomerSearch
+                                onResetCustomerSearch = viewModel::resetCustomerSearch,
+                                // 📸 PROOF-OF-SALE: Show camera FAB when SERIALIZED_INVENTORY is active and we have paymentId
+                                showProofOfSaleButton = isSerializedInventoryActive && currentState.receipt?.paymentId != null,
+                                onProofOfSalePhotoTaken = { photoPath ->
+                                    // Handle proof-of-sale photo upload
+                                    val paymentId = currentState.receipt?.paymentId
+                                    val totalAmount = currentState.receipt?.totalAmount
+                                    // Use orderNumber if available, otherwise use paymentId as identifier
+                                    val orderRef = currentState.orderNumber ?: orderNumber ?: paymentId?.take(8) ?: "UNKNOWN"
+
+                                    if (paymentId != null && totalAmount != null) {
+                                        Timber.d("📸 [PROOF-OF-SALE] Uploading photo for payment $paymentId (ref: $orderRef)")
+                                        viewModel.uploadProofOfSale(photoPath, paymentId, orderRef, totalAmount.toString())
+                                    } else {
+                                        Timber.e("📸 [PROOF-OF-SALE] Missing required data for upload")
+                                        Timber.e("📸 [PROOF-OF-SALE] Missing: paymentId=${paymentId==null}, totalAmount=${totalAmount==null}")
+                                    }
+                                },
+                                isUploadingProofOfSale = false  // TODO: Get from viewModel state
                             )
                         }
                     }
@@ -1075,7 +1109,11 @@ private fun PaymentSuccessContent(
     isLoadingRecentCustomers: Boolean = false,
     onSearchCustomer: (String) -> Unit = {},
     onLoadRecentCustomers: () -> Unit = {},
-    onResetCustomerSearch: () -> Unit = {}
+    onResetCustomerSearch: () -> Unit = {},
+    // 📸 PROOF-OF-SALE
+    showProofOfSaleButton: Boolean = false,  // Show camera FAB for SERIALIZED_INVENTORY
+    onProofOfSalePhotoTaken: (String) -> Unit = {},  // Callback when photo is captured (path)
+    isUploadingProofOfSale: Boolean = false  // Show loading during upload
 ) {
     // Parse amounts (prefer receipt data if available)
     val totalAmount = receipt?.totalAmount ?: (amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)  // ✅ FIX: Use totalAmount (includes tip)
@@ -1090,6 +1128,10 @@ private fun PaymentSuccessContent(
 
     // 📧 State for email receipt dialog
     var showEmailDialog by remember { mutableStateOf(false) }
+
+    // 📸 State for proof-of-sale camera
+    var showProofOfSaleCamera by remember { mutableStateOf(false) }
+    var capturedPhotoPath by remember { mutableStateOf<String?>(null) }
 
     // 🥝 KIOSK MODE: Auto-dismiss countdown
     var kioskSecondsRemaining by remember { mutableIntStateOf(kioskCountdownSeconds) }
@@ -1109,11 +1151,32 @@ private fun PaymentSuccessContent(
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
+    androidx.compose.material3.Scaffold(
+        floatingActionButton = {
+            // 📸 PROOF-OF-SALE: Show camera FAB only when SERIALIZED_INVENTORY is active
+            if (showProofOfSaleButton && !isKioskPayment) {
+                androidx.compose.material3.FloatingActionButton(
+                    onClick = {
+                        Timber.d("📸 [PROOF-OF-SALE] Opening camera for proof-of-sale photo")
+                        showProofOfSaleCamera = true
+                    },
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PhotoCamera,
+                        contentDescription = "Tomar foto de comprobante"
+                    )
+                }
+            }
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .background(MaterialTheme.colorScheme.background)
+        ) {
         // 🥝 KIOSK MODE: Show simplified toolbar with countdown
         if (isKioskPayment) {
             Box(
@@ -1524,6 +1587,59 @@ private fun PaymentSuccessContent(
 
             Spacer(modifier = Modifier.height(24.dp))
         }
+        }  // Close Scaffold Column
+    }  // Close Scaffold
+
+    // 📸 Proof-of-sale camera dialog (full screen)
+    if (showProofOfSaleCamera) {
+        val context = LocalContext.current
+
+        // Create output directory for photos
+        val outputDirectory = remember {
+            val dir = File(context.cacheDir, "proof_of_sale_photos")
+            dir.mkdirs()
+            dir
+        }
+
+        com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen(
+            onPhotoCaptured = { photoPath ->
+                Timber.d("📸 [PROOF-OF-SALE] Photo captured: $photoPath")
+                showProofOfSaleCamera = false
+                capturedPhotoPath = photoPath  // Store path for preview
+            },
+            onClose = {
+                showProofOfSaleCamera = false
+            },
+            outputDirectory = outputDirectory
+        )
+    }
+
+    // 📸 Photo preview dialog with confirm/retake buttons
+    capturedPhotoPath?.let { photoPath ->
+        ProofOfSalePhotoPreviewDialog(
+            photoPath = photoPath,
+            onConfirm = {
+                Timber.d("📸 [PROOF-OF-SALE] Photo confirmed, starting upload")
+                onProofOfSalePhotoTaken(photoPath)
+                capturedPhotoPath = null
+            },
+            onRetake = {
+                Timber.d("📸 [PROOF-OF-SALE] Retaking photo")
+                capturedPhotoPath = null
+                showProofOfSaleCamera = true
+            },
+            onDismiss = {
+                Timber.d("📸 [PROOF-OF-SALE] Photo preview dismissed")
+                capturedPhotoPath = null
+            }
+        )
+    }
+
+    // 📸 Show loading overlay during proof-of-sale upload
+    if (isUploadingProofOfSale) {
+        com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay(
+            message = "Subiendo foto de comprobante..."
+        )
     }
 
     // Order details modal (bottom sheet)
@@ -2199,5 +2315,123 @@ private fun PaymentSuccessWithReceiptPreview() {
             onNewOrder = {},
             onNewFastPayment = {}
         )
+    }
+}
+
+/**
+ * Photo preview dialog for proof-of-sale confirmation.
+ *
+ * Shows captured photo with Confirm/Retake buttons before uploading.
+ *
+ * @param photoPath Local file path of captured photo
+ * @param onConfirm Callback when user confirms photo (triggers upload)
+ * @param onRetake Callback when user wants to retake photo (opens camera again)
+ * @param onDismiss Callback when user dismisses dialog (cancels)
+ */
+@Composable
+private fun ProofOfSalePhotoPreviewDialog(
+    photoPath: String,
+    onConfirm: () -> Unit,
+    onRetake: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+            color = Color.Black
+        ) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Top bar with close button
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Vista Previa",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color.White
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Cerrar",
+                            tint = Color.White
+                        )
+                    }
+                }
+
+                // Photo preview (centered)
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    coil.compose.AsyncImage(
+                        model = java.io.File(photoPath),
+                        contentDescription = "Preview de foto",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(8.dp)),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Fit
+                    )
+                }
+
+                // Action buttons
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Retake button
+                    OutlinedButton(
+                        onClick = onRetake,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color.White
+                        ),
+                        border = BorderStroke(1.dp, Color.White)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CameraAlt,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Retomar")
+                    }
+
+                    // Confirm button
+                    Button(
+                        onClick = onConfirm,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Confirmar")
+                    }
+                }
+            }
+        }
     }
 }

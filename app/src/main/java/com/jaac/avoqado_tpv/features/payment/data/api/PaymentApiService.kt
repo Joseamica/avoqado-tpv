@@ -272,4 +272,39 @@ interface PaymentApiService {
         @Path("paymentId") paymentId: String,
         @Body request: SendReceiptRequest,
     ): Response<SendReceiptResponse>
+
+    /**
+     * Sube foto de comprobante de venta (proof-of-sale) para pagos con SERIALIZED_INVENTORY.
+     *
+     * **Endpoint:** POST /tpv/verification/proof-of-sale
+     *
+     * **Comportamiento del backend:**
+     * 1. Valida que el payment existe
+     * 2. Crea o actualiza SaleVerification con la foto URL
+     * 3. Marca estado como COMPLETED
+     *
+     * **Request Body:** ProofOfSaleRequest (from ApiService DTOs)
+     * ```json
+     * {
+     *   "paymentId": "payment_xxx",
+     *   "photoUrls": ["https://storage.googleapis.com/..."]
+     * }
+     * ```
+     *
+     * **Success Response (200):** ProofOfSaleResponse
+     * ```json
+     * {
+     *   "success": true,
+     *   "verificationId": "verification_xxx",
+     *   "message": "Proof-of-sale photo uploaded successfully"
+     * }
+     * ```
+     *
+     * @param request Datos del proof-of-sale (paymentId, photoUrls)
+     * @return Response con ProofOfSaleResponse o error HTTP
+     */
+    @POST("tpv/verification/proof-of-sale")
+    suspend fun uploadProofOfSale(
+        @Body request: com.jaac.avoqado_tpv.core.data.network.ProofOfSaleRequest,
+    ): Response<com.jaac.avoqado_tpv.core.data.network.ProofOfSaleResponse>
 }

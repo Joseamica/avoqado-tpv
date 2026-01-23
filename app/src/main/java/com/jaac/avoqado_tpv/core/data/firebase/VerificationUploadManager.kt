@@ -207,6 +207,73 @@ class VerificationUploadManager @Inject constructor(
     }
 
     /**
+     * Upload a proof-of-sale photo to Firebase Storage.
+     *
+     * **Path Structure:**
+     * venues/{venueSlug}/proof-of-sale/{YYYY-MM-DD}/{orderNumber}_{amount}.jpg
+     *
+     * **Flow:**
+     * 1. Compress image (max 1920px, 80% JPEG quality)
+     * 2. Upload to Firebase Storage
+     * 3. Get download URL
+     * 4. Return URL for backend storage
+     *
+     * @param localPath Local file path of captured photo
+     * @param venueSlug Venue slug for storage path (e.g., "avoqado-full")
+     * @param orderNumber Order number for filename (e.g., "ORD-00123")
+     * @param amount Payment amount for filename (e.g., "150.50")
+     * @param onProgress Optional callback for upload progress (0.0 to 1.0)
+     * @return Result with download URL on success, or error on failure
+     */
+    suspend fun uploadProofOfSale(
+        localPath: String,
+        venueSlug: String,
+        orderNumber: String,
+        amount: String,
+        onProgress: ((Float) -> Unit)? = null
+    ): Result<String> {
+        return try {
+            Timber.d("📸 [$TAG] Starting proof-of-sale upload | path=$localPath | venue=$venueSlug | order=$orderNumber | amount=$amount")
+
+            // Step 1: Compress image
+            val compressedBytes = compressImage(localPath)
+            Timber.d("📸 [$TAG] Compressed to ${compressedBytes.size / 1024}KB")
+
+            // Step 2: Generate storage path
+            // Format: {env}/venues/{venueSlug}/proof-of-sale/{date}/{orderNumber}_{amount}.jpg
+            val dateStr = SimpleDateFormat(DATE_FORMAT, Locale.US).format(Date())
+            val fileName = "${orderNumber}_${amount}.jpg"
+            val storagePath = buildStoragePath("venues/$venueSlug/proof-of-sale/$dateStr/$fileName")
+
+            Timber.d("📸 [$TAG] Uploading proof-of-sale to: $storagePath")
+
+            // Step 3: Upload to Firebase Storage
+            val photoRef = storageRef.child(storagePath)
+            val uploadTask = photoRef.putBytes(compressedBytes)
+
+            // Track progress
+            uploadTask.addOnProgressListener { snapshot ->
+                val progress = snapshot.bytesTransferred.toFloat() / snapshot.totalByteCount.toFloat()
+                onProgress?.invoke(progress)
+                Timber.d("📸 [$TAG] Upload progress: ${(progress * 100).toInt()}%")
+            }
+
+            // Wait for upload to complete
+            uploadTask.await()
+
+            // Step 4: Get download URL
+            val downloadUrl = photoRef.downloadUrl.await().toString()
+
+            Timber.i("📸 [$TAG] Proof-of-sale upload complete | url=$downloadUrl")
+            Result.success(downloadUrl)
+
+        } catch (e: Exception) {
+            Timber.e(e, "📸 [$TAG] Proof-of-sale upload failed")
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Compress image to reduce upload size and storage costs.
      *
      * **Compression Strategy:**

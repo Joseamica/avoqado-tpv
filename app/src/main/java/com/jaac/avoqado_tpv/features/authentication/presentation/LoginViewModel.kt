@@ -176,9 +176,12 @@ class LoginViewModel @Inject constructor(
                             LoginState.RequiresClockIn(staffName, staffId, pin)
                         }
                         activeEntry.status == TimeEntryStatus.ON_BREAK -> {
-                            // Currently on break
-                            Timber.w("🕐 Staff $staffName is on break")
-                            LoginState.OnBreak(staffName, staffId, pin)
+                            // Currently on break - LOGIN DENIED
+                            Timber.w("🕐 Staff $staffName is on break - login denied")
+                            LoginState.Error(
+                                "No puedes acceder al sistema mientras estás en descanso.\n\n" +
+                                    "Termina tu descanso en el Reloj Checador primero."
+                            )
                         }
                         activeEntry.status == TimeEntryStatus.CLOCKED_IN -> {
                             // Actively working - allow login

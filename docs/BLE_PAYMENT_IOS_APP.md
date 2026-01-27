@@ -78,6 +78,28 @@ Si quieres forzar el salto (aunque falten datos), envía:
 
 Esto hará que el TPV **no muestre** calificación ni propina.
 
+### 📛 Nombre del dispositivo (CLIENT_INFO)
+
+El iOS app envía un payload de identificación después de conectarse para que el TPV
+muestre un nombre amigable en **Dispositivos Externos**.
+
+Ejemplo de payload:
+```json
+{"type":"CLIENT_INFO","deviceName":"iPad de Ana","deviceModel":"iPad","systemVersion":"17.2"}
+```
+
+- `deviceName` es el nombre visible del iPad (Settings → General → About → Name).
+- Este mensaje **no inicia pagos** y solo se usa para UI.
+
+### 🧹 Auto-limpieza de dispositivos registrados
+
+Para evitar listas gigantes de dispositivos:
+
+- Se eliminan automáticamente dispositivos **sin conexión en 30 días**.
+- Se mantienen máximo **30 dispositivos** (los más recientes).
+
+Esto **no afecta** la conexión activa ni el emparejamiento del sistema.
+
 ---
 
 ## Paso 1: Instalar Xcode (Si no lo tienes)
@@ -1095,28 +1117,18 @@ La primera vez que instales una app de desarrollo, el iPad dirá:
 
 ---
 
-### 7.3 Emparejar Dispositivos (Primera vez)
+### 7.3 Enlace Bluetooth (Opcional)
 
-La primera vez que te conectes, aparecerá un diálogo en el **PAX**:
+En algunos iPads aparece un prompt de **enlace Bluetooth** con un código que
+dice algo como: *"Ingresa el código en Avoqado-TPV"*.
 
-```
-┌─────────────────────────────┐
-│  ¿Emparejar con             │
-│  4E:2B:5F:8B:E1:1A?         │
-│                             │
-│  807317                     │  ← PIN de 6 dígitos
-│                             │
-│  Normalmente: 0000 o 1234   │
-│                             │
-│  ☐ El PIN contiene letras...│
-│                             │
-│  [CANCELAR]    [ACEPTAR]    │  ← Toca ACEPTAR
-└─────────────────────────────┘
-```
+**Importante:**
+- El **TPV acepta el PIN automáticamente** (no necesitas abrir ningún diálogo en el PAX).
+- Si el prompt aparece en iOS, solo **acepta en el iPad**.
+- Si no aparece ningún prompt, **es normal**: la conexión BLE funciona igual.
 
-**Toca "ACEPTAR"** en el PAX.
-
-**Nota:** El emparejamiento solo se hace UNA VEZ. Después el iPad queda guardado.
+Si el prompt se repite cada vez, usa **Dispositivos Externos → Olvidar dispositivo** en el TPV
+y vuelve a conectar desde la app iOS.
 
 ---
 
@@ -1208,18 +1220,21 @@ adb logcat -s BluetoothPaymentServer:* | grep "Advertising"
 
 ### ❌ Error: "Error de conexión"
 
-**Causa:** Emparejamiento (pairing) falló o dispositivos incompatibles
+**Causa:** El enlace Bluetooth quedó incompleto (prompt cancelado o PIN no aceptado)
 
-**Solución 1 - Primera conexión:**
-1. Espera el diálogo de PIN en el PAX
-2. Toca **"ACEPTAR"** (no ingreses nada, solo acepta)
-3. En iPad, debería conectarse automáticamente
+**Solución 1 - Reintento rápido:**
+1. En iPad, si aparece el prompt de enlace, toca **Aceptar**
+2. No necesitas PIN en el PAX (se acepta automáticamente)
+3. Reintenta desde la app iOS → **Buscar Terminal PAX**
 
-**Solución 2 - Limpiar emparejamiento anterior:**
-1. En PAX: **Settings** → **Bluetooth** → Busca el iPad → Toca **"Forget"**
-2. En iPad: **Settings** → **Bluetooth** → Busca el PAX → Toca (i) → **"Forget This Device"**
-3. Reinicia ambos dispositivos
-4. Intenta conectar de nuevo
+**Si el diálogo del TPV NO aparece:**
+- Sal de **Dispositivos Externos** y vuelve a intentar desde la pantalla principal.
+- Esto evita que un modal interno bloquee el diálogo del sistema.
+
+**Solución 2 - Limpiar enlace anterior:**
+1. En PAX: **Dispositivos Externos** → selecciona el iPad → **Olvidar**
+2. (Solo si sigue fallando) En iPad: **Settings** → **Bluetooth** → (i) → **Forget**
+3. Reinicia ambos dispositivos y vuelve a conectar desde la app
 
 ---
 
@@ -1420,8 +1435,8 @@ PAX Payment/
    └──────────────┘  BLE   └──────────────┘
          ↓                        ↓
    ┌──────────────┐        ┌──────────────┐
-   │ Acepta PIN   │        │ Selecciona   │
-   │ 807317       │        │ Monto: $10   │
+   │ Enlace BLE   │        │ Selecciona   │
+   │ (auto-acepta)│        │ Monto: $10   │
    └──────────────┘        └──────────────┘
          ↓                        ↓
    ┌──────────────────────────────────────┐
@@ -1468,7 +1483,7 @@ A medida que sigas la guía, marca cada paso:
 **Prueba de Conexión:**
 - [ ] Paso 7.1: BLE Server corriendo en PAX
 - [ ] Paso 7.2: iPad encuentra el terminal PAX
-- [ ] Paso 7.3: Dispositivos emparejados (PIN aceptado)
+- [ ] Paso 7.3: Enlace BLE completado (si aparece prompt en iOS)
 - [ ] Paso 7.4: Monto enviado y recibido correctamente
 - [ ] Paso 7.5: Logs confirman recepción en PAX
 
@@ -1480,7 +1495,7 @@ A medida que sigas la guía, marca cada paso:
 
 1. **No puedes probar en Simulador** - Core Bluetooth requiere hardware real (iPad/iPhone físico)
 2. **Distancia máxima:** ~10 metros en espacio abierto, ~3-5 metros con paredes
-3. **Emparejamiento (pairing):** Solo se hace la primera vez, después el dispositivo queda guardado
+3. **Enlace BLE (pairing):** Puede aparecer en iOS y es opcional; el TPV lo acepta automáticamente
 4. **Background mode:** Esta app simple NO funciona en background, debe estar abierta en foreground
 5. **Batería:** BLE consume poca batería, pero si dejas la app abierta todo el día, puede drenar
 6. **Seguridad:** El emparejamiento Bluetooth es seguro (encriptación AES), pero usa distancias cortas

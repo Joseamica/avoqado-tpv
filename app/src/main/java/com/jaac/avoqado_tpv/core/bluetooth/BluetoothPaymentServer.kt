@@ -75,10 +75,31 @@ class BluetoothPaymentServer(private val context: Context) {
     private var paymentCallback: ((BlePaymentRequest) -> Unit)? = null
     private var deviceConnectedCallback: ((BluetoothDevice) -> Unit)? = null
     private var deviceDisconnectedCallback: ((BluetoothDevice) -> Unit)? = null
+    private var clientInfoCallback: ((BluetoothDevice, ClientInfo) -> Unit)? = null
     private var paymentCharacteristic: BluetoothGattCharacteristic? = null
 
     // Multi-device support: Map of connected devices by address
     private val connectedDevices = mutableMapOf<String, BluetoothDevice>()
+
+    // Venue info for handshake - set by the service/viewModel
+    private var venueId: String? = null
+    private var venueName: String? = null
+
+    data class ClientInfo(
+        val deviceName: String?,
+        val deviceModel: String?,
+        val systemVersion: String?
+    )
+
+    /**
+     * Set the venue info that will be sent in the handshake to connecting devices.
+     * This should be called when the server starts or when the user logs in.
+     */
+    fun setVenueInfo(venueId: String?, venueName: String?) {
+        this.venueId = venueId
+        this.venueName = venueName
+        Timber.i("🔵 [BLE-Server] Venue set for handshake: ${venueName ?: "unknown"} (${venueId?.take(10)}...)")
+    }
 
     /**
      * Start BLE payment server
@@ -90,11 +111,13 @@ class BluetoothPaymentServer(private val context: Context) {
     fun start(
         onPaymentReceived: (BlePaymentRequest) -> Unit,
         onDeviceConnected: (BluetoothDevice) -> Unit = {},
-        onDeviceDisconnected: (BluetoothDevice) -> Unit = {}
+        onDeviceDisconnected: (BluetoothDevice) -> Unit = {},
+        onClientInfoReceived: (BluetoothDevice, ClientInfo) -> Unit = { _, _ -> }
     ) {
         paymentCallback = onPaymentReceived
         deviceConnectedCallback = onDeviceConnected
         deviceDisconnectedCallback = onDeviceDisconnected
+        clientInfoCallback = onClientInfoReceived
 
         Timber.i("🔵 [BLE-Server] Starting Bluetooth Payment Server...")
 
@@ -165,6 +188,41 @@ class BluetoothPaymentServer(private val context: Context) {
      * Get connected device count
      */
     fun getConnectedDeviceCount(): Int = connectedDevices.size
+
+    /**
+     * Send handshake to a specific device with venue info for validation
+     * Called when a device enables notifications
+     */
+    private fun sendHandshake(device: BluetoothDevice) {
+        val currentVenueId = venueId
+        if (currentVenueId == null) {
+            Timber.w("⚠️ [BLE-Server] Cannot send handshake - venueId not set")
+            return
+        }
+
+        if (paymentCharacteristic == null) {
+            Timber.w("⚠️ [BLE-Server] Cannot send handshake - characteristic not available")
+            return
+        }
+
+        // Include venueName for user-friendly error messages on iOS
+        val currentVenueName = venueName ?: "Desconocido"
+        val handshake = """{"type":"HANDSHAKE","venueId":"$currentVenueId","venueName":"$currentVenueName"}"""
+        Timber.i("🤝 [BLE-Server] Sending handshake to ${device.address}: $handshake")
+
+        paymentCharacteristic!!.value = handshake.toByteArray(StandardCharsets.UTF_8)
+
+        try {
+            gattServer?.notifyCharacteristicChanged(
+                device,
+                paymentCharacteristic,
+                false
+            )
+            Timber.i("✅ [BLE-Server] Handshake sent successfully")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [BLE-Server] Failed to send handshake")
+        }
+    }
 
     /**
      * Send payment result back to a specific client or all clients
@@ -409,6 +467,23 @@ class BluetoothPaymentServer(private val context: Context) {
                     device?.let {
                         connectedDevices[it.address] = it
                         Timber.i("✅ [BLE-Server] Client connected: ${it.address} (total: ${connectedDevices.size})")
+
+                        // NOTE: We intentionally do NOT call createBond() here.
+                        // Reason: iOS cannot programmatically "forget" a bonded device - users would
+                        // need to go to Settings > Bluetooth to unpair. By skipping bonding,
+                        // the "Olvidar terminal" button in the iOS app works as expected.
+                        // Security is handled via HTTPS to the backend, not BLE pairing.
+                        val bondState = try {
+                            when (it.bondState) {
+                                BluetoothDevice.BOND_BONDED -> "bonded"
+                                BluetoothDevice.BOND_BONDING -> "bonding"
+                                else -> "none"
+                            }
+                        } catch (e: SecurityException) {
+                            "unknown"
+                        }
+                        Timber.i("🔐 [BLE-Server] Device bond state: $bondState (not initiating bonding)")
+
                         deviceConnectedCallback?.invoke(it)
                     }
                 }
@@ -443,6 +518,51 @@ class BluetoothPaymentServer(private val context: Context) {
             if (characteristic?.uuid == PAYMENT_CHARACTERISTIC_UUID) {
                 val data = value?.toString(StandardCharsets.UTF_8) ?: ""
                 Timber.i("📥 [BLE-Server] Received payment data: $data")
+
+                val messageType = parseString(data, "type")
+                if (messageType != null) {
+                    if (messageType == "CLIENT_INFO") {
+                        val deviceName = parseString(data, "deviceName")
+                        val deviceModel = parseString(data, "deviceModel")
+                        val systemVersion = parseString(data, "systemVersion")
+
+                        Timber.i("📛 [BLE-Server] Client info from ${device?.address}: name=$deviceName model=$deviceModel")
+
+                        if (device != null) {
+                            clientInfoCallback?.invoke(
+                                device,
+                                ClientInfo(
+                                    deviceName = deviceName,
+                                    deviceModel = deviceModel,
+                                    systemVersion = systemVersion
+                                )
+                            )
+                        }
+
+                        if (responseNeeded) {
+                            gattServer?.sendResponse(
+                                device,
+                                requestId,
+                                BluetoothGatt.GATT_SUCCESS,
+                                offset,
+                                value
+                            )
+                        }
+                        return
+                    } else {
+                        Timber.w("⚠️ [BLE-Server] Unknown message type: $messageType")
+                        if (responseNeeded) {
+                            gattServer?.sendResponse(
+                                device,
+                                requestId,
+                                BluetoothGatt.GATT_SUCCESS,
+                                offset,
+                                value
+                            )
+                        }
+                        return
+                    }
+                }
 
                 // Parse request from JSON: {"amount":1500,"tip":200,"rating":5,"skipReview":true}
                 try {
@@ -534,6 +654,9 @@ class BluetoothPaymentServer(private val context: Context) {
                         value
                     )
                 }
+
+                // Send handshake with venueId when client enables notifications
+                device?.let { sendHandshake(it) }
             } else {
                 // Respond to unknown descriptors too
                 if (responseNeeded) {

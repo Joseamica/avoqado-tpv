@@ -25,8 +25,11 @@ data class PaymentSession(
     val verificationContext: VerificationContext? = null,
     val merchantAccountId: String? = null,
     val merchantLocalId: String? = null,
+    val isKioskPayment: Boolean = false,
     val kioskStaffId: String? = null,
-    val skipLocalOrderValidation: Boolean = false
+    val skipLocalOrderValidation: Boolean = false,
+    val track2: String = "",
+    val emvIssuerCountry: String = ""
 ) {
     companion object {
         fun empty(): PaymentSession = PaymentSession(

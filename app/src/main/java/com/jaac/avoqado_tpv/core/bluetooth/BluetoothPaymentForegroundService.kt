@@ -19,7 +19,10 @@ import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import timber.log.Timber
 import javax.inject.Inject
@@ -72,6 +75,13 @@ class BluetoothPaymentForegroundService : Service() {
         private const val NOTIFICATION_CHANNEL_ID = "ble_payment_server"
         private const val NOTIFICATION_ID = 1001
 
+        // Android SDK stubs (34+) only expose PIN + PASSKEY_CONFIRMATION.
+        // These numeric values are stable in AOSP and are used for other variants at runtime.
+        private const val PAIRING_VARIANT_PASSKEY = 1
+        private const val PAIRING_VARIANT_CONSENT = 3
+        private const val PAIRING_VARIANT_DISPLAY_PASSKEY = 4
+        private const val PAIRING_VARIANT_DISPLAY_PIN = 5
+
         // Static state for observing from ViewModels (survives service restarts)
         private val _isRunning = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
@@ -94,6 +104,9 @@ class BluetoothPaymentForegroundService : Service() {
         // Payment events SharedFlow (for AppNavigation to observe)
         private val _paymentEvents = MutableStateFlow<BlePaymentRequest?>(null)
         val paymentEvents: StateFlow<BlePaymentRequest?> = _paymentEvents.asStateFlow()
+
+        private val _pairingEvents = MutableSharedFlow<PairingEvent>(extraBufferCapacity = 1)
+        val pairingEvents: SharedFlow<PairingEvent> = _pairingEvents.asSharedFlow()
 
         /**
          * Clear payment event after it's been consumed
@@ -129,16 +142,13 @@ class BluetoothPaymentForegroundService : Service() {
     private var pairingReceiver: BroadcastReceiver? = null
 
     /**
-     * BroadcastReceiver that automatically ACCEPTS Bluetooth pairing requests.
-     * This prevents the pairing dialogs from appearing while keeping the connection stable.
+     * BroadcastReceiver that handles Bluetooth pairing requests.
      *
-     * Why accept instead of reject?
-     * - Rejecting pairing causes iOS to disconnect (treats it as connection failure)
-     * - Accepting silently completes the pairing without user interaction
-     * - Our BLE communication works with or without bonding, but iOS prefers bonded connections
+     * Since iOS doesn't send its device name over BLE (shows as "null" in system dialog),
+     * we auto-accept the pairing silently. The user has already initiated the connection
+     * from the iOS app, so no additional confirmation is needed.
      *
-     * Security note: Payment data security is handled via HTTPS to the backend,
-     * not via BLE encryption.
+     * Security note: Real payment security comes from HTTPS to backend, not BLE encryption.
      */
     private fun createPairingReceiver(): BroadcastReceiver {
         return object : BroadcastReceiver() {
@@ -154,28 +164,104 @@ class BluetoothPaymentForegroundService : Service() {
                     val pairingType = intent.getIntExtra(BluetoothDevice.EXTRA_PAIRING_VARIANT, -1)
                     val pairingKey = intent.getIntExtra(BluetoothDevice.EXTRA_PAIRING_KEY, -1)
 
-                    Timber.i("🔐 [BLE-Pairing] Pairing request received from ${device?.address}, type=$pairingType, key=$pairingKey - AUTO-ACCEPTING")
+                    val pairingTypeLabel = pairingVariantToString(pairingType)
+                    Timber.i("🔐 [BLE-Pairing] Pairing request from ${device?.address}, type=$pairingTypeLabel, key=$pairingKey")
 
-                    // Abort the broadcast to prevent system dialog from showing
-                    abortBroadcast()
+                    _pairingEvents.tryEmit(PairingEvent(device?.address, pairingType, pairingKey))
 
-                    // Auto-accept the pairing
-                    try {
-                        device?.let {
-                            // For "Just Works" and numeric comparison (type 0, 2)
-                            // Call setPairingConfirmation(true) to accept
-                            val result = it.setPairingConfirmation(true)
-                            Timber.i("🔐 [BLE-Pairing] setPairingConfirmation(true) result: $result for ${it.address}")
-                        }
-                    } catch (e: SecurityException) {
-                        Timber.w(e, "⚠️ [BLE-Pairing] SecurityException - need BLUETOOTH_PRIVILEGED permission")
-                        // On non-rooted devices, we can't auto-accept without BLUETOOTH_PRIVILEGED
-                        // The dialog will still appear, but at least we tried
-                    } catch (e: Exception) {
-                        Timber.w(e, "⚠️ [BLE-Pairing] Could not auto-accept pairing")
+                    // Check if this device is already in our connected devices list
+                    // (meaning the user initiated connection from iOS app)
+                    val isKnownConnection = device?.address?.let { addr ->
+                        _connectedDevices.value.containsKey(addr)
+                    } ?: false
+
+                    if (!isKnownConnection) {
+                        Timber.i("🔐 [BLE-Pairing] Device not yet in connected list (race) - still attempting auto-accept")
+                    } else {
+                        Timber.i("🔐 [BLE-Pairing] Known connection - attempting auto-accept")
+                    }
+
+                    val handled = handlePairingRequest(device, pairingType, pairingKey)
+                    if (handled) {
+                        Timber.i("🔐 [BLE-Pairing] Pairing handled programmatically - aborting broadcast")
+                        abortBroadcast()
+                    } else {
+                        Timber.i("🔐 [BLE-Pairing] Could not auto-handle pairing - allowing system dialog")
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Attempt to handle pairing request programmatically to avoid flaky system dialogs.
+     *
+     * iOS sometimes shows a passcode prompt; if we complete pairing here, the prompt stops repeating.
+     */
+    private fun handlePairingRequest(device: BluetoothDevice?, pairingType: Int, pairingKey: Int): Boolean {
+        if (device == null) return false
+
+        return try {
+            when (pairingType) {
+                BluetoothDevice.PAIRING_VARIANT_PIN,
+                PAIRING_VARIANT_PASSKEY -> {
+                    if (pairingKey >= 0) {
+                        val pin = String.format(java.util.Locale.US, "%06d", pairingKey)
+                        val setPinResult = trySetPin(device, pin)
+                        Timber.i("🔐 [BLE-Pairing] setPin($pin) result: $setPinResult")
+                    } else {
+                        Timber.w("🔐 [BLE-Pairing] Missing pairingKey for PIN/PASSKEY variant")
+                        return false
+                    }
+                    val confirmResult = device.setPairingConfirmation(true)
+                    Timber.i("🔐 [BLE-Pairing] setPairingConfirmation(true) result: $confirmResult")
+                    true
+                }
+                BluetoothDevice.PAIRING_VARIANT_PASSKEY_CONFIRMATION,
+                PAIRING_VARIANT_CONSENT -> {
+                    val confirmResult = device.setPairingConfirmation(true)
+                    Timber.i("🔐 [BLE-Pairing] setPairingConfirmation(true) result: $confirmResult")
+                    true
+                }
+                PAIRING_VARIANT_DISPLAY_PASSKEY,
+                PAIRING_VARIANT_DISPLAY_PIN -> {
+                    // Needs user-visible UI - let system dialog handle it if shown
+                    Timber.i("🔐 [BLE-Pairing] Display-only variant; letting system dialog handle it")
+                    false
+                }
+                else -> {
+                    Timber.w("🔐 [BLE-Pairing] Unknown pairing variant=$pairingType")
+                    false
+                }
+            }
+        } catch (e: SecurityException) {
+            Timber.i("🔐 [BLE-Pairing] Can't auto-accept (needs BLUETOOTH_PRIVILEGED)")
+            false
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ [BLE-Pairing] Failed to handle pairing request")
+            false
+        }
+    }
+
+    private fun trySetPin(device: BluetoothDevice, pin: String): Boolean {
+        return try {
+            val method = device.javaClass.getMethod("setPin", ByteArray::class.java)
+            method.invoke(device, pin.toByteArray(Charsets.UTF_8)) as Boolean
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ [BLE-Pairing] Failed to set PIN via reflection")
+            false
+        }
+    }
+
+    private fun pairingVariantToString(variant: Int): String {
+        return when (variant) {
+            BluetoothDevice.PAIRING_VARIANT_PIN -> "PIN"
+            PAIRING_VARIANT_PASSKEY -> "PASSKEY"
+            BluetoothDevice.PAIRING_VARIANT_PASSKEY_CONFIRMATION -> "PASSKEY_CONFIRMATION"
+            PAIRING_VARIANT_CONSENT -> "CONSENT"
+            PAIRING_VARIANT_DISPLAY_PASSKEY -> "DISPLAY_PASSKEY"
+            PAIRING_VARIANT_DISPLAY_PIN -> "DISPLAY_PIN"
+            else -> "UNKNOWN($variant)"
         }
     }
 
@@ -282,6 +368,12 @@ class BluetoothPaymentForegroundService : Service() {
 
         // Create and start BLE server
         bleServer = BluetoothPaymentServer(this).apply {
+            // Set venue info for handshake validation with iOS
+            val venueId = secureStorage.getVenueId()
+            val venueName = secureStorage.getVenueName()
+            setVenueInfo(venueId, venueName)
+            Timber.i("🔵 [BLE-ForegroundService] Venue for handshake: $venueName (${venueId?.take(10)}...)")
+
             start(
                 onPaymentReceived = { request ->
                     Timber.i("💰 [BLE-ForegroundService] Payment received: ${request.amountCents} cents")
@@ -292,6 +384,9 @@ class BluetoothPaymentForegroundService : Service() {
                 },
                 onDeviceDisconnected = { device ->
                     handleDeviceDisconnected(device)
+                },
+                onClientInfoReceived = { device, info ->
+                    handleClientInfo(device, info)
                 }
             )
         }
@@ -327,6 +422,11 @@ class BluetoothPaymentForegroundService : Service() {
             "Dispositivo"
         }
         val deviceAddress = device.address
+
+        // NOTE: We do NOT call createBond() proactively here because:
+        // 1. The device name may not be available yet (shows "null" in pairing dialog)
+        // 2. iOS will naturally trigger pairing when it enables notifications
+        // 3. By that time, the device name will be properly exchanged
 
         // Add to connected devices map
         val updatedDevices = _connectedDevices.value.toMutableMap()
@@ -386,11 +486,89 @@ class BluetoothPaymentForegroundService : Service() {
         Timber.i("🔵 [BLE-ForegroundService] Device disconnected: $deviceAddress - Remaining: $deviceCount")
     }
 
+    private fun handleClientInfo(device: BluetoothDevice, info: BluetoothPaymentServer.ClientInfo) {
+        val deviceAddress = device.address
+        val resolvedName = info.deviceName?.takeIf { it.isNotBlank() }
+            ?: info.deviceModel?.takeIf { it.isNotBlank() }
+
+        if (resolvedName.isNullOrBlank()) {
+            Timber.w("⚠️ [BLE-ClientInfo] Missing device name for $deviceAddress")
+            return
+        }
+
+        // Update connected devices map with the new name
+        val updatedDevices = _connectedDevices.value.toMutableMap()
+        val existing = updatedDevices[deviceAddress]
+        updatedDevices[deviceAddress] = (existing ?: ConnectedDeviceInfo(deviceAddress, resolvedName))
+            .copy(name = resolvedName)
+        _connectedDevices.value = updatedDevices
+
+        // Update known devices storage without increasing connection count
+        secureStorage.updateKnownBleDeviceName(deviceAddress, resolvedName)
+
+        // Legacy single-device support
+        if (_connectedDeviceAddress.value == deviceAddress) {
+            _connectedDeviceName.value = resolvedName
+        }
+
+        // Refresh notification to display the friendly name
+        val deviceCount = updatedDevices.size
+        if (deviceCount > 0) {
+            updateNotification(
+                title = if (deviceCount == 1) "1 dispositivo conectado" else "$deviceCount dispositivos conectados",
+                content = updatedDevices.values.joinToString(", ") { it.name ?: it.address }
+            )
+        }
+
+        Timber.i("✅ [BLE-ClientInfo] Updated device name for $deviceAddress → $resolvedName")
+    }
+
     /**
      * Send payment result back to connected device
      */
     fun sendPaymentResult(success: Boolean, transactionId: String?) {
         bleServer?.sendPaymentResult(success, transactionId)
+    }
+
+    /**
+     * Try to proactively initiate bonding with "Just Works" method.
+     *
+     * Why? iOS may trigger pairing when enabling notifications on a characteristic.
+     * By proactively bonding from Android side BEFORE iOS tries, we can:
+     * 1. Complete bonding silently using "Just Works" (no PIN dialog)
+     * 2. Satisfy iOS's security requirement
+     * 3. Prevent iOS from showing its pairing dialog
+     *
+     * "Just Works" bonding happens when the peripheral declares no IO capabilities,
+     * which is the default for Android GATT servers.
+     */
+    private fun tryProactiveBonding(device: BluetoothDevice) {
+        try {
+            val bondState = device.bondState
+            Timber.i("🔐 [BLE-Bonding] Device ${device.address} bondState: $bondState")
+
+            when (bondState) {
+                BluetoothDevice.BOND_BONDED -> {
+                    Timber.i("🔐 [BLE-Bonding] Already bonded with ${device.address}")
+                }
+                BluetoothDevice.BOND_BONDING -> {
+                    Timber.i("🔐 [BLE-Bonding] Already bonding with ${device.address}")
+                }
+                BluetoothDevice.BOND_NONE -> {
+                    // Not bonded - try to initiate "Just Works" bonding
+                    Timber.i("🔐 [BLE-Bonding] Initiating proactive bonding with ${device.address}...")
+
+                    // createBond() uses "Just Works" for BLE devices without IO capabilities
+                    val result = device.createBond()
+
+                    Timber.i("🔐 [BLE-Bonding] createBond() result: $result")
+                }
+            }
+        } catch (e: SecurityException) {
+            Timber.w(e, "⚠️ [BLE-Bonding] SecurityException - need BLUETOOTH_CONNECT permission")
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ [BLE-Bonding] Failed to initiate bonding")
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

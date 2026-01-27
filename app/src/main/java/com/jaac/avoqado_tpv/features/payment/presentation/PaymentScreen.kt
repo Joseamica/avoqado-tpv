@@ -689,7 +689,7 @@ fun PaymentScreen(
                                         )
                                     }
                                 },
-                                onNavigateBack = if (effectiveOrigin == PaymentFlowOrigin.FAST) onNavigateHome else onNavigateBack,
+                                onNavigateHome = onNavigateHome,
                                 onRefundComplete = onRefundComplete,
                                 onNewOrder = {
                                     viewModel.resetPayment()
@@ -1232,8 +1232,8 @@ private fun PaymentSuccessContent(
     onKioskTimeout: () -> Unit = {},  // 🥝 Callback when kiosk countdown finishes
     onPrintReceipt: () -> Unit = {},
     onPrintKitchenTicket: () -> Unit = {},  // 🆕 Print kitchen ticket (comanda)
-    onNavigateBack: () -> Unit,  // 🆕 Navigate to WelcomeScreen (home button)
-    onRefundComplete: () -> Unit = onNavigateBack,  // 💸 Navigate after refund success
+    onNavigateHome: () -> Unit,  // 🆕 Navigate to WelcomeScreen (home button)
+    onRefundComplete: () -> Unit = onNavigateHome,  // 💸 Navigate after refund success
     onNewOrder: () -> Unit,  // 🆕 Navigate to new order (for order payments)
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Serialized sale: return to scanner flow
     onNewFastPayment: () -> Unit,  // 🆕 Navigate to new fast payment (for fast payments)
@@ -1346,7 +1346,7 @@ private fun PaymentSuccessContent(
                 ) {
                     // Home button (left) - Navigate to WelcomeScreen
                     IconButton(
-                        onClick = onNavigateBack,  // ✅ Navigate to WelcomeScreen
+                        onClick = onNavigateHome,  // ✅ Navigate to WelcomeScreen
                         modifier = Modifier
                             .size(48.dp)
                             .border(
@@ -2423,7 +2423,7 @@ private fun PaymentSuccessContentPreview() {
             amount = "500.00",
             receipt = null,  // No receipt - button won't show
             onPrintReceipt = {},
-            onNavigateBack = {},
+            onNavigateHome = {},
             onNewOrder = {},
             onNewFastPayment = {}
         )
@@ -2445,7 +2445,7 @@ private fun PaymentSuccessWithReceiptPreview() {
                 tipAmount = java.math.BigDecimal("50.00")
             ),
             onPrintReceipt = {},
-            onNavigateBack = {},
+            onNavigateHome = {},
             onNewOrder = {},
             onNewFastPayment = {}
         )

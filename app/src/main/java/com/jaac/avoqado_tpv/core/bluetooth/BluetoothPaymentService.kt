@@ -1,9 +1,12 @@
 package com.jaac.avoqado_tpv.core.bluetooth
 
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -70,7 +73,8 @@ data class KnownDevice(
  */
 @Singleton
 class BluetoothPaymentService @Inject constructor(
-    private val secureStorage: SecureStorage
+    private val secureStorage: SecureStorage,
+    @ApplicationContext private val context: Context
 ) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -181,28 +185,75 @@ class BluetoothPaymentService @Inject constructor(
     }
 
     /**
-     * Remove a device from the known devices list
+     * Remove a device from the known devices list AND remove system bond
      */
     fun forgetDevice(address: String) {
+        // Remove from our app's storage
         secureStorage.removeKnownBleDevice(address)
+
+        // Also remove system-level bond (so it disappears from Settings > Bluetooth)
+        removeSystemBond(address)
+
         refreshKnownDevices()
         Timber.i("🔵 [BLE-Service] Forgot device: $address")
     }
 
     /**
-     * Clear all known devices
+     * Clear all known devices AND remove all system bonds
      */
     fun forgetAllDevices() {
+        // Get all known devices before clearing
+        val devices = secureStorage.getKnownBleDevices()
+
+        // Remove system bonds for each device
+        devices.forEach { device ->
+            removeSystemBond(device.address)
+        }
+
         secureStorage.clearKnownBleDevices()
         refreshKnownDevices()
         Timber.i("🔵 [BLE-Service] Forgot all devices")
+    }
+
+    /**
+     * Remove the system-level Bluetooth bond for a device.
+     *
+     * This uses reflection because removeBond() is not a public API.
+     * After this, the device will no longer appear in Settings > Bluetooth.
+     */
+    private fun removeSystemBond(address: String) {
+        try {
+            val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            val adapter = bluetoothManager?.adapter ?: return
+
+            val device = adapter.getRemoteDevice(address)
+            if (device.bondState == BluetoothDevice.BOND_BONDED) {
+                // removeBond() is hidden API - use reflection
+                val removeBondMethod = device.javaClass.getMethod("removeBond")
+                val result = removeBondMethod.invoke(device) as Boolean
+                Timber.i("🔐 [BLE-Service] removeBond($address) result: $result")
+            } else {
+                Timber.d("🔐 [BLE-Service] Device $address not bonded, nothing to remove")
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ [BLE-Service] Failed to remove system bond for $address")
+        }
     }
 
     // 🔔 Payment events (global) - allows AppNavigation to start payment flow anywhere
     private val _paymentRequests = MutableSharedFlow<BlePaymentRequest>(extraBufferCapacity = 1)
     val paymentRequests: SharedFlow<BlePaymentRequest> = _paymentRequests.asSharedFlow()
 
+    // 🔐 Pairing events (inform UI when the OS prompts for pairing)
+    val pairingEvents: SharedFlow<PairingEvent> = BluetoothPaymentForegroundService.pairingEvents
+
     init {
+        // Auto-clean old known devices to keep list manageable
+        val removedCount = secureStorage.pruneKnownBleDevices(maxAgeDays = 30, maxDevices = 30)
+        if (removedCount > 0) {
+            Timber.i("🧹 [BLE-Service] Auto-clean removed $removedCount known devices")
+        }
+
         // Forward payment events from Foreground Service
         scope.launch {
             BluetoothPaymentForegroundService.paymentEvents.collect { request ->

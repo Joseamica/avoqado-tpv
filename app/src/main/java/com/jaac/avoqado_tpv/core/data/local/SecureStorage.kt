@@ -12,6 +12,7 @@ import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import timber.log.Timber
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -1426,6 +1427,36 @@ class SecureStorage @Inject constructor(
     }
 
     /**
+     * Update the stored name for a known BLE device without incrementing connection count.
+     */
+    fun updateKnownBleDeviceName(address: String, name: String?) {
+        if (name.isNullOrBlank()) return
+
+        val knownDevices = getKnownBleDevices().toMutableList()
+        val existingIndex = knownDevices.indexOfFirst { it.address == address }
+
+        if (existingIndex >= 0) {
+            val existing = knownDevices[existingIndex]
+            if (existing.name != name) {
+                knownDevices[existingIndex] = existing.copy(name = name)
+                saveKnownBleDevices(knownDevices)
+                Timber.i("🔵 [BLE-Known] Updated device name: $address → $name")
+            }
+        } else {
+            knownDevices.add(
+                KnownBleDevice(
+                    address = address,
+                    name = name,
+                    lastConnectedAt = System.currentTimeMillis(),
+                    connectionCount = 1
+                )
+            )
+            saveKnownBleDevices(knownDevices)
+            Timber.i("🔵 [BLE-Known] Added device from client info: $address ($name)")
+        }
+    }
+
+    /**
      * Get all known BLE devices
      *
      * Returns list sorted by lastConnectedAt (most recent first).
@@ -1466,6 +1497,30 @@ class SecureStorage @Inject constructor(
     fun clearKnownBleDevices() {
         encryptedPrefs.edit().remove(KEY_BLE_KNOWN_DEVICES).apply()
         Timber.i("🔵 [BLE-Known] Cleared all known devices")
+    }
+
+    /**
+     * Auto-clean known BLE devices to avoid stale lists.
+     *
+     * @param maxAgeDays Remove devices not seen in this many days.
+     * @param maxDevices Keep at most this many most-recent devices.
+     * @return number of devices removed
+     */
+    fun pruneKnownBleDevices(maxAgeDays: Int = 30, maxDevices: Int = 30): Int {
+        val allDevices = getKnownBleDevices()
+        if (allDevices.isEmpty()) return 0
+
+        val cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(maxAgeDays.toLong())
+        val filtered = allDevices.filter { it.lastConnectedAt >= cutoff }
+        val trimmed = filtered.sortedByDescending { it.lastConnectedAt }.take(maxDevices)
+
+        val removedCount = allDevices.size - trimmed.size
+        if (removedCount > 0) {
+            saveKnownBleDevices(trimmed)
+            Timber.i("🧹 [BLE-Known] Auto-clean removed $removedCount devices (maxAgeDays=$maxAgeDays, maxDevices=$maxDevices)")
+        }
+
+        return removedCount
     }
 
     private fun saveKnownBleDevices(devices: List<KnownBleDevice>) {

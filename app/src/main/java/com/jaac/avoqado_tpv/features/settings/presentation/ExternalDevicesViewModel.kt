@@ -82,6 +82,23 @@ class ExternalDevicesViewModel @Inject constructor(
                 _state.value = _state.value.copy(knownDevices = devices)
             }
         }
+
+        // Pairing events (system dialog may appear on TPV)
+        viewModelScope.launch {
+            bluetoothPaymentService.pairingEvents.collect { event ->
+                val needsPinOnTpv = event.key < 0
+                _state.value = _state.value.copy(
+                    wizardStep = WizardStep.NONE, // avoid blocking system dialog with our modal
+                    message = if (needsPinOnTpv) {
+                        "Se requiere ingresar el PIN que aparece en el iPad.\n\n" +
+                            "Si no aparece el diálogo del sistema en el TPV, sal de esta pantalla y vuelve a intentarlo desde Inicio."
+                    } else {
+                        "Se está confirmando el enlace Bluetooth…"
+                    },
+                    isError = false
+                )
+            }
+        }
     }
 
     /**

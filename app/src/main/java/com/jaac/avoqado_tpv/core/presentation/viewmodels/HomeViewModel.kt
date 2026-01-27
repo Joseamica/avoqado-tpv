@@ -26,6 +26,9 @@ import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
 import com.jaac.avoqado_tpv.core.data.local.mappers.toEntities
 import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryEntities
+import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleSalesGoal
+import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalPeriod
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -65,7 +68,9 @@ class HomeViewModel @Inject constructor(
     // 📦 Product Cache Warm-up (Performance Optimization)
     private val productRepository: ProductRepository,
     private val productDao: ProductDao,
-    private val productCategoryDao: ProductCategoryDao
+    private val productCategoryDao: ProductCategoryDao,
+    // 🎯 Sales Goal API
+    private val apiService: ApiService
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -129,6 +134,14 @@ class HomeViewModel @Inject constructor(
     private val _venueStatusEvents = MutableSharedFlow<VenueStatusEvent>(replay = 0, extraBufferCapacity = 5)
     val venueStatusEvents: SharedFlow<VenueStatusEvent> = _venueStatusEvents.asSharedFlow()
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SALES GOAL (staff performance tracking)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Current sales goal for the logged-in staff member
+    private val _salesGoal = MutableStateFlow<ModuleSalesGoal?>(null)
+    val salesGoal: StateFlow<ModuleSalesGoal?> = _salesGoal.asStateFlow()
+
     init {
         loadStaffInfo()
         // 🔌 Connect Socket.IO if session was restored (app restart)
@@ -138,6 +151,8 @@ class HomeViewModel @Inject constructor(
         initializeBlumonSDK()
         // 📦 Warm up product cache (so "Quick Order" opens instantly)
         warmUpProductCache()
+        // 🎯 Fetch sales goal for progress bar display
+        fetchSalesGoal()
     }
 
     /**
@@ -204,6 +219,65 @@ class HomeViewModel @Inject constructor(
             // TODO: Implement clock-in feature and load actual clock-in time
             _clockInTime.value = null
         }
+    }
+
+    /**
+     * 🎯 Fetch Sales Goal
+     *
+     * Fetches the current staff's sales goal from the backend.
+     * Shows a progress bar on WelcomeScreen if a goal is configured.
+     *
+     * **Goal Priority:**
+     * 1. Staff-specific goal (if exists)
+     * 2. Venue-wide goal (if no staff goal)
+     * 3. null (no goal configured)
+     */
+    private fun fetchSalesGoal() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                Timber.d("🎯 [HomeViewModel] Fetching sales goal...")
+
+                val response = apiService.getSalesGoal()
+                if (response.isSuccessful) {
+                    val body = response.body()
+                    val goalDto = body?.salesGoal
+
+                    if (goalDto != null) {
+                        val goal = ModuleSalesGoal(
+                            goal = goalDto.goal.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO,
+                            period = when (goalDto.period.uppercase()) {
+                                "WEEKLY" -> SalesGoalPeriod.WEEKLY
+                                "MONTHLY" -> SalesGoalPeriod.MONTHLY
+                                else -> SalesGoalPeriod.DAILY
+                            },
+                            currentSales = goalDto.currentSales.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO,
+                            staffId = goalDto.staffId
+                        )
+                        _salesGoal.value = goal
+                        Timber.i("✅ [HomeViewModel] Sales goal loaded: ${goal.currentSales}/${goal.goal} (${goal.period})")
+                    } else {
+                        _salesGoal.value = null
+                        Timber.d("ℹ️ [HomeViewModel] No sales goal configured for this staff/venue")
+                    }
+                } else {
+                    Timber.w("⚠️ [HomeViewModel] Failed to fetch sales goal: ${response.code()}")
+                    _salesGoal.value = null
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [HomeViewModel] Error fetching sales goal")
+                _salesGoal.value = null
+            }
+        }
+    }
+
+    /**
+     * 🔄 Refresh Sales Goal
+     *
+     * Public method to manually refresh the sales goal.
+     * Called after a payment is completed to update progress.
+     */
+    fun refreshSalesGoal() {
+        fetchSalesGoal()
     }
 
     /**

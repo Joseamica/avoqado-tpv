@@ -203,23 +203,27 @@ data class UiConfig(
 - Only visible when `SERIALIZED_INVENTORY` module is active
 - Clicking FAB opens CameraPreviewScreen for photo capture
 - Upload happens asynchronously (doesn't block payment flow)
+- **Serialized sale flow:** After a serialized sale payment (`skipLocalOrderValidation=true`), the success action returns to the SerializedSale scanner (not Quick Order). Back navigation from payment steps also returns to the scanner to avoid entering tip/merchant flows.
 
 **Implementation:**
 ```kotlin
-// PaymentScreen.kt - Module Detection
-val hiltEntryPoint = remember {
-    dagger.hilt.android.EntryPointAccessors.fromApplication(
-        context.applicationContext,
-        com.jaac.avoqado_tpv.features.permissions.di.PermissionsEntryPoint::class.java
-    )
+// PaymentViewModel.kt - Module Observation
+private val _isSerializedInventoryActive = MutableStateFlow(false)
+val isSerializedInventoryActive: StateFlow<Boolean> = _isSerializedInventoryActive.asStateFlow()
+
+private fun observeModules() {
+    viewModelScope.launch {
+        modulesRepository.modules.collect { modules ->
+            val isActive = modules.any {
+                it.moduleCode == ModulesRepository.MODULE_SERIALIZED_INVENTORY && it.active
+            }
+            _isSerializedInventoryActive.value = isActive
+        }
+    }
 }
-val modulesRepository = remember { hiltEntryPoint.modulesRepository() }
-val currentModules by modulesRepository.modules.collectAsStateWithLifecycle()
 
-val isSerializedInventoryActive = currentModules
-    .any { it.moduleCode == MODULE_SERIALIZED_INVENTORY && it.active }
-
-// FAB button conditional rendering
+// PaymentScreen.kt - UI consumption
+val isSerializedInventoryActive by viewModel.isSerializedInventoryActive.collectAsStateWithLifecycle()
 showProofOfSaleButton = isSerializedInventoryActive && currentState.receipt?.paymentId != null
 ```
 

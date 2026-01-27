@@ -55,6 +55,7 @@ import timber.log.Timber
 fun SerializedSaleScreen(
     onNavigateBack: () -> Unit,
     onNavigateToPayment: (orderId: String, orderTotal: String) -> Unit,
+    resetOnEnter: Boolean = false,
     viewModel: SerializedSaleViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -75,6 +76,14 @@ fun SerializedSaleScreen(
     // Log UI state changes for debugging
     LaunchedEffect(uiState) {
         Timber.d("📦 [Screen] UI State changed: isLoading=${uiState.isLoading}, scanResult=${uiState.scanResult?.let { it::class.simpleName }}, error=${uiState.error}, serial=${uiState.currentSerialNumber}")
+    }
+
+    // Reset flow when returning from payment success
+    LaunchedEffect(resetOnEnter) {
+        if (resetOnEnter) {
+            scannerInput = ""
+            viewModel.returnToScanner()
+        }
     }
 
     // Request focus on scanner input when screen loads and after scanning

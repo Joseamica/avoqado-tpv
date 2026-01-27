@@ -96,7 +96,7 @@ data class FastPaymentRequest(
     // Order reference generated ONCE when entering VerifyingPrePayment state
     // Ensures Firebase photos match the order number created in backend
     @SerializedName("orderReference")
-    val orderReference: String? = null, // e.g., "FAST-1765549860972"
+    val orderReference: String? = null, // e.g., "87654321"
 
     // Firebase Storage URLs of verification photos (uploaded before payment)
     @SerializedName("verificationPhotos")

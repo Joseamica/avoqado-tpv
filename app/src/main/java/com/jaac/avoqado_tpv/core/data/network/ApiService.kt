@@ -559,6 +559,78 @@ interface ApiService {
         @Body request: ProofOfSaleRequest
     ): Response<ProofOfSaleResponse>
 
+    // ========== Crypto Payments (B4Bit Integration) ==========
+
+    /**
+     * Initiate a crypto payment
+     *
+     * POST /tpv/venues/{venueId}/crypto/initiate
+     *
+     * Creates a crypto payment order via B4Bit gateway.
+     * Returns a payment URL that should be displayed as QR code.
+     *
+     * **Flow:**
+     * 1. TPV calls this endpoint with amount and tip
+     * 2. Backend creates B4Bit order and returns payment URL
+     * 3. TPV generates QR code from payment URL
+     * 4. Customer scans QR and pays with crypto
+     * 5. B4Bit webhook notifies backend → Socket.IO event to TPV
+     *
+     * **Supported Cryptocurrencies:**
+     * BTC, ETH, USDT, USDC, DAI, SOL, AVAX, XRP, TRX, ALGO, DASH, BCH
+     *
+     * @param venueId Venue identifier
+     * @param request Crypto payment request with amount, tip, and device info
+     * @return Crypto payment response with QR URL and expiration
+     */
+    @POST("tpv/venues/{venueId}/crypto/initiate")
+    suspend fun initiateCryptoPayment(
+        @Path("venueId") venueId: String,
+        @Body request: CryptoPaymentRequest
+    ): Response<CryptoPaymentResponse>
+
+    /**
+     * Cancel a pending crypto payment
+     *
+     * POST /tpv/venues/{venueId}/crypto/cancel
+     *
+     * Cancels a crypto payment that is awaiting customer payment.
+     * Should be called when user taps "Cancel" on QR screen.
+     *
+     * @param venueId Venue identifier
+     * @param request Cancel request with requestId
+     * @return Generic response with success status
+     */
+    @POST("tpv/venues/{venueId}/crypto/cancel")
+    suspend fun cancelCryptoPayment(
+        @Path("venueId") venueId: String,
+        @Body request: CancelCryptoPaymentRequest
+    ): Response<GenericResponse>
+
+    /**
+     * Get crypto payment status
+     *
+     * GET /tpv/venues/{venueId}/crypto/status/{requestId}
+     *
+     * Polls for crypto payment status (fallback if Socket.IO fails).
+     * Normally not needed - Socket.IO events notify TPV of status changes.
+     *
+     * **Status codes:**
+     * - PENDING: Awaiting customer payment
+     * - PROCESSING: Payment detected, awaiting confirmations
+     * - COMPLETED: Payment confirmed
+     * - FAILED: Payment failed or expired
+     *
+     * @param venueId Venue identifier
+     * @param requestId B4Bit request ID
+     * @return Current payment status
+     */
+    @GET("tpv/venues/{venueId}/crypto/status/{requestId}")
+    suspend fun getCryptoPaymentStatus(
+        @Path("venueId") venueId: String,
+        @Path("requestId") requestId: String
+    ): Response<CryptoPaymentStatusResponse>
+
     // ========== Tables ==========
 
     /**
@@ -876,6 +948,30 @@ interface ApiService {
     suspend fun getModules(
         @Header("X-Venue-Id") venueId: String
     ): Response<com.jaac.avoqado_tpv.features.modules.data.dto.ModulesApiResponse>
+
+    // ========== Sales Goal ==========
+
+    /**
+     * Get current staff's sales goal with progress
+     *
+     * GET /tpv/sales-goal
+     *
+     * Returns the active sales goal for the logged-in staff member,
+     * or the venue-wide goal if no staff-specific goal exists.
+     * Includes real-time current sales calculation based on completed payments.
+     *
+     * **Response:**
+     * - If goal exists: { salesGoal: { goal, period, currentSales, staffId } }
+     * - If no goal: { salesGoal: null }
+     *
+     * **Use case:**
+     * Display sales progress bar on WelcomeScreen to motivate staff
+     * toward daily/weekly/monthly sales targets.
+     *
+     * @return Sales goal with current progress, or null if not configured
+     */
+    @GET("tpv/sales-goal")
+    suspend fun getSalesGoal(): Response<SalesGoalResponse>
 
     // ========== Shifts (Timeclock) - DEPRECATED ==========
     // TODO: Remove these after shift management migration complete
@@ -1342,4 +1438,113 @@ data class ProofOfSaleResponse(
     val success: Boolean,
     val verificationId: String,
     val message: String?
+)
+
+// ========== Sales Goal DTOs ==========
+
+/**
+ * Response from GET /tpv/sales-goal
+ * Contains the staff's active sales goal with real-time progress
+ */
+data class SalesGoalResponse(
+    val salesGoal: SalesGoalDto?
+)
+
+/**
+ * Sales goal data from backend
+ * All monetary values are strings (BigDecimal on backend)
+ */
+data class SalesGoalDto(
+    val goal: String,           // Target amount (e.g., "10000")
+    val period: String,         // "DAILY", "WEEKLY", or "MONTHLY"
+    val currentSales: String,   // Current sales (e.g., "5000")
+    val staffId: String?        // null = venue-wide goal
+)
+
+// ========== Crypto Payment DTOs (B4Bit Integration) ==========
+
+/**
+ * Request to initiate a crypto payment
+ *
+ * @param amount Amount in centavos (e.g., 5500 = $55.00 MXN)
+ * @param tip Tip amount in centavos (optional)
+ * @param staffId Staff member processing the payment
+ * @param orderId Associated order ID (optional for fast payments)
+ * @param orderNumber Order number for display (optional)
+ * @param deviceSerialNumber Terminal serial number
+ */
+data class CryptoPaymentRequest(
+    val amount: Int,
+    val tip: Int? = null,
+    val staffId: String,
+    val orderId: String? = null,
+    val orderNumber: String? = null,
+    val deviceSerialNumber: String
+)
+
+/**
+ * Response from crypto payment initiation
+ *
+ * Backend returns nested structure:
+ * { success: true, data: { requestId, paymentId, ... }, message: "..." }
+ */
+data class CryptoPaymentResponse(
+    val success: Boolean,
+    val data: CryptoPaymentData?,
+    val message: String? = null
+)
+
+/**
+ * Crypto payment data nested inside response
+ *
+ * @param requestId B4Bit request ID for tracking
+ * @param paymentId Avoqado payment ID
+ * @param paymentUrl URL for customer to pay (display as QR code)
+ * @param expiresAt ISO 8601 timestamp when payment expires
+ * @param expiresInSeconds Seconds until expiration (for countdown)
+ * @param cryptoAddress Crypto wallet address (optional)
+ * @param cryptoSymbol Default crypto symbol (optional)
+ */
+data class CryptoPaymentData(
+    val requestId: String,
+    val paymentId: String,
+    val paymentUrl: String,
+    val expiresAt: String,
+    val expiresInSeconds: Int,
+    val cryptoAddress: String? = null,
+    val cryptoSymbol: String? = null
+)
+
+/**
+ * Request to cancel a pending crypto payment
+ *
+ * @param requestId B4Bit request ID to cancel
+ * @param reason Cancellation reason (optional)
+ */
+data class CancelCryptoPaymentRequest(
+    val requestId: String,
+    val reason: String? = null
+)
+
+/**
+ * Response from crypto payment status check
+ *
+ * @param success Whether the request was successful
+ * @param requestId B4Bit request ID
+ * @param status Current payment status (PENDING, PROCESSING, COMPLETED, FAILED)
+ * @param paymentId Avoqado payment ID
+ * @param txHash Blockchain transaction hash (if completed)
+ * @param cryptoAmount Amount in crypto (e.g., "0.00123")
+ * @param cryptoCurrency Cryptocurrency used (e.g., "BTC")
+ * @param confirmedAt ISO 8601 timestamp when payment was confirmed
+ */
+data class CryptoPaymentStatusResponse(
+    val success: Boolean,
+    val requestId: String,
+    val status: String,
+    val paymentId: String? = null,
+    val txHash: String? = null,
+    val cryptoAmount: String? = null,
+    val cryptoCurrency: String? = null,
+    val confirmedAt: String? = null
 )

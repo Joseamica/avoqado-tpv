@@ -23,6 +23,7 @@ import com.jaac.avoqado_tpv.features.payments.domain.models.Payment
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentStatus
 import com.jaac.avoqado_tpv.features.payments.domain.models.StaffSummary
+import com.jaac.avoqado_tpv.features.payment.domain.model.OrderNumberFormatter
 import java.math.BigDecimal
 import java.time.Instant
 
@@ -153,7 +154,7 @@ fun PaymentDetailBottomSheet(
                         DetailRow(
                             icon = Icons.Filled.Receipt,
                             label = "Orden",
-                            value = payment.orderNumber
+                            value = OrderNumberFormatter.display(payment.orderNumber) ?: payment.orderNumber ?: "N/A"
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                     }

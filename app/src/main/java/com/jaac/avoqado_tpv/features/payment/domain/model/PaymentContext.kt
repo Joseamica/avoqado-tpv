@@ -40,7 +40,7 @@ sealed class PaymentContext {
      * Fast Payment: Pago directo sin orden existente.
      *
      * El backend creará automáticamente una orden virtual con:
-     * - orderNumber: "FAST-{timestamp}"
+     * - orderNumber: últimos 8 dígitos del timestamp
      * - No items
      * - status: CONFIRMED + PAID
      *
@@ -70,7 +70,7 @@ sealed class PaymentContext {
         // 📸 PRE-PAYMENT VERIFICATION (2025-01-14)
         // Order reference generated ONCE when entering VerifyingPrePayment state
         // Ensures Firebase photos match the order number created in backend
-        val orderReference: String? = null, // e.g., "FAST-1765549860972"
+        val orderReference: String? = null, // e.g., "87654321"
         // Firebase Storage URLs of verification photos (uploaded before payment)
         val verificationPhotos: List<String> = emptyList(),
         // Scanned barcodes from verification screen

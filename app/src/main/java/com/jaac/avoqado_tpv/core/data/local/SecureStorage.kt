@@ -126,6 +126,10 @@ class SecureStorage @Inject constructor(
 
         // Module cache keys
         private const val KEY_CACHED_MODULES = "cached_modules"
+
+        // BLE Payment Server state persistence
+        private const val KEY_BLE_SERVER_WAS_RUNNING = "ble_server_was_running"
+        private const val KEY_BLE_KNOWN_DEVICES = "ble_known_devices"  // JSON list of known device addresses/names
     }
 
     /**
@@ -1341,5 +1345,136 @@ class SecureStorage @Inject constructor(
     fun clearCachedModules() {
         encryptedPrefs.edit().remove(KEY_CACHED_MODULES).apply()
         Timber.d("📦 Cached modules cleared")
+    }
+
+    // ==================== BLE SERVER STATE PERSISTENCE ====================
+
+    /**
+     * Save BLE Payment Server running state
+     *
+     * Persists whether the server was running before app close.
+     * Used to automatically restart server on app launch.
+     *
+     * @param wasRunning true if server was running
+     */
+    fun saveBleServerWasRunning(wasRunning: Boolean) {
+        encryptedPrefs.edit().putBoolean(KEY_BLE_SERVER_WAS_RUNNING, wasRunning).apply()
+        Timber.d("🔵 BLE server state persisted: wasRunning=$wasRunning")
+    }
+
+    /**
+     * Get BLE Payment Server previous state
+     *
+     * Returns whether server was running before app close.
+     * Defaults to false if never set.
+     *
+     * @return true if server was running before
+     */
+    fun getBleServerWasRunning(): Boolean {
+        return encryptedPrefs.getBoolean(KEY_BLE_SERVER_WAS_RUNNING, false)
+    }
+
+    // ==================== BLE KNOWN DEVICES (Square/Toast Pattern) ====================
+
+    /**
+     * Data class for known BLE device info
+     * Persists across app restarts and APK updates
+     */
+    data class KnownBleDevice(
+        val address: String,           // MAC address (e.g., "60:B3:88:95:25:48")
+        val name: String?,             // Device name if available
+        val lastConnectedAt: Long,     // Timestamp of last connection
+        val connectionCount: Int = 1   // How many times this device has connected
+    )
+
+    /**
+     * Save a device to the known devices list
+     *
+     * Called when a new device connects. If the device is already known,
+     * updates its lastConnectedAt and increments connectionCount.
+     *
+     * @param address Device MAC address
+     * @param name Device name (optional)
+     */
+    fun addKnownBleDevice(address: String, name: String?) {
+        val knownDevices = getKnownBleDevices().toMutableList()
+
+        val existingIndex = knownDevices.indexOfFirst { it.address == address }
+        if (existingIndex >= 0) {
+            // Update existing device
+            val existing = knownDevices[existingIndex]
+            knownDevices[existingIndex] = existing.copy(
+                name = name ?: existing.name,  // Keep old name if new one is null
+                lastConnectedAt = System.currentTimeMillis(),
+                connectionCount = existing.connectionCount + 1
+            )
+            Timber.i("🔵 [BLE-Known] Updated known device: $address (connections: ${existing.connectionCount + 1})")
+        } else {
+            // Add new device
+            knownDevices.add(
+                KnownBleDevice(
+                    address = address,
+                    name = name,
+                    lastConnectedAt = System.currentTimeMillis(),
+                    connectionCount = 1
+                )
+            )
+            Timber.i("🔵 [BLE-Known] Added new known device: $address ($name)")
+        }
+
+        saveKnownBleDevices(knownDevices)
+    }
+
+    /**
+     * Get all known BLE devices
+     *
+     * Returns list sorted by lastConnectedAt (most recent first).
+     * This list persists across app restarts and APK updates.
+     *
+     * @return List of known devices
+     */
+    fun getKnownBleDevices(): List<KnownBleDevice> {
+        return try {
+            val json = encryptedPrefs.getString(KEY_BLE_KNOWN_DEVICES, null)
+            if (json.isNullOrEmpty()) {
+                emptyList()
+            } else {
+                val type = object : TypeToken<List<KnownBleDevice>>() {}.type
+                val devices: List<KnownBleDevice> = gson.fromJson(json, type)
+                devices.sortedByDescending { it.lastConnectedAt }
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [BLE-Known] Failed to load known devices")
+            emptyList()
+        }
+    }
+
+    /**
+     * Remove a device from known devices list
+     *
+     * @param address Device MAC address to remove
+     */
+    fun removeKnownBleDevice(address: String) {
+        val knownDevices = getKnownBleDevices().filter { it.address != address }
+        saveKnownBleDevices(knownDevices)
+        Timber.i("🔵 [BLE-Known] Removed device: $address")
+    }
+
+    /**
+     * Clear all known BLE devices
+     */
+    fun clearKnownBleDevices() {
+        encryptedPrefs.edit().remove(KEY_BLE_KNOWN_DEVICES).apply()
+        Timber.i("🔵 [BLE-Known] Cleared all known devices")
+    }
+
+    private fun saveKnownBleDevices(devices: List<KnownBleDevice>) {
+        try {
+            val json = gson.toJson(devices)
+            encryptedPrefs.edit().putString(KEY_BLE_KNOWN_DEVICES, json).apply()
+            Timber.d("🔵 [BLE-Known] Saved ${devices.size} known devices")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [BLE-Known] Failed to save known devices")
+        }
     }
 }

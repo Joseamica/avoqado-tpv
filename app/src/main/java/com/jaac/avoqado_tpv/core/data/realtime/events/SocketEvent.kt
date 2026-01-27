@@ -97,6 +97,81 @@ sealed interface SocketEvent {
     ) : SocketEvent
 
     // ========================================
+    // Crypto Payment Events (B4Bit Integration)
+    // ========================================
+
+    /**
+     * 🪙 Crypto payment confirmed by B4Bit webhook.
+     *
+     * Emitted when customer successfully pays with crypto and the blockchain
+     * transaction has been confirmed.
+     *
+     * **Handling:**
+     * - Transition from AwaitingCryptoPayment → Success
+     * - Play success sound
+     * - Show receipt with blockchain transaction hash
+     *
+     * @param requestId B4Bit request ID for matching
+     * @param paymentId Our internal payment ID
+     * @param amount Amount in centavos
+     * @param currency Fiat currency ("MXN")
+     * @param txHash Blockchain transaction hash
+     * @param cryptoAmount Amount in crypto (e.g., "0.00123")
+     * @param cryptoCurrency Cryptocurrency used (e.g., "BTC", "ETH")
+     * @param confirmations Number of blockchain confirmations
+     * @param orderId Associated order ID (if any)
+     * @param orderNumber Order number for display
+     * @param receiptUrl Digital receipt URL
+     * @param receiptAccessKey Receipt access key for QR
+     * @param venueId Venue ID
+     * @param timestamp ISO timestamp
+     */
+    data class CryptoPaymentConfirmed(
+        val requestId: String,
+        val paymentId: String,
+        val amount: Int,
+        val currency: String,
+        val txHash: String,
+        val cryptoAmount: String,
+        val cryptoCurrency: String,
+        val confirmations: Int?,
+        val orderId: String?,
+        val orderNumber: String?,
+        val receiptUrl: String?,
+        val receiptAccessKey: String?,
+        val venueId: String,
+        val timestamp: String
+    ) : SocketEvent
+
+    /**
+     * 🚫 Crypto payment failed or expired.
+     *
+     * Emitted when:
+     * - Customer didn't pay before order expired
+     * - Customer paid insufficient amount
+     * - Other blockchain/gateway error
+     *
+     * **Handling:**
+     * - Transition from AwaitingCryptoPayment → Error
+     * - Show error message with retry option
+     *
+     * @param requestId B4Bit request ID for matching
+     * @param paymentId Our internal payment ID (if available)
+     * @param reason Failure reason (human-readable)
+     * @param status B4Bit status code ("OC" = insufficient, "EX" = expired)
+     * @param venueId Venue ID
+     * @param timestamp ISO timestamp
+     */
+    data class CryptoPaymentFailed(
+        val requestId: String,
+        val paymentId: String?,
+        val reason: String,
+        val status: String,
+        val venueId: String,
+        val timestamp: String
+    ) : SocketEvent
+
+    // ========================================
     // Order Events
     // ========================================
 

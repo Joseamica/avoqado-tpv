@@ -52,6 +52,7 @@ import androidx.compose.ui.window.Dialog
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.authentication.presentation.components.PinDisplay
+import com.jaac.avoqado_tpv.features.payment.domain.model.OrderNumberFormatter
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
@@ -137,11 +138,7 @@ fun KioskCashConfirmationContent(
     ) {
         // Top section - Order number only (title already in header)
         if (!orderNumber.isNullOrBlank()) {
-            val displayOrderNumber = if (orderNumber.length > 6) {
-                orderNumber.takeLast(6)
-            } else {
-                orderNumber
-            }
+            val displayOrderNumber = OrderNumberFormatter.display(orderNumber) ?: orderNumber
             Text(
                 text = "Orden #$displayOrderNumber",
                 style = MaterialTheme.typography.bodyMedium,

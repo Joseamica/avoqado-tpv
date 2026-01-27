@@ -97,7 +97,7 @@ class VerificationUploadManager @Inject constructor(
      *
      * @param localPath Local file path of captured photo
      * @param venueSlug Venue slug for storage path (e.g., "avoqado-full")
-     * @param orderReference Order reference for filename (e.g., "ORDER-12345" or "CASH-1765547922")
+     * @param orderReference Order reference for filename (e.g., "12345678")
      * @param photoIndex Index of photo (1-based) for multiple photos per order
      * @param onProgress Optional callback for upload progress (0.0 to 1.0)
      * @return Result with download URL on success, or error on failure
@@ -155,7 +155,7 @@ class VerificationUploadManager @Inject constructor(
      *
      * @param localPaths List of local file paths
      * @param venueSlug Venue slug for storage path (e.g., "avoqado-full")
-     * @param orderReference Order reference for filename (e.g., "ORDER-12345")
+     * @param orderReference Order reference for filename (e.g., "12345678")
      * @param onProgress Callback for overall progress (0.0 to 1.0)
      * @return Result with list of download URLs, or error if any upload fails
      */

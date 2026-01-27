@@ -1,6 +1,10 @@
 package com.jaac.avoqado_tpv.features.settings.presentation
 
 import android.os.Build
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -11,6 +15,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
@@ -41,6 +46,7 @@ fun SettingsScreen(
     onBack: () -> Unit = {},
     onNavigateToShifts: () -> Unit = {},
     onNavigateToSelfUpdate: () -> Unit = {},
+    onNavigateToExternalDevices: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -169,23 +175,30 @@ fun SettingsScreen(
         ) {
             val sizes = LocalResponsiveSizes.current
 
+            // Track expanded state for each section
+            var terminalExpanded by remember { mutableStateOf(true) }
+            var shiftsExpanded by remember { mutableStateOf(false) }
+            var paymentExpanded by remember { mutableStateOf(false) }
+            var kioskExpanded by remember { mutableStateOf(false) }
+            var verificationExpanded by remember { mutableStateOf(false) }
+            var securityExpanded by remember { mutableStateOf(false) }
+            var actionsExpanded by remember { mutableStateOf(true) }
+
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(sizes.paddingScreen),
-                verticalArrangement = Arrangement.spacedBy(sizes.spacingMedium)
+                verticalArrangement = Arrangement.spacedBy(sizes.spacingSmall)
             ) {
                 // ═══════════════════════════════════════════════════════════════
                 // TERMINAL INFORMATION
                 // ═══════════════════════════════════════════════════════════════
                 item {
-                    SectionHeader(
+                    CollapsibleSection(
                         title = "Información del Terminal",
-                        icon = Icons.Outlined.Info
-                    )
-                }
-
-                item {
-                    SettingsCard {
+                        icon = Icons.Outlined.Info,
+                        expanded = terminalExpanded,
+                        onToggle = { terminalExpanded = !terminalExpanded }
+                    ) {
                         SettingsRow(
                             label = "Número de Serie",
                             value = state.serialNumber ?: "No disponible"
@@ -222,16 +235,13 @@ fun SettingsScreen(
                 // SHIFT SYSTEM SETTINGS
                 // ═══════════════════════════════════════════════════════════════
                 item {
-                    Spacer(modifier = Modifier.height(sizes.spacingMedium))
-                    SectionHeader(
+                    CollapsibleSection(
                         title = "Sistema de Turnos",
-                        icon = Icons.Filled.Schedule, // Using Filled to ensure availability
-                        subtitle = "Gestión de caja y personal"
-                    )
-                }
-
-                item {
-                    SettingsCard {
+                        icon = Icons.Filled.Schedule,
+                        subtitle = "Gestión de caja y personal",
+                        expanded = shiftsExpanded,
+                        onToggle = { shiftsExpanded = !shiftsExpanded }
+                    ) {
                         SettingsToggleRow(
                             label = "Habilitar Turnos",
                             description = "Requiere abrir/cerrar turno para operar",
@@ -246,16 +256,13 @@ fun SettingsScreen(
                 // TPV SETTINGS (editable, per-terminal)
                 // ═══════════════════════════════════════════════════════════════
                 item {
-                    Spacer(modifier = Modifier.height(sizes.spacingMedium))
-                    SectionHeader(
+                    CollapsibleSection(
                         title = "Configuración de Pago",
                         icon = Icons.Outlined.CreditCard,
-                        subtitle = "Toca para activar/desactivar"
-                    )
-                }
-
-                item {
-                    SettingsCard {
+                        subtitle = "Propina, recibo y calificación",
+                        expanded = paymentExpanded,
+                        onToggle = { paymentExpanded = !paymentExpanded }
+                    ) {
                         SettingsToggleRow(
                             label = "Pantalla de Calificación",
                             description = "Mostrar estrellas después del monto",
@@ -304,16 +311,13 @@ fun SettingsScreen(
                 // KIOSK MODE FUNCTIONALITY
                 // ═══════════════════════════════════════════════════════════════
                 item {
-                    Spacer(modifier = Modifier.height(sizes.spacingMedium))
-                    SectionHeader(
+                    CollapsibleSection(
                         title = "Modo Kiosko",
                         icon = Icons.Outlined.Storefront,
-                        subtitle = "Funcionalidad de autoservicio"
-                    )
-                }
-
-                item {
-                    SettingsCard {
+                        subtitle = "Funcionalidad de autoservicio",
+                        expanded = kioskExpanded,
+                        onToggle = { kioskExpanded = !kioskExpanded }
+                    ) {
                         SettingsToggleRow(
                             label = "Habilitar Kiosko",
                             description = "Permite activar modo autoservicio en este terminal",
@@ -337,16 +341,13 @@ fun SettingsScreen(
                 // VERIFICATION SETTINGS (Step 4: Sale Verification)
                 // ═══════════════════════════════════════════════════════════════
                 item {
-                    Spacer(modifier = Modifier.height(sizes.spacingMedium))
-                    SectionHeader(
+                    CollapsibleSection(
                         title = "Verificación de Venta",
                         icon = Icons.Outlined.CameraAlt,
-                        subtitle = "Captura de evidencia post-pago (retail/telecomunicaciones)"
-                    )
-                }
-
-                item {
-                    SettingsCard {
+                        subtitle = "Captura de evidencia post-pago",
+                        expanded = verificationExpanded,
+                        onToggle = { verificationExpanded = !verificationExpanded }
+                    ) {
                         SettingsToggleRow(
                             label = "Pantalla de Verificación",
                             description = "Mostrar captura de fotos/códigos después del pago",
@@ -380,16 +381,13 @@ fun SettingsScreen(
                 // SECURITY & ATTENDANCE SETTINGS
                 // ═══════════════════════════════════════════════════════════════
                 item {
-                    Spacer(modifier = Modifier.height(sizes.spacingMedium))
-                    SectionHeader(
+                    CollapsibleSection(
                         title = "Seguridad y Verificación",
                         icon = Icons.Outlined.Security,
-                        subtitle = "Control de asistencia y acceso al sistema"
-                    )
-                }
-
-                item {
-                    SettingsCard {
+                        subtitle = "Control de asistencia y acceso",
+                        expanded = securityExpanded,
+                        onToggle = { securityExpanded = !securityExpanded }
+                    ) {
                         SettingsToggleRow(
                             label = "Foto al Registrar Entrada",
                             description = "Requiere selfie con GPS al hacer clock-in",
@@ -420,15 +418,13 @@ fun SettingsScreen(
                 // ACTIONS
                 // ═══════════════════════════════════════════════════════════════
                 item {
-                    Spacer(modifier = Modifier.height(sizes.spacingMedium))
-                    SectionHeader(
+                    CollapsibleSection(
                         title = "Acciones",
-                        icon = Icons.Outlined.Build
-                    )
-                }
-
-                item {
-                    SettingsCard {
+                        icon = Icons.Outlined.Build,
+                        subtitle = "Pruebas y actualizaciones",
+                        expanded = actionsExpanded,
+                        onToggle = { actionsExpanded = !actionsExpanded }
+                    ) {
                         SettingsActionRow(
                             icon = Icons.Outlined.Print,
                             label = "Imprimir Prueba",
@@ -443,6 +439,14 @@ fun SettingsScreen(
                             description = "Obtener ajustes del servidor",
                             onClick = { viewModel.refreshSettings() },
                             isLoading = state.isRefreshing
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        SettingsActionRow(
+                            icon = Icons.Outlined.Devices,
+                            label = "Dispositivos Externos",
+                            description = "Enlazar iPad/tablets para pagos BLE",
+                            onClick = { onNavigateToExternalDevices() },
+                            isLoading = false
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         SettingsActionRow(
@@ -467,6 +471,91 @@ fun SettingsScreen(
 // ═══════════════════════════════════════════════════════════════════════════════
 // COMPONENTS
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Collapsible section with animated expand/collapse.
+ * Combines a header with an optional card content that can be toggled.
+ */
+@Composable
+private fun CollapsibleSection(
+    title: String,
+    icon: ImageVector,
+    subtitle: String? = null,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val rotationAngle by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        label = "chevron_rotation"
+    )
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        shape = MaterialTheme.shapes.medium
+    ) {
+        Column {
+            // Header (always visible, clickable to toggle)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onToggle() }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    if (subtitle != null) {
+                        Text(
+                            text = subtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Icon(
+                    imageVector = Icons.Filled.KeyboardArrowDown,
+                    contentDescription = if (expanded) "Colapsar" else "Expandir",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .size(24.dp)
+                        .rotate(rotationAngle)
+                )
+            }
+
+            // Collapsible content with animation
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically(),
+                exit = shrinkVertically()
+            ) {
+                Column {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Column(
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    ) {
+                        content()
+                    }
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun SectionHeader(

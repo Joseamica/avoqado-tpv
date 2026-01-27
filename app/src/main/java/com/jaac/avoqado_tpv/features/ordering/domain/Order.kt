@@ -39,8 +39,8 @@ data class Order(
     val createdAt: Instant,
     val updatedAt: Instant,
     val version: Int,  // Optimistic concurrency control
-    val merchantAccountId: String? = null,  // ⭐ P0 FIX: Merchant account used for first payment (locks order to merchant)
-    val merchantAccountName: String? = null,  // Display name for user-friendly split payment errors
+    val merchantAccountId: String? = null,  // Last merchant used (informational; no lock enforcement)
+    val merchantAccountName: String? = null,  // Display name for informational/debugging
     val lastSplitType: SplitType? = null,  // ⭐ Split type of last payment (restricts future split options)
     val paidItemIds: List<String> = emptyList(),  // ⭐ Items already paid (for SplitByProduct screen)
     val discounts: List<OrderDiscount> = emptyList(),  // 🎟️ Applied discounts on this order

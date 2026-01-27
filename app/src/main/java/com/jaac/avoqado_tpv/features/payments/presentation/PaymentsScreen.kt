@@ -28,6 +28,7 @@ import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentStatus
 import com.jaac.avoqado_tpv.features.payments.domain.models.StaffSummary
 import com.jaac.avoqado_tpv.features.payments.presentation.components.PaymentDetailBottomSheet
+import com.jaac.avoqado_tpv.features.payment.domain.model.OrderNumberFormatter
 import java.math.BigDecimal
 import java.time.Instant
 
@@ -479,6 +480,7 @@ private fun PaymentCard(
                     )
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val isRefunded = (payment.refundedAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO
                         // Refund badge (if refund)
                         if (payment.isRefund) {
                             Surface(
@@ -487,6 +489,19 @@ private fun PaymentCard(
                             ) {
                                 Text(
                                     text = "Reembolso",
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                        } else if (isRefunded) {
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = MaterialTheme.colorScheme.errorContainer
+                            ) {
+                                Text(
+                                    text = "Reembolsado",
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Medium,
@@ -525,8 +540,9 @@ private fun PaymentCard(
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        val displayOrderNumber = OrderNumberFormatter.display(payment.orderNumber)
                         Text(
-                            text = payment.orderNumber ?: "N/A",
+                            text = displayOrderNumber ?: payment.orderNumber ?: "N/A",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium
                         )

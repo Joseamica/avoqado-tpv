@@ -136,10 +136,10 @@ data class DraftOrderEntity(
     val conflictData: String? = null, // JSON of server state on 409 conflict
 
     @ColumnInfo(name = "merchant_account_id")
-    val merchantAccountId: String? = null, // Locked merchant for this order (P0 fix - split payment validation)
+    val merchantAccountId: String? = null, // Last merchant used (informational; no lock enforcement)
 
     @ColumnInfo(name = "merchant_account_name")
-    val merchantAccountName: String? = null, // Merchant display name (for user-friendly error messages)
+    val merchantAccountName: String? = null, // Merchant display name (informational/debugging)
 
     // ⭐ Split payment restriction tracking
     // Stores the split type of the last payment to restrict incompatible options

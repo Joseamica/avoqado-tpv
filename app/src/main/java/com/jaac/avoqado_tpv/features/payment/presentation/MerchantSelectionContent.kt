@@ -8,12 +8,19 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -39,6 +46,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEnvironment
 @Composable
 fun MerchantSelectionContent(
     modifier: Modifier = Modifier,
+    subtotalAmount: String,
     totalAmount: String,
     tipAmount: String,
     rating: Int?,
@@ -48,11 +56,16 @@ fun MerchantSelectionContent(
     onSelectMerchant: (MerchantAccount) -> Unit,
     onStartPayment: () -> Unit,
     onStartCashPayment: () -> Unit,
+    onStartCryptoPayment: () -> Unit = {},  // 🪙 Crypto payment callback (B4Bit)
     onNavigateBack: (() -> Unit)? = null,
     showCashOption: Boolean = true,  // 🥝 Show/hide cash button
+    showCryptoOption: Boolean = false,  // 🪙 Show/hide crypto button (B4Bit)
     hideAccountSelector: Boolean = false,  // 🥝 KIOSK: Hide merchant list when default is pre-configured
 
 ) {
+    // 💵 State for cash payment confirmation dialog
+    var showCashConfirmationDialog by remember { mutableStateOf(false) }
+
     Box(modifier = modifier.fillMaxSize()) {
         ResponsiveScaffold(
                 scrollable = false,
@@ -109,14 +122,20 @@ fun MerchantSelectionContent(
                                     color = MaterialTheme.colorScheme.primary
                                 )
 
-                                // Inline tip (if exists)
                                 if (hasTip) {
-                                    Text(
-                                        text = "+$$tipAmount propina",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                        modifier = Modifier.padding(top = 4.dp)
-                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            text = "Monto: $$subtotalAmount",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                        )
+                                        Text(
+                                            text = "Propina: $$tipAmount",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                        )
+                                    }
                                 }
 
                                 // Rating stars (if exists) - clean, no label
@@ -146,12 +165,19 @@ fun MerchantSelectionContent(
                             )
 
                             if (hasTip) {
-                                Text(
-                                    text = "+$$tipAmount propina",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                    modifier = Modifier.padding(top = 4.dp)
-                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        text = "Monto: $$subtotalAmount",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                    )
+                                    Text(
+                                        text = "Propina: $$tipAmount",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                    )
+                                }
                             }
 
                             rating?.let {
@@ -254,7 +280,7 @@ fun MerchantSelectionContent(
                                     .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
                             )
 
-                            // Cash payment button (right)
+                            // Cash payment button
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
@@ -263,7 +289,9 @@ fun MerchantSelectionContent(
                                         if (cashEnabled) MaterialTheme.colorScheme.surfaceVariant
                                         else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
                                     )
-                                    .clickable(enabled = cashEnabled) { onStartCashPayment() },
+                                    .clickable(enabled = cashEnabled) {
+                                        showCashConfirmationDialog = true
+                                    },
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
@@ -271,6 +299,41 @@ fun MerchantSelectionContent(
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.SemiBold,
                                     color = if (cashEnabled) MaterialTheme.colorScheme.onSurfaceVariant
+                                           else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                )
+                            }
+                        }
+
+                        // 🪙 Only show divider and crypto button if showCryptoOption is true
+                        // B4Bit crypto payment integration
+                        if (showCryptoOption) {
+                            // Divider
+                            Box(
+                                modifier = Modifier
+                                    .width(1.dp)
+                                    .fillMaxHeight()
+                                    .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                            )
+
+                            // Crypto payment button
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                                    .background(
+                                        if (!merchantSwitchingLoading) MaterialTheme.colorScheme.surfaceVariant
+                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                    )
+                                    .clickable(enabled = !merchantSwitchingLoading) {
+                                        onStartCryptoPayment()
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "Cripto",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (!merchantSwitchingLoading) MaterialTheme.colorScheme.onSurfaceVariant
                                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                                 )
                             }
@@ -286,6 +349,51 @@ fun MerchantSelectionContent(
         if (merchantSwitchingLoading) {
             AvoqadoLoadingOverlay(
                 message = "Cambiando cuenta..."
+            )
+        }
+
+        // 💵 Cash payment confirmation dialog
+        if (showCashConfirmationDialog) {
+            AlertDialog(
+                onDismissRequest = { showCashConfirmationDialog = false },
+                title = {
+                    Text(
+                        text = "Confirmar pago en efectivo",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Column {
+                        Text(
+                            text = "¿Confirmas que el cliente pagará $$totalAmount en efectivo?",
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "Este pago será registrado inmediatamente.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showCashConfirmationDialog = false
+                            onStartCashPayment()
+                        }
+                    ) {
+                        Text("Confirmar")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { showCashConfirmationDialog = false }
+                    ) {
+                        Text("Cancelar")
+                    }
+                }
             )
         }
     }
@@ -388,6 +496,7 @@ private fun MerchantSelectionSingleMerchantPreview() {
     )
     com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
         MerchantSelectionContent(
+            subtotalAmount = "100.00",
             totalAmount = "115.00",
             tipAmount = "15.00",
             rating = 5,  // 5 stars = excellent rating
@@ -413,6 +522,7 @@ private fun MerchantSelectionSingleNoExtrasPreview() {
     )
     com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
         MerchantSelectionContent(
+            subtotalAmount = "250.00",
             totalAmount = "250.00",
             tipAmount = "0",
             rating = null,
@@ -422,6 +532,34 @@ private fun MerchantSelectionSingleNoExtrasPreview() {
             onSelectMerchant = {},
             onStartPayment = {},
             onStartCashPayment = {}
+        )
+    }
+}
+
+@Preview(showBackground = true, backgroundColor = 0xFF1C1C1C, name = "With Crypto Option (3 buttons)")
+@Composable
+private fun MerchantSelectionWithCryptoPreview() {
+    val singleMerchant = MerchantAccount(
+        id = "1",
+        serialNumber = "2841548417",
+        posId = "5729",
+        displayName = "mindform",
+        environment = MerchantEnvironment.PRODUCTION
+    )
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
+        MerchantSelectionContent(
+            subtotalAmount = "100.00",
+            totalAmount = "115.00",
+            tipAmount = "15.00",
+            rating = 4,
+            merchants = listOf(singleMerchant),
+            currentMerchant = singleMerchant,
+            merchantSwitchingLoading = false,
+            onSelectMerchant = {},
+            onStartPayment = {},
+            onStartCashPayment = {},
+            onStartCryptoPayment = {},
+            showCryptoOption = true  // 🪙 Enable crypto button
         )
     }
 }
@@ -438,6 +576,7 @@ private fun MerchantSelectionTwoMerchantsPreview() {
     )
     com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
         MerchantSelectionContent(
+            subtotalAmount = "100.00",
             totalAmount = "115.00",
             tipAmount = "15.00",
             rating = 4,
@@ -472,6 +611,7 @@ private fun MerchantSelectionThreeMerchantsPreview() {
     )
     com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
         MerchantSelectionContent(
+            subtotalAmount = "250.00",
             totalAmount = "250.00",
             tipAmount = "0",
             rating = null,

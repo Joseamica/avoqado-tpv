@@ -27,7 +27,8 @@ data class ModuleConfig(
     val labels: ModuleLabels = ModuleLabels(),
     val features: ModuleFeatures = ModuleFeatures(),
     val ui: ModuleUi = ModuleUi(),
-    val attendance: ModuleAttendance = ModuleAttendance()
+    val attendance: ModuleAttendance = ModuleAttendance(),
+    val salesGoal: ModuleSalesGoal? = null  // Optional: Staff sales goals
 )
 
 /**
@@ -72,3 +73,28 @@ data class ModuleAttendance(
     val requireClockOutPhoto: Boolean = false, // Photo capture at clock-out
     val requireClockOutGps: Boolean = false    // GPS location at clock-out
 )
+
+/**
+ * Sales goal configuration for staff performance tracking.
+ * Allows setting sales targets per staff member with configurable periods.
+ *
+ * @property goal Target sales amount for the period
+ * @property period Time period for the goal (DAILY, WEEKLY, MONTHLY)
+ * @property currentSales Current sales amount achieved (pre-calculated by backend)
+ * @property staffId Optional staff ID if goal is per-staff (null = same for all)
+ */
+data class ModuleSalesGoal(
+    val goal: java.math.BigDecimal,
+    val period: SalesGoalPeriod = SalesGoalPeriod.DAILY,
+    val currentSales: java.math.BigDecimal = java.math.BigDecimal.ZERO,
+    val staffId: String? = null
+)
+
+/**
+ * Time period for sales goals.
+ */
+enum class SalesGoalPeriod {
+    DAILY,    // Reset every day
+    WEEKLY,   // Reset every week (Monday)
+    MONTHLY   // Reset every month (1st)
+}

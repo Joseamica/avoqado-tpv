@@ -59,6 +59,8 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTextField
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
+import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentLoadingScreen
+import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentQrScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.components.KioskCashConfirmationContent
 import com.jaac.avoqado_tpv.features.payment.presentation.components.PaymentApprovedScreen
 import com.jaac.avoqado_tpv.features.verification.presentation.VerificationScreen
@@ -66,7 +68,9 @@ import com.jaac.avoqado_tpv.features.verification.presentation.components.Barcod
 import com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen
 import java.io.File
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
+import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentFlowOrigin
 import com.jaac.avoqado_tpv.features.payment.domain.model.RefundReason
+import com.jaac.avoqado_tpv.features.payment.domain.model.OrderNumberFormatter
 // 👤 Customer search imports (for email receipt dialog)
 import com.jaac.avoqado_tpv.features.ordering.domain.Customer
 import com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState
@@ -93,6 +97,9 @@ fun PaymentScreen(
     orderNumber: String? = null,  // 🆕 Order number (for display in receipt)
     tableId: String? = null,  // 🆕 Table ID (for clearing table post-payment)
     skipReview: Boolean = false,  // 🧪 Skip rating/tip (test payment from SuperAdmin)
+    externalTipCents: Long? = null,  // 🔵 External device tip (cents)
+    externalRating: Int? = null,  // 🔵 External device rating (1-5)
+    externalSkipReview: Boolean = false,  // 🔵 External device: skip rating/tip screens
     skipLocalOrderValidation: Boolean = false,  // 📱 SERIALIZED SALE: Order exists only on backend, skip local lookup AND sync
     // ⭐ Split payment params (from SplitByPersonScreen or SplitByProductScreen)
     splitType: String? = null,  // EQUALPARTS, PERPRODUCT, CUSTOMAMOUNT, FULLPAYMENT
@@ -119,29 +126,24 @@ fun PaymentScreen(
     kioskStaffId: String? = null,  // 🥝 Staff ID from kiosk session for sales attribution (commissions/tips). If null, uses authContext staffId.
     onKioskPaymentSuccess: ((String, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt?, List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>?) -> Unit)? = null,  // 🥝 Callback with orderNumber + receipt + orderItems when kiosk payment succeeds
     onNavigateBack: () -> Unit,
+    onNavigateHome: () -> Unit = onNavigateBack,
+    onRefundComplete: () -> Unit = onNavigateBack,
     onNavigateToShifts: () -> Unit = {},  // 🆕 Navigate to Shifts screen (for "No shift open" errors)
     onNavigateToNewOrder: () -> Unit = {},  // 🆕 Navigate to new order (Toast/Square pattern)
+    onNavigateToSerializedSale: () -> Unit = {},  // 📱 Serialized sale: return to scanner flow
     onNavigateToNewFastPayment: () -> Unit = {},  // 🆕 Navigate to new fast payment (open WelcomeScreen modal)
     onClearTableAndReturnToFloorPlan: (String) -> Unit = {},  // 🆕 Clear table and return to floor plan (tableId)
     onNavigateToOrder: (String, String?) -> Unit = { _, _ -> },  // ⭐ NEW: Navigate to order for split payment (orderId, tableId)
     onNavigateToPayLaterOrders: () -> Unit = {},  // 💳 Navigate to pay-later orders list
     viewModel: PaymentViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val state by viewModel.state.collectAsStateWithLifecycle()
     val merchants by viewModel.merchants.collectAsStateWithLifecycle()
 
-    // 📸 PROOF-OF-SALE: Check if SERIALIZED_INVENTORY module is active
-    val context = LocalContext.current
-    val hiltEntryPoint = remember {
-        dagger.hilt.android.EntryPointAccessors.fromApplication(
-            context.applicationContext,
-            com.jaac.avoqado_tpv.features.permissions.di.PermissionsEntryPoint::class.java
-        )
-    }
-    val modulesRepository = remember { hiltEntryPoint.modulesRepository() }
-    val currentModules by modulesRepository.modules.collectAsStateWithLifecycle()
-    val isSerializedInventoryActive = currentModules
-        .any { it.moduleCode == com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository.MODULE_SERIALIZED_INVENTORY && it.active }
+    // 📸 PROOF-OF-SALE: derived from PaymentSession snapshot (module-driven)
+    val showProofOfSale by viewModel.showProofOfSale.collectAsStateWithLifecycle()
+    val isUploadingProofOfSale by viewModel.isUploadingProofOfSale.collectAsStateWithLifecycle()
     val currentMerchant by viewModel.currentMerchant.collectAsStateWithLifecycle()
     val merchantSwitchingLoading by viewModel.merchantSwitchingLoading.collectAsStateWithLifecycle()
     val merchantSwitchMessage by viewModel.merchantSwitchMessage.collectAsStateWithLifecycle()
@@ -151,6 +153,7 @@ fun PaymentScreen(
     val isPinDialogVisible by viewModel.isPinDialogVisible.collectAsStateWithLifecycle()  // PIN dialog visibility
     val isSendingReceipt by viewModel.isSendingReceipt.collectAsStateWithLifecycle()  // 📧 Send receipt loading
     val sendReceiptMessage by viewModel.sendReceiptMessage.collectAsStateWithLifecycle()  // 📧 Send receipt result
+    val flowOrigin by viewModel.flowOrigin.collectAsStateWithLifecycle()
     // 👤 Customer search states (for email receipt dialog)
     val customerSearchState by viewModel.customerSearchState.collectAsStateWithLifecycle()
     val recentCustomers by viewModel.recentCustomers.collectAsStateWithLifecycle()
@@ -163,6 +166,21 @@ fun PaymentScreen(
             viewModel.clearSendReceiptMessage()
         }
     }
+
+    // 🔀 Set initial flow origin from navigation args (prevents back stack leaks)
+    val initialFlowOrigin = remember(skipLocalOrderValidation, orderId, isRefundMode, isKioskPayment) {
+        when {
+            isRefundMode -> PaymentFlowOrigin.REFUND
+            isKioskPayment -> PaymentFlowOrigin.KIOSK
+            skipLocalOrderValidation -> PaymentFlowOrigin.SERIALIZED
+            orderId != null -> PaymentFlowOrigin.ORDER
+            else -> PaymentFlowOrigin.FAST
+        }
+    }
+    LaunchedEffect(initialFlowOrigin) {
+        viewModel.setFlowOrigin(initialFlowOrigin)
+    }
+    val effectiveOrigin = if (flowOrigin == PaymentFlowOrigin.FAST) initialFlowOrigin else flowOrigin
 
     // 🥝 KIOSK MODE: Set kiosk payment mode in ViewModel for secure cash flow
     // Pass kioskStaffId for sales attribution (commissions/tips)
@@ -230,6 +248,14 @@ fun PaymentScreen(
 
     // Hide topBar on Success screen (full-screen receipt)
     val showTopBar = state !is PaymentState.Success
+    val navigateBack = resolveBackNavigation(
+        flowOrigin = effectiveOrigin,
+        orderId = orderId,
+        tableId = tableId,
+        onNavigateBack = onNavigateBack,
+        onNavigateToSerializedSale = onNavigateToSerializedSale,
+        onNavigateToOrder = onNavigateToOrder
+    )
 
     Scaffold(
         topBar = {
@@ -244,7 +270,7 @@ fun PaymentScreen(
                             // 🔧 FIX: Reset ViewModel to Idle so next payment uses new initialAmount
                             // Without this, the LaunchedEffect in Idle block won't re-run
                             viewModel.resetPayment()
-                            onNavigateBack()
+                            navigateBack()
                         }
                     }
                 )
@@ -262,7 +288,7 @@ fun PaymentScreen(
                 is PaymentState.EnteringAmount -> {
                     // If we somehow end up here, immediately navigate back to WelcomeScreen
                     LaunchedEffect(Unit) {
-                        onNavigateBack()
+                        navigateBack()
                     }
 
                     // Show loading while navigating (prevents flash)
@@ -293,7 +319,7 @@ fun PaymentScreen(
                             if (!viewModel.goBackOneStep()) {
                                 // 🔧 FIX: Reset ViewModel to Idle so next payment uses new initialAmount
                                 viewModel.resetPayment()
-                                onNavigateBack()
+                                navigateBack()
                             }
                         }
                     )
@@ -407,6 +433,7 @@ fun PaymentScreen(
 
                 is PaymentState.SelectingMerchant -> {
                     MerchantSelectionContent(
+                        subtotalAmount = currentState.subtotal,
                         totalAmount = currentState.totalAmount,
                         tipAmount = currentState.tipAmount,
                         rating = currentState.rating,
@@ -431,16 +458,41 @@ fun PaymentScreen(
                             // Go back to tip selection
                             viewModel.goBackOneStep()
                         },
+                        // 🪙 Crypto payment callback (B4Bit integration)
+                        onStartCryptoPayment = {
+                            viewModel.processCryptoPayment(currentState.totalAmount)
+                        },
                         // 🥝 KIOSK MODE: Cash is enabled (customers may want to pay in cash)
                         showCashOption = true,
+                        // 🪙 Crypto option: Enable via TpvSettings flag (default false for now)
+                        // TODO: Add tpvSettings.showCryptoOption when ready to enable in production
+                        showCryptoOption = true,  // Enable for testing - set to tpvSettings flag later
                         // 🥝 KIOSK MODE: Hide merchant selector when admin pre-configured a default merchant
                         hideAccountSelector = hideKioskMerchantSelector
                     )
                 }
 
+                // 🪙 CRYPTO: Generating QR code (loading state)
+                is PaymentState.GeneratingCryptoQR -> {
+                    CryptoPaymentLoadingScreen(
+                        totalAmount = currentState.totalAmount
+                    )
+                }
+
+                // 🪙 CRYPTO: Awaiting payment (showing QR code)
+                is PaymentState.AwaitingCryptoPayment -> {
+                    CryptoPaymentQrScreen(
+                        paymentUrl = currentState.paymentUrl,
+                        totalAmount = currentState.totalAmount,
+                        expiresInSeconds = currentState.expiresInSeconds,
+                        onCancel = { viewModel.cancelCryptoPayment() },
+                        onTimeout = { viewModel.handleCryptoTimeout() }
+                    )
+                }
+
                 // LEGACY: Old idle state (redirect to new flow)
                 is PaymentState.Idle -> {
-                    LaunchedEffect(initialAmount, skipReview, orderId, orderNumber, splitType, isRefundMode) {
+                    LaunchedEffect(initialAmount, skipReview, orderId, orderNumber, splitType, isRefundMode, externalTipCents, externalRating, externalSkipReview) {
                         // 💸 REFUND MODE: Process refund instead of payment
                         if (isRefundMode && refundAmount != null && originalPaymentId != null) {
                             Timber.i("💸 [PaymentScreen] Refund mode detected - starting refund for payment: $originalPaymentId")
@@ -472,35 +524,56 @@ fun PaymentScreen(
                             viewModel.startRefund(refundContext)
                         } else if (initialAmount != null) {
                             // 💳 NORMAL PAYMENT MODE
-                            if (skipReview) {
-                                // 🧪 Test payment from SuperAdmin OR 📱 Serialized Sale → skip rating/tip
-                                viewModel.submitAmountDirectToMerchant(
-                                    amount = initialAmount,
-                                    orderId = orderId,
-                                    orderNumber = orderNumber,
-                                    splitType = splitType,
-                                    equalPartsPartySize = equalPartsPartySize,
-                                    equalPartsPayedFor = equalPartsPayedFor,
-                                    paidProductIds = paidProductIds,
-                                    skipLocalOrderValidation = skipLocalOrderValidation  // 📱 SERIALIZED SALE
-                                )
-                            } else {
-                                // ✅ Coming from WelcomeScreen/MenuScreen with amount → start payment flow
-                                viewModel.submitAmount(
-                                    amount = initialAmount,
-                                    orderId = orderId,
-                                    orderNumber = orderNumber,
-                                    splitType = splitType,
-                                    equalPartsPartySize = equalPartsPartySize,
-                                    equalPartsPayedFor = equalPartsPayedFor,
-                                    paidProductIds = paidProductIds,
-                                    skipLocalOrderValidation = skipLocalOrderValidation  // 📱 SERIALIZED SALE
-                                )
+                            val hasExternalInputs = externalTipCents != null || externalRating != null || externalSkipReview
+
+                            when {
+                                hasExternalInputs -> {
+                                    // 🔵 External device provided tip/rating or requested skip
+                                    viewModel.submitAmountWithExternalInputs(
+                                        amount = initialAmount,
+                                        tipCents = externalTipCents,
+                                        rating = externalRating,
+                                        skipReview = externalSkipReview || skipReview,
+                                        orderId = orderId,
+                                        orderNumber = orderNumber,
+                                        splitType = splitType,
+                                        equalPartsPartySize = equalPartsPartySize,
+                                        equalPartsPayedFor = equalPartsPayedFor,
+                                        paidProductIds = paidProductIds,
+                                        skipLocalOrderValidation = skipLocalOrderValidation  // 📱 SERIALIZED SALE
+                                    )
+                                }
+                                skipReview -> {
+                                    // 🧪 Test payment from SuperAdmin OR 📱 Serialized Sale → skip rating/tip
+                                    viewModel.submitAmountDirectToMerchant(
+                                        amount = initialAmount,
+                                        orderId = orderId,
+                                        orderNumber = orderNumber,
+                                        splitType = splitType,
+                                        equalPartsPartySize = equalPartsPartySize,
+                                        equalPartsPayedFor = equalPartsPayedFor,
+                                        paidProductIds = paidProductIds,
+                                        skipLocalOrderValidation = skipLocalOrderValidation  // 📱 SERIALIZED SALE
+                                    )
+                                }
+                                else -> {
+                                    // ✅ Coming from WelcomeScreen/MenuScreen with amount → start payment flow
+                                    viewModel.submitAmount(
+                                        amount = initialAmount,
+                                        orderId = orderId,
+                                        orderNumber = orderNumber,
+                                        splitType = splitType,
+                                        equalPartsPartySize = equalPartsPartySize,
+                                        equalPartsPayedFor = equalPartsPayedFor,
+                                        paidProductIds = paidProductIds,
+                                        skipLocalOrderValidation = skipLocalOrderValidation  // 📱 SERIALIZED SALE
+                                    )
+                                }
                             }
                         } else {
                             // ✅ NO initialAmount → This flow REQUIRES amount from WelcomeScreen
                             // Navigate back instead of showing EnteringAmount
-                            onNavigateBack()
+                            navigateBack()
                         }
                     }
 
@@ -551,7 +624,7 @@ fun PaymentScreen(
                     if (isKioskPayment && onKioskPaymentSuccess != null && currentState.receipt != null) {
                         LaunchedEffect(currentState.receipt) {
                             Timber.i("🥝 [KIOSK] Receipt ready - navigating to KioskSuccessScreen | URL=${currentState.receipt?.receiptUrl}, items=${currentState.orderItems?.size}")
-                            val displayOrderNumber = currentState.orderNumber ?: orderNumber ?: "0000"
+                            val displayOrderNumber = OrderNumberFormatter.display(currentState.orderNumber ?: orderNumber) ?: "0000"
                             viewModel.resetPayment()
                             onKioskPaymentSuccess(displayOrderNumber, currentState.receipt, currentState.orderItems)
                         }
@@ -594,13 +667,14 @@ fun PaymentScreen(
                                 isRefund = currentState.isRefund,  // 💸 Show refund-specific UI
                                 wasPayLaterOrder = wasPayLaterOrder,  // 💳 Pay-later context
                                 payLaterOrdersCount = payLaterOrdersCount,  // 💳 Remaining count
+                                flowOrigin = effectiveOrigin,
                                 // 🥝 KIOSK MODE PARAMS
                                 isKioskPayment = showKioskMode,
                                 kioskCountdownSeconds = 12,
                                 onKioskTimeout = {
                                     if (showKioskMode && onKioskPaymentSuccess != null) {
                                         Timber.i("🥝 [KIOSK] Auto-dismiss from unified success screen")
-                                        val displayOrderNumber = currentState.orderNumber ?: orderNumber ?: "0000"
+                                        val displayOrderNumber = OrderNumberFormatter.display(currentState.orderNumber ?: orderNumber) ?: "0000"
                                         viewModel.resetPayment()
                                         onKioskPaymentSuccess(displayOrderNumber, currentState.receipt, currentState.orderItems)
                                     }
@@ -609,16 +683,21 @@ fun PaymentScreen(
                                 onPrintKitchenTicket = {
                                     currentState.orderItems?.let { items ->
                                         viewModel.printKitchenTicket(
-                                            orderNumber = currentState.orderNumber,
+                                            orderNumber = OrderNumberFormatter.display(currentState.orderNumber ?: orderNumber),
                                             tableName = null,
                                             orderItems = items
                                         )
                                     }
                                 },
-                                onNavigateBack = onNavigateBack,
+                                onNavigateBack = if (effectiveOrigin == PaymentFlowOrigin.FAST) onNavigateHome else onNavigateBack,
+                                onRefundComplete = onRefundComplete,
                                 onNewOrder = {
                                     viewModel.resetPayment()
                                     onNavigateToNewOrder()
+                                },
+                                onNavigateToSerializedSale = {
+                                    viewModel.resetPayment()
+                                    onNavigateToSerializedSale()
                                 },
                                 onNewFastPayment = {
                                     viewModel.resetPayment()
@@ -648,13 +727,15 @@ fun PaymentScreen(
                                 onLoadRecentCustomers = viewModel::loadRecentCustomersForReceipt,
                                 onResetCustomerSearch = viewModel::resetCustomerSearch,
                                 // 📸 PROOF-OF-SALE: Show camera FAB when SERIALIZED_INVENTORY is active and we have paymentId
-                                showProofOfSaleButton = isSerializedInventoryActive && currentState.receipt?.paymentId != null,
+                                showProofOfSaleButton = showProofOfSale && currentState.receipt?.paymentId != null,
                                 onProofOfSalePhotoTaken = { photoPath ->
                                     // Handle proof-of-sale photo upload
                                     val paymentId = currentState.receipt?.paymentId
                                     val totalAmount = currentState.receipt?.totalAmount
                                     // Use orderNumber if available, otherwise use paymentId as identifier
-                                    val orderRef = currentState.orderNumber ?: orderNumber ?: paymentId?.take(8) ?: "UNKNOWN"
+                                    val orderRef = OrderNumberFormatter.reference(currentState.orderNumber ?: orderNumber)
+                                        ?: OrderNumberFormatter.reference(paymentId)
+                                        ?: System.currentTimeMillis().toString().takeLast(8)
 
                                     if (paymentId != null && totalAmount != null) {
                                         Timber.d("📸 [PROOF-OF-SALE] Uploading photo for payment $paymentId (ref: $orderRef)")
@@ -664,7 +745,7 @@ fun PaymentScreen(
                                         Timber.e("📸 [PROOF-OF-SALE] Missing: paymentId=${paymentId==null}, totalAmount=${totalAmount==null}")
                                     }
                                 },
-                                isUploadingProofOfSale = false  // TODO: Get from viewModel state
+                                isUploadingProofOfSale = isUploadingProofOfSale
                             )
                         }
                     }
@@ -690,7 +771,7 @@ fun PaymentScreen(
                         },
                         onCancel = {
                             viewModel.resetPayment()
-                            onNavigateBack()
+                            navigateBack()
                         }
                     )
                 }
@@ -791,7 +872,7 @@ fun PaymentScreen(
                     // Auto-navigate back
                     LaunchedEffect(Unit) {
                         viewModel.resetPayment()
-                        onNavigateBack()
+                        navigateBack()
                     }
                 }
             }
@@ -919,6 +1000,61 @@ private fun PaymentIdleContent(
                 message = merchantSwitchMessage ?: "Cambiando cuenta..."
             )
         }
+    }
+}
+
+private data class SuccessRouting(
+    val text: String,
+    val onClick: () -> Unit
+)
+
+private fun resolveBackNavigation(
+    flowOrigin: PaymentFlowOrigin,
+    orderId: String?,
+    tableId: String?,
+    onNavigateBack: () -> Unit,
+    onNavigateToSerializedSale: () -> Unit,
+    onNavigateToOrder: (String, String?) -> Unit
+): () -> Unit {
+    return when (flowOrigin) {
+        PaymentFlowOrigin.SERIALIZED -> onNavigateToSerializedSale
+        PaymentFlowOrigin.ORDER -> {
+            if (orderId.isNullOrBlank()) {
+                onNavigateBack
+            } else {
+                { onNavigateToOrder(orderId, tableId) }
+            }
+        }
+        else -> onNavigateBack
+    }
+}
+
+private fun resolveSuccessRouting(
+    flowOrigin: PaymentFlowOrigin,
+    wasPayLaterOrder: Boolean,
+    payLaterOrdersCount: Int,
+    tableId: String?,
+    onNavigateToPayLaterOrders: () -> Unit,
+    onClearTableAndReturnToFloorPlan: (String) -> Unit,
+    onNavigateToSerializedSale: () -> Unit,
+    onNewOrder: () -> Unit,
+    onNewFastPayment: () -> Unit
+): SuccessRouting {
+    if (wasPayLaterOrder) {
+        val text = if (payLaterOrdersCount > 0) "Pagar cuenta ($payLaterOrdersCount)" else "Pagar cuenta"
+        return SuccessRouting(text = text, onClick = onNavigateToPayLaterOrders)
+    }
+
+    if (tableId != null) {
+        return SuccessRouting(text = "Nueva Orden", onClick = { onClearTableAndReturnToFloorPlan(tableId) })
+    }
+
+    return when (flowOrigin) {
+        PaymentFlowOrigin.SERIALIZED -> SuccessRouting(text = "Nueva Venta", onClick = onNavigateToSerializedSale)
+        PaymentFlowOrigin.ORDER -> SuccessRouting(text = "Nueva Orden", onClick = onNewOrder)
+        PaymentFlowOrigin.FAST -> SuccessRouting(text = "Nuevo Pago", onClick = onNewFastPayment)
+        PaymentFlowOrigin.REFUND -> SuccessRouting(text = "Nuevo Pago", onClick = onNewFastPayment)
+        PaymentFlowOrigin.KIOSK -> SuccessRouting(text = "Nuevo Pago", onClick = onNewFastPayment)
     }
 }
 
@@ -1089,6 +1225,7 @@ private fun PaymentSuccessContent(
     isRefund: Boolean = false,  // 💸 True = show refund-specific UI text
     wasPayLaterOrder: Boolean = false,  // 💳 True = order had customers (pay-later)
     payLaterOrdersCount: Int = 0,  // 💳 Remaining pay-later orders count
+    flowOrigin: PaymentFlowOrigin = PaymentFlowOrigin.FAST,  // 🔀 Origin flow for success actions
     // 🥝 KIOSK MODE PARAMS
     isKioskPayment: Boolean = false,  // 🥝 True = kiosk mode with auto-dismiss
     kioskCountdownSeconds: Int = 12,  // 🥝 Seconds before auto-dismiss
@@ -1096,7 +1233,9 @@ private fun PaymentSuccessContent(
     onPrintReceipt: () -> Unit = {},
     onPrintKitchenTicket: () -> Unit = {},  // 🆕 Print kitchen ticket (comanda)
     onNavigateBack: () -> Unit,  // 🆕 Navigate to WelcomeScreen (home button)
+    onRefundComplete: () -> Unit = onNavigateBack,  // 💸 Navigate after refund success
     onNewOrder: () -> Unit,  // 🆕 Navigate to new order (for order payments)
+    onNavigateToSerializedSale: () -> Unit = {},  // 📱 Serialized sale: return to scanner flow
     onNewFastPayment: () -> Unit,  // 🆕 Navigate to new fast payment (for fast payments)
     onClearTableAndReturnToFloorPlan: (String) -> Unit = {},  // 🆕 Clear table and return to floor plan
     onContinuePayment: () -> Unit = {},  // ⭐ NEW: Continue paying remaining balance
@@ -1115,6 +1254,8 @@ private fun PaymentSuccessContent(
     onProofOfSalePhotoTaken: (String) -> Unit = {},  // Callback when photo is captured (path)
     isUploadingProofOfSale: Boolean = false  // Show loading during upload
 ) {
+    val displayOrderNumber = OrderNumberFormatter.display(orderNumber)
+
     // Parse amounts (prefer receipt data if available)
     val totalAmount = receipt?.totalAmount ?: (amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)  // ✅ FIX: Use totalAmount (includes tip)
     val tipAmount = receipt?.tipAmount ?: java.math.BigDecimal.ZERO
@@ -1228,10 +1369,10 @@ private fun PaymentSuccessContent(
                         contentAlignment = Alignment.Center
                     ) {
                         when {
-                            // 💸 Refund: Show "Listo" button that navigates back
+                            // 💸 Refund: Show "Listo" button that navigates back to payments list
                             isRefund -> {
                                 Button(
-                                    onClick = onNavigateBack,
+                                    onClick = onRefundComplete,
                                     shape = RoundedCornerShape(12.dp),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = MaterialTheme.colorScheme.primary,
@@ -1260,30 +1401,23 @@ private fun PaymentSuccessContent(
                             }
                             // Normal flow: "Pagar cuenta (X)", "Nueva Orden", or "Nuevo Pago"
                             else -> {
-                                // 💳 Determine button text and action
-                                val buttonText = when {
-                                    wasPayLaterOrder && payLaterOrdersCount > 0 -> "Pagar cuenta ($payLaterOrdersCount)"
-                                    wasPayLaterOrder -> "Pagar cuenta"  // Show even without count
-                                    orderId != null -> "Nueva Orden"
-                                    else -> "Nuevo Pago"
-                                }
+                                val successRouting = resolveSuccessRouting(
+                                    flowOrigin = flowOrigin,
+                                    wasPayLaterOrder = wasPayLaterOrder,
+                                    payLaterOrdersCount = payLaterOrdersCount,
+                                    tableId = tableId,
+                                    onNavigateToPayLaterOrders = onNavigateToPayLaterOrders,
+                                    onClearTableAndReturnToFloorPlan = onClearTableAndReturnToFloorPlan,
+                                    onNavigateToSerializedSale = onNavigateToSerializedSale,
+                                    onNewOrder = onNewOrder,
+                                    onNewFastPayment = onNewFastPayment
+                                )
+                                val buttonText = successRouting.text
 
                                 Timber.d("💳 [PaymentSuccess] Button: $buttonText | wasPayLater=$wasPayLaterOrder | count=$payLaterOrdersCount | orderId=$orderId")
 
                                 Button(
-                                    onClick = {
-                                        val currentTableId = tableId
-                                        when {
-                                            // 💳 Pay-later: Navigate to pay-later orders list
-                                            wasPayLaterOrder -> onNavigateToPayLaterOrders()
-                                            // 🪑 Table order → Clear table and return to floor plan
-                                            currentTableId != null -> onClearTableAndReturnToFloorPlan(currentTableId)
-                                            // 📋 Quick order → Create new quick order
-                                            orderId != null -> onNewOrder()
-                                            // ⚡ Fast payment → New fast payment
-                                            else -> onNewFastPayment()
-                                        }
-                                    },
+                                    onClick = successRouting.onClick,
                                     shape = RoundedCornerShape(12.dp),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = MaterialTheme.colorScheme.surface,
@@ -1655,7 +1789,7 @@ private fun PaymentSuccessContent(
             ) {
                 // Header
                 Text(
-                    text = if (!orderNumber.isNullOrBlank()) "Orden #$orderNumber" else "Detalles de la Orden",
+                    text = if (!displayOrderNumber.isNullOrBlank()) "Orden #$displayOrderNumber" else "Detalles de la Orden",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(bottom = 16.dp)

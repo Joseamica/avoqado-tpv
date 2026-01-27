@@ -158,6 +158,9 @@ Kotlin, Jetpack Compose, POS terminals, payments, offline-first architecture, an
 | ---------------------------------------- | -------------------------------------------------------- |
 | `docs/MODULES_SYSTEM.md`                 | **Modules**: VenueModule config, StateFlow pattern, proof-of-sale photo capture |
 | `docs/ATTENDANCE_VERIFICATION.md`        | **Timeclock**: Clock-in/out photo + GPS verification     |
+| `docs/PRE_PAYMENT_VERIFICATION.md`       | **Payment Flow**: Pre-payment photo/barcode verification (TPV settings) |
+| `docs/PAYMENT_FLOW_ORIGIN.md`            | **Payment Flow**: Navigation guardrails by origin (fast/order/serialized) |
+| `docs/PAYMENT_SESSION.md`                | **Payment Flow**: Immutable session snapshot (incremental refactor) |
 | `docs/MASTER_TOTP_LOGIN.md`              | **Master TOTP**: Emergency SUPERADMIN access, venue rule bypass |
 | `docs/PAY_LATER_README.md`               | **Pay Later Overview**: Index of all pay-later docs      |
 | `docs/PAY_LATER_IMPLEMENTATION.md`       | **Pay Later (Android)**: Bug fix + banner implementation |
@@ -175,6 +178,8 @@ Kotlin, Jetpack Compose, POS terminals, payments, offline-first architecture, an
 | `SOCKET_IO_IMPLEMENTATION.md`            | Real-time events architecture & integration              |
 | `SOCKET_IO_TESTING.md`                   | Socket.IO testing strategies & examples                  |
 | `LOCAL_FIRST_SYNC_PATTERNS.md`           | **CRITICAL: Preserve local-only fields when syncing**    |
+| `docs/BLE_PAYMENT_IOS_APP.md`            | BLE external device payments (iOS sender + TPV behavior) |
+| `docs/BLE_PAYMENT_QUEUE.md`              | BLE payment queue (multi-device requests, TPV handling)  |
 | `TESTING_GUIDE.md`                       | Unit tests, integration tests, debugging                 |
 | `SECURITY_CHECKLIST.md`                  | Encryption, tenant isolation, certificate pinning        |
 | `PRODUCTION_BUILD_GUIDE.md`              | Build variants, deployment, troubleshooting              |

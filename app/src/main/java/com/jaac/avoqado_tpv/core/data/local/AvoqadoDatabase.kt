@@ -33,7 +33,7 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
  * - v4 → v5: Added DraftOrderEntity + DraftOrderItemEntity (local-first order management - 2025-01-19)
  * - v5 → v6: Added HistoricalPeriodEntity (offline cache for historical reports - 2025-01-19)
  * - v6 → v7: Fixed FOREIGN KEY with ON UPDATE CASCADE (fixes sync errors - 2025-11-20)
- * - v7 → v8: Added merchant account tracking to DraftOrderEntity (split payment validation - 2025-11-20)
+ * - v7 → v8: Added merchant account tracking to DraftOrderEntity (informational, no lock - 2025-11-20)
  * - v8 → v9: Added ProductEntity + ProductCategoryEntity (cache-first product loading - 2025-11-24)
  * - v9 → v10: Added CachedShiftEntity (offline shift status display - Square/Toast prevention pattern - 2025-11-25)
  * - v10 → v11: Added paidAmount/remainingBalance for split payments (2025-11-26)
@@ -568,22 +568,19 @@ abstract class AvoqadoDatabase : RoomDatabase() {
         /**
          * Migration from version 7 to version 8: Add merchant account tracking to orders.
          *
-         * **Merchant Account Locking for Split Payments (2025-11-20)**
-         * - Adds merchant_account_id column (tracks which merchant processed payment)
-         * - Adds merchant_account_name column (for user-friendly error messages)
-         * - Enables split payment validation (same merchant must be used)
+         * **Merchant Account Tracking for Split Payments (2025-11-20)**
+         * - Adds merchant_account_id column (tracks last merchant used)
+         * - Adds merchant_account_name column (informational/debugging)
          *
          * **Why This Migration:**
-         * - Prevents split payment reconciliation issues (mixing merchants)
-         * - Tracks payment history per merchant account
-         * - Enables merchant-locked orders (already paid with Merchant A → must continue with A)
-         * - Fixes P0 issue: merchant account mismatch in multi-merchant system
+         * - Tracks payment history per merchant account (informational)
+         * - Supports multi-merchant splits without enforcement
          *
          * **Business Logic:**
          * ```
          * Order created → merchantAccountId = null (no lock yet)
-         * First payment processed → merchantAccountId = "merchant_A" (locked)
-         * Second payment (split) → MUST use "merchant_A" (validation enforced)
+         * First payment processed → merchantAccountId = "merchant_A" (last used)
+         * Second payment (split) → can use any merchant; value updates to last used
          * ```
          *
          * **Data Safety:**

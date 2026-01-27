@@ -105,6 +105,11 @@ class OrderSyncCoordinator @Inject constructor(
     private val pendingSyncJobs = ConcurrentHashMap<String, Job>()
 
     /**
+     * Local → server ID remapping (avoids FK violations during ID replacement window).
+     */
+    private val orderIdRemap = ConcurrentHashMap<String, String>()
+
+    /**
      * Per-order mutex for serializing sync operations.
      *
      * ✅ P0 FIX: Prevents concurrent syncs for the same order
@@ -421,6 +426,11 @@ class OrderSyncCoordinator @Inject constructor(
         modifiers: List<ProductModifier>,
         notes: String?
     ): String = withContext(Dispatchers.IO) {
+        val effectiveOrderId = resolveExistingOrderId(orderId)
+        if (effectiveOrderId != orderId) {
+            Timber.w("⚠️ [Order Remap] addItem remapped orderId $orderId → $effectiveOrderId")
+        }
+
         val localItemId = DraftOrderItemEntity.generateLocalId()
         val totalPrice = (unitPrice.toBigDecimal() * quantity.toBigDecimal()).toString()
 
@@ -434,7 +444,7 @@ class OrderSyncCoordinator @Inject constructor(
 
         val draftItem = DraftOrderItemEntity(
             id = localItemId,
-            orderId = orderId,
+            orderId = effectiveOrderId,
             productId = productId,
             productName = productName,
             productSku = null,
@@ -453,10 +463,10 @@ class OrderSyncCoordinator @Inject constructor(
         draftOrderItemDao.insert(draftItem)
 
         // Update order totals
-        recalculateOrderTotals(orderId)
+        recalculateOrderTotals(effectiveOrderId)
 
-        Timber.d("➕ [Local] Added item | order=$orderId | product=$productName | qty=$quantity | modifiers=${modifiers.size}")
-        Timber.d("➕ [SYNC-DEBUG] addItemToLocalOrder() | orderId=$orderId | itemId=$localItemId | product=$productName | timestamp=${System.currentTimeMillis()}")
+        Timber.d("➕ [Local] Added item | order=$effectiveOrderId | product=$productName | qty=$quantity | modifiers=${modifiers.size}")
+        Timber.d("➕ [SYNC-DEBUG] addItemToLocalOrder() | orderId=$effectiveOrderId | itemId=$localItemId | product=$productName | timestamp=${System.currentTimeMillis()}")
 
         localItemId
     }
@@ -474,12 +484,17 @@ class OrderSyncCoordinator @Inject constructor(
         orderId: String,
         itemId: String
     ) = withContext(Dispatchers.IO) {
+        val effectiveOrderId = resolveExistingOrderId(orderId)
+        if (effectiveOrderId != orderId) {
+            Timber.w("⚠️ [Order Remap] removeItem remapped orderId $orderId → $effectiveOrderId")
+        }
+
         draftOrderItemDao.markAsDeleted(itemId)
 
         // Update order totals
-        recalculateOrderTotals(orderId)
+        recalculateOrderTotals(effectiveOrderId)
 
-        Timber.d("➖ [Local] Soft deleted item | order=$orderId | item=$itemId")
+        Timber.d("➖ [Local] Soft deleted item | order=$effectiveOrderId | item=$itemId")
     }
 
     /**
@@ -499,18 +514,23 @@ class OrderSyncCoordinator @Inject constructor(
         newQuantity: Int,
         unitPrice: BigDecimal
     ) = withContext(Dispatchers.IO) {
+        val effectiveOrderId = resolveExistingOrderId(orderId)
+        if (effectiveOrderId != orderId) {
+            Timber.w("⚠️ [Order Remap] updateQty remapped orderId $orderId → $effectiveOrderId")
+        }
+
         if (newQuantity <= 0) {
             // Remove item if quantity is 0
-            removeItemFromLocalOrder(orderId, itemId)
+            removeItemFromLocalOrder(effectiveOrderId, itemId)
         } else {
             // Update quantity in database
             val newTotalPrice = (unitPrice * newQuantity.toBigDecimal()).toString()
             draftOrderItemDao.updateQuantity(itemId, newQuantity, newTotalPrice)
 
             // Update order totals
-            recalculateOrderTotals(orderId)
+            recalculateOrderTotals(effectiveOrderId)
 
-            Timber.d("✏️ [Local] Updated item quantity | order=$orderId | item=$itemId | qty=$newQuantity")
+            Timber.d("✏️ [Local] Updated item quantity | order=$effectiveOrderId | item=$itemId | qty=$newQuantity")
         }
     }
 
@@ -579,32 +599,39 @@ class OrderSyncCoordinator @Inject constructor(
      * @param orderId Order to sync (local or server ID)
      */
     fun scheduleSync(orderId: String) {
+        val resolvedOrderId = resolveOrderId(orderId)
+        if (resolvedOrderId != orderId) {
+            Timber.w("⚠️ [Order Remap] scheduleSync remapped orderId $orderId → $resolvedOrderId")
+            pendingSyncJobs[orderId]?.cancel()
+            pendingSyncJobs.remove(orderId)
+        }
+
         // Cancel previous pending sync for this order
-        pendingSyncJobs[orderId]?.cancel()
+        pendingSyncJobs[resolvedOrderId]?.cancel()
 
         // Schedule new debounced sync
         val job = syncScope.launch {
             val scheduledAt = System.currentTimeMillis()
-            Timber.d("⏱️ [Sync] Scheduled debounced sync | order=$orderId | delay=${SYNC_DEBOUNCE_MS}ms")
-            Timber.d("⏱️ [SYNC-DEBUG] scheduleSync() | orderId=$orderId | debounce=${SYNC_DEBOUNCE_MS}ms | timestamp=$scheduledAt")
+            Timber.d("⏱️ [Sync] Scheduled debounced sync | order=$resolvedOrderId | delay=${SYNC_DEBOUNCE_MS}ms")
+            Timber.d("⏱️ [SYNC-DEBUG] scheduleSync() | orderId=$resolvedOrderId | debounce=${SYNC_DEBOUNCE_MS}ms | timestamp=$scheduledAt")
 
             delay(SYNC_DEBOUNCE_MS)
 
             // ⚡ P0 FIX: Check if another sync is already in progress
             // This prevents race condition when rapid changes schedule multiple syncs
-            val currentOrder = draftOrderDao.getOrder(orderId)
+            val currentOrder = draftOrderDao.getOrder(resolvedOrderId)
             if (currentOrder?.syncStatus == DraftOrderEntity.SYNC_STATUS_SYNCING) {
-                Timber.d("⏭️ [Sync] Skipping debounced sync - already in progress | order=$orderId")
-                pendingSyncJobs.remove(orderId)
+                Timber.d("⏭️ [Sync] Skipping debounced sync - already in progress | order=$resolvedOrderId")
+                pendingSyncJobs.remove(resolvedOrderId)
                 return@launch
             }
 
-            Timber.d("🔄 [Sync] Debounce expired, executing sync | order=$orderId")
-            Timber.i("🔄 [SYNC-DEBUG] scheduleSync() DEBOUNCE EXPIRED | orderId=$orderId | timestamp=${System.currentTimeMillis()} | elapsed=${System.currentTimeMillis() - scheduledAt}ms")
-            executeSyncWithRetry(orderId)
+            Timber.d("🔄 [Sync] Debounce expired, executing sync | order=$resolvedOrderId")
+            Timber.i("🔄 [SYNC-DEBUG] scheduleSync() DEBOUNCE EXPIRED | orderId=$resolvedOrderId | timestamp=${System.currentTimeMillis()} | elapsed=${System.currentTimeMillis() - scheduledAt}ms")
+            executeSyncWithRetry(resolvedOrderId)
         }
 
-        pendingSyncJobs[orderId] = job
+        pendingSyncJobs[resolvedOrderId] = job
     }
 
     /**
@@ -626,19 +653,24 @@ class OrderSyncCoordinator @Inject constructor(
         pendingSyncJobs[orderId]?.cancel()
         pendingSyncJobs.remove(orderId)
 
-        Timber.d("⚡ [Sync] Immediate sync requested | order=$orderId")
-        executeSyncWithRetry(orderId)
+        val resolvedOrderId = resolveExistingOrderId(orderId)
+        if (resolvedOrderId != orderId) {
+            Timber.w("⚠️ [Order Remap] syncImmediate remapped orderId $orderId → $resolvedOrderId")
+        }
+
+        Timber.d("⚡ [Sync] Immediate sync requested | order=$resolvedOrderId")
+        executeSyncWithRetry(resolvedOrderId)
     }
 
     /**
      * Update order's merchant account information after successful payment.
      *
-     * ⭐ P0 FIX: Track which merchant account processed the first payment on an order.
-     * This prevents split payment mismatches (mixing different merchant accounts).
+     * Track merchant account metadata on an order (informational only).
+     * Multi-merchant split payments are allowed; this is NOT a lock.
      *
      * **Use Case:**
-     * - Order has partial payment ($500 MXN) → Lock to Merchant A
-     * - Subsequent payments MUST use Merchant A (validated in PaymentViewModel)
+     * - Order has partial payment ($500 MXN) → merchantAccountId = Merchant A (last used)
+     * - Subsequent payments can use any merchant
      *
      * **Sync Behavior:**
      * - Updates local order immediately
@@ -992,6 +1024,9 @@ class OrderSyncCoordinator @Inject constructor(
         Timber.d("✅ [Sync] Order ID replaced | oldId=${draftOrder.id} | newId=${serverOrder.id} | version=$finalVersion")
         Timber.d("   → ON UPDATE CASCADE automatically updated ${pendingItems.size} items")
 
+        // Record mapping for local-first writes during the transition window
+        recordOrderIdReplacement(draftOrder.id, serverOrder.id)
+
         Timber.i("📣 [SYNC-DEBUG] SyncEvent.Synced ABOUT TO EMIT | serverId=${serverOrder.id} | version=$finalVersion | timestamp=${System.currentTimeMillis()}")
         _syncEvents.emit(SyncEvent.Synced(serverOrder.id, finalVersion))
         Timber.i("📣 [SYNC-DEBUG] SyncEvent.Synced EMITTED | serverId=${serverOrder.id} | timestamp=${System.currentTimeMillis()}")
@@ -1151,13 +1186,18 @@ class OrderSyncCoordinator @Inject constructor(
      * @param orderId Order to recalculate
      */
     private suspend fun recalculateOrderTotals(orderId: String) {
-        val items = draftOrderItemDao.getItemsByOrder(orderId)
+        val effectiveOrderId = resolveExistingOrderId(orderId)
+        if (effectiveOrderId != orderId) {
+            Timber.w("⚠️ [Order Remap] recalc totals remapped orderId $orderId → $effectiveOrderId")
+        }
+
+        val items = draftOrderItemDao.getItemsByOrder(effectiveOrderId)
 
         val subtotal = items.sumOf { it.totalPrice.toBigDecimal() }
         val tax = BigDecimal.ZERO  // ✅ FIX: Backend handles tax (currently 0% for new orders)
         val total = subtotal  // ✅ FIX: Total = subtotal (no tax added)
 
-        val order = draftOrderDao.getOrder(orderId) ?: return
+        val order = draftOrderDao.getOrder(effectiveOrderId) ?: return
 
         // ✅ P0 FIX: Calculate remainingBalance = total - paidAmount
         // Without this, payment buttons stay disabled because canProcessPayment requires remainingBalance > 0
@@ -1174,6 +1214,29 @@ class OrderSyncCoordinator @Inject constructor(
                 syncStatus = DraftOrderEntity.SYNC_STATUS_PENDING // Mark for sync
             )
         )
+    }
+
+    fun resolveOrderId(orderId: String): String {
+        return orderIdRemap[orderId] ?: orderId
+    }
+
+    private fun recordOrderIdReplacement(localId: String, serverId: String) {
+        orderIdRemap[localId] = serverId
+        Timber.w("🔁 [Order Remap] Stored mapping localId=$localId → serverId=$serverId")
+    }
+
+    private suspend fun resolveExistingOrderId(orderId: String): String {
+        // Prefer existing row for the given ID
+        if (draftOrderDao.getOrder(orderId) != null) {
+            return orderId
+        }
+
+        val mapped = orderIdRemap[orderId]
+        if (!mapped.isNullOrBlank() && draftOrderDao.getOrder(mapped) != null) {
+            return mapped
+        }
+
+        return orderId
     }
 
     // ========================================

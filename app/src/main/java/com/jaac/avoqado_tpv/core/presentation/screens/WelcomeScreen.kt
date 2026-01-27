@@ -57,6 +57,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.ActionButtonGrid
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoDialog
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
+import com.jaac.avoqado_tpv.core.presentation.components.SalesGoalProgressCard
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.SettingsBottomSheet
@@ -74,6 +75,7 @@ import com.jaac.avoqado_tpv.features.remote_command.presentation.MaintenanceOver
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import com.jaac.avoqado_tpv.features.shift.presentation.CachedShiftInfo
+import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleSalesGoal
 import dagger.hilt.android.EntryPointAccessors
 import java.math.BigDecimal
 
@@ -159,6 +161,9 @@ fun WelcomeScreen(
     var showVenueSuspendedDialog by remember { mutableStateOf(false) }
     var showVenueClosedDialog by remember { mutableStateOf(false) }
 
+    // Sales goal from HomeViewModel (for progress bar display)
+    val salesGoal by viewModel.salesGoal.collectAsStateWithLifecycle()
+
     // Observe venue status events
     androidx.compose.runtime.LaunchedEffect(Unit) {
         viewModel.venueStatusEvents.collect { event ->
@@ -186,6 +191,12 @@ fun WelcomeScreen(
         shiftViewModel.refreshSettings() // Refresh settings too
     }
 
+    // 🎯 FIX: Refresh sales goal whenever WelcomeScreen becomes visible
+    // This ensures the progress bar updates after payments are completed
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        viewModel.refreshSalesGoal()
+    }
+
     // Main content
     WelcomeScreenContent(
         modifier = modifier,
@@ -196,6 +207,7 @@ fun WelcomeScreen(
         isOffline = isOffline,
         cachedShiftInfo = cachedShiftInfo,
         venueStatus = venueStatus,  // 📊 Pass venue status for banner
+        salesGoal = salesGoal,  // 🎯 Pass sales goal for progress bar
         onStartPaymentWithAmount = onStartPaymentWithAmount,  // ✅ Modal flow for first-time
         onNavigateToShifts = onNavigateToShifts,
         onNavigateToOrdering = onNavigateToOrdering,
@@ -364,6 +376,7 @@ private fun WelcomeScreenContent(
     isOffline: Boolean = false,
     cachedShiftInfo: CachedShiftInfo? = null,
     venueStatus: VenueStatus = VenueStatus.ACTIVE,  // 📊 Venue status for banner
+    salesGoal: ModuleSalesGoal? = null,  // 🎯 Sales goal from backend
     onStartPaymentWithAmount: (String) -> Unit,  // ✅ Modal flow (first-time)
     onNavigateToShifts: () -> Unit,
     onNavigateToOrdering: () -> Unit,
@@ -609,6 +622,22 @@ private fun WelcomeScreenContent(
                             cachedInfo = cachedShiftInfo,
                             onClick = onNavigateToShifts,
                             modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    // ═══════════════════════════════════════════════════════════════
+                    // SALES GOAL PROGRESS CARD
+                    // Shows progress toward staff sales goal when configured.
+                    // Uses salesGoal from HomeViewModel (fetched from backend).
+                    // Falls back to module config if no backend goal (legacy support).
+                    // ═══════════════════════════════════════════════════════════════
+                    val effectiveSalesGoal = salesGoal ?: serializedInventoryConfig?.salesGoal
+                    if (effectiveSalesGoal != null) {
+                        SalesGoalProgressCard(
+                            salesGoal = effectiveSalesGoal,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
                         )
                     }
 

@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.payment.domain
 
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
+import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentFlowOrigin
 
 /**
  * Immutable retry context - preserves all transaction data for smart retry.
@@ -36,6 +37,7 @@ data class RetryContext(
     val rating: Int?,
     val merchantAccountId: String?,  // ✅ NULLABLE: null for cash payments
     val merchantLocalId: String? = null,  // 🆕 Fallback for merchants without backend CUID
+    val flowOrigin: PaymentFlowOrigin = PaymentFlowOrigin.FAST,
     // 🆕 Order context fields (FIX: preserve order data for retry)
     val orderId: String? = null,
     val orderNumber: String? = null,
@@ -226,6 +228,77 @@ sealed class PaymentState {
         val tipAmount: String,     // Calculated tip
         val totalAmount: String,   // subtotal + tip
         val rating: Int?           // null = skipped, 1-5 = rated
+    ) : PaymentState()
+
+    // ==========================================
+    // CRYPTO PAYMENT STATES (B4Bit Integration)
+    // ==========================================
+
+    /**
+     * 🔗 CRYPTO: Generating QR code from B4Bit.
+     *
+     * **Flow:**
+     * SelectingMerchant → [User taps "Cripto"] → GeneratingCryptoQR → AwaitingCryptoPayment
+     *
+     * **Purpose:**
+     * Displays loading spinner while calling backend `/crypto/initiate` endpoint.
+     * Backend calls B4Bit API to create payment order and returns payment URL.
+     *
+     * @param subtotal Original payment amount
+     * @param tipAmount Tip amount
+     * @param totalAmount Total (subtotal + tip)
+     * @param rating User rating (null = skipped)
+     */
+    data class GeneratingCryptoQR(
+        val subtotal: String,
+        val tipAmount: String,
+        val totalAmount: String,
+        val rating: Int?
+    ) : PaymentState()
+
+    /**
+     * 🪙 CRYPTO: Awaiting customer payment via QR code.
+     *
+     * **Flow:**
+     * GeneratingCryptoQR → AwaitingCryptoPayment → Success (via Socket.IO event)
+     *                                            → Error (on timeout/failure)
+     *
+     * **Purpose:**
+     * Displays QR code for customer to scan with their crypto wallet.
+     * Listens for `crypto:payment_confirmed` Socket.IO event from backend.
+     * Has countdown timer for order expiration.
+     *
+     * **UI:**
+     * - Large QR code (generated from paymentUrl)
+     * - Total amount in MXN
+     * - Countdown timer ("Expira en 4:32")
+     * - "Cancelar" button
+     * - Optional: crypto address for manual copy
+     *
+     * @param requestId B4Bit request ID for tracking
+     * @param paymentId Our internal payment ID
+     * @param paymentUrl URL to encode in QR (customer scans this)
+     * @param subtotal Original payment amount
+     * @param tipAmount Tip amount
+     * @param totalAmount Total (subtotal + tip)
+     * @param rating User rating (null = skipped)
+     * @param expiresAt ISO timestamp when order expires
+     * @param expiresInSeconds Seconds until expiration (for countdown)
+     * @param cryptoAddress Optional: wallet address for manual transfer
+     * @param cryptoSymbol Optional: selected cryptocurrency (BTC, ETH, etc.)
+     */
+    data class AwaitingCryptoPayment(
+        val requestId: String,
+        val paymentId: String,
+        val paymentUrl: String,
+        val subtotal: String,
+        val tipAmount: String,
+        val totalAmount: String,
+        val rating: Int?,
+        val expiresAt: String,
+        val expiresInSeconds: Int,
+        val cryptoAddress: String? = null,
+        val cryptoSymbol: String? = null
     ) : PaymentState()
 
     /**

@@ -281,6 +281,13 @@ class SocketManager @Inject constructor() {
         on("payment_failed", onPaymentFailed)
 
         // ========================================
+        // Crypto Payment Events (B4Bit Integration)
+        // ========================================
+
+        on("crypto:payment_confirmed", onCryptoPaymentConfirmed)
+        on("crypto:payment_failed", onCryptoPaymentFailed)
+
+        // ========================================
         // Order Events
         // ========================================
 
@@ -505,6 +512,56 @@ class SocketManager @Inject constructor() {
             "completed" -> SocketEvent.PaymentCompleted(paymentId, amount, currency, tableId, orderId, venueId, timestamp, metadata)
             "failed" -> SocketEvent.PaymentFailed(paymentId, amount, currency, tableId, orderId, venueId, timestamp, metadata)
             else -> throw IllegalArgumentException("Unknown payment status: $status")
+        }
+    }
+
+    // ========================================
+    // Event Handlers - Crypto Payment (B4Bit)
+    // ========================================
+
+    private val onCryptoPaymentConfirmed = Emitter.Listener { args ->
+        try {
+            val data = args.getOrNull(0) as? JSONObject ?: return@Listener
+            Timber.i("🪙 [Socket] Crypto payment confirmed: ${data.optString("requestId")}")
+            _events.tryEmit(
+                SocketEvent.CryptoPaymentConfirmed(
+                    requestId = data.optString("requestId", ""),
+                    paymentId = data.optString("paymentId", ""),
+                    amount = data.optInt("amount", 0),
+                    currency = data.optString("currency", "MXN"),
+                    txHash = data.optString("txHash", ""),
+                    cryptoAmount = data.optString("cryptoAmount", ""),
+                    cryptoCurrency = data.optString("cryptoCurrency", ""),
+                    confirmations = data.optInt("confirmations").takeIf { data.has("confirmations") },
+                    orderId = data.optString("orderId").takeIf { it.isNotEmpty() },
+                    orderNumber = data.optString("orderNumber").takeIf { it.isNotEmpty() },
+                    receiptUrl = data.optString("receiptUrl").takeIf { it.isNotEmpty() },
+                    receiptAccessKey = data.optString("receiptAccessKey").takeIf { it.isNotEmpty() },
+                    venueId = data.optString("venueId", ""),
+                    timestamp = data.optString("timestamp", "")
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error parsing crypto:payment_confirmed")
+        }
+    }
+
+    private val onCryptoPaymentFailed = Emitter.Listener { args ->
+        try {
+            val data = args.getOrNull(0) as? JSONObject ?: return@Listener
+            Timber.w("🪙 [Socket] Crypto payment failed: ${data.optString("requestId")} - ${data.optString("reason")}")
+            _events.tryEmit(
+                SocketEvent.CryptoPaymentFailed(
+                    requestId = data.optString("requestId", ""),
+                    paymentId = data.optString("paymentId").takeIf { it.isNotEmpty() },
+                    reason = data.optString("reason", "Payment failed"),
+                    status = data.optString("status", ""),
+                    venueId = data.optString("venueId", ""),
+                    timestamp = data.optString("timestamp", "")
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error parsing crypto:payment_failed")
         }
     }
 

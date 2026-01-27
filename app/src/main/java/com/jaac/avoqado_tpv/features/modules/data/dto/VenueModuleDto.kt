@@ -42,7 +42,10 @@ data class ModuleConfigDto(
     val ui: ModuleUiDto? = null,
 
     @SerializedName("attendance")
-    val attendance: ModuleAttendanceDto? = null
+    val attendance: ModuleAttendanceDto? = null,
+
+    @SerializedName("salesGoal")
+    val salesGoal: ModuleSalesGoalDto? = null
 )
 
 data class ModuleLabelsDto(
@@ -102,6 +105,24 @@ data class ModuleAttendanceDto(
 )
 
 /**
+ * DTO for sales goal configuration.
+ * Backend sends this when a client has configured sales targets for staff.
+ */
+data class ModuleSalesGoalDto(
+    @SerializedName("goal")
+    val goal: String? = null,  // BigDecimal as string from backend
+
+    @SerializedName("period")
+    val period: String? = null,  // "DAILY", "WEEKLY", "MONTHLY"
+
+    @SerializedName("currentSales")
+    val currentSales: String? = null,  // BigDecimal as string, pre-calculated by backend
+
+    @SerializedName("staffId")
+    val staffId: String? = null
+)
+
+/**
  * API Response wrapper for modules endpoint.
  */
 data class ModulesApiResponse(
@@ -123,7 +144,8 @@ fun ModuleConfigDto.toDomain(): ModuleConfig = ModuleConfig(
     labels = labels?.toDomain() ?: ModuleLabels(),
     features = features?.toDomain() ?: ModuleFeatures(),
     ui = ui?.toDomain() ?: ModuleUi(),
-    attendance = attendance?.toDomain() ?: ModuleAttendance()
+    attendance = attendance?.toDomain() ?: ModuleAttendance(),
+    salesGoal = salesGoal?.toDomain()
 )
 
 fun ModuleLabelsDto.toDomain(): ModuleLabels = ModuleLabels(
@@ -154,6 +176,22 @@ fun ModuleAttendanceDto.toDomain(): ModuleAttendance = ModuleAttendance(
     requireClockOutGps = requireClockOutGps ?: false
 )
 
+fun ModuleSalesGoalDto.toDomain(): ModuleSalesGoal? {
+    // Goal is required, if not present return null
+    val goalAmount = goal?.toBigDecimalOrNull() ?: return null
+
+    return ModuleSalesGoal(
+        goal = goalAmount,
+        period = when (period?.uppercase()) {
+            "WEEKLY" -> SalesGoalPeriod.WEEKLY
+            "MONTHLY" -> SalesGoalPeriod.MONTHLY
+            else -> SalesGoalPeriod.DAILY
+        },
+        currentSales = currentSales?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO,
+        staffId = staffId
+    )
+}
+
 // ===== Mappers: Domain → DTO (for caching) =====
 
 fun VenueModule.toDto(): VenueModuleDto = VenueModuleDto(
@@ -165,7 +203,8 @@ fun ModuleConfig.toDto(): ModuleConfigDto = ModuleConfigDto(
     labels = labels.toDto(),
     features = features.toDto(),
     ui = ui.toDto(),
-    attendance = attendance.toDto()
+    attendance = attendance.toDto(),
+    salesGoal = salesGoal?.toDto()
 )
 
 fun ModuleLabels.toDto(): ModuleLabelsDto = ModuleLabelsDto(
@@ -194,4 +233,11 @@ fun ModuleAttendance.toDto(): ModuleAttendanceDto = ModuleAttendanceDto(
     requireClockInGps = requireClockInGps,
     requireClockOutPhoto = requireClockOutPhoto,
     requireClockOutGps = requireClockOutGps
+)
+
+fun ModuleSalesGoal.toDto(): ModuleSalesGoalDto = ModuleSalesGoalDto(
+    goal = goal.toPlainString(),
+    period = period.name,
+    currentSales = currentSales.toPlainString(),
+    staffId = staffId
 )

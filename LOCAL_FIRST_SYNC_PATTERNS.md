@@ -207,6 +207,15 @@ Antes de la migración, teníamos DOS fuentes de verdad que podían diverger:
 3. Usuario hace click → `_state.value.order.id` aún es `local_xxx` ❌
 4. API call falla: "Order not found"
 
+**Nuevo bug observado (2026-01-22):**
+1. Sync reemplaza `local_xxx` → `cmj123...` (ID replacement)
+2. Usuario agrega item en ese instante
+3. Insert falla con **FK constraint** (orderId ya no existe)
+
+**Mitigación:**
+- Resolver `orderId` antes de escribir en Room (add/update/remove)
+- Si el ID local ya fue reemplazado, usar el ID server
+
 ### La Solución: Room como Single Source of Truth
 
 Siguiendo las [recomendaciones oficiales de Google](https://developer.android.com/topic/architecture):

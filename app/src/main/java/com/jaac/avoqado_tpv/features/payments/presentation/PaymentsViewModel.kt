@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import java.math.BigDecimal
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import javax.inject.Inject
@@ -177,13 +178,14 @@ class PaymentsViewModel @Inject constructor(
                         totalPages = (data.total + 19) / 20  // Round up
 
                         Timber.i("✅ [PaymentsViewModel] Loaded ${data.payments.size} payments (page $currentPage/$totalPages)")
+                        val displayPayments = mergeRefundsForDisplay(data.payments)
 
                         _state.value = PaymentsState.Success(
-                            payments = data.payments,
+                            payments = displayPayments,
                             hasMore = data.hasMore,
                             currentPage = currentPage,
                             totalPages = totalPages,
-                            totalCount = data.total
+                            totalCount = displayPayments.size
                         )
                     }
 
@@ -258,13 +260,14 @@ class PaymentsViewModel @Inject constructor(
                         totalPages = (data.total + 19) / 20
 
                         Timber.i("✅ [PaymentsViewModel] Refreshed ${data.payments.size} payments")
+                        val displayPayments = mergeRefundsForDisplay(data.payments)
 
                         _state.value = PaymentsState.Success(
-                            payments = data.payments,
+                            payments = displayPayments,
                             hasMore = data.hasMore,
                             currentPage = currentPage,
                             totalPages = totalPages,
-                            totalCount = data.total
+                            totalCount = displayPayments.size
                         )
                     }
 
@@ -334,7 +337,7 @@ class PaymentsViewModel @Inject constructor(
                         val data = result.data
 
                         // Append new payments to existing list
-                        val allPayments = currentState.payments + data.payments
+                        val allPayments = mergeRefundsForDisplay(currentState.payments + data.payments)
 
                         Timber.i("✅ [PaymentsViewModel] Loaded ${data.payments.size} more payments (total: ${allPayments.size})")
 
@@ -343,7 +346,7 @@ class PaymentsViewModel @Inject constructor(
                             hasMore = data.hasMore,
                             currentPage = currentPage,
                             totalPages = totalPages,
-                            totalCount = data.total
+                            totalCount = allPayments.size
                         )
                     }
 
@@ -599,6 +602,62 @@ class PaymentsViewModel @Inject constructor(
     // ══════════════════════════════════════════════════════════════════════
     // PRIVATE METHODS
     // ══════════════════════════════════════════════════════════════════════
+
+    /**
+     * UI-only: Collapse refund entries into their original payment to avoid duplicates in history.
+     *
+     * Rules:
+     * - If a refund matches an original payment (by orderId or orderNumber), hide the refund row.
+     * - Aggregate refunded amounts into the original payment if backend didn't provide it.
+     * - Keep unmatched refunds visible (safety net).
+     */
+    private fun mergeRefundsForDisplay(payments: List<Payment>): List<Payment> {
+        if (payments.none { it.isRefund }) return payments
+
+        fun refundKey(payment: Payment): String? = payment.orderId ?: payment.orderNumber
+
+        val refundedByKey = mutableMapOf<String, BigDecimal>()
+        payments.filter { it.isRefund }.forEach { refund ->
+            val key = refundKey(refund) ?: return@forEach
+            val amount = refund.totalAmount.abs()
+            refundedByKey[key] = (refundedByKey[key] ?: BigDecimal.ZERO) + amount
+        }
+
+        val updatedByKey = mutableMapOf<String, Payment>()
+        payments.filterNot { it.isRefund }.forEach { payment ->
+            val key = refundKey(payment) ?: return@forEach
+            val aggregatedRefund = refundedByKey[key] ?: return@forEach
+            val existingRefunded = payment.refundedAmount
+            val mergedRefunded = if (existingRefunded != null && existingRefunded > BigDecimal.ZERO) {
+                existingRefunded
+            } else {
+                aggregatedRefund
+            }
+            val isFullyRefunded = payment.isFullyRefunded || mergedRefunded >= payment.totalAmount
+            updatedByKey[key] = payment.copy(
+                refundedAmount = mergedRefunded,
+                isFullyRefunded = isFullyRefunded
+            )
+        }
+
+        val result = mutableListOf<Payment>()
+        payments.forEach { payment ->
+            if (payment.isRefund) {
+                val key = refundKey(payment)
+                val hasOriginal = key != null && updatedByKey.containsKey(key)
+                if (hasOriginal) return@forEach
+                result += payment
+            } else {
+                val key = refundKey(payment)
+                result += if (key != null && updatedByKey.containsKey(key)) {
+                    updatedByKey.getValue(key)
+                } else {
+                    payment
+                }
+            }
+        }
+        return result
+    }
 
     /**
      * Get date range based on selected filter

@@ -39,6 +39,7 @@ import com.jaac.avoqado_tpv.R
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.EntryPoint
@@ -83,6 +84,10 @@ import androidx.navigation.NavType
 import androidx.navigation.navArgument
 import timber.log.Timber
 import java.time.Instant
+import java.math.BigDecimal
+import java.math.RoundingMode
+// SafeNavigationHelper for preventing black screen from rapid back clicks
+import com.jaac.avoqado_tpv.core.presentation.navigation.safePopBackStack
 
 /**
  * EntryPoint for accessing dependencies in AppNavigation
@@ -100,6 +105,7 @@ interface AppNavigationEntryPoint {
     fun modulesRepository(): com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
     fun initializationManager(): com.jaac.avoqado_tpv.features.payment.data.InitializationManager
     fun updateRequestManager(): UpdateRequestManager
+    fun bluetoothPaymentService(): com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService
 }
 
 /**
@@ -145,12 +151,59 @@ fun AppNavigation(
     val kioskModeManager = remember { kioskEntryPoint.kioskModeManager() }
     val isKioskMode by kioskModeManager.isKioskMode.collectAsStateWithLifecycle()
     val modulesRepository = remember { kioskEntryPoint.modulesRepository() }
+    val bluetoothPaymentService = remember { kioskEntryPoint.bluetoothPaymentService() }
 
     // 📥 UPDATE REQUEST OBSERVATION (Remote update commands from dashboard)
     // When dashboard sends REQUEST_UPDATE command, show dialog to user
     val updateRequestManager = remember { kioskEntryPoint.updateRequestManager() }
     val updateRequestState by updateRequestManager.updateRequestState.collectAsStateWithLifecycle()
     val updateCoroutineScope = rememberCoroutineScope()
+
+    // 🔵 EXTERNAL DEVICES (BLE) - Start payment flow from any screen
+    LaunchedEffect(bluetoothPaymentService) {
+        bluetoothPaymentService.paymentRequests.collect { request ->
+            if (request.amountCents <= 0) {
+                Timber.w("⚠️ [BLE] Ignoring non-positive amount: ${request.amountCents}")
+                return@collect
+            }
+
+            val currentRoute = navController.currentBackStackEntry?.destination?.route
+            if (currentRoute == NavRoute.Payment.route) {
+                Timber.w("⚠️ [BLE] Payment already in progress - ignoring amount: ${request.amountCents}")
+                return@collect
+            }
+
+            val handle = navController.currentBackStackEntry?.savedStateHandle
+            if (handle == null) {
+                Timber.e("❌ [BLE] No backstack entry available - cannot start payment")
+                return@collect
+            }
+
+            // Clear stale payment args to avoid contamination (order/refund/split)
+            clearPaymentArgs(handle)
+
+            val formattedAmount = formatAmountFromCents(request.amountCents)
+            handle.set("initialAmount", formattedAmount)
+            handle.set("skipReview", request.skipReview)
+            handle.set("externalTipCents", request.tipCents)
+            handle.set("externalRating", request.rating)
+            handle.set("externalSkipReview", request.skipReview)
+
+            // Dual-mode payment: Set orderId if present (triggers OrderPayment vs FastPayment)
+            if (request.orderId != null) {
+                handle.set("orderId", request.orderId)
+                handle.set("skipLocalOrderValidation", true) // Order already validated by iOS
+                Timber.i("📦 [BLE] ORDER PAYMENT mode | orderId=${request.orderId}")
+            } else {
+                Timber.i("💨 [BLE] QUICK PAYMENT mode (no orderId)")
+            }
+
+            Timber.i("🔵 [BLE] Navigating to payment | amount=$formattedAmount | cents=${request.amountCents} | orderId=${request.orderId ?: "null"}")
+            navController.navigate(NavRoute.Payment.route) {
+                launchSingleTop = true
+            }
+        }
+    }
 
     // 🔐 GLOBAL SESSION EXPIRATION LISTENER
     // Observes session events from TokenAuthenticator and navigates accordingly
@@ -357,6 +410,9 @@ fun AppNavigation(
                 kioskPaymentStaffId = null
                 // Will automatically show KioskNavigation (kiosk mode still active)
             },
+            onNavigateHome = {
+                // Not used in kiosk success (kiosk has its own success screen)
+            },
             onNavigateToShifts = {
                 // 🥝 In kiosk mode, we can't navigate to shifts (route doesn't exist in kiosk NavHost)
                 // Instead, exit kiosk mode - staff will need to open shift from normal UI
@@ -372,6 +428,7 @@ fun AppNavigation(
             },
             // These callbacks are not applicable for kiosk mode
             onNavigateToNewOrder = { /* Not used in kiosk */ },
+            onNavigateToSerializedSale = { /* Not used in kiosk */ },
             onNavigateToNewFastPayment = { /* Not used in kiosk */ },
             onClearTableAndReturnToFloorPlan = { /* Not used in kiosk */ },
             onNavigateToOrder = { _, _ -> /* Not used in kiosk */ },
@@ -705,7 +762,7 @@ fun AppNavigation(
         composable(NavRoute.FastPaymentEntry.route) {
             FastPaymentEntryScreen(
                 onNavigateBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 },
                 onAmountSubmit = { amount ->
                     // Navigate to PaymentScreen with amount
@@ -745,7 +802,7 @@ fun AppNavigation(
                     Timber.d("💳 Navigating to Order List with PAY_LATER filter")
                 },
                 onNavigateBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 }
             )
         }
@@ -754,7 +811,7 @@ fun AppNavigation(
         composable(NavRoute.FloorPlan.route) {
             FloorPlanCanvasScreen(
                 onNavigateBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 },
                 onTableAssigned = { orderId ->
                     // Navigate to Menu screen with orderId
@@ -774,7 +831,7 @@ fun AppNavigation(
             MenuScreen(
                 orderId = orderId,
                 onNavigateBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 },
                 onProcessPayment = { order ->
                     // ✅ FIX: Pass remainingBalance instead of total for split payments
@@ -845,7 +902,7 @@ fun AppNavigation(
 
             OrderListScreen(
                 onNavigateBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 },
                 onOrderClick = { order ->
                     // Navigate to MenuScreen to view/edit order
@@ -860,7 +917,7 @@ fun AppNavigation(
         composable(NavRoute.Shifts.route) {
             com.jaac.avoqado_tpv.features.shift.presentation.ShiftScreen(
                 onNavigateBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 }
             )
         }
@@ -883,6 +940,10 @@ fun AppNavigation(
 
             // 🧪 Get skipReview flag (test payment from SuperAdmin)
             val skipReview = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("skipReview") ?: false
+            // 🔵 External device inputs (BLE)
+            val externalTipCents = navController.previousBackStackEntry?.savedStateHandle?.get<Long>("externalTipCents")
+            val externalRating = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("externalRating")
+            val externalSkipReview = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("externalSkipReview") ?: false
 
             // 🆕 Get order details (if coming from MenuScreen with order)
             val orderId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderId")
@@ -938,6 +999,9 @@ fun AppNavigation(
                 orderNumber = orderNumber,
                 tableId = tableId,  // 🆕 Pass tableId to determine post-payment flow
                 skipReview = skipReview,
+                externalTipCents = externalTipCents,
+                externalRating = externalRating,
+                externalSkipReview = externalSkipReview,
                 skipLocalOrderValidation = skipLocalOrderValidation,  // 📱 SERIALIZED SALE: Order exists only on backend
                 // ⭐ Split payment params
                 splitType = splitType,
@@ -976,8 +1040,29 @@ fun AppNavigation(
                     kioskSuccessOrderItems = orderItems
                 } else null,
                 onNavigateBack = {
-                    // 🏠 Navigate directly to WelcomeScreen (clearing payment stack)
-                    navController.popBackStack(NavRoute.Home.route, inclusive = false)
+                    // 🔙 Prefer returning to previous screen (order/menu/fast entry). Fallback to Home.
+                    val popped = navController.safePopBackStack()
+                    if (!popped) {
+                        navController.safePopBackStack(NavRoute.Home.route, inclusive = false)
+                    }
+                },
+                onNavigateHome = {
+                    val popped = navController.safePopBackStack(NavRoute.Home.route, inclusive = false)
+                    if (!popped) {
+                        navController.navigate(NavRoute.Home.route) {
+                            popUpTo(NavRoute.Home.route) { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    }
+                },
+                onRefundComplete = {
+                    // 💸 Refund success: return to Payments list (not RefundConfirmation)
+                    val popped = navController.safePopBackStack(NavRoute.Payments.route, inclusive = false)
+                    if (!popped) {
+                        navController.navigate(NavRoute.Payments.route) {
+                            popUpTo(NavRoute.Home.route) { inclusive = false }
+                        }
+                    }
                 },
                 onNavigateToShifts = {
                     // 🆕 Navigate to Shifts screen (for "No shift open" errors)
@@ -992,6 +1077,27 @@ fun AppNavigation(
                         popUpTo(NavRoute.OrderingWelcome.route) { inclusive = false }
                     }
                     Timber.d("🔄 [Navigation] Toast/Square pattern: Navigated to NEW quick order")
+                },
+                onNavigateToSerializedSale = {
+                    // 📱 Serialized sale: return to scanner flow, avoid quick order menu
+                    runCatching {
+                        navController.getBackStackEntry(NavRoute.SerializedSale.route)
+                    }.onSuccess { entry ->
+                        entry.savedStateHandle["resetSerializedSale"] = true
+                    }
+
+                    val popped = navController.safePopBackStack(NavRoute.SerializedSale.route, inclusive = false)
+                    if (!popped) {
+                        navController.navigate(NavRoute.SerializedSale.route) {
+                            popUpTo(NavRoute.Home.route) { inclusive = false }
+                        }
+                        runCatching {
+                            navController.getBackStackEntry(NavRoute.SerializedSale.route)
+                        }.onSuccess { entry ->
+                            entry.savedStateHandle["resetSerializedSale"] = true
+                        }
+                    }
+                    Timber.d("📱 [Navigation] Serialized sale: Returned to scanner flow")
                 },
                 onNavigateToNewFastPayment = {
                     // 🔄 Navigate to FastPaymentEntryScreen for new fast payment
@@ -1050,9 +1156,17 @@ fun AppNavigation(
         // Settings Screen
         composable(NavRoute.Settings.route) {
             com.jaac.avoqado_tpv.features.settings.presentation.SettingsScreen(
-                onBack = { navController.popBackStack() },
+                onBack = { navController.safePopBackStack() },
                 onNavigateToShifts = { navController.navigate(NavRoute.Shifts.route) },
-                onNavigateToSelfUpdate = { navController.navigate(NavRoute.SelfUpdate.route) }
+                onNavigateToSelfUpdate = { navController.navigate(NavRoute.SelfUpdate.route) },
+                onNavigateToExternalDevices = { navController.navigate(NavRoute.ExternalDevices.route) }
+            )
+        }
+
+        // External Devices Screen - BLE device linking (Square/Toast pattern)
+        composable(NavRoute.ExternalDevices.route) {
+            com.jaac.avoqado_tpv.features.settings.presentation.ExternalDevicesScreen(
+                onNavigateBack = { navController.safePopBackStack() }
             )
         }
 
@@ -1076,7 +1190,7 @@ fun AppNavigation(
 
             com.jaac.avoqado_tpv.core.presentation.screens.SuperAdminScreen(
                 onNavigateBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 },
                 onTestPayment = {
                     // Trigger test payment of $10.00
@@ -1092,7 +1206,7 @@ fun AppNavigation(
 
             com.jaac.avoqado_tpv.features.reports.presentation.ReportsScreen(
                 onNavigateBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 },
                 onNavigateToProductPerformance = {
                     // TODO: Implement Product Performance screen navigation
@@ -1123,14 +1237,14 @@ fun AppNavigation(
                     period = selectedPeriod!!,
                     onNavigateBack = {
                         reportsViewModel.clearSelectedPeriod()
-                        navController.popBackStack()
+                        navController.safePopBackStack()
                     }
                 )
             } else {
                 // If no period selected, navigate back to reports
                 LaunchedEffect(Unit) {
                     Timber.w("⚠️ No period selected for detail screen, navigating back")
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 }
             }
         }
@@ -1139,7 +1253,7 @@ fun AppNavigation(
         composable(NavRoute.Payments.route) {
             com.jaac.avoqado_tpv.features.payments.presentation.PaymentsScreen(
                 onBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 },
                 onNavigateToRefund = { payment: Payment ->
                     // Store payment data in savedStateHandle for RefundConfirmationScreen
@@ -1210,7 +1324,7 @@ fun AppNavigation(
                 blumonSerialNumber = blumonSerialNumber,
                 refundedAmount = refundedAmount,
                 onNavigateBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 },
                 onConfirmRefund = { refundAmount, refundReason ->
                     // 💸 Navigate to PaymentScreen with refund context
@@ -1249,7 +1363,7 @@ fun AppNavigation(
         composable(NavRoute.Support.route) {
             com.jaac.avoqado_tpv.features.support.presentation.SupportScreen(
                 onBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 }
             )
         }
@@ -1258,7 +1372,7 @@ fun AppNavigation(
         composable(NavRoute.SelfUpdate.route) {
             com.jaac.avoqado_tpv.features.self_update.presentation.SelfUpdateScreen(
                 onNavigateBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 }
             )
         }
@@ -1272,7 +1386,7 @@ fun AppNavigation(
 
             SplitByProductScreen(
                 onNavigateBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 },
                 onProceedToPayment = { amount, productIds ->
                     // 💳 Read wasPayLaterOrder from previous screen and forward to Payment
@@ -1302,7 +1416,7 @@ fun AppNavigation(
 
             SplitByPersonScreen(
                 onNavigateBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 },
                 onProceedToPayment = { amount, partySize, payingFor ->
                     // 💳 Read wasPayLaterOrder from previous screen and forward to Payment
@@ -1340,7 +1454,7 @@ fun AppNavigation(
                     // Clear session when going back (user didn't complete timeclock flow)
                     Timber.d("🚪 Timeclock back pressed - Clearing session")
                     secureStorage.clearSession()
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 },
                 onNavigateToLogin = {
                     // After timeclock action, navigate back to login (session already cleared)
@@ -1377,10 +1491,14 @@ fun AppNavigation(
         }
 
         // 📱 Serialized Sale Screen - Quick sell flow for serialized items (SIMs, etc.)
-        composable(NavRoute.SerializedSale.route) {
+        composable(NavRoute.SerializedSale.route) { backStackEntry ->
+            val shouldReset = backStackEntry.savedStateHandle.get<Boolean>("resetSerializedSale") == true
+            if (shouldReset) {
+                backStackEntry.savedStateHandle.remove<Boolean>("resetSerializedSale")
+            }
             SerializedSaleScreen(
                 onNavigateBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 },
                 onNavigateToPayment = { orderId, orderTotal ->
                     // Navigate to PaymentScreen with order details
@@ -1395,7 +1513,8 @@ fun AppNavigation(
                     }
                     navController.navigate(NavRoute.Payment.route)
                     Timber.d("💳 Serialized sale: Navigating to payment for order $orderId, amount $orderTotal (skipLocalValidation=true)")
-                }
+                },
+                resetOnEnter = shouldReset
             )
         }
 
@@ -1403,7 +1522,7 @@ fun AppNavigation(
         composable(NavRoute.SerializedInventoryRegister.route) {
             SerializedInventoryScreen(
                 onNavigateBack = {
-                    navController.popBackStack()
+                    navController.safePopBackStack()
                 }
             )
         }
@@ -1721,5 +1840,44 @@ private fun SessionExpiringOverlay() {
             }
         }
     }
+}
+
+private fun clearPaymentArgs(handle: SavedStateHandle) {
+    handle.remove<String>("orderId")
+    handle.remove<String>("orderNumber")
+    handle.remove<String>("tableId")
+    handle.remove<Boolean>("skipLocalOrderValidation")
+
+    handle.remove<String>("splitType")
+    handle.remove<Int>("equalPartsPartySize")
+    handle.remove<Int>("equalPartsPayedFor")
+    handle.remove<List<String>>("paidProductIds")
+
+    handle.remove<Boolean>("isRefundMode")
+    handle.remove<String>("refundAmount")
+    handle.remove<String>("refundReason")
+    handle.remove<String>("originalPaymentId")
+    handle.remove<String>("originalOrderId")
+    handle.remove<String>("originalTotalAmount")
+    handle.remove<String>("originalTipAmount")
+    handle.remove<String>("merchantAccountId")
+    handle.remove<String>("blumonSerialNumber")
+    handle.remove<Int>("blumonOperationNumber")
+    handle.remove<String>("paymentVenueId")
+
+    handle.remove<Boolean>("wasPayLaterOrder")
+    handle.remove<Int>("payLaterOrdersCount")
+    handle.remove<Boolean>("isKioskPayment")
+
+    handle.remove<Long>("externalTipCents")
+    handle.remove<Int>("externalRating")
+    handle.remove<Boolean>("externalSkipReview")
+}
+
+private fun formatAmountFromCents(amountCents: Long): String {
+    return BigDecimal(amountCents)
+        .movePointLeft(2)
+        .setScale(2, RoundingMode.HALF_UP)
+        .toPlainString()
 }
 

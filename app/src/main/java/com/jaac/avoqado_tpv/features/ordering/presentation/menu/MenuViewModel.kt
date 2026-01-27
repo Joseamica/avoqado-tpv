@@ -1193,17 +1193,25 @@ class MenuViewModel @Inject constructor(
             }
 
             try {
+                val resolvedOrderId = orderSyncCoordinator.resolveOrderId(order.id)
+                val effectiveOrder = if (resolvedOrderId != order.id) {
+                    Timber.w("⚠️ [Order Remap] addItem remapped orderId ${order.id} → $resolvedOrderId")
+                    order.copy(id = resolvedOrderId)
+                } else {
+                    order
+                }
+
                 // ✅ STEP 1: Calculate price
                 val modifiersTotal = modifiers.sumOf { it.priceAdjustment }
                 val unitPrice = product.price + modifiersTotal
                 val totalPrice = unitPrice * BigDecimal(quantity.toString())
 
                 Timber.d("🛒 [Local-First] Adding item to Room DB: ${product.name} x$quantity")
-                Timber.d("➕ [VM-DEBUG] addItem() CALLING addItemToLocalOrder | orderId=${order.id} | timestamp=${System.currentTimeMillis()}")
+                Timber.d("➕ [VM-DEBUG] addItem() CALLING addItemToLocalOrder | orderId=${effectiveOrder.id} | timestamp=${System.currentTimeMillis()}")
 
                 // ✅ STEP 2: Add to Room DB (INSTANT - 0ms latency)
                 val localItemId = orderSyncCoordinator.addItemToLocalOrder(
-                    orderId = order.id,
+                    orderId = effectiveOrder.id,
                     productId = product.id,
                     productName = product.name,
                     quantity = quantity,
@@ -1215,7 +1223,7 @@ class MenuViewModel @Inject constructor(
                 // ✅ STEP 3: Update UI state (optimistic update)
                 val newItem = OrderItem(
                     id = localItemId,
-                    orderId = order.id,
+                    orderId = effectiveOrder.id,
                     productId = product.id,
                     productName = product.name,
                     productSku = product.sku,
@@ -1229,7 +1237,7 @@ class MenuViewModel @Inject constructor(
                     sentToKitchenAt = null
                 )
 
-                val updatedOrder = recalculateOrder(order.copy(items = order.items + newItem))
+                val updatedOrder = recalculateOrder(effectiveOrder.copy(items = effectiveOrder.items + newItem))
                 updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts with order.discounts
 
                 // 🔍 DEBUG: Item added details
@@ -1251,8 +1259,8 @@ class MenuViewModel @Inject constructor(
                 Timber.i("═══════════════════════════════════════════════════════════")
 
                 // ✅ STEP 4: Schedule debounced sync (2 seconds)
-                orderSyncCoordinator.scheduleSync(order.id)
-                Timber.d("⏱️ [Sync] Scheduled debounced sync for order: ${order.id}")
+                orderSyncCoordinator.scheduleSync(effectiveOrder.id)
+                Timber.d("⏱️ [Sync] Scheduled debounced sync for order: ${effectiveOrder.id}")
 
                 // 🎯 Result: User sees item added INSTANTLY (0ms)
                 // Backend sync happens automatically 2 seconds later (or sooner if user sends to kitchen)

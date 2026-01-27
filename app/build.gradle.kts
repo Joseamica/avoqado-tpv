@@ -47,7 +47,6 @@ android {
 
     // ⭐ PRODUCTION MIGRATION (2025-11-19): Build Variants for Sandbox + Production
     flavorDimensions += "environment"
-
     productFlavors {
         create("sandbox") {
             dimension = "environment"

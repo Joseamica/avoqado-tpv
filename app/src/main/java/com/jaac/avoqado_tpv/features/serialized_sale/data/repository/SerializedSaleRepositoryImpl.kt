@@ -159,10 +159,12 @@ class SerializedSaleRepositoryImpl @Inject constructor(
         price: BigDecimal,
         paymentMethodId: String?,
         notes: String?,
-        terminalId: String?
+        terminalId: String?,
+        isPortabilidad: Boolean,
+        skipProofOfSale: Boolean
     ): Result<QuickSellResult> {
         return try {
-            Log.d(TAG, "Quick sell: $serialNumber, price: $price, category: $categoryId, terminalId: $terminalId")
+            Log.d(TAG, "Quick sell: $serialNumber, price: $price, category: $categoryId, terminalId: $terminalId, portabilidad: $isPortabilidad")
 
             val request = QuickSellRequestDto(
                 serialNumber = serialNumber,
@@ -170,7 +172,9 @@ class SerializedSaleRepositoryImpl @Inject constructor(
                 price = price.toDouble(),
                 paymentMethodId = paymentMethodId,
                 notes = notes,
-                terminalId = terminalId
+                terminalId = terminalId,
+                isPortabilidad = isPortabilidad,
+                skipProofOfSale = skipProofOfSale
             )
 
             val response = apiService.quickSellSerializedItem(request)

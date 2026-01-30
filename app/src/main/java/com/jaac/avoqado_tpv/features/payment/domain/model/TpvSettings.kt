@@ -57,7 +57,9 @@ data class TpvSettings(
     val kioskDefaultMerchantId: String? = null,
     // Home screen button visibility (controlled from dashboard)
     val showQuickPayment: Boolean = true,
-    val showOrderManagement: Boolean = true
+    val showOrderManagement: Boolean = true,
+    // Crypto payment option (B4Bit integration)
+    val showCryptoOption: Boolean = false
 ) {
     companion object {
         /**

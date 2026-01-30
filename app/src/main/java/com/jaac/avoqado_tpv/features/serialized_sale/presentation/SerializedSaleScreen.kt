@@ -38,6 +38,7 @@ import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.CategoryWithSt
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
+import com.jaac.avoqado_tpv.core.presentation.components.AmountInputBottomSheet
 import timber.log.Timber
 
 /**
@@ -60,7 +61,7 @@ import timber.log.Timber
 @Composable
 fun SerializedSaleScreen(
     onNavigateBack: () -> Unit,
-    onNavigateToPayment: (orderId: String, orderTotal: String) -> Unit,
+    onNavigateToPayment: (orderId: String, orderTotal: String, skipProofOfSale: Boolean) -> Unit,
     resetOnEnter: Boolean = false,
     viewModel: SerializedSaleViewModel = hiltViewModel()
 ) {
@@ -78,6 +79,9 @@ fun SerializedSaleScreen(
 
     // Create category dialog state
     var showCreateCategoryDialog by remember { mutableStateOf(false) }
+
+    // Amount input dialog state
+    var showAmountInput by remember { mutableStateOf(false) }
 
     // Log UI state changes for debugging
     LaunchedEffect(uiState) {
@@ -310,38 +314,115 @@ fun SerializedSaleScreen(
                                 )
                                 Spacer(modifier = Modifier.height(Spacing.Space1))
 
-                                OutlinedTextField(
-                                    value = uiState.enteredPrice,
-                                    onValueChange = viewModel::onPriceChanged,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text("Precio (MXN)") },
-                                    leadingIcon = {
+                                // Clickable price display — opens numpad dialog
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { showAmountInput = true },
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = androidx.compose.foundation.BorderStroke(
+                                        1.dp,
+                                        if (uiState.enteredPrice.isNotEmpty())
+                                            MaterialTheme.colorScheme.primary
+                                        else
+                                            MaterialTheme.colorScheme.outline
+                                    ),
+                                    color = MaterialTheme.colorScheme.surface
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
                                         Text(
-                                            "$",
-                                            style = MaterialTheme.typography.titleLarge
+                                            text = if (uiState.enteredPrice.isNotEmpty())
+                                                "$${uiState.enteredPrice}"
+                                            else
+                                                "$0",
+                                            style = MaterialTheme.typography.headlineMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (uiState.enteredPrice.isNotEmpty())
+                                                MaterialTheme.colorScheme.onSurface
+                                            else
+                                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                                         )
-                                    },
-                                    keyboardOptions = KeyboardOptions(
-                                        keyboardType = KeyboardType.Decimal,
-                                        imeAction = ImeAction.Done
-                                    ),
-                                    keyboardActions = KeyboardActions(
-                                        onDone = { focusManager.clearFocus() }
-                                    ),
-                                    singleLine = true,
-                                    textStyle = MaterialTheme.typography.headlineMedium
-                                )
+                                        Spacer(modifier = Modifier.weight(1f))
+                                        Icon(
+                                            Icons.Default.Edit,
+                                            contentDescription = "Editar precio",
+                                            modifier = Modifier.size(20.dp),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
 
-                                Spacer(modifier = Modifier.height(Spacing.Space4))
+                                Spacer(modifier = Modifier.height(Spacing.Space3))
+
+                                // Portabilidad toggle (only when backend enables it)
+                                if (uiState.showPortabilidadToggle) {
+                                    Surface(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = if (uiState.isPortabilidad)
+                                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                                        else
+                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                        tonalElevation = if (uiState.isPortabilidad) 2.dp else 0.dp
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable { viewModel.onPortabilidadToggled(!uiState.isPortabilidad) }
+                                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.SwapHoriz,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(20.dp),
+                                                    tint = if (uiState.isPortabilidad)
+                                                        MaterialTheme.colorScheme.primary
+                                                    else
+                                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                                Column {
+                                                    Text(
+                                                        text = "Portabilidad",
+                                                        style = MaterialTheme.typography.titleSmall,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                    Text(
+                                                        text = "Conserva su número actual",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            }
+                                            Switch(
+                                                checked = uiState.isPortabilidad,
+                                                onCheckedChange = viewModel::onPortabilidadToggled
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(Spacing.Space3))
+                                }
 
                                 // Confirm sale button
                                 Button(
                                     onClick = {
                                         focusManager.clearFocus()
+                                        val skipProof = uiState.isPortabilidad
                                         viewModel.onConfirmSale { result ->
                                             onNavigateToPayment(
                                                 result.orderId,
-                                                result.total.toPlainString()
+                                                result.total.toPlainString(),
+                                                skipProof
                                             )
                                         }
                                     },
@@ -353,7 +434,10 @@ fun SerializedSaleScreen(
                                     Icon(Icons.Default.Check, contentDescription = null)
                                     Spacer(modifier = Modifier.width(Spacing.Space2))
                                     Text(
-                                        text = "Vender $${uiState.enteredPrice.ifEmpty { "0" }}",
+                                        text = if (uiState.isPortabilidad)
+                                            "Portabilidad $${uiState.enteredPrice.ifEmpty { "0" }}"
+                                        else
+                                            "Vender $${uiState.enteredPrice.ifEmpty { "0" }}",
                                         style = MaterialTheme.typography.titleMedium
                                     )
                                 }
@@ -401,6 +485,16 @@ fun SerializedSaleScreen(
                 }
             }
         }
+
+        // Amount Input Bottom Sheet (numpad dialog)
+        AmountInputBottomSheet(
+            visible = showAmountInput,
+            onDismiss = { showAmountInput = false },
+            onConfirm = { amount ->
+                viewModel.onPriceChanged(amount)
+                showAmountInput = false
+            }
+        )
 
         // Create Category Dialog
         if (showCreateCategoryDialog) {

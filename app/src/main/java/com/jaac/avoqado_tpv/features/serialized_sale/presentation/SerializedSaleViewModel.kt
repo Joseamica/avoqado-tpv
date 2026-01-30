@@ -51,6 +51,25 @@ class SerializedSaleViewModel @Inject constructor(
 
     init {
         loadCategories()
+        loadPortabilidadConfig()
+    }
+
+    /**
+     * Check if portabilidad toggle should be shown based on module config.
+     */
+    private fun loadPortabilidadConfig() {
+        val config = modulesRepository.getModuleConfig(ModulesRepository.MODULE_SERIALIZED_INVENTORY)
+        val enabled = config?.features?.enablePortabilidad == true
+        Timber.d("📦 [SerializedSale] Portabilidad config: enablePortabilidad=$enabled")
+        _uiState.update { it.copy(showPortabilidadToggle = enabled) }
+    }
+
+    /**
+     * Toggle portabilidad mode on/off.
+     */
+    fun onPortabilidadToggled(enabled: Boolean) {
+        Timber.d("📦 [SerializedSale] Portabilidad toggled: $enabled")
+        _uiState.update { it.copy(isPortabilidad = enabled) }
     }
 
     /**
@@ -253,7 +272,9 @@ class SerializedSaleViewModel @Inject constructor(
                 serialNumber = state.currentSerialNumber,
                 categoryId = categoryId,
                 price = price,
-                terminalId = terminalId
+                terminalId = terminalId,
+                isPortabilidad = state.isPortabilidad,
+                skipProofOfSale = state.isPortabilidad
             )
                 .onSuccess { result ->
                     Timber.d("Quick sell success: ${result.orderNumber}, terminalId: $terminalId")
@@ -284,7 +305,8 @@ class SerializedSaleViewModel @Inject constructor(
     fun resetForNewScan() {
         _uiState.update {
             SerializedSaleUiState(
-                categories = it.categories // Keep categories loaded
+                categories = it.categories, // Keep categories loaded
+                showPortabilidadToggle = it.showPortabilidadToggle // Keep config
             )
         }
     }

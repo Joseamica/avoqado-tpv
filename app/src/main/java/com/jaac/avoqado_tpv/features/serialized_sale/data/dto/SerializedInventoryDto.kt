@@ -63,7 +63,9 @@ data class QuickSellRequestDto(
     val price: Double, // Price in pesos
     val paymentMethodId: String? = null,
     val notes: String? = null,
-    val terminalId: String? = null // Terminal that created this order (sales attribution)
+    val terminalId: String? = null, // Terminal that created this order (sales attribution)
+    val isPortabilidad: Boolean = false,
+    val skipProofOfSale: Boolean = false
 )
 
 /**

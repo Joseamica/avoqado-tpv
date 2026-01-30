@@ -94,4 +94,10 @@ interface MerchantRepository {
      * @param merchants List of merchant accounts with backend CUIDs (merchantAccountId)
      */
     fun updateMerchants(merchants: List<MerchantAccount>)
+
+    /**
+     * Whether the current merchants are fallback/hardcoded accounts
+     * (not loaded from backend)
+     */
+    fun isUsingFallback(): Boolean
 }

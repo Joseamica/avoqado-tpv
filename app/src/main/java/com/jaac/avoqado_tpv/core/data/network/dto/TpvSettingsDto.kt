@@ -81,7 +81,11 @@ data class TpvSettingsDto(
     val showQuickPayment: Boolean?,
 
     @SerializedName("showOrderManagement")
-    val showOrderManagement: Boolean?
+    val showOrderManagement: Boolean?,
+
+    // Crypto payment option (B4Bit integration)
+    @SerializedName("showCryptoOption")
+    val showCryptoOption: Boolean?
 )
 
 /**
@@ -111,7 +115,8 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     kioskDefaultMerchantId = kioskDefaultMerchantId,
     // Home screen buttons default to enabled
     showQuickPayment = showQuickPayment ?: true,
-    showOrderManagement = showOrderManagement ?: true
+    showOrderManagement = showOrderManagement ?: true,
+    showCryptoOption = showCryptoOption ?: false
 )
 
 /**
@@ -134,7 +139,8 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     kioskModeEnabled = kioskModeEnabled,
     kioskDefaultMerchantId = kioskDefaultMerchantId,
     showQuickPayment = showQuickPayment,
-    showOrderManagement = showOrderManagement
+    showOrderManagement = showOrderManagement,
+    showCryptoOption = showCryptoOption
 )
 
 /**

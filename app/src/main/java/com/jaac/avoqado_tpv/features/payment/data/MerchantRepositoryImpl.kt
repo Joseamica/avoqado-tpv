@@ -60,10 +60,15 @@ class MerchantRepositoryImpl @Inject constructor(
     // In-memory cache (StateFlow for reactive updates)
     private val _merchants = MutableStateFlow<List<MerchantAccount>>(emptyList())
 
+    // Whether current merchants are fallback (not from backend)
+    @Volatile
+    private var _isFallback = true
+
     init {
         // Initialize with default sandbox accounts (fallback)
         // These will be replaced when terminal config is fetched from backend
         _merchants.value = MerchantAccount.getDefaultSandboxAccounts()
+        _isFallback = true
         Timber.d("📋 [MerchantRepository] Initialized with ${_merchants.value.size} sandbox accounts (fallback)")
         Timber.d("   ⚠️  These will be replaced by backend config on app startup")
     }
@@ -148,8 +153,11 @@ class MerchantRepositoryImpl @Inject constructor(
      *
      * @param merchants List of merchant accounts from backend with CUIDs
      */
+    override fun isUsingFallback(): Boolean = _isFallback
+
     override fun updateMerchants(merchants: List<MerchantAccount>) {
         _merchants.value = merchants
+        _isFallback = false
         Timber.i("📋 [MerchantRepository] Replaced with ${merchants.size} merchants from backend")
         merchants.forEach { merchant ->
             Timber.d("   ✅ ${merchant.displayName} (${merchant.serialNumber})")

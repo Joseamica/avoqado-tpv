@@ -473,15 +473,10 @@ class BluetoothPaymentForegroundService : Service() {
         )
         _connectedDevices.value = updatedDevices
 
-        // 🔵 PERSIST TO KNOWN DEVICES (Square/Toast Pattern)
-        // This survives APK updates and app restarts
-        secureStorage.upsertKnownBleDevice(
-            address = deviceAddress,
-            name = deviceName,
-            deviceId = null,
-            incrementConnection = true,
-            approvedIfNew = false
-        )
+        // NOTE: We don't persist to "known devices" yet.
+        // iOS uses random BLE addresses and can rotate before CLIENT_INFO arrives,
+        // which would create duplicates. We persist only after receiving CLIENT_INFO
+        // with a stable deviceId.
 
         // Legacy single-device support (uses first connected device)
         if (_connectedDeviceAddress.value == null) {
@@ -552,8 +547,14 @@ class BluetoothPaymentForegroundService : Service() {
             )
         _connectedDevices.value = updatedDevices
 
-        // Update known devices storage without increasing connection count
-        secureStorage.updateKnownBleDeviceInfo(deviceAddress, deviceId, resolvedName)
+        // Persist/update known devices with stable deviceId (avoid duplicates)
+        secureStorage.upsertKnownBleDevice(
+            address = deviceAddress,
+            name = resolvedName,
+            deviceId = deviceId,
+            incrementConnection = true,
+            approvedIfNew = false
+        )
 
         if (!approved) {
             _authorizationEvents.tryEmit(

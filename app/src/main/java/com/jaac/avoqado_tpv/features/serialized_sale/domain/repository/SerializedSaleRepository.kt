@@ -70,7 +70,9 @@ interface SerializedSaleRepository {
         price: BigDecimal,
         paymentMethodId: String? = null,
         notes: String? = null,
-        terminalId: String? = null
+        terminalId: String? = null,
+        isPortabilidad: Boolean = false,
+        skipProofOfSale: Boolean = false
     ): Result<QuickSellResult>
 
     /**

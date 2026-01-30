@@ -125,7 +125,11 @@ data class SerializedSaleUiState(
     val enteredPrice: String = "",
     val error: String? = null,
     val sellResult: QuickSellResult? = null,
-    val currentSerialNumber: String = ""
+    val currentSerialNumber: String = "",
+    /** Whether the portabilidad toggle is visible (backend-controlled) */
+    val showPortabilidadToggle: Boolean = false,
+    /** Whether the current sale is a portabilidad (skips proof-of-sale) */
+    val isPortabilidad: Boolean = false
 ) {
     val canProceedToSell: Boolean
         get() = scanResult != null &&

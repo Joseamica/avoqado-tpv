@@ -101,6 +101,7 @@ fun PaymentScreen(
     externalRating: Int? = null,  // 🔵 External device rating (1-5)
     externalSkipReview: Boolean = false,  // 🔵 External device: skip rating/tip screens
     skipLocalOrderValidation: Boolean = false,  // 📱 SERIALIZED SALE: Order exists only on backend, skip local lookup AND sync
+    skipProofOfSale: Boolean = false,  // 📱 PORTABILIDAD: Skip proof-of-sale camera FAB on payment success
     // ⭐ Split payment params (from SplitByPersonScreen or SplitByProductScreen)
     splitType: String? = null,  // EQUALPARTS, PERPRODUCT, CUSTOMAMOUNT, FULLPAYMENT
     equalPartsPartySize: Int? = null,  // Total people for EQUALPARTS mode
@@ -186,6 +187,13 @@ fun PaymentScreen(
     // Pass kioskStaffId for sales attribution (commissions/tips)
     LaunchedEffect(isKioskPayment, kioskStaffId) {
         viewModel.setKioskPaymentMode(isKioskPayment, kioskStaffId)
+    }
+
+    // 📱 PORTABILIDAD: Skip proof-of-sale camera on payment success
+    LaunchedEffect(skipProofOfSale) {
+        if (skipProofOfSale) {
+            viewModel.setSkipProofOfSale(true)
+        }
     }
 
     // 📊 Dynamic step counter based on TPV settings
@@ -464,9 +472,8 @@ fun PaymentScreen(
                         },
                         // 🥝 KIOSK MODE: Cash is enabled (customers may want to pay in cash)
                         showCashOption = true,
-                        // 🪙 Crypto option: Enable via TpvSettings flag (default false for now)
-                        // TODO: Add tpvSettings.showCryptoOption when ready to enable in production
-                        showCryptoOption = true,  // Enable for testing - set to tpvSettings flag later
+                        // 🪙 Crypto option: controlled by TpvSettings from dashboard
+                        showCryptoOption = tpvSettings?.showCryptoOption ?: false,
                         // 🥝 KIOSK MODE: Hide merchant selector when admin pre-configured a default merchant
                         hideAccountSelector = hideKioskMerchantSelector
                     )

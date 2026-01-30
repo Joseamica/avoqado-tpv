@@ -38,7 +38,8 @@ import com.jaac.avoqado_tpv.core.presentation.viewmodels.ConnectionState
  *
  * **States:**
  * - Connected: Banner hidden
- * - Disconnected: Orange banner "Sin conexión" + Reintentar button
+ * - DisconnectedNoInternet: Orange banner "Sin conexión a internet" + Reintentar button
+ * - DisconnectedServerDown: Orange banner "Sin conexión al servidor" + Reintentar button
  * - Reconnecting: Orange banner "Reconectando..."
  * - Reconnected: Green banner briefly "Conectado"
  *
@@ -64,7 +65,12 @@ fun ConnectionBanner(
         modifier = modifier
     ) {
         when (state) {
-            is ConnectionState.Disconnected -> DisconnectedBanner(
+            is ConnectionState.DisconnectedNoInternet -> DisconnectedBanner(
+                message = "Sin conexión a internet",
+                onRetry = onRetry
+            )
+            is ConnectionState.DisconnectedServerDown -> DisconnectedBanner(
+                message = "Sin conexión al servidor",
                 onRetry = onRetry
             )
             is ConnectionState.Reconnecting -> ReconnectingBanner()
@@ -83,6 +89,7 @@ fun ConnectionBanner(
  */
 @Composable
 private fun DisconnectedBanner(
+    message: String = "Sin conexión a internet",
     onRetry: () -> Unit = {}
 ) {
     Row(
@@ -107,7 +114,7 @@ private fun DisconnectedBanner(
             Spacer(modifier = Modifier.width(8.dp))
 
             Text(
-                text = "Sin conexión",
+                text = message,
                 style = MaterialTheme.typography.labelMedium,
                 color = Color.White,
                 fontWeight = FontWeight.Medium
@@ -208,7 +215,7 @@ private fun ReconnectedBanner() {
 private fun ConnectionBannerDisconnectedPreview() {
     AvoqadoTheme {
         ConnectionBanner(
-            state = ConnectionState.Disconnected,
+            state = ConnectionState.DisconnectedNoInternet,
             onRetry = {}
         )
     }

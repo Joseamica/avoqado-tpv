@@ -246,6 +246,9 @@ class PaymentViewModel @Inject constructor(
     private val _showProofOfSale = MutableStateFlow(false)
     val showProofOfSale: StateFlow<Boolean> = _showProofOfSale.asStateFlow()
 
+    // 📱 PORTABILIDAD: When true, skip proof-of-sale camera FAB on payment success
+    private var _skipProofOfSale = false
+
     // 📸 Proof-of-sale upload progress (UI overlay)
     private val _isUploadingProofOfSale = MutableStateFlow(false)
     val isUploadingProofOfSale: StateFlow<Boolean> = _isUploadingProofOfSale.asStateFlow()
@@ -761,6 +764,15 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
+     * 📱 PORTABILIDAD: Skip proof-of-sale camera FAB on payment success
+     */
+    fun setSkipProofOfSale(skip: Boolean) {
+        _skipProofOfSale = skip
+        Timber.d("📱 [Portabilidad] skipProofOfSale=$skip")
+        updateSessionSnapshot(reason = "setSkipProofOfSale")
+    }
+
+    /**
      * 🧾 Update immutable PaymentSession snapshot from current ViewModel state.
      *
      * NOTE: This is read-only today (no behavior changes), used for safe refactor.
@@ -825,7 +837,7 @@ class PaymentViewModel @Inject constructor(
         if (settings.showTipScreen) features += PaymentFeature.TIP_COLLECTION
         if (settings.showReviewScreen) features += PaymentFeature.RATING_COLLECTION
         if (settings.showVerificationScreen || effectiveVerificationContext != null) features += PaymentFeature.PRE_VERIFICATION
-        if (_isSerializedInventoryActive.value) features += PaymentFeature.PROOF_OF_SALE
+        if (_isSerializedInventoryActive.value && !_skipProofOfSale) features += PaymentFeature.PROOF_OF_SALE
 
         val mode = when {
             effectiveRefundContext != null -> PaymentMode.REFUND
@@ -3708,6 +3720,7 @@ class PaymentViewModel @Inject constructor(
         _state.value = PaymentState.Idle
         isSkipReviewFlow = false
         _flowOrigin.value = PaymentFlowOrigin.FAST
+        _skipProofOfSale = false
 
         // 🪙 Clear crypto payment state
         currentCryptoRequestId = null

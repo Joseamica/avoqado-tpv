@@ -125,6 +125,9 @@ class SecureStorage @Inject constructor(
         private const val KEY_TPV_SHOW_QUICK_PAYMENT = "tpv_show_quick_payment"
         private const val KEY_TPV_SHOW_ORDER_MANAGEMENT = "tpv_show_order_management"
 
+        // Crypto payment option (B4Bit integration)
+        private const val KEY_TPV_SHOW_CRYPTO_OPTION = "tpv_show_crypto_option"
+
         // Module cache keys
         private const val KEY_CACHED_MODULES = "cached_modules"
 
@@ -930,8 +933,10 @@ class SecureStorage @Inject constructor(
             // Home screen button visibility
             putBoolean(KEY_TPV_SHOW_QUICK_PAYMENT, settings.showQuickPayment)
             putBoolean(KEY_TPV_SHOW_ORDER_MANAGEMENT, settings.showOrderManagement)
+            // Crypto payment option
+            putBoolean(KEY_TPV_SHOW_CRYPTO_OPTION, settings.showCryptoOption)
         }.apply()
-        Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, showVerification=${settings.showVerificationScreen}, enableShifts=${settings.enableShifts}, kioskEnabled=${settings.kioskModeEnabled}, showQuickPayment=${settings.showQuickPayment}, showOrderManagement=${settings.showOrderManagement}")
+        Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, showVerification=${settings.showVerificationScreen}, enableShifts=${settings.enableShifts}, kioskEnabled=${settings.kioskModeEnabled}, showQuickPayment=${settings.showQuickPayment}, showOrderManagement=${settings.showOrderManagement}, showCrypto=${settings.showCryptoOption}")
     }
 
     /**
@@ -979,7 +984,9 @@ class SecureStorage @Inject constructor(
             kioskDefaultMerchantId = encryptedPrefs.getString(KEY_TPV_KIOSK_DEFAULT_MERCHANT_ID, null),
             // Home screen button visibility (default: enabled)
             showQuickPayment = encryptedPrefs.getBoolean(KEY_TPV_SHOW_QUICK_PAYMENT, true),
-            showOrderManagement = encryptedPrefs.getBoolean(KEY_TPV_SHOW_ORDER_MANAGEMENT, true)
+            showOrderManagement = encryptedPrefs.getBoolean(KEY_TPV_SHOW_ORDER_MANAGEMENT, true),
+            // Crypto payment option (default: disabled)
+            showCryptoOption = encryptedPrefs.getBoolean(KEY_TPV_SHOW_CRYPTO_OPTION, false)
         )
     }
 
@@ -1011,6 +1018,8 @@ class SecureStorage @Inject constructor(
             // Home screen button visibility
             remove(KEY_TPV_SHOW_QUICK_PAYMENT)
             remove(KEY_TPV_SHOW_ORDER_MANAGEMENT)
+            // Crypto payment option
+            remove(KEY_TPV_SHOW_CRYPTO_OPTION)
         }.apply()
         Timber.d("TPV settings cleared")
     }

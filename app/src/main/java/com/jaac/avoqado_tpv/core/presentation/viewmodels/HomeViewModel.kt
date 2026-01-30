@@ -27,8 +27,12 @@ import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
 import com.jaac.avoqado_tpv.core.data.local.mappers.toEntities
 import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryEntities
 import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
+import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
+import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleSalesGoal
 import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalPeriod
+import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -70,7 +74,12 @@ class HomeViewModel @Inject constructor(
     private val productDao: ProductDao,
     private val productCategoryDao: ProductCategoryDao,
     // 🎯 Sales Goal API
-    private val apiService: ApiService
+    private val apiService: ApiService,
+    // 🔄 Connection restored events for auto-retry
+    private val connectionEventManager: ConnectionEventManager,
+    private val terminalConfigRepository: TerminalConfigRepository,
+    private val merchantRepository: MerchantRepository,
+    private val deviceInfoManager: DeviceInfoManager
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -153,6 +162,8 @@ class HomeViewModel @Inject constructor(
         warmUpProductCache()
         // 🎯 Fetch sales goal for progress bar display
         fetchSalesGoal()
+        // 🔄 Listen for connection restored to re-fetch merchants if using fallback
+        listenForConnectionRestored()
     }
 
     /**
@@ -415,14 +426,38 @@ class HomeViewModel @Inject constructor(
                         Timber.e(error, "❌ [Blumon] SDK initialization failed")
                         _isBlumonInitializing.value = false
                         _isBlumonReady.value = false
-                        _blumonInitError.value = "Error al inicializar sistema de pagos. Intente reiniciar."
+                        _blumonInitError.value = when {
+                            error is java.net.UnknownHostException ||
+                            error.cause is java.net.UnknownHostException ||
+                            error is java.net.ConnectException ||
+                            error.cause is java.net.ConnectException ||
+                            error is java.net.SocketTimeoutException ||
+                            error.cause is java.net.SocketTimeoutException ||
+                            error.message?.contains("NetworkConnectionFailure", ignoreCase = true) == true ||
+                            error.message?.contains("UnknownHostException", ignoreCase = true) == true ->
+                                "Sin conexión a internet. Verifica tu conexión WiFi e intenta de nuevo."
+                            else ->
+                                "Error al inicializar sistema de pagos. Intente reiniciar."
+                        }
                     }
 
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Blumon] Unexpected error during SDK initialization")
                 _isBlumonInitializing.value = false
                 _isBlumonReady.value = false
-                _blumonInitError.value = "Error inesperado: ${e.message}"
+                _blumonInitError.value = when {
+                    e is java.net.UnknownHostException ||
+                    e.cause is java.net.UnknownHostException ||
+                    e is java.net.ConnectException ||
+                    e.cause is java.net.ConnectException ||
+                    e is java.net.SocketTimeoutException ||
+                    e.cause is java.net.SocketTimeoutException ||
+                    e.message?.contains("NetworkConnectionFailure", ignoreCase = true) == true ||
+                    e.message?.contains("UnknownHostException", ignoreCase = true) == true ->
+                        "Sin conexión a internet. Verifica tu conexión WiFi e intenta de nuevo."
+                    else ->
+                        "Error inesperado: ${e.message}"
+                }
             }
         }
     }
@@ -434,6 +469,53 @@ class HomeViewModel @Inject constructor(
     fun retryBlumonInit() {
         Timber.i("🔧 [Blumon] Retrying SDK initialization...")
         initializeBlumonSDK()
+    }
+
+    /**
+     * 🔄 Listen for connection restored events
+     *
+     * When connection is restored and merchants are still using fallback accounts,
+     * automatically re-fetch terminal config from backend and re-initialize SDK
+     * with real merchant accounts.
+     */
+    private fun listenForConnectionRestored() {
+        viewModelScope.launch {
+            connectionEventManager.connectionRestoredEvents.collect { event ->
+                Timber.i("🔄 [HomeViewModel] Connection restored (after ${event.attemptsBeforeReconnection} attempts)")
+
+                // Re-fetch merchants if still using fallback
+                if (merchantRepository.isUsingFallback()) {
+                    Timber.i("🔄 [HomeViewModel] Merchants are fallback - re-fetching from backend...")
+                    retryFetchMerchantsAndReinitSDK()
+                }
+            }
+        }
+    }
+
+    /**
+     * Re-fetch merchants from backend and re-initialize Blumon SDK
+     */
+    private fun retryFetchMerchantsAndReinitSDK() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val serialNumber = deviceInfoManager.getSerialNumber()
+                val configResult = terminalConfigRepository.fetchConfig(serialNumber)
+
+                configResult.onSuccess { (terminalInfo, merchantAccounts) ->
+                    Timber.i("✅ [HomeViewModel] Re-fetched ${merchantAccounts.size} merchants from backend")
+                    merchantRepository.updateMerchants(merchantAccounts)
+                    secureStorage.saveVenueType(terminalInfo.venueType)
+
+                    // Re-init SDK with real merchants if it was initialized with fallback
+                    Timber.i("🔧 [HomeViewModel] Re-initializing Blumon SDK with real merchants...")
+                    initializeBlumonSDK()
+                }.onFailure { error ->
+                    Timber.w(error, "⚠️ [HomeViewModel] Still can't fetch merchants from backend")
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [HomeViewModel] Error re-fetching merchants")
+            }
+        }
     }
 
     /**

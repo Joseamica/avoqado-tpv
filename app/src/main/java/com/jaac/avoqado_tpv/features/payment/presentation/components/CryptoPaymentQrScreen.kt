@@ -7,8 +7,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -109,31 +107,8 @@ fun CryptoPaymentQrScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Top section: Cancel button
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Start
-            ) {
-                IconButton(
-                    onClick = {
-                        Timber.i("🪙 [CRYPTO-QR] User cancelled crypto payment")
-                        onCancel()
-                    },
-                    modifier = Modifier
-                        .size(48.dp)
-                        .border(
-                            width = 1.dp,
-                            color = MaterialTheme.colorScheme.outline,
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Cancelar",
-                        tint = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
+            // Top spacer (cancel button removed)
+            Spacer(modifier = Modifier.height(48.dp))
 
             // Center section: QR code + amount
             Column(

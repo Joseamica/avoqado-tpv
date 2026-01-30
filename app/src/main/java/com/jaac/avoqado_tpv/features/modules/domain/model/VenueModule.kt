@@ -49,7 +49,8 @@ data class ModuleLabels(
 data class ModuleFeatures(
     val allowUnregisteredSale: Boolean = true,
     val requireCategorySelection: Boolean = true,
-    val showStockCounts: Boolean = true
+    val showStockCounts: Boolean = true,
+    val enablePortabilidad: Boolean = false
 )
 
 /**

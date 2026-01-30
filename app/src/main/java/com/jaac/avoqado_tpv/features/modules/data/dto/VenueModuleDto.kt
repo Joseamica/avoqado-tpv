@@ -73,7 +73,10 @@ data class ModuleFeaturesDto(
     val requireCategorySelection: Boolean? = null,
 
     @SerializedName("showStockCounts")
-    val showStockCounts: Boolean? = null
+    val showStockCounts: Boolean? = null,
+
+    @SerializedName("enablePortabilidad")
+    val enablePortabilidad: Boolean? = null
 )
 
 data class ModuleUiDto(
@@ -159,7 +162,8 @@ fun ModuleLabelsDto.toDomain(): ModuleLabels = ModuleLabels(
 fun ModuleFeaturesDto.toDomain(): ModuleFeatures = ModuleFeatures(
     allowUnregisteredSale = allowUnregisteredSale ?: true,
     requireCategorySelection = requireCategorySelection ?: true,
-    showStockCounts = showStockCounts ?: true
+    showStockCounts = showStockCounts ?: true,
+    enablePortabilidad = enablePortabilidad ?: false
 )
 
 fun ModuleUiDto.toDomain(): ModuleUi = ModuleUi(
@@ -218,7 +222,8 @@ fun ModuleLabels.toDto(): ModuleLabelsDto = ModuleLabelsDto(
 fun ModuleFeatures.toDto(): ModuleFeaturesDto = ModuleFeaturesDto(
     allowUnregisteredSale = allowUnregisteredSale,
     requireCategorySelection = requireCategorySelection,
-    showStockCounts = showStockCounts
+    showStockCounts = showStockCounts,
+    enablePortabilidad = enablePortabilidad
 )
 
 fun ModuleUi.toDto(): ModuleUiDto = ModuleUiDto(

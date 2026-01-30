@@ -108,7 +108,8 @@ class ConnectionViewModel @Inject constructor(
                 // Adaptive interval based on connection state
                 val interval = when (_state.value) {
                     is ConnectionState.Connected -> 30_000L // 30s when connected
-                    is ConnectionState.Disconnected -> calculateBackoffDelay() // Exponential backoff
+                    is ConnectionState.DisconnectedNoInternet,
+                    is ConnectionState.DisconnectedServerDown -> calculateBackoffDelay() // Exponential backoff
                     is ConnectionState.Reconnecting -> 5_000L // 5s when reconnecting
                     else -> 10_000L // 10s default
                 }
@@ -182,7 +183,7 @@ class ConnectionViewModel @Inject constructor(
             Timber.w("⚠️ [Connection] No network connection")
             // Don't override Dismissed state - user dismissed banner
             if (!isDismissed) {
-                _state.value = ConnectionState.Disconnected
+                _state.value = ConnectionState.DisconnectedNoInternet
             }
             reconnectionAttempts++
             return
@@ -194,7 +195,7 @@ class ConnectionViewModel @Inject constructor(
 
             // ✅ FIX: Only show Reconnecting if we were previously disconnected
             // This prevents "banner flash" during routine checks when already connected
-            if (_state.value is ConnectionState.Disconnected) {
+            if (_state.value is ConnectionState.DisconnectedNoInternet || _state.value is ConnectionState.DisconnectedServerDown) {
                 _state.value = ConnectionState.Reconnecting
             }
 
@@ -237,7 +238,7 @@ class ConnectionViewModel @Inject constructor(
                     Timber.w("⚠️ [Connection] Backend unreachable: ${result.exception?.message}")
                     // Don't override Dismissed state - user dismissed banner
                     if (!isDismissed) {
-                        _state.value = ConnectionState.Disconnected
+                        _state.value = ConnectionState.DisconnectedServerDown
                     }
                     reconnectionAttempts++
                 }
@@ -246,7 +247,7 @@ class ConnectionViewModel @Inject constructor(
             Timber.e(e, "❌ [Connection] Check failed")
             // Don't override Dismissed state - user dismissed banner
             if (!isDismissed) {
-                _state.value = ConnectionState.Disconnected
+                _state.value = ConnectionState.DisconnectedServerDown
             }
             reconnectionAttempts++
         }
@@ -382,9 +383,14 @@ sealed class ConnectionState {
     data object Connected : ConnectionState()
 
     /**
-     * Disconnected from backend - Show warning banner
+     * No network connectivity (WiFi/mobile off) - Show "Sin conexión a internet"
      */
-    data object Disconnected : ConnectionState()
+    data object DisconnectedNoInternet : ConnectionState()
+
+    /**
+     * Network available but server unreachable - Show "Sin conexión al servidor"
+     */
+    data object DisconnectedServerDown : ConnectionState()
 
     /**
      * Attempting to reconnect - Show reconnecting banner

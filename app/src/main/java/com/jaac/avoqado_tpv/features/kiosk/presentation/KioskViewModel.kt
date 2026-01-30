@@ -199,10 +199,21 @@ class KioskViewModel @Inject constructor(
                 initializationManager.ensureInitialized(defaultMerchantPosId = targetMerchant.posId)
                     .onFailure { error ->
                         Timber.e(error, "🥝 [KIOSK-VM] ❌ Basic SDK initialization failed")
+                        val isNetworkError = error is java.net.UnknownHostException ||
+                            error.cause is java.net.UnknownHostException ||
+                            error is java.net.ConnectException ||
+                            error.cause is java.net.ConnectException ||
+                            error is java.net.SocketTimeoutException ||
+                            error.cause is java.net.SocketTimeoutException ||
+                            error.message?.contains("NetworkConnectionFailure", ignoreCase = true) == true ||
+                            error.message?.contains("UnknownHostException", ignoreCase = true) == true
                         _state.update { it.copy(
                             isBlumonInitializing = false,
                             isBlumonReady = false,
-                            blumonInitError = "Error al inicializar sistema de pagos. Intente reiniciar."
+                            blumonInitError = if (isNetworkError)
+                                "Sin conexión a internet. Verifica tu conexión WiFi e intenta de nuevo."
+                            else
+                                "Error al inicializar sistema de pagos. Intente reiniciar."
                         ) }
                         return@launch
                     }

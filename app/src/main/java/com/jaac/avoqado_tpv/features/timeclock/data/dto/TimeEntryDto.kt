@@ -27,7 +27,9 @@ data class TimeEntryDto(
     val editedBy: String?,
     val checkInPhotoUrl: String?, // Firebase Storage URL of clock-in photo (anti-fraud)
     val staff: StaffInfoDto?,
-    val breaks: List<TimeEntryBreakDto>?
+    val breaks: List<TimeEntryBreakDto>?,
+    val autoClockOut: Boolean?, // Was this entry auto-closed by the system?
+    val autoClockOutNote: String? // Reason for auto clock-out (e.g., "Hora de cierre: 03:00")
 )
 
 data class StaffInfoDto(
@@ -117,7 +119,9 @@ fun TimeEntryDto.toDomain(): TimeEntry {
         breakMinutes = breakMinutes ?: 0,
         status = parseStatus(status),
         checkInPhotoUrl = checkInPhotoUrl,
-        breaks = breaks?.map { it.toDomain() } ?: emptyList()
+        breaks = breaks?.map { it.toDomain() } ?: emptyList(),
+        autoClockOut = autoClockOut ?: false,
+        autoClockOutNote = autoClockOutNote
     )
 }
 

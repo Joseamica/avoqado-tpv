@@ -36,6 +36,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.activity.compose.BackHandler
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.InventoryScanResult
 import timber.log.Timber
@@ -73,17 +78,29 @@ fun SerializedInventoryScreen(
     // Snackbar state for feedback
     var lastScanFeedback by remember { mutableStateOf<String?>(null) }
 
-    // 🛡️ BackHandler to prevent accidental back navigation from physical scanner Enter key
-    // Enable when category is selected (scanner mode active) OR have items OR is camera scanning
-    // This prevents physical scanner's Enter key from being interpreted as back navigation
-    val shouldInterceptBack = uiState.selectedCategory != null || uiState.scannedCount > 0 || uiState.isScanning
-    BackHandler(enabled = shouldInterceptBack) {
+    // 🛡️ BackHandler ALWAYS enabled on this screen
+    // Prevents physical scanner's Enter key from being interpreted as back navigation
+    // User must explicitly tap back arrow button in TopAppBar to go back
+    BackHandler(enabled = true) {
         Timber.d("📦 BackHandler intercepted - category: ${uiState.selectedCategory?.name}, scannedCount: ${uiState.scannedCount}, isScanning: ${uiState.isScanning}")
-        // Don't navigate back automatically - user must explicitly tap back arrow button in TopAppBar
-        // This prevents physical scanner's Enter/back key events from causing navigation
+        // Don't navigate back - user must tap the back arrow explicitly
     }
 
     Scaffold(
+        modifier = Modifier.onPreviewKeyEvent { keyEvent ->
+            // 🔫 Safety net: Intercept ENTER/DPAD_CENTER from physical scanner
+            // When TextField loses focus, ENTER can activate the TopBar back button.
+            // Consuming it here prevents accidental navigation to WelcomeScreen.
+            // The TextField's onDone still works because KeyboardActions are handled
+            // by the IME layer, not the key event dispatch.
+            val isEnterKey = keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter
+            if (isEnterKey && keyEvent.type == KeyEventType.KeyUp) {
+                Timber.d("📦 Screen-level ENTER consumed (preventing accidental back navigation)")
+                true // Consume
+            } else {
+                false
+            }
+        },
         topBar = {
             AvoqadoTopBar(
                 title = registerLabel,
@@ -491,8 +508,16 @@ private fun InventoryFormContent(
                         }
                         physicalScannerInput = ""
                     }
+                    // 🔫 CRITICAL: Re-request focus on TextField after processing
+                    // Without this, focus moves to the TopBar back button, and the next
+                    // ENTER from the scanner activates it → navigates to WelcomeScreen
                     showKeyboardManually = false
                     keyboardController?.hide()
+                    try {
+                        focusRequester.requestFocus()
+                    } catch (e: Exception) {
+                        Timber.w("📦 Failed to re-request focus after scan: ${e.message}")
+                    }
                 }
             ),
             singleLine = true,

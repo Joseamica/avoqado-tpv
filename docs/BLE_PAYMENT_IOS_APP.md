@@ -1117,18 +1117,20 @@ La primera vez que instales una app de desarrollo, el iPad dirá:
 
 ---
 
-### 7.3 Enlace Bluetooth (Opcional)
+### 7.3 Enlace Bluetooth (Con PIN)
 
-En algunos iPads aparece un prompt de **enlace Bluetooth** con un código que
-dice algo como: *"Ingresa el código en Avoqado-TPV"*.
+Este flujo **requiere emparejamiento**. La primera vez verás un PIN en iOS
+y el TPV mostrará su diálogo de vínculo.
 
 **Importante:**
-- El **TPV acepta el PIN automáticamente** (no necesitas abrir ningún diálogo en el PAX).
-- Si el prompt aparece en iOS, solo **acepta en el iPad**.
-- Si no aparece ningún prompt, **es normal**: la conexión BLE funciona igual.
+- Ingresa el PIN en el TPV cuando se muestre el diálogo del sistema.
+- Una vez emparejado, **no debería volver a pedir PIN** (a menos que olvides el vínculo).
+- En Android puede aparecer “emparejar con null” — es normal (iOS no envía el nombre durante el enlace).
 
-Si el prompt se repite cada vez, usa **Dispositivos Externos → Olvidar dispositivo** en el TPV
-y vuelve a conectar desde la app iOS.
+**Si el prompt se repite:**
+- iPad: **Ajustes → Bluetooth → (i) → Olvidar**
+- TPV: **Dispositivos Externos → Olvidar dispositivo**
+- Vuelve a conectar desde la app iOS.
 
 ---
 
@@ -1220,21 +1222,12 @@ adb logcat -s BluetoothPaymentServer:* | grep "Advertising"
 
 ### ❌ Error: "Error de conexión"
 
-**Causa:** El enlace Bluetooth quedó incompleto (prompt cancelado o PIN no aceptado)
+**Causa:** El emparejamiento no se completó (PIN no ingresado o diálogo cancelado).
 
-**Solución 1 - Reintento rápido:**
-1. En iPad, si aparece el prompt de enlace, toca **Aceptar**
-2. No necesitas PIN en el PAX (se acepta automáticamente)
-3. Reintenta desde la app iOS → **Buscar Terminal PAX**
-
-**Si el diálogo del TPV NO aparece:**
-- Sal de **Dispositivos Externos** y vuelve a intentar desde la pantalla principal.
-- Esto evita que un modal interno bloquee el diálogo del sistema.
-
-**Solución 2 - Limpiar enlace anterior:**
-1. En PAX: **Dispositivos Externos** → selecciona el iPad → **Olvidar**
-2. (Solo si sigue fallando) En iPad: **Settings** → **Bluetooth** → (i) → **Forget**
-3. Reinicia ambos dispositivos y vuelve a conectar desde la app
+**Solución rápida (con PIN):**
+1. Reintenta y **ingresa el PIN** en el TPV cuando aparezca el diálogo.
+2. Si el diálogo no aparece en TPV, sal de **Dispositivos Externos** y vuelve a intentar desde Inicio.
+3. Si sigue fallando: iPad **Ajustes → Bluetooth → (i) → Olvidar**, y en TPV **Olvidar dispositivo**.
 
 ---
 

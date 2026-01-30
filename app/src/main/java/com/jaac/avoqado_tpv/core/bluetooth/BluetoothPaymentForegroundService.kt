@@ -108,6 +108,9 @@ class BluetoothPaymentForegroundService : Service() {
         private val _pairingEvents = MutableSharedFlow<PairingEvent>(extraBufferCapacity = 1)
         val pairingEvents: SharedFlow<PairingEvent> = _pairingEvents.asSharedFlow()
 
+        private val _authorizationEvents = MutableSharedFlow<AuthorizationEvent>(extraBufferCapacity = 1)
+        val authorizationEvents: SharedFlow<AuthorizationEvent> = _authorizationEvents.asSharedFlow()
+
         /**
          * Clear payment event after it's been consumed
          */
@@ -124,6 +127,20 @@ class BluetoothPaymentForegroundService : Service() {
          * Get connected device count
          */
         fun getConnectedDeviceCount(): Int = _connectedDevices.value.size
+
+        /**
+         * Update approval state for a connected device (by deviceId or address).
+         */
+        fun updateDeviceApproval(deviceId: String?, address: String, approved: Boolean) {
+            val updated = _connectedDevices.value.toMutableMap()
+            val entry = updated.entries.firstOrNull { entry ->
+                val info = entry.value
+                (!deviceId.isNullOrBlank() && info.deviceId == deviceId) || info.address == address
+            } ?: return
+
+            updated[entry.key] = entry.value.copy(approved = approved)
+            _connectedDevices.value = updated
+        }
     }
 
     /**
@@ -132,6 +149,8 @@ class BluetoothPaymentForegroundService : Service() {
     data class ConnectedDeviceInfo(
         val address: String,
         val name: String?,
+        val deviceId: String? = null,
+        val approved: Boolean = true,
         val connectedAt: Long = System.currentTimeMillis()
     )
 
@@ -375,9 +394,8 @@ class BluetoothPaymentForegroundService : Service() {
             Timber.i("🔵 [BLE-ForegroundService] Venue for handshake: $venueName (${venueId?.take(10)}...)")
 
             start(
-                onPaymentReceived = { request ->
-                    Timber.i("💰 [BLE-ForegroundService] Payment received: ${request.amountCents} cents")
-                    _paymentEvents.value = request
+                onPaymentReceived = { device, request ->
+                    handlePaymentReceived(device, request)
                 },
                 onDeviceConnected = { device ->
                     handleDeviceConnected(device)
@@ -423,6 +441,22 @@ class BluetoothPaymentForegroundService : Service() {
         }
         val deviceAddress = device.address
 
+        val allowMultipleDevices = secureStorage.getBleAllowMultipleDevices()
+        val hasOtherDevice = _connectedDevices.value.keys.any { it != deviceAddress }
+        if (!allowMultipleDevices && hasOtherDevice) {
+            Timber.w("🚫 [BLE-ForegroundService] Rejecting connection (multi-device disabled): $deviceAddress")
+            _authorizationEvents.tryEmit(
+                AuthorizationEvent(
+                    address = deviceAddress,
+                    deviceId = null,
+                    message = "Solo se permite 1 dispositivo conectado. Desconecta el actual o habilita múltiples.",
+                    isError = true
+                )
+            )
+            bleServer?.disconnectDevice(device)
+            return
+        }
+
         // NOTE: We do NOT call createBond() proactively here because:
         // 1. The device name may not be available yet (shows "null" in pairing dialog)
         // 2. iOS will naturally trigger pairing when it enables notifications
@@ -430,15 +464,24 @@ class BluetoothPaymentForegroundService : Service() {
 
         // Add to connected devices map
         val updatedDevices = _connectedDevices.value.toMutableMap()
+        val isApproved = secureStorage.isKnownBleDeviceApproved(deviceId = null, address = deviceAddress)
         updatedDevices[deviceAddress] = ConnectedDeviceInfo(
             address = deviceAddress,
-            name = deviceName
+            name = deviceName,
+            deviceId = null,
+            approved = isApproved
         )
         _connectedDevices.value = updatedDevices
 
         // 🔵 PERSIST TO KNOWN DEVICES (Square/Toast Pattern)
         // This survives APK updates and app restarts
-        secureStorage.addKnownBleDevice(deviceAddress, deviceName)
+        secureStorage.upsertKnownBleDevice(
+            address = deviceAddress,
+            name = deviceName,
+            deviceId = null,
+            incrementConnection = true,
+            approvedIfNew = false
+        )
 
         // Legacy single-device support (uses first connected device)
         if (_connectedDeviceAddress.value == null) {
@@ -488,6 +531,7 @@ class BluetoothPaymentForegroundService : Service() {
 
     private fun handleClientInfo(device: BluetoothDevice, info: BluetoothPaymentServer.ClientInfo) {
         val deviceAddress = device.address
+        val deviceId = info.deviceId
         val resolvedName = info.deviceName?.takeIf { it.isNotBlank() }
             ?: info.deviceModel?.takeIf { it.isNotBlank() }
 
@@ -499,12 +543,28 @@ class BluetoothPaymentForegroundService : Service() {
         // Update connected devices map with the new name
         val updatedDevices = _connectedDevices.value.toMutableMap()
         val existing = updatedDevices[deviceAddress]
+        val approved = secureStorage.isKnownBleDeviceApproved(deviceId, deviceAddress)
         updatedDevices[deviceAddress] = (existing ?: ConnectedDeviceInfo(deviceAddress, resolvedName))
-            .copy(name = resolvedName)
+            .copy(
+                name = resolvedName,
+                deviceId = deviceId,
+                approved = approved
+            )
         _connectedDevices.value = updatedDevices
 
         // Update known devices storage without increasing connection count
-        secureStorage.updateKnownBleDeviceName(deviceAddress, resolvedName)
+        secureStorage.updateKnownBleDeviceInfo(deviceAddress, deviceId, resolvedName)
+
+        if (!approved) {
+            _authorizationEvents.tryEmit(
+                AuthorizationEvent(
+                    address = deviceAddress,
+                    deviceId = deviceId,
+                    message = "Dispositivo pendiente de autorización. Autorízalo en 'Dispositivos Registrados'.",
+                    isError = false
+                )
+            )
+        }
 
         // Legacy single-device support
         if (_connectedDeviceAddress.value == deviceAddress) {
@@ -520,7 +580,35 @@ class BluetoothPaymentForegroundService : Service() {
             )
         }
 
-        Timber.i("✅ [BLE-ClientInfo] Updated device name for $deviceAddress → $resolvedName")
+        Timber.i("✅ [BLE-ClientInfo] Updated device name for $deviceAddress → $resolvedName (id=$deviceId)")
+    }
+
+    private fun handlePaymentReceived(device: BluetoothDevice?, request: BlePaymentRequest) {
+        val deviceAddress = device?.address
+        val info = deviceAddress?.let { _connectedDevices.value[it] }
+        val deviceId = info?.deviceId
+
+        val approved = if (deviceAddress != null) {
+            info?.approved ?: secureStorage.isKnownBleDeviceApproved(deviceId, deviceAddress)
+        } else {
+            false
+        }
+
+        if (!approved) {
+            Timber.w("🚫 [BLE-ForegroundService] Payment blocked - device not approved (${deviceAddress ?: "unknown"})")
+            _authorizationEvents.tryEmit(
+                AuthorizationEvent(
+                    address = deviceAddress,
+                    deviceId = deviceId,
+                    message = "Pago bloqueado: dispositivo no autorizado. Autorízalo en Dispositivos Registrados.",
+                    isError = true
+                )
+            )
+            return
+        }
+
+        Timber.i("💰 [BLE-ForegroundService] Payment received: ${request.amountCents} cents")
+        _paymentEvents.value = request
     }
 
     /**

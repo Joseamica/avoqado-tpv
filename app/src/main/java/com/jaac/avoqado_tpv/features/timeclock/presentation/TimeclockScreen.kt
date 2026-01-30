@@ -206,6 +206,14 @@ private fun PulseContent(
         // 1. Header Section (Staff Info)
         StaffHeader(state.staffName, state.totalHoursToday)
 
+        // Auto Clock-Out Notice - Show if last entry was auto-closed by system
+        val lastAutoClosedEntry = state.recentEntries.firstOrNull { it.autoClockOut }
+        if (lastAutoClosedEntry != null && state.currentEntry == null) {
+            AutoClockOutNotice(
+                note = lastAutoClosedEntry.autoClockOutNote ?: "Turno cerrado automáticamente"
+            )
+        }
+
         // 2. Hero Section (The Pulse Card) - No weight, let it size to content
         PulseStatusCard(
             status = status,
@@ -226,6 +234,38 @@ private fun PulseContent(
             onEndBreak = onEndBreak,
             onDone = onDone
         )
+    }
+}
+
+/**
+ * Notice banner shown when the user's last entry was auto-closed by the system.
+ * This informs the employee that the system automatically clocked them out.
+ */
+@Composable
+private fun AutoClockOutNotice(note: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.7f),
+        tonalElevation = 2.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Info,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier.size(20.dp)
+            )
+            Text(
+                text = note.removePrefix("[Sistema] "), // Clean up the note for display
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onTertiaryContainer
+            )
+        }
     }
 }
 
@@ -877,11 +917,57 @@ private fun PulseWorkingPreview() {
             state = TimeclockState.Ready(
                 staffId = "1", staffName = "Fernando",
                 currentEntry = TimeEntry(
-                    "1", "1", "Fernando", "1",
-                    LocalDateTime.now().minusHours(2).minusMinutes(15), null,
-                    "Waiter", null, 0, TimeEntryStatus.CLOCKED_IN, null, emptyList()
+                    id = "1",
+                    staffId = "1",
+                    staffName = "Fernando",
+                    venueId = "1",
+                    clockInTime = LocalDateTime.now().minusHours(2).minusMinutes(15),
+                    clockOutTime = null,
+                    jobRole = "Waiter",
+                    totalHours = null,
+                    breakMinutes = 0,
+                    status = TimeEntryStatus.CLOCKED_IN,
+                    checkInPhotoUrl = null,
+                    breaks = emptyList(),
+                    autoClockOut = false,
+                    autoClockOutNote = null
                 ),
-                recentEntries = emptyList(), totalHoursToday = BigDecimal.ZERO
+                recentEntries = emptyList(),
+                totalHoursToday = BigDecimal.ZERO
+            ),
+            {}, {}, {}, {}, {}
+        )
+    }
+}
+
+@Preview(name = "Pulse - Auto Clock Out Notice", showBackground = true, uiMode = Configuration.UI_MODE_NIGHT_NO)
+@Composable
+private fun PulseAutoClockOutPreview() {
+    AvoqadoTheme {
+        PulseContent(
+            state = TimeclockState.Ready(
+                staffId = "1",
+                staffName = "Fernando",
+                currentEntry = null, // Not clocked in
+                recentEntries = listOf(
+                    TimeEntry(
+                        id = "1",
+                        staffId = "1",
+                        staffName = "Fernando",
+                        venueId = "1",
+                        clockInTime = LocalDateTime.now().minusHours(14),
+                        clockOutTime = LocalDateTime.now().minusHours(2),
+                        jobRole = "Waiter",
+                        totalHours = BigDecimal("12.00"),
+                        breakMinutes = 30,
+                        status = TimeEntryStatus.CLOCKED_OUT,
+                        checkInPhotoUrl = null,
+                        breaks = emptyList(),
+                        autoClockOut = true,
+                        autoClockOutNote = "[Sistema] Salida automatica: Turno excedio 12 horas"
+                    )
+                ),
+                totalHoursToday = BigDecimal("12.00")
             ),
             {}, {}, {}, {}, {}
         )

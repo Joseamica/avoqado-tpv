@@ -261,12 +261,7 @@ class PaymentViewModel @Inject constructor(
 
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private var currentAmount: String = ""  // Amount in decimal format (e.g., "30.00") for UI display
-    private var currentAmountInCents: String = ""  // Amount in cents (e.g., "3000") for SDK calls
-    private var currentTip: String = "0.00"  // Tip amount in decimal format (e.g., "5.00")
-    private var currentTrack2: String = ""  // Track2 data extracted from chip/contactless
-    private var lastEmvIssuerCountry: String = ""  // 🌍 EMV tag 5F28 (Issuer Country Code) for international detection
-    private var currentRating: Int? = null  // Optional rating from user (1-5 stars)
+    // Track2 + EMV issuer country are stored in PaymentSession
 
     // ⭐ NEW: Payment context data for backend recording
     private var currentVenueId: String = ""  // Venue ID from auth context
@@ -276,30 +271,12 @@ class PaymentViewModel @Inject constructor(
     // 🪙 CRYPTO PAYMENT: Track pending B4Bit request for Socket.IO matching
     private var currentCryptoRequestId: String? = null  // B4Bit request ID (for matching webhook callback)
 
-    // 💸 REFUND SUPPORT: Track transaction type (SALE vs REFUND)
-    // Default to SALE for normal payments, set to REFUND in startRefund()
-    private var currentTransactionType: TransType = TransType.SALE
-    // Refund context (null for sales, set for refunds)
-    private var currentRefundContext: PaymentContext.RefundPayment? = null
+    // 💸 REFUND SUPPORT: Refund context now stored in PaymentSession (no mutable field)
 
-    // 🆕 Order context (for order payment with inventory deduction)
-    private var currentOrderId: String? = null  // Order ID (null = fast payment, non-null = order payment)
-    private var currentOrderNumber: String? = null  // Order number (for display in receipt)
-    private var skipLocalOrderValidation: Boolean = false  // 📱 SERIALIZED SALE: Skip local order lookup
-
-    // ⭐ Split payment params (from SplitByPersonScreen or SplitByProductScreen)
-    private var currentSplitType: String? = null  // EQUALPARTS, PERPRODUCT, CUSTOMAMOUNT, FULLPAYMENT
-    private var currentEqualPartsPartySize: Int? = null  // Total people for EQUALPARTS mode
-    private var currentEqualPartsPayedFor: Int? = null  // How many parts being paid now
-    private var currentPaidProductIds: List<String> = emptyList()  // Product IDs for PERPRODUCT mode
+    // 📱 SERIALIZED SALE: Skip local order lookup is tracked in PaymentSession.orderContext
     private var isSkipReviewFlow: Boolean = false  // 🧪 Skip rating/tip (test payment / serialized sale)
 
-    // 📸 PRE-payment verification data (captured BEFORE payment processing)
-    // Stored here after user completes VerifyingPrePayment step, then sent with payment to backend
-    private var prePaymentVerificationPhotos: List<String> = emptyList()
-    private var prePaymentVerificationBarcodes: List<ScannedProduct> = emptyList()
-    // 🔧 FIX: Store the order reference generated for verification (ensures consistent naming)
-    private var prePaymentOrderReference: String? = null
+    // 📸 PRE-payment verification data stored in PaymentSession.verificationContext
 
     // ⚡ Performance optimization flags (1GB RAM devices)
     private var pinDialogFlowsStarted = false  // Track if PIN dialog collectors are running
@@ -308,10 +285,7 @@ class PaymentViewModel @Inject constructor(
     // 🥝 KIOSK MODE: Deferred cash payment recording (McDonald's/Cinépolis pattern)
     // When true, cash payments go to AwaitingCashConfirmation state instead of recording immediately
     // Staff must confirm they received cash before payment is recorded
-    private var isKioskPayment: Boolean = false
-    // 🥝 Staff ID from kiosk session for sales attribution (commissions/tips)
-    // If set, used for `processedById` instead of authContext staffId
-    private var kioskStaffId: String? = null
+    // 🥝 Kiosk mode state is stored in PaymentSession
 
     // 🔒 CRITICAL: Signal when merchants are fully loaded (prevents race condition)
     // Used by skipTip()/submitTip() to await merchants before reading _merchants.value
@@ -802,71 +776,68 @@ class PaymentViewModel @Inject constructor(
         reason: String,
         amountOverride: String? = null,
         tipOverride: String? = null,
-        ratingOverride: Int? = null
+        ratingOverride: Int? = null,
+        orderContextOverride: OrderContext? = null,
+        splitContextOverride: SplitContext? = null,
+        kioskModeOverride: Boolean? = null,
+        kioskStaffIdOverride: String? = null,
+        refundContextOverride: PaymentContext.RefundPayment? = null,
+        refundContextClear: Boolean = false,
+        verificationContextOverride: VerificationContext? = null,
+        verificationContextClear: Boolean = false,
+        track2Override: String? = null,
+        track2Clear: Boolean = false,
+        emvIssuerCountryOverride: String? = null,
+        emvIssuerCountryClear: Boolean = false
     ) {
         val settings = tpvSettingsRepository.getCurrentSettings()
-        val amountValue = amountOverride ?: currentAmount
-        val tipValue = tipOverride ?: currentTip
-        val ratingValue = ratingOverride ?: currentRating
+        val amountValue = amountOverride ?: getAmountForFlow()
+        val tipValue = tipOverride ?: getTipForFlow()
+        val ratingValue = ratingOverride ?: getRatingForFlow()
 
-        val orderIdValue = currentOrderId
-        val orderNumberValue = currentOrderNumber
-        val splitTypeValue = currentSplitType
-        val splitPartySizeValue = currentEqualPartsPartySize
-        val splitPayedForValue = currentEqualPartsPayedFor
-        val paidProductIdsValue = currentPaidProductIds
+        val effectiveOrderContext = orderContextOverride ?: sessionSnapshot.orderContext
+        val effectiveSplitContext = splitContextOverride ?: sessionSnapshot.splitContext
+        val isSerializedFlow = effectiveOrderContext?.skipLocalOrderValidation == true
+        val effectiveKioskMode = kioskModeOverride ?: sessionSnapshot.isKioskPayment
+        val effectiveKioskStaffId = when {
+            kioskModeOverride == false -> null
+            kioskStaffIdOverride != null -> kioskStaffIdOverride
+            else -> sessionSnapshot.kioskStaffId
+        }
+        val effectiveRefundContext = when {
+            refundContextClear -> null
+            refundContextOverride != null -> refundContextOverride
+            else -> sessionSnapshot.refundContext
+        }
+        val effectiveVerificationContext = when {
+            verificationContextClear -> null
+            verificationContextOverride != null -> verificationContextOverride
+            else -> sessionSnapshot.verificationContext
+        }
+        val effectiveTrack2 = when {
+            track2Clear -> ""
+            track2Override != null -> track2Override
+            else -> sessionSnapshot.track2
+        }
+        val effectiveEmvIssuerCountry = when {
+            emvIssuerCountryClear -> ""
+            emvIssuerCountryOverride != null -> emvIssuerCountryOverride
+            else -> sessionSnapshot.emvIssuerCountry
+        }
 
         val features = mutableSetOf<PaymentFeature>()
-        if (isKioskPayment) features += PaymentFeature.KIOSK
-        if (skipLocalOrderValidation) features += PaymentFeature.SERIALIZED_INVENTORY
-        if (splitTypeValue != null) features += PaymentFeature.SPLIT
+        if (effectiveKioskMode) features += PaymentFeature.KIOSK
+        if (isSerializedFlow) features += PaymentFeature.SERIALIZED_INVENTORY
+        if (effectiveSplitContext != null) features += PaymentFeature.SPLIT
         if (settings.showTipScreen) features += PaymentFeature.TIP_COLLECTION
         if (settings.showReviewScreen) features += PaymentFeature.RATING_COLLECTION
-        if (settings.showVerificationScreen) features += PaymentFeature.PRE_VERIFICATION
+        if (settings.showVerificationScreen || effectiveVerificationContext != null) features += PaymentFeature.PRE_VERIFICATION
         if (_isSerializedInventoryActive.value) features += PaymentFeature.PROOF_OF_SALE
-        if (prePaymentVerificationPhotos.isNotEmpty() ||
-            prePaymentVerificationBarcodes.isNotEmpty() ||
-            prePaymentOrderReference != null
-        ) {
-            features += PaymentFeature.PRE_VERIFICATION
-        }
 
         val mode = when {
-            currentTransactionType == TransType.REFUND || currentRefundContext != null -> PaymentMode.REFUND
-            orderIdValue != null -> PaymentMode.ORDER
+            effectiveRefundContext != null -> PaymentMode.REFUND
+            effectiveOrderContext != null -> PaymentMode.ORDER
             else -> PaymentMode.FAST
-        }
-
-        val orderContext = orderIdValue?.let { orderId ->
-            OrderContext(
-                orderId = orderId,
-                orderNumber = orderNumberValue,
-                tableId = null,
-                skipLocalOrderValidation = skipLocalOrderValidation
-            )
-        }
-
-        val splitContext = splitTypeValue?.let { splitType ->
-            SplitContext(
-                type = SplitType.fromValue(splitType),
-                equalPartsPartySize = splitPartySizeValue,
-                equalPartsPayedFor = splitPayedForValue,
-                paidProductIds = paidProductIdsValue
-            )
-        }
-
-        val verificationContext = if (
-            prePaymentVerificationPhotos.isNotEmpty() ||
-            prePaymentVerificationBarcodes.isNotEmpty() ||
-            prePaymentOrderReference != null
-        ) {
-            VerificationContext(
-                photos = prePaymentVerificationPhotos,
-                barcodes = prePaymentVerificationBarcodes,
-                orderReference = prePaymentOrderReference
-            )
-        } else {
-            null
         }
 
         sessionSnapshot = PaymentSession(
@@ -876,14 +847,17 @@ class PaymentViewModel @Inject constructor(
             mode = mode,
             features = features,
             flowOrigin = _flowOrigin.value,
-            orderContext = orderContext,
-            splitContext = splitContext,
-            refundContext = currentRefundContext,
-            verificationContext = verificationContext,
+            orderContext = effectiveOrderContext,
+            splitContext = effectiveSplitContext,
+            refundContext = effectiveRefundContext,
+            verificationContext = effectiveVerificationContext,
             merchantAccountId = _currentMerchant.value?.merchantAccountId,
             merchantLocalId = _currentMerchant.value?.id,
-            kioskStaffId = kioskStaffId,
-            skipLocalOrderValidation = skipLocalOrderValidation
+            isKioskPayment = effectiveKioskMode,
+            kioskStaffId = effectiveKioskStaffId,
+            skipLocalOrderValidation = effectiveOrderContext?.skipLocalOrderValidation == true,
+            track2 = effectiveTrack2,
+            emvIssuerCountry = effectiveEmvIssuerCountry
         )
 
         _showProofOfSale.value = PaymentFeature.PROOF_OF_SALE in features
@@ -891,44 +865,18 @@ class PaymentViewModel @Inject constructor(
     }
 
     private fun getOrderIdForFlow(): String? {
-        val orderId = sessionSnapshot.orderContext?.orderId
-        if (orderId == null && currentOrderId != null) {
-            Timber.w("⚠️ [PaymentSession] OrderId missing in snapshot - backfilling from legacy state")
-            updateSessionSnapshot(reason = "backfillOrderContext")
-        }
-        return sessionSnapshot.orderContext?.orderId ?: currentOrderId
+        return sessionSnapshot.orderContext?.orderId
     }
 
     private fun getOrderNumberForFlow(): String? {
-        val orderNumber = sessionSnapshot.orderContext?.orderNumber
-        if (orderNumber == null && currentOrderNumber != null) {
-            Timber.w("⚠️ [PaymentSession] OrderNumber missing in snapshot - backfilling from legacy state")
-            updateSessionSnapshot(reason = "backfillOrderContext")
-        }
-        return sessionSnapshot.orderContext?.orderNumber ?: currentOrderNumber
+        return sessionSnapshot.orderContext?.orderNumber
     }
 
     private fun shouldSkipLocalValidation(): Boolean =
-        sessionSnapshot.skipLocalOrderValidation || skipLocalOrderValidation
+        sessionSnapshot.skipLocalOrderValidation
 
-    private fun getSplitContextForFlow(): SplitContext? {
-        val split = sessionSnapshot.splitContext
-        val splitTypeValue = currentSplitType
-        if (split == null && splitTypeValue != null) {
-            Timber.w("⚠️ [PaymentSession] SplitContext missing in snapshot - backfilling from legacy state")
-            updateSessionSnapshot(reason = "backfillSplitContext")
-        }
-        val updatedSplit = sessionSnapshot.splitContext
-        if (updatedSplit == null && splitTypeValue != null) {
-            return SplitContext(
-                type = SplitType.fromValue(splitTypeValue),
-                equalPartsPartySize = currentEqualPartsPartySize,
-                equalPartsPayedFor = currentEqualPartsPayedFor,
-                paidProductIds = currentPaidProductIds
-            )
-        }
-        return updatedSplit
-    }
+    private fun getSplitContextForFlow(): SplitContext? =
+        sessionSnapshot.splitContext
 
     private fun hasFeature(feature: PaymentFeature): Boolean =
         sessionSnapshot.features.contains(feature)
@@ -998,8 +946,6 @@ class PaymentViewModel @Inject constructor(
             PrePaymentNextStep.VERIFY_PRE_PAYMENT,
             PrePaymentNextStep.SELECT_MERCHANT -> {
                 Timber.d("⏭️ [Payment Flow] Skipping $skipLog (disabled in TPV settings)")
-                currentTip = "0.00"
-                currentRating = rating
                 updateSessionSnapshot(reason = skipReason, amountOverride = amount, tipOverride = "0.00", ratingOverride = rating)
 
                 routeToPreVerificationOrMerchant(
@@ -1030,12 +976,14 @@ class PaymentViewModel @Inject constructor(
      */
     fun setKioskPaymentMode(isKiosk: Boolean, staffId: String? = null) {
         Timber.i("🥝 [KIOSK] Payment mode set: isKiosk=$isKiosk, staffId=$staffId")
-        isKioskPayment = isKiosk
-        kioskStaffId = staffId  // 🥝 Store staff ID for sales attribution
         if (isKiosk) {
             _flowOrigin.value = PaymentFlowOrigin.KIOSK
         }
-        updateSessionSnapshot(reason = "setKioskPaymentMode")
+        updateSessionSnapshot(
+            reason = "setKioskPaymentMode",
+            kioskModeOverride = isKiosk,
+            kioskStaffIdOverride = staffId
+        )
     }
 
     /**
@@ -1141,9 +1089,23 @@ class PaymentViewModel @Inject constructor(
         paidProductIds: List<String>,
         skipLocalOrderValidation: Boolean
     ) {
-        currentOrderId = orderId
-        currentOrderNumber = if (orderId == null) null else orderNumber
-        this.skipLocalOrderValidation = if (orderId == null) false else skipLocalOrderValidation
+        val orderContextOverride = orderId?.let { resolvedOrderId ->
+            OrderContext(
+                orderId = resolvedOrderId,
+                orderNumber = orderNumber,
+                tableId = null,
+                skipLocalOrderValidation = skipLocalOrderValidation
+            )
+        }
+
+        val splitContextOverride = splitType?.let { resolvedSplitType ->
+            SplitContext(
+                type = SplitType.fromValue(resolvedSplitType),
+                equalPartsPartySize = equalPartsPartySize,
+                equalPartsPayedFor = equalPartsPayedFor,
+                paidProductIds = paidProductIds
+            )
+        }
 
         if (orderId == null) {
             if (splitType != null ||
@@ -1153,19 +1115,19 @@ class PaymentViewModel @Inject constructor(
             ) {
                 Timber.w("⚠️ [Order Context] Fast payment received split data - clearing for safety")
             }
-            currentSplitType = null
-            currentEqualPartsPartySize = null
-            currentEqualPartsPayedFor = null
-            currentPaidProductIds = emptyList()
-            updateSessionSnapshot(reason = "setOrderContext-fast")
+            updateSessionSnapshot(
+                reason = "setOrderContext-fast",
+                orderContextOverride = null,
+                splitContextOverride = null
+            )
             return
         }
 
-        currentSplitType = splitType
-        currentEqualPartsPartySize = equalPartsPartySize
-        currentEqualPartsPayedFor = equalPartsPayedFor
-        currentPaidProductIds = paidProductIds
-        updateSessionSnapshot(reason = "setOrderContext-order")
+        updateSessionSnapshot(
+            reason = "setOrderContext-order",
+            orderContextOverride = orderContextOverride,
+            splitContextOverride = splitContextOverride
+        )
     }
 
     fun submitAmount(
@@ -1240,7 +1202,7 @@ class PaymentViewModel @Inject constructor(
             val tpvSettings = tpvSettingsRepository.getCurrentSettings()
             val kioskDefaultMerchantId = tpvSettings.kioskDefaultMerchantId
 
-            if (isKioskPayment && !kioskDefaultMerchantId.isNullOrBlank()) {
+            if (sessionSnapshot.isKioskPayment && !kioskDefaultMerchantId.isNullOrBlank()) {
                 // Find the default merchant by ID and pre-select it
                 val defaultKioskMerchant = merchants.find {
                     it.merchantAccountId == kioskDefaultMerchantId || it.id == kioskDefaultMerchantId
@@ -1518,8 +1480,6 @@ class PaymentViewModel @Inject constructor(
         Timber.d("💵 [Payment Flow] Calculated total: '$totalAmount' (subtotal='$subtotal' + tip='$tipAmount')")
 
         // ⭐ Save tip and rating for backend recording
-        currentTip = tipAmount
-        currentRating = rating
         updateSessionSnapshot(reason = "submitTip", amountOverride = subtotal, tipOverride = tipAmount, ratingOverride = rating)
 
         // 📸 PRE-PAYMENT VERIFICATION: Check if verification is enabled
@@ -1553,8 +1513,6 @@ class PaymentViewModel @Inject constructor(
         Timber.d("⏭️  [Payment Flow] Tip skipped")
 
         // ⭐ Save zero tip and rating for backend recording
-        currentTip = "0.00"
-        currentRating = rating
         updateSessionSnapshot(reason = "skipTip", amountOverride = subtotal, tipOverride = "0.00", ratingOverride = rating)
 
         // 📸 PRE-PAYMENT VERIFICATION: Check if verification is enabled
@@ -1692,6 +1650,23 @@ class PaymentViewModel @Inject constructor(
         return String.format(java.util.Locale.US, "%.2f", amountDecimal)
     }
 
+    /**
+     * 🧾 SSOT helpers: prefer PaymentSession snapshot, fallback to legacy fields.
+     *
+     * These are transitional accessors while we migrate the full ViewModel to PaymentSession.
+     */
+    private fun getAmountForFlow(): String =
+        sessionSnapshot.amount.toPlainString()
+
+    private fun getTipForFlow(): String =
+        sessionSnapshot.tip.toPlainString()
+
+    private fun getRatingForFlow(): Int? =
+        sessionSnapshot.rating
+
+    private fun getAmountCentsForFlow(): String =
+        convertToCents(getAmountForFlow())
+
     private fun configurePaymentContext(
         logPrefix: String,
         orderId: String? = null,
@@ -1712,7 +1687,7 @@ class PaymentViewModel @Inject constructor(
             skipLocalOrderValidation = skipLocalOrderValidation
         )
         _flowOrigin.value = when {
-            isKioskPayment -> PaymentFlowOrigin.KIOSK
+            sessionSnapshot.isKioskPayment -> PaymentFlowOrigin.KIOSK
             skipLocalOrderValidation -> PaymentFlowOrigin.SERIALIZED
             orderId != null -> PaymentFlowOrigin.ORDER
             else -> PaymentFlowOrigin.FAST
@@ -1753,8 +1728,6 @@ class PaymentViewModel @Inject constructor(
             skipLocalOrderValidation = skipLocalOrderValidation
         )
 
-        currentTip = tipAmount
-        currentRating = rating
         updateSessionSnapshot(
             reason = reason,
             amountOverride = amount,
@@ -1793,12 +1766,12 @@ class PaymentViewModel @Inject constructor(
      * This prevents error -11 (FailureSecondGenerate) for cards that don't need ARPC.
      */
     fun startPayment(amount: String) {
-        currentAmount = amount  // Save for UI display
-        currentAmountInCents = convertToCents(amount)  // Save for SDK calls (cents as integer string)
-        updateSessionSnapshot(reason = "startPayment", amountOverride = amount)
-
-        // Reset international detection state for new payment
-        lastEmvIssuerCountry = ""
+        updateSessionSnapshot(
+            reason = "startPayment",
+            amountOverride = amount,
+            track2Clear = true,
+            emvIssuerCountryClear = true
+        )
 
         // ⭐ Get venue and staff context for backend recording
         val venueId = authRepository.getVenueId()
@@ -1823,8 +1796,8 @@ class PaymentViewModel @Inject constructor(
         collectPinDialogFlows()
 
         Timber.d("🎯 [BlumonPayment] Starting ONLINE chip payment flow: $$amount")
-        Timber.d("   💰 Amount: $$amount → $currentAmountInCents centavos")
-        Timber.d("   🏪 Venue: $currentVenueId | Staff: $currentStaffId | Tip: $$currentTip")
+        Timber.d("   💰 Amount: $${getAmountForFlow()} → ${getAmountCentsForFlow()} centavos")
+        Timber.d("   🏪 Venue: $currentVenueId | Staff: $currentStaffId | Tip: $${getTipForFlow()}")
 
         // ⭐ CRITICAL: Validate shift is open before processing payment (Square/Toast pattern)
         // Without an open shift, cash reconciliation is impossible and payments can't be properly tracked
@@ -2055,16 +2028,17 @@ class PaymentViewModel @Inject constructor(
                 // ═══════════════════════════════════════════════════════════════════════════
                 _state.value = PaymentState.ConfiguringKernel
                 Timber.i("[PHASE 1] PreTrans - Configuring EMV kernel...")
-                // 💸 REFUND SUPPORT: Use currentTransactionType (SALE or REFUND) instead of hardcoded SALE
                 // 💰 TIP FIX: Pass tip in cents to Blumon SDK (was hardcoded to "0")
-                val tipInCents = convertToCents(currentTip)
-                Timber.d("💰 [PreTrans] Amount: $currentAmountInCents cents | Tip: $tipInCents cents (from currentTip=$currentTip)")
-                val preParams = PreTransParams(currentAmountInCents, tipInCents, currentTransactionType, CountryConstants.MEX)
+                val amountCents = getAmountCentsForFlow()
+                val tipInCents = convertToCents(getTipForFlow())
+                Timber.d("💰 [PreTrans] Amount: $amountCents cents | Tip: $tipInCents cents (from tip=${getTipForFlow()})")
+                val transType = if (sessionSnapshot.mode == PaymentMode.REFUND) TransType.REFUND else TransType.SALE
+                val preParams = PreTransParams(amountCents, tipInCents, transType, CountryConstants.MEX)
                 preTransUseCase.runInfallible(preParams)
                 Timber.d("✅ [PHASE 1] PreTrans completed")
 
                 // PASO 2: StartDetectCard (wait for card tap)
-                _state.value = PaymentState.DetectingCard(currentAmount)
+                _state.value = PaymentState.DetectingCard(getAmountForFlow())
                 Timber.i("[PHASE 2] StartDetectCard - Waiting for card tap...")
                 val detectParams = StartDetectCardParams(EReaderType.MAG_ICC_PICC)
                 val detectResult = startDetectCardUseCase.run(detectParams)
@@ -2092,7 +2066,7 @@ class PaymentViewModel @Inject constructor(
                 when (cardType) {
                     CardType.PICC -> {
                         Timber.i("🔄 [ROUTING] Contactless card detected → Calling processContactlessPayment()")
-                        processContactlessPayment(currentAmountInCents)  // ✅ Pass cents format
+                        processContactlessPayment(getAmountCentsForFlow())  // ✅ Pass cents format
                         return@launch  // Exit startPayment() - contactless flow handles everything
                     }
                     CardType.ICC, CardType.MAG -> {
@@ -2199,14 +2173,18 @@ class PaymentViewModel @Inject constructor(
                     cardTech = CardTech.CHIP
                 )
                 val track2Result = getTagValueUseCase.run(track2Params)
-                currentTrack2 = if (track2Result.isRight) {
+                val track2Value = if (track2Result.isRight) {
                     track2Result.rightValue().tagValue ?: ""
                 } else {
                     ""
                 }
+                updateSessionSnapshot(
+                    reason = "track2-extracted-chip",
+                    track2Override = track2Value
+                )
 
-                if (currentTrack2.isNotEmpty()) {
-                    Timber.i("   ✅ Track2 extracted: ${currentTrack2.take(16)}... (length: ${currentTrack2.length})")
+                if (track2Value.isNotEmpty()) {
+                    Timber.i("   ✅ Track2 extracted: ${track2Value.take(16)}... (length: ${track2Value.length})")
                 } else {
                     Timber.w("   ⚠️ Track2 not found in EMV tags - this may cause issues")
                 }
@@ -2218,18 +2196,26 @@ class PaymentViewModel @Inject constructor(
                         cardTech = CardTech.CHIP
                     )
                     val countryResult = getTagValueUseCase.run(countryParams)
-                    if (countryResult.isRight) {
-                        lastEmvIssuerCountry = countryResult.rightValue().tagValue ?: ""
-                        if (lastEmvIssuerCountry.isNotEmpty()) {
-                            Timber.i("🌍 [EMV 5F28] Issuer Country Code (CHIP): $lastEmvIssuerCountry")
-                        }
+                    val issuerCountry = if (countryResult.isRight) {
+                        countryResult.rightValue().tagValue ?: ""
                     } else {
-                        lastEmvIssuerCountry = ""
+                        ""
+                    }
+                    updateSessionSnapshot(
+                        reason = "emv-issuer-country-chip",
+                        emvIssuerCountryOverride = issuerCountry
+                    )
+                    if (issuerCountry.isNotEmpty()) {
+                        Timber.i("🌍 [EMV 5F28] Issuer Country Code (CHIP): $issuerCountry")
+                    } else {
                         Timber.d("🌍 [EMV 5F28] Not available for this card (CHIP)")
                     }
                 } catch (e: Exception) {
-                    lastEmvIssuerCountry = ""
                     Timber.w("🌍 [EMV 5F28] Could not extract (CHIP): ${e.message}")
+                    updateSessionSnapshot(
+                        reason = "emv-issuer-country-chip-error",
+                        emvIssuerCountryClear = true
+                    )
                 }
 
                 // ⚠️ NOTE: emvTagListStr already contains ALL 22 tags in correct TLV format
@@ -2246,10 +2232,10 @@ class PaymentViewModel @Inject constructor(
                 // ⚠️ CRITICAL: SaleIcc (Blumon API) expects DECIMAL format, NOT cents!
                 // Per Edgardo Olvera (2025-01-21): "Es float... Si tienes que poner un decimal"
                 // PreTrans uses cents (Long.parseLong), but SaleIcc uses decimal format
-                val amountForSaleIcc = formatAmountDecimal(currentAmount)
+                val amountForSaleIcc = formatAmountDecimal(getAmountForFlow())
                 val authResult = performOnlineAuthorization(
                     amount = amountForSaleIcc,  // ✅ Decimal format for Blumon API (e.g., "10.00")
-                    track2 = currentTrack2,  // Extracted from emvTagListStr above
+                    track2 = sessionSnapshot.track2,  // Extracted from emvTagListStr above
                     cardHolderName = "CARDHOLDER",  // TODO: Extract from tag 5F20 if available
                     emvTagList = emvTagListStr
                 )
@@ -2325,11 +2311,10 @@ class PaymentViewModel @Inject constructor(
                 Timber.i("🎉 PAYMENT APPROVED WITH ONLINE AUTHORIZATION!")
 
                 // ✅ FIX: Display total (subtotal + tip) in Success screen
-                // currentAmount = subtotal, currentTip = tip
                 _state.value = PaymentState.Success(
                     authCode = saleData.authorization ?: "",
-                    amount = calculateTotal(currentAmount, currentTip),
-                    tipAmount = currentTip
+                    amount = calculateTotal(getAmountForFlow(), getTipForFlow()),
+                    tipAmount = getTipForFlow()
                 )
 
                 // ⭐ NEW: Record payment to backend (in background)
@@ -2368,13 +2353,7 @@ class PaymentViewModel @Inject constructor(
      * @param context RefundPayment context with original payment info + refund amount
      */
     fun startRefund(context: PaymentContext.RefundPayment) {
-        currentTransactionType = TransType.REFUND
         _flowOrigin.value = PaymentFlowOrigin.REFUND
-
-        // Set amount from context
-        currentAmount = context.amount.toPlainString()
-        currentAmountInCents = convertToCents(currentAmount)
-        currentTip = context.tip.toPlainString()
 
         // 🏢 CRITICAL FIX (2025-12-15): Use PAYMENT'S venueId, not auth context!
         // The refund API endpoint is /tpv/venues/{venueId}/refunds
@@ -2389,16 +2368,24 @@ class PaymentViewModel @Inject constructor(
         currentShiftId = context.shiftId  // ShiftId from context (may be null, will be resolved later if needed)
 
         // Update context: venueId from payment, staffId from auth
-        currentRefundContext = context.copy(
+        val refundContext = context.copy(
             venueId = currentVenueId,  // 🏢 Payment's venue (NOT auth venue!)
             staffId = currentStaffId   // Current staff processing the refund
         )
-        updateSessionSnapshot(reason = "startRefund", amountOverride = currentAmount, tipOverride = currentTip, ratingOverride = currentRating)
+
+        // Set amount from context + refund context snapshot
+        updateSessionSnapshot(
+            reason = "startRefund",
+            amountOverride = context.amount.toPlainString(),
+            tipOverride = context.tip.toPlainString(),
+            ratingOverride = null,
+            refundContextOverride = refundContext
+        )
 
         Timber.i("═══════════════════════════════════════════════════════════")
         Timber.i("💸 [REFUND] Starting refund transaction")
         Timber.i("═══════════════════════════════════════════════════════════")
-        Timber.i("   💰 Refund amount: $$currentAmount")
+        Timber.i("   💰 Refund amount: $${getAmountForFlow()}")
         Timber.i("   📄 Original payment: ${context.originalPaymentId}")
         Timber.i("   🏪 Merchant: ${context.merchantAccountId}")
         Timber.i("   📟 Serial: ${context.blumonSerialNumber}")
@@ -2467,11 +2454,18 @@ class PaymentViewModel @Inject constructor(
                 // 💸 CRITICAL FIX: Update refund context with merchant's serial number if it was missing
                 // This fixes the "blumonSerialNumber is required" error when original payment
                 // doesn't have blumonSerialNumber stored (older payments before this field was added)
-                // NOTE: Use currentRefundContext (not context) to preserve the venueId/staffId we already fixed
-                if (currentRefundContext?.blumonSerialNumber.isNullOrBlank() && targetMerchant.serialNumber.isNotBlank()) {
+                // NOTE: Use sessionSnapshot.refundContext to preserve venueId/staffId we already fixed
+                val refundContext = sessionSnapshot.refundContext
+                if (refundContext != null &&
+                    refundContext.blumonSerialNumber.isNullOrBlank() &&
+                    targetMerchant.serialNumber.isNotBlank()
+                ) {
                     Timber.i("🔧 [REFUND] Fixing missing blumonSerialNumber from target merchant")
-                    currentRefundContext = currentRefundContext?.copy(blumonSerialNumber = targetMerchant.serialNumber)
-                    updateSessionSnapshot(reason = "refund-serial-backfill")
+                    val updatedRefundContext = refundContext.copy(blumonSerialNumber = targetMerchant.serialNumber)
+                    updateSessionSnapshot(
+                        reason = "refund-serial-backfill",
+                        refundContextOverride = updatedRefundContext
+                    )
                 }
 
                 // ═══════════════════════════════════════════════════════════════════════════
@@ -2491,21 +2485,22 @@ class PaymentViewModel @Inject constructor(
                 }
 
                 // ═══════════════════════════════════════════════════════════════════════════
-                // STEP 3: PreTrans with TransType.REFUND (already set in currentTransactionType)
+                // STEP 3: PreTrans with TransType.REFUND
                 // ═══════════════════════════════════════════════════════════════════════════
                 _state.value = PaymentState.ConfiguringKernel
                 Timber.i("[REFUND PHASE 1] PreTrans - Configuring EMV kernel for REFUND...")
                 // 💰 TIP FIX: Pass tip in cents to Blumon SDK (was hardcoded to "0")
-                val tipInCents = convertToCents(currentTip)
-                Timber.d("💰 [PreTrans REFUND] Amount: $currentAmountInCents cents | Tip: $tipInCents cents")
-                val preParams = PreTransParams(currentAmountInCents, tipInCents, currentTransactionType, CountryConstants.MEX)
+                val amountCents = getAmountCentsForFlow()
+                val tipInCents = convertToCents(getTipForFlow())
+                Timber.d("💰 [PreTrans REFUND] Amount: $amountCents cents | Tip: $tipInCents cents")
+                val preParams = PreTransParams(amountCents, tipInCents, TransType.REFUND, CountryConstants.MEX)
                 preTransUseCase.runInfallible(preParams)
                 Timber.d("✅ [REFUND PHASE 1] PreTrans completed with TransType.REFUND")
 
                 // ═══════════════════════════════════════════════════════════════════════════
                 // STEP 4: Detect card (same as sale)
                 // ═══════════════════════════════════════════════════════════════════════════
-                _state.value = PaymentState.DetectingCard(currentAmount)
+                _state.value = PaymentState.DetectingCard(getAmountForFlow())
                 Timber.i("[REFUND PHASE 2] Detecting card for refund...")
 
                 val detectParams = StartDetectCardParams(EReaderType.MAG_ICC_PICC)
@@ -2529,7 +2524,7 @@ class PaymentViewModel @Inject constructor(
                 when (cardType) {
                     CardType.PICC -> {
                         Timber.i("🔄 [REFUND ROUTING] Contactless card → processContactlessRefund()")
-                        processContactlessRefund(currentAmountInCents)
+                        processContactlessRefund(getAmountCentsForFlow())
                         return@launch
                     }
                     CardType.ICC, CardType.MAG -> {
@@ -2611,7 +2606,10 @@ class PaymentViewModel @Inject constructor(
             val track2TagParams = GetTagValueParams(0x57, CardTech.CHIP)
             val track2Result = getTagValueUseCase.run(track2TagParams)
             val track2 = if (track2Result.isRight) track2Result.rightValue().tagValue else ""
-            currentTrack2 = track2
+            updateSessionSnapshot(
+                reason = "track2-extracted-refund-chip",
+                track2Override = track2
+            )
 
             // STEP 4: Online authorization using CancelIccUseCase (NOT SaleIcc or ReverseIcc!)
             // CRITICAL: CancelIcc accepts operationID (original transaction reference)
@@ -2631,7 +2629,7 @@ class PaymentViewModel @Inject constructor(
             Timber.i("   Original operation number for CancelIcc: $originalOperationNumber")
 
             val authResult = performRefundAuthorization(
-                amount = formatAmountDecimal(currentAmount),
+                amount = formatAmountDecimal(getAmountForFlow()),
                 track2 = track2,
                 cardHolderName = "",
                 emvTagList = emvTagList,
@@ -2658,7 +2656,7 @@ class PaymentViewModel @Inject constructor(
             // Note: CancelData uses 'reference' instead of 'authorization'
             _state.value = PaymentState.Success(
                 authCode = cancelData.reference ?: "",
-                amount = currentAmount,
+                amount = getAmountForFlow(),
                 isRefund = true // 💸 Flag this as refund for UI
             )
 
@@ -2704,15 +2702,15 @@ class PaymentViewModel @Inject constructor(
                 TransResultEnum.RESULT_REQ_ONLINE -> {
                     Timber.i("[CONTACTLESS REFUND] RESULT_REQ_ONLINE → Online authorization")
                     // 💰 TIP FIX: Pass total (subtotal + tip) for refund
-                    val totalAmount = calculateTotal(currentAmount, currentTip)
-                    Timber.d("💰 [Contactless Refund Online] Passing total: $totalAmount (subtotal=$currentAmount + tip=$currentTip)")
+                    val totalAmount = calculateTotal(getAmountForFlow(), getTipForFlow())
+                    Timber.d("💰 [Contactless Refund Online] Passing total: $totalAmount (subtotal=${getAmountForFlow()} + tip=${getTipForFlow()})")
                     processContactlessRefundOnlineAuth(formatAmountDecimal(totalAmount))
                 }
                 TransResultEnum.RESULT_OFFLINE_APPROVED -> {
                     Timber.i("🎉 [CONTACTLESS REFUND] Offline approved!")
                     _state.value = PaymentState.Success(
                         authCode = "OFFLINE_APPROVED",
-                        amount = currentAmount,
+                        amount = getAmountForFlow(),
                         isRefund = true
                     )
                     // Note: Offline refunds should still be recorded to backend
@@ -2724,7 +2722,7 @@ class PaymentViewModel @Inject constructor(
                     // Esto es diferente a pagos donde OFFLINE_DENIED es rechazo final
                     // Square/Toast behavior: Intentar online auth cuando el kernel dice "no puedo offline"
                     Timber.i("[CONTACTLESS REFUND] RESULT_OFFLINE_DENIED → Requiere autorización online (comportamiento EMV normal para reembolsos)")
-                    processContactlessRefundOnlineAuth(formatAmountDecimal(currentAmount))
+                    processContactlessRefundOnlineAuth(formatAmountDecimal(getAmountForFlow()))
                 }
                 else -> {
                     _state.value = PaymentState.Error(
@@ -2765,7 +2763,10 @@ class PaymentViewModel @Inject constructor(
             val track2Params = GetTagValueParams(0x57, CardTech.CONTACTLESS)
             val track2Result = getTagValueUseCase.run(track2Params)
             val track2 = if (track2Result.isRight) track2Result.rightValue().tagValue else ""
-            currentTrack2 = track2
+            updateSessionSnapshot(
+                reason = "track2-extracted-refund-contactless",
+                track2Override = track2
+            )
 
             // Online authorization using CancelIccUseCase (NOT SaleIcc or ReverseIcc!)
             // CRITICAL: CancelIcc accepts operationID (original transaction reference)
@@ -2805,7 +2806,7 @@ class PaymentViewModel @Inject constructor(
             // Note: CancelData uses 'reference' instead of 'authorization'
             _state.value = PaymentState.Success(
                 authCode = cancelData.reference ?: "",
-                amount = currentAmount,
+                amount = getAmountForFlow(),
                 isRefund = true
             )
 
@@ -2962,7 +2963,7 @@ class PaymentViewModel @Inject constructor(
 
                     // Translate SDK errors to user-friendly Spanish messages
                     // 💸 Use "Reembolso" for refund mode, "Pago" for sales
-                    val isRefund = currentTransactionType == TransType.REFUND
+                    val isRefund = sessionSnapshot.mode == PaymentMode.REFUND
                     val rejectedPrefix = if (isRefund) "Reembolso rechazado" else "Pago rechazado"
                     val userMessage = when {
                         // ⭐ NEW: Use specific error description if available
@@ -3316,8 +3317,8 @@ class PaymentViewModel @Inject constructor(
                     Timber.i("[CONTACTLESS PHASE 3] RESULT_REQ_ONLINE → Extracting EMV tags and calling SaleIcc...")
                     // ⚠️ SaleIcc expects DECIMAL format, NOT cents (per Edgardo 2025-01-21)
                     // 💰 TIP FIX: Pass total (subtotal + tip) to SaleIcc
-                    val totalAmount = calculateTotal(currentAmount, currentTip)
-                    Timber.d("💰 [Contactless Online] Passing total to SaleIcc: $totalAmount (subtotal=$currentAmount + tip=$currentTip)")
+                    val totalAmount = calculateTotal(getAmountForFlow(), getTipForFlow())
+                    Timber.d("💰 [Contactless Online] Passing total to SaleIcc: $totalAmount (subtotal=${getAmountForFlow()} + tip=${getTipForFlow()})")
                     processContactlessOnlineAuthorization(formatAmountDecimal(totalAmount))
                 }
 
@@ -3327,8 +3328,8 @@ class PaymentViewModel @Inject constructor(
                     // ✅ FIX: Display total (subtotal + tip)
                     _state.value = PaymentState.Success(
                         authCode = "OFFLINE_APPROVED",
-                        amount = calculateTotal(currentAmount, currentTip),
-                        tipAmount = currentTip
+                        amount = calculateTotal(getAmountForFlow(), getTipForFlow()),
+                        tipAmount = getTipForFlow()
                     )
                 }
 
@@ -3422,6 +3423,10 @@ class PaymentViewModel @Inject constructor(
             } else {
                 ""
             }
+            updateSessionSnapshot(
+                reason = "track2-extracted-contactless",
+                track2Override = track2
+            )
 
             if (track2.isNotEmpty()) {
                 Timber.i("   ✅ Track2 extracted: ${track2.take(16)}... (length: ${track2.length})")
@@ -3437,16 +3442,26 @@ class PaymentViewModel @Inject constructor(
                 )
                 val countryResult = getTagValueUseCase.run(countryParams)
                 if (countryResult.isRight) {
-                    lastEmvIssuerCountry = countryResult.rightValue().tagValue ?: ""
-                    if (lastEmvIssuerCountry.isNotEmpty()) {
-                        Timber.i("🌍 [EMV 5F28] Issuer Country Code (CONTACTLESS): $lastEmvIssuerCountry")
+                    val issuerCountry = countryResult.rightValue().tagValue ?: ""
+                    updateSessionSnapshot(
+                        reason = "emv-issuer-country-contactless",
+                        emvIssuerCountryOverride = issuerCountry
+                    )
+                    if (issuerCountry.isNotEmpty()) {
+                        Timber.i("🌍 [EMV 5F28] Issuer Country Code (CONTACTLESS): $issuerCountry")
                     }
                 } else {
-                    lastEmvIssuerCountry = ""
+                    updateSessionSnapshot(
+                        reason = "emv-issuer-country-contactless",
+                        emvIssuerCountryClear = true
+                    )
                     Timber.d("🌍 [EMV 5F28] Not available for this card (CONTACTLESS)")
                 }
             } catch (e: Exception) {
-                lastEmvIssuerCountry = ""
+                updateSessionSnapshot(
+                    reason = "emv-issuer-country-contactless-error",
+                    emvIssuerCountryClear = true
+                )
                 Timber.w("🌍 [EMV 5F28] Could not extract (CONTACTLESS): ${e.message}")
             }
 
@@ -3491,8 +3506,8 @@ class PaymentViewModel @Inject constructor(
             // ✅ FIX: Display total (subtotal + tip)
             _state.value = PaymentState.Success(
                 authCode = saleData.authorization ?: "",
-                amount = calculateTotal(currentAmount, currentTip),
-                tipAmount = currentTip
+                amount = calculateTotal(getAmountForFlow(), getTipForFlow()),
+                tipAmount = getTipForFlow()
             )
 
             // ⭐ NEW: Record payment to backend (in background)
@@ -3581,7 +3596,7 @@ class PaymentViewModel @Inject constructor(
 
                 // 🥝 KIOSK MODE: Defer recording until staff confirms cash received
                 // McDonald's/Cinépolis pattern - prevents walk-away fraud
-                if (isKioskPayment) {
+                if (sessionSnapshot.isKioskPayment) {
                     Timber.i("🥝 [KIOSK CASH] Deferring payment recording - awaiting staff confirmation")
                     Timber.d("   💵 Subtotal: ${currentState.subtotal}, Tip: ${currentState.tipAmount}, Total: ${currentState.totalAmount}")
 
@@ -3844,17 +3859,20 @@ class PaymentViewModel @Inject constructor(
                     0 // Default to 0 if tip parsing fails
                 }
 
+                val cryptoOrderId = getOrderIdForFlow()
+                val cryptoOrderNumber = getOrderNumberForFlow()
+
                 Timber.d("🪙 [Crypto Payment] Calling backend to initiate crypto payment")
                 Timber.d("   💰 Amount: $amountCentavos centavos, Tip: $tipCentavos centavos")
-                Timber.d("   📦 Order: ${currentOrderId ?: "Fast payment"}")
+                Timber.d("   📦 Order: ${cryptoOrderId ?: "Fast payment"}")
 
                 // Call backend API to initiate crypto payment
                 val request = com.jaac.avoqado_tpv.core.data.network.CryptoPaymentRequest(
                     amount = amountCentavos,
                     tip = if (tipCentavos > 0) tipCentavos else null,
                     staffId = staffId,
-                    orderId = currentOrderId,
-                    orderNumber = currentOrderNumber,
+                    orderId = cryptoOrderId,
+                    orderNumber = cryptoOrderNumber,
                     deviceSerialNumber = deviceSerial
                 )
 
@@ -4053,10 +4071,10 @@ class PaymentViewModel @Inject constructor(
                 // - If kiosk session exists → commission/tip goes to SESSION user
                 // - If no kiosk session → commission/tip goes to PIN-confirming staff
                 // PIN is always required to confirm cash receipt, but attribution is separate
-                val effectiveStaffId = if (isKioskPayment && !kioskStaffId.isNullOrBlank()) {
-                    Timber.i("🥝 [KIOSK CASH] Using SESSION staff for attribution: $kioskStaffId")
+                val effectiveStaffId = if (sessionSnapshot.isKioskPayment && !sessionSnapshot.kioskStaffId.isNullOrBlank()) {
+                    Timber.i("🥝 [KIOSK CASH] Using SESSION staff for attribution: ${sessionSnapshot.kioskStaffId}")
                     Timber.i("   👤 Confirmed by: ${confirmedByStaffId ?: "unknown"} (for audit only)")
-                    kioskStaffId!!  // Session user gets commission/tip
+                    sessionSnapshot.kioskStaffId!!  // Session user gets commission/tip
                 } else {
                     Timber.i("🥝 [KIOSK CASH] No kiosk session - using PIN staff for attribution: ${confirmedByStaffId ?: currentStaffId}")
                     confirmedByStaffId ?: currentStaffId!!  // PIN staff gets attribution
@@ -4190,38 +4208,24 @@ class PaymentViewModel @Inject constructor(
      */
     fun resetPayment() {
         _state.value = PaymentState.Idle
-        currentAmount = ""
-        currentAmountInCents = ""
-        currentTip = "0"
-        currentRating = null
-        currentTrack2 = ""
-        lastEmvIssuerCountry = ""
         isSkipReviewFlow = false
         _flowOrigin.value = PaymentFlowOrigin.FAST
-
-        currentOrderId = null
-        currentOrderNumber = null
-        skipLocalOrderValidation = false
-
-        currentSplitType = null
-        currentEqualPartsPartySize = null
-        currentEqualPartsPayedFor = null
-        currentPaidProductIds = emptyList()
-
-        prePaymentVerificationPhotos = emptyList()
-        prePaymentVerificationBarcodes = emptyList()
-        prePaymentOrderReference = null
-
-        isKioskPayment = false
-        kioskStaffId = null
-
-        currentTransactionType = TransType.SALE
-        currentRefundContext = null
 
         // 🪙 Clear crypto payment state
         currentCryptoRequestId = null
 
-        updateSessionSnapshot(reason = "resetPayment")
+        updateSessionSnapshot(
+            reason = "resetPayment",
+            amountOverride = "0.00",
+            tipOverride = "0.00",
+            ratingOverride = null,
+            kioskModeOverride = false,
+            kioskStaffIdOverride = null,
+            refundContextClear = true,
+            verificationContextClear = true,
+            track2Clear = true,
+            emvIssuerCountryClear = true
+        )
         Timber.d("🔄 Payment state reset (cleared payment-level context)")
     }
 
@@ -4300,16 +4304,8 @@ class PaymentViewModel @Inject constructor(
         val split = getSplitContextForFlow()
         val splitType = split?.type ?: SplitType.FULLPAYMENT
 
-        val amount = if (session.amount > java.math.BigDecimal.ZERO) {
-            session.amount
-        } else {
-            currentAmount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
-        }
-        val tip = if (session.tip > java.math.BigDecimal.ZERO) {
-            session.tip
-        } else {
-            currentTip.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
-        }
+        val amount = getAmountForFlow().toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+        val tip = getTipForFlow().toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
 
         return PaymentContext.OrderPayment(
             venueId = currentVenueId,
@@ -4318,7 +4314,7 @@ class PaymentViewModel @Inject constructor(
             orderId = orderId,
             amount = amount,
             tip = tip,
-            rating = session.rating ?: currentRating,
+            rating = getRatingForFlow(),
             merchantAccountId = merchantAccountId,
             blumonSerialNumber = blumonSerial,
             deviceSerialNumber = secureStorage.getSerialNumber(),
@@ -4335,17 +4331,7 @@ class PaymentViewModel @Inject constructor(
      */
     private fun buildRefundPaymentContext(): PaymentContext.RefundPayment? {
         val session = sessionSnapshot
-        val snapshotContext = session.refundContext
-        val currentContext = currentRefundContext
-        val base = if (
-            snapshotContext == null ||
-            (snapshotContext.blumonSerialNumber.isBlank() && currentContext?.blumonSerialNumber?.isNotBlank() == true)
-        ) {
-            currentContext
-        } else {
-            snapshotContext
-        }
-        if (base == null) return null
+        val base = session.refundContext ?: return null
 
         val venueId = if (!currentVenueId.isNullOrBlank()) currentVenueId else base.venueId
         val staffId = if (!currentStaffId.isNullOrBlank()) currentStaffId else base.staffId
@@ -4398,18 +4384,27 @@ class PaymentViewModel @Inject constructor(
         }
 
         // Restore context to ViewModel state
-        currentAmount = context.amount
-        currentTip = context.tipAmount
-        currentRating = context.rating
+        // Tip/rating handled via snapshot overrides below
         _flowOrigin.value = context.flowOrigin
 
-        // 🆕 FIX: Restore order context from RetryContext (prevents "order not found" error)
-        currentOrderId = context.orderId
-        currentOrderNumber = context.orderNumber
-        currentSplitType = context.splitType
-        currentEqualPartsPartySize = context.equalPartsPartySize
-        currentEqualPartsPayedFor = context.equalPartsPayedFor
-        currentPaidProductIds = context.paidProductIds ?: emptyList()
+        val retrySkipLocalValidation = context.flowOrigin == PaymentFlowOrigin.SERIALIZED
+        val orderContextOverride = context.orderId?.let { orderId ->
+            OrderContext(
+                orderId = orderId,
+                orderNumber = context.orderNumber,
+                tableId = null,
+                skipLocalOrderValidation = retrySkipLocalValidation
+            )
+        }
+
+        val splitContextOverride = context.splitType?.let { splitType ->
+            SplitContext(
+                type = SplitType.fromValue(splitType),
+                equalPartsPartySize = context.equalPartsPartySize,
+                equalPartsPayedFor = context.equalPartsPayedFor,
+                paidProductIds = context.paidProductIds ?: emptyList()
+            )
+        }
 
         Timber.d("🔄 [Smart Retry] Order context restored: orderId=${context.orderId} | orderNumber=${context.orderNumber} | splitType=${context.splitType}")
 
@@ -4444,7 +4439,9 @@ class PaymentViewModel @Inject constructor(
             reason = "retryPayment",
             amountOverride = context.amount,
             tipOverride = context.tipAmount,
-            ratingOverride = context.rating
+            ratingOverride = context.rating,
+            orderContextOverride = orderContextOverride,
+            splitContextOverride = splitContextOverride
         )
 
         // ✅ Go directly to payment processing (skip amount/tip/rating steps)
@@ -4518,24 +4515,25 @@ class PaymentViewModel @Inject constructor(
                     shouldShowPreVerification() -> {
                         val tpvSettings = tpvSettingsRepository.getCurrentSettings()
                         Timber.d("⬅️  [Payment Flow] Back from SelectingMerchant → VerifyingPrePayment")
+                        val storedVerification = sessionSnapshot.verificationContext
                         // Reconstruct VerificationPhoto objects from saved Firebase URLs
-                        val restoredPhotos = prePaymentVerificationPhotos.map { url ->
+                        val restoredPhotos = storedVerification?.photos?.map { url ->
                             VerificationPhoto(
                                 localPath = url, // Use URL as path (already uploaded)
                                 status = PhotoUploadStatus.UPLOADED,
                                 firebaseUrl = url
                             )
-                        }
+                        } ?: emptyList()
                         _state.value = PaymentState.VerifyingPrePayment(
                             amount = currentState.subtotal,
                             rating = currentState.rating,
                             tipAmount = currentState.tipAmount,
                             photos = restoredPhotos,
-                            scannedBarcodes = prePaymentVerificationBarcodes,
+                            scannedBarcodes = storedVerification?.barcodes ?: emptyList(),
                             requirePhoto = tpvSettings.requireVerificationPhoto,
                             requireBarcode = tpvSettings.requireVerificationBarcode,
                             // 🔧 FIX: Restore saved order reference (ensures consistency on go-back)
-                            orderReference = prePaymentOrderReference
+                            orderReference = storedVerification?.orderReference
                         )
                         true
                     }
@@ -4734,7 +4732,7 @@ class PaymentViewModel @Inject constructor(
                     Timber.w("   → Payment succeeded with Blumon, but backend sync requires login")
                     Timber.w("   → SOLUTION: User must log in with PIN before processing payments")
                     Timber.w("   → TODO: Queue payment for offline sync when user logs in")
-                    Timber.w("   → Payment details: auth=$authorizationNumber | ref=$referenceNumber | amount=$currentAmount")
+                    Timber.w("   → Payment details: auth=$authorizationNumber | ref=$referenceNumber | amount=${getAmountForFlow()}")
                     // Payment still shows success to user (Blumon approved it)
                     return@launch
                 }
@@ -4763,9 +4761,9 @@ class PaymentViewModel @Inject constructor(
 
                 // 🥝 KIOSK: Use kiosk staff ID if available (for sales attribution/commissions)
                 // Otherwise use auth context staff ID
-                val effectiveStaffId = if (isKioskPayment && !kioskStaffId.isNullOrBlank()) {
-                    Timber.i("🥝 [KIOSK] Using kiosk staff ID for payment attribution: $kioskStaffId")
-                    kioskStaffId!!
+                val effectiveStaffId = if (sessionSnapshot.isKioskPayment && !sessionSnapshot.kioskStaffId.isNullOrBlank()) {
+                    Timber.i("🥝 [KIOSK] Using kiosk staff ID for payment attribution: ${sessionSnapshot.kioskStaffId}")
+                    sessionSnapshot.kioskStaffId!!
                 } else {
                     currentStaffId
                 }
@@ -4787,7 +4785,7 @@ class PaymentViewModel @Inject constructor(
                     )
                 }
 
-                Timber.d("💾 [Backend Recording] Context: venue=$currentVenueId, staff=$currentStaffId, shift=$currentShiftId, amount=$currentAmount, tip=$currentTip, rating=$currentRating, merchantId=${context.merchantAccountId}, blumonSerial=${context.blumonSerialNumber}")
+                Timber.d("💾 [Backend Recording] Context: venue=$currentVenueId, staff=$currentStaffId, shift=$currentShiftId, amount=${getAmountForFlow()}, tip=${getTipForFlow()}, rating=${getRatingForFlow()}, merchantId=${context.merchantAccountId}, blumonSerial=${context.blumonSerialNumber}")
 
                 // 🔍 DEBUG: Trace blumonOperationNumber being passed to recorder
                 val contextOpNumber = when (context) {
@@ -4863,9 +4861,9 @@ class PaymentViewModel @Inject constructor(
                         referenceNumber = referenceNumber,
                         venueId = currentVenueId,
                         staffId = currentStaffId,
-                        amount = currentAmount.toBigDecimal(),
-                        tip = currentTip.toBigDecimal(),
-                        rating = currentRating, // 🆕 NEW: Preserve user rating for offline queue retry
+                        amount = sessionSnapshot.amount,
+                        tip = sessionSnapshot.tip,
+                        rating = sessionSnapshot.rating, // 🆕 NEW: Preserve user rating for offline queue retry
                         merchantAccountId = _currentMerchant.value?.merchantAccountId ?: "", // ✅ FIX: Use backend CUID, not local ID
                         blumonSerialNumber = _currentMerchant.value?.serialNumber ?: "", // ✅ CRITICAL FIX: Use VIRTUAL serial (e.g., "2841548417"), not physical terminal serial
                         maskedPan = cardDetails.maskedPan,
@@ -5024,17 +5022,19 @@ class PaymentViewModel @Inject constructor(
                     // Refunds require immediate attention for proper reconciliation
                 }
 
-                // Reset transaction type after refund completes
-                currentTransactionType = TransType.SALE
-                currentRefundContext = null
-                updateSessionSnapshot(reason = "refund-reset")
+                // Clear refund context after refund completes
+                updateSessionSnapshot(
+                    reason = "refund-reset",
+                    refundContextClear = true
+                )
 
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Refund Recording] Unexpected error")
                 // Reset state even on error
-                currentTransactionType = TransType.SALE
-                currentRefundContext = null
-                updateSessionSnapshot(reason = "refund-reset")
+                updateSessionSnapshot(
+                    reason = "refund-reset",
+                    refundContextClear = true
+                )
             }
         }
     }
@@ -5156,9 +5156,9 @@ class PaymentViewModel @Inject constructor(
             }
 
             // Mask PAN from Track2 or BIN
-            val maskedPan = if (currentTrack2.isNotEmpty()) {
-                val panEndIndex = currentTrack2.indexOf('=')
-                val pan = if (panEndIndex > 0) currentTrack2.substring(0, panEndIndex) else currentTrack2
+            val maskedPan = if (sessionSnapshot.track2.isNotEmpty()) {
+                val panEndIndex = sessionSnapshot.track2.indexOf('=')
+                val pan = if (panEndIndex > 0) sessionSnapshot.track2.substring(0, panEndIndex) else sessionSnapshot.track2
                 maskPan(pan)
             } else if (bin.isNotEmpty()) {
                 "$bin******XXXX" // Use BIN with masked suffix
@@ -5169,7 +5169,7 @@ class PaymentViewModel @Inject constructor(
             // 🌍 Determine if international card (3-level strategy)
             val isInternational = determineIsInternational(
                 binInfoCountry = issuerCountryFromBlumon,
-                emvIssuerCountry = lastEmvIssuerCountry,
+                emvIssuerCountry = sessionSnapshot.emvIssuerCountry,
                 bin = bin
             )
 
@@ -5183,7 +5183,7 @@ class PaymentViewModel @Inject constructor(
             Timber.e(e, "Failed to extract card details from Blumon response - falling back to Track2 detection")
             // Fallback to old Track2 extraction method
             extractCardDetailsFromTrack2(
-                track2 = currentTrack2,
+                track2 = sessionSnapshot.track2,
                 entryMode = entryMode
             )
         }
@@ -5220,7 +5220,7 @@ class PaymentViewModel @Inject constructor(
             // 🌍 Determine if international (using EMV + BIN lookup since no Blumon binInfo here)
             val isInternational = determineIsInternational(
                 binInfoCountry = null,
-                emvIssuerCountry = lastEmvIssuerCountry,
+                emvIssuerCountry = sessionSnapshot.emvIssuerCountry,
                 bin = bin
             )
 
@@ -6156,14 +6156,20 @@ class PaymentViewModel @Inject constructor(
             return
         }
 
-        // 💾 Store verification data for later (when recording payment)
-        // ⭐ Use Firebase URLs (not local paths) for backend storage
-        prePaymentVerificationPhotos = currentState.uploadedPhotoUrls
-        prePaymentVerificationBarcodes = currentState.scannedBarcodes
-        // 🔧 FIX: Store order reference for backend (ensures photos match order)
-        prePaymentOrderReference = currentState.orderReference
-        Timber.d("📸 [PRE-Verification] Stored verification data: photos=${prePaymentVerificationPhotos.size} (Firebase URLs) | barcodes=${prePaymentVerificationBarcodes.size} | orderRef=$prePaymentOrderReference")
-        updateSessionSnapshot(reason = "completePrePaymentVerification", amountOverride = currentState.amount, tipOverride = currentState.tipAmount, ratingOverride = currentState.rating)
+        // 💾 Store verification data in session snapshot (Firebase URLs)
+        val verificationContext = VerificationContext(
+            photos = currentState.uploadedPhotoUrls,
+            barcodes = currentState.scannedBarcodes,
+            orderReference = currentState.orderReference
+        )
+        Timber.d("📸 [PRE-Verification] Stored verification data: photos=${verificationContext.photos.size} (Firebase URLs) | barcodes=${verificationContext.barcodes.size} | orderRef=${verificationContext.orderReference}")
+        updateSessionSnapshot(
+            reason = "completePrePaymentVerification",
+            amountOverride = currentState.amount,
+            tipOverride = currentState.tipAmount,
+            ratingOverride = currentState.rating,
+            verificationContextOverride = verificationContext
+        )
 
         // Calculate total and proceed to merchant selection
         val totalAmount = calculateTotal(currentState.amount, currentState.tipAmount)
@@ -6194,12 +6200,14 @@ class PaymentViewModel @Inject constructor(
             return
         }
 
-        // Clear any partial verification data
-        prePaymentVerificationPhotos = emptyList()
-        prePaymentVerificationBarcodes = emptyList()
-        prePaymentOrderReference = null
         Timber.d("📸 [PRE-Verification] Skipped - no verification data stored")
-        updateSessionSnapshot(reason = "skipPrePaymentVerification", amountOverride = currentState.amount, tipOverride = currentState.tipAmount, ratingOverride = currentState.rating)
+        updateSessionSnapshot(
+            reason = "skipPrePaymentVerification",
+            amountOverride = currentState.amount,
+            tipOverride = currentState.tipAmount,
+            ratingOverride = currentState.rating,
+            verificationContextClear = true
+        )
 
         // Calculate total and proceed to merchant selection
         val totalAmount = calculateTotal(currentState.amount, currentState.tipAmount)

@@ -2,12 +2,10 @@ package com.jaac.avoqado_tpv.features.settings.presentation
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -20,6 +18,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.content.Intent
+import android.provider.Settings
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 
@@ -100,7 +100,6 @@ fun ExternalDevicesScreen(
             LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
@@ -110,6 +109,31 @@ fun ExternalDevicesScreen(
                     isRunning = state.isServerRunning,
                     onToggleServer = toggleServerWithPermissions
                 )
+            }
+
+            item {
+                MultiDevicePolicyCard(
+                    allowMultipleDevices = state.allowMultipleDevices,
+                    onToggle = { viewModel.setAllowMultipleDevices(it) }
+                )
+            }
+
+            if (state.showPairingHelp) {
+                item {
+                    PairingHelpBanner(
+                        requiresPin = state.pairingRequiresPin,
+                        onOpenBluetooth = {
+                            try {
+                                context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                })
+                            } catch (_: Exception) {
+                                // No-op: if settings can't open, user can still use notification shade.
+                            }
+                        },
+                        onDismiss = { viewModel.dismissPairingHelp() }
+                    )
+                }
             }
 
             // Connected Devices Section
@@ -174,7 +198,8 @@ fun ExternalDevicesScreen(
                 item {
                     KnownDevicesCard(
                         devices = state.knownDevices,
-                        onForgetDevice = { viewModel.forgetDevice(it) }
+                        onForgetDevice = { viewModel.forgetDevice(it) },
+                        onApproveDevice = { viewModel.approveDevice(it) }
                     )
                 }
             }
@@ -207,6 +232,7 @@ fun ExternalDevicesScreen(
             onFinish = { viewModel.cancelWizard() }
         )
     }
+
 }
 
 /**
@@ -336,11 +362,24 @@ private fun ConnectedDevicesCard(devices: List<com.jaac.avoqado_tpv.core.bluetoo
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
                             )
+                            Text(
+                                text = if (device.approved) {
+                                    "🟢 Autorizado"
+                                } else {
+                                    "🟠 Pendiente de autorización"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (device.approved) {
+                                    Color(0xFF4CAF50)
+                                } else {
+                                    Color(0xFFFFA000)
+                                }
+                            )
                         }
                         Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = "Conectado",
-                            tint = Color(0xFF4CAF50),
+                            imageVector = if (device.approved) Icons.Default.CheckCircle else Icons.Default.Warning,
+                            contentDescription = if (device.approved) "Autorizado" else "Pendiente",
+                            tint = if (device.approved) Color(0xFF4CAF50) else Color(0xFFFFA000),
                             modifier = Modifier.size(24.dp)
                         )
                     }
@@ -379,7 +418,8 @@ private fun ConnectedDevicesCard(devices: List<com.jaac.avoqado_tpv.core.bluetoo
 @Composable
 private fun KnownDevicesCard(
     devices: List<com.jaac.avoqado_tpv.core.bluetooth.KnownDevice>,
-    onForgetDevice: (String) -> Unit
+    onForgetDevice: (com.jaac.avoqado_tpv.core.bluetooth.KnownDevice) -> Unit,
+    onApproveDevice: (com.jaac.avoqado_tpv.core.bluetooth.KnownDevice) -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -452,6 +492,11 @@ private fun KnownDevicesCard(
                                 MaterialTheme.colorScheme.onSurfaceVariant
                             }
                         )
+                        Text(
+                            text = if (device.approved) "✅ Autorizado" else "🟠 Pendiente de autorización",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (device.approved) Color(0xFF4CAF50) else Color(0xFFFFA000)
+                        )
                         if (device.connectionCount > 1) {
                             Text(
                                 text = "${device.connectionCount} conexiones",
@@ -461,18 +506,167 @@ private fun KnownDevicesCard(
                         }
                     }
 
-                    // Forget button (only for disconnected devices)
-                    if (!device.isConnected) {
-                        IconButton(
-                            onClick = { onForgetDevice(device.address) }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Delete,
-                                contentDescription = "Olvidar dispositivo",
-                                tint = MaterialTheme.colorScheme.error
-                            )
+                    Column(
+                        horizontalAlignment = Alignment.End,
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (!device.approved) {
+                            TextButton(onClick = { onApproveDevice(device) }) {
+                                Text("Autorizar")
+                            }
+                        }
+
+                        // Forget button (only for disconnected devices)
+                        if (!device.isConnected) {
+                            IconButton(
+                                onClick = { onForgetDevice(device) }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = "Olvidar dispositivo",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MultiDevicePolicyCard(
+    allowMultipleDevices: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Permitir varios dispositivos",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = if (allowMultipleDevices) {
+                        "Se pueden conectar varios iPads/tablets al mismo tiempo."
+                    } else {
+                        "Solo 1 dispositivo a la vez."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Switch(
+                checked = allowMultipleDevices,
+                onCheckedChange = onToggle
+            )
+        }
+    }
+}
+
+@Composable
+private fun PairingHelpBanner(
+    requiresPin: Boolean,
+    onOpenBluetooth: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Bluetooth,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onTertiaryContainer
+                )
+                Text(
+                    text = "Emparejamiento Bluetooth",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Cerrar"
+                    )
+                }
+            }
+
+            Text(
+                text = "Es normal que el sistema muestre “null”. Ese es el iPad.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onTertiaryContainer
+            )
+
+            Text(
+                text = "1) En el iPad ya aparece el PIN. Manténlo a la vista.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = if (requiresPin) {
+                    "2) En el TPV, abre la solicitud de Bluetooth y escribe el PIN."
+                } else {
+                    "2) En el TPV, confirma el enlace en la solicitud de Bluetooth."
+                },
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = "3) Si no ves el diálogo, desliza desde arriba y toca “Solicitud de vinculación”.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = "4) Espera a que aparezca “Conectado”.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+
+            Text(
+                text = "El PIN solo se ingresa en el diálogo del sistema, no en esta pantalla.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.75f)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onOpenBluetooth,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Abrir Bluetooth")
+                }
+                Button(
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Entendido")
                 }
             }
         }

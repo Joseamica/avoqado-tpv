@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -29,7 +30,9 @@ import javax.inject.Singleton
  */
 data class ConnectedDevice(
     val address: String,
-    val name: String?
+    val name: String?,
+    val deviceId: String?,
+    val approved: Boolean
 )
 
 /**
@@ -37,8 +40,10 @@ data class ConnectedDevice(
  * Includes connection status for UI display
  */
 data class KnownDevice(
+    val deviceId: String?,
     val address: String,
     val name: String?,
+    val approved: Boolean,
     val isConnected: Boolean,
     val lastConnectedAt: Long,
     val connectionCount: Int
@@ -100,7 +105,12 @@ class BluetoothPaymentService @Inject constructor(
     val connectedDevicesList: StateFlow<List<ConnectedDevice>> = connectedDevicesMap
         .map { devicesMap ->
             devicesMap.values.map { info ->
-                ConnectedDevice(address = info.address, name = info.name)
+                ConnectedDevice(
+                    address = info.address,
+                    name = info.name,
+                    deviceId = info.deviceId,
+                    approved = info.approved
+                )
             }
         }
         .stateIn(
@@ -161,10 +171,15 @@ class BluetoothPaymentService @Inject constructor(
 
         // Merge with connection status
         knownList.map { known ->
-            val isCurrentlyConnected = connectedMap.containsKey(known.address)
+            val isCurrentlyConnected = connectedMap.values.any { info ->
+                (!known.deviceId.isNullOrBlank() && info.deviceId == known.deviceId) ||
+                    info.address == known.address
+            }
             KnownDevice(
+                deviceId = known.deviceId,
                 address = known.address,
                 name = known.name,
+                approved = known.approved,
                 isConnected = isCurrentlyConnected,
                 lastConnectedAt = known.lastConnectedAt,
                 connectionCount = known.connectionCount
@@ -185,17 +200,23 @@ class BluetoothPaymentService @Inject constructor(
     }
 
     /**
+     * Whether multiple devices can be connected at once.
+     */
+    private val _allowMultipleDevices = MutableStateFlow(secureStorage.getBleAllowMultipleDevices())
+    val allowMultipleDevices: StateFlow<Boolean> = _allowMultipleDevices.asStateFlow()
+
+    /**
      * Remove a device from the known devices list AND remove system bond
      */
-    fun forgetDevice(address: String) {
+    fun forgetDevice(deviceId: String?, address: String) {
         // Remove from our app's storage
-        secureStorage.removeKnownBleDevice(address)
+        secureStorage.removeKnownBleDevice(deviceId, address)
 
         // Also remove system-level bond (so it disappears from Settings > Bluetooth)
         removeSystemBond(address)
 
         refreshKnownDevices()
-        Timber.i("🔵 [BLE-Service] Forgot device: $address")
+        Timber.i("🔵 [BLE-Service] Forgot device: $address (${deviceId ?: "no-id"})")
     }
 
     /**
@@ -213,6 +234,21 @@ class BluetoothPaymentService @Inject constructor(
         secureStorage.clearKnownBleDevices()
         refreshKnownDevices()
         Timber.i("🔵 [BLE-Service] Forgot all devices")
+    }
+
+    /**
+     * Approve a known device (allow BLE payments).
+     */
+    fun approveDevice(deviceId: String?, address: String) {
+        secureStorage.setKnownBleDeviceApproved(deviceId, address, true)
+        BluetoothPaymentForegroundService.updateDeviceApproval(deviceId, address, true)
+        refreshKnownDevices()
+        Timber.i("✅ [BLE-Service] Approved device: $address (${deviceId ?: "no-id"})")
+    }
+
+    fun setAllowMultipleDevices(allowed: Boolean) {
+        secureStorage.setBleAllowMultipleDevices(allowed)
+        _allowMultipleDevices.value = allowed
     }
 
     /**
@@ -246,6 +282,9 @@ class BluetoothPaymentService @Inject constructor(
 
     // 🔐 Pairing events (inform UI when the OS prompts for pairing)
     val pairingEvents: SharedFlow<PairingEvent> = BluetoothPaymentForegroundService.pairingEvents
+
+    // 🚫 Authorization events (device blocked / pending approval)
+    val authorizationEvents: SharedFlow<AuthorizationEvent> = BluetoothPaymentForegroundService.authorizationEvents
 
     init {
         // Auto-clean old known devices to keep list manageable

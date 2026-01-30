@@ -18,7 +18,9 @@ data class TimeEntry(
     val breakMinutes: Int,
     val status: TimeEntryStatus,
     val checkInPhotoUrl: String?, // Firebase Storage URL of clock-in photo (anti-fraud)
-    val breaks: List<TimeEntryBreak>
+    val breaks: List<TimeEntryBreak>,
+    val autoClockOut: Boolean = false, // Was this entry auto-closed by the system?
+    val autoClockOutNote: String? = null // Reason for auto clock-out
 ) {
     /**
      * Check if the employee is currently on a break

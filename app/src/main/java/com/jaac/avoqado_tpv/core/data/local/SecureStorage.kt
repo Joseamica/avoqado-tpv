@@ -131,6 +131,7 @@ class SecureStorage @Inject constructor(
         // BLE Payment Server state persistence
         private const val KEY_BLE_SERVER_WAS_RUNNING = "ble_server_was_running"
         private const val KEY_BLE_KNOWN_DEVICES = "ble_known_devices"  // JSON list of known device addresses/names
+        private const val KEY_BLE_ALLOW_MULTIPLE_DEVICES = "ble_allow_multiple_devices"
     }
 
     /**
@@ -1375,6 +1376,15 @@ class SecureStorage @Inject constructor(
         return encryptedPrefs.getBoolean(KEY_BLE_SERVER_WAS_RUNNING, false)
     }
 
+    fun getBleAllowMultipleDevices(): Boolean {
+        return encryptedPrefs.getBoolean(KEY_BLE_ALLOW_MULTIPLE_DEVICES, true)
+    }
+
+    fun setBleAllowMultipleDevices(allowed: Boolean) {
+        encryptedPrefs.edit().putBoolean(KEY_BLE_ALLOW_MULTIPLE_DEVICES, allowed).apply()
+        Timber.i("🔵 [BLE-Settings] Allow multiple devices: $allowed")
+    }
+
     // ==================== BLE KNOWN DEVICES (Square/Toast Pattern) ====================
 
     /**
@@ -1382,78 +1392,125 @@ class SecureStorage @Inject constructor(
      * Persists across app restarts and APK updates
      */
     data class KnownBleDevice(
+        val deviceId: String? = null,  // Stable deviceId from iOS (UUID)
         val address: String,           // MAC address (e.g., "60:B3:88:95:25:48")
         val name: String?,             // Device name if available
         val lastConnectedAt: Long,     // Timestamp of last connection
-        val connectionCount: Int = 1   // How many times this device has connected
+        val connectionCount: Int = 1,  // How many times this device has connected
+        val approved: Boolean = true   // Whether this device is authorized
     )
 
     /**
-     * Save a device to the known devices list
+     * Add or update a known BLE device.
      *
-     * Called when a new device connects. If the device is already known,
-     * updates its lastConnectedAt and increments connectionCount.
-     *
-     * @param address Device MAC address
-     * @param name Device name (optional)
+     * - Matches by deviceId when available (stable across BLE address changes).
+     * - Falls back to BLE address when deviceId is missing.
+     * - Optionally increments connection count.
      */
-    fun addKnownBleDevice(address: String, name: String?) {
+    fun upsertKnownBleDevice(
+        address: String,
+        name: String?,
+        deviceId: String?,
+        incrementConnection: Boolean,
+        approvedIfNew: Boolean = false
+    ) {
         val knownDevices = getKnownBleDevices().toMutableList()
+        val now = System.currentTimeMillis()
 
-        val existingIndex = knownDevices.indexOfFirst { it.address == address }
-        if (existingIndex >= 0) {
-            // Update existing device
-            val existing = knownDevices[existingIndex]
-            knownDevices[existingIndex] = existing.copy(
-                name = name ?: existing.name,  // Keep old name if new one is null
-                lastConnectedAt = System.currentTimeMillis(),
-                connectionCount = existing.connectionCount + 1
-            )
-            Timber.i("🔵 [BLE-Known] Updated known device: $address (connections: ${existing.connectionCount + 1})")
+        val existingById = if (!deviceId.isNullOrBlank()) {
+            knownDevices.firstOrNull { it.deviceId == deviceId }
         } else {
-            // Add new device
-            knownDevices.add(
-                KnownBleDevice(
-                    address = address,
-                    name = name,
-                    lastConnectedAt = System.currentTimeMillis(),
-                    connectionCount = 1
-                )
+            null
+        }
+        val existing = existingById ?: knownDevices.firstOrNull { it.address == address }
+
+        if (existing != null) {
+            val updated = existing.copy(
+                deviceId = deviceId ?: existing.deviceId,
+                address = address,
+                name = name ?: existing.name,
+                lastConnectedAt = now,
+                connectionCount = if (incrementConnection) existing.connectionCount + 1 else existing.connectionCount,
+                approved = existing.approved
             )
-            Timber.i("🔵 [BLE-Known] Added new known device: $address ($name)")
+
+            val filtered = knownDevices.filterNot {
+                it.address == address || (!deviceId.isNullOrBlank() && it.deviceId == deviceId)
+            }.toMutableList()
+
+            filtered.add(updated)
+            saveKnownBleDevices(filtered)
+
+            Timber.i("🔵 [BLE-Known] Updated known device: ${updated.address} (${updated.deviceId ?: "no-id"})")
+            return
         }
 
+        val newDevice = KnownBleDevice(
+            deviceId = deviceId,
+            address = address,
+            name = name,
+            lastConnectedAt = now,
+            connectionCount = 1,
+            approved = approvedIfNew
+        )
+        knownDevices.add(newDevice)
         saveKnownBleDevices(knownDevices)
+        Timber.i("🔵 [BLE-Known] Added new known device: $address ($name) approved=$approvedIfNew")
     }
 
     /**
-     * Update the stored name for a known BLE device without incrementing connection count.
+     * Update stored device info (name/deviceId) without incrementing connection count.
      */
-    fun updateKnownBleDeviceName(address: String, name: String?) {
-        if (name.isNullOrBlank()) return
+    fun updateKnownBleDeviceInfo(address: String, deviceId: String?, name: String?) {
+        if (name.isNullOrBlank() && deviceId.isNullOrBlank()) return
+        upsertKnownBleDevice(
+            address = address,
+            name = name,
+            deviceId = deviceId,
+            incrementConnection = false
+        )
+    }
 
-        val knownDevices = getKnownBleDevices().toMutableList()
-        val existingIndex = knownDevices.indexOfFirst { it.address == address }
-
-        if (existingIndex >= 0) {
-            val existing = knownDevices[existingIndex]
-            if (existing.name != name) {
-                knownDevices[existingIndex] = existing.copy(name = name)
-                saveKnownBleDevices(knownDevices)
-                Timber.i("🔵 [BLE-Known] Updated device name: $address → $name")
-            }
+    /**
+     * Get a known device by deviceId (preferred) or address.
+     */
+    fun getKnownBleDevice(deviceId: String?, address: String): KnownBleDevice? {
+        val knownDevices = getKnownBleDevices()
+        return if (!deviceId.isNullOrBlank()) {
+            knownDevices.firstOrNull { it.deviceId == deviceId } ?: knownDevices.firstOrNull { it.address == address }
         } else {
-            knownDevices.add(
-                KnownBleDevice(
-                    address = address,
-                    name = name,
-                    lastConnectedAt = System.currentTimeMillis(),
-                    connectionCount = 1
-                )
-            )
-            saveKnownBleDevices(knownDevices)
-            Timber.i("🔵 [BLE-Known] Added device from client info: $address ($name)")
+            knownDevices.firstOrNull { it.address == address }
         }
+    }
+
+    /**
+     * Approve or block a known device.
+     */
+    fun setKnownBleDeviceApproved(deviceId: String?, address: String, approved: Boolean) {
+        val knownDevices = getKnownBleDevices().toMutableList()
+        val existingById = if (!deviceId.isNullOrBlank()) {
+            knownDevices.firstOrNull { it.deviceId == deviceId }
+        } else {
+            null
+        }
+        val existing = existingById ?: knownDevices.firstOrNull { it.address == address } ?: return
+
+        val updated = existing.copy(
+            approved = approved,
+            deviceId = deviceId ?: existing.deviceId,
+            address = address
+        )
+        val filtered = knownDevices.filterNot {
+            it.address == address || (!deviceId.isNullOrBlank() && it.deviceId == deviceId)
+        }.toMutableList()
+        filtered.add(updated)
+        saveKnownBleDevices(filtered)
+
+        Timber.i("🔵 [BLE-Known] Device approval updated: ${updated.address} approved=$approved")
+    }
+
+    fun isKnownBleDeviceApproved(deviceId: String?, address: String): Boolean {
+        return getKnownBleDevice(deviceId, address)?.approved == true
     }
 
     /**
@@ -1485,10 +1542,12 @@ class SecureStorage @Inject constructor(
      *
      * @param address Device MAC address to remove
      */
-    fun removeKnownBleDevice(address: String) {
-        val knownDevices = getKnownBleDevices().filter { it.address != address }
+    fun removeKnownBleDevice(deviceId: String?, address: String) {
+        val knownDevices = getKnownBleDevices().filterNot {
+            it.address == address || (!deviceId.isNullOrBlank() && it.deviceId == deviceId)
+        }
         saveKnownBleDevices(knownDevices)
-        Timber.i("🔵 [BLE-Known] Removed device: $address")
+        Timber.i("🔵 [BLE-Known] Removed device: $address (${deviceId ?: "no-id"})")
     }
 
     /**

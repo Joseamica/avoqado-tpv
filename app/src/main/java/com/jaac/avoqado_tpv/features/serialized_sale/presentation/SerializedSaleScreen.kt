@@ -17,11 +17,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.BackHandler
 import androidx.hilt.navigation.compose.hiltViewModel
 import java.math.BigDecimal
 import java.time.Instant
@@ -95,6 +101,12 @@ fun SerializedSaleScreen(
         }
     }
 
+    // 🛡️ BackHandler ALWAYS enabled on this screen
+    // Prevents physical scanner's Enter key from being interpreted as back navigation
+    BackHandler(enabled = true) {
+        Timber.d("📦 [SerializedSale] BackHandler intercepted - ignoring hardware back during scan flow")
+    }
+
     // Camera scanner dialog (fullscreen)
     if (uiState.showCameraScanner) {
         BarcodeScannerScreen(
@@ -106,6 +118,19 @@ fun SerializedSaleScreen(
         )
     } else {
         Scaffold(
+            modifier = Modifier.onPreviewKeyEvent { keyEvent ->
+                // 🔫 Safety net: Intercept ENTER KeyUp from physical scanner
+                // When TextField is removed (isLoading=true), ENTER KeyUp can activate
+                // the TopBar back button → navigates to WelcomeScreen.
+                // Consuming KeyUp here prevents that. KeyDown still reaches TextField's onDone.
+                val isEnterKey = keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter
+                if (isEnterKey && keyEvent.type == KeyEventType.KeyUp) {
+                    Timber.d("📦 [SerializedSale] Screen-level ENTER KeyUp consumed (preventing accidental back navigation)")
+                    true // Consume
+                } else {
+                    false
+                }
+            },
             topBar = {
                 AvoqadoTopBar(
                     title = "Vender $itemLabel",

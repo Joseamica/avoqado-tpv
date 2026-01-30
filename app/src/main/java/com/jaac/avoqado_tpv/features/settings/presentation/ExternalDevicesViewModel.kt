@@ -44,7 +44,8 @@ class ExternalDevicesViewModel @Inject constructor(
             bluetoothPaymentService.isRunning.collect { isRunning ->
                 _state.value = _state.value.copy(
                     isServerRunning = isRunning,
-                    wizardStep = if (!isRunning) WizardStep.NONE else _state.value.wizardStep
+                    wizardStep = if (!isRunning) WizardStep.NONE else _state.value.wizardStep,
+                    showPairingHelp = if (!isRunning) false else _state.value.showPairingHelp
                 )
             }
         }
@@ -55,6 +56,7 @@ class ExternalDevicesViewModel @Inject constructor(
                 val previousCount = _state.value.connectedDevices.size
                 val newCount = devices.size
 
+                val shouldDismissPairingHelp = newCount > previousCount && _state.value.showPairingHelp
                 _state.value = _state.value.copy(
                     connectedDevices = devices,
                     // Auto-advance wizard when first device connects while waiting
@@ -70,7 +72,9 @@ class ExternalDevicesViewModel @Inject constructor(
                         "Nuevo dispositivo conectado (${newCount} total)"
                     } else {
                         _state.value.message
-                    }
+                    },
+                    showPairingHelp = if (shouldDismissPairingHelp) false else _state.value.showPairingHelp,
+                    pairingRequiresPin = if (shouldDismissPairingHelp) false else _state.value.pairingRequiresPin
                 )
             }
         }
@@ -83,19 +87,32 @@ class ExternalDevicesViewModel @Inject constructor(
             }
         }
 
+        viewModelScope.launch {
+            bluetoothPaymentService.allowMultipleDevices.collect { allowed ->
+                _state.value = _state.value.copy(allowMultipleDevices = allowed)
+            }
+        }
+
         // Pairing events (system dialog may appear on TPV)
         viewModelScope.launch {
             bluetoothPaymentService.pairingEvents.collect { event ->
                 val needsPinOnTpv = event.key < 0
                 _state.value = _state.value.copy(
                     wizardStep = WizardStep.NONE, // avoid blocking system dialog with our modal
-                    message = if (needsPinOnTpv) {
-                        "Se requiere ingresar el PIN que aparece en el iPad.\n\n" +
-                            "Si no aparece el diálogo del sistema en el TPV, sal de esta pantalla y vuelve a intentarlo desde Inicio."
-                    } else {
-                        "Se está confirmando el enlace Bluetooth…"
-                    },
+                    showPairingHelp = true,
+                    pairingRequiresPin = needsPinOnTpv,
+                    message = "",
                     isError = false
+                )
+            }
+        }
+
+        // Authorization events (blocked/pending devices)
+        viewModelScope.launch {
+            bluetoothPaymentService.authorizationEvents.collect { event ->
+                _state.value = _state.value.copy(
+                    message = event.message,
+                    isError = event.isError
                 )
             }
         }
@@ -104,8 +121,8 @@ class ExternalDevicesViewModel @Inject constructor(
     /**
      * Forget a known device (remove from persistent storage)
      */
-    fun forgetDevice(address: String) {
-        bluetoothPaymentService.forgetDevice(address)
+    fun forgetDevice(device: KnownDevice) {
+        bluetoothPaymentService.forgetDevice(device.deviceId, device.address)
         _state.value = _state.value.copy(
             message = "Dispositivo olvidado"
         )
@@ -118,6 +135,26 @@ class ExternalDevicesViewModel @Inject constructor(
         bluetoothPaymentService.forgetAllDevices()
         _state.value = _state.value.copy(
             message = "Todos los dispositivos olvidados"
+        )
+    }
+
+    fun approveDevice(device: KnownDevice) {
+        bluetoothPaymentService.approveDevice(device.deviceId, device.address)
+        _state.value = _state.value.copy(
+            message = "Dispositivo autorizado",
+            isError = false
+        )
+    }
+
+    fun setAllowMultipleDevices(allowed: Boolean) {
+        bluetoothPaymentService.setAllowMultipleDevices(allowed)
+        _state.value = _state.value.copy(
+            message = if (allowed) {
+                "Ahora se permiten múltiples dispositivos"
+            } else {
+                "Solo 1 dispositivo permitido"
+            },
+            isError = false
         )
     }
 
@@ -200,6 +237,13 @@ class ExternalDevicesViewModel @Inject constructor(
         )
     }
 
+    fun dismissPairingHelp() {
+        _state.value = _state.value.copy(
+            showPairingHelp = false,
+            pairingRequiresPin = false
+        )
+    }
+
     /**
      * Clear message
      */
@@ -232,10 +276,13 @@ data class ExternalDevicesState(
     val isServerRunning: Boolean = false,
     val connectedDevices: List<ConnectedDevice> = emptyList(),
     val knownDevices: List<KnownDevice> = emptyList(),  // Persists across APK updates
+    val allowMultipleDevices: Boolean = true,
     val wizardStep: WizardStep = WizardStep.NONE,
     val message: String = "",
     val isError: Boolean = false,
-    val lastPaymentAmount: Long? = null
+    val lastPaymentAmount: Long? = null,
+    val showPairingHelp: Boolean = false,
+    val pairingRequiresPin: Boolean = false
 ) {
     /**
      * First connected device (for backward compatibility)

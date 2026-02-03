@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.domain.models.Result
+import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.authentication.domain.models.AuthResponse
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
@@ -30,6 +31,7 @@ class LoginViewModel @Inject constructor(
     private val authRepository: AuthRepository,
     private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
     private val socketManager: SocketManager,
+    private val deviceInfoManager: DeviceInfoManager,
     private val tpvSettingsRepository: TpvSettingsRepository,
     private val timeEntryRepository: TimeEntryRepository
 ) : ViewModel() {
@@ -232,10 +234,11 @@ class LoginViewModel @Inject constructor(
                 Timber.d("🔌 [Socket.IO] Connecting to: $socketUrl")
                 Timber.d("🔌 [Socket.IO] Venue ID: $venueId")
 
-                // Connect with JWT authentication
+                // Connect with JWT authentication + terminalId for direct socket routing
                 socketManager.connect(
                     url = socketUrl,
                     token = jwtToken,
+                    terminalId = deviceInfoManager.getSerialNumber(),
                     reconnection = true,
                     reconnectionAttempts = 5
                 )

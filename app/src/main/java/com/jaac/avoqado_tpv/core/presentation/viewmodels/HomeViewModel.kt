@@ -79,7 +79,9 @@ class HomeViewModel @Inject constructor(
     private val connectionEventManager: ConnectionEventManager,
     private val terminalConfigRepository: TerminalConfigRepository,
     private val merchantRepository: MerchantRepository,
-    private val deviceInfoManager: DeviceInfoManager
+    private val deviceInfoManager: DeviceInfoManager,
+    // 📡 Socket.IO Payment Bridge - Forward socket payment requests to BLE pipeline
+    private val bluetoothPaymentService: com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -333,10 +335,11 @@ class HomeViewModel @Inject constructor(
                 Timber.d("🔌 [Socket.IO] URL: $socketUrl")
                 Timber.d("🔌 [Socket.IO] Venue ID: $venueId")
 
-                // Connect with JWT authentication
+                // Connect with JWT authentication + terminalId for direct socket routing
                 socketManager.connect(
                     url = socketUrl,
                     token = jwtToken,
+                    terminalId = deviceInfoManager.getSerialNumber(),
                     reconnection = true,
                     reconnectionAttempts = 5
                 )
@@ -608,6 +611,23 @@ class HomeViewModel @Inject constructor(
                     is SocketEvent.PeripheralError -> {
                         Timber.e("⚠️ [Socket] Peripheral error: ${event.peripheralType} - ${event.errorMessage} (severity: ${event.severity})")
                         _hardwareStatus.tryEmit(event)
+                    }
+
+                    // ═══════════════════════════════════════════════════════════
+                    // TERMINAL PAYMENT REQUEST (iOS → Backend → Socket.IO → TPV)
+                    // ═══════════════════════════════════════════════════════════
+                    is SocketEvent.TerminalPaymentRequest -> {
+                        Timber.i("💳 [Socket] Terminal payment request: ${event.requestId} | amount=${event.amountCents} cents")
+                        val request = com.jaac.avoqado_tpv.core.bluetooth.BlePaymentRequest(
+                            amountCents = event.amountCents,
+                            tipCents = event.tipCents,
+                            rating = event.rating,
+                            skipReview = event.skipReview,
+                            orderId = event.orderId,
+                            source = com.jaac.avoqado_tpv.core.bluetooth.PaymentSource.SOCKET,
+                            socketRequestId = event.requestId
+                        )
+                        bluetoothPaymentService.submitSocketPaymentRequest(request)
                     }
 
                     // Other events handled by other ViewModels (PaymentViewModel, OrderViewModel, etc.)

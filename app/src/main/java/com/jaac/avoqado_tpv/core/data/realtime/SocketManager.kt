@@ -58,6 +58,8 @@ class SocketManager @Inject constructor() {
     private var currentUrl: String? = null
     private var currentToken: String? = null
 
+    private var currentTerminalId: String? = null
+
     /**
      * Shared Flow for all Socket.IO events
      * Replay = 1: New subscribers get the last emitted event
@@ -95,6 +97,7 @@ class SocketManager @Inject constructor() {
     fun connect(
         url: String,
         token: String,
+        terminalId: String? = null,
         reconnection: Boolean = true,
         reconnectionAttempts: Int = 5
     ) {
@@ -105,12 +108,16 @@ class SocketManager @Inject constructor() {
             // Store for reconnection
             currentUrl = url
             currentToken = token
+            currentTerminalId = terminalId
 
             // Socket.IO connection options
             val options = IO.Options().apply {
                 // Authentication - Server checks 4 sources (auth, query, header, cookie)
                 // We use auth object (most reliable for mobile)
-                auth = mapOf("token" to token)
+                auth = buildMap {
+                    put("token", token)
+                    if (terminalId != null) put("terminalId", terminalId)
+                }
 
                 // Transports: WebSocket preferred, fallback to polling
                 transports = arrayOf("websocket", "polling")
@@ -174,7 +181,7 @@ class SocketManager @Inject constructor() {
 
         if (url != null && token != null) {
             Timber.d("🔄 Socket.IO reconnecting...")
-            connect(url, token)
+            connect(url, token, currentTerminalId)
         } else {
             Timber.w("⚠️ Cannot reconnect: No stored credentials")
         }
@@ -342,6 +349,12 @@ class SocketManager @Inject constructor() {
         on("product_price_changed", onProductPriceChanged)
         on("menu_category_updated", onMenuCategoryUpdated)
         on("menu_category_deleted", onMenuCategoryDeleted)
+
+        // ========================================
+        // Terminal Payment Request (iOS → Backend → TPV)
+        // ========================================
+
+        on("terminal:payment_request", onTerminalPaymentRequest)
 
         // ========================================
         // Hardware Events (NEW)
@@ -1180,6 +1193,33 @@ class SocketManager @Inject constructor() {
     }
 
     // ========================================
+    // Event Handler - Terminal Payment Request
+    // ========================================
+
+    private val onTerminalPaymentRequest = Emitter.Listener { args ->
+        try {
+            val data = args.getOrNull(0) as? JSONObject ?: return@Listener
+
+            Timber.i("💳 [Socket] Terminal payment request received: ${data.optString("requestId")}")
+            _events.tryEmit(
+                SocketEvent.TerminalPaymentRequest(
+                    requestId = data.optString("requestId", ""),
+                    amountCents = data.optLong("amountCents", 0),
+                    tipCents = data.optLong("tipCents", 0),
+                    rating = data.optInt("rating").takeIf { data.has("rating") },
+                    skipReview = data.optBoolean("skipReview", true),
+                    orderId = data.optString("orderId").takeIf { it.isNotEmpty() },
+                    senderDeviceName = data.optString("senderDeviceName").takeIf { it.isNotEmpty() },
+                    venueId = data.optString("venueId", ""),
+                    timestamp = data.optString("timestamp", "")
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error parsing terminal:payment_request")
+        }
+    }
+
+    // ========================================
     // Event Handlers - Errors
     // ========================================
 
@@ -1312,6 +1352,56 @@ class SocketManager @Inject constructor() {
             Timber.d("📊 [RESULT] Command $commandId: $resultStatus")
         } catch (e: Exception) {
             Timber.e(e, "❌ Failed to emit command result")
+        }
+    }
+
+    // ========================================
+    // Terminal Payment Result Emission
+    // ========================================
+
+    /**
+     * Send payment result back to backend via Socket.IO.
+     * Backend resolves the pending HTTP request from iOS.
+     *
+     * @param requestId The original request ID from terminal:payment_request
+     * @param status "success" or "failed"
+     * @param transactionId Blumon transaction ID (if success)
+     * @param cardDetails Card info for receipt
+     * @param errorMessage Error description (if failed)
+     * @param receiptUrl Receipt URL (if available)
+     * @param receiptAccessKey Receipt access key for QR (if available)
+     */
+    fun emitTerminalPaymentResult(
+        requestId: String,
+        status: String,
+        transactionId: String? = null,
+        cardDetails: Map<String, String?>? = null,
+        errorMessage: String? = null,
+        receiptUrl: String? = null,
+        receiptAccessKey: String? = null
+    ) {
+        try {
+            socket?.emit("terminal:payment_result", JSONObject().apply {
+                put("requestId", requestId)
+                put("status", status)
+                put("transactionId", transactionId ?: JSONObject.NULL)
+                put("errorMessage", errorMessage ?: JSONObject.NULL)
+                if (cardDetails != null) {
+                    put("cardDetails", JSONObject().apply {
+                        cardDetails.forEach { (k, v) -> put(k, v ?: JSONObject.NULL) }
+                    })
+                }
+                if (receiptUrl != null || receiptAccessKey != null) {
+                    put("receipt", JSONObject().apply {
+                        put("receiptUrl", receiptUrl ?: JSONObject.NULL)
+                        put("receiptAccessKey", receiptAccessKey ?: JSONObject.NULL)
+                    })
+                }
+                put("completedAt", java.time.Instant.now().toString())
+            })
+            Timber.i("📡 [Socket] Emitted terminal:payment_result | requestId=$requestId | status=$status")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Failed to emit terminal:payment_result")
         }
     }
 

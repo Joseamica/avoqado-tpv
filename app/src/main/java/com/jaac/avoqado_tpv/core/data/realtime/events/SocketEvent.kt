@@ -172,6 +172,37 @@ sealed interface SocketEvent {
     ) : SocketEvent
 
     // ========================================
+    // Terminal Payment Request (iOS → Backend → TPV via Socket.IO)
+    // ========================================
+
+    /**
+     * Payment request received via Socket.IO from backend.
+     * iOS app sent an HTTP request to backend, which forwards it here.
+     * TPV processes the payment and sends result back via Socket.IO.
+     *
+     * @param requestId Unique request ID for matching response
+     * @param amountCents Payment amount in cents
+     * @param tipCents Tip amount in cents
+     * @param rating Customer rating (1-5)
+     * @param skipReview Whether to skip review/tip screens
+     * @param orderId Associated order ID (null for fast payments)
+     * @param senderDeviceName Name of the iOS device that sent the request
+     * @param venueId Venue ID
+     * @param timestamp ISO timestamp
+     */
+    data class TerminalPaymentRequest(
+        val requestId: String,
+        val amountCents: Long,
+        val tipCents: Long,
+        val rating: Int?,
+        val skipReview: Boolean,
+        val orderId: String?,
+        val senderDeviceName: String?,
+        val venueId: String,
+        val timestamp: String
+    ) : SocketEvent
+
+    // ========================================
     // Order Events
     // ========================================
 

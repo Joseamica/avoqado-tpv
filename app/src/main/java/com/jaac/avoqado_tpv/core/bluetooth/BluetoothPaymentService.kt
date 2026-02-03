@@ -280,6 +280,15 @@ class BluetoothPaymentService @Inject constructor(
     private val _paymentRequests = MutableSharedFlow<BlePaymentRequest>(extraBufferCapacity = 1)
     val paymentRequests: SharedFlow<BlePaymentRequest> = _paymentRequests.asSharedFlow()
 
+    /**
+     * Submit a payment request from Socket.IO (server-routed payment).
+     * Reuses the same SharedFlow as BLE payments so AppNavigation handles it identically.
+     */
+    fun submitSocketPaymentRequest(request: BlePaymentRequest) {
+        Timber.i("📡 [Socket-Service] Forwarding socket payment: ${request.amountCents} cents (requestId=${request.socketRequestId})")
+        _paymentRequests.tryEmit(request)
+    }
+
     // 🔐 Pairing events (inform UI when the OS prompts for pairing)
     val pairingEvents: SharedFlow<PairingEvent> = BluetoothPaymentForegroundService.pairingEvents
 

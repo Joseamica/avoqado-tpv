@@ -106,6 +106,7 @@ interface AppNavigationEntryPoint {
     fun initializationManager(): com.jaac.avoqado_tpv.features.payment.data.InitializationManager
     fun updateRequestManager(): UpdateRequestManager
     fun bluetoothPaymentService(): com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService
+    fun socketManager(): com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 }
 
 /**
@@ -152,6 +153,7 @@ fun AppNavigation(
     val isKioskMode by kioskModeManager.isKioskMode.collectAsStateWithLifecycle()
     val modulesRepository = remember { kioskEntryPoint.modulesRepository() }
     val bluetoothPaymentService = remember { kioskEntryPoint.bluetoothPaymentService() }
+    val socketManager = remember { kioskEntryPoint.socketManager() }
 
     // 📥 UPDATE REQUEST OBSERVATION (Remote update commands from dashboard)
     // When dashboard sends REQUEST_UPDATE command, show dialog to user
@@ -170,6 +172,15 @@ fun AppNavigation(
             val currentRoute = navController.currentBackStackEntry?.destination?.route
             if (currentRoute == NavRoute.Payment.route) {
                 Timber.w("⚠️ [BLE] Payment already in progress - ignoring amount: ${request.amountCents}")
+                // If this came via socket, send rejection back so iOS doesn't hang
+                if (request.source == com.jaac.avoqado_tpv.core.bluetooth.PaymentSource.SOCKET && request.socketRequestId != null) {
+                    socketManager.emitTerminalPaymentResult(
+                        requestId = request.socketRequestId!!,
+                        status = "failed",
+                        errorMessage = "Ya hay un pago en proceso en el terminal"
+                    )
+                    Timber.i("📡 [Socket] Sent rejection for requestId=${request.socketRequestId}")
+                }
                 return@collect
             }
 
@@ -198,7 +209,12 @@ fun AppNavigation(
                 Timber.i("💨 [BLE] QUICK PAYMENT mode (no orderId)")
             }
 
-            Timber.i("🔵 [BLE] Navigating to payment | amount=$formattedAmount | cents=${request.amountCents} | orderId=${request.orderId ?: "null"}")
+            // Pass payment source and socket request ID for result callback
+            handle.set("paymentSource", request.source.name)
+            handle.set("socketRequestId", request.socketRequestId)
+
+            val sourceLabel = if (request.source == com.jaac.avoqado_tpv.core.bluetooth.PaymentSource.SOCKET) "SOCKET" else "BLE"
+            Timber.i("🔵 [$sourceLabel] Navigating to payment | amount=$formattedAmount | cents=${request.amountCents} | orderId=${request.orderId ?: "null"}")
             navController.navigate(NavRoute.Payment.route) {
                 launchSingleTop = true
             }
@@ -982,7 +998,11 @@ fun AppNavigation(
             // 🥝 KIOSK MODE PARAMS
             val isKioskPayment = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("isKioskPayment") ?: false
 
-            Timber.d("💳 [Payment] Pay-later context: wasPayLaterOrder=$wasPayLaterOrder, count=$payLaterOrdersCount, isKiosk=$isKioskPayment")
+            // 📡 SOCKET PAYMENT SOURCE (for sending result back via Socket.IO)
+            val paymentSourceStr = navController.previousBackStackEntry?.savedStateHandle?.get<String>("paymentSource")
+            val socketRequestId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("socketRequestId")
+
+            Timber.d("💳 [Payment] Pay-later context: wasPayLaterOrder=$wasPayLaterOrder, count=$payLaterOrdersCount, isKiosk=$isKioskPayment, source=$paymentSourceStr")
 
             // 🔌 Get TableRepository via Hilt EntryPoint for clearing tables post-payment
             val context = LocalContext.current
@@ -1028,6 +1048,9 @@ fun AppNavigation(
                 // 💳 PAY-LATER CONTEXT PARAMS
                 wasPayLaterOrder = wasPayLaterOrder,
                 payLaterOrdersCount = payLaterOrdersCount,
+                // 📡 SOCKET PAYMENT SOURCE
+                paymentSource = paymentSourceStr,
+                socketRequestId = socketRequestId,
                 // 🥝 KIOSK MODE PARAMS
                 isKioskPayment = isKioskPayment,
                 onKioskPaymentSuccess = if (isKioskPayment) { displayOrderNumber, receipt, orderItems ->

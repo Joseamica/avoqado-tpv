@@ -126,6 +126,9 @@ fun PaymentScreen(
     isKioskPayment: Boolean = false,  // 🥝 True = payment from kiosk self-service flow
     kioskStaffId: String? = null,  // 🥝 Staff ID from kiosk session for sales attribution (commissions/tips). If null, uses authContext staffId.
     onKioskPaymentSuccess: ((String, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt?, List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>?) -> Unit)? = null,  // 🥝 Callback with orderNumber + receipt + orderItems when kiosk payment succeeds
+    // 📡 SOCKET PAYMENT SOURCE (for sending result back via Socket.IO)
+    paymentSource: String? = null,  // "BLE" | "SOCKET" | null (direct)
+    socketRequestId: String? = null,  // Request ID for Socket.IO result callback
     onNavigateBack: () -> Unit,
     onNavigateHome: () -> Unit = onNavigateBack,
     onRefundComplete: () -> Unit = onNavigateBack,
@@ -194,6 +197,11 @@ fun PaymentScreen(
         if (skipProofOfSale) {
             viewModel.setSkipProofOfSale(true)
         }
+    }
+
+    // 📡 SOCKET PAYMENT: Pass source info to ViewModel for result callback
+    LaunchedEffect(paymentSource, socketRequestId) {
+        viewModel.setSocketPaymentSource(paymentSource, socketRequestId)
     }
 
     // 📊 Dynamic step counter based on TPV settings

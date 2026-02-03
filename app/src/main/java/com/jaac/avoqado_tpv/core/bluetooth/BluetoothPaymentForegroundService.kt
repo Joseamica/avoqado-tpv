@@ -484,6 +484,10 @@ class BluetoothPaymentForegroundService : Service() {
             _connectedDeviceAddress.value = deviceAddress
         }
 
+        // Proactively trigger bonding to avoid missing pairing dialogs on iOS.
+        // This makes the OS show the pairing UI or completes "Just Works" automatically.
+        tryProactiveBonding(device)
+
         // Update notification to show connected device count
         val deviceCount = updatedDevices.size
         updateNotification(

@@ -126,7 +126,9 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch(Dispatchers.IO) {
                 startHeartbeatIfActivated()
                 fetchTerminalConfigIfActivated()
-                restoreBleServerIfPreviouslyRunning()
+                // TEMPORARILY DISABLED: BLE server restore - using API + WebSockets instead
+                // Will re-enable when BLE functionality is needed again
+                // restoreBleServerIfPreviouslyRunning()
             }
         } else {
             Timber.e("❌ READ_PHONE_STATE permission DENIED - app cannot function without hardware serial")
@@ -217,7 +219,9 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch(Dispatchers.IO) {
                 startHeartbeatIfActivated()
                 fetchTerminalConfigIfActivated()
-                restoreBleServerIfPreviouslyRunning()
+                // TEMPORARILY DISABLED: BLE server restore - using API + WebSockets instead
+                // Will re-enable when BLE functionality is needed again
+                // restoreBleServerIfPreviouslyRunning()
             }
         }
     }

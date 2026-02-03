@@ -274,6 +274,10 @@ class PaymentViewModel @Inject constructor(
     // 🪙 CRYPTO PAYMENT: Track pending B4Bit request for Socket.IO matching
     private var currentCryptoRequestId: String? = null  // B4Bit request ID (for matching webhook callback)
 
+    // 📡 SOCKET PAYMENT: Track source for sending result back via Socket.IO
+    private var _paymentSource: String? = null  // "BLE" | "SOCKET" | null
+    private var _socketRequestId: String? = null  // Request ID for Socket.IO result callback
+
     // 💸 REFUND SUPPORT: Refund context now stored in PaymentSession (no mutable field)
 
     // 📱 SERIALIZED SALE: Skip local order lookup is tracked in PaymentSession.orderContext
@@ -358,6 +362,7 @@ class PaymentViewModel @Inject constructor(
         // If SDK is not ready when user starts payment, we await it in startPayment()
 
         collectSocketEvents()  // 🔌 Listen to real-time Socket.IO events
+        observeSocketPaymentResult()  // 📡 Send result back via Socket.IO if source=SOCKET
 
         // 📸 Step 4: Load TPV settings for verification screen
         loadTpvSettings()
@@ -515,6 +520,53 @@ class PaymentViewModel @Inject constructor(
      *
      * Pattern: Similar to Square Terminal multi-device synchronization
      */
+    /**
+     * 📡 Observe payment state and send result back via Socket.IO when source=SOCKET.
+     * This ensures the backend can resolve the pending HTTP long-poll request.
+     */
+    private fun observeSocketPaymentResult() {
+        viewModelScope.launch {
+            _state.collect { state ->
+                val requestId = _socketRequestId ?: return@collect
+                if (_paymentSource != "SOCKET") return@collect
+
+                when (state) {
+                    is PaymentState.Success -> {
+                        Timber.i("📡 [Socket-Payment] Emitting SUCCESS result for requestId=$requestId")
+                        socketManager.emitTerminalPaymentResult(
+                            requestId = requestId,
+                            status = "success",
+                            transactionId = state.receipt?.paymentId,
+                            cardDetails = state.cardDetails?.let { card ->
+                                mapOf(
+                                    "lastFour" to card.maskedPan.takeLast(4),
+                                    "brand" to card.cardBrand.name
+                                )
+                            },
+                            errorMessage = null,
+                            receiptUrl = state.receipt?.receiptUrl,
+                            receiptAccessKey = state.receipt?.accessKey
+                        )
+                        // Clear to prevent duplicate emissions
+                        _socketRequestId = null
+                    }
+                    is PaymentState.Error -> {
+                        Timber.i("📡 [Socket-Payment] Emitting FAILED result for requestId=$requestId")
+                        socketManager.emitTerminalPaymentResult(
+                            requestId = requestId,
+                            status = "failed",
+                            transactionId = null,
+                            cardDetails = null,
+                            errorMessage = state.message
+                        )
+                        _socketRequestId = null
+                    }
+                    else -> { /* ignore intermediate states */ }
+                }
+            }
+        }
+    }
+
     private fun collectSocketEvents() {
         viewModelScope.launch {
             socketManager.events.collect { event ->
@@ -986,6 +1038,17 @@ class PaymentViewModel @Inject constructor(
      *
      * @param isKiosk true = kiosk mode (deferred recording), false = normal flow
      */
+    /**
+     * 📡 Set socket payment source info (for sending result back via Socket.IO)
+     */
+    fun setSocketPaymentSource(source: String?, requestId: String?) {
+        _paymentSource = source
+        _socketRequestId = requestId
+        if (source == "SOCKET") {
+            Timber.i("📡 [Socket-Payment] Source set: source=$source, requestId=$requestId")
+        }
+    }
+
     fun setKioskPaymentMode(isKiosk: Boolean, staffId: String? = null) {
         Timber.i("🥝 [KIOSK] Payment mode set: isKiosk=$isKiosk, staffId=$staffId")
         if (isKiosk) {
@@ -4226,6 +4289,10 @@ class PaymentViewModel @Inject constructor(
 
         // 🪙 Clear crypto payment state
         currentCryptoRequestId = null
+
+        // 📡 Clear socket payment source
+        _paymentSource = null
+        _socketRequestId = null
 
         updateSessionSnapshot(
             reason = "resetPayment",

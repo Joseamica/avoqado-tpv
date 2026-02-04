@@ -729,6 +729,8 @@ versionName = "1.1.1" // Semántico: MAJOR.MINOR.PATCH
 
 **Claude es responsable de gestionar commits y releases.** El usuario NO debe preocuparse por git.
 
+**⚠️ REGLA CRÍTICA: NUNCA ejecutar comandos git (commit, push, tag, etc.) sin autorización EXPLÍCITA del usuario.** Siempre preguntar primero y esperar confirmación.
+
 ### 🔄 Después de CADA implementación/fix, Claude DEBE:
 
 ```

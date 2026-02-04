@@ -42,6 +42,23 @@ interface DraftOrderItemDao {
     suspend fun getItemsByOrder(orderId: String): List<DraftOrderItemEntity>
 
     /**
+     * Get items for an order filtered by product ID (excluding soft-deleted).
+     *
+     * Used to merge identical items (same product + modifiers + notes) on add.
+     *
+     * @param orderId Order ID
+     * @param productId Product ID
+     * @return List of matching items (excludes DELETED status)
+     */
+    @Query("""
+        SELECT * FROM draft_order_items
+        WHERE order_id = :orderId
+          AND product_id = :productId
+          AND sync_status != 'DELETED'
+    """)
+    suspend fun getItemsByOrderAndProduct(orderId: String, productId: String): List<DraftOrderItemEntity>
+
+    /**
      * Get all items for an order as Flow (reactive, excluding soft-deleted).
      * Emits new list whenever items change (add/remove/update).
      *
@@ -231,6 +248,16 @@ interface DraftOrderItemDao {
      */
     @Query("SELECT COUNT(*) FROM draft_order_items WHERE order_id = :orderId AND sync_status != 'DELETED'")
     suspend fun getItemCount(orderId: String): Int
+
+    /**
+     * Get max line position for items in an order.
+     * Used to generate stable insertion order for new items.
+     *
+     * @param orderId Order ID
+     * @return Max line_position or null if none
+     */
+    @Query("SELECT MAX(line_position) FROM draft_order_items WHERE order_id = :orderId")
+    suspend fun getMaxLinePosition(orderId: String): Long?
 
     /**
      * Get items by product ID across all orders.

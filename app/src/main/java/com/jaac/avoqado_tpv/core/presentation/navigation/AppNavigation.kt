@@ -326,12 +326,22 @@ fun AppNavigation(
                 kioskSuccessReceipt?.let { receipt ->
                     coroutineScopeForKiosk.launch {
                         Timber.i("🥝 [KIOSK] Printing receipt for order: $kioskSuccessOrderNumber")
-                        printerManager.printKioskReceipt(
-                            orderNumber = kioskSuccessOrderNumber ?: "",
-                            receiptUrl = receipt.receiptUrl,
-                            amount = receipt.amount.toString(),
-                            tipAmount = receipt.tipAmount.toString()
-                        )
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            printerManager.printKioskReceipt(
+                                orderNumber = kioskSuccessOrderNumber ?: "",
+                                receiptUrl = receipt.receiptUrl,
+                                amount = receipt.amount.toString(),
+                                tipAmount = receipt.tipAmount.toString(),
+                                venueName = secureStorage.getVenueName(),
+                                venueLogoUrl = secureStorage.getVenueLogo(),
+                                venueLegalName = secureStorage.getVenueLegalName(),
+                                venueRfc = secureStorage.getVenueRfc(),
+                                venueAddress = secureStorage.getVenueAddress(),
+                                venueCity = secureStorage.getVenueCity(),
+                                venueState = secureStorage.getVenueState(),
+                                venueZipCode = secureStorage.getVenueZipCode()
+                            )
+                        }
                     }
                 } ?: Timber.w("🥝 [KIOSK] Cannot print - no receipt available")
             },
@@ -1286,7 +1296,9 @@ fun AppNavigation(
                     navController.currentBackStackEntry?.savedStateHandle?.apply {
                         set("paymentId", payment.id)
                         set("orderNumber", payment.orderNumber)
-                        set("originalAmount", payment.amount.toString())
+                        // 💸 CRITICAL FIX: Use totalAmount (includes tip), NOT amount (base only)
+                        // Blumon rejects refunds where amount doesn't match original payment total
+                        set("originalAmount", payment.totalAmount.toString())
                         set("originalTipAmount", payment.tipAmount.toString())
                         set("paymentMethod", payment.method.label) // Payment uses 'method: PaymentMethod' enum
                         set("createdAt", payment.createdAt.toString())

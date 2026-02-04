@@ -31,6 +31,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
@@ -411,6 +412,8 @@ private fun ExpandedContent(
 
         HorizontalDivider()
 
+        val displayItems = remember(order.items) { order.items.distinctBy { it.id } }
+
         // Scrollable items list
         LazyColumn(
             modifier = Modifier
@@ -419,7 +422,7 @@ private fun ExpandedContent(
             verticalArrangement = Arrangement.spacedBy(sizes.spacingSmall),
             contentPadding = PaddingValues(sizes.paddingScreen)
         ) {
-            items(order.items, key = { it.id }) { item ->
+            items(displayItems, key = { it.id }) { item ->
                 ExpandedItemCard(
                     item = item,
                     onQuantityChange = { newQty -> onItemQuantityChange(item, newQty) },

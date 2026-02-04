@@ -121,7 +121,7 @@ class PermissionsRepository @Inject constructor(
      *
      * **Usage:**
      * ```kotlin
-     * if (permissionsRepository.hasPermission("tpv-payments:refund")) {
+     * if (permissionsRepository.hasPermission("payments:refund")) {
      *     // Show refund button
      * }
      * ```

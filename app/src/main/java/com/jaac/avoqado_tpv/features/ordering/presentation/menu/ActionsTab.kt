@@ -377,7 +377,7 @@ fun ActionsTab(
 
         ActionsDialogState.VoidItems -> {
             VoidItemsDialog(
-                items = order.items,
+                items = order.items.distinctBy { it.id },
                 onDismiss = { dialogState = ActionsDialogState.None },
                 onConfirm = { selectedIds, reason ->
                     onVoidItems(selectedIds, reason)

@@ -156,6 +156,7 @@ fun PaymentScreen(
     val pinEntryState by viewModel.pinEntryState.collectAsStateWithLifecycle()  // PIN asterisks feedback
     val isPinDialogVisible by viewModel.isPinDialogVisible.collectAsStateWithLifecycle()  // PIN dialog visibility
     val isSendingReceipt by viewModel.isSendingReceipt.collectAsStateWithLifecycle()  // 📧 Send receipt loading
+    val isPrinting by viewModel.isPrinting.collectAsStateWithLifecycle()  // 🖨️ Receipt printing loading
     val sendReceiptMessage by viewModel.sendReceiptMessage.collectAsStateWithLifecycle()  // 📧 Send receipt result
     val flowOrigin by viewModel.flowOrigin.collectAsStateWithLifecycle()
     // 👤 Customer search states (for email receipt dialog)
@@ -760,7 +761,8 @@ fun PaymentScreen(
                                         Timber.e("📸 [PROOF-OF-SALE] Missing: paymentId=${paymentId==null}, totalAmount=${totalAmount==null}")
                                     }
                                 },
-                                isUploadingProofOfSale = isUploadingProofOfSale
+                                isUploadingProofOfSale = isUploadingProofOfSale,
+                                isPrinting = isPrinting  // 🖨️ Show "Imprimiendo..." on button
                             )
                         }
                     }
@@ -785,14 +787,20 @@ fun PaymentScreen(
                             onNavigateToShifts()
                         },
                         onCancel = {
-                            viewModel.resetPayment()
-                            navigateBack()
+                            if (!isRefundMode && currentState.canRetry && currentState.context != null && !currentState.showOpenShiftButton) {
+                                viewModel.returnToSelectingMerchantFromError(currentState.context)
+                            } else {
+                                viewModel.resetPayment()
+                                navigateBack()
+                            }
                         }
                     )
                 }
-                // 🆕 NEW: Printing state (show loading indicator)
+                // 🖨️ Printing state is no longer used for UI transitions - printing feedback
+                // is shown on the Success screen's button (changes to "Imprimiendo...").
+                // This case is kept for sealed class exhaustiveness but should not be reached.
                 is PaymentState.Printing -> {
-                    PaymentLoadingContent("Imprimiendo recibo...")
+                    // No separate UI - printing happens in background while on Success screen
                 }
                 // 🆕 NEW: Print error state (show error dialog, can retry or dismiss)
                 is PaymentState.PrintError -> {
@@ -1182,7 +1190,9 @@ private fun PaymentLoadingContent(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(
-                modifier = Modifier.padding(32.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 CircularProgressIndicator(
@@ -1267,7 +1277,9 @@ private fun PaymentSuccessContent(
     // 📸 PROOF-OF-SALE
     showProofOfSaleButton: Boolean = false,  // Show camera FAB for SERIALIZED_INVENTORY
     onProofOfSalePhotoTaken: (String) -> Unit = {},  // Callback when photo is captured (path)
-    isUploadingProofOfSale: Boolean = false  // Show loading during upload
+    isUploadingProofOfSale: Boolean = false,  // Show loading during upload
+    // 🖨️ RECEIPT PRINTING
+    isPrinting: Boolean = false  // Show "Imprimiendo..." on print button
 ) {
     val displayOrderNumber = OrderNumberFormatter.display(orderNumber)
 
@@ -1669,28 +1681,37 @@ private fun PaymentSuccessContent(
                         shape = buttonShape
                     )
             ) {
-                // 🖨️ Print receipt button (left)
+                // 🖨️ Print receipt button (left) - shows "Imprimiendo..." when printing
                 Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
                         .background(MaterialTheme.colorScheme.surface)
-                        .clickable { onPrintReceipt() },  // Material3 uses theme ripple by default
+                        .clickable(enabled = !isPrinting) { onPrintReceipt() },
                     contentAlignment = Alignment.Center
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Print,
-                            contentDescription = "Imprimir",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        if (isPrinting) {
+                            // 🖨️ Show spinner while printing
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Print,
+                                contentDescription = "Imprimir",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "Imprimir",
+                            text = if (isPrinting) "Imprimiendo..." else "Imprimir",
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -1996,29 +2017,31 @@ private fun PaymentErrorContent(
 
                 Spacer(modifier = Modifier.height(32.dp))
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     // ⭐ SHIFT VALIDATION: Show "Abrir Turno" button when no shift is open
                     if (showOpenShiftButton) {
                         AvoqadoButton(
                             text = "Abrir Turno",
                             onClick = onOpenShift,
-                            modifier = Modifier.weight(1f)
+                            fullWidth = true
                         )
                     } else if (canRetry) {
                         AvoqadoButton(
                             text = "Reintentar",
                             onClick = onRetry,
-                            modifier = Modifier.weight(1f)
+                            fullWidth = true
                         )
                     }
 
                     AvoqadoButton(
                         text = "Cancelar",
                         onClick = onCancel,
-                        modifier = Modifier.weight(1f)
+                        fullWidth = true
                     )
                 }
             }

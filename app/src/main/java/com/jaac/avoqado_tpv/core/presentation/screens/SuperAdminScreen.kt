@@ -28,6 +28,7 @@ import com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentServer
 import com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService
 import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 import com.jaac.avoqado_tpv.core.observability.ObservabilityTester
+import com.jaac.avoqado_tpv.core.data.network.interceptors.SlowNetworkInterceptor
 import android.content.Context
 import android.Manifest
 import android.os.Build
@@ -284,6 +285,24 @@ private fun SuperAdminScreenContent(
                     )
                 }
 
+                // 🐢 Slow Network Simulation Section
+                item {
+                    SectionHeader(title = "Network Simulation")
+                }
+
+                item {
+                    SlowNetworkCard(
+                        isEnabled = state.isSlowNetworkEnabled,
+                        delayMs = state.slowNetworkDelayMs,
+                        onToggle = { enabled ->
+                            SlowNetworkInterceptor.enabled = enabled
+                        },
+                        onDelayChange = { delayMs ->
+                            SlowNetworkInterceptor.delayMs = delayMs
+                        }
+                    )
+                }
+
                 // Status Messages
                 if (state.message != null) {
                     item {
@@ -470,6 +489,132 @@ private fun StatusMessage(
     }
 }
 
+/**
+ * Slow Network Card - Toggle and configure network delay simulation
+ */
+@Composable
+private fun SlowNetworkCard(
+    isEnabled: Boolean,
+    delayMs: Long,
+    onToggle: (Boolean) -> Unit,
+    onDelayChange: (Long) -> Unit
+) {
+    var enabled by remember { mutableStateOf(isEnabled) }
+    var currentDelay by remember { mutableStateOf(delayMs) }
+
+    // Sync with actual interceptor state on recomposition
+    LaunchedEffect(Unit) {
+        enabled = SlowNetworkInterceptor.enabled
+        currentDelay = SlowNetworkInterceptor.delayMs
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (enabled) {
+                Color(0xFFFF9800).copy(alpha = 0.15f)  // Orange tint when enabled
+            } else {
+                MaterialTheme.colorScheme.surface
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Header with toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Speed,
+                        contentDescription = null,
+                        tint = if (enabled) Color(0xFFFF9800) else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(32.dp)
+                    )
+                    Column {
+                        Text(
+                            text = "Slow Network Simulation",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = if (enabled) "🐢 Enabled - ${currentDelay}ms delay" else "Disabled",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (enabled) Color(0xFFFF9800) else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = { newEnabled ->
+                        enabled = newEnabled
+                        onToggle(newEnabled)
+                        Timber.i("🐢 [SlowNetwork] ${if (newEnabled) "ENABLED" else "DISABLED"} - ${currentDelay}ms delay")
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color(0xFFFF9800),
+                        checkedTrackColor = Color(0xFFFF9800).copy(alpha = 0.5f)
+                    )
+                )
+            }
+
+            // Delay presets (only show when enabled)
+            if (enabled) {
+                Text(
+                    text = "Delay Presets:",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf(
+                        "1s" to 1000L,
+                        "3s" to 3000L,
+                        "5s" to 5000L,
+                        "8s" to 8000L,
+                        "12s" to 12000L
+                    ).forEach { (label, delay) ->
+                        FilterChip(
+                            selected = currentDelay == delay,
+                            onClick = {
+                                currentDelay = delay
+                                onDelayChange(delay)
+                                Timber.i("🐢 [SlowNetwork] Delay set to ${delay}ms")
+                            },
+                            label = { Text(label) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = Color(0xFFFF9800),
+                                selectedLabelColor = Color.White
+                            )
+                        )
+                    }
+                }
+
+                // Warning text
+                Text(
+                    text = "⚠️ All API requests will be delayed. Disable after testing.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFFF9800)
+                )
+            }
+        }
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // VIEW MODEL
 // ══════════════════════════════════════════════════════════════════════
@@ -484,7 +629,10 @@ data class SuperAdminState(
     val isLoading: Boolean = false,
     val message: String? = null,
     val isError: Boolean = false,
-    val isBleServerRunning: Boolean = false
+    val isBleServerRunning: Boolean = false,
+    // 🐢 Slow Network Simulation
+    val isSlowNetworkEnabled: Boolean = false,
+    val slowNetworkDelayMs: Long = 3000L
 )
 
 /**

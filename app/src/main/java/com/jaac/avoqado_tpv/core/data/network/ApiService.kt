@@ -364,6 +364,18 @@ interface ApiService {
         @Path("venueId") venueId: String
     ): Response<com.jaac.avoqado_tpv.core.data.network.dto.VenueWithSettingsResponse>
 
+    /**
+     * Get venue details for receipt/header printing.
+     *
+     * GET /tpv/venues/{venueId}
+     *
+     * Returns the full venue object; we parse only the fields needed by the TPV.
+     */
+    @GET("tpv/venues/{venueId}")
+    suspend fun getVenueDetails(
+        @Path("venueId") venueId: String
+    ): Response<com.jaac.avoqado_tpv.core.data.network.dto.VenueDetailsDto>
+
     // ========== Orders ==========
 
     /**

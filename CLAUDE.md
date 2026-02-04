@@ -162,6 +162,8 @@ Kotlin, Jetpack Compose, POS terminals, payments, offline-first architecture, an
 | `docs/PAYMENT_FLOW_ORIGIN.md`            | **Payment Flow**: Navigation guardrails by origin (fast/order/serialized) |
 | `docs/PAYMENT_SESSION.md`                | **Payment Flow**: Immutable session snapshot (incremental refactor) |
 | `docs/MASTER_TOTP_LOGIN.md`              | **Master TOTP**: Emergency SUPERADMIN access, venue rule bypass |
+| `docs/RECEIPT_PRINTING.md`               | **Receipts**: Printed layout, fiscal header, QR, footer             |
+| `docs/ORDERING_OFFLINE.md`               | **Ordering Offline**: Quick order + table service behavior          |
 | `docs/PAY_LATER_README.md`               | **Pay Later Overview**: Index of all pay-later docs      |
 | `docs/PAY_LATER_IMPLEMENTATION.md`       | **Pay Later (Android)**: Bug fix + banner implementation |
 | `docs/PAY_LATER_TESTING_CHECKLIST.md`    | Pay Later QA manual + automated tests                    |
@@ -216,6 +218,66 @@ adb logcat -c && adb logcat -s PaymentViewModel,MenuViewModel | grep -iE "keywor
 ```
 
 **Full guide**: `ADB_MONITORING_GUIDE.md`
+
+### 🤖 Claude Log Capture (Testing Workflow)
+
+**When working on a specific feature**, use this workflow for automatic log capture and Claude analysis:
+
+#### Workflow
+
+```bash
+# 1. Claude finishes coding → Start log capture for the feature
+./scripts/capture-logs.sh payment start
+
+# 2. You test the feature on the device
+
+# 3. Tell Claude: "ya terminé de testear"
+#    Claude automatically reads logs and analyzes issues
+
+# 4. Logs are cleaned up after review
+```
+
+#### Available Features
+
+| Feature | Tags Captured | Use Case |
+|---------|--------------|----------|
+| `payment` | PaymentViewModel, BlumonService, EmvProcess, CardReader | Card payments, refunds |
+| `order` | OrderViewModel, OrderSync, OrderCache, PendingPayment | Order CRUD, sync |
+| `menu` | MenuViewModel, ProductRepository, CategoryRepository | Products, categories |
+| `bluetooth` | BluetoothPayment, BleServer, BleClient | iOS BLE payments |
+| `socket` | SocketManager, SocketEvent, RealTime | Real-time events |
+| `auth` | AuthRepository, LoginViewModel, TokenRefresh | Login, session |
+| `printer` | PrinterManager, ReceiptPrinter | Receipt printing |
+| `sync` | SyncWorker, SyncCoordinator, Heartbeat | Background sync |
+| `table` | TableViewModel, FloorPlan, TableStatus | Table management |
+| `kiosk` | KioskViewModel, KioskPayment | Self-service mode |
+| `inventory` | SerializedInventory, ProofOfSale | Inventory tracking |
+| `all` | All major components | General debugging |
+
+#### Commands
+
+```bash
+./scripts/capture-logs.sh <feature> start   # Start capturing
+./scripts/capture-logs.sh <feature> stop    # Stop capturing
+./scripts/capture-logs.sh <feature> status  # Check if running
+./scripts/capture-logs.sh <feature> read    # Output for Claude
+```
+
+#### Claude Instructions
+
+**When user says "ya terminé de testear" or similar:**
+
+1. Read the captured logs:
+   ```bash
+   ./scripts/capture-logs.sh <feature> read
+   ```
+2. Analyze for errors, warnings, unexpected behavior
+3. Stop capture and suggest cleanup:
+   ```bash
+   ./scripts/capture-logs.sh <feature> stop
+   ```
+
+**Log file location:** `/tmp/avoqado-logs/<feature>-<timestamp>.log`
 
 ---
 
@@ -498,6 +560,7 @@ adb logcat -s "RoomDatabase:*" | grep -i "migration"
 | Add Socket.IO events          | `SOCKET_IO_IMPLEMENTATION.md`            |
 | Test Socket.IO                | `SOCKET_IO_TESTING.md`                   |
 | Fix local-first sync bugs     | `LOCAL_FIRST_SYNC_PATTERNS.md`           |
+| Ordering offline behavior     | `docs/ORDERING_OFFLINE.md`               |
 | Debug with ADB                | `ADB_MONITORING_GUIDE.md`                |
 | Write tests                   | `TESTING_GUIDE.md`                       |
 
@@ -662,6 +725,6 @@ versionName = "1.1.1" // Semántico: MAJOR.MINOR.PATCH
 
 ---
 
-**Last Updated:** 2025-12-26
+**Last Updated:** 2026-02-03
 **Maintainer:** Development Team
-**Version:** 4.3 (Fixed: APK must use apksigner for v2 signature, not jarsigner)
+**Version:** 4.4 (Added ordering offline documentation)

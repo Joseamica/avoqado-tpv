@@ -51,13 +51,15 @@ import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
  * @param selectedCategory Filter by this category (null = show all)
  * @param onProductClick Callback when product is tapped
  * @param modifier Modifier for customization
+ * @param scrollResetKey Key that resets pagination + scroll (use category/search changes, not backend refresh)
  */
 @Composable
 fun ProductGrid(
     products: List<Product>,
     selectedCategory: ProductCategory?,
     onProductClick: (Product) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    scrollResetKey: Any? = selectedCategory?.id
 ) {
     val sizes = LocalResponsiveSizes.current
 
@@ -74,12 +76,14 @@ fun ProductGrid(
         categoryFiltered.filter { it.available }
     }
 
-    // 🔢 PAGINATION: State management (reset when availableProducts changes)
-    var displayedItemCount by remember(availableProducts) { mutableStateOf(15) }
+    val resetKey = scrollResetKey ?: selectedCategory?.id
+
+    // 🔢 PAGINATION: State management (reset only on filter/search changes)
+    var displayedItemCount by remember(resetKey) { mutableStateOf(15) }
     val gridState = rememberLazyGridState()
 
-    // 📜 SCROLL RESET: Scroll to top when products change (category switch, search)
-    LaunchedEffect(availableProducts) {
+    // 📜 SCROLL RESET: Scroll to top only on filter/search changes
+    LaunchedEffect(resetKey) {
         gridState.scrollToItem(0)  // Always start at the top
     }
 

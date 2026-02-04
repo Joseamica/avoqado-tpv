@@ -104,10 +104,12 @@ object NetworkModule {
         authInterceptor: AuthInterceptor,
         tenantInterceptor: TenantInterceptor,
         tokenAuthenticator: TokenAuthenticator,  // ✅ Handles 401 with token refresh
-        certificatePinner: CertificatePinner?
+        certificatePinner: CertificatePinner?,
+        slowNetworkInterceptor: com.jaac.avoqado_tpv.core.data.network.interceptors.SlowNetworkInterceptor  // 🐢 DEBUG: Simulate slow network
     ): OkHttpClient {
         return OkHttpClient.Builder()
             // Interceptors (order matters!)
+            .addInterceptor(slowNetworkInterceptor) // 🐢 DEBUG: Slow network simulation (first, before auth)
             .addInterceptor(authInterceptor)        // Add JWT token
             .addInterceptor(tenantInterceptor)      // Add venueId
             .addInterceptor(LoggingInterceptor.create())  // Log requests (DEBUG only)

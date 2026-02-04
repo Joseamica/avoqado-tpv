@@ -204,6 +204,8 @@ fun OrderItem.toEntity(
 
     return DraftOrderItemEntity(
         id = id,
+        externalId = id,  // ✅ Idempotency: default externalId to server ID for synced items
+        linePosition = createdAt.toEpochMilli(),
         orderId = orderId,
         productId = productId,
         productName = productName,

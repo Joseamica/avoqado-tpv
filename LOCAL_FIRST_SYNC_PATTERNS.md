@@ -13,6 +13,7 @@ Algunos campos existen SOLO en Room DB y NO en el backend:
 | `sentToKitchenAt` | `DraftOrderItemEntity` | Backend no trackea impresiones de cocina |
 | `syncStatus` | `DraftOrderEntity/ItemEntity` | Estado de sync es solo relevante localmente |
 | `isServerCreated` | `DraftOrderEntity/ItemEntity` | Flag para saber si tiene CUID del server |
+| `linePosition` | `DraftOrderItemEntity` | Orden estable de items en UI (no depende del backend) |
 
 **Cuando el backend devuelve datos, estos campos vienen como `null` o valores default.**
 
@@ -47,15 +48,14 @@ suspend fun cacheBackendOrder(order: Order) {
     // 1. Leer valores locales existentes
     val existingItems = draftOrderItemDao.getAllItemsByOrder(order.id)
     val localTimestamps = existingItems.associate { it.id to it.sentToKitchenAt }
+    val localLinePositions = existingItems.associate { it.id to it.linePosition }
 
     // 2. Convertir y PRESERVAR campos locales
     val entities = order.items.toEntities().map { item ->
         val localTimestamp = localTimestamps[item.id]
-        if (localTimestamp != null) {
-            item.copy(sentToKitchenAt = localTimestamp)
-        } else {
-            item
-        }
+        val withSentAt = if (localTimestamp != null) item.copy(sentToKitchenAt = localTimestamp) else item
+        val localLinePosition = localLinePositions[item.id]
+        if (localLinePosition != null) withSentAt.copy(linePosition = localLinePosition) else withSentAt
     }
 
     draftOrderItemDao.insertAll(entities)
@@ -102,6 +102,8 @@ Preguntate SIEMPRE:
 - `sentToKitchenAt: Long?` - Timestamp de cuando se imprimio ticket de cocina
 - `syncStatus: String` - SYNCED, PENDING, SYNCING, DELETED
 - `isServerCreated: Boolean` - True si tiene CUID del backend
+- `externalId: String?` - Idempotency key (linea local estable)
+- `linePosition: Long` - Orden estable de items en UI (preservar en cache)
 
 ### DraftOrderEntity
 - `syncStatus: String` - SYNCED, PENDING, SYNCING
@@ -170,6 +172,61 @@ private fun listenToSocketEvents() {
 }
 ```
 
+---
+
+## Anti-Patron #5: Cancelar Sync en Vuelo (Version Stale)
+
+```kotlin
+// ❌ MAL: El debounce cancela el mismo job que hace el sync
+// Resultado: el backend ya respondió, pero no se persistió la nueva versión en Room
+pendingSyncJob?.cancel()
+pendingSyncJob = scope.launch {
+    delay(2000)
+    executeSync(orderId) // Se cancela a mitad si llega otro cambio
+}
+
+// ✅ BIEN: El debounce solo cancela la espera, el sync se ejecuta aparte
+pendingSyncJob?.cancel()
+pendingSyncJob = scope.launch {
+    delay(2000)
+    launchSync(orderId) // sync en coroutine separado (no cancelable por debounce)
+}
+```
+
+**Patrón correcto:**
+- Nunca cancelar un sync en vuelo.
+- Si llega un cambio mientras sync corre, marcar `dirty=true`.
+- Cuando termina el sync, si `dirty=true` → disparar otro sync.
+- Persistencias críticas (version/syncStatus) en `NonCancellable`.
+
+---
+
+## Patrón recomendado: Auto-resolver Conflictos (409)
+
+Cuando llega 409 por version:
+1. Fetch del backend
+2. Cache local preservando `sentToKitchenAt` y `linePosition`
+3. Si hay cambios locales PENDING/DELETED → marcar `dirty` y re‑sync
+4. Si no hay cambios locales → emitir `Synced` y evitar banner de conflicto
+
+Esto evita que el usuario vea errores innecesarios si el conflicto es solo por otra terminal.
+
+---
+
+## Anti-Patron #6: Perder externalId (Idempotencia)
+
+```kotlin
+// ❌ MAL: Reemplazar ID y perder externalId
+draftOrderItemDao.replaceLocalIdWithServerCuid(localId, serverId)
+// Si externalId se pierde, los reintentos pueden duplicar items en backend
+
+// ✅ BIEN: externalId debe permanecer estable
+// (externalId = ID local original, NO cambiar en remapeo)
+```
+
+**Patrón correcto:**
+- `externalId` debe ser **estable por linea**.
+- El backend usa `externalId` para **idempotencia**.
 ---
 
 ## Historial de Bugs Causados por Este Patron

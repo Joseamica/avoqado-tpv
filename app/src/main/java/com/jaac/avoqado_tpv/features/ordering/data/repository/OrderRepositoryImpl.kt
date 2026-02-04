@@ -158,7 +158,8 @@ class OrderRepositoryImpl @Inject constructor(
         waiterId: String?,
         orderType: OrderType,
         skipCaching: Boolean,
-        source: String
+        source: String,
+        externalId: String?
     ): Result<Order> {
         return try {
             val request = CreateOrderRequest(
@@ -171,7 +172,8 @@ class OrderRepositoryImpl @Inject constructor(
                     OrderType.DELIVERY -> "DELIVERY"
                     OrderType.PICKUP -> "PICKUP"
                 },
-                source = source  // TPV, KIOSK, QR, WEB, etc.
+                source = source,  // TPV, KIOSK, QR, WEB, etc.
+                externalId = externalId
             )
 
             // 🔍 [DIAGNOSTIC] Log venueId used to create order
@@ -198,11 +200,22 @@ class OrderRepositoryImpl @Inject constructor(
                                     isServerCreated = true
                                 )
 
+                                // Preserve local line positions to keep UI order stable
+                                val existingItems = draftOrderItemDao.getAllItemsByOrder(order.id)
+                                val localLinePositions = existingItems.associate { it.id to it.linePosition }
+
                                 // Convert items to entities
                                 val draftItemEntities = order.items.toEntities(
                                     syncStatus = com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity.SYNC_STATUS_SYNCED,
                                     isServerCreated = true
-                                )
+                                ).map { item ->
+                                    val localLinePosition = localLinePositions[item.id]
+                                    if (localLinePosition != null) {
+                                        item.copy(linePosition = localLinePosition)
+                                    } else {
+                                        item
+                                    }
+                                }
 
                                 // Insert order first (parent)
                                 draftOrderDao.insert(draftOrderEntity)
@@ -268,7 +281,8 @@ class OrderRepositoryImpl @Inject constructor(
                     productId = item.productId,
                     quantity = item.quantity,
                     notes = item.notes,
-                    modifierIds = item.modifierIds
+                    modifierIds = item.modifierIds,
+                    externalId = item.externalId
                 )
             }
 

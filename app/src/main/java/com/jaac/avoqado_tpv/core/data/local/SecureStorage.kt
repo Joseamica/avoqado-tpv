@@ -63,6 +63,12 @@ class SecureStorage @Inject constructor(
         private const val KEY_PERMISSIONS = "permissions"
         private const val KEY_VENUE_LOGO = "venue_logo"
         private const val KEY_VENUE_NAME = "venue_name"
+        private const val KEY_VENUE_LEGAL_NAME = "venue_legal_name"
+        private const val KEY_VENUE_RFC = "venue_rfc"
+        private const val KEY_VENUE_ADDRESS = "venue_address"
+        private const val KEY_VENUE_CITY = "venue_city"
+        private const val KEY_VENUE_STATE = "venue_state"
+        private const val KEY_VENUE_ZIP = "venue_zip"
         private const val KEY_VENUE_TYPE = "venue_type"
         private const val KEY_VENUE_STATUS = "venue_status"
         private const val KEY_LOYALTY_ACTIVE = "loyalty_active"  // Toast/Square pattern
@@ -409,6 +415,126 @@ class SecureStorage @Inject constructor(
      */
     fun getVenueName(): String? {
         return encryptedPrefs.getString(KEY_VENUE_NAME, null)
+    }
+
+    /**
+     * Save venue legal name (razon social)
+     * @param legalName Venue legal name
+     */
+    fun saveVenueLegalName(legalName: String?) {
+        if (legalName != null) {
+            encryptedPrefs.edit().putString(KEY_VENUE_LEGAL_NAME, legalName).apply()
+        } else {
+            encryptedPrefs.edit().remove(KEY_VENUE_LEGAL_NAME).apply()
+        }
+    }
+
+    /**
+     * Get venue legal name
+     * @return Venue legal name or null if not set
+     */
+    fun getVenueLegalName(): String? {
+        return encryptedPrefs.getString(KEY_VENUE_LEGAL_NAME, null)
+    }
+
+    /**
+     * Save venue RFC
+     * @param rfc Venue tax ID (RFC)
+     */
+    fun saveVenueRfc(rfc: String?) {
+        if (rfc != null) {
+            encryptedPrefs.edit().putString(KEY_VENUE_RFC, rfc).apply()
+        } else {
+            encryptedPrefs.edit().remove(KEY_VENUE_RFC).apply()
+        }
+    }
+
+    /**
+     * Get venue RFC
+     * @return Venue RFC or null if not set
+     */
+    fun getVenueRfc(): String? {
+        return encryptedPrefs.getString(KEY_VENUE_RFC, null)
+    }
+
+    /**
+     * Save venue address
+     * @param address Venue address
+     */
+    fun saveVenueAddress(address: String?) {
+        if (address != null) {
+            encryptedPrefs.edit().putString(KEY_VENUE_ADDRESS, address).apply()
+        } else {
+            encryptedPrefs.edit().remove(KEY_VENUE_ADDRESS).apply()
+        }
+    }
+
+    /**
+     * Get venue address
+     * @return Venue address or null if not set
+     */
+    fun getVenueAddress(): String? {
+        return encryptedPrefs.getString(KEY_VENUE_ADDRESS, null)
+    }
+
+    /**
+     * Save venue city
+     * @param city Venue city
+     */
+    fun saveVenueCity(city: String?) {
+        if (city != null) {
+            encryptedPrefs.edit().putString(KEY_VENUE_CITY, city).apply()
+        } else {
+            encryptedPrefs.edit().remove(KEY_VENUE_CITY).apply()
+        }
+    }
+
+    /**
+     * Get venue city
+     * @return Venue city or null if not set
+     */
+    fun getVenueCity(): String? {
+        return encryptedPrefs.getString(KEY_VENUE_CITY, null)
+    }
+
+    /**
+     * Save venue state
+     * @param state Venue state
+     */
+    fun saveVenueState(state: String?) {
+        if (state != null) {
+            encryptedPrefs.edit().putString(KEY_VENUE_STATE, state).apply()
+        } else {
+            encryptedPrefs.edit().remove(KEY_VENUE_STATE).apply()
+        }
+    }
+
+    /**
+     * Get venue state
+     * @return Venue state or null if not set
+     */
+    fun getVenueState(): String? {
+        return encryptedPrefs.getString(KEY_VENUE_STATE, null)
+    }
+
+    /**
+     * Save venue zip code
+     * @param zipCode Venue zip code
+     */
+    fun saveVenueZipCode(zipCode: String?) {
+        if (zipCode != null) {
+            encryptedPrefs.edit().putString(KEY_VENUE_ZIP, zipCode).apply()
+        } else {
+            encryptedPrefs.edit().remove(KEY_VENUE_ZIP).apply()
+        }
+    }
+
+    /**
+     * Get venue zip code
+     * @return Venue zip code or null if not set
+     */
+    fun getVenueZipCode(): String? {
+        return encryptedPrefs.getString(KEY_VENUE_ZIP, null)
     }
 
     /**

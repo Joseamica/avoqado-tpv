@@ -7,10 +7,12 @@ import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import com.jaac.avoqado_tpv.core.data.local.dao.CachedShiftDao
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderDao
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderItemDao
+import com.jaac.avoqado_tpv.core.data.local.dao.FloorElementDao
 import com.jaac.avoqado_tpv.core.data.local.dao.HistoricalPeriodDao
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
+import com.jaac.avoqado_tpv.core.data.local.dao.TableDao
 import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueDao
 import dagger.Module
 import dagger.Provides
@@ -92,7 +94,10 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_13_14, // 📸 Step 4 verification queue (photos + barcodes)
                 AvoqadoDatabase.MIGRATION_14_15, // 🚫 Filter inactive categories (isActive field in ProductCategory)
                 AvoqadoDatabase.MIGRATION_15_16, // 🚫 Category active status in products (categoryIsActive field)
-                AvoqadoDatabase.MIGRATION_16_17  // 🔴 CRITICAL: Fix pending_payments missing columns (v1.1.x → v1.3.0 production crash)
+                AvoqadoDatabase.MIGRATION_16_17,  // 🔴 CRITICAL: Fix pending_payments missing columns (v1.1.x → v1.3.0 production crash)
+                AvoqadoDatabase.MIGRATION_17_18,  // 🪑 Floor plan cache (tables + floor elements)
+                AvoqadoDatabase.MIGRATION_18_19,  // 🛠️ Schema hash fix (idempotent)
+                AvoqadoDatabase.MIGRATION_19_20   // 🧾 Stable ordering (line_position)
             )
 
             // ⚠️ DEVELOPMENT ONLY: Destructive migration (data loss on schema change)
@@ -222,6 +227,26 @@ object DatabaseModule {
         database: AvoqadoDatabase
     ): ProductCategoryDao {
         return database.productCategoryDao()
+    }
+
+    /**
+     * Provides TableDao from database.
+     */
+    @Provides
+    fun provideTableDao(
+        database: AvoqadoDatabase
+    ): TableDao {
+        return database.tableDao()
+    }
+
+    /**
+     * Provides FloorElementDao from database.
+     */
+    @Provides
+    fun provideFloorElementDao(
+        database: AvoqadoDatabase
+    ): FloorElementDao {
+        return database.floorElementDao()
     }
 
     /**

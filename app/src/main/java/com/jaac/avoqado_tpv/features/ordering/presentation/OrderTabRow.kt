@@ -27,7 +27,7 @@ import androidx.compose.ui.unit.sp
  *
  * @param currentTab Currently selected tab
  * @param onTabSelected Callback when tab is selected
- * @param orderItemCount Number of items in order (for CHECK tab badge)
+ * @param orderItemCount Total units in order (sum of quantities) for CHECK tab badge
  * @param modifier Optional modifier
  */
 @Composable

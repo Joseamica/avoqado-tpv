@@ -149,7 +149,8 @@ data class CreateOrderRequest(
     @SerializedName("covers") val covers: Int = 1,
     @SerializedName("waiterId") val waiterId: String? = null,
     @SerializedName("orderType") val orderType: String = "TAKEOUT",  // "DINE_IN" or "TAKEOUT"
-    @SerializedName("source") val source: String = "TPV"  // "TPV", "KIOSK", "QR", "WEB", etc.
+    @SerializedName("source") val source: String = "TPV",  // "TPV", "KIOSK", "QR", "WEB", etc.
+    @SerializedName("externalId") val externalId: String? = null  // ✅ Idempotency key (client order ID)
 )
 
 /**
@@ -311,7 +312,8 @@ data class AddItemDto(
     @SerializedName("productId") val productId: String,
     @SerializedName("quantity") val quantity: Int,
     @SerializedName("notes") val notes: String? = null,
-    @SerializedName("modifierIds") val modifierIds: List<String>? = null
+    @SerializedName("modifierIds") val modifierIds: List<String>? = null,
+    @SerializedName("externalId") val externalId: String? = null
 )
 
 /**

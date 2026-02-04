@@ -9,6 +9,7 @@ import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity
 import com.jaac.avoqado_tpv.core.data.local.mappers.toDomain
 import com.jaac.avoqado_tpv.core.data.local.mappers.toEntity
 import com.jaac.avoqado_tpv.core.data.local.mappers.toEntities
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -28,6 +29,7 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import timber.log.Timber
 import java.math.BigDecimal
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.min
@@ -105,6 +107,17 @@ class OrderSyncCoordinator @Inject constructor(
     private val pendingSyncJobs = ConcurrentHashMap<String, Job>()
 
     /**
+     * Tracks active syncs per order (prevents cancelling in-flight syncs).
+     */
+    private val activeSyncOrders = ConcurrentHashMap<String, Boolean>()
+
+    /**
+     * Marks orders that changed while a sync was in progress.
+     * After sync completes, we schedule another sync if dirty=true.
+     */
+    private val dirtyOrders = ConcurrentHashMap<String, Boolean>()
+
+    /**
      * Local → server ID remapping (avoids FK violations during ID replacement window).
      */
     private val orderIdRemap = ConcurrentHashMap<String, String>()
@@ -122,6 +135,13 @@ class OrderSyncCoordinator @Inject constructor(
      * With mutex: Sync B waits for Sync A to complete, reads version=2
      */
     private val syncMutexes = ConcurrentHashMap<String, Mutex>()
+
+    /**
+     * Per-order mutex for serializing local item mutations.
+     *
+     * Prevents duplicate inserts when user taps the same product rapidly.
+     */
+    private val itemMutationMutexes = ConcurrentHashMap<String, Mutex>()
 
     /**
      * Coroutine scope for background sync operations.
@@ -258,7 +278,11 @@ class OrderSyncCoordinator @Inject constructor(
                 }
             }
 
-            val order = draftOrder.toDomain(draftItems)
+            val sortedItems = draftItems.sortedWith(
+                compareBy<DraftOrderItemEntity> { it.linePosition }
+                    .thenBy { it.id }
+            )
+            val order = draftOrder.toDomain(sortedItems)
             order
         } catch (e: Exception) {
             Timber.e(e, "❌ Error loading order from local DB: $orderId")
@@ -287,11 +311,57 @@ class OrderSyncCoordinator @Inject constructor(
             localOrders.mapNotNull { entity ->
                 val items = draftOrderItemDao.getItemsByOrder(entity.id)
                     .filter { it.syncStatus != DraftOrderItemEntity.SYNC_STATUS_DELETED }
+                    .sortedWith(
+                        compareBy<DraftOrderItemEntity> { it.linePosition }
+                            .thenBy { it.id }
+                    )
                 entity.toDomain(items)
             }
         } catch (e: Exception) {
             Timber.e(e, "❌ Error fetching local-only orders for venue=$venueId")
             emptyList()
+        }
+    }
+
+    /**
+     * Sync all pending orders for a venue (reconnect recovery).
+     *
+     * Runs when connection is restored to push local pending changes.
+     */
+    suspend fun syncPendingOrders(venueId: String) = withContext(Dispatchers.IO) {
+        try {
+            val pendingOrders = draftOrderDao.getOrdersByStatus(venueId, DraftOrderEntity.SYNC_STATUS_PENDING)
+            val syncingOrders = draftOrderDao.getOrdersByStatus(venueId, DraftOrderEntity.SYNC_STATUS_SYNCING)
+            val errorOrders = draftOrderDao.getOrdersByStatus(venueId, "ERROR")
+            val ordersToSync = (pendingOrders + syncingOrders + errorOrders).distinctBy { it.id }
+
+            Timber.i(
+                "🔁 [Sync] Orders to sync: ${ordersToSync.size} | " +
+                    "pending=${pendingOrders.size}, syncing=${syncingOrders.size}, error=${errorOrders.size} | venue=$venueId"
+            )
+
+            ordersToSync.forEach { entity ->
+                val resolvedOrderId = resolveOrderId(entity.id)
+                if (isSyncInProgress(resolvedOrderId)) {
+                    markDirty(resolvedOrderId, reason = "reconnect sync while active")
+                    return@forEach
+                }
+
+                if (entity.syncStatus != DraftOrderEntity.SYNC_STATUS_PENDING) {
+                    Timber.w("🔁 [Sync] Resetting syncStatus to PENDING | order=${entity.id} | status=${entity.syncStatus}")
+                    draftOrderDao.updateSyncStatus(entity.id, DraftOrderEntity.SYNC_STATUS_PENDING, System.currentTimeMillis())
+                }
+
+                val syncRunId = generateSyncRunId()
+                Timber.i("🚀 [Sync] Reconnect sync queued | order=$resolvedOrderId | syncRunId=$syncRunId")
+                executeSyncWithRetry(
+                    orderId = resolvedOrderId,
+                    syncRunId = syncRunId,
+                    trigger = "reconnect"
+                )
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Sync] Failed to sync pending orders | venue=$venueId")
         }
     }
 
@@ -332,8 +402,25 @@ class OrderSyncCoordinator @Inject constructor(
                 val activeItems = withItems.items
                     .filter { it.syncStatus != DraftOrderItemEntity.SYNC_STATUS_DELETED }
 
+                // Guard: ensure unique IDs to avoid LazyColumn key collisions
+                val dedupedItems = activeItems.distinctBy { it.id }
+                if (dedupedItems.size != activeItems.size) {
+                    val duplicateIds = activeItems.groupBy { it.id }
+                        .filterValues { it.size > 1 }
+                        .keys
+                    Timber.e(
+                        "❌ [SSOT] Duplicate item IDs detected | order=${withItems.order.id} | " +
+                            "duplicates=${duplicateIds.joinToString(",")}"
+                    )
+                }
+
+                val sortedItems = dedupedItems.sortedWith(
+                    compareBy<DraftOrderItemEntity> { it.linePosition }
+                        .thenBy { it.id }
+                )
+
                 // Convert to domain model
-                withItems.order.toDomain(activeItems)
+                withItems.order.toDomain(sortedItems)
             }
             .distinctUntilChanged()
     }
@@ -365,6 +452,7 @@ class OrderSyncCoordinator @Inject constructor(
             // Backend doesn't have this field, so we must preserve local values
             val existingItems = draftOrderItemDao.getAllItemsByOrder(order.id)
             val localSentTimestamps = existingItems.associate { it.id to it.sentToKitchenAt }
+            val localLinePositions = existingItems.associate { it.id to it.linePosition }
             Timber.d("💾 [Cache] Preserving ${localSentTimestamps.count { it.value != null }} local sentToKitchenAt timestamps")
 
             // Convert order to entity (marked as SYNCED since it came from backend)
@@ -380,10 +468,16 @@ class OrderSyncCoordinator @Inject constructor(
             ).map { item ->
                 // Preserve local sentToKitchenAt if it exists
                 val localTimestamp = localSentTimestamps[item.id]
-                if (localTimestamp != null && item.sentToKitchenAt == null) {
+                val localLinePosition = localLinePositions[item.id]
+                val withSentAt = if (localTimestamp != null && item.sentToKitchenAt == null) {
                     item.copy(sentToKitchenAt = localTimestamp)
                 } else {
                     item
+                }
+                if (localLinePosition != null) {
+                    withSentAt.copy(linePosition = localLinePosition)
+                } else {
+                    withSentAt
                 }
             }
 
@@ -431,44 +525,77 @@ class OrderSyncCoordinator @Inject constructor(
             Timber.w("⚠️ [Order Remap] addItem remapped orderId $orderId → $effectiveOrderId")
         }
 
-        val localItemId = DraftOrderItemEntity.generateLocalId()
-        val totalPrice = (unitPrice.toBigDecimal() * quantity.toBigDecimal()).toString()
+        return@withContext withItemLock(effectiveOrderId) {
+            val normalizedNotes = normalizeNotes(notes)
+            val modifiersKey = buildModifiersKey(modifiers)
 
-        // 🔍 [DIAGNOSTIC] Log modifiers being stored
-        val modifiersJson = if (modifiers.isNotEmpty()) {
-            com.google.gson.Gson().toJson(modifiers)
-        } else {
-            "[]"
+            // Merge identical items (same product + modifiers + notes) unless already sent to kitchen.
+            val existingItems = draftOrderItemDao.getItemsByOrderAndProduct(effectiveOrderId, productId)
+            val matchingItem = existingItems.firstOrNull { item ->
+                item.sentToKitchenAt == null &&
+                    normalizeNotes(item.notes) == normalizedNotes &&
+                    buildModifiersKeyFromJson(item.modifiers) == modifiersKey
+            }
+
+            if (matchingItem != null) {
+                val newQuantity = matchingItem.quantity + quantity
+                val unit = matchingItem.unitPrice.toBigDecimal()
+                val newTotalPrice = (unit * newQuantity.toBigDecimal()).toString()
+
+                draftOrderItemDao.updateQuantity(matchingItem.id, newQuantity, newTotalPrice)
+                recalculateOrderTotals(effectiveOrderId)
+
+                Timber.i(
+                    "🧩 [Local] Merged item | order=$effectiveOrderId | product=$productName | " +
+                        "oldQty=${matchingItem.quantity} → newQty=$newQuantity | modifiersKey=$modifiersKey"
+                )
+
+                return@withItemLock matchingItem.id
+            }
+
+            val localItemId = DraftOrderItemEntity.generateLocalId()
+            val totalPrice = (unitPrice.toBigDecimal() * quantity.toBigDecimal()).toString()
+            val createdAt = System.currentTimeMillis()
+            val linePosition = nextLinePosition(effectiveOrderId, createdAt)
+
+            // 🔍 [DIAGNOSTIC] Log modifiers being stored
+            val modifiersJson = if (modifiers.isNotEmpty()) {
+                com.google.gson.Gson().toJson(modifiers)
+            } else {
+                "[]"
+            }
+            Timber.d("🔍 [addItemToLocalOrder] Storing modifiers | product=$productName | modifiers.size=${modifiers.size} | JSON=$modifiersJson")
+
+            val draftItem = DraftOrderItemEntity(
+                id = localItemId,
+                externalId = localItemId, // ✅ Idempotency: stable client-side line ID
+                linePosition = linePosition,
+                orderId = effectiveOrderId,
+                productId = productId,
+                productName = productName,
+                productSku = null,
+                quantity = quantity,
+                unitPrice = unitPrice,
+                totalPrice = totalPrice,
+                modifiers = modifiersJson,
+                notes = notes,
+                kitchenStatus = "PENDING",
+                createdAt = createdAt,
+                sentToKitchenAt = null,
+                syncStatus = DraftOrderItemEntity.SYNC_STATUS_PENDING,
+                isServerCreated = false
+            )
+
+            draftOrderItemDao.insert(draftItem)
+
+            // Update order totals
+            recalculateOrderTotals(effectiveOrderId)
+
+            Timber.d("➕ [Local] Added item | order=$effectiveOrderId | product=$productName | qty=$quantity | modifiers=${modifiers.size}")
+            Timber.d("➕ [SYNC-DEBUG] addItemToLocalOrder() | orderId=$effectiveOrderId | itemId=$localItemId | product=$productName | timestamp=${System.currentTimeMillis()}")
+
+            localItemId
         }
-        Timber.d("🔍 [addItemToLocalOrder] Storing modifiers | product=$productName | modifiers.size=${modifiers.size} | JSON=$modifiersJson")
-
-        val draftItem = DraftOrderItemEntity(
-            id = localItemId,
-            orderId = effectiveOrderId,
-            productId = productId,
-            productName = productName,
-            productSku = null,
-            quantity = quantity,
-            unitPrice = unitPrice,
-            totalPrice = totalPrice,
-            modifiers = modifiersJson,
-            notes = notes,
-            kitchenStatus = "PENDING",
-            createdAt = System.currentTimeMillis(),
-            sentToKitchenAt = null,
-            syncStatus = DraftOrderItemEntity.SYNC_STATUS_PENDING,
-            isServerCreated = false
-        )
-
-        draftOrderItemDao.insert(draftItem)
-
-        // Update order totals
-        recalculateOrderTotals(effectiveOrderId)
-
-        Timber.d("➕ [Local] Added item | order=$effectiveOrderId | product=$productName | qty=$quantity | modifiers=${modifiers.size}")
-        Timber.d("➕ [SYNC-DEBUG] addItemToLocalOrder() | orderId=$effectiveOrderId | itemId=$localItemId | product=$productName | timestamp=${System.currentTimeMillis()}")
-
-        localItemId
     }
 
     /**
@@ -572,6 +699,76 @@ class OrderSyncCoordinator @Inject constructor(
         Timber.i("🍳 [Local] Marked item as sent to kitchen | itemId=$itemId | sentAt=$sentAt")
     }
 
+    private fun isSyncInProgress(orderId: String): Boolean {
+        return activeSyncOrders[orderId] == true
+    }
+
+    private fun markDirty(orderId: String, reason: String) {
+        dirtyOrders[orderId] = true
+        Timber.i("🟡 [Sync] Marked dirty | order=$orderId | reason=$reason")
+    }
+
+    private suspend fun <T> withItemLock(orderId: String, block: suspend () -> T): T {
+        val mutex = itemMutationMutexes.getOrPut(orderId) { Mutex() }
+        return mutex.withLock { block() }
+    }
+
+    private suspend fun nextLinePosition(orderId: String, createdAt: Long): Long {
+        val lastPosition = draftOrderItemDao.getMaxLinePosition(orderId) ?: 0L
+        return maxOf(lastPosition + 1, createdAt)
+    }
+
+    private fun normalizeNotes(notes: String?): String? {
+        return notes?.trim()?.ifBlank { null }
+    }
+
+    private fun buildModifiersKey(modifiers: List<ProductModifier>): String {
+        if (modifiers.isEmpty()) return ""
+        return modifiers.map { it.id }.sorted().joinToString("|")
+    }
+
+    private fun buildModifiersKeyFromJson(modifiersJson: String): String {
+        if (modifiersJson.isBlank() || modifiersJson == "[]") return ""
+        return try {
+            val gson = Gson()
+            val type = object : TypeToken<List<ProductModifier>>() {}.type
+            val list = gson.fromJson<List<ProductModifier>>(modifiersJson, type) ?: emptyList()
+            buildModifiersKey(list)
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Failed to parse modifiers JSON for key: $modifiersJson")
+            modifiersJson // Fallback to raw JSON to avoid false matches
+        }
+    }
+
+    private fun generateSyncRunId(): String {
+        return UUID.randomUUID().toString().take(8)
+    }
+
+    private fun launchSync(
+        orderId: String,
+        trigger: String,
+        debounceScheduledAt: Long? = null
+    ) {
+        if (isSyncInProgress(orderId)) {
+            markDirty(orderId, reason = "launchSync during active sync")
+            return
+        }
+
+        val syncRunId = generateSyncRunId()
+        Timber.i(
+            "🚀 [Sync] Launching sync | order=$orderId | syncRunId=$syncRunId | trigger=$trigger | debounceAt=$debounceScheduledAt"
+        )
+
+        syncScope.launch {
+            executeSyncWithRetry(
+                orderId = orderId,
+                syncRunId = syncRunId,
+                trigger = trigger,
+                debounceScheduledAt = debounceScheduledAt
+            )
+        }
+    }
+
     /**
      * Schedule debounced sync (2 seconds after last change).
      *
@@ -606,29 +803,34 @@ class OrderSyncCoordinator @Inject constructor(
             pendingSyncJobs.remove(orderId)
         }
 
-        // Cancel previous pending sync for this order
+        // If a sync is already in flight, mark dirty and let it finish
+        if (isSyncInProgress(resolvedOrderId)) {
+            markDirty(resolvedOrderId, reason = "scheduleSync during active sync")
+            return
+        }
+
+        // Cancel previous pending debounce for this order
         pendingSyncJobs[resolvedOrderId]?.cancel()
 
-        // Schedule new debounced sync
+        // Schedule new debounced sync (delay only)
         val job = syncScope.launch {
             val scheduledAt = System.currentTimeMillis()
-            Timber.d("⏱️ [Sync] Scheduled debounced sync | order=$resolvedOrderId | delay=${SYNC_DEBOUNCE_MS}ms")
+            Timber.d("⏱️ [Sync] Scheduled debounced sync | order=$resolvedOrderId | delay=${SYNC_DEBOUNCE_MS}ms | scheduledAt=$scheduledAt")
             Timber.d("⏱️ [SYNC-DEBUG] scheduleSync() | orderId=$resolvedOrderId | debounce=${SYNC_DEBOUNCE_MS}ms | timestamp=$scheduledAt")
 
             delay(SYNC_DEBOUNCE_MS)
+            pendingSyncJobs.remove(resolvedOrderId)
 
-            // ⚡ P0 FIX: Check if another sync is already in progress
-            // This prevents race condition when rapid changes schedule multiple syncs
-            val currentOrder = draftOrderDao.getOrder(resolvedOrderId)
-            if (currentOrder?.syncStatus == DraftOrderEntity.SYNC_STATUS_SYNCING) {
-                Timber.d("⏭️ [Sync] Skipping debounced sync - already in progress | order=$resolvedOrderId")
-                pendingSyncJobs.remove(resolvedOrderId)
+            // If a sync started while we were waiting, mark dirty and exit
+            if (isSyncInProgress(resolvedOrderId)) {
+                Timber.d("⏭️ [Sync] Debounce expired but sync in progress | order=$resolvedOrderId")
+                markDirty(resolvedOrderId, reason = "debounce expired during active sync")
                 return@launch
             }
 
             Timber.d("🔄 [Sync] Debounce expired, executing sync | order=$resolvedOrderId")
             Timber.i("🔄 [SYNC-DEBUG] scheduleSync() DEBOUNCE EXPIRED | orderId=$resolvedOrderId | timestamp=${System.currentTimeMillis()} | elapsed=${System.currentTimeMillis() - scheduledAt}ms")
-            executeSyncWithRetry(resolvedOrderId)
+            launchSync(resolvedOrderId, trigger = "debounce", debounceScheduledAt = scheduledAt)
         }
 
         pendingSyncJobs[resolvedOrderId] = job
@@ -659,7 +861,8 @@ class OrderSyncCoordinator @Inject constructor(
         }
 
         Timber.d("⚡ [Sync] Immediate sync requested | order=$resolvedOrderId")
-        executeSyncWithRetry(resolvedOrderId)
+        val syncRunId = generateSyncRunId()
+        executeSyncWithRetry(resolvedOrderId, syncRunId = syncRunId, trigger = "immediate")
     }
 
     /**
@@ -722,107 +925,148 @@ class OrderSyncCoordinator @Inject constructor(
      * Execute sync with exponential backoff retry.
      *
      * ✅ P0 FIX: Uses mutex to prevent concurrent syncs for the same order.
-     * This ensures version numbers are read/written atomically.
-     *
-     * Retries up to 3 times on network errors with exponential backoff:
-     * - Attempt 1: Immediate
-     * - Attempt 2: 2s delay
-     * - Attempt 3: 4s delay
-     * - Attempt 4: 8s delay
-     *
-     * On 409 conflict: Do NOT retry, emit conflict event for user resolution.
-     *
-     * @param orderId Order to sync
-     * @param attempt Current attempt number (1-indexed)
-     * @return The synced order ID (CUID from server, or original ID if conflict/error)
+     * ✅ P0 FIX: Does NOT cancel in-flight syncs; marks dirty and re-syncs after completion.
      */
     private suspend fun executeSyncWithRetry(
         orderId: String,
-        attempt: Int = 1
+        syncRunId: String,
+        trigger: String,
+        debounceScheduledAt: Long? = null
     ): String {
-        // ✅ P0 FIX: Acquire mutex for this order to prevent concurrent syncs
         val mutex = syncMutexes.getOrPut(orderId) { Mutex() }
+        var attempt = 1
+        var resultId = orderId
+        var resyncNeeded = false
+        var conflictDetected = false
+        var errorMessage: String? = null
 
-        return mutex.withLock {
-            if (attempt > 1) {
-                val delayMs = (2.0.pow(attempt - 1) * 1000).toLong()
-                Timber.d("🔄 [Sync] Retry attempt $attempt | order=$orderId | delay=${delayMs}ms")
-                delay(delayMs)
-            }
+        activeSyncOrders[orderId] = true
 
-            try {
-                val syncedId = executeSync(orderId)
-                Timber.i("✅ [Sync] Success | order=$orderId → syncedId=$syncedId")
-                syncedId
-            } catch (e: ConflictException) {
-                Timber.w("⚠️ [Sync] Conflict detected | order=$orderId | version mismatch")
-                // Do NOT retry on 409 - user must resolve conflict
-                _syncEvents.emit(SyncEvent.Conflict(orderId, e.serverVersion))
-                orderId  // Return original ID on conflict
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                // ⚠️ CRITICAL: Rethrow CancellationException so coroutine is cancelled properly
-                // Do NOT catch this as a generic error, or it will trigger retries!
-                Timber.d("🛑 [Sync] Cancelled (debounce) | order=$orderId")
-                throw e
-            } catch (e: Exception) {
-                Timber.e(e, "❌ [Sync] Failed (attempt $attempt) | order=$orderId")
+        try {
+            while (true) {
+                if (attempt > 1) {
+                    val delayMs = (2.0.pow(attempt - 1) * 1000).toLong()
+                    Timber.d("🔄 [Sync] Retry attempt $attempt | order=$orderId | delay=${delayMs}ms | syncRunId=$syncRunId")
+                    delay(delayMs)
+                }
 
-                if (attempt < 4) {
-                    // Retry with exponential backoff (release mutex during delay)
-                    // Note: We release mutex here and re-acquire in recursive call
-                    // This is intentional - allows other syncs to proceed during backoff
-                    executeSyncWithRetryInternal(orderId, attempt + 1)
-                } else {
-                    // Max retries exceeded
-                    Timber.e("❌ [Sync] Max retries exceeded | order=$orderId")
-                    // ✅ P0 FIX: Persist 'ERROR' status in DB
-                    draftOrderDao.updateSyncStatus(orderId, "ERROR", System.currentTimeMillis())
-                    _syncEvents.emit(SyncEvent.Error(orderId, e.message ?: "Sync failed"))
-                    orderId  // Return original ID on failure
+                val localVersion = draftOrderDao.getOrder(orderId)?.version
+                Timber.i(
+                    "🚀 [Sync] START | order=$orderId | attempt=$attempt | syncRunId=$syncRunId | trigger=$trigger | " +
+                        "localVersion=$localVersion | dirty=${dirtyOrders[orderId] == true} | debounceAt=$debounceScheduledAt"
+                )
+
+                try {
+                    resultId = mutex.withLock {
+                        executeSync(orderId)
+                    }
+
+                    val serverVersion = draftOrderDao.getOrder(resultId)?.version
+                    Timber.i(
+                        "✅ [Sync] Success | order=$orderId → syncedId=$resultId | serverVersion=$serverVersion | syncRunId=$syncRunId"
+                    )
+                    break
+                } catch (e: ConflictException) {
+                    val autoResolved = attemptAutoResolveConflict(orderId, e.serverVersion)
+                    if (autoResolved) {
+                        Timber.i("✅ [Sync] Conflict auto-resolved | order=$orderId | serverVersion=${e.serverVersion} | syncRunId=$syncRunId")
+                        resultId = orderId
+                        break
+                    }
+
+                    Timber.w("⚠️ [Sync] Conflict detected | order=$orderId | serverVersion=${e.serverVersion} | syncRunId=$syncRunId")
+                    _syncEvents.emit(SyncEvent.Conflict(orderId, e.serverVersion))
+                    conflictDetected = true
+                    resultId = orderId
+                    break
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    Timber.d("🛑 [Sync] Cancelled | order=$orderId | syncRunId=$syncRunId | trigger=$trigger")
+                    throw e
+                } catch (e: Exception) {
+                    Timber.e(e, "❌ [Sync] Failed (attempt $attempt) | order=$orderId | syncRunId=$syncRunId")
+                    if (attempt >= 4) {
+                        errorMessage = e.message ?: "Sync failed"
+                        break
+                    }
+                    attempt += 1
                 }
             }
+        } finally {
+            activeSyncOrders.remove(orderId)
+            resyncNeeded = dirtyOrders.remove(orderId) == true
+            Timber.i("🏁 [Sync] Finished | order=$orderId | syncRunId=$syncRunId | resync=$resyncNeeded | trigger=$trigger")
         }
+
+        if (errorMessage != null && !conflictDetected) {
+            withContext(NonCancellable) {
+                draftOrderDao.updateSyncStatus(orderId, "ERROR", System.currentTimeMillis())
+            }
+            _syncEvents.emit(SyncEvent.Error(orderId, errorMessage))
+            return orderId
+        }
+
+        if (resyncNeeded && !conflictDetected) {
+            Timber.i("🔁 [Sync] Dirty changes detected after sync | order=$orderId | scheduling resync")
+            scheduleSync(orderId)
+        }
+
+        return resultId
     }
 
     /**
-     * Internal retry helper (called from within mutex lock).
-     * Releases mutex during backoff delay, then re-acquires for retry.
+     * Attempt auto-resolve for version conflict.
+     *
+     * Strategy:
+     * 1. Fetch latest order from backend
+     * 2. Cache to Room (preserve local line positions & sentToKitchenAt)
+     * 3. If local pending/deleted items exist → mark dirty for resync
+     * 4. If no pending changes → emit Synced event with latest version
+     *
+     * @return true if auto-resolve succeeded, false otherwise
      */
-    private suspend fun executeSyncWithRetryInternal(
+    private suspend fun attemptAutoResolveConflict(
         orderId: String,
-        attempt: Int
-    ): String {
-        val delayMs = (2.0.pow(attempt - 1) * 1000).toLong()
-        Timber.d("🔄 [Sync] Retry attempt $attempt | order=$orderId | delay=${delayMs}ms")
-        delay(delayMs)
+        serverVersion: String
+    ): Boolean {
+        return try {
+            val draftOrder = draftOrderDao.getOrder(orderId) ?: return false
+            if (!draftOrder.isServerCreated) return false
 
-        val mutex = syncMutexes.getOrPut(orderId) { Mutex() }
+            Timber.w("⚠️ [Sync] Auto-resolving conflict | order=$orderId | serverVersion=$serverVersion")
 
-        return mutex.withLock {
-            try {
-                val syncedId = executeSync(orderId)
-                Timber.i("✅ [Sync] Success (retry $attempt) | order=$orderId → syncedId=$syncedId")
-                syncedId
-            } catch (e: ConflictException) {
-                Timber.w("⚠️ [Sync] Conflict detected | order=$orderId | version mismatch")
-                _syncEvents.emit(SyncEvent.Conflict(orderId, e.serverVersion))
-                orderId
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                Timber.d("🛑 [Sync] Cancelled during retry (debounce) | order=$orderId")
-                throw e
-            } catch (e: Exception) {
-                Timber.e(e, "❌ [Sync] Failed (attempt $attempt) | order=$orderId")
-
-                if (attempt < 4) {
-                    executeSyncWithRetryInternal(orderId, attempt + 1)
-                } else {
-                    Timber.e("❌ [Sync] Max retries exceeded | order=$orderId")
-                    // ✅ P0 FIX: Persist 'ERROR' status in DB
-                    draftOrderDao.updateSyncStatus(orderId, "ERROR", System.currentTimeMillis())
-                    _syncEvents.emit(SyncEvent.Error(orderId, e.message ?: "Sync failed"))
-                    orderId
-                }
+            val backendOrder = orderRepository.getOrder(
+                venueId = draftOrder.venueId,
+                orderId = orderId
+            ).getOrElse { error ->
+                Timber.e(error, "❌ [Sync] Conflict auto-resolve failed (backend fetch)")
+                return false
             }
+
+            cacheBackendOrder(backendOrder)
+
+            val hasPending =
+                draftOrderItemDao.getPendingItemsByOrder(orderId).isNotEmpty() ||
+                    draftOrderItemDao.getDeletedItemsByOrder(orderId).isNotEmpty()
+
+            withContext(NonCancellable) {
+                val newStatus = if (hasPending) {
+                    DraftOrderEntity.SYNC_STATUS_PENDING
+                } else {
+                    DraftOrderEntity.SYNC_STATUS_SYNCED
+                }
+                draftOrderDao.updateSyncStatus(orderId, newStatus, System.currentTimeMillis())
+            }
+
+            if (hasPending) {
+                markDirty(orderId, reason = "conflict auto-resolve")
+            } else {
+                _syncEvents.emit(SyncEvent.Synced(orderId, backendOrder.version))
+            }
+
+            true
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Sync] Conflict auto-resolve failed")
+            false
         }
     }
 
@@ -888,7 +1132,8 @@ class OrderSyncCoordinator @Inject constructor(
             covers = draftOrder.covers,
             waiterId = draftOrder.waiterId,
             orderType = OrderType.valueOf(draftOrder.orderType),
-            skipCaching = true
+            skipCaching = true,
+            externalId = draftOrder.id  // ✅ Idempotency: stable client order ID
         )
 
         if (result.isFailure) {
@@ -930,7 +1175,8 @@ class OrderSyncCoordinator @Inject constructor(
                     productId = item.productId,
                     quantity = item.quantity,
                     notes = item.notes,
-                    modifierIds = modifierIds  // ✅ Send modifier IDs to backend
+                    modifierIds = modifierIds,  // ✅ Send modifier IDs to backend
+                    externalId = item.externalId ?: item.id  // ✅ Idempotency: stable line ID
                 )
             }
 
@@ -1001,13 +1247,15 @@ class OrderSyncCoordinator @Inject constructor(
         val replacementStartTime = System.currentTimeMillis()
         Timber.w("🔀 [SYNC-DEBUG] ID REPLACEMENT START | old=${draftOrder.id} → new=${serverOrder.id} | timestamp=$replacementStartTime")
 
-        draftOrderDao.replaceLocalIdWithServerCuid(
-            localId = draftOrder.id,
-            newId = serverOrder.id,
-            orderNumber = finalOrderNumber,
-            version = finalVersion,  // ← Use final version (updated after adding items)
-            timestamp = System.currentTimeMillis()
-        )
+        withContext(NonCancellable) {
+            draftOrderDao.replaceLocalIdWithServerCuid(
+                localId = draftOrder.id,
+                newId = serverOrder.id,
+                orderNumber = finalOrderNumber,
+                version = finalVersion,  // ← Use final version (updated after adding items)
+                timestamp = System.currentTimeMillis()
+            )
+        }
 
         Timber.w("✅ [SYNC-DEBUG] ID REPLACEMENT DONE | old=${draftOrder.id} → new=${serverOrder.id} | timestamp=${System.currentTimeMillis()} | duration=${System.currentTimeMillis() - replacementStartTime}ms")
 
@@ -1076,7 +1324,8 @@ class OrderSyncCoordinator @Inject constructor(
                     productId = item.productId,
                     quantity = item.quantity,
                     notes = item.notes,
-                    modifierIds = modifiersList.map { it.id }  // ✅ Send modifier IDs to backend
+                    modifierIds = modifiersList.map { it.id },  // ✅ Send modifier IDs to backend
+                    externalId = item.externalId ?: item.id  // ✅ Idempotency: stable line ID
                 )
             }
 
@@ -1090,7 +1339,8 @@ class OrderSyncCoordinator @Inject constructor(
                 venueId = venueId,
                 orderId = orderId,
                 items = addItemRequests,
-                currentVersion = currentVersion  // Use tracked version
+                currentVersion = currentVersion,  // Use tracked version
+                skipCaching = true  // 🔄 [SYNC-FIX] Prevent race with local cache
             )
 
             if (result.isFailure) {
@@ -1108,7 +1358,9 @@ class OrderSyncCoordinator @Inject constructor(
 
             // ⭐ CRITICAL: Persist version immediately to prevent stale retry
             // If a retry happens after this point, it will read the correct version from DB
-            draftOrderDao.updateVersion(orderId, currentVersion)
+            withContext(NonCancellable) {
+                draftOrderDao.updateVersion(orderId, currentVersion)
+            }
             Timber.d("💾 [Sync] Persisted version=$currentVersion after addItems")
 
             // Mark items as SYNCED
@@ -1145,7 +1397,9 @@ class OrderSyncCoordinator @Inject constructor(
                 currentVersion = updatedOrder.version
 
                 // ⭐ CRITICAL: Persist version immediately to prevent stale retry
-                draftOrderDao.updateVersion(orderId, currentVersion)
+                withContext(NonCancellable) {
+                    draftOrderDao.updateVersion(orderId, currentVersion)
+                }
                 Timber.d("💾 [Sync] Persisted version=$currentVersion after removeItem")
             }
 
@@ -1164,13 +1418,15 @@ class OrderSyncCoordinator @Inject constructor(
             // ✅ FIX: Use update() instead of insert() to prevent CASCADE DELETE
             // insert() with REPLACE strategy DELETEs order row, triggering FK CASCADE on all items
             // update() modifies existing row without DELETE, preserving all child items
-            draftOrderDao.update(
-                order.copy(
-                    version = currentVersion,  // ← Save latest version
-                    syncStatus = DraftOrderEntity.SYNC_STATUS_SYNCED,
-                    lastSyncAt = System.currentTimeMillis()
+            withContext(NonCancellable) {
+                draftOrderDao.update(
+                    order.copy(
+                        version = currentVersion,  // ← Save latest version
+                        syncStatus = DraftOrderEntity.SYNC_STATUS_SYNCED,
+                        lastSyncAt = System.currentTimeMillis()
+                    )
                 )
-            )
+            }
         }
 
         Timber.i("📣 [SYNC-DEBUG] SyncEvent.Synced ABOUT TO EMIT (update) | orderId=$orderId | version=$currentVersion | timestamp=${System.currentTimeMillis()}")

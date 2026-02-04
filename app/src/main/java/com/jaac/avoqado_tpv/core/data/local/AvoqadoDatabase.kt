@@ -9,11 +9,14 @@ import com.jaac.avoqado_tpv.core.data.local.converters.ProductTypeConverters
 import com.jaac.avoqado_tpv.core.data.local.dao.CachedShiftDao
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderDao
 import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderItemDao
+import com.jaac.avoqado_tpv.core.data.local.dao.FloorElementDao
 import com.jaac.avoqado_tpv.core.data.local.dao.HistoricalPeriodDao
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
+import com.jaac.avoqado_tpv.core.data.local.dao.TableDao
 import com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity
+import com.jaac.avoqado_tpv.core.data.local.entities.FloorElementEntity
 import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueDao
 import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity
@@ -21,6 +24,7 @@ import com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.HistoricalPeriodEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.ProductCategoryEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.ProductEntity
+import com.jaac.avoqado_tpv.core.data.local.entities.TableEntity
 import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
 
 /**
@@ -43,6 +47,9 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
  * - v14 → v15: Added isActive to ProductCategoryEntity (filter inactive categories - 2025-01-13)
  * - v15 → v16: Added categoryIsActive to ProductEntity (category status in product cache - 2025-01-13)
  * - v16 → v17: **🔴 CRITICAL FIX** - Added missing columns to PendingPaymentEntity (venue_id, blumon_serial_number, is_international, authorization_number, device_serial_number) - Fixes production crash on update from v1.1.x (2026-01-19)
+ * - v17 → v18: Added tables + floor elements cache for offline floor plan (2026-02-03)
+ * - v18 → v19: Schema hash fix (idempotent migration for external_id + table/floor cache) (2026-02-03)
+ * - v19 → v20: Added line_position for stable item ordering (2026-02-03)
  *
  * **Entities:**
  * - PendingPaymentEntity: Offline queue for failed payment recordings
@@ -51,6 +58,8 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
  * - HistoricalPeriodEntity: Offline cache for historical sales data (network-first + cache-fallback)
  * - ProductEntity: Cache products for instant offline access (Toast POS pattern)
  * - ProductCategoryEntity: Cache product categories for instant offline access
+ * - TableEntity: Cache tables for floor plan + table service (offline-friendly)
+ * - FloorElementEntity: Cache floor elements for floor plan (offline-friendly)
  * - CachedShiftEntity: Offline cache for shift status (prevention pattern - shows last known state)
  * - VerificationQueueEntity: Offline queue for Step 4 sale verification (photos, barcodes)
  *
@@ -92,10 +101,12 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
         HistoricalPeriodEntity::class,
         ProductEntity::class,
         ProductCategoryEntity::class,
+        TableEntity::class,
+        FloorElementEntity::class,
         CachedShiftEntity::class,
         VerificationQueueEntity::class
     ],
-    version = 17, // ⭐ Version 17: CRITICAL FIX - Added missing columns to pending_payments (fixes production crash)
+    version = 20, // ⭐ Version 20: Stable ordering for draft_order_items
     exportSchema = false // Set to true when adding migrations for production
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -165,6 +176,16 @@ abstract class AvoqadoDatabase : RoomDatabase() {
      * - 24h TTL auto-expiration
      */
     abstract fun productCategoryDao(): ProductCategoryDao
+
+    /**
+     * DAO for cached tables (floor plan + table service).
+     */
+    abstract fun tableDao(): TableDao
+
+    /**
+     * DAO for cached floor elements (floor plan decorations).
+     */
+    abstract fun floorElementDao(): FloorElementDao
 
     /**
      * DAO for cached shift status.
@@ -1110,6 +1131,213 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                 if (!columnExists("pending_payments", "device_serial_number")) {
                     database.execSQL(
                         "ALTER TABLE pending_payments ADD COLUMN device_serial_number TEXT DEFAULT NULL"
+                    )
+                }
+            }
+        }
+
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Draft order items: external_id (idempotency line ID)
+                database.execSQL(
+                    "ALTER TABLE draft_order_items ADD COLUMN external_id TEXT"
+                )
+                database.execSQL(
+                    "UPDATE draft_order_items SET external_id = id WHERE external_id IS NULL"
+                )
+
+                // Tables cache
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS tables_cache (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        table_id TEXT NOT NULL,
+                        venue_id TEXT NOT NULL,
+                        number TEXT NOT NULL,
+                        capacity INTEGER NOT NULL,
+                        position_x REAL,
+                        position_y REAL,
+                        shape TEXT NOT NULL,
+                        rotation INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        current_order_id TEXT,
+                        current_order_number TEXT,
+                        current_order_covers INTEGER,
+                        current_order_total TEXT,
+                        current_order_item_count INTEGER,
+                        current_order_waiter_id TEXT,
+                        current_order_waiter_name TEXT,
+                        current_order_created_at TEXT,
+                        area_id TEXT,
+                        area_name TEXT,
+                        cached_at INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_tables_cache_venue_id_table_id ON tables_cache(venue_id, table_id)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_tables_cache_venue_id ON tables_cache(venue_id)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_tables_cache_cached_at ON tables_cache(cached_at)"
+                )
+
+                // Floor elements cache
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS floor_elements_cache (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        element_id TEXT NOT NULL,
+                        venue_id TEXT NOT NULL,
+                        type TEXT NOT NULL,
+                        position_x REAL NOT NULL,
+                        position_y REAL NOT NULL,
+                        width REAL,
+                        height REAL,
+                        rotation INTEGER NOT NULL,
+                        end_x REAL,
+                        end_y REAL,
+                        label TEXT,
+                        color TEXT,
+                        area_id TEXT,
+                        cached_at INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_floor_elements_cache_venue_id_element_id ON floor_elements_cache(venue_id, element_id)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_floor_elements_cache_venue_id ON floor_elements_cache(venue_id)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_floor_elements_cache_cached_at ON floor_elements_cache(cached_at)"
+                )
+            }
+        }
+
+        val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Helper function to check if column exists
+                fun columnExists(tableName: String, columnName: String): Boolean {
+                    val cursor = database.query("PRAGMA table_info($tableName)")
+                    cursor.use {
+                        val nameIndex = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(nameIndex) == columnName) {
+                                return true
+                            }
+                        }
+                    }
+                    return false
+                }
+
+                // Draft order items: external_id (idempotency line ID)
+                if (!columnExists("draft_order_items", "external_id")) {
+                    database.execSQL(
+                        "ALTER TABLE draft_order_items ADD COLUMN external_id TEXT"
+                    )
+                    database.execSQL(
+                        "UPDATE draft_order_items SET external_id = id WHERE external_id IS NULL"
+                    )
+                }
+
+                // Tables cache (idempotent)
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS tables_cache (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        table_id TEXT NOT NULL,
+                        venue_id TEXT NOT NULL,
+                        number TEXT NOT NULL,
+                        capacity INTEGER NOT NULL,
+                        position_x REAL,
+                        position_y REAL,
+                        shape TEXT NOT NULL,
+                        rotation INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        current_order_id TEXT,
+                        current_order_number TEXT,
+                        current_order_covers INTEGER,
+                        current_order_total TEXT,
+                        current_order_item_count INTEGER,
+                        current_order_waiter_id TEXT,
+                        current_order_waiter_name TEXT,
+                        current_order_created_at TEXT,
+                        area_id TEXT,
+                        area_name TEXT,
+                        cached_at INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_tables_cache_venue_id_table_id ON tables_cache(venue_id, table_id)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_tables_cache_venue_id ON tables_cache(venue_id)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_tables_cache_cached_at ON tables_cache(cached_at)"
+                )
+
+                // Floor elements cache (idempotent)
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS floor_elements_cache (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        element_id TEXT NOT NULL,
+                        venue_id TEXT NOT NULL,
+                        type TEXT NOT NULL,
+                        position_x REAL NOT NULL,
+                        position_y REAL NOT NULL,
+                        width REAL,
+                        height REAL,
+                        rotation INTEGER NOT NULL,
+                        end_x REAL,
+                        end_y REAL,
+                        label TEXT,
+                        color TEXT,
+                        area_id TEXT,
+                        cached_at INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_floor_elements_cache_venue_id_element_id ON floor_elements_cache(venue_id, element_id)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_floor_elements_cache_venue_id ON floor_elements_cache(venue_id)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_floor_elements_cache_cached_at ON floor_elements_cache(cached_at)"
+                )
+            }
+        }
+
+        val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Helper function to check if column exists
+                fun columnExists(tableName: String, columnName: String): Boolean {
+                    val cursor = database.query("PRAGMA table_info($tableName)")
+                    cursor.use {
+                        val nameIndex = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(nameIndex) == columnName) {
+                                return true
+                            }
+                        }
+                    }
+                    return false
+                }
+
+                if (!columnExists("draft_order_items", "line_position")) {
+                    database.execSQL(
+                        "ALTER TABLE draft_order_items ADD COLUMN line_position INTEGER NOT NULL DEFAULT 0"
+                    )
+                    database.execSQL(
+                        "UPDATE draft_order_items SET line_position = created_at WHERE line_position = 0"
                     )
                 }
             }

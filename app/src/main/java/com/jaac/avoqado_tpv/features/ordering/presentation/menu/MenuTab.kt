@@ -116,6 +116,8 @@ fun MenuTab(
             .fillMaxSize()
             .consumeWindowInsets(WindowInsets.ime)
     ) {
+        val scrollResetKey = "${selectedCategory?.id ?: "all"}|$searchQuery"
+
         // Product grid with pull-to-refresh (takes all available space)
         AvoqadoPullToRefresh(
             isRefreshing = isRefreshing,
@@ -126,7 +128,8 @@ fun MenuTab(
                 products = products,
                 selectedCategory = selectedCategory,
                 onProductClick = onProductClick,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier.fillMaxSize(),
+                scrollResetKey = scrollResetKey
             )
         }
 

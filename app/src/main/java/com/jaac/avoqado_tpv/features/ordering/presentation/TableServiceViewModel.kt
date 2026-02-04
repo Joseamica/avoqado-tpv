@@ -3,15 +3,20 @@ package com.jaac.avoqado_tpv.features.ordering.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.local.dao.TableDao
+import com.jaac.avoqado_tpv.core.data.local.mappers.toTableDomain
+import com.jaac.avoqado_tpv.core.data.local.mappers.toTableEntities
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.features.ordering.domain.Table
 import com.jaac.avoqado_tpv.features.ordering.domain.TableRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -79,6 +84,7 @@ sealed class TableServiceState {
 @HiltViewModel
 class TableServiceViewModel @Inject constructor(
     private val tableRepository: TableRepository,
+    private val tableDao: TableDao,
     private val deviceInfoManager: DeviceInfoManager,
     private val secureStorage: SecureStorage
 ) : ViewModel() {
@@ -116,19 +122,52 @@ class TableServiceViewModel @Inject constructor(
                 return@launch
             }
 
-            Timber.i("🪑 [TableServiceVM] Loading tables for venue: $venueId")
-            _state.value = TableServiceState.Loading
+            val previousState = _state.value as? TableServiceState.Success
+            val selectedTableId = previousState?.selectedTable?.id
+
+            var cachedTables: List<Table> = emptyList()
+            var latestCacheAt: Long? = null
+
+            withContext(Dispatchers.IO) {
+                cachedTables = tableDao.getTables(venueId).toTableDomain()
+                latestCacheAt = tableDao.getLatestCacheTimestamp(venueId)
+            }
+
+            val hasCache = cachedTables.isNotEmpty()
+            if (hasCache) {
+                val selectedTable = cachedTables.firstOrNull { it.id == selectedTableId }
+                _state.value = TableServiceState.Success(tables = cachedTables, selectedTable = selectedTable)
+
+                val minutesAgo = latestCacheAt?.let {
+                    ((System.currentTimeMillis() - it) / 60000L).coerceAtLeast(0)
+                }
+                Timber.i("🗄️ [TableServiceVM] Cache hit | tables=${cachedTables.size} | cachedMinutes=${minutesAgo ?: -1}")
+            } else {
+                Timber.i("🪑 [TableServiceVM] Cache miss - loading from backend | venue=$venueId")
+                _state.value = TableServiceState.Loading
+            }
 
             when (val result = tableRepository.getTables(venueId)) {
                 is Result.Success -> {
                     Timber.i("✅ [TableServiceVM] Tables loaded: ${result.data.size}")
-                    _state.value = TableServiceState.Success(tables = result.data)
+
+                    val cachedAt = System.currentTimeMillis()
+                    withContext(Dispatchers.IO) {
+                        tableDao.upsertTables(result.data.toTableEntities(venueId, cachedAt))
+                    }
+
+                    val selectedTable = result.data.firstOrNull { it.id == selectedTableId }
+                    _state.value = TableServiceState.Success(tables = result.data, selectedTable = selectedTable)
                 }
                 is Result.Error -> {
                     Timber.e(result.exception, "❌ [TableServiceVM] Error loading tables")
-                    _state.value = TableServiceState.Error(
-                        result.exception.message ?: "Error al cargar las mesas"
-                    )
+                    if (!hasCache) {
+                        _state.value = TableServiceState.Error(
+                            result.exception.message ?: "Error al cargar las mesas"
+                        )
+                    } else {
+                        Timber.w("⚠️ [TableServiceVM] Using cached tables due to backend error")
+                    }
                 }
             }
         }

@@ -1,4 +1,4 @@
-# CLAUDE.md - Avoqado TPV (Android POS)
+# AGENTS.md - Avoqado TPV (Android POS)
 
 This file is the **index** for Claude Code. It provides quick context and points to detailed documentation in `docs/`.
 
@@ -22,6 +22,75 @@ This file is the **index** for Claude Code. It provides quick context and points
 ```
 
 **Central hub:** `avoqado-server/docs/README.md` is the master index for ALL cross-repo documentation.
+
+---
+
+## 🚨 CRITICAL: PaymentViewModel & PaymentScreen Safety Rules
+
+**⚠️ EXTREME CAUTION REQUIRED** when modifying these files:
+- `PaymentViewModel.kt` (sandbox AND production variants)
+- `PaymentScreen.kt`
+
+### Why This Is Critical
+
+These components are used by **8+ different features**, each with its own conditional logic:
+
+| Feature | Key Conditional | Risk |
+|---------|----------------|------|
+| **Fast Payment** | `orderId == null` | Break quick checkout flow |
+| **Quick Order** | `orderId != null && tableId == null` | Break order payment flow |
+| **Table Service** | `currentTableId != null` | Break table clearing, navigation |
+| **Pay Later** | `wasPayLaterOrder == true` | Break pay-later navigation |
+| **SERIALIZED_INVENTORY** | `isSerializedInventoryMode` | Break proof-of-sale flow |
+| **Split Payments** | `remainingBalance > 0` | Break partial payment flow |
+| **Refunds** | `isRefund == true` | Break refund UI/flow |
+| **Kiosk Mode** | `isKioskPayment == true` | Break auto-dismiss |
+
+### Mandatory Safety Checklist
+
+**BEFORE making ANY change to PaymentViewModel or PaymentScreen:**
+
+- [ ] **Identify all affected features** - Which conditionals does your change touch?
+- [ ] **Test ALL features** - Don't just test the one you're fixing
+- [ ] **Cache management** - If adding state variables, clear them in `resetPayment()`
+- [ ] **State transitions** - Verify Success state includes ALL required fields (receipt, cardDetails, etc.)
+- [ ] **Both variants** - Sync changes between `sandbox/` and `production/` variants
+- [ ] **Regression testing** - Test:
+  - Fast payment (no order)
+  - Quick order payment
+  - Table order payment
+  - Pay-later order payment
+  - Split payment (partial amount)
+  - Refund flow
+
+### Real Bug Example (January 2026)
+
+**Problem**: Added proof-of-sale feature for SERIALIZED_INVENTORY. Receipt data was cached but QR code didn't appear.
+
+**Root Cause**:
+1. When SERIALIZED_INVENTORY enabled, state transitions: `Success → AwaitingProofOfSale → Success (final)`
+2. Cached receipt data before AwaitingProofOfSale
+3. But `transitionToFinalSuccess()` created Success state **without** cached receipt
+4. QR code showed empty because `receipt` field was null
+
+**Risk**: Cache not cleared in `resetPayment()` → contaminated next payment with previous receipt data
+
+**Fix**:
+1. Cache receipt data before AwaitingProofOfSale
+2. Restore cached data in `transitionToFinalSuccess()`
+3. **Clear cache in `resetPayment()`** ← CRITICAL
+
+**Lesson**: A "small fix" to one feature can break 7 others. Always test ALL payment flows.
+
+### Golden Rules
+
+1. **Never assume only one feature uses a code path** - Multiple features share the same state machine
+2. **Clear ALL state in resetPayment()** - Add new fields to reset list immediately
+3. **Test with real scenarios** - Don't just compile, actually run all payment types
+4. **Sync both variants** - sandbox and production must match (except SDK URLs)
+5. **Watch for state contamination** - Cached data from one payment can leak to next
+
+**Remember**: This is the most critical flow in the app. Payment bugs = lost revenue + merchant distrust.
 
 ---
 
@@ -89,7 +158,12 @@ Kotlin, Jetpack Compose, POS terminals, payments, offline-first architecture, an
 | ---------------------------------------- | -------------------------------------------------------- |
 | `docs/MODULES_SYSTEM.md`                 | **Modules**: VenueModule config, StateFlow pattern, proof-of-sale photo capture |
 | `docs/ATTENDANCE_VERIFICATION.md`        | **Timeclock**: Clock-in/out photo + GPS verification     |
+| `docs/PRE_PAYMENT_VERIFICATION.md`       | **Payment Flow**: Pre-payment photo/barcode verification (TPV settings) |
+| `docs/PAYMENT_FLOW_ORIGIN.md`            | **Payment Flow**: Navigation guardrails by origin (fast/order/serialized) |
+| `docs/PAYMENT_SESSION.md`                | **Payment Flow**: Immutable session snapshot (incremental refactor) |
 | `docs/MASTER_TOTP_LOGIN.md`              | **Master TOTP**: Emergency SUPERADMIN access, venue rule bypass |
+| `docs/RECEIPT_PRINTING.md`               | **Receipts**: Printed layout, fiscal header, QR, footer             |
+| `docs/ORDERING_OFFLINE.md`               | **Ordering Offline**: Quick order + table service behavior          |
 | `docs/PAY_LATER_README.md`               | **Pay Later Overview**: Index of all pay-later docs      |
 | `docs/PAY_LATER_IMPLEMENTATION.md`       | **Pay Later (Android)**: Bug fix + banner implementation |
 | `docs/PAY_LATER_TESTING_CHECKLIST.md`    | Pay Later QA manual + automated tests                    |
@@ -106,6 +180,8 @@ Kotlin, Jetpack Compose, POS terminals, payments, offline-first architecture, an
 | `SOCKET_IO_IMPLEMENTATION.md`            | Real-time events architecture & integration              |
 | `SOCKET_IO_TESTING.md`                   | Socket.IO testing strategies & examples                  |
 | `LOCAL_FIRST_SYNC_PATTERNS.md`           | **CRITICAL: Preserve local-only fields when syncing**    |
+| `docs/BLE_PAYMENT_IOS_APP.md`            | BLE external device payments (iOS sender + TPV behavior) |
+| `docs/BLE_PAYMENT_QUEUE.md`              | BLE payment queue (multi-device requests, TPV handling)  |
 | `TESTING_GUIDE.md`                       | Unit tests, integration tests, debugging                 |
 | `SECURITY_CHECKLIST.md`                  | Encryption, tenant isolation, certificate pinning        |
 | `PRODUCTION_BUILD_GUIDE.md`              | Build variants, deployment, troubleshooting              |
@@ -142,6 +218,96 @@ adb logcat -c && adb logcat -s PaymentViewModel,MenuViewModel | grep -iE "keywor
 ```
 
 **Full guide**: `ADB_MONITORING_GUIDE.md`
+
+### 🤖 MANDATORY: Log Capture for Testing (Claude Workflow)
+
+**After implementing code for a specific feature**, Claude MUST:
+
+1. **Start log capture** before user tests:
+   ```bash
+   ./scripts/capture-logs.sh <feature> start
+   ```
+
+2. **Wait for user** to test on device
+
+3. **When user says "ya terminé" or "listo"**, Claude MUST:
+   ```bash
+   ./scripts/capture-logs.sh <feature> read   # Analyze logs
+   ./scripts/capture-logs.sh <feature> stop   # Stop capture
+   ```
+
+4. **Report findings** - errors, crashes, unexpected behavior
+
+#### Available Features
+
+| Feature | What it captures |
+|---------|-----------------|
+| `payment` | Blumon SDK, card detection, refunds, tips + ALL errors |
+| `order` | Order CRUD, sync, cache, items + ALL errors |
+| `menu` | Products, categories, modifiers + ALL errors |
+| `bluetooth` | BLE payments, device pairing + ALL errors |
+| `socket` | Socket.IO events, rooms, broadcasts + ALL errors |
+| `auth` | Login, tokens, sessions, permissions + ALL errors |
+| `printer` | Receipt printing, fiscal format + ALL errors |
+| `sync` | Background workers, heartbeat + ALL errors |
+| `table` | Floor plans, table status + ALL errors |
+| `kiosk` | Self-service mode + ALL errors |
+| `inventory` | Stock, proof-of-sale + ALL errors |
+| `all` | Everything (verbose) |
+
+#### What's ALWAYS Captured (Automatic)
+
+**TPV (Android):**
+- Crashes: `AndroidRuntime`, `FATAL`, `Crash`, `ANR`
+- Exceptions: `Exception`, `Error`, `NPE`
+- Network: `OkHttp`, `Retrofit`, `timeout`, `refused`
+- HTTP errors: `unauthorized`, `forbidden`, `not found`
+
+**Server (Node.js):**
+- Errors: `error`, `fail`, `exception`
+- HTTP 4xx/5xx responses
+- Unhandled rejections, timeouts
+
+#### Commands
+
+```bash
+./scripts/capture-logs.sh <feature> start   # Start capturing
+./scripts/capture-logs.sh <feature> stop    # Stop capturing
+./scripts/capture-logs.sh <feature> status  # Check if running
+./scripts/capture-logs.sh <feature> read    # Output for Claude
+```
+
+#### Claude Instructions
+
+**When user says "ya terminé de testear" or similar:**
+
+1. Read the captured logs:
+   ```bash
+   ./scripts/capture-logs.sh <feature> read
+   ```
+2. Analyze for errors, warnings, unexpected behavior
+3. Stop capture and suggest cleanup:
+   ```bash
+   ./scripts/capture-logs.sh <feature> stop
+   ```
+
+**Log file location:** `/tmp/avoqado-logs/<feature>-<timestamp>.log`
+
+#### User Commands (for manual testing)
+
+```bash
+# Start capture
+./scripts/capture-logs.sh payment start
+
+# Watch live (in another terminal)
+tail -f /tmp/avoqado-logs/payment-*.log
+
+# Check status
+./scripts/capture-logs.sh payment status
+
+# Stop capture
+./scripts/capture-logs.sh payment stop
+```
 
 ---
 
@@ -424,6 +590,7 @@ adb logcat -s "RoomDatabase:*" | grep -i "migration"
 | Add Socket.IO events          | `SOCKET_IO_IMPLEMENTATION.md`            |
 | Test Socket.IO                | `SOCKET_IO_TESTING.md`                   |
 | Fix local-first sync bugs     | `LOCAL_FIRST_SYNC_PATTERNS.md`           |
+| Ordering offline behavior     | `docs/ORDERING_OFFLINE.md`               |
 | Debug with ADB                | `ADB_MONITORING_GUIDE.md`                |
 | Write tests                   | `TESTING_GUIDE.md`                       |
 
@@ -588,6 +755,6 @@ versionName = "1.1.1" // Semántico: MAJOR.MINOR.PATCH
 
 ---
 
-**Last Updated:** 2025-12-26
+**Last Updated:** 2026-02-03
 **Maintainer:** Development Team
-**Version:** 4.3 (Fixed: APK must use apksigner for v2 signature, not jarsigner)
+**Version:** 4.4 (Synced with CLAUDE.md - Added PaymentViewModel safety rules, log capture, documentation map)

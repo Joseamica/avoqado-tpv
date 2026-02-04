@@ -3,6 +3,12 @@ package com.jaac.avoqado_tpv.features.ordering.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.local.dao.FloorElementDao
+import com.jaac.avoqado_tpv.core.data.local.dao.TableDao
+import com.jaac.avoqado_tpv.core.data.local.mappers.toFloorElementDomain
+import com.jaac.avoqado_tpv.core.data.local.mappers.toFloorElementEntities
+import com.jaac.avoqado_tpv.core.data.local.mappers.toTableDomain
+import com.jaac.avoqado_tpv.core.data.local.mappers.toTableEntities
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.features.ordering.domain.FloorElement
@@ -12,6 +18,9 @@ import com.jaac.avoqado_tpv.features.ordering.domain.Table
 import com.jaac.avoqado_tpv.features.ordering.domain.TableRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.TableShape
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -19,6 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -95,6 +105,8 @@ data class AreaInfo(
 class FloorPlanViewModel @Inject constructor(
     private val tableRepository: TableRepository,
     private val floorElementRepository: FloorElementRepository,
+    private val tableDao: TableDao,
+    private val floorElementDao: FloorElementDao,
     private val deviceInfoManager: DeviceInfoManager,
     private val secureStorage: SecureStorage,
     private val socketManager: com.jaac.avoqado_tpv.core.data.realtime.SocketManager
@@ -106,6 +118,9 @@ class FloorPlanViewModel @Inject constructor(
     // Error events for user-friendly error messages
     private val _errorEvent = MutableSharedFlow<String>()
     val errorEvent: SharedFlow<String> = _errorEvent.asSharedFlow()
+
+    private var socketReloadJob: Job? = null
+    private val socketReloadDebounceMs = 800L
 
     init {
         // 🔌 Start listening to Socket.IO events for real-time table status updates
@@ -129,8 +144,13 @@ class FloorPlanViewModel @Inject constructor(
                         Timber.i("🔄 [FloorPlan] Table status changed - reloading floor plan")
                         Timber.d("   TableId: ${event.tableId} | VenueId: ${event.venueId}")
 
-                        // Reload floor plan to show updated table status
-                        loadFloorPlan()
+                        // Debounce reload to avoid rapid refresh storms
+                        socketReloadJob?.cancel()
+                        socketReloadJob = viewModelScope.launch {
+                            delay(socketReloadDebounceMs)
+                            Timber.i("🔄 [FloorPlan] Debounced reload after table status change")
+                            loadFloorPlan(reason = "socket_table_status_change")
+                        }
                     }
                     else -> {
                         // Ignore other events
@@ -145,10 +165,8 @@ class FloorPlanViewModel @Inject constructor(
      *
      * Fetches tables, floor elements, and areas from repository.
      */
-    fun loadFloorPlan() {
+    fun loadFloorPlan(reason: String = "manual") {
         viewModelScope.launch {
-            _state.value = FloorPlanState.Loading
-
             val venueId = deviceInfoManager.getVenueId() ?: run {
                 Timber.e("❌ No venueId configured")
                 _state.value = FloorPlanState.Error(
@@ -157,7 +175,47 @@ class FloorPlanViewModel @Inject constructor(
                 return@launch
             }
 
-            Timber.i("🗺️ [FloorPlan] Loading floor plan for venue: $venueId")
+            val previousState = _state.value as? FloorPlanState.Success
+            val selectedAreaId = previousState?.selectedAreaId
+            val selectedTableId = previousState?.selectedTable?.id
+            val isEditMode = previousState?.isEditMode ?: false
+
+            var cachedTables: List<Table> = emptyList()
+            var cachedElements: List<FloorElement> = emptyList()
+            var latestCacheAt: Long? = null
+
+            withContext(Dispatchers.IO) {
+                cachedTables = tableDao.getTables(venueId).toTableDomain()
+                cachedElements = floorElementDao.getFloorElements(venueId).toFloorElementDomain()
+
+                val tablesCacheAt = tableDao.getLatestCacheTimestamp(venueId)
+                val elementsCacheAt = floorElementDao.getLatestCacheTimestamp(venueId)
+                latestCacheAt = listOfNotNull(tablesCacheAt, elementsCacheAt).maxOrNull()
+            }
+
+            val hasCache = cachedTables.isNotEmpty() || cachedElements.isNotEmpty()
+            if (hasCache) {
+                Timber.i(
+                    "🗄️ [FloorPlan] Cache hit | tables=${cachedTables.size} | elements=${cachedElements.size} | reason=$reason"
+                )
+
+                val areas = buildAreas(cachedTables)
+                val selectedTable = cachedTables.firstOrNull { it.id == selectedTableId }
+
+                _state.value = FloorPlanState.Success(
+                    tables = cachedTables,
+                    floorElements = cachedElements,
+                    areas = areas,
+                    selectedAreaId = selectedAreaId,
+                    selectedTable = selectedTable,
+                    isEditMode = isEditMode
+                )
+            } else {
+                Timber.i("🗄️ [FloorPlan] Cache miss | reason=$reason")
+                _state.value = FloorPlanState.Loading
+            }
+
+            Timber.i("🗺️ [FloorPlan] Refreshing from backend | venue=$venueId | reason=$reason")
 
             val tablesResult = tableRepository.getTables(venueId)
             val elementsResult = floorElementRepository.getFloorElements(venueId)
@@ -166,39 +224,37 @@ class FloorPlanViewModel @Inject constructor(
                 tablesResult is Result.Error -> {
                     val errorMessage = tablesResult.exception.userMessage
                     Timber.e(tablesResult.exception, "❌ [FloorPlan] Failed to load tables")
-                    _state.value = FloorPlanState.Error(errorMessage)
+                    handleBackendFailure(errorMessage, hasCache, latestCacheAt)
                 }
 
                 elementsResult is Result.Error -> {
                     val errorMessage = elementsResult.exception.userMessage
                     Timber.e(elementsResult.exception, "❌ [FloorPlan] Failed to load floor elements")
-                    _state.value = FloorPlanState.Error(errorMessage)
+                    handleBackendFailure(errorMessage, hasCache, latestCacheAt)
                 }
 
                 tablesResult is Result.Success && elementsResult is Result.Success -> {
                     val tables = tablesResult.data
                     val floorElements = elementsResult.data
+                    val cachedAt = System.currentTimeMillis()
 
                     Timber.i("✅ [FloorPlan] Loaded ${tables.size} tables and ${floorElements.size} floor elements")
 
-                    // Extract unique areas from tables
-                    val areas = tables
-                        .filter { it.areaId != null && it.areaName != null }
-                        .groupBy { it.areaId!! }
-                        .map { (areaId, tablesInArea) ->
-                            AreaInfo(
-                                id = areaId,
-                                name = tablesInArea.first().areaName!!,
-                                tableCount = tablesInArea.size
-                            )
-                        }
+                    withContext(Dispatchers.IO) {
+                        tableDao.upsertTables(tables.toTableEntities(venueId, cachedAt))
+                        floorElementDao.upsertFloorElements(floorElements.toFloorElementEntities(venueId, cachedAt))
+                    }
+
+                    val areas = buildAreas(tables)
+                    val selectedTable = tables.firstOrNull { it.id == selectedTableId }
 
                     _state.value = FloorPlanState.Success(
                         tables = tables,
                         floorElements = floorElements,
                         areas = areas,
-                        selectedAreaId = null,
-                        selectedTable = null
+                        selectedAreaId = selectedAreaId,
+                        selectedTable = selectedTable,
+                        isEditMode = isEditMode
                     )
                 }
             }
@@ -221,6 +277,43 @@ class FloorPlanViewModel @Inject constructor(
             selectedAreaId = areaId,
             selectedTable = null // Clear selection when changing filter
         )
+    }
+
+    private fun buildAreas(tables: List<Table>): List<AreaInfo> {
+        return tables
+            .filter { it.areaId != null && it.areaName != null }
+            .groupBy { it.areaId!! }
+            .map { (areaId, tablesInArea) ->
+                AreaInfo(
+                    id = areaId,
+                    name = tablesInArea.first().areaName!!,
+                    tableCount = tablesInArea.size
+                )
+            }
+    }
+
+    private suspend fun handleBackendFailure(
+        errorMessage: String,
+        hasCache: Boolean,
+        latestCacheAt: Long?
+    ) {
+        if (!hasCache) {
+            _state.value = FloorPlanState.Error(errorMessage)
+            return
+        }
+
+        val minutesAgo = latestCacheAt?.let {
+            ((System.currentTimeMillis() - it) / 60000L).coerceAtLeast(0)
+        }
+
+        val userMessage = if (minutesAgo != null) {
+            "Mostrando último estado (hace ${minutesAgo} min)"
+        } else {
+            "Mostrando último estado (sin timestamp)"
+        }
+
+        Timber.w("⚠️ [FloorPlan] Backend unavailable - using cache | ${userMessage}")
+        _errorEvent.emit(userMessage)
     }
 
     /**

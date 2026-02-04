@@ -125,6 +125,9 @@ class AuthRepository @Inject constructor(
                 // Settings control payment flow screens (tip, review, receipt options)
                 tpvSettingsRepository.refreshSettings(authResponse.venueId)
 
+                // Cache venue details for receipt/header printing (non-blocking)
+                refreshVenueDetails(authResponse.venueId)
+
                 // 🔐 Fetch permissions from backend and cache (for permission-based UI)
                 try {
                     permissionsRepository.getPermissions(forceRefresh = true)
@@ -234,6 +237,32 @@ class AuthRepository @Inject constructor(
     }
 
     /**
+     * Fetch venue details and cache for receipt/header printing.
+     * Does not block login on failure.
+     */
+    private suspend fun refreshVenueDetails(venueId: String) {
+        try {
+            val response = apiService.getVenueDetails(venueId)
+            if (response.isSuccessful && response.body() != null) {
+                val venue = response.body()!!
+                secureStorage.saveVenueName(venue.name)
+                secureStorage.saveVenueLogo(venue.logo)
+                secureStorage.saveVenueLegalName(venue.legalName)
+                secureStorage.saveVenueRfc(venue.rfc)
+                secureStorage.saveVenueAddress(venue.address)
+                secureStorage.saveVenueCity(venue.city)
+                secureStorage.saveVenueState(venue.state)
+                secureStorage.saveVenueZipCode(venue.zipCode)
+                Timber.d("✅ Venue details cached for receipts: ${venue.id}")
+            } else {
+                Timber.w("⚠️ Failed to fetch venue details (HTTP ${response.code()})")
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ Failed to fetch venue details")
+        }
+    }
+
+    /**
      * Verify PIN and create session for Timeclock
      *
      * Used by Timeclock feature to verify employee identity and create
@@ -272,6 +301,7 @@ class AuthRepository @Inject constructor(
 
                 // Save session so API calls work (getTimeEntries, clockIn, etc.)
                 saveSession(authResponse)
+                refreshVenueDetails(authResponse.venueId)
                 Timber.d("✅ PIN verified and session saved for: ${authResponse.staff.displayName}")
 
                 kotlin.Result.success(

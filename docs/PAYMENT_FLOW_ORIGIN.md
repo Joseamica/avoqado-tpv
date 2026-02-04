@@ -36,6 +36,17 @@ It is stored in `PaymentViewModel.flowOrigin` and set whenever a flow starts:
 - **SERIALIZED** → return to `SerializedSale` (scanner)
 - **ORDER / FAST / REFUND / KIOSK** → return to **previous screen** (Menu, Fast entry, Refund list, Kiosk),
   with fallback to Home if the back stack is empty.
+- **DetectingCard (card payments, non-refund)** → return to **SelectingMerchant** (stops card detection).
+- **Error (card payments, non-refund)** → **Cancelar** returns to **SelectingMerchant** so staff can retry or switch method.
+
+---
+
+## Refund Guardrails
+
+- **Use payment venue for refunds**: Refunds must call `/tpv/venues/{paymentVenueId}/refunds`, not the auth venue.
+  `paymentVenueId` is passed through navigation and used in `startRefund()`.
+- **Gate by backend permission**: Refund UI should be enabled only if the user has `payments:refund`
+  (matches backend `checkPermission('payments:refund')`).
 
 ---
 
@@ -65,6 +76,7 @@ Without a single origin:
 - **REFUND**: Success → back to Home
 - **Back** from SelectingMerchant in SERIALIZED → returns to scanner
 - **Back** from SelectingMerchant in ORDER → returns to the order screen (not Welcome)
+- **Back** from DetectingCard (non-refund) → returns to SelectingMerchant
 
 ---
 

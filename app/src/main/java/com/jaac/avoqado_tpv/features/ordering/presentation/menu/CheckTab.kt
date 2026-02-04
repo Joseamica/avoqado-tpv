@@ -20,6 +20,7 @@ import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,7 +55,10 @@ fun CheckTab(
     modifier: Modifier = Modifier
 ) {
     val currencyFormatter = NumberFormat.getCurrencyInstance(Locale("es", "MX"))
-    val calculatedTotal = order.items.sumOf { it.totalPrice }
+    val displayItems = remember(order.items) { order.items.distinctBy { it.id } }
+    val calculatedTotal = displayItems.sumOf { it.totalPrice }
+    val lineCount = displayItems.size
+    val unitCount = displayItems.sumOf { it.quantity }
 
     Column(
         modifier = modifier
@@ -69,7 +73,7 @@ fun CheckTab(
                 .weight(1f)
                 .fillMaxWidth()
         ) {
-            if (order.items.isEmpty()) {
+            if (displayItems.isEmpty()) {
                 EmptyState()
             } else {
                 LazyColumn(
@@ -79,7 +83,8 @@ fun CheckTab(
                     // Header Summary (Inside scroll to maximize space)
                     item {
                         OrderSummaryHeader(
-                            itemCount = order.items.size,
+                            lineCount = lineCount,
+                            unitCount = unitCount,
                             total = calculatedTotal,
                             onPrint = onPrintComanda,
                             hasItems = true
@@ -88,7 +93,7 @@ fun CheckTab(
                     }
 
                     items(
-                        items = order.items,
+                        items = displayItems,
                         key = { it.id }
                     ) { item ->
                         SwipeableOrderItem(
@@ -447,7 +452,7 @@ private fun KitchenStatusIcon(isSent: Boolean, onPrint: () -> Unit) {
 }
 
 @Composable
-private fun OrderSummaryHeader(itemCount: Int, total: BigDecimal, onPrint: () -> Unit, hasItems: Boolean) {
+private fun OrderSummaryHeader(lineCount: Int, unitCount: Int, total: BigDecimal, onPrint: () -> Unit, hasItems: Boolean) {
     val formatter = NumberFormat.getCurrencyInstance(Locale("es", "MX"))
     Row(
         modifier = Modifier
@@ -457,7 +462,7 @@ private fun OrderSummaryHeader(itemCount: Int, total: BigDecimal, onPrint: () ->
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = "Orden ($itemCount items)",
+            text = "Orden ($lineCount líneas · $unitCount unidades)",
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

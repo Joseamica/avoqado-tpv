@@ -60,6 +60,12 @@ data class DraftOrderItemEntity(
     @PrimaryKey
     val id: String,
 
+    @ColumnInfo(name = "external_id")
+    val externalId: String? = null,
+
+    @ColumnInfo(name = "line_position")
+    val linePosition: Long = 0L,
+
     @ColumnInfo(name = "order_id")
     val orderId: String, // FK to DraftOrderEntity
 

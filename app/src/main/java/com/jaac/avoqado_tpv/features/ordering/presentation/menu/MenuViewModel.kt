@@ -11,6 +11,7 @@ import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryEntities
 import com.jaac.avoqado_tpv.core.data.local.mappers.toDomain
 import com.jaac.avoqado_tpv.core.data.local.mappers.toEntities
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.features.ordering.domain.AddOrderItemRequest
 import com.jaac.avoqado_tpv.features.ordering.domain.KitchenStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
@@ -27,6 +28,7 @@ import com.jaac.avoqado_tpv.features.ordering.domain.DiscountType
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderDiscount
 import com.jaac.avoqado_tpv.features.ordering.domain.CouponCode
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,6 +38,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -45,6 +48,8 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.math.BigDecimal
@@ -77,6 +82,7 @@ class MenuViewModel @Inject constructor(
     private val customerRepository: com.jaac.avoqado_tpv.features.ordering.domain.CustomerRepository,  // 👤 Customer search
     private val socketManager: com.jaac.avoqado_tpv.core.data.realtime.SocketManager,
     private val orderSyncCoordinator: com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator,
+    private val connectionEventManager: ConnectionEventManager,
     private val productDao: ProductDao,  // ⚡ Cache-first product loading
     private val productCategoryDao: ProductCategoryDao,  // ⚡ Cache-first category loading
     private val printerManager: PrinterManager  // 🖨️ Kitchen ticket printing
@@ -95,11 +101,23 @@ class MenuViewModel @Inject constructor(
      */
     private val _currentOrderId = MutableStateFlow<String?>(null)
 
+    @Volatile
+    private var isOrderingActive = false
+
+    @Volatile
+    private var isMenuTabActive = true
+
+    @Volatile
+    private var pendingProductsRefresh = false
+
     private val _products = MutableStateFlow<List<Product>>(emptyList())
     val products: StateFlow<List<Product>> = _products.asStateFlow()
 
     private val _categories = MutableStateFlow<List<com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory>>(emptyList())
     val categories: StateFlow<List<com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory>> = _categories.asStateFlow()
+
+    @Volatile
+    private var categoryOrderMap: Map<String, Int> = emptyMap()
 
     // 🔍 Search functionality (Issue #4)
     private val _searchQuery = MutableStateFlow("")
@@ -112,6 +130,13 @@ class MenuViewModel @Inject constructor(
     // Products loading state (for AvoqadoLoadingOverlay)
     private val _isLoadingProducts = MutableStateFlow(true)  // Start as true since products load in init
     val isLoadingProducts: StateFlow<Boolean> = _isLoadingProducts.asStateFlow()
+
+    // 🔄 Product refresh throttling (avoid jank on repeated socket events)
+    private val productsRefreshMutex = Mutex()
+
+    @Volatile
+    private var lastProductsRefreshAt: Long = 0L
+    private val minProductsRefreshIntervalMs = 2000L
 
     // 🔄 Local-first sync status
     private val _isSyncing = MutableStateFlow(false)
@@ -257,7 +282,7 @@ class MenuViewModel @Inject constructor(
 
     init {
         // Load products on ViewModel creation
-        loadProducts()
+        loadProducts(reason = "init", force = true)
 
         // 🎟️ Load available discounts for the venue
         loadAvailableDiscounts()
@@ -272,6 +297,9 @@ class MenuViewModel @Inject constructor(
         // Listen to Socket.IO events for real-time inventory updates
         listenToSocketEvents()
 
+        // 🔁 Auto-sync pending orders when connection is restored
+        listenToConnectionRestored()
+
         // ✨ BARCODE QUICK ADD: Register BroadcastReceiver for VOLUME_UP button
         val intentFilter = android.content.IntentFilter("com.jaac.avoqado_tpv.OPEN_BARCODE_SCANNER")
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
@@ -283,8 +311,31 @@ class MenuViewModel @Inject constructor(
         Timber.d("📷 [BarcodeQuickAdd] BroadcastReceiver registered")
     }
 
+    /**
+     * Mark whether Ordering screen is active (used for reconnect sync).
+     */
+    fun setOrderingActive(active: Boolean) {
+        isOrderingActive = active
+        Timber.d("🧭 [Ordering] Active=$active")
+    }
+
+    /**
+     * Mark whether Menu tab is active (used to defer product refresh to avoid UI jank).
+     */
+    fun setMenuTabActive(active: Boolean) {
+        isMenuTabActive = active
+        Timber.d("🧭 [MenuTab] Active=$active")
+
+        if (active && pendingProductsRefresh) {
+            pendingProductsRefresh = false
+            Timber.d("🔁 [MenuTab] Applying deferred product refresh")
+            loadProducts(reason = "menu_tab_resumed", force = false)
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
+        isOrderingActive = false
         // ✨ BARCODE QUICK ADD: Unregister BroadcastReceiver
         try {
             context.unregisterReceiver(barcodeScannerReceiver)
@@ -328,8 +379,14 @@ class MenuViewModel @Inject constructor(
                     Timber.i("🔄 [MenuViewModel] Order updated (debounced) - reloading products to sync inventory")
                     Timber.d("   OrderId: ${orderEvent.orderId} | Items: ${orderEvent.items?.size ?: 0} | Total: ${orderEvent.total}")
 
-                    // Reload products to get updated inventory counts
-                    loadProducts()
+                    if (!isMenuTabActive) {
+                        pendingProductsRefresh = true
+                        Timber.d("⏸️ [MenuViewModel] Menu tab inactive - deferring product refresh")
+                        return@collect
+                    }
+
+                    // Reload products to get updated inventory counts (throttled)
+                    loadProducts(reason = "socket_order_updated", force = false)
                 }
         }
 
@@ -355,6 +412,34 @@ class MenuViewModel @Inject constructor(
                         refreshOrderFromBackend(eventOrderId)
                     }
                 }
+        }
+    }
+
+    /**
+     * 🔁 Listen to Connection Restored Events
+     *
+     * When backend connectivity returns, auto-sync pending local orders.
+     * Only runs when Ordering screen is active to avoid noisy background sync.
+     */
+    private fun listenToConnectionRestored() {
+        viewModelScope.launch {
+            connectionEventManager.connectionRestoredEvents.collect { event ->
+                if (!isOrderingActive) {
+                    Timber.d("🔁 [Sync] Connection restored but ordering inactive - skipping")
+                    return@collect
+                }
+
+                val venueId = deviceInfoManager.getVenueId()
+                if (venueId == null) {
+                    Timber.w("🔁 [Sync] Connection restored but venueId is null")
+                    return@collect
+                }
+
+                Timber.i(
+                    "🔁 [Sync] Connection restored - syncing pending orders | venue=$venueId | attempts=${event.attemptsBeforeReconnection}"
+                )
+                orderSyncCoordinator.syncPendingOrders(venueId)
+            }
         }
     }
 
@@ -634,14 +719,15 @@ class MenuViewModel @Inject constructor(
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private fun collectOrderFromRoom() {
         viewModelScope.launch {
-            _currentOrderId
-                .filterNotNull()
-                .flatMapLatest { orderId ->
-                    Timber.d("🔄 [SSOT] Observing order from Room | orderId=$orderId")
-                    orderSyncCoordinator.observeOrder(orderId)
-                }
-                .distinctUntilChanged()
-                .collect { order ->
+                _currentOrderId
+                    .filterNotNull()
+                    .flatMapLatest { orderId ->
+                        Timber.d("🔄 [SSOT] Observing order from Room | orderId=$orderId")
+                        orderSyncCoordinator.observeOrder(orderId)
+                    }
+                    .distinctUntilChanged()
+                    .conflate()
+                    .collect { order ->
                     Timber.d("🔄 [SSOT] Room emitted order update | id=${order.id} | items=${order.items.size}")
 
                     // Update _state with fresh order from Room
@@ -775,9 +861,46 @@ class MenuViewModel @Inject constructor(
      *
      * **Result:** First paint goes from 500-1000ms → ~10ms (50-100x faster!)
      */
-    private fun loadProducts() {
+    private fun loadProducts(
+        reason: String,
+        force: Boolean
+    ) {
         viewModelScope.launch {
-            loadProductsInternal()
+            loadProductsInternal(reason = reason, force = force)
+        }
+    }
+
+    private fun sortProductsForMenu(
+        products: List<Product>,
+        categoryOrder: Map<String, Int> = categoryOrderMap
+    ): List<Product> {
+        if (products.size <= 1) return products
+        return products.sortedWith(
+            compareBy<Product> { categoryOrder[it.categoryId] ?: Int.MAX_VALUE }
+                .thenBy { it.displayOrder }
+                .thenBy { it.name.lowercase() }
+                .thenBy { it.id }
+        )
+    }
+
+    private fun sortCategoriesForMenu(
+        categories: List<com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory>
+    ): List<com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory> {
+        if (categories.size <= 1) return categories
+        return categories.sortedWith(
+            compareBy<com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory> { it.displayOrder }
+                .thenBy { it.name.lowercase() }
+                .thenBy { it.id }
+        )
+    }
+
+    private fun updateCategoryOrder(
+        categories: List<com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory>
+    ) {
+        categoryOrderMap = categories.associate { it.id to it.displayOrder }
+        val sortedProducts = sortProductsForMenu(_products.value, categoryOrderMap)
+        if (sortedProducts != _products.value) {
+            _products.value = sortedProducts
         }
     }
 
@@ -794,7 +917,7 @@ class MenuViewModel @Inject constructor(
         viewModelScope.launch {
             _isRefreshing.value = true
             try {
-                loadProductsInternal()
+                loadProductsInternal(reason = "pull_to_refresh", force = true)
             } finally {
                 _isRefreshing.value = false
             }
@@ -804,7 +927,39 @@ class MenuViewModel @Inject constructor(
     /**
      * Internal product loading logic (shared by init and refresh)
      */
-    private suspend fun loadProductsInternal() {
+    private suspend fun loadProductsInternal(
+        reason: String,
+        force: Boolean
+    ) {
+        val now = System.currentTimeMillis()
+        if (!force && (now - lastProductsRefreshAt) < minProductsRefreshIntervalMs) {
+            Timber.d(
+                "⏳ [Products] Refresh throttled | reason=$reason | elapsed=${now - lastProductsRefreshAt}ms"
+            )
+            return
+        }
+
+        if (force) {
+            productsRefreshMutex.withLock {
+                lastProductsRefreshAt = System.currentTimeMillis()
+                performProductsRefresh(reason)
+            }
+        } else {
+            if (!productsRefreshMutex.tryLock()) {
+                Timber.d("⏳ [Products] Refresh already running | reason=$reason")
+                return
+            }
+
+            try {
+                lastProductsRefreshAt = System.currentTimeMillis()
+                performProductsRefresh(reason)
+            } finally {
+                productsRefreshMutex.unlock()
+            }
+        }
+    }
+
+    private suspend fun performProductsRefresh(reason: String) {
         try {
             val venueId = deviceInfoManager.getVenueId()
             if (venueId == null) {
@@ -812,18 +967,24 @@ class MenuViewModel @Inject constructor(
                 return
             }
 
-            Timber.d("📦 [Cache-First] Loading products for venue: $venueId")
+            Timber.d("📦 [Cache-First] Loading products for venue: $venueId | reason=$reason")
 
             // ⚡ STEP 1: Emit cached products immediately (~10ms)
             withContext(Dispatchers.IO) {
-                val cachedProducts = productDao.getAllProducts(venueId).toDomain()
                 val cachedCategories = productCategoryDao.getAllCategories(venueId).toCategoryDomain()
+                categoryOrderMap = cachedCategories.associate { it.id to it.displayOrder }
+                val cachedProducts = sortProductsForMenu(productDao.getAllProducts(venueId).toDomain(), categoryOrderMap)
                 // Filter only active categories for display
-                val activeCachedCategories = cachedCategories.filter { it.isActive }
+                val activeCachedCategories = sortCategoriesForMenu(cachedCategories.filter { it.isActive })
 
                 if (cachedProducts.isNotEmpty()) {
-                    _products.value = cachedProducts
-                    _categories.value = listOf(com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory.ALL) + activeCachedCategories
+                    if (cachedProducts != _products.value) {
+                        _products.value = cachedProducts
+                    }
+                    val cachedCategoryList = listOf(com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory.ALL) + activeCachedCategories
+                    if (cachedCategoryList != _categories.value) {
+                        _categories.value = cachedCategoryList
+                    }
                     Timber.i("⚡ [Cache Hit] Loaded ${cachedProducts.size} products, ${activeCachedCategories.size} active categories from cache (~10ms)")
 
                     // 🔍 DEBUG: Log inventory for each product
@@ -850,7 +1011,10 @@ class MenuViewModel @Inject constructor(
                     withContext(Dispatchers.IO) {
                         productDao.upsertProducts(freshProducts.toEntities(venueId, cachedAt))
                     }
-                    _products.value = freshProducts
+                    val sortedFreshProducts = sortProductsForMenu(freshProducts, categoryOrderMap)
+                    if (sortedFreshProducts != _products.value) {
+                        _products.value = sortedFreshProducts
+                    }
                     Timber.i("✅ [Backend] Loaded ${freshProducts.size} products and updated cache")
 
                     // 🔍 DEBUG: Log inventory for each product from backend
@@ -872,18 +1036,24 @@ class MenuViewModel @Inject constructor(
             productRepository.getCategories(venueId).fold(
                 onSuccess = { freshCategories ->
                     // Filter only active categories for display
-                    val activeCategories = freshCategories.filter { it.isActive }
+                    val activeCategories = sortCategoriesForMenu(freshCategories.filter { it.isActive })
+                    updateCategoryOrder(freshCategories)
                     withContext(Dispatchers.IO) {
                         // Cache all categories (active and inactive) for potential admin use
                         productCategoryDao.upsertCategories(freshCategories.toCategoryEntities(venueId, cachedAt))
                     }
-                    _categories.value = listOf(com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory.ALL) + activeCategories
+                    val freshCategoryList = listOf(com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory.ALL) + activeCategories
+                    if (freshCategoryList != _categories.value) {
+                        _categories.value = freshCategoryList
+                    }
                     Timber.i("✅ [Backend] Loaded ${freshCategories.size} categories (${activeCategories.size} active) and updated cache")
                 },
                 onFailure = { error ->
                     Timber.e(error, "❌ [Backend] Failed to load categories (using cached data)")
                 }
             )
+        } catch (e: CancellationException) {
+            Timber.d("⚪ [Products] Refresh cancelled | reason=$reason")
         } catch (e: Exception) {
             Timber.e(e, "❌ Error loading products")
         } finally {
@@ -1204,8 +1374,6 @@ class MenuViewModel @Inject constructor(
                 // ✅ STEP 1: Calculate price
                 val modifiersTotal = modifiers.sumOf { it.priceAdjustment }
                 val unitPrice = product.price + modifiersTotal
-                val totalPrice = unitPrice * BigDecimal(quantity.toString())
-
                 Timber.d("🛒 [Local-First] Adding item to Room DB: ${product.name} x$quantity")
                 Timber.d("➕ [VM-DEBUG] addItem() CALLING addItemToLocalOrder | orderId=${effectiveOrder.id} | timestamp=${System.currentTimeMillis()}")
 
@@ -1220,43 +1388,10 @@ class MenuViewModel @Inject constructor(
                     notes = notes.ifBlank { null }
                 )
 
-                // ✅ STEP 3: Update UI state (optimistic update)
-                val newItem = OrderItem(
-                    id = localItemId,
-                    orderId = effectiveOrder.id,
-                    productId = product.id,
-                    productName = product.name,
-                    productSku = product.sku,
-                    quantity = quantity,
-                    unitPrice = unitPrice,
-                    totalPrice = totalPrice,
-                    modifiers = modifiers,
-                    notes = notes.ifBlank { null },
-                    kitchenStatus = KitchenStatus.PENDING,
-                    createdAt = Instant.now(),
-                    sentToKitchenAt = null
+                Timber.i(
+                    "✅ [Local-First] Item persisted | itemId=$localItemId | " +
+                        "product=${product.name} | qty=$quantity | modifiers=${modifiers.size}"
                 )
-
-                val updatedOrder = recalculateOrder(effectiveOrder.copy(items = effectiveOrder.items + newItem))
-                updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts with order.discounts
-
-                // 🔍 DEBUG: Item added details
-                Timber.i("═══════════════════════════════════════════════════════════")
-                Timber.i("✅ ITEM ADDED TO ORDER")
-                Timber.i("   localItemId: $localItemId")
-                Timber.i("   productId: ${product.id}")
-                Timber.i("   productName: ${product.name}")
-                Timber.i("   quantity: $quantity")
-                Timber.i("   unitPrice: $unitPrice")
-                Timber.i("   totalPrice: $totalPrice")
-                Timber.i("   modifiers: ${modifiers.size}")
-                Timber.i("   notes: ${notes.ifBlank { "none" }}")
-                Timber.i("   ─────────────────────────────────────────────────────")
-                Timber.i("   📊 ORDER TOTALS AFTER ADD:")
-                Timber.i("      items count: ${updatedOrder.items.size}")
-                Timber.i("      subtotal: ${updatedOrder.subtotal}")
-                Timber.i("      total: ${updatedOrder.total}")
-                Timber.i("═══════════════════════════════════════════════════════════")
 
                 // ✅ STEP 4: Schedule debounced sync (2 seconds)
                 orderSyncCoordinator.scheduleSync(effectiveOrder.id)
@@ -1304,27 +1439,7 @@ class MenuViewModel @Inject constructor(
                     unitPrice = item.unitPrice
                 )
 
-                // Update UI state (optimistic)
-                val updatedItems = if (newQuantity <= 0) {
-                    // Remove item if quantity is 0
-                    order.items.filter { it.id != item.id }
-                } else {
-                    // Update quantity
-                    order.items.map {
-                        if (it.id == item.id) {
-                            it.copy(
-                                quantity = newQuantity,
-                                totalPrice = it.unitPrice * BigDecimal(newQuantity.toString())
-                            )
-                        } else {
-                            it
-                        }
-                    }
-                }
-
-                val updatedOrder = recalculateOrder(order.copy(items = updatedItems))
-                updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts with order.discounts
-                Timber.d("✏️ Item quantity updated: ${item.productName} → $newQuantity")
+                Timber.d("✏️ [Local-First] Item quantity updated: ${item.productName} → $newQuantity")
 
                 // ✅ FIX: Schedule sync to send updated quantity to backend
                 orderSyncCoordinator.scheduleSync(order.id)
@@ -1369,12 +1484,7 @@ class MenuViewModel @Inject constructor(
                     itemId = item.id
                 )
 
-                // ✅ STEP 2: Update UI state (remove from list)
-                val updatedItems = order.items.filter { it.id != item.id }
-                val updatedOrder = recalculateOrder(order.copy(items = updatedItems))
-                updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts with order.discounts
-
-                Timber.i("✅ [Local-First] Item removed from UI instantly | id=${item.id}")
+                Timber.i("✅ [Local-First] Item removed from Room | id=${item.id}")
 
                 // ✅ STEP 3: Schedule debounced sync (2 seconds)
                 orderSyncCoordinator.scheduleSync(order.id)
@@ -3029,16 +3139,23 @@ class MenuViewModel @Inject constructor(
      * @param order The updated order (after recalculateOrder)
      */
     private fun updateStateWithOrder(order: Order) {
-        _state.value = MenuState.Success(order)
+        val normalizedOrder = normalizeOrderForUi(order)
+        _state.value = MenuState.Success(normalizedOrder)
 
         // 🔄 Only UPDATE _appliedDiscounts if order.discounts has real data
         // NEVER clear based on discountAmount (Room emits before recalculate, causing race condition)
-        if (order.discounts.isNotEmpty()) {
-            _appliedDiscounts.value = order.discounts
-            Timber.d("🔄 [updateStateWithOrder] Updated _appliedDiscounts (${order.discounts.size} discounts)")
+        if (normalizedOrder.discounts.isNotEmpty()) {
+            _appliedDiscounts.value = normalizedOrder.discounts
+            Timber.d("🔄 [updateStateWithOrder] Updated _appliedDiscounts (${normalizedOrder.discounts.size} discounts)")
         }
         // If order.discounts is empty, PRESERVE existing _appliedDiscounts
         // This handles the race condition where Room emits before recalculateOrder() runs
+    }
+
+    private fun normalizeOrderForUi(order: Order): Order {
+        if (order.items.size <= 1) return order
+        val dedupedItems = order.items.distinctBy { it.id }
+        return if (dedupedItems == order.items) order else order.copy(items = dedupedItems)
     }
 
     /**

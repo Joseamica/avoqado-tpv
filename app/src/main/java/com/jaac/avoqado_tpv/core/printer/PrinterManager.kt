@@ -2,12 +2,15 @@ package com.jaac.avoqado_tpv.core.printer
 
 import android.content.Context
 import android.graphics.Bitmap
+import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.R
 import com.pax.dal.IDAL
 import com.pax.dal.IPrinter
 import com.pax.neptunelite.api.NeptuneLiteUser
 import dagger.hilt.android.qualifiers.ApplicationContext
 import timber.log.Timber
+import java.net.HttpURLConnection
+import java.net.URL
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -44,6 +47,12 @@ import javax.inject.Singleton
 class PrinterManager @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    private companion object {
+        private const val LINE_WIDTH = 32
+        private const val PAPER_WIDTH = 384
+        private const val LOGO_WIDTH = 220
+    }
+
     private val dal: IDAL? by lazy {
         try {
             val instance = NeptuneLiteUser.getInstance().getDal(context)
@@ -68,68 +77,94 @@ class PrinterManager @Inject constructor(
     }
 
     /**
-     * Print professional receipt (Toast/Square/Clip style adapted for Mexico).
+     * Print Mexican fiscal-style receipt (Toast/Square/Clip adapted for Mexico).
      *
      * **Receipt Layout:**
      * ```
      *      [AVOQADO LOGO]
-     *    RFC: ABC123456789
-     *   Dirección del venue
+     *       Nombre del Venue
+     * RFC: ABC123456789
+     * Dirección del venue
      *
-     * Fecha: 10/11/2025  13:03:27
+     * ================================
+     * FOLIO: ORD-123
+     * FECHA: 10/11/2025  13:03:27
+     * CAJERO: Juan Pérez
+     * ================================
      *
-     * Orden #ORD-123        (only if order payment)
-     *
-     * 2x Pizza Margherita    $360.00
-     * 1x Coca-Cola            $35.00
-     * 3x Alitas Buffalo      $270.00
-     *    Sin salsa picante
+     * CANT  DESCRIPCION      IMPORTE
+     * --------------------------------
+     * 2     Pizza Margherit  $360.00
+     * 1     Coca-Cola         $35.00
+     * 3     Alitas Buffalo   $270.00
      * --------------------------------
      *
-     * Mastercard ****7182
-     * Tarjeta Contactless (NFC)
+     * Subtotal:              $665.00 MXN
+     * Propina:                $66.50 MXN
+     * ================================
+     * TOTAL:                 $731.50 MXN
+     * ================================
+     *
+     * Desglose IVA (incluido):
+     *   Base:                $630.60 MXN
+     *   IVA 16%:             $100.90 MXN
+     *
+     * Forma de pago: Mastercard ****7182
+     * Autorizacion: ABC123
+     * Referencia: 757355196496
+     *
+     * --------------------------------
+     *   ESTE NO ES UN COMPROBANTE
+     *           FISCAL
      * --------------------------------
      *
-     * Monto:         $500.00 MXN
-     * Propina:        $50.00 MXN
-     * ================================
-     * TOTAL:         $550.00 MXN
-     * ================================
-     *
-     * Autorizacion:  ABC123
-     * Referencia:    757355196496
-     *
-     *     [QR CODE BITMAP]
-     *
-     * Escanea para ver recibo digital
+     *     [QR CODE]
+     * Escanea para recibo digital
      *
      * ================================
-     *   Gracias por su compra
+     *     Gracias por su compra
      * ================================
+     *   AVOQADO TPV vX.X.X
      * ```
      *
      * @param receiptUrl URL of digital receipt (for QR code) - NULL if backend registration failed
-     * @param amount Payment amount (formatted, e.g. "500.00")
+     * @param amount TOTAL payment amount (already includes tip if applicable)
      * @param authCode Authorization code from payment processor
-     * @param tipAmount Optional tip amount (formatted)
+     * @param tipAmount Tip amount (for display only - NOT added to amount since it's already included)
      * @param cardDetails Optional card information (brand, masked PAN, entry mode)
-     * @param referenceNumber Optional reference number
-     * @param venueRfc Optional venue RFC for fiscal compliance
-     * @param venueAddress Optional venue address
-     * @param orderNumber Optional order number (only for order payments)
-     * @param orderItems Optional order items list (only for Pedido Rápido or Servicio de Mesa)
+     * @param referenceNumber Optional reference number from processor
+     * @param venueName Business/venue name for receipt header
+     * @param venueLogoUrl Venue logo URL (fallback to Avoqado)
+     * @param venueLegalName Venue legal name (razon social)
+     * @param venueRfc Venue RFC for fiscal compliance
+     * @param venueAddress Venue address
+     * @param venueCity Venue city (place of issue)
+     * @param venueState Venue state (place of issue)
+     * @param venueZipCode Venue zip code (place of issue)
+     * @param staffName Cashier/staff name
+     * @param orderNumber Order number (FOLIO) for receipt
+     * @param orderItems Order items list for itemized receipt
+     * @param discountAmount Discount applied to order
+     * @param isRefund True if this is a refund transaction
      * @return Result.success if printed, Result.failure if printer unavailable/error
      */
     fun printReceipt(
         receiptUrl: String?,  // ✅ FIX: Nullable for generic receipts when backend fails
-        amount: String,
+        amount: String,  // ⚠️ TOTAL amount (already includes tip if applicable)
         authCode: String,
-        tipAmount: String? = null,
+        tipAmount: String? = null,  // Tip amount (for display only - NOT added to amount)
         cardDetails: com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails? = null,
         referenceNumber: String? = null,
+        venueName: String? = null,  // 🆕 Venue/business name
+        venueLogoUrl: String? = null,  // 🆕 Venue logo URL (fallback to Avoqado)
+        venueLegalName: String? = null,  // 🆕 Venue legal name (razon social)
         venueRfc: String? = null,
         venueAddress: String? = null,
-        orderNumber: String? = null,  // 🆕 Order number (for display)
+        venueCity: String? = null,
+        venueState: String? = null,
+        venueZipCode: String? = null,
+        staffName: String? = null,  // 🆕 Cashier/staff name
+        orderNumber: String? = null,  // 🆕 Order number (FOLIO)
         orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null,  // 🆕 Order items (for itemized receipt)
         discountAmount: String? = null,  // 🆕 Discount applied to order
         isRefund: Boolean = false  // 💸 Refund mode - changes header and labels
@@ -145,173 +180,172 @@ class PrinterManager @Inject constructor(
             printerInstance.init()
 
             // ========================================
-            // HEADER - Avoqado Logo (professional branding - black version for thermal printer)
+            // HEADER - Venue logo (fallback to Avoqado)
             // ========================================
-            try {
-                val originalLogo = android.graphics.BitmapFactory.decodeResource(
-                    context.resources,
-                    R.drawable.logo_avoqado_black  // Black logo optimized for thermal printer
-                )
-                if (originalLogo != null) {
-                    // Scale logo to reasonable width (220px for visibility)
-                    val targetWidth = 220
-                    val aspectRatio = originalLogo.height.toFloat() / originalLogo.width.toFloat()
-                    val targetHeight = (targetWidth * aspectRatio).toInt()
+            printLogo(printerInstance, venueLogoUrl)
 
-                    val scaledLogo = Bitmap.createScaledBitmap(originalLogo, targetWidth, targetHeight, true)
+            // ========================================
+            // VENUE INFO (Mexican fiscal receipt style)
+            // ========================================
+            printVenueInfo(
+                printerInstance = printerInstance,
+                venueName = venueName,
+                venueLegalName = venueLegalName,
+                venueRfc = venueRfc,
+                venueAddress = venueAddress,
+                venueCity = venueCity,
+                venueState = venueState,
+                venueZipCode = venueZipCode
+            )
 
-                    // Convert RGBA to RGB with white background (for thermal printer)
-                    // Step 1: Create white background bitmap in RGB_565 (thermal printer format)
-                    val logoWithWhiteBg = Bitmap.createBitmap(scaledLogo.width, scaledLogo.height, Bitmap.Config.RGB_565)
-                    val canvas = android.graphics.Canvas(logoWithWhiteBg)
+            printerInstance.printStr("================================\n", null)
 
-                    // Step 2: Fill with white background
-                    canvas.drawColor(android.graphics.Color.WHITE)
+            // Date & Time + Order info line
+            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale("es", "MX"))
+            val timeFormat = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale("es", "MX"))
+            val now = java.util.Date()
+            val currentDate = dateFormat.format(now)
+            val currentTime = timeFormat.format(now)
 
-                    // Step 3: Draw logo on top with proper alpha blending
-                    val paint = android.graphics.Paint().apply {
-                        isAntiAlias = true
-                        isFilterBitmap = true
-                    }
-                    canvas.drawBitmap(scaledLogo, 0f, 0f, paint)
-
-                    // Center the logo horizontally on thermal paper (384px width)
-                    val centeredLogo = centerBitmap(logoWithWhiteBg, targetWidth = 384)
-
-                    printerInstance.printBitmap(centeredLogo)
-                    printerInstance.printStr("\n", null)
-                    Timber.d("✅ [Printer] Centered black logo with white background printed (${centeredLogo.width}x${centeredLogo.height})")
-                } else {
-                    Timber.w("⚠️ [Printer] Logo resource is null, using text fallback")
-                    printerInstance.printStr("          AVOQADO\n", null)
-                }
-            } catch (e: Exception) {
-                Timber.w(e, "⚠️ [Printer] Could not print logo, using text fallback")
-                printerInstance.printStr("          AVOQADO\n", null)
+            // FOLIO (order number) and FECHA
+            if (!orderNumber.isNullOrBlank()) {
+                printerInstance.printStr("FOLIO: $orderNumber\n", null)
             }
+            printerInstance.printStr("FECHA: $currentDate  $currentTime\n", null)
 
-            // 💸 Different header for refunds vs sales
-            val receiptTitle = if (isRefund) "  Comprobante de Reembolso" else "    Comprobante de Venta"
-            printerInstance.printStr("$receiptTitle\n\n", null)
-
-            // RFC and Address (if available) - small text
-            if (venueRfc != null) {
-                printerInstance.printStr("RFC: $venueRfc\n", null)
-            }
-            if (venueAddress != null) {
-                printerInstance.printStr("$venueAddress\n", null)
-            }
-            if (venueRfc != null || venueAddress != null) {
-                printerInstance.printStr("\n", null)
+            // Cajero (cashier)
+            if (staffName != null) {
+                printerInstance.printStr("CAJERO: $staffName\n", null)
             }
 
             printerInstance.printStr("================================\n\n", null)
 
-            // Date & Time
-            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", java.util.Locale("es", "MX"))
-            val currentDateTime = dateFormat.format(java.util.Date())
-            printerInstance.printStr("Fecha: $currentDateTime\n\n", null)
-
             // ========================================
-            // 📦 ORDER ITEMS (only for order payments - Pedido Rápido or Servicio de Mesa)
+            // 📦 ORDER ITEMS TABLE (Mexican format: CANT | DESCRIPCION | IMPORTE)
             // ========================================
             if (!orderItems.isNullOrEmpty()) {
-                // Order number header
-                if (!orderNumber.isNullOrBlank()) {
-                    printerInstance.printStr("Orden #$orderNumber\n\n", null)
-                }
+                // Table header
+                printerInstance.printStr("CANT  DESCRIPCION      IMPORTE\n", null)
+                printerInstance.printStr("--------------------------------\n", null)
 
                 // Print each item
                 orderItems.forEach { item ->
-                    // Product line: "2x Pizza Margherita    $360.00"
-                    val itemLine = "${item.quantity}x ${item.productName}"
-                    val itemPrice = item.formattedTotalPrice
+                    // Format: "2     Pizza Margherita   $360.00"
+                    val qty = item.quantity.toString().padEnd(6, ' ')
+                    val desc = item.productName.take(16).padEnd(16, ' ')
+                    val price = item.formattedTotalPrice.padStart(10, ' ')
+                    printerInstance.printStr("$qty$desc$price\n", null)
 
-                    // Pad to align prices on the right (32 chars total width for thermal printer)
-                    val paddedLine = itemLine.padEnd(20, ' ') + itemPrice.padStart(12, ' ')
-                    printerInstance.printStr("$paddedLine\n", null)
-
-                    // Modifiers (if any) - indented with price
+                    // Modifiers (if any) - indented
                     if (item.modifiers.isNotEmpty()) {
                         item.modifiers.forEach { modifier ->
-                            val modLine = "   • ${modifier.name}"
-                            val modPrice = modifier.formattedPrice
-                            val paddedModLine = modLine.padEnd(20, ' ') + modPrice.padStart(12, ' ')
-                            printerInstance.printStr("$paddedModLine\n", null)
+                            val modDesc = "  + ${modifier.name}".take(22).padEnd(22, ' ')
+                            val modPrice = modifier.formattedPrice.padStart(10, ' ')
+                            printerInstance.printStr("$modDesc$modPrice\n", null)
                         }
                     }
 
-                    // Notes (if any) - indented with smaller text
+                    // Notes (if any) - indented
                     if (!item.notes.isNullOrBlank()) {
-                        printerInstance.printStr("   ${item.notes}\n", null)
+                        printerInstance.printStr("      (${item.notes})\n", null)
                     }
                 }
 
-                printerInstance.printStr("\n--------------------------------\n", null)
-            }
-
-            // ========================================
-            // CARD INFORMATION (if available)
-            // ========================================
-            if (cardDetails != null) {
                 printerInstance.printStr("--------------------------------\n", null)
-                printerInstance.printStr("${cardDetails.cardBrand.displayName} ${cardDetails.maskedPan}\n", null)
-                printerInstance.printStr("Tarjeta ${cardDetails.entryMode.displayName}\n", null)
-                printerInstance.printStr("--------------------------------\n\n", null)
             }
 
             // ========================================
-            // TRANSACTION DETAILS
+            // TRANSACTION DETAILS (Fixed: amount ALREADY includes tip)
             // ========================================
-            val amountValue = amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
-            // 💸 Skip tip calculation for refunds
+            // ⚠️ CRITICAL FIX: 'amount' is the TOTAL (already includes tip from calculateTotal())
+            // We calculate subtotal by SUBTRACTING tip from total
+            val totalValue = amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
             val tipValue = if (isRefund) java.math.BigDecimal.ZERO else (tipAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)
-            val totalValue = amountValue + tipValue
+            val discountValue = discountAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
 
-            // 💸 Different label for refunds
-            val amountLabel = if (isRefund) "Reembolso:     " else "Monto:         "
-            printerInstance.printStr("$amountLabel\$${amount} MXN\n", null)
+            // Calculate subtotal (base amount before tip)
+            // Subtotal = Total - Tip
+            val subtotalValue = totalValue - tipValue
 
-            // 🆕 Descuento (si aplica) - not applicable for refunds
-            if (!isRefund && !discountAmount.isNullOrEmpty() && discountAmount != "0" && discountAmount != "0.00") {
-                printerInstance.printStr("Descuento:     -\$${discountAmount} MXN\n", null)
+            // 💸 Different display for refunds vs sales
+            if (isRefund) {
+                printerInstance.printStr("Reembolso:".padEnd(22, ' ') + "\$${formatDecimal(totalValue)} MXN\n", null)
+                printerInstance.printStr("================================\n", null)
+                printerInstance.printStr("TOTAL REEMBOLSO:".padEnd(16, ' ') + "\$${formatDecimal(totalValue)} MXN\n", null)
+            } else {
+                // Show subtotal if there's a tip or discount
+                if (tipValue > java.math.BigDecimal.ZERO || discountValue > java.math.BigDecimal.ZERO) {
+                    printerInstance.printStr("Subtotal:".padEnd(22, ' ') + "\$${formatDecimal(subtotalValue)} MXN\n", null)
+                }
+
+                // Propina (if applicable)
+                if (tipValue > java.math.BigDecimal.ZERO) {
+                    printerInstance.printStr("Propina:".padEnd(22, ' ') + "\$${formatDecimal(tipValue)} MXN\n", null)
+                }
+                printerInstance.printStr(rightAlign("DESC. C/IMP.: \$${formatDecimal(discountValue)}") + "\n", null)
+                printerInstance.printStr(rightAlign("TOTAL: \$${formatDecimal(totalValue)}") + "\n", null)
             }
-
-            // 💸 Skip tip for refunds
-            if (!isRefund && tipValue > java.math.BigDecimal.ZERO) {
-                printerInstance.printStr("Propina:        \$${tipAmount} MXN\n", null)
-            }
-
-            printerInstance.printStr("================================\n", null)
-            // 💸 Different total label for refunds
-            val totalLabel = if (isRefund) "TOTAL REEMBOLSO:" else "TOTAL:         "
-            printerInstance.printStr("$totalLabel \$${totalValue} MXN\n", null)
             printerInstance.printStr("================================\n\n", null)
 
+            if (!isRefund) {
+                printerInstance.printStr("${amountToWordsEs(totalValue)}\n\n", null)
+            }
+
             // ========================================
-            // AUTHORIZATION & REFERENCE
+            // IVA BREAKDOWN (Mexican fiscal format)
+            // In Mexico, prices INCLUDE IVA. Calculate breakdown.
+            // IVA rate = 16%, so: Base = Total / 1.16, IVA = Total - Base
             // ========================================
-            printerInstance.printStr("Autorizacion:  $authCode\n", null)
-            if (referenceNumber != null) {
-                printerInstance.printStr("Referencia:    $referenceNumber\n\n", null)
-            } else {
+            if (!isRefund) {
+                val ivaRate = java.math.BigDecimal("1.16")
+                val baseBeforeIva = totalValue.divide(ivaRate, 2, java.math.RoundingMode.HALF_UP)
+                val ivaAmount = totalValue - baseBeforeIva
+
+                printerInstance.printStr("Desglose IVA (incluido):\n", null)
+                printerInstance.printStr("  Base:".padEnd(20, ' ') + "\$${formatDecimal(baseBeforeIva)} MXN\n", null)
+                printerInstance.printStr("  IVA 16%:".padEnd(20, ' ') + "\$${formatDecimal(ivaAmount)} MXN\n", null)
                 printerInstance.printStr("\n", null)
             }
 
             // ========================================
-            // QR CODE BITMAP (Centered - Clip/MercadoPago style)
-            // Only print QR code if receiptUrl exists (backend registration succeeded)
+            // PAYMENT METHOD
+            // ========================================
+            val isCash = cardDetails?.isCash == true
+            val paymentMethod = if (isCash) {
+                "EFECTIVO"
+            } else if (cardDetails != null) {
+                "${cardDetails.cardBrand.displayName} ${cardDetails.maskedPan}\n${cardDetails.entryMode.displayName}"
+            } else {
+                "TARJETA"
+            }
+            printerInstance.printStr("Forma de pago: $paymentMethod\n", null)
+
+            // Authorization & Reference
+            if (!isCash) {
+                printerInstance.printStr("Autorizacion: $authCode\n", null)
+                if (referenceNumber != null) {
+                    printerInstance.printStr("Referencia: $referenceNumber\n", null)
+                }
+            }
+            printerInstance.printStr("\n", null)
+
+            // ========================================
+            // FISCAL DISCLAIMER (Mexican requirement)
+            // ========================================
+            printerInstance.printStr("--------------------------------\n", null)
+            printerInstance.printStr("  ESTE NO ES UN COMPROBANTE\n", null)
+            printerInstance.printStr("          FISCAL\n", null)
+            printerInstance.printStr("--------------------------------\n\n", null)
+
+            // ========================================
+            // QR CODE (for digital receipt/invoicing)
             // ========================================
             if (receiptUrl != null) {
                 try {
                     val qrBitmap = generateQrBitmap(receiptUrl, size = 200)
                     if (qrBitmap != null) {
                         Timber.d("✅ [Printer] QR bitmap generated (${qrBitmap.width}x${qrBitmap.height})")
-
-                        // Center the QR code by adding left padding
-                        // PAX thermal printer width is typically 384px, QR is 200px
-                        // Left margin = (384 - 200) / 2 = 92px ≈ centered
-                        val centeredQr = centerBitmap(qrBitmap, targetWidth = 384)
+                        val centeredQr = centerBitmap(qrBitmap, targetWidth = PAPER_WIDTH)
                         printerInstance.printBitmap(centeredQr)
                         printerInstance.printStr("\n", null)
                         Timber.d("✅ [Printer] Centered QR bitmap printed")
@@ -322,20 +356,16 @@ class PrinterManager @Inject constructor(
                     Timber.w(e, "⚠️ [Printer] Could not generate/print QR bitmap")
                 }
 
-                printerInstance.printStr(" Escanea para ver recibo digital\n\n", null)
-            } else {
-                // Backend registration failed - print generic message instead of QR
-                Timber.i("📄 [Printer] No receipt URL - printing generic receipt")
-                printerInstance.printStr("\n Recibo genérico\n", null)
-                printerInstance.printStr(" Pendiente de registro en sistema\n\n", null)
+                printerInstance.printStr("Escanea para recibo digital\n\n", null)
             }
 
             // ========================================
-            // FOOTER (Professional thank you)
+            // FOOTER
             // ========================================
             printerInstance.printStr("================================\n", null)
-            printerInstance.printStr("   Gracias por su compra\n", null)
+            printerInstance.printStr("     Gracias por su compra\n", null)
             printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("${centerText("AVOQADO TPV v${BuildConfig.VERSION_NAME}")}\n", null)
             printerInstance.printStr("\n\n\n", null) // Feed paper
 
             // Start printing
@@ -353,6 +383,278 @@ class PrinterManager @Inject constructor(
             Result.failure(
                 Exception("Error al imprimir: ${e.message ?: "Error desconocido"}")
             )
+        }
+    }
+
+    private fun centerText(text: String, width: Int = LINE_WIDTH): String {
+        val trimmed = text.take(width)
+        val padding = (width - trimmed.length) / 2
+        return " ".repeat(padding.coerceAtLeast(0)) + trimmed
+    }
+
+    private fun rightAlign(text: String, width: Int = LINE_WIDTH): String {
+        val trimmed = text.take(width)
+        val padding = width - trimmed.length
+        return " ".repeat(padding.coerceAtLeast(0)) + trimmed
+    }
+
+    private fun wrapText(text: String, maxLineWidth: Int = LINE_WIDTH): List<String> {
+        if (text.length <= maxLineWidth) return listOf(text)
+        val words = text.split(" ")
+        val lines = mutableListOf<String>()
+        var currentLine = ""
+        for (word in words) {
+            val candidate = if (currentLine.isEmpty()) word else "$currentLine $word"
+            if (candidate.length <= maxLineWidth) {
+                currentLine = candidate
+            } else {
+                if (currentLine.isNotEmpty()) {
+                    lines.add(currentLine)
+                }
+                currentLine = word
+            }
+        }
+        if (currentLine.isNotEmpty()) {
+            lines.add(currentLine)
+        }
+        return lines
+    }
+
+    private fun buildAddressLine(
+        address: String?,
+        city: String?,
+        state: String?,
+        zipCode: String?
+    ): String? {
+        val addressLine = address?.trim().orEmpty()
+        val cityStateZip = listOfNotNull(
+            city?.trim()?.takeIf { it.isNotEmpty() },
+            state?.trim()?.takeIf { it.isNotEmpty() },
+            zipCode?.trim()?.takeIf { it.isNotEmpty() }
+        ).joinToString(" ")
+
+        return when {
+            addressLine.isNotEmpty() && cityStateZip.isNotEmpty() -> "$addressLine $cityStateZip"
+            addressLine.isNotEmpty() -> addressLine
+            cityStateZip.isNotEmpty() -> cityStateZip
+            else -> null
+        }
+    }
+
+    private fun printVenueInfo(
+        printerInstance: IPrinter,
+        venueName: String?,
+        venueLegalName: String?,
+        venueRfc: String?,
+        venueAddress: String?,
+        venueCity: String?,
+        venueState: String?,
+        venueZipCode: String?
+    ) {
+        val primaryName = venueLegalName?.takeIf { it.isNotBlank() } ?: venueName?.takeIf { it.isNotBlank() }
+        primaryName?.let { printerInstance.printStr("${centerText(it)}\n", null) }
+
+        if (!venueLegalName.isNullOrBlank() && !venueName.isNullOrBlank() && venueLegalName != venueName) {
+            printerInstance.printStr("${centerText(venueName)}\n", null)
+        }
+
+        venueRfc?.takeIf { it.isNotBlank() }?.let { printerInstance.printStr("RFC: $it\n", null) }
+
+        val addressLine = buildAddressLine(venueAddress, venueCity, venueState, venueZipCode)
+        if (!addressLine.isNullOrBlank()) {
+            printerInstance.printStr("LUGAR DE EXPEDICION\n", null)
+            wrapText(addressLine).forEach { line ->
+                printerInstance.printStr("$line\n", null)
+            }
+        }
+
+        printerInstance.printStr("\n", null)
+    }
+
+    private fun amountToWordsEs(amount: java.math.BigDecimal): String {
+        val scaled = amount.setScale(2, java.math.RoundingMode.HALF_UP)
+        val pesos = scaled.toBigInteger().toLong()
+        val cents = scaled.remainder(java.math.BigDecimal.ONE)
+            .movePointRight(2)
+            .abs()
+            .toInt()
+            .coerceIn(0, 99)
+
+        val words = if (pesos == 0L) {
+            "CERO"
+        } else {
+            apocopeMasculine(numberToWordsEs(pesos))
+        }
+
+        val pesoLabel = if (pesos == 1L) "PESO" else "PESOS"
+        return "SON: $words $pesoLabel ${cents.toString().padStart(2, '0')}/100 M.N"
+    }
+
+    private fun apocopeMasculine(words: String): String {
+        var result = words
+        result = result.replace(" VEINTIUNO", " VEINTIUN")
+        result = result.replace(" Y UNO", " Y UN")
+        if (result.endsWith("UNO")) {
+            result = result.dropLast(1) // UNO -> UN
+        }
+        return result
+    }
+
+    private fun numberToWordsEs(number: Long): String {
+        if (number == 0L) return "CERO"
+        if (number < 0) return "MENOS ${numberToWordsEs(-number)}"
+
+        fun units(n: Long): String = when (n) {
+            0L -> ""
+            1L -> "UNO"
+            2L -> "DOS"
+            3L -> "TRES"
+            4L -> "CUATRO"
+            5L -> "CINCO"
+            6L -> "SEIS"
+            7L -> "SIETE"
+            8L -> "OCHO"
+            9L -> "NUEVE"
+            else -> ""
+        }
+
+        fun tens(n: Long): String = when (n) {
+            10L -> "DIEZ"
+            11L -> "ONCE"
+            12L -> "DOCE"
+            13L -> "TRECE"
+            14L -> "CATORCE"
+            15L -> "QUINCE"
+            16L -> "DIECISEIS"
+            17L -> "DIECISIETE"
+            18L -> "DIECIOCHO"
+            19L -> "DIECINUEVE"
+            20L -> "VEINTE"
+            in 21..29 -> "VEINTI" + units(n - 20)
+            30L -> "TREINTA"
+            40L -> "CUARENTA"
+            50L -> "CINCUENTA"
+            60L -> "SESENTA"
+            70L -> "SETENTA"
+            80L -> "OCHENTA"
+            90L -> "NOVENTA"
+            else -> ""
+        }
+
+        fun hundreds(n: Long): String {
+            if (n == 0L) return ""
+            if (n == 100L) return "CIEN"
+            val hundred = n / 100
+            val remainder = n % 100
+            val hundredWord = when (hundred) {
+                1L -> "CIENTO"
+                2L -> "DOSCIENTOS"
+                3L -> "TRESCIENTOS"
+                4L -> "CUATROCIENTOS"
+                5L -> "QUINIENTOS"
+                6L -> "SEISCIENTOS"
+                7L -> "SETECIENTOS"
+                8L -> "OCHOCIENTOS"
+                9L -> "NOVECIENTOS"
+                else -> ""
+            }
+            return if (remainder == 0L) {
+                hundredWord
+            } else {
+                "$hundredWord ${numberToWordsEs(remainder)}"
+            }
+        }
+
+        return when {
+            number < 10 -> units(number)
+            number < 30 -> tens(number)
+            number < 100 -> {
+                val ten = (number / 10) * 10
+                val unit = number % 10
+                if (unit == 0L) tens(ten) else "${tens(ten)} Y ${units(unit)}"
+            }
+            number < 1000 -> hundreds(number)
+            number < 1_000_000 -> {
+                val thousands = number / 1000
+                val remainder = number % 1000
+                val thousandsWord = if (thousands == 1L) "MIL" else "${numberToWordsEs(thousands)} MIL"
+                if (remainder == 0L) thousandsWord else "$thousandsWord ${numberToWordsEs(remainder)}"
+            }
+            number < 1_000_000_000 -> {
+                val millions = number / 1_000_000
+                val remainder = number % 1_000_000
+                val millionsWord = if (millions == 1L) "UN MILLON" else "${numberToWordsEs(millions)} MILLONES"
+                if (remainder == 0L) millionsWord else "$millionsWord ${numberToWordsEs(remainder)}"
+            }
+            else -> {
+                val billions = number / 1_000_000_000
+                val remainder = number % 1_000_000_000
+                val billionsWord = if (billions == 1L) "MIL MILLONES" else "${numberToWordsEs(billions)} MIL MILLONES"
+                if (remainder == 0L) billionsWord else "$billionsWord ${numberToWordsEs(remainder)}"
+            }
+        }
+    }
+
+    private fun loadBitmapFromUrl(url: String): Bitmap? {
+        return try {
+            val connection = (URL(url).openConnection() as? HttpURLConnection) ?: return null
+            try {
+                connection.connectTimeout = 5000
+                connection.readTimeout = 5000
+                connection.instanceFollowRedirects = true
+                connection.doInput = true
+                connection.connect()
+                connection.inputStream.use { stream ->
+                    val buffered = java.io.BufferedInputStream(stream)
+                    android.graphics.BitmapFactory.decodeStream(buffered)
+                }
+            } finally {
+                connection.disconnect()
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ [Printer] Failed to load logo from URL")
+            null
+        }
+    }
+
+    private fun prepareLogoBitmap(originalLogo: Bitmap): Bitmap {
+        val aspectRatio = originalLogo.height.toFloat() / originalLogo.width.toFloat()
+        val targetHeight = (LOGO_WIDTH * aspectRatio).toInt()
+        val scaledLogo = Bitmap.createScaledBitmap(originalLogo, LOGO_WIDTH, targetHeight, true)
+
+        val logoWithWhiteBg = Bitmap.createBitmap(scaledLogo.width, scaledLogo.height, Bitmap.Config.RGB_565)
+        val canvas = android.graphics.Canvas(logoWithWhiteBg)
+        canvas.drawColor(android.graphics.Color.WHITE)
+        val paint = android.graphics.Paint().apply {
+            isAntiAlias = true
+            isFilterBitmap = true
+        }
+        canvas.drawBitmap(scaledLogo, 0f, 0f, paint)
+
+        return centerBitmap(logoWithWhiteBg, targetWidth = PAPER_WIDTH)
+    }
+
+    private fun printLogo(printerInstance: IPrinter, venueLogoUrl: String?) {
+        try {
+            val venueLogoBitmap = venueLogoUrl?.takeIf { it.isNotBlank() }?.let { loadBitmapFromUrl(it) }
+            val fallbackLogo = android.graphics.BitmapFactory.decodeResource(
+                context.resources,
+                R.drawable.logo_avoqado_black
+            )
+            val logoToPrint = venueLogoBitmap ?: fallbackLogo
+
+            if (logoToPrint != null) {
+                val centeredLogo = prepareLogoBitmap(logoToPrint)
+                printerInstance.printBitmap(centeredLogo)
+                printerInstance.printStr("\n", null)
+                Timber.d("✅ [Printer] Logo printed (${centeredLogo.width}x${centeredLogo.height})")
+            } else {
+                Timber.w("⚠️ [Printer] Logo bitmap is null, using text fallback")
+                printerInstance.printStr("${centerText("AVOQADO")}\n", null)
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ [Printer] Could not print logo, using text fallback")
+            printerInstance.printStr("${centerText("AVOQADO")}\n", null)
         }
     }
 
@@ -403,7 +705,7 @@ class PrinterManager @Inject constructor(
      * @param targetWidth Target width for the centered bitmap (default: 384px for PAX printer)
      * @return New bitmap with centered content and white background
      */
-    private fun centerBitmap(source: Bitmap, targetWidth: Int = 384): Bitmap {
+    private fun centerBitmap(source: Bitmap, targetWidth: Int = PAPER_WIDTH): Bitmap {
         return try {
             // If source is already wider than target, return as-is
             if (source.width >= targetWidth) {
@@ -428,6 +730,13 @@ class PrinterManager @Inject constructor(
             Timber.w(e, "⚠️ [Printer] Could not center bitmap, returning original")
             source
         }
+    }
+
+    /**
+     * Format BigDecimal for receipt display (2 decimal places).
+     */
+    private fun formatDecimal(value: java.math.BigDecimal): String {
+        return value.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()
     }
 
     /**
@@ -1256,23 +1565,40 @@ class PrinterManager @Inject constructor(
      *
      *        [QR CODE]
      *
-     * Escanea para ver tu recibo
+     * Escanea para recibo digital
      * ================================
      *    Gracias por tu compra
      * ================================
+     *   AVOQADO TPV vX.X.X
      * ```
      *
      * @param orderNumber Order number for display
      * @param receiptUrl URL of digital receipt (for QR code)
      * @param amount Total payment amount (formatted, e.g. "530.00")
      * @param tipAmount Tip amount (formatted, e.g. "50.00")
+     * @param venueName Venue name (header)
+     * @param venueLogoUrl Venue logo URL (fallback to Avoqado)
+     * @param venueLegalName Venue legal name (razon social)
+     * @param venueRfc Venue RFC
+     * @param venueAddress Venue address
+     * @param venueCity Venue city
+     * @param venueState Venue state
+     * @param venueZipCode Venue zip code
      * @return Result.success if printed, Result.failure if error
      */
     fun printKioskReceipt(
         orderNumber: String,
         receiptUrl: String?,
         amount: String,
-        tipAmount: String? = null
+        tipAmount: String? = null,
+        venueName: String? = null,
+        venueLogoUrl: String? = null,
+        venueLegalName: String? = null,
+        venueRfc: String? = null,
+        venueAddress: String? = null,
+        venueCity: String? = null,
+        venueState: String? = null,
+        venueZipCode: String? = null
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
@@ -1285,33 +1611,19 @@ class PrinterManager @Inject constructor(
             printerInstance.init()
 
             // ========================================
-            // HEADER - Logo
+            // HEADER - Venue logo + info
             // ========================================
-            try {
-                val originalLogo = android.graphics.BitmapFactory.decodeResource(
-                    context.resources,
-                    R.drawable.logo_avoqado_black
-                )
-                if (originalLogo != null) {
-                    val targetWidth = 220
-                    val aspectRatio = originalLogo.height.toFloat() / originalLogo.width.toFloat()
-                    val targetHeight = (targetWidth * aspectRatio).toInt()
-
-                    val scaledLogo = Bitmap.createScaledBitmap(originalLogo, targetWidth, targetHeight, true)
-                    val logoWithWhiteBg = Bitmap.createBitmap(scaledLogo.width, scaledLogo.height, Bitmap.Config.RGB_565)
-                    val canvas = android.graphics.Canvas(logoWithWhiteBg)
-                    canvas.drawColor(android.graphics.Color.WHITE)
-                    canvas.drawBitmap(scaledLogo, 0f, 0f, null)
-                    val centeredLogo = centerBitmap(logoWithWhiteBg, targetWidth = 384)
-                    printerInstance.printBitmap(centeredLogo)
-                    printerInstance.printStr("\n", null)
-                } else {
-                    printerInstance.printStr("          AVOQADO\n", null)
-                }
-            } catch (e: Exception) {
-                Timber.w(e, "⚠️ [Printer] Could not print logo, using text fallback")
-                printerInstance.printStr("          AVOQADO\n", null)
-            }
+            printLogo(printerInstance, venueLogoUrl)
+            printVenueInfo(
+                printerInstance = printerInstance,
+                venueName = venueName,
+                venueLegalName = venueLegalName,
+                venueRfc = venueRfc,
+                venueAddress = venueAddress,
+                venueCity = venueCity,
+                venueState = venueState,
+                venueZipCode = venueZipCode
+            )
 
             printerInstance.printStr("    Comprobante de Venta\n\n", null)
             printerInstance.printStr("================================\n\n", null)
@@ -1351,7 +1663,7 @@ class PrinterManager @Inject constructor(
                 try {
                     val qrBitmap = generateQrBitmap(receiptUrl, size = 200)
                     if (qrBitmap != null) {
-                        val centeredQr = centerBitmap(qrBitmap, targetWidth = 384)
+                        val centeredQr = centerBitmap(qrBitmap, targetWidth = PAPER_WIDTH)
                         printerInstance.printBitmap(centeredQr)
                         printerInstance.printStr("\n", null)
                         Timber.d("✅ [Printer] Kiosk receipt QR printed")
@@ -1359,7 +1671,7 @@ class PrinterManager @Inject constructor(
                 } catch (e: Exception) {
                     Timber.w(e, "⚠️ [Printer] Could not print QR code")
                 }
-                printerInstance.printStr(" Escanea para ver tu recibo\n\n", null)
+                printerInstance.printStr("Escanea para recibo digital\n\n", null)
             }
 
             // ========================================
@@ -1368,6 +1680,7 @@ class PrinterManager @Inject constructor(
             printerInstance.printStr("================================\n", null)
             printerInstance.printStr("   Gracias por tu compra\n", null)
             printerInstance.printStr("================================\n", null)
+            printerInstance.printStr("${centerText("AVOQADO TPV v${BuildConfig.VERSION_NAME}")}\n", null)
             printerInstance.printStr("\n\n\n", null) // Feed paper
 
             // Execute print

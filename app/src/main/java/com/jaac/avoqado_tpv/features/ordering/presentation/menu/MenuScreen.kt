@@ -39,6 +39,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import com.jaac.avoqado_tpv.R
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -127,6 +128,11 @@ fun MenuScreen(
     val menuState by viewModel.state.collectAsStateWithLifecycle()
     val isLoadingProducts by viewModel.isLoadingProducts.collectAsStateWithLifecycle()
 
+    DisposableEffect(Unit) {
+        viewModel.setOrderingActive(true)
+        onDispose { viewModel.setOrderingActive(false) }
+    }
+
     // 🎟️ Discount & Coupon state
     val availableDiscounts by viewModel.availableDiscounts.collectAsStateWithLifecycle()
     val appliedDiscounts by viewModel.appliedDiscounts.collectAsStateWithLifecycle()
@@ -169,6 +175,10 @@ fun MenuScreen(
 
     // Tab state (local to MenuScreen - pure UI concern)
     var currentTab by remember { mutableStateOf(OrderTab.MENU) }
+
+    LaunchedEffect(currentTab) {
+        viewModel.setMenuTabActive(currentTab == OrderTab.MENU)
+    }
 
     // Local state for UI (Menu tab specific)
     var selectedCategory by remember { mutableStateOf<ProductCategory?>(null) }
@@ -312,7 +322,7 @@ fun MenuScreen(
             OrderTabRow(
                 currentTab = currentTab,
                 onTabSelected = { newTab -> currentTab = newTab },
-                orderItemCount = order?.items?.size ?: 0
+                orderItemCount = order?.items?.distinctBy { it.id }?.sumOf { it.quantity } ?: 0
             )
 
             // Sync error/conflict banner (dismissible warning)

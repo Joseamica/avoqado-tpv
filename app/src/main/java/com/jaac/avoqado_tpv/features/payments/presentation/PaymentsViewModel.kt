@@ -5,10 +5,10 @@ import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
-import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.payments.domain.models.Payment
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod
 import com.jaac.avoqado_tpv.features.payments.domain.repository.PaymentRepository
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -56,6 +56,7 @@ import javax.inject.Inject
 class PaymentsViewModel @Inject constructor(
     private val paymentRepository: PaymentRepository,
     private val secureStorage: SecureStorage,
+    private val permissionsRepository: PermissionsRepository,
     private val printerManager: PrinterManager
 ) : ViewModel() {
 
@@ -102,14 +103,11 @@ class PaymentsViewModel @Inject constructor(
     /**
      * Whether current user can process refunds.
      *
-     * Based on StaffRole.canRefund() which allows:
-     * - SUPERADMIN
-     * - OWNER
-     * - ADMIN
+     * Uses backend permissions (payments:refund) to match server authorization.
+     * Defaults to false until permissions are loaded.
      */
-    val canProcessRefund: StateFlow<Boolean> = MutableStateFlow(
-        secureStorage.getRole()?.canRefund() ?: false
-    )
+    private val _canProcessRefund = MutableStateFlow(false)
+    val canProcessRefund: StateFlow<Boolean> = _canProcessRefund.asStateFlow()
 
     // Payment selected for refund (to be passed to navigation)
     private val _paymentForRefund = MutableStateFlow<Payment?>(null)
@@ -125,6 +123,7 @@ class PaymentsViewModel @Inject constructor(
 
     init {
         loadPayments()
+        refreshRefundPermission()
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -138,6 +137,7 @@ class PaymentsViewModel @Inject constructor(
      * Called when user changes filters or pulls to refresh.
      */
     fun loadPayments() {
+        refreshRefundPermission()
         viewModelScope.launch {
             try {
                 Timber.d("💳 [PaymentsViewModel] Loading payments (page 1)")
@@ -560,7 +560,7 @@ class PaymentsViewModel @Inject constructor(
      * Sets the payment for refund and triggers navigation.
      *
      * **Pre-conditions checked:**
-     * - User role is authorized (canRefund)
+     * - User has backend permission (payments:refund)
      * - Payment is refundable (not cash, not fully refunded, has merchantAccountId)
      *
      * @param payment Payment to refund
@@ -573,10 +573,9 @@ class PaymentsViewModel @Inject constructor(
             return
         }
 
-        // Validate user role
-        val role = secureStorage.getRole()
-        if (role == null || !role.canRefund()) {
-            Timber.w("⚠️ [PaymentsViewModel] User role cannot process refunds: $role")
+        // Validate backend permission (matches server check: payments:refund)
+        if (!_canProcessRefund.value) {
+            Timber.w("⚠️ [PaymentsViewModel] User lacks payments:refund permission")
             return
         }
 
@@ -597,6 +596,14 @@ class PaymentsViewModel @Inject constructor(
      */
     fun clearRefundNavigation() {
         _paymentForRefund.value = null
+    }
+
+    private fun refreshRefundPermission() {
+        viewModelScope.launch {
+            val hasPermission = permissionsRepository.hasPermission("payments:refund")
+            _canProcessRefund.value = hasPermission
+            Timber.d("🔐 Refund permission (payments:refund) = $hasPermission")
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════════

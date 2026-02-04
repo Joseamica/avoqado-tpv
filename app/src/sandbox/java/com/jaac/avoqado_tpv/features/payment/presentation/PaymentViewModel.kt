@@ -100,6 +100,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -234,6 +235,16 @@ class PaymentViewModel @Inject constructor(
     // 📧 Send receipt by email loading state
     private val _isSendingReceipt = MutableStateFlow(false)
     val isSendingReceipt: StateFlow<Boolean> = _isSendingReceipt.asStateFlow()
+
+    // 🖨️ Receipt printing loading state (stays on Success screen, button changes to "Imprimiendo...")
+    private val _isPrinting = MutableStateFlow(false)
+    val isPrinting: StateFlow<Boolean> = _isPrinting.asStateFlow()
+
+    // 🚦 Payment-in-progress guard (prevents multiple concurrent payment flows)
+    // CRITICAL: Big companies (Square/Toast) use this pattern to prevent double-charge bugs
+    // when users click payment button multiple times during slow network conditions
+    private val _isPaymentInProgress = MutableStateFlow(false)
+    val isPaymentInProgress: StateFlow<Boolean> = _isPaymentInProgress.asStateFlow()
 
     // 📧 Send receipt result message (for toast/snackbar display)
     private val _sendReceiptMessage = MutableStateFlow<String?>(null)
@@ -1841,6 +1852,24 @@ class PaymentViewModel @Inject constructor(
      * This prevents error -11 (FailureSecondGenerate) for cards that don't need ARPC.
      */
     fun startPayment(amount: String) {
+        // 🚦 GUARD: Prevent multiple concurrent payment flows (Square/Toast pattern)
+        // Critical for slow network: User clicking "Tarjeta" multiple times during API delay
+        // Without this guard, each click launches a new payment flow → chaos
+        if (_isPaymentInProgress.value) {
+            Timber.w("⚠️ [Payment] Payment already in progress - ignoring duplicate click")
+            return
+        }
+
+        // 🔒 Lock payment immediately (BEFORE any async work)
+        // This prevents race conditions where multiple clicks sneak through
+        _isPaymentInProgress.value = true
+
+        // ⚡ Show loading state IMMEDIATELY (before coroutine launch)
+        // This provides instant feedback even on slow networks
+        _state.value = PaymentState.Processing("Iniciando pago...")
+
+        Timber.d("🚦 [Payment] Payment flow started - guard locked")
+
         updateSessionSnapshot(
             reason = "startPayment",
             amountOverride = amount,
@@ -1857,6 +1886,7 @@ class PaymentViewModel @Inject constructor(
         // Now we catch this BEFORE starting, showing a clear error
         if (venueId.isNullOrBlank() || staffId.isNullOrBlank()) {
             Timber.w("⚠️ [Payment] No session - venueId=$venueId, staffId=$staffId")
+            _isPaymentInProgress.value = false  // 🚦 Release guard
             _state.value = PaymentState.Error(
                 message = "Tu sesión expiró.\n\nPor favor inicia sesión de nuevo.",
                 canRetry = false
@@ -1881,14 +1911,15 @@ class PaymentViewModel @Inject constructor(
             // SDK init is triggered after login (LoginViewModel.initializeBlumonSDK)
             // This ensures SDK is ready even if user navigates quickly to payment screen
 
-            // 📺 Show loading if SDK needs initialization (prevents 7s of no feedback)
+            // 📺 Update loading message if SDK needs initialization
             if (!initializationManager.isInitialized.value) {
                 _state.value = PaymentState.Processing("Configurando sistema de pago...")
-                Timber.d("⏳ [Payment] SDK not ready - showing loading indicator")
+                Timber.d("⏳ [Payment] SDK not ready - updating loading indicator")
             }
 
             initializationManager.awaitInitialization().onFailure { error ->
                 Timber.e(error, "❌ [Payment] SDK initialization failed")
+                _isPaymentInProgress.value = false  // 🚦 Release guard
                 _state.value = PaymentState.Error(
                     message = "Error inicializando sistema de pago.\n\n" +
                              "Por favor, cierra sesión e intenta nuevamente.",
@@ -1907,6 +1938,7 @@ class PaymentViewModel @Inject constructor(
                     Timber.w("⚠️ [Payment] No active shift - cannot process payment")
                     Timber.w("   → Shift validation required for cash reconciliation and audit trail")
                     Timber.w("   → Pattern: Square POS / Toast POS - always require open shift for payments")
+                    _isPaymentInProgress.value = false  // 🚦 Release guard
                     _state.value = PaymentState.Error(
                         message = "No hay turno abierto.\n\n" +
                                  "Abre un turno para procesar pagos.",
@@ -2113,16 +2145,33 @@ class PaymentViewModel @Inject constructor(
                 Timber.d("✅ [PHASE 1] PreTrans completed")
 
                 // PASO 2: StartDetectCard (wait for card tap)
-                _state.value = PaymentState.DetectingCard(getAmountForFlow())
+                // ⚠️ FIX: Show TOTAL (subtotal + tip) - this is what customer will be charged
+                val displayTotal = calculateTotal(getAmountForFlow(), getTipForFlow())
+                _state.value = PaymentState.DetectingCard(displayTotal)
                 Timber.i("[PHASE 2] StartDetectCard - Waiting for card tap...")
                 val detectParams = StartDetectCardParams(EReaderType.MAG_ICC_PICC)
                 val detectResult = startDetectCardUseCase.run(detectParams)
 
+                if (!_isPaymentInProgress.value || _state.value !is PaymentState.DetectingCard) {
+                    Timber.d("⬅️  [Payment Flow] Detect card result ignored - payment cancelled/back")
+                    return@launch
+                }
+
                 if (detectResult.isLeft) {
                     val error = detectResult.leftValue()
                     Timber.e("❌ [PHASE 2] Detect card failed: $error")
+                    val userMessage = when {
+                        error.toString().contains("Timeout", ignoreCase = true) ->
+                            "Tiempo de espera agotado.\n\nPor favor, acerque o inserte la tarjeta nuevamente."
+                        error.toString().contains("Cancel", ignoreCase = true) ->
+                            "Operación cancelada."
+                        error.toString().contains("Detect", ignoreCase = true) ->
+                            "No se detectó la tarjeta.\n\nPor favor, inténtelo nuevamente."
+                        else ->
+                            "Error detectando tarjeta.\n\nPor favor, intente de nuevo."
+                    }
                     _state.value = PaymentState.Error(
-                        message = "Error detectando tarjeta: $error",
+                        message = userMessage,
                         context = createPaymentContext()  // 🔄 Preserve context for smart retry
                     )
                     return@launch
@@ -2132,6 +2181,11 @@ class PaymentViewModel @Inject constructor(
                 val pollingResult = detectResponse.pollingResult
                 val detectedReaderType = pollingResult.readerType
                 val cardType = mapReaderTypeToCardType(detectedReaderType)
+
+                if (!_isPaymentInProgress.value || _state.value !is PaymentState.DetectingCard) {
+                    Timber.d("⬅️  [Payment Flow] Card detected after cancel - ignoring result")
+                    return@launch
+                }
 
                 Timber.i("✅ [PHASE 2] Card detected - Type: $cardType (ReaderType: $detectedReaderType)")
 
@@ -2575,7 +2629,9 @@ class PaymentViewModel @Inject constructor(
                 // ═══════════════════════════════════════════════════════════════════════════
                 // STEP 4: Detect card (same as sale)
                 // ═══════════════════════════════════════════════════════════════════════════
-                _state.value = PaymentState.DetectingCard(getAmountForFlow())
+                // Note: For refunds, tip is usually 0 but we use same pattern for consistency
+                val refundDisplayTotal = calculateTotal(getAmountForFlow(), getTipForFlow())
+                _state.value = PaymentState.DetectingCard(refundDisplayTotal)
                 Timber.i("[REFUND PHASE 2] Detecting card for refund...")
 
                 val detectParams = StartDetectCardParams(EReaderType.MAG_ICC_PICC)
@@ -4270,6 +4326,7 @@ class PaymentViewModel @Inject constructor(
     fun cancelPayment() {
         viewModelScope.launch {
             stopDetectCardUseCase.runInfallible(StopDetectCardParams())
+            _isPaymentInProgress.value = false  // 🚦 Release guard
             _state.value = PaymentState.Cancelled
             Timber.d("🚫 Payment cancelled by user")
         }
@@ -4283,6 +4340,7 @@ class PaymentViewModel @Inject constructor(
      */
     fun resetPayment() {
         _state.value = PaymentState.Idle
+        _isPaymentInProgress.value = false  // 🚦 Release payment guard
         isSkipReviewFlow = false
         _flowOrigin.value = PaymentFlowOrigin.FAST
         _skipProofOfSale = false
@@ -4447,6 +4505,9 @@ class PaymentViewModel @Inject constructor(
     fun retryPayment(context: RetryContext?) {
         Timber.i("🔄 [Smart Retry] Called with context: $context")
 
+        // 🚦 Release guard from failed attempt (allow startPayment to re-acquire it)
+        _isPaymentInProgress.value = false
+
         if (context == null) {
             Timber.w("⚠️ [Retry] Context is NULL, resetting to idle")
             resetPayment()
@@ -4528,6 +4589,74 @@ class PaymentViewModel @Inject constructor(
         startPayment(context.amount)
     }
 
+    fun returnToSelectingMerchantFromError(context: RetryContext?) {
+        Timber.i("↩️ [Error Cancel] Returning to SelectingMerchant | context=$context")
+
+        _isPaymentInProgress.value = false
+
+        if (context == null || !context.isValid()) {
+            Timber.w("⚠️ [Error Cancel] Context missing/invalid - resetting")
+            resetPayment()
+            return
+        }
+
+        _flowOrigin.value = context.flowOrigin
+
+        val retrySkipLocalValidation = context.flowOrigin == PaymentFlowOrigin.SERIALIZED
+        val orderContextOverride = context.orderId?.let { orderId ->
+            OrderContext(
+                orderId = orderId,
+                orderNumber = context.orderNumber,
+                tableId = null,
+                skipLocalOrderValidation = retrySkipLocalValidation
+            )
+        }
+
+        val splitContextOverride = context.splitType?.let { splitType ->
+            SplitContext(
+                type = SplitType.fromValue(splitType),
+                equalPartsPartySize = context.equalPartsPartySize,
+                equalPartsPayedFor = context.equalPartsPayedFor,
+                paidProductIds = context.paidProductIds ?: emptyList()
+            )
+        }
+
+        val merchant = context.merchantAccountId?.let { merchantCuid ->
+            _merchants.value.firstOrNull { it.merchantAccountId == merchantCuid }
+        } ?: context.merchantLocalId?.let { localId ->
+            _merchants.value.firstOrNull { it.id == localId }
+        }
+
+        if (merchant != null) {
+            _currentMerchant.value = merchant
+            Timber.d("↩️ [Error Cancel] Merchant restored: ${merchant.displayName}")
+        } else if (context.merchantAccountId == null && context.merchantLocalId == null) {
+            Timber.d("↩️ [Error Cancel] Cash payment - no merchant to restore")
+        } else if (_merchants.value.isNotEmpty()) {
+            val fallbackMerchant = _merchants.value.first()
+            _currentMerchant.value = fallbackMerchant
+            Timber.w("↩️ [Error Cancel] Merchant not found - using fallback: ${fallbackMerchant.displayName}")
+        }
+
+        updateSessionSnapshot(
+            reason = "error-cancel",
+            amountOverride = context.amount,
+            tipOverride = context.tipAmount,
+            ratingOverride = context.rating,
+            orderContextOverride = orderContextOverride,
+            splitContextOverride = splitContextOverride,
+            track2Clear = true,
+            emvIssuerCountryClear = true
+        )
+
+        _state.value = PaymentState.SelectingMerchant(
+            subtotal = context.amount,
+            tipAmount = context.tipAmount,
+            totalAmount = calculateTotal(context.amount, context.tipAmount),
+            rating = context.rating
+        )
+    }
+
     /**
      * Navigate back one step in the payment flow.
      *
@@ -4586,6 +4715,11 @@ class PaymentViewModel @Inject constructor(
             }
 
             is PaymentState.SelectingMerchant -> {
+                // 🐛 DEBUG: Log back navigation state
+                Timber.d("⬅️  [Payment Flow] Back from SelectingMerchant - isSkipReviewFlow=$isSkipReviewFlow")
+                Timber.d("⬅️  [Payment Flow] Features: ${sessionSnapshot.features}")
+                Timber.d("⬅️  [Payment Flow] shouldShowTipScreen=${shouldShowTipScreen()}, shouldShowRatingScreen=${shouldShowRatingScreen()}, shouldShowPreVerification=${shouldShowPreVerification()}")
+
                 if (isSkipReviewFlow) {
                     Timber.d("⬅️  [Payment Flow] Back from SelectingMerchant → Home (skip review flow)")
                     return false
@@ -4646,10 +4780,20 @@ class PaymentViewModel @Inject constructor(
 
             // During payment processing - no back allowed
             is PaymentState.ConfiguringKernel,
-            is PaymentState.DetectingCard,
             is PaymentState.Processing -> {
                 Timber.w("⚠️  [Payment Flow] Back not allowed during payment processing")
                 false
+            }
+
+            is PaymentState.DetectingCard -> {
+                if (sessionSnapshot.mode == PaymentMode.REFUND) {
+                    Timber.w("⚠️  [Payment Flow] Back from DetectingCard (refund) → Return to previous screen")
+                    false
+                } else {
+                    Timber.d("⬅️  [Payment Flow] Back from DetectingCard → SelectingMerchant")
+                    returnToSelectingMerchantFromCardDetection()
+                    true
+                }
             }
 
             // 🪙 Crypto payment states - cancel instead of back
@@ -4676,6 +4820,31 @@ class PaymentViewModel @Inject constructor(
                 false
             }
         }
+    }
+
+    private fun returnToSelectingMerchantFromCardDetection() {
+        viewModelScope.launch {
+            stopDetectCardUseCase.runInfallible(StopDetectCardParams())
+        }
+
+        _isPaymentInProgress.value = false  // 🚦 Release guard
+
+        updateSessionSnapshot(
+            reason = "back-from-detecting-card",
+            track2Clear = true,
+            emvIssuerCountryClear = true
+        )
+
+        val subtotal = sessionSnapshot.amount.toPlainString()
+        val tipAmount = sessionSnapshot.tip.toPlainString()
+        val totalAmount = (sessionSnapshot.amount + sessionSnapshot.tip).toPlainString()
+
+        _state.value = PaymentState.SelectingMerchant(
+            subtotal = subtotal,
+            tipAmount = tipAmount,
+            totalAmount = totalAmount,
+            rating = sessionSnapshot.rating
+        )
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -5501,38 +5670,58 @@ class PaymentViewModel @Inject constructor(
 
         Timber.d("📦 [Order Data] Loading data for order: $orderId")
         return try {
-            val result = orderRepository.getOrder(
-                venueId = currentVenueId,
-                orderId = orderId
-            )
+            val venueId = currentVenueId ?: authRepository.getVenueId()
+            val backendOrder = if (!venueId.isNullOrBlank()) {
+                val result = orderRepository.getOrder(
+                    venueId = venueId,
+                    orderId = orderId
+                )
 
-            result.onSuccess { order ->
-                Timber.d("✅ [Order Data] Loaded ${order.items.size} items | remainingBalance=${order.remainingBalance} | paidAmount=${order.paidAmount}")
-                order.items.forEach { item ->
-                    Timber.d("   - ${item.quantity}x ${item.productName} @ ${item.formattedTotalPrice}")
+                result.onSuccess { order ->
+                    Timber.d("✅ [Order Data] Loaded ${order.items.size} items | remainingBalance=${order.remainingBalance} | paidAmount=${order.paidAmount}")
+                    order.items.forEach { item ->
+                        Timber.d("   - ${item.quantity}x ${item.productName} @ ${item.formattedTotalPrice}")
 
-                    // ✅ FIX: Log modifiers to debug backend response
-                    if (item.modifiers.isNotEmpty()) {
-                        Timber.d("      Modifiers (${item.modifiers.size}):")
-                        item.modifiers.forEach { modifier ->
-                            Timber.d("         • ${modifier.name} (${modifier.formattedPrice})")
+                        // ✅ FIX: Log modifiers to debug backend response
+                        if (item.modifiers.isNotEmpty()) {
+                            Timber.d("      Modifiers (${item.modifiers.size}):")
+                            item.modifiers.forEach { modifier ->
+                                Timber.d("         • ${modifier.name} (${modifier.formattedPrice})")
+                            }
                         }
                     }
+
+                    // ⭐ FIX: Update Room with fresh order data (paidAmount, remainingBalance)
+                    // This ensures MenuScreen shows correct remaining balance after split payment
+                    try {
+                        orderSyncCoordinator.cacheBackendOrder(order)
+                        Timber.d("💾 [Order Data] Updated Room with fresh payment data | paidAmount=${order.paidAmount} | remainingBalance=${order.remainingBalance}")
+                    } catch (e: Exception) {
+                        Timber.w(e, "⚠️ [Order Data] Failed to cache order to Room (non-blocking)")
+                    }
+                }.onFailure { error ->
+                    Timber.e(error, "❌ [Order Data] Failed to load data for order $orderId")
                 }
 
-                // ⭐ FIX: Update Room with fresh order data (paidAmount, remainingBalance)
-                // This ensures MenuScreen shows correct remaining balance after split payment
-                try {
-                    orderSyncCoordinator.cacheBackendOrder(order)
-                    Timber.d("💾 [Order Data] Updated Room with fresh payment data | paidAmount=${order.paidAmount} | remainingBalance=${order.remainingBalance}")
-                } catch (e: Exception) {
-                    Timber.w(e, "⚠️ [Order Data] Failed to cache order to Room (non-blocking)")
-                }
-            }.onFailure { error ->
-                Timber.e(error, "❌ [Order Data] Failed to load data for order $orderId")
+                result.getOrNull()
+            } else {
+                Timber.w("⚠️ [Order Data] Missing venueId - skipping backend fetch")
+                null
             }
 
-            result.getOrNull()?.let { order ->
+            val effectiveOrder = if (backendOrder != null && backendOrder.items.isNotEmpty()) {
+                backendOrder
+            } else {
+                val localOrder = orderSyncCoordinator.getLocalOrder(orderId)
+                if (localOrder != null) {
+                    Timber.d("💾 [Order Data] Using local order fallback | items=${localOrder.items.size}")
+                } else {
+                    Timber.w("⚠️ [Order Data] Local order not found for $orderId")
+                }
+                localOrder
+            }
+
+            effectiveOrder?.let { order ->
                 OrderData(
                     items = order.items,
                     remainingBalance = order.remainingBalance,
@@ -5611,27 +5800,57 @@ class PaymentViewModel @Inject constructor(
                     Timber.w("⚠️ [Print] Paper low - proceeding with print")
                 }
 
-                _state.value = PaymentState.Printing
+                val orderDataForPrint = if (currentState.orderId != null && currentState.orderItems.isNullOrEmpty()) {
+                    loadOrderData(currentState.orderId)
+                } else {
+                    null
+                }
+                val itemsForPrint = currentState.orderItems ?: orderDataForPrint?.items
+                val discountForPrint = currentState.discountAmount ?: orderDataForPrint?.discountAmount?.toPlainString()
 
-                val result = printerManager.printReceipt(
-                    receiptUrl = currentState.receipt?.receiptUrl,  // ✅ FIX: Can be null for generic receipt
-                    amount = currentState.amount,
-                    authCode = currentState.authCode,
-                    tipAmount = currentState.tipAmount,
-                    cardDetails = currentState.cardDetails,  // 🎫 Pass card info for professional receipt
-                    referenceNumber = currentState.referenceNumber,  // 🎫 Pass reference for receipt
-                    orderNumber = OrderNumberFormatter.display(currentState.orderNumber),  // 🆕 Order number (for display in receipt)
-                    orderItems = currentState.orderItems,  // 🆕 Order items (for itemized receipt - only for orders, not fast payments)
-                    discountAmount = currentState.discountAmount,  // 🆕 Discount for receipt printing
-                    isRefund = currentState.isRefund  // 💸 Pass refund flag for receipt header
-                )
+                if (currentState.orderId != null && itemsForPrint.isNullOrEmpty()) {
+                    Timber.w("⚠️ [Print] Order has no items to print")
+                    _state.value = PaymentState.PrintError(
+                        message = "No se encontraron productos de la orden para imprimir. Intenta de nuevo.",
+                        previousState = currentState
+                    )
+                    return@launch
+                }
+
+                // 🖨️ Set printing state (button shows "Imprimiendo..." instead of separate screen)
+                _isPrinting.value = true
+
+                val result = withContext(Dispatchers.IO) {
+                    printerManager.printReceipt(
+                        receiptUrl = currentState.receipt?.receiptUrl,  // ✅ FIX: Can be null for generic receipt
+                        amount = currentState.amount,  // ⚠️ TOTAL (already includes tip)
+                        authCode = currentState.authCode,
+                        tipAmount = currentState.tipAmount,  // For display only (not added to amount)
+                        cardDetails = currentState.cardDetails,  // 🎫 Pass card info for professional receipt
+                        referenceNumber = currentState.referenceNumber,  // 🎫 Pass reference for receipt
+                        venueName = secureStorage.getVenueName(),  // 🏪 Venue name for receipt header
+                        venueLogoUrl = secureStorage.getVenueLogo(),  // 🏪 Venue logo (fallback to Avoqado)
+                        venueLegalName = secureStorage.getVenueLegalName(),  // 🧾 Razón social
+                        venueRfc = secureStorage.getVenueRfc(),  // 🧾 RFC
+                        venueAddress = secureStorage.getVenueAddress(),  // 📍 Address
+                        venueCity = secureStorage.getVenueCity(),
+                        venueState = secureStorage.getVenueState(),
+                        venueZipCode = secureStorage.getVenueZipCode(),
+                        staffName = secureStorage.getStaffName(),  // 👤 Cashier name
+                        orderNumber = OrderNumberFormatter.display(currentState.orderNumber),  // 🆕 Order number (FOLIO)
+                        orderItems = itemsForPrint,  // 🆕 Order items (for itemized receipt)
+                        discountAmount = discountForPrint,  // 🆕 Discount for receipt printing
+                        isRefund = currentState.isRefund  // 💸 Pass refund flag for receipt header
+                    )
+                }
 
                 result.onSuccess {
                     Timber.i("✅ [Print] Receipt printed successfully")
-                    // Return to Success state
-                    _state.value = currentState
+                    // Done printing - button returns to "Imprimir"
+                    _isPrinting.value = false
                 }.onFailure { error ->
                     Timber.e(error, "❌ [Print] Failed to print receipt")
+                    _isPrinting.value = false
                     _state.value = PaymentState.PrintError(
                         message = error.message ?: "Error al imprimir recibo",
                         previousState = currentState
@@ -5639,6 +5858,7 @@ class PaymentViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Print] Unexpected error during print")
+                _isPrinting.value = false
                 _state.value = PaymentState.PrintError(
                     message = "Error inesperado al imprimir: ${e.message}",
                     previousState = currentState
@@ -5902,7 +6122,7 @@ class PaymentViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 Timber.i("🖨️ [Print] Starting kitchen ticket print")
-                _state.value = PaymentState.Printing
+                _isPrinting.value = true
 
                 val result = printerManager.printKitchenTicket(
                     orderNumber = orderNumber,
@@ -5913,9 +6133,10 @@ class PaymentViewModel @Inject constructor(
 
                 result.onSuccess {
                     Timber.i("✅ [Print] Kitchen ticket printed successfully")
-                    _state.value = currentState
+                    _isPrinting.value = false
                 }.onFailure { error ->
                     Timber.e(error, "❌ [Print] Failed to print kitchen ticket")
+                    _isPrinting.value = false
                     _state.value = PaymentState.PrintError(
                         message = error.message ?: "Error al imprimir comanda",
                         previousState = currentState
@@ -5923,6 +6144,7 @@ class PaymentViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Print] Unexpected error during kitchen ticket print")
+                _isPrinting.value = false
                 _state.value = PaymentState.PrintError(
                     message = "Error inesperado al imprimir: ${e.message}",
                     previousState = currentState

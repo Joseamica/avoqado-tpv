@@ -90,7 +90,8 @@ interface OrderRepository {
         waiterId: String?,
         orderType: OrderType,
         skipCaching: Boolean = false,
-        source: String = "TPV"
+        source: String = "TPV",
+        externalId: String? = null
     ): Result<Order>
 
     /**
@@ -507,7 +508,8 @@ data class AddOrderItemRequest(
     val productId: String,
     val quantity: Int,
     val notes: String? = null,
-    val modifierIds: List<String>? = null
+    val modifierIds: List<String>? = null,
+    val externalId: String? = null
 ) {
     init {
         require(quantity > 0) { "Quantity must be greater than 0" }

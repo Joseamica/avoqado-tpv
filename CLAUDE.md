@@ -725,6 +725,98 @@ versionName = "1.1.1" // Semántico: MAJOR.MINOR.PATCH
 
 ---
 
-**Last Updated:** 2026-02-03
+## 11. MANDATORY: Git Workflow Management (Claude's Responsibility)
+
+**Claude es responsable de gestionar commits y releases.** El usuario NO debe preocuparse por git.
+
+### 🔄 Después de CADA implementación/fix, Claude DEBE:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  DESPUÉS DE COMPLETAR CUALQUIER TAREA, SIEMPRE PREGUNTAR:       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  "✅ Implementación completa. ¿Quieres que haga commit?"        │
+│                                                                 │
+│  Opciones:                                                      │
+│  • Sí → Hacer commit con mensaje descriptivo                    │
+│  • No → Dejar cambios sin commitear (WIP)                       │
+│  • Release → Preparar release completo (bump + tag + push)      │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 📝 Formato de commits
+
+```bash
+# Feature nueva
+feat(area): descripción corta
+
+# Bug fix
+fix(area): descripción corta
+
+# Múltiples cambios (release)
+release(vX.Y.Z): título del release
+
+## 🐛 Bug Fixes
+- fix(area): descripción
+
+## ✨ Features
+- feat(area): descripción
+```
+
+**⚠️ NUNCA agregar `Co-Authored-By: Claude` en los commits.** Los commits deben verse como del desarrollador.
+
+### 🚀 Comandos que el usuario puede pedir
+
+| Comando del usuario | Acción de Claude |
+|---------------------|------------------|
+| `"commitea esto"` | `git add -A && git commit -m "mensaje"` |
+| `"qué cambios hay?"` | `git status --short` + resumen |
+| `"release X.Y.Z"` | Bump versión + commit + tag + push + instrucciones build |
+| `"push"` | `git push origin main --tags` |
+| `"descarta los cambios"` | `git checkout -- .` (con confirmación) |
+
+### ⚡ Flujo automático post-implementación
+
+```
+Usuario: "Arregla el bug de refund"
+    ↓
+Claude: [Implementa el fix]
+    ↓
+Claude: "✅ Fix implementado en AppNavigation.kt
+
+        ¿Quieres que haga commit?
+        • Sí - commit normal
+        • Release - preparar release X.Y.Z
+        • No - dejar como WIP"
+    ↓
+Usuario: "Sí" / "Release 1.4.1" / "No"
+    ↓
+Claude: [Ejecuta la acción correspondiente]
+```
+
+### 🏷️ Cuándo sugerir Release vs Commit normal
+
+| Situación | Sugerir |
+|-----------|---------|
+| Fix pequeño, desarrollo en progreso | Commit normal |
+| Feature completa lista para producción | Release |
+| Múltiples fixes acumulados | Release |
+| Usuario menciona "producción" o "APK" | Release |
+| Fin de sesión de trabajo | Commit normal (backup) |
+
+### 📋 Checklist de Release (Claude ejecuta automáticamente)
+
+1. ✅ Verificar que no hay errores de compilación
+2. ✅ Bump `versionCode` (+1) y `versionName` en build.gradle.kts
+3. ✅ Commit con mensaje detallado (formato release)
+4. ✅ Crear tag anotado `vX.Y.Z`
+5. ✅ Push a origin (main + tags)
+6. ✅ Dar instrucciones de build + firma
+
+---
+
+**Last Updated:** 2026-02-04
 **Maintainer:** Development Team
-**Version:** 4.4 (Added ordering offline documentation)
+**Version:** 4.5 (Added Git Workflow Management - Claude's responsibility)

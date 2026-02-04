@@ -210,6 +210,26 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 23)
 ./gradlew compileDebugKotlin
 ```
 
+### Build Variants (Mismo branch, diferente build)
+
+**Todo el código está en `main`.** Las variantes son configuraciones de Gradle, NO branches.
+
+| Variante | Comando | Uso | Blumon Server |
+|----------|---------|-----|---------------|
+| **sandboxDebug** | `./gradlew installSandboxDebug` | Desarrollo diario (90%) | sandbox-tokener |
+| **productionDebug** | `./gradlew installProductionDebug` | Debug problemas de prod | tokener (REAL) |
+| **productionRelease** | `./gradlew assembleProductionRelease` | APK final para terminales | tokener (REAL) |
+
+```bash
+# Desarrollo normal
+./gradlew installSandboxDebug
+
+# APK para producción (genera en app/build/outputs/apk/)
+./gradlew assembleProductionRelease
+```
+
+⚠️ **productionDebug y productionRelease usan dinero REAL** - solo usar cuando sea necesario.
+
 ### ADB Monitoring (MANDATORY After Every Change)
 
 ```bash

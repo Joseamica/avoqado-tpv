@@ -29,6 +29,8 @@ import com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService
 import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 import com.jaac.avoqado_tpv.core.observability.ObservabilityTester
 import com.jaac.avoqado_tpv.core.data.network.interceptors.SlowNetworkInterceptor
+import com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceHealthViewModel
+import com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceAlert
 import android.content.Context
 import android.Manifest
 import android.os.Build
@@ -63,9 +65,11 @@ fun SuperAdminScreen(
     modifier: Modifier = Modifier,
     onNavigateBack: () -> Unit = {},
     onTestPayment: () -> Unit = {},
-    viewModel: SuperAdminViewModel = hiltViewModel()
+    viewModel: SuperAdminViewModel = hiltViewModel(),
+    deviceHealthViewModel: DeviceHealthViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val deviceAlerts by deviceHealthViewModel.activeAlerts.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     // Bluetooth permissions required for Android 12+
@@ -112,6 +116,7 @@ fun SuperAdminScreen(
         modifier = modifier,
         state = state,
         context = context,
+        deviceAlerts = deviceAlerts,
         onNavigateBack = onNavigateBack,
         onTestPrinter = viewModel::testPrinter,
         onTestPayment = onTestPayment,
@@ -120,7 +125,16 @@ fun SuperAdminScreen(
         onTestBluetooth = viewModel::testBluetooth,
         onToggleBleServer = handleToggleBleServer,
         onTestFirebaseCrash = viewModel::testFirebaseCrash,
-        onTestFirebaseError = viewModel::testFirebaseError
+        onTestFirebaseError = viewModel::testFirebaseError,
+        onSimulateNoInternet = { deviceHealthViewModel.simulateAlert(DeviceAlert.NoInternet) },
+        onSimulateServerDown = { deviceHealthViewModel.simulateAlert(DeviceAlert.ServerDown) },
+        onSimulateBatteryCritical = { deviceHealthViewModel.simulateAlert(DeviceAlert.BatteryCritical(5)) },
+        onSimulateBatteryLow = { deviceHealthViewModel.simulateAlert(DeviceAlert.BatteryLow(15)) },
+        onSimulateStorageLow = { deviceHealthViewModel.simulateAlert(DeviceAlert.StorageLow(0.5f)) },
+        onSimulateMemoryLow = { deviceHealthViewModel.simulateAlert(DeviceAlert.MemoryLow(50)) },
+        onSimulateWeakWifi = { deviceHealthViewModel.simulateAlert(DeviceAlert.WeakWifi(1)) },
+        onSimulateMultipleAlerts = { deviceHealthViewModel.simulateMultipleAlerts() },
+        onClearSimulatedAlerts = { deviceHealthViewModel.clearAllSimulatedAlerts() }
     )
 }
 
@@ -134,6 +148,7 @@ private fun SuperAdminScreenContent(
     modifier: Modifier = Modifier,
     state: SuperAdminState,
     context: Context,
+    deviceAlerts: List<DeviceAlert> = emptyList(),
     onNavigateBack: () -> Unit,
     onTestPrinter: () -> Unit,
     onTestPayment: () -> Unit,
@@ -142,7 +157,16 @@ private fun SuperAdminScreenContent(
     onTestBluetooth: (Context) -> Unit,
     onToggleBleServer: (Context) -> Unit,
     onTestFirebaseCrash: () -> Unit = {},
-    onTestFirebaseError: () -> Unit = {}
+    onTestFirebaseError: () -> Unit = {},
+    onSimulateNoInternet: () -> Unit = {},
+    onSimulateServerDown: () -> Unit = {},
+    onSimulateBatteryCritical: () -> Unit = {},
+    onSimulateBatteryLow: () -> Unit = {},
+    onSimulateStorageLow: () -> Unit = {},
+    onSimulateMemoryLow: () -> Unit = {},
+    onSimulateWeakWifi: () -> Unit = {},
+    onSimulateMultipleAlerts: () -> Unit = {},
+    onClearSimulatedAlerts: () -> Unit = {}
 ) {
     Scaffold(
         topBar = {
@@ -300,6 +324,26 @@ private fun SuperAdminScreenContent(
                         onDelayChange = { delayMs ->
                             SlowNetworkInterceptor.delayMs = delayMs
                         }
+                    )
+                }
+
+                // 🏥 Device Health Simulation Section
+                item {
+                    SectionHeader(title = "Device Health Simulation")
+                }
+
+                item {
+                    DeviceHealthSimulationCard(
+                        activeAlertsCount = deviceAlerts.size,
+                        onSimulateNoInternet = onSimulateNoInternet,
+                        onSimulateServerDown = onSimulateServerDown,
+                        onSimulateBatteryCritical = onSimulateBatteryCritical,
+                        onSimulateBatteryLow = onSimulateBatteryLow,
+                        onSimulateStorageLow = onSimulateStorageLow,
+                        onSimulateMemoryLow = onSimulateMemoryLow,
+                        onSimulateWeakWifi = onSimulateWeakWifi,
+                        onSimulateMultipleAlerts = onSimulateMultipleAlerts,
+                        onClearSimulatedAlerts = onClearSimulatedAlerts
                     )
                 }
 
@@ -611,6 +655,263 @@ private fun SlowNetworkCard(
                     color = Color(0xFFFF9800)
                 )
             }
+        }
+    }
+}
+
+/**
+ * Device Health Simulation Card
+ *
+ * Allows testing device health alerts without actual low battery/storage conditions.
+ * Useful for QA testing of alert banners and priority handling.
+ */
+@Composable
+private fun DeviceHealthSimulationCard(
+    activeAlertsCount: Int,
+    onSimulateNoInternet: () -> Unit,
+    onSimulateServerDown: () -> Unit,
+    onSimulateBatteryCritical: () -> Unit,
+    onSimulateBatteryLow: () -> Unit,
+    onSimulateStorageLow: () -> Unit,
+    onSimulateMemoryLow: () -> Unit,
+    onSimulateWeakWifi: () -> Unit,
+    onSimulateMultipleAlerts: () -> Unit,
+    onClearSimulatedAlerts: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (activeAlertsCount > 0) {
+                Color(0xFFE65100).copy(alpha = 0.1f)  // Orange tint when alerts active
+            } else {
+                MaterialTheme.colorScheme.surface
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Header
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.HealthAndSafety,
+                    contentDescription = null,
+                    tint = if (activeAlertsCount > 0) Color(0xFFE65100) else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(32.dp)
+                )
+                Column {
+                    Text(
+                        text = "Device Health Alerts",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = if (activeAlertsCount > 0) "⚠️ $activeAlertsCount alert(s) active" else "No alerts",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (activeAlertsCount > 0) Color(0xFFE65100) else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Simulate buttons - Row 0: Connection (P0, P2)
+            Text(
+                text = "Connection Alerts:",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // No Internet (P0)
+                OutlinedButton(
+                    onClick = onSimulateNoInternet,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFFB71C1C)  // Red
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.WifiOff,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Sin Internet", style = MaterialTheme.typography.labelSmall)
+                }
+
+                // Server Down (P2)
+                OutlinedButton(
+                    onClick = onSimulateServerDown,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFFB71C1C)  // Red
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CloudOff,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Sin Servidor", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+
+            // Device Alerts label
+            Text(
+                text = "Device Health Alerts:",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // Row 1: Battery
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Battery Critical
+                OutlinedButton(
+                    onClick = onSimulateBatteryCritical,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFFB71C1C)  // Red
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.BatteryAlert,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Critical 5%", style = MaterialTheme.typography.labelSmall)
+                }
+
+                // Battery Low
+                OutlinedButton(
+                    onClick = onSimulateBatteryLow,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFFE65100)  // Orange
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Battery2Bar,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Low 15%", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+
+            // Row 2: Storage & Memory
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onSimulateStorageLow,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFFF57F17)  // Yellow
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Storage,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Storage", style = MaterialTheme.typography.labelSmall)
+                }
+
+                OutlinedButton(
+                    onClick = onSimulateMemoryLow,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFFF57F17)  // Yellow
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Memory,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Memory", style = MaterialTheme.typography.labelSmall)
+                }
+
+                OutlinedButton(
+                    onClick = onSimulateWeakWifi,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFFF57F17)  // Yellow
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.WifiOff,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("WiFi", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+
+            // Row 3: Multiple & Clear
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onSimulateMultipleAlerts,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFFE65100)
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Multiple", style = MaterialTheme.typography.labelSmall)
+                }
+
+                Button(
+                    onClick = onClearSimulatedAlerts,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF4CAF50)
+                    ),
+                    enabled = activeAlertsCount > 0
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Clear,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Clear All", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+
+            // Info text
+            Text(
+                text = "💡 Alerts appear at the top of the screen. Tap \"+N\" badge to expand.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

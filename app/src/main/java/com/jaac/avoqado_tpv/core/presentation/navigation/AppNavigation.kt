@@ -140,6 +140,12 @@ fun AppNavigation(
     val connectionViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.ConnectionViewModel = hiltViewModel()
     val connectionState by connectionViewModel.state.collectAsStateWithLifecycle()
 
+    // 🏥 DEVICE HEALTH MONITORING (Square/Toast/Shopify pattern)
+    // Shows alerts for low battery, storage, memory, weak WiFi
+    val deviceHealthViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceHealthViewModel = hiltViewModel()
+    val deviceAlerts by deviceHealthViewModel.activeAlerts.collectAsStateWithLifecycle()
+    val deviceAlertsExpanded by deviceHealthViewModel.isExpanded.collectAsStateWithLifecycle()
+
     // 🥝 KIOSK MODE OBSERVATION
     // When in kiosk mode, show simplified customer-facing navigation instead of staff UI
     val context = LocalContext.current
@@ -491,12 +497,16 @@ fun AppNavigation(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // 🌐 CONNECTION BANNER (pushes content down when visible)
-        // Thin bar at top - doesn't overlay, pushes content down
-        // No dismiss button - stays until connection is restored
-        com.jaac.avoqado_tpv.core.presentation.components.ConnectionBanner(
-            state = connectionState,
-            onRetry = { connectionViewModel.forceCheck() }
+        // 🏥 UNIFIED ALERT SYSTEM (Square/Toast pattern)
+        // Shows ALL alerts in priority order: connection (P0, P2) + device health (P1, P3-P6)
+        // Single expandable banner instead of separate ConnectionBanner + DeviceAlertBanner
+        // ConnectionViewModel still handles reconnection logic, but alerts show here
+        com.jaac.avoqado_tpv.core.presentation.components.DeviceAlertBanner(
+            alerts = deviceAlerts,
+            isExpanded = deviceAlertsExpanded,
+            onToggleExpand = { deviceHealthViewModel.toggleExpanded() },
+            onDismiss = { alert -> deviceHealthViewModel.dismissAlert(alert) },
+            onRetry = { connectionViewModel.forceCheck() } // For connection alerts
         )
 
         // Main navigation content (takes remaining space)

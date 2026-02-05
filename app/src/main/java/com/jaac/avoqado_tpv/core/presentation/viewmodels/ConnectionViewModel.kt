@@ -7,9 +7,12 @@ import com.jaac.avoqado_tpv.core.data.network.dto.toTpvCommand
 import com.jaac.avoqado_tpv.core.data.repository.HeartbeatRepository
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
+import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
+import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
 import com.jaac.avoqado_tpv.core.util.DeviceHealthMonitor
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
+import com.jaac.avoqado_tpv.core.util.NetworkStatus
 import com.jaac.avoqado_tpv.features.remote_command.data.model.CommandResult
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -56,11 +59,13 @@ import javax.inject.Inject
 @HiltViewModel
 class ConnectionViewModel @Inject constructor(
     private val networkMonitor: NetworkMonitor,
+    private val connectivityObserver: ConnectivityObserver,
     private val heartbeatRepository: HeartbeatRepository,
     private val deviceInfoManager: DeviceInfoManager,
     private val deviceHealthMonitor: DeviceHealthMonitor,
     private val connectionEventManager: ConnectionEventManager,
-    private val commandExecutor: CommandExecutor
+    private val commandExecutor: CommandExecutor,
+    private val connectionStateManager: ConnectionStateManager
 ) : ViewModel() {
 
     // ══════════════════════════════════════════════════════════════════════
@@ -71,6 +76,7 @@ class ConnectionViewModel @Inject constructor(
     val state: StateFlow<ConnectionState> = _state.asStateFlow()
 
     private var monitoringJob: Job? = null
+    private var networkObserverJob: Job? = null
     private var reconnectionAttempts = 0
     private val maxReconnectionAttempts = Int.MAX_VALUE // Keep trying forever
     private var isDismissed = false  // User manually dismissed banner
@@ -85,6 +91,7 @@ class ConnectionViewModel @Inject constructor(
         // The startMonitoring() function calls checkConnection() BEFORE any delay
         Timber.i("🚀 [Connection] ViewModel initialized - sending immediate heartbeat")
         startMonitoring()
+        observeNetworkChanges()
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -155,6 +162,54 @@ class ConnectionViewModel @Inject constructor(
     }
 
     // ══════════════════════════════════════════════════════════════════════
+    // NETWORK STATE OBSERVATION (Toast/Square Pattern)
+    // ══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Observe network connectivity changes in real-time
+     *
+     * **Problem Solved:**
+     * When screen is locked/unlocked, the periodic 30s check might show "Sin conexión"
+     * banner briefly because network isn't fully ready yet. This observer reacts
+     * IMMEDIATELY when Android reports network available, triggering a fresh check.
+     *
+     * **Toast POS Pattern:**
+     * - Network restored → Automatic reconnection (no user action needed)
+     * - Banner disappears automatically when connection is restored
+     *
+     * **Grace Period:**
+     * We wait 2 seconds after network becomes available before checking.
+     * This gives WiFi/DNS time to fully initialize after screen wake.
+     */
+    private fun observeNetworkChanges() {
+        networkObserverJob?.cancel()
+        networkObserverJob = viewModelScope.launch {
+            connectivityObserver.observe().collect { status ->
+                when (status) {
+                    NetworkStatus.Available -> {
+                        Timber.i("🌐 [Connection] Network restored - checking connection after grace period")
+                        // Grace period: Wait 2s for network to fully stabilize after wake
+                        delay(2000)
+                        // Clear dismissed state - network change is a new situation
+                        isDismissed = false
+                        checkConnection()
+                    }
+                    NetworkStatus.Unavailable -> {
+                        Timber.w("⚠️ [Connection] Network lost")
+                        // Update state immediately when network is lost
+                        if (!isDismissed) {
+                            _state.value = ConnectionState.DisconnectedNoInternet
+                        }
+                        // Update unified alert system
+                        connectionStateManager.setInternetConnected(false)
+                        reconnectionAttempts++
+                    }
+                }
+            }
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
     // PRIVATE METHODS
     // ══════════════════════════════════════════════════════════════════════
 
@@ -185,6 +240,8 @@ class ConnectionViewModel @Inject constructor(
             if (!isDismissed) {
                 _state.value = ConnectionState.DisconnectedNoInternet
             }
+            // Update unified alert system
+            connectionStateManager.setInternetConnected(false)
             reconnectionAttempts++
             return
         }
@@ -206,6 +263,9 @@ class ConnectionViewModel @Inject constructor(
             when (result) {
                 is Result.Success -> {
                     Timber.i("✅ [Connection] Backend connected")
+
+                    // Update unified alert system - fully connected
+                    connectionStateManager.updateState(hasInternet = true, hasServer = true)
 
                     // 🎯 Square Terminal API Pattern: Process pending commands from heartbeat response
                     // Commands are delivered via HTTP polling instead of socket push
@@ -240,6 +300,8 @@ class ConnectionViewModel @Inject constructor(
                     if (!isDismissed) {
                         _state.value = ConnectionState.DisconnectedServerDown
                     }
+                    // Update unified alert system - internet OK, server down
+                    connectionStateManager.updateState(hasInternet = true, hasServer = false)
                     reconnectionAttempts++
                 }
             }
@@ -249,6 +311,8 @@ class ConnectionViewModel @Inject constructor(
             if (!isDismissed) {
                 _state.value = ConnectionState.DisconnectedServerDown
             }
+            // Update unified alert system - internet OK (we got here), server down
+            connectionStateManager.updateState(hasInternet = true, hasServer = false)
             reconnectionAttempts++
         }
     }
@@ -362,6 +426,8 @@ class ConnectionViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         stopMonitoring()
+        networkObserverJob?.cancel()
+        networkObserverJob = null
     }
 }
 

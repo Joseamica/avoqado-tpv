@@ -1239,15 +1239,7 @@ fun AppNavigation(
             com.jaac.avoqado_tpv.features.settings.presentation.SettingsScreen(
                 onBack = { navController.safePopBackStack() },
                 onNavigateToShifts = { navController.navigate(NavRoute.Shifts.route) },
-                onNavigateToSelfUpdate = { navController.navigate(NavRoute.SelfUpdate.route) },
-                onNavigateToExternalDevices = { navController.navigate(NavRoute.ExternalDevices.route) }
-            )
-        }
-
-        // External Devices Screen - BLE device linking (Square/Toast pattern)
-        composable(NavRoute.ExternalDevices.route) {
-            com.jaac.avoqado_tpv.features.settings.presentation.ExternalDevicesScreen(
-                onNavigateBack = { navController.safePopBackStack() }
+                onNavigateToSelfUpdate = { navController.navigate(NavRoute.SelfUpdate.route) }
             )
         }
 

@@ -961,6 +961,62 @@ Usuario: "bump + commit" / "solo commit" / "WIP"
 
 ---
 
-**Last Updated:** 2026-02-04
+## 12. MANDATORY: Cross-Repo Consistency Before Release
+
+**⚠️ CRITICAL**: TPV takes 3-5 days to update (requires Blumon/PAX signature). Backend/Dashboard deploy in minutes.
+
+### Verificación Obligatoria Antes de Release
+
+**ANTES de generar APK de producción, Claude DEBE:**
+
+1. **Ejecutar script de verificación:**
+   ```bash
+   ./scripts/check-cross-repo.sh
+   ```
+
+2. **Revisar cambios pendientes en otros repos:**
+   ```bash
+   git -C ../avoqado-server log --oneline -5
+   git -C ../avoqado-web-dashboard log --oneline -5
+   ```
+
+3. **Preguntar al usuario:**
+   - "¿Hay cambios en backend/dashboard que requieran esta versión del TPV?"
+   - "¿Hay cambios en TPV que requieran actualización de backend/dashboard?"
+
+### Regla de Oro: Backwards Compatibility
+
+| Principio | Implementación |
+|-----------|----------------|
+| Backend SIEMPRE soporta versiones antiguas | Usar `X-App-Version-Code` header para comportamiento condicional |
+| NUNCA quitar campos de respuestas existentes | Agregar campos nuevos, no eliminar los viejos |
+| NUNCA requerir campos nuevos en requests | Hacer nuevos campos opcionales con defaults |
+| Deploy order para features nuevas | Backend primero → esperar deploy → enviar APK |
+
+### Escenarios Comunes
+
+| Escenario | Acción Correcta |
+|-----------|----------------|
+| Nuevo endpoint en backend | Deploy backend ANTES de enviar APK que lo usa |
+| Campo nuevo en respuesta API | Backend agrega campo → TPV puede usarlo cuando quiera |
+| TPV necesita dato que no existe | Backend debe agregarlo PRIMERO con backwards compatibility |
+| Feature cross-repo | Coordinar: server deploy → dashboard deploy → APK |
+
+### Timeline Típico de Release Cross-Repo
+
+```
+Día 1: Commit cambios en los 3 repos
+Día 1: Deploy backend a producción (minutos)
+Día 1: Deploy dashboard a producción (minutos)
+Día 1: Generar APK y enviar a Blumon
+Día 3-5: Blumon firma APK
+Día 5: APK disponible en terminales
+```
+
+**Implicación**: El backend en producción debe soportar TANTO la versión vieja del TPV como la nueva durante al menos 1 semana.
+
+---
+
+**Last Updated:** 2026-02-05
 **Maintainer:** Development Team
-**Version:** 4.7 (Fixed version bump criteria - focus on user capability, not code quantity)
+**Version:** 4.8 (Added cross-repo consistency rules)

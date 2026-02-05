@@ -46,7 +46,6 @@ fun SettingsScreen(
     onBack: () -> Unit = {},
     onNavigateToShifts: () -> Unit = {},
     onNavigateToSelfUpdate: () -> Unit = {},
-    onNavigateToExternalDevices: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -439,14 +438,6 @@ fun SettingsScreen(
                             description = "Obtener ajustes del servidor",
                             onClick = { viewModel.refreshSettings() },
                             isLoading = state.isRefreshing
-                        )
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        SettingsActionRow(
-                            icon = Icons.Outlined.Devices,
-                            label = "Dispositivos Externos",
-                            description = "Enlazar iPad/tablets para pagos BLE",
-                            onClick = { onNavigateToExternalDevices() },
-                            isLoading = false
                         )
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         SettingsActionRow(

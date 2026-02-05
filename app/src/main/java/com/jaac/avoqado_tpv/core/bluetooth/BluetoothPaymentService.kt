@@ -132,7 +132,7 @@ class BluetoothPaymentService @Inject constructor(
     val connectedDeviceAddress: StateFlow<String?> = BluetoothPaymentForegroundService.connectedDeviceAddress
 
     /**
-     * First connected device (for backward compatibility with ExternalDevicesViewModel)
+     * First connected device (convenience accessor)
      * Returns the first device in the list, or null if no devices connected.
      */
     val connectedDevice: StateFlow<ConnectedDevice?> = connectedDevicesList

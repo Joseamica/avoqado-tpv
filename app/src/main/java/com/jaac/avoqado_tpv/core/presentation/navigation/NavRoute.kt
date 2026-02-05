@@ -57,17 +57,6 @@ sealed class NavRoute(val route: String) {
     data object Settings : NavRoute("settings")
 
     /**
-     * External Devices screen - Link external devices (iPad, tablets) for BLE payments
-     * Accessed from Settings
-     *
-     * Pattern: Square/Toast/Stripe device management
-     * - Toggle BLE server on/off
-     * - View connected devices
-     * - Wizard-guided device linking
-     */
-    data object ExternalDevices : NavRoute("external_devices")
-
-    /**
      * Payment screen - EMV chip card payment with online authorization
      */
     data object Payment : NavRoute("payment")

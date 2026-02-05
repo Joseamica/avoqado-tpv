@@ -81,7 +81,7 @@ Esto hará que el TPV **no muestre** calificación ni propina.
 ### 📛 Nombre del dispositivo (CLIENT_INFO)
 
 El iOS app envía un payload de identificación después de conectarse para que el TPV
-muestre un nombre amigable en **Dispositivos Externos**.
+reconozca el dispositivo (usado internamente para logs).
 
 Ejemplo de payload:
 ```json
@@ -1129,7 +1129,7 @@ y el TPV mostrará su diálogo de vínculo.
 
 **Si el prompt se repite:**
 - iPad: **Ajustes → Bluetooth → (i) → Olvidar**
-- TPV: **Dispositivos Externos → Olvidar dispositivo**
+- Reinicia el TPV para limpiar el cache de dispositivos BLE
 - Vuelve a conectar desde la app iOS.
 
 ---
@@ -1226,8 +1226,8 @@ adb logcat -s BluetoothPaymentServer:* | grep "Advertising"
 
 **Solución rápida (con PIN):**
 1. Reintenta y **ingresa el PIN** en el TPV cuando aparezca el diálogo.
-2. Si el diálogo no aparece en TPV, sal de **Dispositivos Externos** y vuelve a intentar desde Inicio.
-3. Si sigue fallando: iPad **Ajustes → Bluetooth → (i) → Olvidar**, y en TPV **Olvidar dispositivo**.
+2. Si el diálogo no aparece en TPV, reinicia la app del TPV y vuelve a intentar.
+3. Si sigue fallando: iPad **Ajustes → Bluetooth → (i) → Olvidar**, y reinicia el TPV.
 
 ---
 

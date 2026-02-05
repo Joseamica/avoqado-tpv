@@ -355,6 +355,7 @@ class SocketManager @Inject constructor() {
         // ========================================
 
         on("terminal:payment_request", onTerminalPaymentRequest)
+        on("terminal:payment_cancel", onTerminalPaymentCancel)
 
         // ========================================
         // Hardware Events (NEW)
@@ -1216,6 +1217,23 @@ class SocketManager @Inject constructor() {
             )
         } catch (e: Exception) {
             Timber.e(e, "❌ Error parsing terminal:payment_request")
+        }
+    }
+
+    private val onTerminalPaymentCancel = Emitter.Listener { args ->
+        try {
+            val data = args.getOrNull(0) as? JSONObject ?: return@Listener
+
+            Timber.i("🚫 [Socket] Terminal payment cancel received: ${data.optString("requestId")}")
+            _events.tryEmit(
+                SocketEvent.TerminalPaymentCancel(
+                    requestId = data.optString("requestId").takeIf { it.isNotEmpty() },
+                    reason = data.optString("reason", "Cancelled by user"),
+                    timestamp = data.optString("timestamp", "")
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error parsing terminal:payment_cancel")
         }
     }
 

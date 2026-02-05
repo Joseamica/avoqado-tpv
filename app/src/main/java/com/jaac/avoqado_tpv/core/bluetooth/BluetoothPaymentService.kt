@@ -280,13 +280,51 @@ class BluetoothPaymentService @Inject constructor(
     private val _paymentRequests = MutableSharedFlow<BlePaymentRequest>(extraBufferCapacity = 1)
     val paymentRequests: SharedFlow<BlePaymentRequest> = _paymentRequests.asSharedFlow()
 
+    // Track current socket payment for cancel verification (idempotency)
+    @Volatile
+    private var currentSocketRequestId: String? = null
+
+    // Cancel events for UI to observe
+    private val _paymentCancelRequests = MutableSharedFlow<String?>(extraBufferCapacity = 1)
+    val paymentCancelRequests: SharedFlow<String?> = _paymentCancelRequests.asSharedFlow()
+
     /**
      * Submit a payment request from Socket.IO (server-routed payment).
      * Reuses the same SharedFlow as BLE payments so AppNavigation handles it identically.
      */
     fun submitSocketPaymentRequest(request: BlePaymentRequest) {
         Timber.i("📡 [Socket-Service] Forwarding socket payment: ${request.amountCents} cents (requestId=${request.socketRequestId})")
+        currentSocketRequestId = request.socketRequestId
         _paymentRequests.tryEmit(request)
+    }
+
+    /**
+     * Cancel a socket payment request (idempotent).
+     * Only cancels if the requestId matches the current payment being processed.
+     */
+    fun cancelSocketPaymentRequest(requestId: String?) {
+        val currentId = currentSocketRequestId
+        if (requestId == null || currentId == null) {
+            // No requestId provided or no current payment - emit cancel anyway
+            Timber.i("🚫 [Socket-Service] Cancel request (no requestId check)")
+            _paymentCancelRequests.tryEmit(requestId)
+            currentSocketRequestId = null
+        } else if (currentId == requestId) {
+            // RequestIds match - this is the correct payment to cancel
+            Timber.i("🚫 [Socket-Service] Cancelling payment $requestId (matches current)")
+            _paymentCancelRequests.tryEmit(requestId)
+            currentSocketRequestId = null
+        } else {
+            // RequestIds don't match - ignore (different payment already started)
+            Timber.w("⚠️ [Socket-Service] Cancel ignored - requestId mismatch. Current=$currentId, Cancel=$requestId")
+        }
+    }
+
+    /**
+     * Clear current socket request ID (called when payment completes)
+     */
+    fun clearCurrentSocketRequest() {
+        currentSocketRequestId = null
     }
 
     // 🔐 Pairing events (inform UI when the OS prompts for pairing)

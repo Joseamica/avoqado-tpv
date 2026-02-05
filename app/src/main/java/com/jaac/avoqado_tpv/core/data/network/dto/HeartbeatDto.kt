@@ -164,6 +164,33 @@ data class PendingCommandDto(
 )
 
 /**
+ * Force Update DTO
+ *
+ * Included in heartbeat response when there's a FORCE update that cannot be bypassed.
+ * Terminal MUST install this update - user cannot dismiss or ignore it.
+ *
+ * **Backend Enforcement Pattern:**
+ * This is included in EVERY heartbeat response (every 30 seconds) until the
+ * terminal updates. This prevents users from bypassing forced updates.
+ */
+data class ForceUpdateDto(
+    @SerializedName("versionName")
+    val versionName: String,
+
+    @SerializedName("versionCode")
+    val versionCode: Int,
+
+    @SerializedName("downloadUrl")
+    val downloadUrl: String,
+
+    @SerializedName("releaseNotes")
+    val releaseNotes: String?,
+
+    @SerializedName("updateMode")
+    val updateMode: String  // Always "FORCE" for this DTO
+)
+
+/**
  * Heartbeat Response DTO
  *
  * Matches backend response from POST /tpv/heartbeat
@@ -186,7 +213,12 @@ data class HeartbeatResponseDto(
 
     // Square/Toast pattern: Commands delivered via heartbeat response
     @SerializedName("pendingCommands")
-    val pendingCommands: List<PendingCommandDto>?
+    val pendingCommands: List<PendingCommandDto>?,
+
+    // 🚨 Backend Enforcement: Force update that cannot be bypassed
+    // When present, terminal MUST show ForceUpdateDialog until update is installed
+    @SerializedName("forceUpdate")
+    val forceUpdate: ForceUpdateDto?
 )
 
 /**

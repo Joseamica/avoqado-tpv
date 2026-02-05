@@ -6,6 +6,7 @@ import com.jaac.avoqado_tpv.core.data.network.interceptors.AuthInterceptor
 import com.jaac.avoqado_tpv.core.data.network.interceptors.LoggingInterceptor
 import com.jaac.avoqado_tpv.core.data.network.interceptors.TenantInterceptor
 import com.jaac.avoqado_tpv.core.data.network.interceptors.TokenAuthenticator
+import com.jaac.avoqado_tpv.core.data.network.interceptors.VersionGateInterceptor
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -104,14 +105,16 @@ object NetworkModule {
         authInterceptor: AuthInterceptor,
         tenantInterceptor: TenantInterceptor,
         tokenAuthenticator: TokenAuthenticator,  // ✅ Handles 401 with token refresh
+        versionGateInterceptor: VersionGateInterceptor,  // 🚨 Handles 426 Upgrade Required
         certificatePinner: CertificatePinner?,
         slowNetworkInterceptor: com.jaac.avoqado_tpv.core.data.network.interceptors.SlowNetworkInterceptor  // 🐢 DEBUG: Simulate slow network
     ): OkHttpClient {
         return OkHttpClient.Builder()
             // Interceptors (order matters!)
             .addInterceptor(slowNetworkInterceptor) // 🐢 DEBUG: Slow network simulation (first, before auth)
-            .addInterceptor(authInterceptor)        // Add JWT token
+            .addInterceptor(authInterceptor)        // Add JWT token + version headers
             .addInterceptor(tenantInterceptor)      // Add venueId
+            .addInterceptor(versionGateInterceptor) // 🚨 Handle 426 Upgrade Required
             .addInterceptor(LoggingInterceptor.create())  // Log requests (DEBUG only)
 
             // Authenticator (handles 401 responses with token refresh)

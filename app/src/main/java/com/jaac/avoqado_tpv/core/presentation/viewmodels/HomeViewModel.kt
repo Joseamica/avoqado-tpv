@@ -30,6 +30,7 @@ import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import com.jaac.avoqado_tpv.core.util.UpdateCheckManager
 import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleSalesGoal
 import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalPeriod
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
@@ -81,7 +82,9 @@ class HomeViewModel @Inject constructor(
     private val merchantRepository: MerchantRepository,
     private val deviceInfoManager: DeviceInfoManager,
     // 📡 Socket.IO Payment Bridge - Forward socket payment requests to BLE pipeline
-    private val bluetoothPaymentService: com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService
+    private val bluetoothPaymentService: com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService,
+    // 📦 Update Check Manager - Check for app updates after login
+    private val updateCheckManager: UpdateCheckManager
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -166,6 +169,8 @@ class HomeViewModel @Inject constructor(
         fetchSalesGoal()
         // 🔄 Listen for connection restored to re-fetch merchants if using fallback
         listenForConnectionRestored()
+        // 📦 Check for app updates (shows banner if available)
+        checkForUpdates()
     }
 
     /**
@@ -291,6 +296,30 @@ class HomeViewModel @Inject constructor(
      */
     fun refreshSalesGoal() {
         fetchSalesGoal()
+    }
+
+    /**
+     * 📦 Check for App Updates
+     *
+     * Called on app startup after login to check if a newer version is available.
+     * If an update is available:
+     * - BANNER mode: Shows update alert in DeviceAlertBanner
+     * - FORCE mode: DeviceAlertBanner + shows blocking modal
+     */
+    private fun checkForUpdates() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                Timber.i("📦 [HomeViewModel] Checking for app updates...")
+                val update = updateCheckManager.checkForUpdates()
+                if (update != null) {
+                    Timber.i("✅ [HomeViewModel] Update available: ${update.versionName} (mode=${update.updateMode})")
+                } else {
+                    Timber.d("ℹ️ [HomeViewModel] App is up to date")
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [HomeViewModel] Error checking for updates")
+            }
+        }
     }
 
     /**
@@ -477,9 +506,9 @@ class HomeViewModel @Inject constructor(
     /**
      * 🔄 Listen for connection restored events
      *
-     * When connection is restored and merchants are still using fallback accounts,
-     * automatically re-fetch terminal config from backend and re-initialize SDK
-     * with real merchant accounts.
+     * When connection is restored:
+     * 1. Re-fetch merchants if still using fallback accounts
+     * 2. Re-check for app updates (in case server was down on initial check)
      */
     private fun listenForConnectionRestored() {
         viewModelScope.launch {
@@ -490,6 +519,13 @@ class HomeViewModel @Inject constructor(
                 if (merchantRepository.isUsingFallback()) {
                     Timber.i("🔄 [HomeViewModel] Merchants are fallback - re-fetching from backend...")
                     retryFetchMerchantsAndReinitSDK()
+                }
+
+                // Re-check for updates (in case initial check failed due to no connection)
+                // Only if there's no pending update already
+                if (updateCheckManager.pendingUpdate.value == null) {
+                    Timber.i("📦 [HomeViewModel] Re-checking for app updates after connection restored...")
+                    checkForUpdates()
                 }
             }
         }
@@ -628,6 +664,12 @@ class HomeViewModel @Inject constructor(
                             socketRequestId = event.requestId
                         )
                         bluetoothPaymentService.submitSocketPaymentRequest(request)
+                    }
+
+                    is SocketEvent.TerminalPaymentCancel -> {
+                        Timber.i("🚫 [Socket] Terminal payment cancel: requestId=${event.requestId} reason=${event.reason}")
+                        // Cancel only if the requestId matches the current payment (idempotency)
+                        bluetoothPaymentService.cancelSocketPaymentRequest(event.requestId)
                     }
 
                     // Other events handled by other ViewModels (PaymentViewModel, OrderViewModel, etc.)

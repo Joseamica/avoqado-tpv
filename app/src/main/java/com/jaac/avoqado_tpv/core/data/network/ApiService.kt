@@ -1253,6 +1253,18 @@ data class AvoqadoUpdateResponse(
 )
 
 /**
+ * Update notification mode
+ * - NONE: No notification, user must check manually
+ * - BANNER: Persistent banner, user can ignore/dismiss
+ * - FORCE: Blocking modal, app blocked until updated
+ */
+enum class UpdateMode {
+    NONE,
+    BANNER,
+    FORCE
+}
+
+/**
  * Update information from Avoqado backend
  */
 data class AvoqadoUpdateInfo(
@@ -1263,10 +1275,13 @@ data class AvoqadoUpdateInfo(
     val fileSize: String, // BigInt as string
     val checksum: String,
     val releaseNotes: String?,
-    val isRequired: Boolean,
+    val updateMode: UpdateMode = UpdateMode.NONE,
     val minAndroidSdk: Int,
     val publishedAt: String
-)
+) {
+    /** Backwards compatibility: true if updateMode is FORCE */
+    val isRequired: Boolean get() = updateMode == UpdateMode.FORCE
+}
 
 /**
  * Request to report update installation

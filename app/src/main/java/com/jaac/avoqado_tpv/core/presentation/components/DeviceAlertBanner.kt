@@ -52,6 +52,7 @@ fun DeviceAlertBanner(
     onToggleExpand: () -> Unit = {},
     onDismiss: (DeviceAlert) -> Unit = {},
     onRetry: () -> Unit = {}, // For connection alerts (NoInternet, ServerDown)
+    onUpdate: () -> Unit = {}, // For update alerts (UpdateAvailable)
     modifier: Modifier = Modifier
 ) {
     // Don't show if no alerts
@@ -74,7 +75,8 @@ fun DeviceAlertBanner(
                 isExpanded = isExpanded,
                 onToggleExpand = onToggleExpand,
                 onDismiss = if (topAlert.priority > 2) {{ onDismiss(topAlert) }} else null,
-                onRetry = if (topAlert is DeviceAlert.NoInternet || topAlert is DeviceAlert.ServerDown) onRetry else null
+                onRetry = if (topAlert is DeviceAlert.NoInternet || topAlert is DeviceAlert.ServerDown) onRetry else null,
+                onUpdate = if (topAlert is DeviceAlert.UpdateAvailable) onUpdate else null
             )
 
             // Expanded list of additional alerts
@@ -92,6 +94,7 @@ fun DeviceAlertBanner(
                             onToggleExpand = {},
                             onDismiss = if (alert.priority > 2) {{ onDismiss(alert) }} else null,
                             onRetry = if (alert is DeviceAlert.NoInternet || alert is DeviceAlert.ServerDown) onRetry else null,
+                            onUpdate = if (alert is DeviceAlert.UpdateAvailable) onUpdate else null,
                             isSecondary = true
                         )
                     }
@@ -112,15 +115,18 @@ private fun AlertBannerRow(
     onToggleExpand: () -> Unit,
     onDismiss: (() -> Unit)?,
     onRetry: (() -> Unit)? = null, // For connection alerts
+    onUpdate: (() -> Unit)? = null, // For update alerts
     isSecondary: Boolean = false
 ) {
     val backgroundColor = when (alert.getAlertColor()) {
+        AlertColor.UPDATE -> Color(0xFF1565C0)    // Blue - for updates
         AlertColor.CRITICAL -> Color(0xFFB71C1C)  // Dark red
         AlertColor.WARNING -> Color(0xFFE65100)   // Dark orange
         AlertColor.CAUTION -> Color(0xFFF57F17)   // Dark yellow
     }
 
     val icon = when (alert) {
+        is DeviceAlert.UpdateAvailable -> Icons.Default.SystemUpdate
         is DeviceAlert.NoInternet -> Icons.Default.WifiOff
         is DeviceAlert.BatteryCritical -> Icons.Default.BatteryAlert
         is DeviceAlert.ServerDown -> Icons.Default.CloudOff
@@ -131,6 +137,7 @@ private fun AlertBannerRow(
     }
 
     val message = when (alert) {
+        is DeviceAlert.UpdateAvailable -> alert.message
         is DeviceAlert.NoInternet -> alert.message
         is DeviceAlert.BatteryCritical -> alert.message
         is DeviceAlert.ServerDown -> alert.message
@@ -141,6 +148,7 @@ private fun AlertBannerRow(
     }
 
     val description = when (alert) {
+        is DeviceAlert.UpdateAvailable -> alert.description
         is DeviceAlert.NoInternet -> alert.description
         is DeviceAlert.BatteryCritical -> alert.description
         is DeviceAlert.ServerDown -> alert.description
@@ -246,6 +254,35 @@ private fun AlertBannerRow(
                             style = MaterialTheme.typography.labelSmall,
                             color = Color.White,
                             fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            }
+
+            // Update button (for update alerts)
+            if (onUpdate != null) {
+                Surface(
+                    onClick = onUpdate,
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color.White.copy(alpha = 0.25f),
+                    modifier = Modifier.padding(end = 8.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SystemUpdate,
+                            contentDescription = "Actualizar",
+                            tint = Color.White,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Actualizar",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }

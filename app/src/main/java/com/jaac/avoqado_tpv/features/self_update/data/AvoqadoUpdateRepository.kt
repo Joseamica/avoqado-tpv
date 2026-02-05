@@ -244,17 +244,23 @@ class AvoqadoUpdateRepository @Inject constructor(
 
                 Timber.i("✅ [Avoqado] Download complete: ${outputFile.absolutePath}")
 
-                // Verify checksum
-                val actualChecksum = calculateSha256(outputFile)
-                if (actualChecksum != updateInfo.checksum) {
-                    Timber.e("❌ [Avoqado] Checksum mismatch! Expected: ${updateInfo.checksum}, Got: $actualChecksum")
-                    outputFile.delete()
-                    return@withContext DownloadResult.Error(
-                        message = "Verificación de integridad falló"
-                    )
-                }
+                // Verify checksum (skip for placeholder values from heartbeat/version-gate)
+                val expectedChecksum = updateInfo.checksum
+                val isPlaceholderChecksum = expectedChecksum == "heartbeat" || expectedChecksum == "version-gate"
 
-                Timber.i("✅ [Avoqado] Checksum verified")
+                if (isPlaceholderChecksum) {
+                    Timber.i("⚠️ [Avoqado] Skipping checksum verification (placeholder from forced update)")
+                } else {
+                    val actualChecksum = calculateSha256(outputFile)
+                    if (actualChecksum != expectedChecksum) {
+                        Timber.e("❌ [Avoqado] Checksum mismatch! Expected: $expectedChecksum, Got: $actualChecksum")
+                        outputFile.delete()
+                        return@withContext DownloadResult.Error(
+                            message = "Verificación de integridad falló"
+                        )
+                    }
+                    Timber.i("✅ [Avoqado] Checksum verified")
+                }
 
                 return@withContext DownloadResult.Success(
                     filePath = outputFile.absolutePath

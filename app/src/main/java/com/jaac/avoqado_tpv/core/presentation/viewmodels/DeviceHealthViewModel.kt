@@ -2,12 +2,14 @@ package com.jaac.avoqado_tpv.core.presentation.viewmodels
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.core.data.network.UpdateMode
 import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
 import com.jaac.avoqado_tpv.core.util.DeviceHealthMonitor
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
 import com.jaac.avoqado_tpv.core.util.SimulatedAlertsManager
+import com.jaac.avoqado_tpv.core.util.UpdateCheckManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -58,7 +60,8 @@ class DeviceHealthViewModel @Inject constructor(
     private val networkMonitor: NetworkMonitor,
     private val connectivityObserver: ConnectivityObserver,
     private val simulatedAlertsManager: SimulatedAlertsManager,
-    private val connectionStateManager: ConnectionStateManager
+    private val connectionStateManager: ConnectionStateManager,
+    private val updateCheckManager: UpdateCheckManager
 ) : ViewModel() {
 
     // ══════════════════════════════════════════════════════════════════════
@@ -75,6 +78,7 @@ class DeviceHealthViewModel @Inject constructor(
     private var networkObserverJob: Job? = null
     private var simulatedAlertsObserverJob: Job? = null
     private var connectionStateObserverJob: Job? = null
+    private var updateObserverJob: Job? = null
 
     // Dismissed alerts (user can dismiss non-critical alerts)
     private val dismissedAlerts = mutableSetOf<DeviceAlertType>()
@@ -89,6 +93,7 @@ class DeviceHealthViewModel @Inject constructor(
         observeNetworkChanges()
         observeSimulatedAlerts()
         observeConnectionState()
+        observeUpdates()
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -222,6 +227,22 @@ class DeviceHealthViewModel @Inject constructor(
     }
 
     /**
+     * Observe pending updates from UpdateCheckManager
+     * Updates are checked after login and periodically
+     */
+    private fun observeUpdates() {
+        updateObserverJob?.cancel()
+        updateObserverJob = viewModelScope.launch {
+            updateCheckManager.pendingUpdate.collect { update ->
+                if (update != null) {
+                    Timber.i("📦 [DeviceHealth] Update available: ${update.versionName} (mode=${update.updateMode})")
+                }
+                updateAlerts()
+            }
+        }
+    }
+
+    /**
      * Update the list of active alerts based on current device state
      */
     private fun updateAlerts() {
@@ -231,6 +252,23 @@ class DeviceHealthViewModel @Inject constructor(
         val health = deviceHealthMonitor.getSystemHealth()
         val networkInfo = networkMonitor.getCurrentNetworkInfo()
         val connectionState = connectionStateManager.connectionState.value
+        val pendingUpdate = updateCheckManager.pendingUpdate.value
+
+        // ══════════════════════════════════════════════════════════════════════
+        // UPDATE ALERTS (P-1) - Highest priority (special blue color)
+        // ══════════════════════════════════════════════════════════════════════
+
+        // P-1: Update available (BANNER or FORCE mode)
+        if (pendingUpdate != null && pendingUpdate.updateMode != UpdateMode.NONE) {
+            alerts.add(
+                DeviceAlert.UpdateAvailable(
+                    versionName = pendingUpdate.versionName,
+                    versionCode = pendingUpdate.versionCode,
+                    releaseNotes = pendingUpdate.releaseNotes,
+                    isForced = pendingUpdate.updateMode == UpdateMode.FORCE
+                )
+            )
+        }
 
         // ══════════════════════════════════════════════════════════════════════
         // CONNECTION ALERTS (P0, P2) - Highest priority
@@ -306,6 +344,7 @@ class DeviceHealthViewModel @Inject constructor(
         networkObserverJob?.cancel()
         simulatedAlertsObserverJob?.cancel()
         connectionStateObserverJob?.cancel()
+        updateObserverJob?.cancel()
     }
 }
 
@@ -317,6 +356,7 @@ class DeviceHealthViewModel @Inject constructor(
  * Device Alert Types (for tracking dismissed alerts)
  */
 enum class DeviceAlertType {
+    UPDATE_AVAILABLE, // P-1 - Highest priority (special - blue color)
     NO_INTERNET,      // P0 - Most critical
     BATTERY_CRITICAL, // P1
     SERVER_DOWN,      // P2
@@ -333,6 +373,7 @@ enum class DeviceAlertType {
  * Lower priority number = more critical.
  *
  * **Priority Hierarchy (Unified):**
+ * - P-1: Update available - BLUE (highest priority, special color)
  * - P0: No internet - RED (most critical)
  * - P1: Battery critical (<10%) - RED
  * - P2: Server down - RED
@@ -345,6 +386,20 @@ sealed class DeviceAlert(
     val priority: Int,
     val type: DeviceAlertType
 ) {
+    /**
+     * Update available (P-1) - Highest priority, special blue color
+     * Shows banner for BANNER mode, triggers blocking modal for FORCE mode
+     */
+    data class UpdateAvailable(
+        val versionName: String,
+        val versionCode: Int,
+        val releaseNotes: String?,
+        val isForced: Boolean // true = FORCE mode (blocking), false = BANNER mode
+    ) : DeviceAlert(-1, DeviceAlertType.UPDATE_AVAILABLE) {
+        val message: String get() = if (isForced) "Actualización obligatoria" else "Nueva versión disponible"
+        val description: String get() = "v$versionName ${if (isForced) "- Requerida para continuar" else "- Toca para actualizar"}"
+    }
+
     /**
      * No internet connection (P0) - Most critical
      * Cannot process any payments
@@ -414,9 +469,10 @@ sealed class DeviceAlert(
  */
 fun DeviceAlert.getAlertColor(): AlertColor {
     return when (priority) {
-        0, 1, 2 -> AlertColor.CRITICAL  // Red - P0 (No internet), P1 (Battery critical), P2 (Server down)
-        3 -> AlertColor.WARNING         // Orange - P3 (Battery low)
-        else -> AlertColor.CAUTION      // Yellow - P4-P6
+        -1 -> AlertColor.UPDATE        // Blue - Update available (special)
+        0, 1, 2 -> AlertColor.CRITICAL // Red - P0 (No internet), P1 (Battery critical), P2 (Server down)
+        3 -> AlertColor.WARNING        // Orange - P3 (Battery low)
+        else -> AlertColor.CAUTION     // Yellow - P4-P6
     }
 }
 
@@ -424,6 +480,7 @@ fun DeviceAlert.getAlertColor(): AlertColor {
  * Alert color categories
  */
 enum class AlertColor {
+    UPDATE,    // Blue - Update available (special, not an error)
     CRITICAL,  // Red - Immediate action required
     WARNING,   // Orange - Action needed soon
     CAUTION    // Yellow - Informational warning

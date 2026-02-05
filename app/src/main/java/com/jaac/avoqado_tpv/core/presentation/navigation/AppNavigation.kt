@@ -48,6 +48,7 @@ import dagger.hilt.components.SingletonComponent
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.screens.FastPaymentEntryScreen
@@ -146,6 +147,11 @@ fun AppNavigation(
     val deviceAlerts by deviceHealthViewModel.activeAlerts.collectAsStateWithLifecycle()
     val deviceAlertsExpanded by deviceHealthViewModel.isExpanded.collectAsStateWithLifecycle()
 
+    // 🔒 FORCE UPDATE CHECK
+    // If there's a forced update, show blocking dialog
+    val forceUpdateAlert = deviceAlerts.filterIsInstance<com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceAlert.UpdateAvailable>()
+        .firstOrNull { it.isForced }
+
     // 🥝 KIOSK MODE OBSERVATION
     // When in kiosk mode, show simplified customer-facing navigation instead of staff UI
     val context = LocalContext.current
@@ -223,6 +229,22 @@ fun AppNavigation(
             Timber.i("🔵 [$sourceLabel] Navigating to payment | amount=$formattedAmount | cents=${request.amountCents} | orderId=${request.orderId ?: "null"}")
             navController.navigate(NavRoute.Payment.route) {
                 launchSingleTop = true
+            }
+        }
+    }
+
+    // 🚫 PAYMENT CANCEL from iOS - Navigate back to Welcome
+    LaunchedEffect(bluetoothPaymentService) {
+        bluetoothPaymentService.paymentCancelRequests.collect { requestId ->
+            val currentRoute = navController.currentBackStackEntry?.destination?.route
+            if (currentRoute == NavRoute.Payment.route) {
+                Timber.i("🚫 [Cancel] Cancelling payment (requestId=$requestId) - navigating to Home")
+                navController.navigate(NavRoute.Home.route) {
+                    popUpTo(NavRoute.Home.route) { inclusive = false }
+                    launchSingleTop = true
+                }
+            } else {
+                Timber.w("⚠️ [Cancel] Not on Payment screen (current=$currentRoute) - ignoring cancel")
             }
         }
     }
@@ -469,6 +491,11 @@ fun AppNavigation(
         return // Don't show anything else during kiosk payment
     }
 
+    // 🔒 FORCE UPDATE DIALOG (Global - Shows in ALL modes including kiosk)
+    // When backend flags update as FORCE, block app usage until updated
+    // Rendered AFTER navigation content so navController has routes available
+    // But Dialog overlays on top, so it still blocks interaction
+
     // 🥝 KIOSK MODE - Separate navigation graph for self-service
     if (isKioskMode) {
         com.jaac.avoqado_tpv.features.kiosk.presentation.KioskNavigation(
@@ -501,12 +528,20 @@ fun AppNavigation(
         // Shows ALL alerts in priority order: connection (P0, P2) + device health (P1, P3-P6)
         // Single expandable banner instead of separate ConnectionBanner + DeviceAlertBanner
         // ConnectionViewModel still handles reconnection logic, but alerts show here
+        // Don't show banner if there's a FORCE update (modal handles it)
+        val alertsToShow = if (forceUpdateAlert != null) {
+            deviceAlerts.filterNot { it is com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceAlert.UpdateAvailable }
+        } else {
+            deviceAlerts
+        }
+
         com.jaac.avoqado_tpv.core.presentation.components.DeviceAlertBanner(
-            alerts = deviceAlerts,
+            alerts = alertsToShow,
             isExpanded = deviceAlertsExpanded,
             onToggleExpand = { deviceHealthViewModel.toggleExpanded() },
             onDismiss = { alert -> deviceHealthViewModel.dismissAlert(alert) },
-            onRetry = { connectionViewModel.forceCheck() } // For connection alerts
+            onRetry = { connectionViewModel.forceCheck() }, // For connection alerts
+            onUpdate = { navController.navigate(NavRoute.SelfUpdate.route) } // For update alerts
         )
 
         // Main navigation content (takes remaining space)
@@ -1648,6 +1683,28 @@ fun AppNavigation(
             }
         }  // Close Box
     }  // Close Column
+
+    // 🔒 FORCE UPDATE DIALOG (Global overlay - shown AFTER navigation content)
+    // Dialog overlays on top of everything, blocking interaction until update
+    // Placed here so navController has all routes available
+    // Don't show on SelfUpdate screen (user is already updating)
+    val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
+    val isOnSelfUpdateScreen = currentRoute == NavRoute.SelfUpdate.route
+
+    if (forceUpdateAlert != null && !isOnSelfUpdateScreen) {
+        Timber.i("🔒 [ForceUpdate] Showing force update dialog for ${forceUpdateAlert.versionName}")
+        com.jaac.avoqado_tpv.core.presentation.components.ForceUpdateDialog(
+            update = forceUpdateAlert,
+            onUpdate = {
+                Timber.i("🔒 [ForceUpdate] User clicked update - navigating to SelfUpdate")
+                // If in kiosk mode, exit first then navigate
+                if (isKioskMode) {
+                    kioskModeManager.exitKioskMode()
+                }
+                navController.navigate(NavRoute.SelfUpdate.route)
+            }
+        )
+    }
 }
 
 /**

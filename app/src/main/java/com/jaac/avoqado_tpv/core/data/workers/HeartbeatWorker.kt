@@ -17,6 +17,7 @@ import com.jaac.avoqado_tpv.core.util.DeviceHealthMonitor
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
+import com.jaac.avoqado_tpv.core.util.UpdateCheckManager
 import com.jaac.avoqado_tpv.features.remote_command.data.model.CommandResult
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
 import dagger.assisted.Assisted
@@ -68,7 +69,8 @@ class HeartbeatWorker @AssistedInject constructor(
     private val heartbeatRepository: HeartbeatRepository,
     private val secureStorage: SecureStorage,
     private val maintenanceManager: MaintenanceManager,
-    private val commandExecutor: CommandExecutor
+    private val commandExecutor: CommandExecutor,
+    private val updateCheckManager: UpdateCheckManager
 ) : CoroutineWorker(appContext, workerParams) {
 
     companion object {
@@ -146,6 +148,15 @@ class HeartbeatWorker @AssistedInject constructor(
                     if (!pendingCommands.isNullOrEmpty()) {
                         Timber.i("📥 [Heartbeat] Received ${pendingCommands.size} pending command(s)")
                         processPendingCommands(pendingCommands)
+                    }
+
+                    // 🚨 Backend Enforcement: Check for forced updates that cannot be bypassed
+                    // This is included in EVERY heartbeat response when there's a FORCE update.
+                    // The user cannot dismiss or ignore this - it keeps getting set until installed.
+                    val forceUpdate = heartbeatResult.data.forceUpdate
+                    if (forceUpdate != null) {
+                        Timber.i("🚨 [Heartbeat] FORCE update received: v${forceUpdate.versionCode} (${forceUpdate.versionName})")
+                        updateCheckManager.setForceUpdateFromHeartbeat(forceUpdate)
                     }
 
                     androidx.work.ListenableWorker.Result.success()

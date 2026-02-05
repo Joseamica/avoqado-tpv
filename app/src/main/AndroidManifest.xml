@@ -116,6 +116,17 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
+        <!-- App Update Receiver - Auto-relaunch after self-update -->
+        <!-- Listens for MY_PACKAGE_REPLACED to restart app after PAX SDK installs new version -->
+        <receiver
+            android:name=".core.receivers.AppUpdateReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
 </manifest>

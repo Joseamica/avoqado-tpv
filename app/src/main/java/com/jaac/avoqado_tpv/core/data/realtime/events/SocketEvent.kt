@@ -202,6 +202,20 @@ sealed interface SocketEvent {
         val timestamp: String
     ) : SocketEvent
 
+    /**
+     * Received when iOS user cancels a pending terminal payment.
+     * TPV should only cancel if currentRequestId matches (idempotency).
+     *
+     * @param requestId The request ID to cancel (if it matches current payment)
+     * @param reason Cancellation reason
+     * @param timestamp ISO timestamp
+     */
+    data class TerminalPaymentCancel(
+        val requestId: String?,
+        val reason: String,
+        val timestamp: String
+    ) : SocketEvent
+
     // ========================================
     // Order Events
     // ========================================

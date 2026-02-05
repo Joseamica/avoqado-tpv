@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.core.data.network.interceptors
 
+import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import okhttp3.Interceptor
 import okhttp3.Response
@@ -10,7 +11,7 @@ import javax.inject.Singleton
 /**
  * Auth Interceptor
  *
- * Automatically adds JWT token to all requests.
+ * Automatically adds JWT token and app version headers to all requests.
  * For 401 handling and token refresh, see TokenAuthenticator.
  *
  * **Why separate Interceptor and Authenticator?**
@@ -20,6 +21,11 @@ import javax.inject.Singleton
  * **Pattern:** OkHttp best practice for authentication
  * - Interceptor runs BEFORE request (adds headers)
  * - Authenticator runs AFTER 401 response (refreshes token)
+ *
+ * **Version Headers (Square/Toast pattern):**
+ * - X-App-Version-Code: Integer version code (e.g., 16)
+ * - X-App-Version-Name: Version string (e.g., "1.4.2-sandbox")
+ * Backend uses these for version gating (HTTP 426 if outdated)
  *
  * @param secureStorage Storage for JWT token
  */
@@ -31,23 +37,23 @@ class AuthInterceptor @Inject constructor(
     override fun intercept(chain: Interceptor.Chain): Response {
         val originalRequest = chain.request()
 
+        // Start building new request with version headers (always added)
+        val requestBuilder = originalRequest.newBuilder()
+            .header("X-App-Version-Code", BuildConfig.VERSION_CODE.toString())
+            .header("X-App-Version-Name", BuildConfig.VERSION_NAME)
+
         // Get JWT token from secure storage
         val token = secureStorage.getToken()
 
-        // If no token, proceed without auth header (e.g., login/activation endpoints)
-        if (token == null) {
-            Timber.d("No auth token found, proceeding without Authorization header")
-            return chain.proceed(originalRequest)
+        // If token exists, add Authorization header
+        if (token != null) {
+            requestBuilder.header("Authorization", "Bearer $token")
+            Timber.d("🔐 [Auth] Added Authorization + Version headers to ${originalRequest.url}")
+        } else {
+            Timber.d("📦 [Auth] Added Version headers (no auth) to ${originalRequest.url}")
         }
 
-        // Add Authorization header
-        val authenticatedRequest = originalRequest.newBuilder()
-            .header("Authorization", "Bearer $token")
-            .build()
-
-        Timber.d("🔐 [Auth] Added Authorization header to ${originalRequest.url}")
-
-        // Execute request (Authenticator will handle 401 if token expired)
-        return chain.proceed(authenticatedRequest)
+        // Execute request
+        return chain.proceed(requestBuilder.build())
     }
 }

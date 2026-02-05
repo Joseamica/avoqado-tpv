@@ -18,8 +18,11 @@ import com.jaac.avoqado_tpv.core.data.network.AvoqadoUpdateInfo
 import com.jaac.avoqado_tpv.features.self_update.data.AvoqadoUpdateRepository
 import com.jaac.avoqado_tpv.features.self_update.data.DownloadResult
 import com.jaac.avoqado_tpv.features.self_update.data.UpdateCheckResult
+import com.jaac.avoqado_tpv.core.util.UpdateCheckManager
+import com.jaac.avoqado_tpv.core.data.network.UpdateMode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -52,7 +55,8 @@ class SelfUpdateViewModel @Inject constructor(
     private val downloadFileUseCase: DownloadFileUseCase,
     private val installerAppUseCase: InstallerAppUseCase,
     private val getInitDataUseCase: GetInitDataUseCase,
-    private val avoqadoUpdateRepository: AvoqadoUpdateRepository
+    private val avoqadoUpdateRepository: AvoqadoUpdateRepository,
+    private val updateCheckManager: UpdateCheckManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<SelfUpdateState>(SelfUpdateState.Idle)
@@ -63,6 +67,39 @@ class SelfUpdateViewModel @Inject constructor(
     private var currentAvoqadoUpdate: AvoqadoUpdateInfo? = null
     private var downloadedApkPath: String? = null
     private var currentUpdateSource: UpdateSource = UpdateSource.BLUMON
+
+    init {
+        // Auto-start Avoqado update if there's a pending forced update
+        // This triggers when user clicks "Actualizar Ahora" from ForceUpdateDialog
+        checkAndAutoStartPendingUpdate()
+    }
+
+    /**
+     * Check if there's a pending forced update and auto-start the download flow
+     *
+     * Called on ViewModel init to automatically start the Avoqado update process
+     * when navigating from ForceUpdateDialog.
+     */
+    private fun checkAndAutoStartPendingUpdate() {
+        val pendingUpdate = updateCheckManager.pendingUpdate.value
+        if (pendingUpdate != null && (pendingUpdate.updateMode == UpdateMode.FORCE || pendingUpdate.updateMode == UpdateMode.BANNER)) {
+            Timber.i("📦 [SelfUpdate] Auto-starting Avoqado update: ${pendingUpdate.versionName} (mode=${pendingUpdate.updateMode})")
+
+            // Set state and start the update flow directly
+            currentAvoqadoUpdate = pendingUpdate
+            currentUpdateSource = UpdateSource.AVOQADO
+            _state.value = SelfUpdateState.AvoqadoUpdateAvailable(pendingUpdate)
+
+            // Auto-start download if FORCE mode (skip showing update info, go straight to download)
+            if (pendingUpdate.updateMode == UpdateMode.FORCE) {
+                Timber.i("📦 [SelfUpdate] FORCE mode - auto-starting download")
+                viewModelScope.launch {
+                    delay(500) // Brief delay for UI to render
+                    downloadUpdate()
+                }
+            }
+        }
+    }
 
     /**
      * Check if an update is available from Blumon servers (Provider)
@@ -356,9 +393,23 @@ class SelfUpdateViewModel @Inject constructor(
             _state.value = SelfUpdateState.Installing
 
             try {
+                // Verify APK file exists and is readable
+                val apkFile = File(apkPath)
+                Timber.d("📦 APK file check: exists=${apkFile.exists()}, size=${apkFile.length()}, readable=${apkFile.canRead()}")
+
+                if (!apkFile.exists()) {
+                    Timber.e("❌ APK file does not exist: $apkPath")
+                    _state.value = SelfUpdateState.Error(
+                        code = UpdateErrorCode.INSTALL_FAILED,
+                        message = "Archivo APK no encontrado",
+                        retryAction = RetryAction.DOWNLOAD
+                    )
+                    return@launch
+                }
+
                 val params = InstallerParams(apkPath)
 
-                Timber.d("📦 Installing APK: $apkPath")
+                Timber.d("📦 Installing APK: $apkPath (size=${apkFile.length()} bytes)")
 
                 val result = withContext(Dispatchers.IO) {
                     installerAppUseCase.run(params)
@@ -366,7 +417,11 @@ class SelfUpdateViewModel @Inject constructor(
 
                 if (result.isLeft) {
                     val failure = result.leftValue()
-                    Timber.e("❌ Installation failed: $failure")
+                    // Log detailed error info for debugging
+                    val errorCode = when (failure) {
+                        is InstallerFailure.InstallFailure -> failure.msg?.name ?: "null"
+                    }
+                    Timber.e("❌ Installation failed: $failure (errorCode=$errorCode)")
                     _state.value = mapInstallerFailure(failure)
                     cleanupApk()
                     return@launch

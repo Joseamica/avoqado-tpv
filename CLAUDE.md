@@ -156,6 +156,7 @@ Kotlin, Jetpack Compose, POS terminals, payments, offline-first architecture, an
 
 | Document                                 | Description                                              |
 | ---------------------------------------- | -------------------------------------------------------- |
+| `docs/FORCE_UPDATE_SYSTEM.md`            | **🚨 CRITICAL**: 3-layer force update enforcement (API 426 + Heartbeat + Startup) |
 | `docs/MODULES_SYSTEM.md`                 | **Modules**: VenueModule config, StateFlow pattern, proof-of-sale photo capture |
 | `docs/ATTENDANCE_VERIFICATION.md`        | **Timeclock**: Clock-in/out photo + GPS verification     |
 | `docs/PRE_PAYMENT_VERIFICATION.md`       | **Payment Flow**: Pre-payment photo/barcode verification (TPV settings) |
@@ -492,6 +493,9 @@ avoqado-web-dashboard/docs/    ← Frontend-specific ONLY
 | Module config stale after logout| UI uses `remember {}` not Flow  | Use `collectAsStateWithLifecycle()` on StateFlow |
 | Feature button not appearing    | Permission not in DEFAULT_PERMISSIONS | Add permission to `permissions.ts` DEFAULT_PERMISSIONS + INDIVIDUAL_PERMISSIONS_BY_RESOURCE |
 | Permission check fails silently | Name mismatch TPV vs Backend    | Verify EXACT permission name in both: backend `checkPermission()` AND TPV `hasPermission()` |
+| Force update not blocking       | `updateMode` not set to FORCE   | Edit in dashboard, select "Forzar", verify DB has `updateMode='FORCE'` |
+| Force update checksum error     | Placeholder checksum from heartbeat | Normal - repo skips validation for `"heartbeat"` or `"version-gate"` checksums |
+| Old terminals bypass force update | No version headers (< 1.4.2)   | Expected! Must manually update to 1.4.x first, then system works |
 
 ### 🚨 CRITICAL: Room Migration Checklist
 
@@ -722,6 +726,46 @@ Actions: read, create, update, delete, refund, comp, void, settings, execute
 3. Recibir APK final firmado por PAX
 4. Ese APK se puede instalar en terminales de producción
 
+### Paso 7: Guardar APK en iCloud (OBLIGATORIO)
+
+**Claude DEBE guardar todos los APKs generados en la siguiente estructura:**
+
+```
+/Users/amieva/Library/Mobile Documents/com~apple~CloudDocs/Avoqado/Blumon/APK/
+├── <version>/
+│   ├── sandbox/
+│   │   └── avoqado-tpv-<version>-sandbox.apk
+│   ├── production/
+│   │   └── avoqado-tpv-<version>-production.apk
+│   └── PAXFIRMADO/
+│       └── (APKs firmados por PAX - agregados manualmente por usuario)
+```
+
+**Ejemplos:**
+```bash
+# Sandbox
+/Users/amieva/Library/Mobile Documents/com~apple~CloudDocs/Avoqado/Blumon/APK/1.4.5/sandbox/avoqado-tpv-1.4.5-sandbox.apk
+
+# Production
+/Users/amieva/Library/Mobile Documents/com~apple~CloudDocs/Avoqado/Blumon/APK/1.4.5/production/avoqado-tpv-1.4.5-production.apk
+
+# PAX Firmado (agregado manualmente por usuario después de recibir de Blumon)
+/Users/amieva/Library/Mobile Documents/com~apple~CloudDocs/Avoqado/Blumon/APK/1.4.5/PAXFIRMADO/avoqado-tpv-1.4.5-pax.apk
+```
+
+**Comando para guardar:**
+```bash
+# Sandbox
+APK_DIR='/Users/amieva/Library/Mobile Documents/com~apple~CloudDocs/Avoqado/Blumon/APK/<VERSION>/sandbox'
+mkdir -p "$APK_DIR" && cp app/build/outputs/apk/sandbox/debug/app-sandbox-debug.apk "$APK_DIR/avoqado-tpv-<VERSION>-sandbox.apk"
+
+# Production
+APK_DIR='/Users/amieva/Library/Mobile Documents/com~apple~CloudDocs/Avoqado/Blumon/APK/<VERSION>/production'
+mkdir -p "$APK_DIR" && cp app/build/outputs/apk/production/release/app-production-release.apk "$APK_DIR/avoqado-tpv-<VERSION>-production.apk"
+```
+
+**⚠️ NUNCA guardar APKs en Desktop** - Siempre usar la estructura de iCloud arriba.
+
 ### ❌ ERRORES COMUNES
 
 | Error | Causa | Solución |
@@ -729,6 +773,7 @@ Actions: read, create, update, delete, refund, comp, void, settings, execute
 | "Error análisis paquete" | Firma v1 only (jarsigner) | Usar `apksigner` |
 | "Error análisis paquete" | APK corrupto | Verificar con `aapt2 dump badging` |
 | Blumon rechaza APK | APK unsigned | Firmar antes de enviar |
+| PAX SDK `InstallerFailure` | APK no firmado por PAX | PAX SDK silent install requiere certificado PAX. ADB funciona, pero para OTA necesitas APK firmado por Blumon/PAX |
 
 ### Versión actual en build.gradle
 

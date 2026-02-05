@@ -828,6 +828,83 @@ Claude: [Ejecuta la acción correspondiente]
 | Usuario menciona "producción" o "APK" | Release |
 | Fin de sesión de trabajo | Commit normal (backup) |
 
+### 📦 MANDATORY: Recomendar Version Bump Proactivamente
+
+**Claude DEBE recomendar version bump después de implementaciones significativas.**
+
+El usuario NO tiene que recordar cuándo hacer bump - Claude analiza los commits/cambios y recomienda.
+
+#### Formato de recomendación (después de cada implementación):
+
+```
+✅ Implementación completa.
+
+📦 Recomendación: Bump [TIPO] ([actual] → [nueva])
+   Razón: [descripción breve del cambio]
+
+¿Quieres que haga el bump? (El bump se registra en sandbox también)
+```
+
+#### 🎯 LA PREGUNTA CLAVE (SIEMPRE hacerse esta pregunta):
+
+> **¿El usuario puede hacer algo que ANTES NO PODÍA?**
+> - **Sí** → MINOR (nueva capacidad)
+> - **No** → PATCH (mejora de algo existente)
+
+⚠️ **ERROR COMÚN**: Ver "mucho código nuevo" y asumir MINOR. La cantidad de código NO determina el tipo de bump. Lo que importa es el IMPACTO para el usuario.
+
+#### Criterios para recomendar bump:
+
+| Tipo de cambio | Bump | Ejemplo | ¿Usuario puede hacer algo nuevo? |
+|----------------|------|---------|----------------------------------|
+| Nueva funcionalidad de negocio | **MINOR** | Pagos BLE, modo kiosk, reportes | ✅ Sí |
+| Nuevo módulo que agrega capacidad | **MINOR** | Integración con nuevo proveedor | ✅ Sí |
+| Bug fix | **PATCH** | Fix refund navigation | ❌ No |
+| Mejora de UX/UI | **PATCH** | Unificar alertas, mejor UI | ❌ No |
+| Refactor/mejora infraestructura | **PATCH** | Mejor manejo de conexión | ❌ No |
+| Mejora de performance | **PATCH** | Optimizar queries | ❌ No |
+| Cambio breaking / rediseño mayor | **MAJOR** | Migración DB incompatible | ⚠️ Rompe compatibilidad |
+| Refactor interno sin cambio visible | **Sin bump** | Cleanup de código | ❌ No |
+| Cambios solo en docs/tests | **Sin bump** | Actualizar CLAUDE.md | ❌ No |
+
+#### Ejemplos para evitar confusión:
+
+| Cambio | ❌ Incorrecto | ✅ Correcto | Razón |
+|--------|--------------|-------------|-------|
+| Unificar banners de alerta | MINOR | PATCH | Solo mejora UX, usuario no gana capacidad nueva |
+| Agregar pagos con BLE | - | MINOR | Usuario PUEDE hacer algo nuevo (pagar desde iOS) |
+| Mejorar manejo de conexión | MINOR | PATCH | Mejor experiencia, no nueva funcionalidad |
+| Agregar modo kiosk | - | MINOR | Nueva capacidad de auto-servicio |
+
+#### Flujo con recomendación de bump:
+
+```
+Usuario: "Mejora el sistema de alertas"
+    ↓
+Claude: [Implementa la mejora]
+    ↓
+Claude: "✅ Implementación completa.
+
+        📦 Recomendación: Bump PATCH (1.4.0 → 1.4.1)
+           Razón: Mejora UX de alertas (usuario no gana capacidad nueva)
+
+        ¿Quieres que:
+        • Haga commit (sin bump)
+        • Haga bump + commit
+        • Lo deje como WIP"
+    ↓
+Usuario: "bump + commit" / "solo commit" / "WIP"
+```
+
+#### Reglas importantes:
+
+1. **SIEMPRE preguntar**: "¿El usuario puede hacer algo que antes no podía?"
+2. **No dejarse engañar** por cantidad de código o archivos nuevos
+3. **Justificar** - Explicar por qué ese tipo de bump
+4. **No ejecutar sin permiso** - Solo recomendar, usuario decide
+5. **Sandbox también cuenta** - El bump aplica a ambos variants
+6. **Acumular si es necesario** - Si hay varios cambios sin bump, sugerir bump que cubra todos
+
 ### 📋 Checklist de Release (Claude ejecuta automáticamente)
 
 1. ✅ Verificar que no hay errores de compilación
@@ -841,4 +918,4 @@ Claude: [Ejecuta la acción correspondiente]
 
 **Last Updated:** 2026-02-04
 **Maintainer:** Development Team
-**Version:** 4.5 (Added Git Workflow Management - Claude's responsibility)
+**Version:** 4.7 (Fixed version bump criteria - focus on user capability, not code quantity)

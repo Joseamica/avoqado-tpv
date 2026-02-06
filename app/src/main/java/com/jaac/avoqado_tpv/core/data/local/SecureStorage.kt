@@ -85,6 +85,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_LAST_SYNC_TIMESTAMP = "last_sync_timestamp"
         private const val KEY_IS_OFFLINE_MODE = "is_offline_mode"
         private const val KEY_SELECTED_LANGUAGE = "selected_language"
+        private const val KEY_IS_DARK_MODE = "is_dark_mode"
 
         // Terminal activation keys
         private const val KEY_SERIAL_NUMBER = "serial_number"
@@ -832,6 +833,26 @@ class SecureStorage @Inject constructor(
      */
     fun getLanguage(): String {
         return encryptedPrefs.getString(KEY_SELECTED_LANGUAGE, "es") ?: "es"
+    }
+
+    /**
+     * Save dark mode preference
+     *
+     * Device-level preference, NOT session-scoped.
+     * Persists across logout/login (not cleared in clearSession).
+     *
+     * @param isDark true for dark mode, false for light mode
+     */
+    fun saveIsDarkMode(isDark: Boolean) {
+        encryptedPrefs.edit().putBoolean(KEY_IS_DARK_MODE, isDark).apply()
+    }
+
+    /**
+     * Get dark mode preference
+     * @return true if dark mode, false for light mode (default: Light)
+     */
+    fun getIsDarkMode(): Boolean {
+        return encryptedPrefs.getBoolean(KEY_IS_DARK_MODE, false)
     }
 
     // ========== Terminal Activation ==========

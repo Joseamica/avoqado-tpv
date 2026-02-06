@@ -64,6 +64,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.kiosk.domain.model.KioskProduct
 import com.jaac.avoqado_tpv.features.kiosk.presentation.KioskViewModel
 import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskAdminAuth
@@ -224,7 +225,7 @@ fun KioskMenuScreen(
                         Timber.i("🥝 [KIOSK-MENU] Cart FAB clicked (cartItems: $cartItemCount) - navigating to cart")
                         onCartClick()
                     },
-                    containerColor = Color(0xFF4CAF50),  // Green color for cart
+                    containerColor = MaterialTheme.avoqadoColors.statusSuccess,
                     modifier = Modifier.size(72.dp)
                 ) {
                     Box {

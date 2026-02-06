@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.jaac.avoqado_tpv.core.domain.models.Result
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.authentication.presentation.components.PinDisplay
 import com.jaac.avoqado_tpv.features.payment.domain.model.OrderNumberFormatter
@@ -156,7 +157,7 @@ fun KioskCashConfirmationContent(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp),
             colors = CardDefaults.cardColors(
-                containerColor = Color(0xFF4CAF50).copy(alpha = 0.1f)
+                containerColor = MaterialTheme.avoqadoColors.statusSuccess.copy(alpha = 0.1f)
             ),
             shape = RoundedCornerShape(12.dp)
         ) {
@@ -175,7 +176,7 @@ fun KioskCashConfirmationContent(
                     text = displayAmount,
                     style = MaterialTheme.typography.headlineLarge,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFF4CAF50)
+                    color = MaterialTheme.avoqadoColors.statusSuccess
                 )
                 // Show tip if present
                 if (!tipAmount.isNullOrBlank()) {
@@ -289,7 +290,7 @@ fun KioskCashConfirmationContent(
                         .weight(1f)
                         .height(48.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF4CAF50)
+                        containerColor = MaterialTheme.avoqadoColors.statusSuccess
                     ),
                     shape = RoundedCornerShape(8.dp),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 8.dp)
@@ -514,7 +515,7 @@ private fun CashConfirmationPinDialog(
                         shape = RoundedCornerShape(12.dp),
                         enabled = pin.length >= 4 && !isLoading,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF4CAF50)
+                            containerColor = MaterialTheme.avoqadoColors.statusSuccess
                         )
                     ) {
                         Text("Aceptar", fontWeight = FontWeight.Bold)

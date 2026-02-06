@@ -6,6 +6,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Help
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.outlined.RestartAlt
@@ -62,7 +63,9 @@ fun SettingsBottomSheet(
     onHelp: (() -> Unit)? = null,
     isKioskModeEnabled: Boolean = false,
     onKioskModeToggle: (() -> Unit)? = null,
-    kioskModeAvailable: Boolean = false
+    kioskModeAvailable: Boolean = false,
+    isDarkMode: Boolean = false,
+    onDarkModeToggle: (() -> Unit)? = null,
 ) {
     // ✅ Skip partially expanded state - open fully
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -70,8 +73,8 @@ fun SettingsBottomSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = MaterialTheme.colorScheme.surface,
-        tonalElevation = 8.dp
+        containerColor = MaterialTheme.colorScheme.background,
+        tonalElevation = 0.dp
     ) {
         Column(
             modifier = Modifier
@@ -88,7 +91,7 @@ fun SettingsBottomSheet(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            HorizontalDivider()
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
 
             Spacer(modifier = Modifier.height(8.dp))
 
@@ -123,7 +126,17 @@ fun SettingsBottomSheet(
                 )
             }
 
-            // Option 4: Configuración
+            // Option 4: Dark Mode Toggle (always visible)
+            SettingsToggleOption(
+                icon = Icons.Default.DarkMode,
+                label = "Modo Oscuro",
+                description = "Cambiar apariencia del terminal",
+                enabled = true,
+                checked = isDarkMode,
+                onToggle = { onDarkModeToggle?.invoke() }
+            )
+
+            // Option 5: Configuración
             SettingsOption(
                 icon = Icons.Default.Settings,
                 label = "Configuración",

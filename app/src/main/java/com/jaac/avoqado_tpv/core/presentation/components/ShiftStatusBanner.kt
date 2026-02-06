@@ -24,12 +24,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import com.jaac.avoqado_tpv.features.shift.presentation.CachedShiftInfo
@@ -152,7 +152,7 @@ private fun OnlineShiftBanner(
                 Icon(
                     imageVector = if (isShiftOpen) Icons.Default.CheckCircle else Icons.Default.Error,
                     contentDescription = if (isShiftOpen) "Turno abierto" else "Sin turno activo",
-                    tint = if (isShiftOpen) MaterialTheme.colorScheme.tertiary else Color(0xFFEB5757),
+                    tint = if (isShiftOpen) MaterialTheme.colorScheme.tertiary else MaterialTheme.avoqadoColors.statusError,
                     modifier = Modifier.size(24.dp)
                 )
 
@@ -264,7 +264,7 @@ private fun OfflineCachedBanner(
                 Icon(
                     imageVector = Icons.Default.CloudOff,
                     contentDescription = "Sin conexión",
-                    tint = Color(0xFFE65100), // Darker orange (elegant)
+                    tint = MaterialTheme.avoqadoColors.offlineOrange, // Darker orange (elegant)
                     modifier = Modifier.size(24.dp)
                 )
 
@@ -299,7 +299,7 @@ private fun OfflineCachedBanner(
                     Text(
                         text = "Último estado conocido ($minutesText)",
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFFE65100) // Orange to match icon
+                        color = MaterialTheme.avoqadoColors.offlineOrange // Orange to match icon
                     )
                 }
             }
@@ -313,7 +313,7 @@ private fun OfflineCachedBanner(
                     style = MaterialTheme.typography.labelSmall.copy(
                         fontWeight = FontWeight.Medium
                     ),
-                    color = Color(0xFFE65100)
+                    color = MaterialTheme.avoqadoColors.offlineOrange
                 )
             }
         }
@@ -361,7 +361,7 @@ private fun OfflineUnknownBanner(
                 Icon(
                     imageVector = Icons.AutoMirrored.Outlined.HelpOutline,
                     contentDescription = "Estado desconocido",
-                    tint = Color(0xFFE65100), // Darker orange
+                    tint = MaterialTheme.avoqadoColors.offlineOrange, // Darker orange
                     modifier = Modifier.size(24.dp)
                 )
 
@@ -381,7 +381,7 @@ private fun OfflineUnknownBanner(
                     Text(
                         text = "Sin conexión al servidor",
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFFE65100)
+                        color = MaterialTheme.avoqadoColors.offlineOrange
                     )
                 }
             }
@@ -395,7 +395,7 @@ private fun OfflineUnknownBanner(
                     style = MaterialTheme.typography.labelSmall.copy(
                         fontWeight = FontWeight.Medium
                     ),
-                    color = Color(0xFFE65100)
+                    color = MaterialTheme.avoqadoColors.offlineOrange
                 )
             }
         }

@@ -41,6 +41,7 @@ import androidx.compose.ui.window.Dialog
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoButton
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoSecondaryButton
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import java.math.BigDecimal
@@ -377,7 +378,7 @@ fun CloseShiftDialog(
                             .height(48.dp),
                         shape = RoundedCornerShape(28.dp),  // ⭐ Fully rounded like Avoqado buttons
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFFEB5757),  // Red for destructive action
+                            containerColor = MaterialTheme.avoqadoColors.statusError,
                             contentColor = Color.White
                         )
                     ) {

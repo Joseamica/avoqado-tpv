@@ -34,6 +34,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleSalesGoal
 import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalPeriod
 import java.math.BigDecimal
@@ -168,7 +169,7 @@ fun SalesGoalProgressCard(
                         .height(12.dp)
                         .clip(RoundedCornerShape(6.dp)),
                     color = if (isGoalAchieved) {
-                        Color(0xFF4CAF50) // Green when achieved
+                        MaterialTheme.avoqadoColors.statusSuccess
                     } else {
                         MaterialTheme.colorScheme.primary
                     },
@@ -198,7 +199,7 @@ fun SalesGoalProgressCard(
                             fontSize = 18.sp
                         ),
                         color = if (isGoalAchieved) {
-                            Color(0xFF4CAF50)
+                            MaterialTheme.avoqadoColors.statusSuccess
                         } else {
                             MaterialTheme.colorScheme.tertiary
                         }
@@ -215,7 +216,7 @@ fun SalesGoalProgressCard(
                             fontWeight = FontWeight.Bold
                         ),
                         color = if (isGoalAchieved) {
-                            Color(0xFF4CAF50)
+                            MaterialTheme.avoqadoColors.statusSuccess
                         } else {
                             MaterialTheme.colorScheme.primary
                         }
@@ -269,9 +270,9 @@ private fun PeriodBadge(
     modifier: Modifier = Modifier
 ) {
     val (text, color) = when (period) {
-        SalesGoalPeriod.DAILY -> "Diario" to Color(0xFF2196F3)
+        SalesGoalPeriod.DAILY -> "Diario" to MaterialTheme.avoqadoColors.statusInfo
         SalesGoalPeriod.WEEKLY -> "Semanal" to Color(0xFF9C27B0)
-        SalesGoalPeriod.MONTHLY -> "Mensual" to Color(0xFFFF9800)
+        SalesGoalPeriod.MONTHLY -> "Mensual" to MaterialTheme.avoqadoColors.statusWarning
     }
 
     Box(

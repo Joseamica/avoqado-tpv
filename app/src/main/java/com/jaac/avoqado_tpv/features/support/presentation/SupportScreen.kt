@@ -48,6 +48,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.android.qualifiers.ApplicationContext
 import androidx.compose.runtime.rememberCoroutineScope
@@ -349,7 +350,7 @@ fun SupportScreen(
             title = "Reportar Bug",
             subtitle = "Describe el problema que encontraste",
             icon = Icons.Default.BugReport,
-            iconTint = Color(0xFFF44336),
+            iconTint = MaterialTheme.avoqadoColors.statusError,
             onDismiss = { showBugReportDialog = false },
             onSend = { message, onError, onSuccess ->
                 coroutineScope.launch {
@@ -386,7 +387,7 @@ fun SupportScreen(
             title = "Sugerir Función",
             subtitle = "Comparte tu idea para mejorar Avoqado TPV",
             icon = Icons.Default.Lightbulb,
-            iconTint = Color(0xFFFF9800),
+            iconTint = MaterialTheme.avoqadoColors.statusWarning,
             onDismiss = { showFeatureSuggestionDialog = false },
             onSend = { message, onError, onSuccess ->
                 coroutineScope.launch {

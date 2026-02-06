@@ -89,6 +89,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.ordering.domain.Discount
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountScope
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountType
@@ -110,8 +111,8 @@ private object ActionColors {
     val Discounts = Color(0xFFE91E63)     // Pink/Magenta
     val Coupons = Color(0xFFFF9800)       // Orange
     val PayLater = Color(0xFF607D8B)      // Blue Grey - DISABLED
-    val VoidItems = Color(0xFFF44336)     // Red
-    val Cortesia = Color(0xFF4CAF50)      // Green
+    // VoidItems and Cortesia use semantic theme colors (statusError / statusSuccess)
+    // accessed via MaterialTheme.avoqadoColors inside @Composable functions
 }
 
 // ============================================================
@@ -288,7 +289,7 @@ fun ActionsTab(
                 id = "void_items",
                 title = "Void Items",
                 icon = Icons.Default.Delete,
-                backgroundColor = ActionColors.VoidItems,
+                backgroundColor = MaterialTheme.avoqadoColors.statusError,
                 enabled = hasItems,
                 onClick = { dialogState = ActionsDialogState.VoidItems }
             )
@@ -298,7 +299,7 @@ fun ActionsTab(
                 id = "cortesia",
                 title = "Cortesia",
                 icon = Icons.Default.Favorite,
-                backgroundColor = ActionColors.Cortesia,
+                backgroundColor = MaterialTheme.avoqadoColors.statusSuccess,
                 enabled = hasItems,
                 onClick = { dialogState = ActionsDialogState.Cortesia }
             )
@@ -543,7 +544,7 @@ private fun AppliedDiscountsBadge(
     modifier: Modifier = Modifier
 ) {
     val sizes = LocalResponsiveSizes.current
-    val greenColor = Color(0xFF22C55E)
+    val greenColor = MaterialTheme.avoqadoColors.statusSuccess
 
     Surface(
         modifier = modifier
@@ -1106,7 +1107,7 @@ private fun AppliedDiscountRow(
     onRemove: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val greenColor = Color(0xFF22C55E)
+    val greenColor = MaterialTheme.avoqadoColors.statusSuccess
 
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -1186,7 +1187,7 @@ private fun CortesiaDialog(
     onConfirm: (reason: String?) -> Unit
 ) {
     var reason by remember { mutableStateOf("") }
-    val greenColor = ActionColors.Cortesia
+    val greenColor = MaterialTheme.avoqadoColors.statusSuccess
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1284,7 +1285,7 @@ private fun VoidItemsDialog(
 ) {
     var selectedItems by remember { mutableStateOf<Set<String>>(emptySet()) }
     var reason by remember { mutableStateOf("") }
-    val redColor = ActionColors.VoidItems
+    val redColor = MaterialTheme.avoqadoColors.statusError
     val focusRequester = remember { FocusRequester() }
 
     Dialog(

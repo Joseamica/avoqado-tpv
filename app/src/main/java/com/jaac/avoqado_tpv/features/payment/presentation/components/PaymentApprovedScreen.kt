@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -99,9 +100,9 @@ fun PaymentApprovedScreen(
         onAnimationComplete()
     }
 
-    // Dark theme colors (Avoqado palette)
-    val backgroundColor = Color(0xFF1C1C1C)  // Dark background
-    val textColor = Color(0xFFFAFAFA)  // Soft white text
+    // Theme colors (Avoqado palette)
+    val backgroundColor = MaterialTheme.colorScheme.background
+    val textColor = MaterialTheme.colorScheme.onBackground
 
     Box(
         modifier = modifier
@@ -165,7 +166,7 @@ private fun AnimatedCheckCircle(
     checkmarkScale: Float,
     modifier: Modifier = Modifier
 ) {
-    val successGreen = Color(0xFF22C55E) // Tailwind green-500
+    val successGreen = MaterialTheme.avoqadoColors.statusSuccess
     val strokeWidth = with(LocalDensity.current) { 6.dp.toPx() }
 
     Canvas(modifier = modifier) {

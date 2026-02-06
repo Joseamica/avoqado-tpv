@@ -31,6 +31,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 
 /**
  * Venue Status Banner
@@ -144,29 +145,30 @@ private data class StatusConfig(
     val message: String
 )
 
+@Composable
 private fun getStatusConfig(status: VenueStatus): StatusConfig {
     return when (status) {
         VenueStatus.LIVE_DEMO -> StatusConfig(
-            backgroundColor = Color(0xFF8B5CF6).copy(alpha = 0.2f),
-            textColor = Color(0xFF8B5CF6),
+            backgroundColor = MaterialTheme.avoqadoColors.venueDemo.copy(alpha = 0.2f),
+            textColor = MaterialTheme.avoqadoColors.venueDemo,
             icon = Icons.Default.Science,
             message = "Modo Demo - Transacciones simuladas"
         )
         VenueStatus.TRIAL -> StatusConfig(
-            backgroundColor = Color(0xFF3B82F6).copy(alpha = 0.2f),
-            textColor = Color(0xFF3B82F6),
+            backgroundColor = MaterialTheme.avoqadoColors.venueTrial.copy(alpha = 0.2f),
+            textColor = MaterialTheme.avoqadoColors.venueTrial,
             icon = Icons.Default.Info,
             message = "Periodo de prueba activo"
         )
         VenueStatus.ONBOARDING -> StatusConfig(
-            backgroundColor = Color(0xFFF59E0B).copy(alpha = 0.2f),
-            textColor = Color(0xFFF59E0B),
+            backgroundColor = MaterialTheme.avoqadoColors.venueOnboarding.copy(alpha = 0.2f),
+            textColor = MaterialTheme.avoqadoColors.venueOnboarding,
             icon = Icons.Default.Info,
             message = "Configuraci\u00F3n en progreso"
         )
         VenueStatus.PENDING_ACTIVATION -> StatusConfig(
-            backgroundColor = Color(0xFFF59E0B).copy(alpha = 0.2f),
-            textColor = Color(0xFFF59E0B),
+            backgroundColor = MaterialTheme.avoqadoColors.venueOnboarding.copy(alpha = 0.2f),
+            textColor = MaterialTheme.avoqadoColors.venueOnboarding,
             icon = Icons.Default.Warning,
             message = "Pendiente de activaci\u00F3n"
         )
@@ -177,36 +179,37 @@ private fun getStatusConfig(status: VenueStatus): StatusConfig {
             message = ""
         )
         VenueStatus.SUSPENDED -> StatusConfig(
-            backgroundColor = Color(0xFFEF4444).copy(alpha = 0.2f),
-            textColor = Color(0xFFEF4444),
+            backgroundColor = MaterialTheme.avoqadoColors.venueSuspended.copy(alpha = 0.2f),
+            textColor = MaterialTheme.avoqadoColors.venueSuspended,
             icon = Icons.Default.Warning,
             message = "Establecimiento suspendido"
         )
         VenueStatus.ADMIN_SUSPENDED -> StatusConfig(
-            backgroundColor = Color(0xFFEF4444).copy(alpha = 0.2f),
-            textColor = Color(0xFFEF4444),
+            backgroundColor = MaterialTheme.avoqadoColors.venueSuspended.copy(alpha = 0.2f),
+            textColor = MaterialTheme.avoqadoColors.venueSuspended,
             icon = Icons.Default.Block,
             message = "Suspendido por administraci\u00F3n"
         )
         VenueStatus.CLOSED -> StatusConfig(
-            backgroundColor = Color(0xFF6B7280).copy(alpha = 0.2f),
-            textColor = Color(0xFF6B7280),
+            backgroundColor = MaterialTheme.avoqadoColors.venueClosed.copy(alpha = 0.2f),
+            textColor = MaterialTheme.avoqadoColors.venueClosed,
             icon = Icons.Default.Block,
             message = "Establecimiento cerrado"
         )
     }
 }
 
+@Composable
 private fun getStatusChipConfig(status: VenueStatus): Pair<Color, String> {
     return when (status) {
-        VenueStatus.LIVE_DEMO -> Color(0xFF8B5CF6) to "Demo"
-        VenueStatus.TRIAL -> Color(0xFF3B82F6) to "Prueba"
-        VenueStatus.ONBOARDING -> Color(0xFFF59E0B) to "Configurando"
-        VenueStatus.PENDING_ACTIVATION -> Color(0xFFF59E0B) to "Pendiente"
-        VenueStatus.ACTIVE -> Color(0xFF10B981) to "Activo"
-        VenueStatus.SUSPENDED -> Color(0xFFEF4444) to "Suspendido"
-        VenueStatus.ADMIN_SUSPENDED -> Color(0xFFEF4444) to "Suspendido"
-        VenueStatus.CLOSED -> Color(0xFF6B7280) to "Cerrado"
+        VenueStatus.LIVE_DEMO -> MaterialTheme.avoqadoColors.venueDemo to "Demo"
+        VenueStatus.TRIAL -> MaterialTheme.avoqadoColors.venueTrial to "Prueba"
+        VenueStatus.ONBOARDING -> MaterialTheme.avoqadoColors.venueOnboarding to "Configurando"
+        VenueStatus.PENDING_ACTIVATION -> MaterialTheme.avoqadoColors.venueOnboarding to "Pendiente"
+        VenueStatus.ACTIVE -> MaterialTheme.avoqadoColors.statusSuccess to "Activo"
+        VenueStatus.SUSPENDED -> MaterialTheme.avoqadoColors.venueSuspended to "Suspendido"
+        VenueStatus.ADMIN_SUSPENDED -> MaterialTheme.avoqadoColors.venueSuspended to "Suspendido"
+        VenueStatus.CLOSED -> MaterialTheme.avoqadoColors.venueClosed to "Cerrado"
     }
 }
 
@@ -242,7 +245,7 @@ private fun VenueStatusBannerSuspendedPreview() {
 @Composable
 private fun VenueStatusRowActivePreview() {
     AvoqadoTheme {
-        Surface(color = Color(0xFF2A2A2A)) {
+        Surface(color = MaterialTheme.colorScheme.surface) {
             VenueStatusRow(status = VenueStatus.ACTIVE)
         }
     }
@@ -252,7 +255,7 @@ private fun VenueStatusRowActivePreview() {
 @Composable
 private fun VenueStatusRowSuspendedPreview() {
     AvoqadoTheme {
-        Surface(color = Color(0xFF2A2A2A)) {
+        Surface(color = MaterialTheme.colorScheme.surface) {
             VenueStatusRow(status = VenueStatus.SUSPENDED)
         }
     }

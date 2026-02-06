@@ -41,6 +41,7 @@ import com.journeyapps.barcodescanner.BarcodeResult
 import com.journeyapps.barcodescanner.DecoratedBarcodeView
 import com.journeyapps.barcodescanner.DefaultDecoderFactory
 import com.journeyapps.barcodescanner.camera.CameraSettings
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import timber.log.Timber
 
 /**
@@ -300,6 +301,7 @@ private fun ZXingBarcodeScanner(
 private fun ScanAreaOverlay(
     modifier: Modifier = Modifier
 ) {
+    val accentColor = MaterialTheme.avoqadoColors.statusSuccess
     Canvas(
         modifier = modifier.graphicsLayer {
             // ⚠️ CRITICAL: Required for BlendMode.Clear to work correctly
@@ -372,7 +374,7 @@ private fun ScanAreaOverlay(
         // Corner accents
         val cornerLength = 40.dp.toPx()
         val cornerStroke = 5.dp.toPx()
-        val accentColor = Color(0xFF4CAF50)  // Green
+        // accentColor hoisted above Canvas for composable access
 
         // Top-left corner
         drawLine(

@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceAlert
 
 /**
@@ -35,9 +36,9 @@ fun ForceUpdateDialog(
     onUpdate: () -> Unit
 ) {
     // Colors
-    val primaryGreen = Color(0xFF4CAF50)
-    val darkBackground = Color(0xFF1A1A1A)
-    val cardBackground = Color(0xFF2D2D2D)
+    val primaryGreen = MaterialTheme.avoqadoColors.statusSuccess
+    val darkBackground = MaterialTheme.colorScheme.background
+    val cardBackground = MaterialTheme.colorScheme.surface
 
     Dialog(
         onDismissRequest = { /* Cannot dismiss */ },

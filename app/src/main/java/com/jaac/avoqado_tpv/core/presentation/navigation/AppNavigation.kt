@@ -130,6 +130,8 @@ fun AppNavigation(
     deviceInfoManager: DeviceInfoManager,
     secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
     sessionManager: SessionManager,
+    isDarkMode: Boolean = false,
+    onThemeToggle: () -> Unit = {},
     navController: NavHostController = rememberNavController(),
     startDestination: String = NavRoute.Splash.route
 ) {
@@ -824,7 +826,9 @@ fun AppNavigation(
                     navController.navigate(NavRoute.Login.route) {
                         popUpTo(NavRoute.Home.route) { inclusive = true }
                     }
-                }
+                },
+                isDarkMode = isDarkMode,
+                onDarkModeToggle = onThemeToggle
             )
 
                 // 🔧 Loading overlay while awaiting Blumon SDK initialization
@@ -1836,7 +1840,7 @@ private fun SplashScreenContent() {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFFF5F5F5)),  // Light gray background (professional)
+            .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center
     ) {
         Column(

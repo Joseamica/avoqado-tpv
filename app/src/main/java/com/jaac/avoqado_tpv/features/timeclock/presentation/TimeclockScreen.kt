@@ -36,6 +36,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntry
 import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntryStatus
 import com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen
@@ -180,7 +181,7 @@ private fun PulseContent(
     val statusColor by animateColorAsState(
         targetValue = when (status) {
             TimeEntryStatus.CLOCKED_IN -> MaterialTheme.colorScheme.primary
-            TimeEntryStatus.ON_BREAK -> Color(0xFFFF9800) // Amber
+            TimeEntryStatus.ON_BREAK -> MaterialTheme.avoqadoColors.statusWarning
             else -> MaterialTheme.colorScheme.surfaceVariant
         },
         label = "statusColor"

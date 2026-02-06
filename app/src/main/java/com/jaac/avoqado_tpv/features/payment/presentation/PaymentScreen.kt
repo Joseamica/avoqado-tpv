@@ -58,6 +58,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoCard
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTextField
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
 import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentLoadingScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentQrScreen
@@ -1087,7 +1088,7 @@ private fun PaymentDetectingCard(
     isRefund: Boolean = false
 ) {
     // 💸 Refund indicator color (amber/orange like Square's yellow arrow)
-    val refundColor = Color(0xFFFFA726) // Orange/Amber
+    val refundColor = MaterialTheme.avoqadoColors.statusWarning
 
     Box(
         modifier = Modifier
@@ -1504,7 +1505,7 @@ private fun PaymentSuccessContent(
                         .padding(top = 70.dp), // Reduced from 90dp - less space for QR
                     contentDescription = "",
                     contentScale = ContentScale.FillBounds,
-                    colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.surface)
+                    colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.surfaceVariant)
                 )
 
                 // QR Code (centered on top) - ALWAYS shown

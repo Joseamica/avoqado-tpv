@@ -27,6 +27,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 
 /**
  * Maintenance Overlay - Full-Screen Maintenance Mode Blocker
@@ -71,8 +72,8 @@ fun MaintenanceOverlay(
     modifier: Modifier = Modifier
 ) {
     // Amber/warning color for maintenance (different from error red for lock)
-    val amberColor = Color(0xFFFFA000)
-    val darkBackground = Color(0xFF1C1C1C)
+    val amberColor = MaterialTheme.avoqadoColors.statusWarning
+    val darkBackground = MaterialTheme.colorScheme.background
 
     AnimatedVisibility(
         visible = visible,

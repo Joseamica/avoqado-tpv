@@ -17,6 +17,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.AlertColor
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceAlert
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.getAlertColor
@@ -118,11 +119,12 @@ private fun AlertBannerRow(
     onUpdate: (() -> Unit)? = null, // For update alerts
     isSecondary: Boolean = false
 ) {
+    val avoqadoColors = MaterialTheme.avoqadoColors
     val backgroundColor = when (alert.getAlertColor()) {
-        AlertColor.UPDATE -> Color(0xFF1565C0)    // Blue - for updates
-        AlertColor.CRITICAL -> Color(0xFFB71C1C)  // Dark red
-        AlertColor.WARNING -> Color(0xFFE65100)   // Dark orange
-        AlertColor.CAUTION -> Color(0xFFF57F17)   // Dark yellow
+        AlertColor.UPDATE -> avoqadoColors.statusInfo
+        AlertColor.CRITICAL -> avoqadoColors.statusCritical
+        AlertColor.WARNING -> avoqadoColors.offlineOrange
+        AlertColor.CAUTION -> avoqadoColors.statusWarning
     }
 
     val icon = when (alert) {

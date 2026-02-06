@@ -14,6 +14,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 
 /**
  * Environment Badge - Shows current Blumon environment (SANDBOX vs PRODUCTION)
@@ -42,8 +43,8 @@ fun EnvironmentBadge(
 
     val environment = BuildConfig.BLUMON_ENV
     val backgroundColor = when (environment) {
-        "SAND" -> Color(0xFFFFA726)  // Amber 400 (warning)
-        "PROD" -> Color(0xFFEF5350)  // Red 400 (danger)
+        "SAND" -> MaterialTheme.avoqadoColors.statusWarning
+        "PROD" -> MaterialTheme.avoqadoColors.statusError
         else -> Color.Gray
     }
     val displayText = when (environment) {

@@ -21,6 +21,7 @@ import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.BluetoothCapabilityChecker
@@ -443,7 +444,7 @@ private fun TestButton(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = if (destructive) {
-                Color(0xFFEB5757).copy(alpha = 0.1f)
+                MaterialTheme.avoqadoColors.statusError.copy(alpha = 0.1f)
             } else {
                 MaterialTheme.colorScheme.surface
             }
@@ -459,7 +460,7 @@ private fun TestButton(
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                tint = if (destructive) Color(0xFFEB5757) else MaterialTheme.colorScheme.primary,
+                tint = if (destructive) MaterialTheme.avoqadoColors.statusError else MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(32.dp)
             )
 
@@ -469,7 +470,7 @@ private fun TestButton(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.bodyLarge,
-                    color = if (destructive) Color(0xFFEB5757) else MaterialTheme.colorScheme.onSurface,
+                    color = if (destructive) MaterialTheme.avoqadoColors.statusError else MaterialTheme.colorScheme.onSurface,
                     fontWeight = FontWeight.Medium
                 )
                 Text(
@@ -483,7 +484,7 @@ private fun TestButton(
                 onClick = onClick,
                 enabled = enabled,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (destructive) Color(0xFFEB5757) else MaterialTheme.colorScheme.primary
+                    containerColor = if (destructive) MaterialTheme.avoqadoColors.statusError else MaterialTheme.colorScheme.primary
                 )
             ) {
                 Text("Run")
@@ -504,9 +505,9 @@ private fun StatusMessage(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = if (isError) {
-                Color(0xFFEB5757).copy(alpha = 0.1f)
+                MaterialTheme.avoqadoColors.statusError.copy(alpha = 0.1f)
             } else {
-                Color(0xFF4CAF50).copy(alpha = 0.1f)
+                MaterialTheme.avoqadoColors.statusSuccess.copy(alpha = 0.1f)
             }
         )
     ) {
@@ -520,14 +521,14 @@ private fun StatusMessage(
             Icon(
                 imageVector = if (isError) Icons.Default.Error else Icons.Default.CheckCircle,
                 contentDescription = null,
-                tint = if (isError) Color(0xFFEB5757) else Color(0xFF4CAF50),
+                tint = if (isError) MaterialTheme.avoqadoColors.statusError else MaterialTheme.avoqadoColors.statusSuccess,
                 modifier = Modifier.size(24.dp)
             )
 
             Text(
                 text = message,
                 style = MaterialTheme.typography.bodyMedium,
-                color = if (isError) Color(0xFFEB5757) else Color(0xFF4CAF50)
+                color = if (isError) MaterialTheme.avoqadoColors.statusError else MaterialTheme.avoqadoColors.statusSuccess
             )
         }
     }
@@ -556,7 +557,7 @@ private fun SlowNetworkCard(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = if (enabled) {
-                Color(0xFFFF9800).copy(alpha = 0.15f)  // Orange tint when enabled
+                MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.15f)  // Orange tint when enabled
             } else {
                 MaterialTheme.colorScheme.surface
             }
@@ -581,7 +582,7 @@ private fun SlowNetworkCard(
                     Icon(
                         imageVector = Icons.Default.Speed,
                         contentDescription = null,
-                        tint = if (enabled) Color(0xFFFF9800) else MaterialTheme.colorScheme.primary,
+                        tint = if (enabled) MaterialTheme.avoqadoColors.statusWarning else MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(32.dp)
                     )
                     Column {
@@ -594,7 +595,7 @@ private fun SlowNetworkCard(
                         Text(
                             text = if (enabled) "🐢 Enabled - ${currentDelay}ms delay" else "Disabled",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = if (enabled) Color(0xFFFF9800) else MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (enabled) MaterialTheme.avoqadoColors.statusWarning else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -607,8 +608,8 @@ private fun SlowNetworkCard(
                         Timber.i("🐢 [SlowNetwork] ${if (newEnabled) "ENABLED" else "DISABLED"} - ${currentDelay}ms delay")
                     },
                     colors = SwitchDefaults.colors(
-                        checkedThumbColor = Color(0xFFFF9800),
-                        checkedTrackColor = Color(0xFFFF9800).copy(alpha = 0.5f)
+                        checkedThumbColor = MaterialTheme.avoqadoColors.statusWarning,
+                        checkedTrackColor = MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.5f)
                     )
                 )
             }
@@ -641,7 +642,7 @@ private fun SlowNetworkCard(
                             },
                             label = { Text(label) },
                             colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = Color(0xFFFF9800),
+                                selectedContainerColor = MaterialTheme.avoqadoColors.statusWarning,
                                 selectedLabelColor = Color.White
                             )
                         )
@@ -652,7 +653,7 @@ private fun SlowNetworkCard(
                 Text(
                     text = "⚠️ All API requests will be delayed. Disable after testing.",
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFFFF9800)
+                    color = MaterialTheme.avoqadoColors.statusWarning
                 )
             }
         }
@@ -682,7 +683,7 @@ private fun DeviceHealthSimulationCard(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = if (activeAlertsCount > 0) {
-                Color(0xFFE65100).copy(alpha = 0.1f)  // Orange tint when alerts active
+                MaterialTheme.avoqadoColors.offlineOrange.copy(alpha = 0.1f)  // Orange tint when alerts active
             } else {
                 MaterialTheme.colorScheme.surface
             }
@@ -702,7 +703,7 @@ private fun DeviceHealthSimulationCard(
                 Icon(
                     imageVector = Icons.Default.HealthAndSafety,
                     contentDescription = null,
-                    tint = if (activeAlertsCount > 0) Color(0xFFE65100) else MaterialTheme.colorScheme.primary,
+                    tint = if (activeAlertsCount > 0) MaterialTheme.avoqadoColors.offlineOrange else MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(32.dp)
                 )
                 Column {
@@ -715,7 +716,7 @@ private fun DeviceHealthSimulationCard(
                     Text(
                         text = if (activeAlertsCount > 0) "⚠️ $activeAlertsCount alert(s) active" else "No alerts",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = if (activeAlertsCount > 0) Color(0xFFE65100) else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (activeAlertsCount > 0) MaterialTheme.avoqadoColors.offlineOrange else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -736,7 +737,7 @@ private fun DeviceHealthSimulationCard(
                     onClick = onSimulateNoInternet,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color(0xFFB71C1C)  // Red
+                        contentColor = MaterialTheme.avoqadoColors.statusCritical  // Red
                     )
                 ) {
                     Icon(
@@ -753,7 +754,7 @@ private fun DeviceHealthSimulationCard(
                     onClick = onSimulateServerDown,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color(0xFFB71C1C)  // Red
+                        contentColor = MaterialTheme.avoqadoColors.statusCritical  // Red
                     )
                 ) {
                     Icon(
@@ -783,7 +784,7 @@ private fun DeviceHealthSimulationCard(
                     onClick = onSimulateBatteryCritical,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color(0xFFB71C1C)  // Red
+                        contentColor = MaterialTheme.avoqadoColors.statusCritical  // Red
                     )
                 ) {
                     Icon(
@@ -800,7 +801,7 @@ private fun DeviceHealthSimulationCard(
                     onClick = onSimulateBatteryLow,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color(0xFFE65100)  // Orange
+                        contentColor = MaterialTheme.avoqadoColors.offlineOrange  // Orange
                     )
                 ) {
                     Icon(
@@ -822,7 +823,7 @@ private fun DeviceHealthSimulationCard(
                     onClick = onSimulateStorageLow,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color(0xFFF57F17)  // Yellow
+                        contentColor = MaterialTheme.avoqadoColors.statusWarning  // Yellow
                     )
                 ) {
                     Icon(
@@ -838,7 +839,7 @@ private fun DeviceHealthSimulationCard(
                     onClick = onSimulateMemoryLow,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color(0xFFF57F17)  // Yellow
+                        contentColor = MaterialTheme.avoqadoColors.statusWarning  // Yellow
                     )
                 ) {
                     Icon(
@@ -854,7 +855,7 @@ private fun DeviceHealthSimulationCard(
                     onClick = onSimulateWeakWifi,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color(0xFFF57F17)  // Yellow
+                        contentColor = MaterialTheme.avoqadoColors.statusWarning  // Yellow
                     )
                 ) {
                     Icon(
@@ -876,7 +877,7 @@ private fun DeviceHealthSimulationCard(
                     onClick = onSimulateMultipleAlerts,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color(0xFFE65100)
+                        contentColor = MaterialTheme.avoqadoColors.offlineOrange
                     )
                 ) {
                     Icon(
@@ -892,7 +893,7 @@ private fun DeviceHealthSimulationCard(
                     onClick = onClearSimulatedAlerts,
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF4CAF50)
+                        containerColor = MaterialTheme.avoqadoColors.statusSuccess
                     ),
                     enabled = activeAlertsCount > 0
                 ) {

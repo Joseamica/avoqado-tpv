@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.core.presentation.theme
 
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 /**
@@ -155,7 +156,7 @@ val LightOnError = Color.White
 val LightErrorContainer = Color(0xFFFEE2E2) // Red 100
 val LightOnErrorContainer = Color(0xFF7F1D1D) // Red 900
 
-val LightBackground = Color.White
+val LightBackground = Color(0xFFFAF8F6)
 val LightOnBackground = Gray900
 val LightSurface = Color.White
 val LightOnSurface = Gray900
@@ -164,6 +165,16 @@ val LightOnSurfaceVariant = Gray700
 
 val LightOutline = Gray300
 val LightOutlineVariant = Gray200
+
+// Surface tint must be transparent to prevent green tint on elevated surfaces
+val LightSurfaceTint = Color.Transparent
+// Explicit surface containers (prevent Material 3 auto-tinting from primary green)
+val LightSurfaceContainerLowest = Color.White
+val LightSurfaceContainerLow = Color.White
+val LightSurfaceContainer = Color(0xFFF5F5F5)
+val LightSurfaceContainerHigh = Color(0xFFF0F0F0)
+val LightSurfaceContainerHighest = Color(0xFFEBEBEB)
+val LightScrim = Color.Black
 
 // ========== Dark Theme Colors (Avoqado Dashboard Web) ==========
 
@@ -222,3 +233,69 @@ val DarkOnSurfaceVariant = Color(0xFFB5B5B5) // oklch(0.708 0 0) - Muted text
 // Outlines & Borders (subtle in dark mode)
 val DarkOutline = Color(0xFF383838) // oklch(0.269 0 0) - Borders
 val DarkOutlineVariant = Color(0xFF2A2A2A) // oklch(0.205 0 0) - Subtle dividers
+
+// ========== Custom Semantic Colors (beyond Material 3) ==========
+
+/**
+ * Avoqado custom semantic colors for domain-specific UI states.
+ *
+ * These are colors that Material 3's ColorScheme does not cover:
+ * status indicators, table states, venue status badges, etc.
+ *
+ * Access via: `MaterialTheme.avoqadoColors.statusSuccess`
+ */
+data class AvoqadoColors(
+    // Status indicators
+    val statusSuccess: Color,
+    val statusWarning: Color,
+    val statusError: Color,
+    val statusInfo: Color,
+    val statusCritical: Color,
+    val offlineOrange: Color,
+    // Table states (floor plan)
+    val tableAvailable: Color,
+    val tableOccupied: Color,
+    val tableReserved: Color,
+    // Venue status badges
+    val venueDemo: Color,
+    val venueTrial: Color,
+    val venueOnboarding: Color,
+    val venueSuspended: Color,
+    val venueClosed: Color,
+)
+
+val LightAvoqadoColors = AvoqadoColors(
+    statusSuccess = Color(0xFF10B981),
+    statusWarning = Color(0xFFF59E0B),
+    statusError = Color(0xFFEF4444),
+    statusInfo = Color(0xFF3B82F6),
+    statusCritical = Color(0xFFB71C1C),
+    offlineOrange = Color(0xFFE65100),
+    tableAvailable = Color(0xFF4CAF50),
+    tableOccupied = Color(0xFFF44336),
+    tableReserved = Color(0xFFFFC107),
+    venueDemo = Color(0xFF8B5CF6),
+    venueTrial = Color(0xFF3B82F6),
+    venueOnboarding = Color(0xFFF59E0B),
+    venueSuspended = Color(0xFFEF4444),
+    venueClosed = Color(0xFF6B7280),
+)
+
+val DarkAvoqadoColors = AvoqadoColors(
+    statusSuccess = Color(0xFF34D399),
+    statusWarning = Color(0xFFFBBF24),
+    statusError = Color(0xFFEB5757),
+    statusInfo = Color(0xFF60A5FA),
+    statusCritical = Color(0xFFEF5350),
+    offlineOrange = Color(0xFFFF6D00),
+    tableAvailable = Color(0xFF66BB6A),
+    tableOccupied = Color(0xFFEF5350),
+    tableReserved = Color(0xFFFFD54F),
+    venueDemo = Color(0xFFA78BFA),
+    venueTrial = Color(0xFF60A5FA),
+    venueOnboarding = Color(0xFFFBBF24),
+    venueSuspended = Color(0xFFEF5350),
+    venueClosed = Color(0xFF9CA3AF),
+)
+
+val LocalAvoqadoColors = staticCompositionLocalOf { LightAvoqadoColors }

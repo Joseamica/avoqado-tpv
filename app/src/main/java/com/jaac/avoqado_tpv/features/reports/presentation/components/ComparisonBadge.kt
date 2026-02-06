@@ -8,11 +8,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 
 /**
  * Comparison Badge Component
@@ -50,15 +50,15 @@ fun ComparisonBadge(
     if (change.isBlank()) return
 
     val backgroundColor = if (isPositive) {
-        Color(0xFF10B981).copy(alpha = 0.1f)  // Green 500 with 10% opacity
+        MaterialTheme.avoqadoColors.statusSuccess.copy(alpha = 0.1f)
     } else {
-        Color(0xFFEF4444).copy(alpha = 0.1f)  // Red 500 with 10% opacity
+        MaterialTheme.avoqadoColors.statusError.copy(alpha = 0.1f)
     }
 
     val textColor = if (isPositive) {
-        Color(0xFF10B981)  // Green 500
+        MaterialTheme.avoqadoColors.statusSuccess
     } else {
-        Color(0xFFEF4444)  // Red 500
+        MaterialTheme.avoqadoColors.statusError
     }
 
     Surface(

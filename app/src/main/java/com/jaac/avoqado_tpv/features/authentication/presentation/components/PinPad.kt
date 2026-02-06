@@ -126,12 +126,12 @@ private fun PinButton(
         shape = CircleShape,
         colors = ButtonDefaults.elevatedButtonColors(
             containerColor = if (isAction) {
-                MaterialTheme.colorScheme.secondaryContainer
+                MaterialTheme.colorScheme.surfaceContainerHighest
             } else {
                 MaterialTheme.colorScheme.surfaceVariant
             },
             contentColor = if (isAction) {
-                MaterialTheme.colorScheme.onSecondaryContainer
+                MaterialTheme.colorScheme.onSurface
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
             }
@@ -167,12 +167,12 @@ private fun PinButtonIcon(
         shape = CircleShape,
         colors = ButtonDefaults.elevatedButtonColors(
             containerColor = if (isAction) {
-                MaterialTheme.colorScheme.secondaryContainer
+                MaterialTheme.colorScheme.surfaceContainerHighest
             } else {
                 MaterialTheme.colorScheme.surfaceVariant
             },
             contentColor = if (isAction) {
-                MaterialTheme.colorScheme.onSecondaryContainer
+                MaterialTheme.colorScheme.onSurface
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
             }

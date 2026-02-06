@@ -1,57 +1,32 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!--
-    Avoqado TPV Theme - ALWAYS Dark Mode
+    Avoqado TPV Theme - Base XML theme
 
-    Matches Avoqado Web Dashboard dark theme exactly.
-    Professional POS pattern following Square Terminal & Toast POS.
+    This is the STARTUP theme only (splash screen, before Compose loads).
+    Once Compose loads, AvoqadoTheme() in Theme.kt takes over completely.
 
-    Source: avoqado-web-dashboard/src/index.css (.dark theme)
+    Default: Light mode (matching Compose default).
+    System bars are transparent - Compose handles icon colors dynamically.
     -->
-    <style name="Theme.Avoqadotpv" parent="Theme.Material3.Dark.NoActionBar">
-        <!-- ========== Background & Surface ========== -->
-        <item name="android:colorBackground">@color/dark_background</item>       <!-- #1C1C1C -->
-        <item name="colorSurface">@color/dark_card</item>                        <!-- #2A2A2A -->
-        <item name="colorOnSurface">@color/dark_foreground</item>                <!-- #FAFAFA -->
-        <item name="colorSurfaceVariant">@color/dark_surface</item>              <!-- #282828 -->
+    <style name="Theme.Avoqadotpv" parent="Theme.Material3.Light.NoActionBar">
+        <!-- ========== Background & Surface (Light) ========== -->
+        <item name="android:colorBackground">@color/light_background</item>
+        <item name="colorSurface">@color/white</item>
+        <item name="colorOnSurface">#111827</item>
 
         <!-- ========== Primary Brand Color ========== -->
-        <item name="colorPrimary">@color/dark_primary</item>                     <!-- #E8E8E8 -->
-        <item name="colorOnPrimary">@color/dark_on_primary</item>                <!-- #2A2A2A -->
-        <item name="colorPrimaryContainer">@color/dark_secondary</item>          <!-- #383838 -->
-        <item name="colorOnPrimaryContainer">@color/dark_foreground</item>       <!-- #FAFAFA -->
+        <item name="colorPrimary">@color/avoqado_green</item>
+        <item name="colorOnPrimary">@color/white</item>
 
-        <!-- ========== Secondary Colors ========== -->
-        <item name="colorSecondary">@color/dark_secondary</item>                 <!-- #383838 -->
-        <item name="colorOnSecondary">@color/dark_on_secondary</item>            <!-- #FAFAFA -->
-        <item name="colorSecondaryContainer">@color/dark_secondary</item>        <!-- #383838 -->
-        <item name="colorOnSecondaryContainer">@color/dark_primary</item>        <!-- #E8E8E8 -->
+        <!-- ========== Status Bar (Transparent - Compose handles) ========== -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
 
-        <!-- ========== Tertiary (Avoqado Green) ========== -->
-        <item name="colorTertiary">@color/avoqado_green_light</item>             <!-- #34D399 -->
-        <item name="colorOnTertiary">@color/dark_background</item>               <!-- #1C1C1C -->
+        <!-- ========== Navigation Bar (Transparent - Compose handles) ========== -->
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">true</item>
 
-        <!-- ========== Error/Destructive ========== -->
-        <item name="colorError">@color/dark_error</item>                         <!-- #EB5757 -->
-        <item name="colorOnError">@color/dark_on_error</item>                    <!-- #FAFAFA -->
-        <item name="colorErrorContainer">@color/dark_error</item>                <!-- #EB5757 -->
-        <item name="colorOnErrorContainer">@color/dark_on_error</item>           <!-- #FAFAFA -->
-
-        <!-- ========== Status Bar (Always Dark) ========== -->
-        <item name="android:statusBarColor">@color/dark_background</item>        <!-- #1C1C1C -->
-        <item name="android:windowLightStatusBar">false</item>                   <!-- Light icons -->
-
-        <!-- ========== Navigation Bar (Always Dark) ========== -->
-        <item name="android:navigationBarColor">@color/dark_background</item>    <!-- #1C1C1C -->
-        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">false</item>
-
-        <!-- ========== Splash Screen (Android 12+) ========== -->
-        <item name="android:windowSplashScreenBackground">@color/dark_background</item>
-        <item name="android:windowSplashScreenIconBackgroundColor">@color/dark_card</item>
-
-        <!-- ========== Window Background ========== -->
-        <item name="android:windowBackground">@color/dark_background</item>      <!-- #1C1C1C -->
-
-        <!-- ========== Outline & Borders ========== -->
-        <item name="colorOutline">@color/dark_outline</item>                     <!-- #383838 -->
+        <!-- ========== Window Background (White for light default) ========== -->
+        <item name="android:windowBackground">@color/light_background</item>
     </style>
 </resources>

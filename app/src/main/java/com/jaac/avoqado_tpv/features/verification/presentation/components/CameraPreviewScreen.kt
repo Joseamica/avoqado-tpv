@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import timber.log.Timber
 import java.io.File
 import java.text.SimpleDateFormat
@@ -452,6 +453,7 @@ private fun CameraControls(
 private fun VolumeButtonHint(
     modifier: Modifier = Modifier
 ) {
+    val hintColor = MaterialTheme.avoqadoColors.statusSuccess
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.Start  // Align to left
@@ -463,7 +465,7 @@ private fun VolumeButtonHint(
                 .height(50.dp)
                 .padding(start = 8.dp)
         ) {
-            val arrowColor = Color(0xFF4CAF50) // Green color for visibility
+            val arrowColor = hintColor
 
             // Draw curved arrow pointing UP-LEFT
             val path = Path().apply {
@@ -499,7 +501,7 @@ private fun VolumeButtonHint(
         Row(
             modifier = Modifier
                 .background(
-                    color = Color(0xFF4CAF50),  // Green background
+                    color = hintColor,
                     shape = RoundedCornerShape(20.dp)
                 )
                 .padding(horizontal = 12.dp, vertical = 8.dp),

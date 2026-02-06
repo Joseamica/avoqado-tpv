@@ -47,6 +47,7 @@ import timber.log.Timber
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.CategoryWithStock
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 
 /**
  * SerializedInventoryScreen (Alta de Productos flow)
@@ -234,9 +235,9 @@ private fun ScannedCountOverlay(
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = if (lastFeedback.startsWith("✓")) {
-                    Color(0xFF4CAF50).copy(alpha = 0.9f)  // Green for success
+                    MaterialTheme.avoqadoColors.statusSuccess.copy(alpha = 0.9f)
                 } else {
-                    Color(0xFFFF9800).copy(alpha = 0.9f)  // Orange for warning
+                    MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.9f)
                 }
             ) {
                 Text(

@@ -81,6 +81,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.ordering.domain.FloorElement
 import com.jaac.avoqado_tpv.features.ordering.domain.FloorElementType
 import com.jaac.avoqado_tpv.features.ordering.domain.Table
@@ -823,6 +824,11 @@ private fun FloorPlanCanvas(
         }
     }
 
+    // Extract table status colors from theme (needed before Canvas DrawScope)
+    val tableAvailableColor = MaterialTheme.avoqadoColors.tableAvailable
+    val tableOccupiedColor = MaterialTheme.avoqadoColors.tableOccupied
+    val tableReservedColor = MaterialTheme.avoqadoColors.tableReserved
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -1137,7 +1143,10 @@ private fun FloorPlanCanvas(
                     dragOffset = dragOffset,
                     canvasWidth = canvasWidth,
                     canvasHeight = canvasHeight,
-                    textMeasurer = textMeasurer
+                    textMeasurer = textMeasurer,
+                    availableColor = tableAvailableColor,
+                    occupiedColor = tableOccupiedColor,
+                    reservedColor = tableReservedColor
                 )
             }
 
@@ -1334,7 +1343,10 @@ private fun DrawScope.drawTable(
     dragOffset: Offset,
     canvasWidth: Float,
     canvasHeight: Float,
-    textMeasurer: androidx.compose.ui.text.TextMeasurer
+    textMeasurer: androidx.compose.ui.text.TextMeasurer,
+    availableColor: Color,
+    occupiedColor: Color,
+    reservedColor: Color
 ) {
     val baseX = (table.positionX ?: 0.5f) * canvasWidth
     val baseY = (table.positionY ?: 0.5f) * canvasHeight
@@ -1342,11 +1354,11 @@ private fun DrawScope.drawTable(
     val y = baseY + dragOffset.y
     val tableSize = 80f // Base size in pixels
 
-    // Color by status (standard colors)
+    // Color by status (from theme)
     val tableColor = when (table.status) {
-        TableStatus.AVAILABLE -> Color(0xFF4CAF50)  // 🟢 Green
-        TableStatus.OCCUPIED -> Color(0xFFF44336)   // 🔴 Red
-        TableStatus.RESERVED -> Color(0xFFFFC107)   // 🟡 Yellow
+        TableStatus.AVAILABLE -> availableColor
+        TableStatus.OCCUPIED -> occupiedColor
+        TableStatus.RESERVED -> reservedColor
     }
 
     rotate(table.rotation.toFloat(), Offset(x, y)) {

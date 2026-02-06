@@ -44,6 +44,7 @@ import com.journeyapps.barcodescanner.BarcodeResult
 import com.journeyapps.barcodescanner.DecoratedBarcodeView
 import com.journeyapps.barcodescanner.DefaultDecoderFactory
 import com.journeyapps.barcodescanner.camera.CameraSettings
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import timber.log.Timber
 
 /**
@@ -256,6 +257,7 @@ private fun QrOnlyScanner(
 private fun QrScanAreaOverlay(
     modifier: Modifier = Modifier
 ) {
+    val accentColor = MaterialTheme.avoqadoColors.statusInfo
     Canvas(
         modifier = modifier.graphicsLayer {
             compositingStrategy = CompositingStrategy.Offscreen
@@ -325,7 +327,7 @@ private fun QrScanAreaOverlay(
         // Corner accents (thicker and more prominent)
         val cornerLength = 50.dp.toPx()
         val cornerStroke = 6.dp.toPx()
-        val accentColor = Color(0xFF2196F3)  // Blue for QR (green is for barcodes)
+        // accentColor hoisted above Canvas for composable access
 
         // Top-left corner
         drawLine(
@@ -493,7 +495,7 @@ private fun QrScannerControls(
                     Icon(
                         imageVector = Icons.Default.QrCodeScanner,
                         contentDescription = null,
-                        tint = Color(0xFF2196F3),
+                        tint = MaterialTheme.avoqadoColors.statusInfo,
                         modifier = Modifier.size(32.dp)
                     )
 
@@ -512,7 +514,7 @@ private fun QrScannerControls(
                     // Key instruction: hold steady
                     Text(
                         text = "📌 Mantén la cámara fija sin moverla",
-                        color = Color(0xFF4CAF50),
+                        color = MaterialTheme.avoqadoColors.statusSuccess,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
                         textAlign = TextAlign.Center
@@ -597,7 +599,7 @@ private fun QrPermissionDeniedContent(
         Button(
             onClick = onRequestPermission,
             colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFF2196F3)
+                containerColor = MaterialTheme.avoqadoColors.statusInfo
             )
         ) {
             Text("Permitir Acceso")

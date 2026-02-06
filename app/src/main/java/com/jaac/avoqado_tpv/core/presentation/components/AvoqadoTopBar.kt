@@ -29,6 +29,7 @@ import com.jaac.avoqado_tpv.BuildConfig
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import kotlinx.coroutines.delay
 
 /**
@@ -66,7 +67,7 @@ fun AvoqadoTopBar(
 
     // Border color - Blue for sandbox to distinguish from production
     val isSandbox = BuildConfig.BLUMON_ENV == "SAND"
-    val borderColor = if (isSandbox) Color(0xFF42A5F5) else MaterialTheme.colorScheme.outline  // Blue 400
+    val borderColor = if (isSandbox) MaterialTheme.avoqadoColors.statusInfo else MaterialTheme.colorScheme.outline
     val borderWidth = if (isSandbox) 3.dp else 1.dp
 
     val resolvedTitleStyle = titleStyle ?: MaterialTheme.typography.titleLarge

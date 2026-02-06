@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -139,11 +140,18 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Edge-to-edge: content draws behind system bars (status bar, nav bar)
+        // This allows ModalBottomSheet scrim to cover the entire screen seamlessly
+        enableEdgeToEdge()
+
         // Check/Request READ_PHONE_STATE permission (MANDATORY on Android 8+)
         checkAndRequestPhoneStatePermission()
 
         setContent {
-            AvoqadoTheme {
+            // Theme preference: persisted per-device, not per-session
+            var isDarkTheme by remember { mutableStateOf(secureStorage.getIsDarkMode()) }
+
+            AvoqadoTheme(darkTheme = isDarkTheme) {
                 val permissionStatus by permissionGranted
 
                 // 🔒 ROOT-LEVEL Lock/Maintenance state - covers ALL screens
@@ -164,7 +172,12 @@ class MainActivity : ComponentActivity() {
                             AppNavigation(
                                 deviceInfoManager = deviceInfoManager,
                                 secureStorage = secureStorage,
-                                sessionManager = sessionManager
+                                sessionManager = sessionManager,
+                                isDarkMode = isDarkTheme,
+                                onThemeToggle = {
+                                    isDarkTheme = !isDarkTheme
+                                    secureStorage.saveIsDarkMode(isDarkTheme)
+                                }
                             )
                         }
                         false -> {

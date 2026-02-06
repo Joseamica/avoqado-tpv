@@ -20,6 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.ConnectionState
 
 /**
@@ -95,7 +96,7 @@ private fun DisconnectedBanner(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFFE65100)) // Darker orange (more elegant)
+            .background(MaterialTheme.avoqadoColors.offlineOrange)
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
@@ -152,7 +153,7 @@ private fun ReconnectingBanner() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFFE65100))
+            .background(MaterialTheme.avoqadoColors.offlineOrange)
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
@@ -183,7 +184,7 @@ private fun ReconnectedBanner() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFF2E7D32)) // Darker green (elegant)
+            .background(MaterialTheme.avoqadoColors.statusSuccess)
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically

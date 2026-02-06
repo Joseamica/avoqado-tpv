@@ -1,10 +1,13 @@
 package com.jaac.avoqado_tpv.core.presentation.theme
 
 import android.app.Activity
+import android.graphics.Color
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
@@ -13,39 +16,29 @@ import androidx.core.view.WindowCompat
  * Avoqado TPV Material 3 Theme
  *
  * Complete theme definition with:
- * - Light & Dark color schemes (Dark is DEFAULT)
+ * - Light & Dark color schemes (Light is DEFAULT, togglable via Settings)
+ * - Custom semantic colors via [AvoqadoColors] CompositionLocal
  * - Typography scale
- * - Spacing & sizing system
+ * - Dynamic status bar appearance
  *
  * **Usage:**
  * ```kotlin
  * @Composable
  * fun MyScreen() {
- *     AvoqadoTheme {  // Dark mode by default
- *         // Your composables here
+ *     AvoqadoTheme {
  *         Text(
  *             text = "Hello World",
  *             style = MaterialTheme.typography.headlineSmall,
  *             color = MaterialTheme.colorScheme.primary
  *         )
+ *         // Custom semantic colors:
+ *         Icon(tint = MaterialTheme.avoqadoColors.statusSuccess)
  *     }
  * }
  * ```
  *
- * **Dark Theme (ALWAYS DEFAULT):**
- * TPV apps use dark mode for restaurant environments (Square/Toast pattern).
- * System theme detection is DISABLED - always dark mode.
- * Light theme only available for design previews via `darkTheme = false`.
- *
- * **Professional TPV Pattern:**
- * - Square Terminal: Always dark UI
- * - Toast POS: Always dark UI
- * - Stripe Terminal: Always dark UI
- * - Avoqado TPV: Always dark UI ✅
- *
  * **Dynamic Color:**
  * Material 3 dynamic color is disabled to maintain brand consistency.
- * Dashboard Web dark theme colors are used.
  */
 
 // ========== Light Color Scheme ==========
@@ -79,7 +72,15 @@ private val LightColorScheme = lightColorScheme(
     onSurfaceVariant = LightOnSurfaceVariant,
 
     outline = LightOutline,
-    outlineVariant = LightOutlineVariant
+    outlineVariant = LightOutlineVariant,
+
+    surfaceTint = LightSurfaceTint,
+    surfaceContainerLowest = LightSurfaceContainerLowest,
+    surfaceContainerLow = LightSurfaceContainerLow,
+    surfaceContainer = LightSurfaceContainer,
+    surfaceContainerHigh = LightSurfaceContainerHigh,
+    surfaceContainerHighest = LightSurfaceContainerHighest,
+    scrim = LightScrim
 )
 
 // ========== Dark Color Scheme ==========
@@ -119,38 +120,47 @@ private val DarkColorScheme = darkColorScheme(
 /**
  * Avoqado Theme wrapper
  *
- * **IMPORTANT:** TPV always uses Dark Mode by default (Square/Toast pattern).
- * Professional POS systems maintain consistent dark UI for restaurant environments.
- *
- * @param darkTheme Whether to use dark theme. Always defaults to true.
- *                  Only set to false for specific preview purposes.
+ * @param darkTheme Whether to use dark theme. Defaults to false (Light mode).
+ *                  Togglable via Settings > "Modo Oscuro".
  * @param content The composable content to wrap with theme
  */
 @Composable
 fun AvoqadoTheme(
-    darkTheme: Boolean = true,  // ✅ ALWAYS dark mode by default
+    darkTheme: Boolean = false,
     content: @Composable () -> Unit
 ) {
-    // ✅ Force dark theme for production TPV
-    // Light theme only available for design/preview purposes
-    val colorScheme = if (darkTheme) {
-        DarkColorScheme
-    } else {
-        LightColorScheme  // Only for previews
-    }
+    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+    val avoqadoColors = if (darkTheme) DarkAvoqadoColors else LightAvoqadoColors
 
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
-            // ✅ Always use dark status bar for TPV (light icons on dark background)
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
+            // Transparent system bars — enableEdgeToEdge() draws content behind them
+            // Compose content background shows through, scrim covers full screen
+            window.statusBarColor = Color.TRANSPARENT
+            window.navigationBarColor = Color.TRANSPARENT
+            // Dynamic: dark icons on light background, light icons on dark background
+            val insetsController = WindowCompat.getInsetsController(window, view)
+            insetsController.isAppearanceLightStatusBars = !darkTheme
+            insetsController.isAppearanceLightNavigationBars = !darkTheme
         }
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = AvoqadoTypography,
-        content = content
-    )
+    CompositionLocalProvider(LocalAvoqadoColors provides avoqadoColors) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = AvoqadoTypography,
+            content = content
+        )
+    }
 }
+
+/**
+ * Extension to access custom [AvoqadoColors] from MaterialTheme.
+ *
+ * Usage: `MaterialTheme.avoqadoColors.statusSuccess`
+ */
+val MaterialTheme.avoqadoColors: AvoqadoColors
+    @Composable @ReadOnlyComposable
+    get() = LocalAvoqadoColors.current

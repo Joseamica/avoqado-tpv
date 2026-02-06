@@ -23,6 +23,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.features.reports.domain.models.PaymentMethodBreakdown
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import java.math.BigDecimal
 
 /**
@@ -170,15 +171,16 @@ private fun PaymentMethodBar(
  * Color-coding follows industry standards:
  * - Cash: Green (traditional cash color)
  * - Card: Blue (card/digital payment)
- * - Voucher: Purple (special/voucher)
+ * - Voucher: Purple (specific chart color)
  * - Other: Gray (neutral)
  */
+@Composable
 private fun getColorForPaymentMethod(method: PaymentMethodBreakdown.PaymentMethod): Color {
     return when (method) {
-        PaymentMethodBreakdown.PaymentMethod.CASH -> Color(0xFF4CAF50)  // Green
-        PaymentMethodBreakdown.PaymentMethod.CARD -> Color(0xFF2196F3)  // Blue
-        PaymentMethodBreakdown.PaymentMethod.VOUCHER -> Color(0xFF9C27B0)  // Purple
-        PaymentMethodBreakdown.PaymentMethod.OTHER -> Color(0xFF9E9E9E)  // Gray
+        PaymentMethodBreakdown.PaymentMethod.CASH -> MaterialTheme.avoqadoColors.statusSuccess
+        PaymentMethodBreakdown.PaymentMethod.CARD -> MaterialTheme.avoqadoColors.statusInfo
+        PaymentMethodBreakdown.PaymentMethod.VOUCHER -> Color(0xFF9C27B0)  // Purple (specific chart color)
+        PaymentMethodBreakdown.PaymentMethod.OTHER -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 }
 

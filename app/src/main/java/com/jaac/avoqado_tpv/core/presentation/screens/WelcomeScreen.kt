@@ -112,6 +112,8 @@ fun WelcomeScreen(
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Telecom: Vender flow (barcode → price → payment)
     onNavigateToInventoryRegister: () -> Unit = {},  // 📦 Telecom: Alta de productos flow
     onLogout: () -> Unit = {},
+    isDarkMode: Boolean = false,
+    onDarkModeToggle: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
     shiftViewModel: com.jaac.avoqado_tpv.features.shift.presentation.ShiftViewModel = hiltViewModel()
 ) {
@@ -221,7 +223,9 @@ fun WelcomeScreen(
         onLogout = {
             viewModel.logout()
             onLogout()
-        }
+        },
+        isDarkMode = isDarkMode,
+        onDarkModeToggle = onDarkModeToggle
     )
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -387,7 +391,9 @@ private fun WelcomeScreenContent(
     onNavigateToSuperAdmin: () -> Unit,
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Telecom: Vender flow
     onNavigateToInventoryRegister: () -> Unit = {},  // 📦 Telecom: Alta de productos
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    isDarkMode: Boolean = false,
+    onDarkModeToggle: () -> Unit = {},
 ) {
     // ══════════════════════════════════════════════════════════════════════
     // STATE
@@ -712,7 +718,9 @@ private fun WelcomeScreenContent(
                         }
                     }
                 }
-            } else null
+            } else null,
+            isDarkMode = isDarkMode,
+            onDarkModeToggle = { onDarkModeToggle() }
         )
     }
 

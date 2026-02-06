@@ -438,6 +438,7 @@ private fun PaymentCard(
                 }
             ),
         shape = MaterialTheme.shapes.medium,
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (isSelected) {
                 MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
@@ -472,11 +473,11 @@ private fun PaymentCard(
                         text = payment.formatTotalAmount(),
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
-                        // Red for refunds, primary for normal payments
+                        // Red for refunds, standard text for normal payments
                         color = if (payment.isRefund)
                             MaterialTheme.colorScheme.error
                         else
-                            MaterialTheme.colorScheme.primary
+                            MaterialTheme.colorScheme.onSurface
                     )
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -17,7 +17,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
@@ -25,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachMoney
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 
 /**
  * Metric Card Component
@@ -135,15 +135,15 @@ fun ComparisonBadge(
     modifier: Modifier = Modifier
 ) {
     val backgroundColor = when (trend) {
-        ComparisonTrend.UP -> Color(0xFF4CAF50).copy(alpha = 0.15f)  // Green
-        ComparisonTrend.DOWN -> Color(0xFFEB5757).copy(alpha = 0.15f)  // Red
-        ComparisonTrend.NEUTRAL -> Color(0xFF9E9E9E).copy(alpha = 0.15f)  // Gray
+        ComparisonTrend.UP -> MaterialTheme.avoqadoColors.statusSuccess.copy(alpha = 0.15f)
+        ComparisonTrend.DOWN -> MaterialTheme.avoqadoColors.statusError.copy(alpha = 0.15f)
+        ComparisonTrend.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f)
     }
 
     val textColor = when (trend) {
-        ComparisonTrend.UP -> Color(0xFF4CAF50)  // Green
-        ComparisonTrend.DOWN -> Color(0xFFEB5757)  // Red
-        ComparisonTrend.NEUTRAL -> Color(0xFF9E9E9E)  // Gray
+        ComparisonTrend.UP -> MaterialTheme.avoqadoColors.statusSuccess
+        ComparisonTrend.DOWN -> MaterialTheme.avoqadoColors.statusError
+        ComparisonTrend.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
     Card(

@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.ordering.domain.*
 import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import java.math.BigDecimal
@@ -447,7 +448,7 @@ private fun KitchenStatusIcon(isSent: Boolean, onPrint: () -> Unit) {
         modifier = Modifier
             .size(16.dp)
             .clickable { onPrint() },
-        tint = if (isSent) Color(0xFF2E7D32) else Color(0xFFEF6C00) // Green vs Orange
+        tint = if (isSent) MaterialTheme.avoqadoColors.statusSuccess else MaterialTheme.avoqadoColors.offlineOrange
     )
 }
 

@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.core.location
 
+import com.google.gson.annotations.SerializedName
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import timber.log.Timber
 import javax.inject.Inject
@@ -66,29 +67,29 @@ class CellLocationApiImpl @Inject constructor(
  * Request body for network location API (cell towers + WiFi).
  */
 data class NetworkLocationRequest(
-    val cellTowers: List<CellTowerRequest>,
-    val wifiAccessPoints: List<WifiAccessPointRequest> = emptyList()
+    @SerializedName("cellTowers") val cellTowers: List<CellTowerRequest>,
+    @SerializedName("wifiAccessPoints") val wifiAccessPoints: List<WifiAccessPointRequest> = emptyList()
 )
 
 data class CellTowerRequest(
-    val radioType: String,
-    val mobileCountryCode: Int,
-    val mobileNetworkCode: Int,
-    val locationAreaCode: Int,
-    val cellId: Long
+    @SerializedName("radioType") val radioType: String,
+    @SerializedName("mobileCountryCode") val mobileCountryCode: Int,
+    @SerializedName("mobileNetworkCode") val mobileNetworkCode: Int,
+    @SerializedName("locationAreaCode") val locationAreaCode: Int,
+    @SerializedName("cellId") val cellId: Long
 )
 
 data class WifiAccessPointRequest(
-    val macAddress: String,
-    val signalStrength: Int,
-    val channel: Int
+    @SerializedName("macAddress") val macAddress: String,
+    @SerializedName("signalStrength") val signalStrength: Int,
+    @SerializedName("channel") val channel: Int
 )
 
 /**
  * Response from network location API.
  */
 data class CellLocationResponse(
-    val latitude: Double,
-    val longitude: Double,
-    val accuracy: Float
+    @SerializedName("latitude") val latitude: Double,
+    @SerializedName("longitude") val longitude: Double,
+    @SerializedName("accuracy") val accuracy: Float
 )

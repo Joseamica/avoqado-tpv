@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import java.math.BigDecimal
 import javax.inject.Inject
 
 /**
@@ -81,6 +82,52 @@ class SerializedInventoryViewModel @Inject constructor(
                 selectedCategory = category,
                 error = null
             )
+        }
+    }
+
+    /**
+     * Create a new category and auto-select it.
+     */
+    fun createCategory(
+        name: String,
+        description: String? = null,
+        suggestedPrice: BigDecimal? = null,
+        onSuccess: (CategoryWithStock) -> Unit = {}
+    ) {
+        val trimmedName = name.trim()
+        if (trimmedName.isBlank()) {
+            _uiState.update { it.copy(error = "Ingresa un nombre de categoría") }
+            return
+        }
+
+        _uiState.update { it.copy(isLoading = true, error = null) }
+
+        viewModelScope.launch {
+            serializedSaleRepository.createCategory(
+                name = trimmedName,
+                description = description?.trim()?.ifBlank { null },
+                suggestedPrice = suggestedPrice
+            )
+                .onSuccess { category ->
+                    val updatedCategories = (_uiState.value.categories + category).distinctBy { it.id }
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            categories = updatedCategories,
+                            selectedCategory = category
+                        )
+                    }
+                    onSuccess(category)
+                }
+                .onFailure { error ->
+                    Timber.e(error, "Failed to create category from inventory flow")
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            error = error.message ?: "Error al crear categoría"
+                        )
+                    }
+                }
         }
     }
 

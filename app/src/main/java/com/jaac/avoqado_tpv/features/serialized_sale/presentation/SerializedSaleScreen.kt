@@ -138,7 +138,12 @@ fun SerializedSaleScreen(
             topBar = {
                 AvoqadoTopBar(
                     title = "Vender $itemLabel",
-                    onNavigationClick = onNavigateBack
+                    onNavigationClick = onNavigateBack,
+                    actions = {
+                        TextButton(onClick = { showCreateCategoryDialog = true }) {
+                            Text("+ categoría")
+                        }
+                    }
                 )
             }
         ) { paddingValues ->

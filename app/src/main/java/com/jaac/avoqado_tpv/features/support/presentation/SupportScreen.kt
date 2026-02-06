@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.support.presentation
 
 import android.content.Intent
+import android.content.Context
 import android.net.Uri
 import android.os.Build
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -17,6 +18,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -70,10 +74,39 @@ interface SupportScreenEntryPoint {
 // Helper Functions
 // ══════════════════════════════════════════════════════════════════════
 
+private const val USER_GUIDE_URL = "https://help.avoqado.io"
+private const val VIDEO_TUTORIALS_URL = "https://www.youtube.com/results?search_query=Avoqado+TPV+tutoriales"
+
 // Result sealed class for internal use
 private sealed class FeedbackResult {
     object Success : FeedbackResult()
     data class Error(val message: String) : FeedbackResult()
+}
+
+private fun openExternalLink(
+    context: Context,
+    url: String,
+    resourceName: String,
+    onError: (String) -> Unit
+) {
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+        addCategory(Intent.CATEGORY_BROWSABLE)
+        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+    }
+
+    val canOpen = intent.resolveActivity(context.packageManager) != null
+    if (!canOpen) {
+        Timber.w("No app available to open $resourceName URL: $url")
+        onError("No se encontró una app para abrir $resourceName.")
+        return
+    }
+
+    try {
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Timber.e(e, "Failed opening $resourceName URL: $url")
+        onError("No se pudo abrir $resourceName. Intenta de nuevo.")
+    }
 }
 
 /**
@@ -291,24 +324,34 @@ fun SupportScreen(
                 item {
                     DocumentationLinks(
                         onUserGuideClick = {
-                            try {
-                                val intent = Intent(Intent.ACTION_VIEW).apply {
-                                    data = Uri.parse("https://docs.avoqado.io/tpv/user-guide")
+                            openExternalLink(
+                                context = context,
+                                url = USER_GUIDE_URL,
+                                resourceName = "la guía de usuario",
+                                onError = { error ->
+                                    coroutineScope.launch {
+                                        snackbarHostState.showSnackbar(
+                                            message = error,
+                                            duration = SnackbarDuration.Short
+                                        )
+                                    }
                                 }
-                                context.startActivity(intent)
-                            } catch (e: Exception) {
-                                // Browser not available - ignore gracefully
-                            }
+                            )
                         },
                         onVideoTutorialsClick = {
-                            try {
-                                val intent = Intent(Intent.ACTION_VIEW).apply {
-                                    data = Uri.parse("https://www.youtube.com/@avoqado")
+                            openExternalLink(
+                                context = context,
+                                url = VIDEO_TUTORIALS_URL,
+                                resourceName = "los videos tutoriales",
+                                onError = { error ->
+                                    coroutineScope.launch {
+                                        snackbarHostState.showSnackbar(
+                                            message = error,
+                                            duration = SnackbarDuration.Short
+                                        )
+                                    }
                                 }
-                                context.startActivity(intent)
-                            } catch (e: Exception) {
-                                // Browser not available - ignore gracefully
-                            }
+                            )
                         }
                     )
                 }
@@ -338,7 +381,7 @@ fun SupportScreen(
     if (showWhatsAppDialog) {
         ContactInfoDialog(
             title = "Contacto por WhatsApp",
-            icon = Icons.Default.Chat,
+            icon = Icons.AutoMirrored.Filled.Chat,
             message = "Para comunicarte con nosotros escribe a +52 56 400 70001",
             onDismiss = { showWhatsAppDialog = false }
         )
@@ -447,19 +490,19 @@ private fun ContactOptions(
         ContactCard(
             icon = Icons.Default.Email,
             title = "Email",
-            subtitle = "soporte@avoqado.io",
+            subtitle = "hola@avoqado.io",
             onClick = onEmailClick
         )
 
         ContactCard(
             icon = Icons.Default.Phone,
             title = "Teléfono",
-            subtitle = "+52 55 1234 5678",
+            subtitle = "+52 5640070001",
             onClick = onPhoneClick
         )
 
         ContactCard(
-            icon = Icons.Default.Chat,
+            icon = Icons.AutoMirrored.Filled.Chat,
             title = "WhatsApp",
             subtitle = "Chatea con nosotros",
             onClick = onWhatsAppClick
@@ -671,7 +714,7 @@ private fun DocumentationLinks(
                 horizontalArrangement = Arrangement.spacedBy(sizes.spacingMedium)
             ) {
                 Icon(
-                    imageVector = Icons.Default.MenuBook,
+                    imageVector = Icons.AutoMirrored.Filled.MenuBook,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary
                 )
@@ -681,7 +724,7 @@ private fun DocumentationLinks(
                     modifier = Modifier.weight(1f)
                 )
                 Icon(
-                    imageVector = Icons.Default.OpenInNew,
+                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp)
@@ -711,7 +754,7 @@ private fun DocumentationLinks(
                     modifier = Modifier.weight(1f)
                 )
                 Icon(
-                    imageVector = Icons.Default.OpenInNew,
+                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp)

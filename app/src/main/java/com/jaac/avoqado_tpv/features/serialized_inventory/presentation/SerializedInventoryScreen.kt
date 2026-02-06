@@ -45,6 +45,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.InventoryScanResult
 import timber.log.Timber
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.CategoryWithStock
+import com.jaac.avoqado_tpv.features.serialized_sale.presentation.CreateCategoryDialog
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
@@ -78,6 +79,7 @@ fun SerializedInventoryScreen(
 
     // Snackbar state for feedback
     var lastScanFeedback by remember { mutableStateOf<String?>(null) }
+    var showCreateCategoryDialog by remember { mutableStateOf(false) }
 
     // 🛡️ BackHandler ALWAYS enabled on this screen
     // Prevents physical scanner's Enter key from being interpreted as back navigation
@@ -105,7 +107,12 @@ fun SerializedInventoryScreen(
         topBar = {
             AvoqadoTopBar(
                 title = registerLabel,
-                onNavigationClick = onNavigateBack
+                onNavigationClick = onNavigateBack,
+                actions = {
+                    TextButton(onClick = { showCreateCategoryDialog = true }) {
+                        Text("+ categoría")
+                    }
+                }
             )
         }
     ) { paddingValues ->
@@ -212,6 +219,23 @@ fun SerializedInventoryScreen(
                 }
             }
         }
+    }
+
+    if (showCreateCategoryDialog) {
+        CreateCategoryDialog(
+            onDismiss = { showCreateCategoryDialog = false },
+            onCreate = { name, description, suggestedPrice ->
+                viewModel.createCategory(
+                    name = name,
+                    description = description,
+                    suggestedPrice = suggestedPrice,
+                    onSuccess = {
+                        showCreateCategoryDialog = false
+                    }
+                )
+            },
+            categoryLabel = labels?.category ?: "Categoría"
+        )
     }
 }
 

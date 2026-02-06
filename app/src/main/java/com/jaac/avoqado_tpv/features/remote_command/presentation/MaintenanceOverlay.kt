@@ -3,7 +3,9 @@ package com.jaac.avoqado_tpv.features.remote_command.presentation
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,17 +14,22 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -71,9 +78,8 @@ fun MaintenanceOverlay(
     onExitMaintenance: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Amber/warning color for maintenance (different from error red for lock)
-    val amberColor = MaterialTheme.avoqadoColors.statusWarning
-    val darkBackground = MaterialTheme.colorScheme.background
+    val warningColor = MaterialTheme.avoqadoColors.statusWarning
+    val scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.76f)
 
     AnimatedVisibility(
         visible = visible,
@@ -84,88 +90,116 @@ fun MaintenanceOverlay(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(darkBackground)
+                .background(scrimColor)
                 .zIndex(90f),  // Below lock (100), above content
             contentAlignment = Alignment.Center
         ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-                modifier = Modifier.padding(32.dp)
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 560.dp)
+                    .padding(24.dp),
+                shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                ),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant
+                )
             ) {
-                // Build/Maintenance Icon
-                Icon(
-                    imageVector = Icons.Filled.Build,
-                    contentDescription = "Modo mantenimiento",
-                    modifier = Modifier.size(100.dp),
-                    tint = amberColor
-                )
-
-                Spacer(modifier = Modifier.height(32.dp))
-
-                // Title
-                Text(
-                    text = "Modo Mantenimiento",
-                    style = MaterialTheme.typography.headlineLarge,
-                    color = Color.White
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Main message
-                Text(
-                    text = "Terminal en mantenimiento.\nNo se pueden procesar pagos.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = Color.White.copy(alpha = 0.7f),
-                    textAlign = TextAlign.Center
-                )
-
-                // Reason (if provided)
-                if (!maintenanceReason.isNullOrBlank()) {
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = "Motivo: $maintenanceReason",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White.copy(alpha = 0.5f),
-                        textAlign = TextAlign.Center
-                    )
-                }
-
-                // Initiated by (if provided)
-                if (!initiatedBy.isNullOrBlank()) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Iniciado por: $initiatedBy",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.White.copy(alpha = 0.4f),
-                        textAlign = TextAlign.Center
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(48.dp))
-
-                // Exit Maintenance Button
-                OutlinedButton(
-                    onClick = onExitMaintenance,
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color.White
-                    )
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 28.dp)
                 ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = warningColor.copy(alpha = 0.18f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Build,
+                            contentDescription = "Modo mantenimiento",
+                            modifier = Modifier
+                                .size(92.dp)
+                                .padding(22.dp),
+                            tint = warningColor
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
                     Text(
-                        text = "Salir de Mantenimiento",
-                        style = MaterialTheme.typography.bodyLarge
+                        text = "Modo mantenimiento",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text(
+                        text = "Terminal en mantenimiento. No se pueden procesar pagos.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+
+                    if (!maintenanceReason.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest
+                        ) {
+                            Text(
+                                text = "Motivo: $maintenanceReason",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                            )
+                        }
+                    }
+
+                    if (!initiatedBy.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Iniciado por: $initiatedBy",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    Button(
+                        onClick = onExitMaintenance,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    ) {
+                        Text(
+                            text = "Salir de mantenimiento",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "Si no puedes salir, contacte al administrador.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
                     )
                 }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Help text
-                Text(
-                    text = "O contacte al administrador para salir remotamente",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = 0.3f),
-                    textAlign = TextAlign.Center
-                )
             }
         }
     }

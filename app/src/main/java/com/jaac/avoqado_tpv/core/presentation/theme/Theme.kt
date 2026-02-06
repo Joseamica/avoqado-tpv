@@ -120,13 +120,13 @@ private val DarkColorScheme = darkColorScheme(
 /**
  * Avoqado Theme wrapper
  *
- * @param darkTheme Whether to use dark theme. Defaults to false (Light mode).
+ * @param darkTheme Whether to use dark theme. Defaults to true (Dark mode).
  *                  Togglable via Settings > "Modo Oscuro".
  * @param content The composable content to wrap with theme
  */
 @Composable
 fun AvoqadoTheme(
-    darkTheme: Boolean = false,
+    darkTheme: Boolean = true,
     content: @Composable () -> Unit
 ) {
     val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme

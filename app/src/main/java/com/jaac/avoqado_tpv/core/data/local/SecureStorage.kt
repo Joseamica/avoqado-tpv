@@ -849,10 +849,10 @@ class SecureStorage @Inject constructor(
 
     /**
      * Get dark mode preference
-     * @return true if dark mode, false for light mode (default: Light)
+     * @return true if dark mode, false for light mode (default: Dark)
      */
     fun getIsDarkMode(): Boolean {
-        return encryptedPrefs.getBoolean(KEY_IS_DARK_MODE, false)
+        return encryptedPrefs.getBoolean(KEY_IS_DARK_MODE, true)
     }
 
     // ========== Terminal Activation ==========

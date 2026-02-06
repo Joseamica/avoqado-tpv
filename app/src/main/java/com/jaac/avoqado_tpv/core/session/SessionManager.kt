@@ -112,6 +112,20 @@ class SessionManager @Inject constructor() {
     }
 
     /**
+     * Notify that the token was successfully refreshed
+     *
+     * Called by TokenAuthenticator after a successful token refresh.
+     * This allows Socket.IO to reconnect with the fresh token from SecureStorage,
+     * preventing infinite reconnection loops with an expired in-memory token.
+     *
+     * **Thread-safe**: Can be called from TokenAuthenticator's synchronized block
+     */
+    fun notifyTokenRefreshed() {
+        Timber.d("🔄 [SessionManager] Token refreshed - notifying observers")
+        _sessionEvents.tryEmit(SessionEvent.TokenRefreshed)
+    }
+
+    /**
      * Notify that the terminal has been deactivated
      *
      * Called by HeartbeatWorker when backend reports terminal status = RETIRED.
@@ -142,4 +156,10 @@ sealed class SessionEvent {
      * Action: Navigate to Activation screen, clear ALL data
      */
     data object TerminalDeactivated : SessionEvent()
+
+    /**
+     * Token refreshed successfully by TokenAuthenticator
+     * Action: Socket.IO reconnects with fresh token from SecureStorage
+     */
+    data object TokenRefreshed : SessionEvent()
 }

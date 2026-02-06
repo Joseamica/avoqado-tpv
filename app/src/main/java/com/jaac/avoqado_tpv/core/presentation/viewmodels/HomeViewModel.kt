@@ -8,6 +8,8 @@ import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
 import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
+import com.jaac.avoqado_tpv.core.session.SessionEvent
+import com.jaac.avoqado_tpv.core.session.SessionManager
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
 import com.jaac.avoqado_tpv.core.domain.events.VenueStatusEvent
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
@@ -84,7 +86,9 @@ class HomeViewModel @Inject constructor(
     // 📡 Socket.IO Payment Bridge - Forward socket payment requests to BLE pipeline
     private val bluetoothPaymentService: com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService,
     // 📦 Update Check Manager - Check for app updates after login
-    private val updateCheckManager: UpdateCheckManager
+    private val updateCheckManager: UpdateCheckManager,
+    // 🔄 Session Manager - Observe token refresh for Socket.IO reconnection
+    private val sessionManager: SessionManager
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -171,6 +175,8 @@ class HomeViewModel @Inject constructor(
         listenForConnectionRestored()
         // 📦 Check for app updates (shows banner if available)
         checkForUpdates()
+        // 🔄 Observe token refresh → reconnect Socket.IO with fresh token
+        observeTokenRefresh()
     }
 
     /**
@@ -318,6 +324,24 @@ class HomeViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Timber.e(e, "❌ [HomeViewModel] Error checking for updates")
+            }
+        }
+    }
+
+    /**
+     * 🔄 Observe Token Refresh Events
+     *
+     * When TokenAuthenticator refreshes the JWT, Socket.IO may still be using
+     * the old expired token in memory, causing infinite reconnection loops.
+     * This observer reconnects Socket.IO with the fresh token from SecureStorage.
+     */
+    private fun observeTokenRefresh() {
+        viewModelScope.launch {
+            sessionManager.sessionEvents.collect { event ->
+                if (event is SessionEvent.TokenRefreshed) {
+                    Timber.d("🔄 [HomeViewModel] Token refreshed - reconnecting socket with fresh token")
+                    socketManager.reconnectWithFreshToken()
+                }
             }
         }
     }

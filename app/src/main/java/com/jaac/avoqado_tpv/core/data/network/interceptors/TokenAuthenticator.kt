@@ -163,6 +163,9 @@ class TokenAuthenticator @Inject constructor(
                     // ✅ Hide loading overlay - refresh succeeded, no need to show "verifying" anymore
                     sessionManager.resetSessionExpiringState()
 
+                    // 🔄 Notify observers (Socket.IO) to reconnect with fresh token
+                    sessionManager.notifyTokenRefreshed()
+
                     // Get new token and retry
                     val newToken = secureStorage.getToken()
                     if (newToken != null) {

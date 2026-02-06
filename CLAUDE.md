@@ -156,6 +156,7 @@ Kotlin, Jetpack Compose, POS terminals, payments, offline-first architecture, an
 
 | Document                                 | Description                                              |
 | ---------------------------------------- | -------------------------------------------------------- |
+| `docs/CROSS_REPO_RELEASE_FLOW.md`        | **🚨 CRITICAL**: Flujo completo de release cross-repo (verificación, deploy order, timeline) |
 | `docs/FORCE_UPDATE_SYSTEM.md`            | **🚨 CRITICAL**: 3-layer force update enforcement (API 426 + Heartbeat + Startup) |
 | `docs/MODULES_SYSTEM.md`                 | **Modules**: VenueModule config, StateFlow pattern, proof-of-sale photo capture |
 | `docs/ATTENDANCE_VERIFICATION.md`        | **Timeclock**: Clock-in/out photo + GPS verification     |
@@ -965,24 +966,32 @@ Usuario: "bump + commit" / "solo commit" / "WIP"
 
 **⚠️ CRITICAL**: TPV takes 3-5 days to update (requires Blumon/PAX signature). Backend/Dashboard deploy in minutes.
 
-### Verificación Obligatoria Antes de Release
+**Full documentation:** `docs/CROSS_REPO_RELEASE_FLOW.md`
 
-**ANTES de generar APK de producción, Claude DEBE:**
+### Quick Reference
 
-1. **Ejecutar script de verificación:**
-   ```bash
-   ./scripts/check-cross-repo.sh
-   ```
+**ANTES de generar APK de producción:**
 
-2. **Revisar cambios pendientes en otros repos:**
-   ```bash
-   git -C ../avoqado-server log --oneline -5
-   git -C ../avoqado-web-dashboard log --oneline -5
-   ```
+```bash
+# 1. Ejecutar verificación automática
+./scripts/check-cross-repo.sh
 
-3. **Preguntar al usuario:**
-   - "¿Hay cambios en backend/dashboard que requieran esta versión del TPV?"
-   - "¿Hay cambios en TPV que requieran actualización de backend/dashboard?"
+# Exit codes:
+# 0 = ✅ Listo para APK
+# 1 = ❌ Errores críticos, NO generar
+# 2 = ⚠️  Advertencias, revisar manualmente
+```
+
+**Si el script pasa, Claude DEBE preguntar:**
+
+1. ¿El TPV usa endpoints NUEVOS del backend? → ¿Ya están en producción?
+2. ¿El backend requiere esta versión del TPV? → Debe soportar vieja Y nueva
+3. ¿Los commits del server/dashboard afectan al TPV?
+
+**Solo después de confirmación:**
+```bash
+./gradlew assembleProductionRelease
+```
 
 ### Regla de Oro: Backwards Compatibility
 

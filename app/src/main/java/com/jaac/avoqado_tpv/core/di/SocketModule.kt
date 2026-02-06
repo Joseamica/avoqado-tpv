@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.core.di
 
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import dagger.Module
 import dagger.Provides
@@ -54,7 +55,7 @@ object SocketModule {
      */
     @Provides
     @Singleton
-    fun provideSocketManager(): SocketManager {
-        return SocketManager()
+    fun provideSocketManager(secureStorage: SecureStorage): SocketManager {
+        return SocketManager(secureStorage)
     }
 }

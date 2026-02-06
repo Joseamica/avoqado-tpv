@@ -299,6 +299,11 @@ fun AppNavigation(
                     // Reset the expiring state after navigation completes
                     sessionManager.resetSessionExpiringState()
                 }
+
+                is SessionEvent.TokenRefreshed -> {
+                    // Handled by HomeViewModel - socket reconnection with fresh token
+                    Timber.d("🔄 [AppNavigation] Token refreshed (socket reconnect handled by HomeViewModel)")
+                }
             }
         }
     }

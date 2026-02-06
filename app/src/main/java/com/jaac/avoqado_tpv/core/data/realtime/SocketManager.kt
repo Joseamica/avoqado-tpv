@@ -48,7 +48,9 @@ import javax.inject.Singleton
  * ```
  */
 @Singleton
-class SocketManager @Inject constructor() {
+class SocketManager @Inject constructor(
+    private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage
+) {
 
     // ========================================
     // Properties
@@ -184,6 +186,26 @@ class SocketManager @Inject constructor() {
             connect(url, token, currentTerminalId)
         } else {
             Timber.w("⚠️ Cannot reconnect: No stored credentials")
+        }
+    }
+
+    /**
+     * Reconnect using fresh token from SecureStorage (source of truth)
+     *
+     * Called when TokenAuthenticator refreshes the JWT. The in-memory `currentToken`
+     * may be stale (expired), so we read the fresh token directly from SecureStorage.
+     * This breaks the infinite reconnection loop caused by Socket.IO auto-reconnect
+     * using the expired in-memory token.
+     */
+    fun reconnectWithFreshToken() {
+        val url = currentUrl
+        val freshToken = secureStorage.getToken()
+
+        if (url != null && freshToken != null) {
+            Timber.d("🔄 [Socket.IO] Reconnecting with fresh token from SecureStorage")
+            connect(url, freshToken, currentTerminalId)
+        } else {
+            Timber.w("⚠️ [Socket.IO] Cannot reconnect with fresh token: url=$url, hasToken=${freshToken != null}")
         }
     }
 

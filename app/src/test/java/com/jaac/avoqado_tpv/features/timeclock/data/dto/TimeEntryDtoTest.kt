@@ -22,7 +22,8 @@ class TimeEntryDtoTest {
             clockInTime = utcString, clockOutTime = null,
             jobRole = null, totalHours = null, breakMinutes = 0,
             status = "CLOCKED_IN", notes = null, editedBy = null,
-            checkInPhotoUrl = null, staff = null, breaks = null
+            checkInPhotoUrl = null, staff = null, breaks = null,
+            autoClockOut = null, autoClockOutNote = null
         )
 
         // Act
@@ -46,7 +47,8 @@ class TimeEntryDtoTest {
             clockInTime = localString, clockOutTime = null,
             jobRole = null, totalHours = null, breakMinutes = 0,
             status = "CLOCKED_IN", notes = null, editedBy = null,
-            checkInPhotoUrl = null, staff = null, breaks = null
+            checkInPhotoUrl = null, staff = null, breaks = null,
+            autoClockOut = null, autoClockOutNote = null
         )
 
         // Act

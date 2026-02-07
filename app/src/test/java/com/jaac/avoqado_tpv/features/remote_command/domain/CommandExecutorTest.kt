@@ -10,6 +10,8 @@ import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommand
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandPriority
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandType
+import com.jaac.avoqado_tpv.features.self_update.data.AvoqadoUpdateRepository
+import com.jaac.avoqado_tpv.features.self_update.domain.UpdateRequestManager
 import io.mockk.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
@@ -40,6 +42,8 @@ class CommandExecutorTest {
     private lateinit var mockMaintenanceManager: MaintenanceManager
     private lateinit var mockSecureStorage: SecureStorage
     private lateinit var mockPackageManager: PackageManager
+    private lateinit var mockUpdateRequestManager: UpdateRequestManager
+    private lateinit var mockAvoqadoUpdateRepository: AvoqadoUpdateRepository
 
     // System under test
     private lateinit var commandExecutor: CommandExecutor
@@ -55,6 +59,8 @@ class CommandExecutorTest {
         mockMaintenanceManager = mockk(relaxed = true)
         mockSecureStorage = mockk(relaxed = true)
         mockPackageManager = mockk(relaxed = true)
+        mockUpdateRequestManager = mockk(relaxed = true)
+        mockAvoqadoUpdateRepository = mockk(relaxed = true)
 
         // Setup secure storage to return test terminal ID
         every { mockSecureStorage.getSerialNumber() } returns testTerminalId
@@ -75,7 +81,9 @@ class CommandExecutorTest {
             context = mockContext,
             lockScreenManager = mockLockScreenManager,
             maintenanceManager = mockMaintenanceManager,
-            secureStorage = mockSecureStorage
+            secureStorage = mockSecureStorage,
+            updateRequestManager = mockUpdateRequestManager,
+            avoqadoUpdateRepository = mockAvoqadoUpdateRepository
         )
     }
 

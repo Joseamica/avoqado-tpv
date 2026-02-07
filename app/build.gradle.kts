@@ -131,6 +131,12 @@ android {
         }
     }
 
+    testOptions {
+        unitTests.all {
+            it.jvmArgs("-Xmx2g")
+        }
+    }
+
     // ⚠️ LINT: Fail build on orphaned files and code quality issues
     lint {
         abortOnError = false  // Don't fail build on warnings (for now)

@@ -32,6 +32,7 @@ class SocketManagerTest {
 
     // Mock Socket.IO objects
     private lateinit var mockSocket: Socket
+    private lateinit var mockSecureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage
     private lateinit var socketManager: SocketManager
 
     // Captured listeners for simulating server events
@@ -46,6 +47,7 @@ class SocketManagerTest {
 
         // Mock Socket.IO Socket
         mockSocket = mockk(relaxed = true)
+        mockSecureStorage = mockk(relaxed = true)
 
         // Capture all event listeners when socket.on() is called
         every { mockSocket.on(any(), any()) } answers {
@@ -62,7 +64,7 @@ class SocketManagerTest {
         every { mockSocket.emit(any(), any<JSONObject>()) } returns mockSocket
 
         // Create SocketManager instance
-        socketManager = SocketManager()
+        socketManager = SocketManager(mockSecureStorage)
 
         // Use reflection to inject mock socket
         injectMockSocket()

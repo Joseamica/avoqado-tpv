@@ -107,7 +107,13 @@ class AttendanceVerificationTest {
             requireVerificationBarcode = null,
             enableShifts = null,
             requireClockInPhoto = null,  // Null from backend
-            requireClockOutPhoto = null  // Null from backend
+            requireClockOutPhoto = null,  // Null from backend
+            requireClockInToLogin = null,
+            kioskModeEnabled = null,
+            kioskDefaultMerchantId = null,
+            showQuickPayment = null,
+            showOrderManagement = null,
+            showCryptoOption = null
         )
 
         val domain = dto.toDomain()
@@ -136,7 +142,13 @@ class AttendanceVerificationTest {
             requireVerificationBarcode = null,
             enableShifts = null,
             requireClockInPhoto = true,
-            requireClockOutPhoto = true
+            requireClockOutPhoto = true,
+            requireClockInToLogin = null,
+            kioskModeEnabled = null,
+            kioskDefaultMerchantId = null,
+            showQuickPayment = null,
+            showOrderManagement = null,
+            showCryptoOption = null
         )
 
         val domain = dto.toDomain()
@@ -165,7 +177,13 @@ class AttendanceVerificationTest {
             requireVerificationBarcode = null,
             enableShifts = null,
             requireClockInPhoto = false,
-            requireClockOutPhoto = false
+            requireClockOutPhoto = false,
+            requireClockInToLogin = null,
+            kioskModeEnabled = null,
+            kioskDefaultMerchantId = null,
+            showQuickPayment = null,
+            showOrderManagement = null,
+            showCryptoOption = null
         )
 
         val domain = dto.toDomain()

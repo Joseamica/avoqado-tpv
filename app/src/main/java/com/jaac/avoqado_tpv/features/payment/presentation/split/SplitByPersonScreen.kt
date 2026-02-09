@@ -35,8 +35,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.payment.presentation.split.components.PersonCountSelector
 import com.jaac.avoqado_tpv.features.payment.presentation.split.components.SelectableItemRow
 import java.math.BigDecimal
-import java.text.NumberFormat
-import java.util.Locale
+import com.jaac.avoqado_tpv.core.util.rememberCurrencyFormat
 
 /**
  * Split By Person Screen
@@ -86,7 +85,7 @@ fun SplitByPersonScreen(
     viewModel: SplitByPersonViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val currencyFormatter = NumberFormat.getCurrencyInstance(Locale("es", "MX"))
+    val currencyFormatter = rememberCurrencyFormat()
 
     Scaffold(
         topBar = {
@@ -168,7 +167,7 @@ private fun SplitByPersonContent(
     onProceedToPayment: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val currencyFormatter = NumberFormat.getCurrencyInstance(Locale("es", "MX"))
+    val currencyFormatter = rememberCurrencyFormat()
 
     Column(
         modifier = modifier.fillMaxSize()

@@ -160,4 +160,19 @@ interface PendingPaymentDao {
         ORDER BY created_at DESC
     """)
     suspend fun getAllFailed(): List<PendingPaymentEntity>
+
+    /**
+     * Reset all failed payments back to PENDING for retry.
+     *
+     * **Use Case:** When connection is restored, give failed payments another chance.
+     * Resets retry_count to 0 so they get full retry attempts.
+     *
+     * @return Number of payments reset
+     */
+    @Query("""
+        UPDATE pending_payments
+        SET sync_status = 'PENDING', retry_count = 0
+        WHERE sync_status = 'FAILED'
+    """)
+    suspend fun resetAllFailed(): Int
 }

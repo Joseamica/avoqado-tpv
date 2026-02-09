@@ -536,6 +536,110 @@ class VerificationUploadManager @Inject constructor(
     }
 
     /**
+     * Upload a facade/store front photo to Firebase Storage.
+     * Path: venues/{venueSlug}/facade/{date}/{staffId}_{timestamp}.jpg
+     *
+     * @param localPath Path to local image file (from camera capture)
+     * @param venueSlug Venue slug for storage path (e.g., "avoqado-full")
+     * @param staffId Staff member ID for filename
+     * @param timestamp Timestamp for uniqueness (System.currentTimeMillis())
+     * @param onProgress Optional callback for upload progress (0.0 to 1.0)
+     * @return Result with download URL on success, or error on failure
+     */
+    suspend fun uploadFacadePhoto(
+        localPath: String,
+        venueSlug: String,
+        staffId: String,
+        timestamp: Long = System.currentTimeMillis(),
+        onProgress: ((Float) -> Unit)? = null
+    ): Result<String> {
+        return try {
+            Timber.d("📸 [$TAG] Starting facade photo upload | staff=$staffId | venue=$venueSlug")
+
+            val compressedBytes = compressImage(localPath)
+            Timber.d("📸 [$TAG] Compressed to ${compressedBytes.size / 1024}KB")
+
+            val dateStr = SimpleDateFormat(DATE_FORMAT, Locale.US).format(Date())
+            val fileName = "${staffId}_${timestamp}.jpg"
+            val storagePath = buildStoragePath("venues/$venueSlug/facade/$dateStr/$fileName")
+
+            Timber.d("📸 [$TAG] Uploading facade photo to: $storagePath")
+
+            val photoRef = storageRef.child(storagePath)
+            val uploadTask = photoRef.putBytes(compressedBytes)
+
+            uploadTask.addOnProgressListener { snapshot ->
+                val progress = snapshot.bytesTransferred.toFloat() / snapshot.totalByteCount.toFloat()
+                onProgress?.invoke(progress)
+                Timber.d("📸 [$TAG] Upload progress: ${(progress * 100).toInt()}%")
+            }
+
+            uploadTask.await()
+
+            val downloadUrl = photoRef.downloadUrl.await().toString()
+
+            Timber.i("📸 [$TAG] Facade photo upload complete | url=$downloadUrl")
+            Result.success(downloadUrl)
+
+        } catch (e: Exception) {
+            Timber.e(e, "📸 [$TAG] Facade photo upload failed")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Upload a bank deposit voucher photo to Firebase Storage.
+     * Path: venues/{venueSlug}/deposit/{date}/{staffId}_{timestamp}.jpg
+     *
+     * @param localPath Path to local image file (from camera capture)
+     * @param venueSlug Venue slug for storage path (e.g., "avoqado-full")
+     * @param staffId Staff member ID for filename
+     * @param timestamp Timestamp for uniqueness (System.currentTimeMillis())
+     * @param onProgress Optional callback for upload progress (0.0 to 1.0)
+     * @return Result with download URL on success, or error on failure
+     */
+    suspend fun uploadDepositPhoto(
+        localPath: String,
+        venueSlug: String,
+        staffId: String,
+        timestamp: Long = System.currentTimeMillis(),
+        onProgress: ((Float) -> Unit)? = null
+    ): Result<String> {
+        return try {
+            Timber.d("📸 [$TAG] Starting deposit photo upload | staff=$staffId | venue=$venueSlug")
+
+            val compressedBytes = compressImage(localPath)
+            Timber.d("📸 [$TAG] Compressed to ${compressedBytes.size / 1024}KB")
+
+            val dateStr = SimpleDateFormat(DATE_FORMAT, Locale.US).format(Date())
+            val fileName = "${staffId}_${timestamp}.jpg"
+            val storagePath = buildStoragePath("venues/$venueSlug/deposit/$dateStr/$fileName")
+
+            Timber.d("📸 [$TAG] Uploading deposit photo to: $storagePath")
+
+            val photoRef = storageRef.child(storagePath)
+            val uploadTask = photoRef.putBytes(compressedBytes)
+
+            uploadTask.addOnProgressListener { snapshot ->
+                val progress = snapshot.bytesTransferred.toFloat() / snapshot.totalByteCount.toFloat()
+                onProgress?.invoke(progress)
+                Timber.d("📸 [$TAG] Upload progress: ${(progress * 100).toInt()}%")
+            }
+
+            uploadTask.await()
+
+            val downloadUrl = photoRef.downloadUrl.await().toString()
+
+            Timber.i("📸 [$TAG] Deposit photo upload complete | url=$downloadUrl")
+            Result.success(downloadUrl)
+
+        } catch (e: Exception) {
+            Timber.e(e, "📸 [$TAG] Deposit photo upload failed")
+            Result.failure(e)
+        }
+    }
+
+    /**
      * Delete a photo from Firebase Storage.
      * Used for cleanup when user removes a photo before payment.
      *

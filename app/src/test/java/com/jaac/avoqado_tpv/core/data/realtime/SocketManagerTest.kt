@@ -14,6 +14,7 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import java.net.URI
 
 /**
  * SocketManagerTest
@@ -21,11 +22,11 @@ import org.junit.Test
  * Unit tests for SocketManager core functionality.
  *
  * Tests:
- * ✅ Connection lifecycle (connect, disconnect, reconnect)
- * ✅ Event parsing (JSON → SocketEvent)
- * ✅ Room management (join, leave)
- * ✅ Error handling
- * ✅ StateFlow emissions
+ * - Connection lifecycle (connect, disconnect, reconnect)
+ * - Event parsing (JSON → SocketEvent)
+ * - Room management (join, leave)
+ * - Error handling
+ * - StateFlow emissions
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class SocketManagerTest {
@@ -63,28 +64,19 @@ class SocketManagerTest {
         // Mock socket.emit() for room operations
         every { mockSocket.emit(any(), any<JSONObject>()) } returns mockSocket
 
-        // Create SocketManager instance
-        socketManager = SocketManager(mockSecureStorage)
+        // Mock IO.socket() static to return our mock socket
+        mockkStatic(IO::class)
+        every { IO.socket(any<URI>(), any<IO.Options>()) } returns mockSocket
 
-        // Use reflection to inject mock socket
-        injectMockSocket()
+        // Create SocketManager and call connect() to register all event listeners
+        socketManager = SocketManager(mockSecureStorage)
+        socketManager.connect("https://test.socket.io", "test-token")
     }
 
     @After
     fun tearDown() {
         capturedListeners.clear()
         unmockkAll()
-    }
-
-    /**
-     * Inject mock socket into SocketManager using reflection
-     *
-     * This allows us to test SocketManager without actually connecting to a server.
-     */
-    private fun injectMockSocket() {
-        val socketField = SocketManager::class.java.getDeclaredField("socket")
-        socketField.isAccessible = true
-        socketField.set(socketManager, mockSocket)
     }
 
     // ========================================
@@ -98,15 +90,14 @@ class SocketManagerTest {
         val token = "test-jwt-token"
         val capturedOptions = slot<IO.Options>()
 
-        // Mock IO.socket() to return our mock socket and capture options
-        mockkStatic(IO::class)
-        every { IO.socket(any<String>(), capture(capturedOptions)) } returns mockSocket
+        // Re-mock IO.socket with capture to inspect options
+        every { IO.socket(any<URI>(), capture(capturedOptions)) } returns mockSocket
 
         // When
         socketManager.connect(url, token)
 
         // Then - Verify socket was created with correct options
-        verify { IO.socket(any<String>(), any<IO.Options>()) }
+        verify { IO.socket(any<URI>(), any<IO.Options>()) }
 
         // Verify auth token was set correctly
         val authMap = capturedOptions.captured.auth as? Map<*, *>
@@ -245,7 +236,7 @@ class SocketManagerTest {
         // Given
         val commandJson = JSONObject().apply {
             put("terminalId", "terminal_123")
-            put("commandType", "MAINTENANCE_MODE")
+            put("type", "MAINTENANCE_MODE")
             put("payload", JSONObject().apply {
                 put("enabled", true)
             })
@@ -422,10 +413,11 @@ class SocketManagerTest {
         // When - Try to parse as payment_completed
         capturedListeners["payment_completed"]?.call(malformedJson)
 
-        // Then - Should not crash, may emit error or nothing
+        // Then - Should not crash. Event is emitted with default/empty values
+        // (parsePaymentEvent uses optString/optInt which return defaults for missing fields)
         socketManager.events.test {
-            // Either no event or an error event, but shouldn't crash
-            expectNoEvents()
+            val event = awaitItem()
+            assertThat(event).isInstanceOf(SocketEvent.PaymentCompleted::class.java)
             cancelAndIgnoreRemainingEvents()
         }
     }
@@ -460,11 +452,11 @@ class SocketManagerTest {
 
     @Test
     fun `isConnected StateFlow should update on connection changes`() = runTest(testDispatcher) {
-        // Given
+        // Given - setup's connect() called disconnect() which emitted false
         every { mockSocket.connected() } returns false
 
         socketManager.isConnected.test {
-            // Initial state
+            // Initial state (replayed from setup)
             assertThat(awaitItem()).isFalse()
 
             // When - Connect

@@ -38,6 +38,7 @@ import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.R
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.activity.ComponentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -139,13 +140,18 @@ fun AppNavigation(
     val isSessionExpiring by sessionManager.isSessionExpiring.collectAsStateWithLifecycle()
 
     // 🌐 CONNECTION MONITORING (Square/Toast pattern)
-    // Shows discrete banner when backend is unreachable, doesn't block operations
-    val connectionViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.ConnectionViewModel = hiltViewModel()
+    // Anchored to Activity lifecycle — survives navigation without recreation
+    val activityOwner = LocalContext.current as ComponentActivity
+    val connectionViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.ConnectionViewModel = hiltViewModel(
+        viewModelStoreOwner = activityOwner
+    )
     val connectionState by connectionViewModel.state.collectAsStateWithLifecycle()
 
     // 🏥 DEVICE HEALTH MONITORING (Square/Toast/Shopify pattern)
-    // Shows alerts for low battery, storage, memory, weak WiFi
-    val deviceHealthViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceHealthViewModel = hiltViewModel()
+    // Anchored to Activity lifecycle — survives navigation without recreation
+    val deviceHealthViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceHealthViewModel = hiltViewModel(
+        viewModelStoreOwner = activityOwner
+    )
     val deviceAlerts by deviceHealthViewModel.activeAlerts.collectAsStateWithLifecycle()
     val deviceAlertsExpanded by deviceHealthViewModel.isExpanded.collectAsStateWithLifecycle()
 
@@ -751,16 +757,16 @@ fun AppNavigation(
             Box(modifier = Modifier.fillMaxSize()) {
             WelcomeScreen(
                 onStartPaymentWithAmount = { amount ->
-                    // ✅ Modal flow: Navigate to PaymentScreen with amount
+                    Timber.d("[PERF] NAV: Welcome → PaymentScreen START")
                     navController.currentBackStackEntry?.savedStateHandle?.set("initialAmount", amount)
                     navController.navigate(NavRoute.Payment.route)
                 },
                 onNavigateToShifts = {
-                    // Navigate to Shifts screen
+                    Timber.d("[PERF] NAV: Welcome → Shifts START")
                     navController.navigate(NavRoute.Shifts.route)
                 },
                 onNavigateToOrdering = {
-                    // Navigate to Ordering Welcome screen
+                    Timber.d("[PERF] NAV: Welcome → Ordering START")
                     navController.navigate(NavRoute.OrderingWelcome.route)
                 },
                 onNavigateToReports = {
@@ -857,9 +863,7 @@ fun AppNavigation(
             OrderingWelcomeScreen(
                 showTableService = secureStorage.supportsTableService(),
                 onQuickOrderClick = {
-                    // Quick Order flow (retail/QSR) - No table assignment
-                    // MenuViewModel will create order LOCALLY (local-first) and sync later
-                    Timber.d("🛒 Quick Order clicked - Creating new order LOCALLY (local-first)")
+                    Timber.d("[PERF] NAV: Ordering → MenuScreen (QuickOrder) START")
                     navController.navigate(NavRoute.Menu.createRoute("CREATE_QUICK_ORDER"))
                 },
                 onTableServiceClick = {

@@ -26,17 +26,19 @@ class TimeEntryRepositoryImpl @Inject constructor(
         checkInPhotoUrl: String?,
         clockInLatitude: Double?,
         clockInLongitude: Double?,
-        clockInAccuracy: Float?
+        clockInAccuracy: Float?,
+        facadePhotoUrl: String?
     ): Result<TimeEntry> = withContext(Dispatchers.IO) {
         try {
             val hasGps = clockInLatitude != null && clockInLongitude != null
-            Timber.d("⏱ Clocking in staff: $staffId at venue: $venueId, hasPhoto: ${checkInPhotoUrl != null}, hasGps: $hasGps")
+            Timber.d("⏱ Clocking in staff: $staffId at venue: $venueId, hasPhoto: ${checkInPhotoUrl != null}, hasFacade: ${facadePhotoUrl != null}, hasGps: $hasGps")
 
             val request = ClockInRequestDto(
                 staffId = staffId,
                 pin = pin,
                 jobRole = jobRole,
                 checkInPhotoUrl = checkInPhotoUrl,
+                facadePhotoUrl = facadePhotoUrl,
                 clockInLatitude = clockInLatitude,
                 clockInLongitude = clockInLongitude,
                 clockInAccuracy = clockInAccuracy
@@ -66,17 +68,19 @@ class TimeEntryRepositoryImpl @Inject constructor(
         checkOutPhotoUrl: String?,
         clockOutLatitude: Double?,
         clockOutLongitude: Double?,
-        clockOutAccuracy: Float?
+        clockOutAccuracy: Float?,
+        depositPhotoUrl: String?
     ): Result<TimeEntry> = withContext(Dispatchers.IO) {
         try {
             val hasGps = clockOutLatitude != null && clockOutLongitude != null
             val hasPhoto = checkOutPhotoUrl != null
-            Timber.d("⏱ Clocking out staff: $staffId at venue: $venueId, hasGps: $hasGps, hasPhoto: $hasPhoto")
+            Timber.d("⏱ Clocking out staff: $staffId at venue: $venueId, hasGps: $hasGps, hasPhoto: $hasPhoto, hasDeposit: ${depositPhotoUrl != null}")
 
             val request = ClockOutRequestDto(
                 staffId = staffId,
                 pin = pin,
                 checkOutPhotoUrl = checkOutPhotoUrl,
+                depositPhotoUrl = depositPhotoUrl,
                 clockOutLatitude = clockOutLatitude,
                 clockOutLongitude = clockOutLongitude,
                 clockOutAccuracy = clockOutAccuracy

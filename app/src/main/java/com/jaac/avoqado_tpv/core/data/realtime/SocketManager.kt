@@ -94,14 +94,14 @@ class SocketManager @Inject constructor(
      * @param url Server URL (e.g., "https://api.avoqado.io" or dev URL)
      * @param token JWT access token from login
      * @param reconnection Enable automatic reconnection (default: true)
-     * @param reconnectionAttempts Max reconnection attempts (default: 5)
+     * @param reconnectionAttempts Max reconnection attempts (default: unlimited for 3G resilience)
      */
     fun connect(
         url: String,
         token: String,
         terminalId: String? = null,
         reconnection: Boolean = true,
-        reconnectionAttempts: Int = 5
+        reconnectionAttempts: Int = Int.MAX_VALUE
     ) {
         try {
             // Disconnect existing socket if any
@@ -128,11 +128,11 @@ class SocketManager @Inject constructor(
                 this.reconnection = reconnection
                 this.reconnectionAttempts = reconnectionAttempts
                 reconnectionDelay = 1000 // 1 second
-                reconnectionDelayMax = 5000 // 5 seconds max
+                reconnectionDelayMax = 30000 // 30 seconds max (slow 3G needs longer backoff)
                 randomizationFactor = 0.5 // Add jitter to prevent thundering herd
 
                 // Timeouts
-                timeout = 20000 // 20 seconds connection timeout
+                timeout = 30000 // 30 seconds connection timeout (3G WebSocket upgrade can be slow)
 
                 // Force new connection (don't reuse existing)
                 forceNew = true

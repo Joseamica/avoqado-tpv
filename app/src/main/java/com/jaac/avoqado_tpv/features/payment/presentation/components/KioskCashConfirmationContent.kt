@@ -60,8 +60,7 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.launch
 import timber.log.Timber
-import java.text.NumberFormat
-import java.util.Locale
+import com.jaac.avoqado_tpv.core.util.rememberCurrencyFormat
 
 /**
  * EntryPoint for accessing dependencies in KioskCashConfirmationContent
@@ -112,9 +111,7 @@ fun KioskCashConfirmationContent(
     onConfirm: (staffId: String) -> Unit,
     onCancel: () -> Unit
 ) {
-    val currencyFormat = remember {
-        NumberFormat.getCurrencyInstance(Locale("es", "MX"))
-    }
+    val currencyFormat = rememberCurrencyFormat()
 
     // Format amount for display
     val displayAmount = remember(totalAmount) {

@@ -136,6 +136,7 @@ fun TimeclockScreen(
                     ClockInPhotoPrompt(
                         staffName = currentState.staffName,
                         canSkip = currentState.canSkip,
+                        photoType = currentState.photoType,
                         onTakePhoto = viewModel::startPhotoCapture,
                         onSkip = viewModel::skipPhoto,
                         onCancel = viewModel::cancelPhotoCapture
@@ -146,6 +147,7 @@ fun TimeclockScreen(
                         staffName = currentState.staffName,
                         localPath = currentState.localPath,
                         isClockOut = currentState.isClockOut,
+                        photoType = currentState.photoType,
                         onConfirm = viewModel::confirmPhoto,
                         onRetake = viewModel::retakePhoto,
                         onCancel = viewModel::cancelPhotoCapture
@@ -627,10 +629,28 @@ private fun PhotoUploadProgress(progress: Float) { /* ... keep existing ... */ }
 private fun ClockInPhotoPrompt(
     staffName: String,
     canSkip: Boolean,
+    photoType: PhotoType = PhotoType.CLOCK_IN_SELFIE,
     onTakePhoto: () -> Unit,
     onSkip: () -> Unit,
     onCancel: () -> Unit
 ) {
+    // Dynamic text based on photo type
+    val title = when (photoType) {
+        PhotoType.CLOCK_IN_SELFIE -> "Foto de Verificacion"
+        PhotoType.FACADE -> "Foto de Fachada/Tienda"
+        PhotoType.DEPOSIT_VOUCHER -> "Foto de Voucher Bancario"
+    }
+    val description = when (photoType) {
+        PhotoType.CLOCK_IN_SELFIE -> "Se requiere una foto selfie para registrar tu entrada. Tambien se guardara tu ubicacion GPS."
+        PhotoType.FACADE -> "Toma una foto panoramica del frente de la tienda."
+        PhotoType.DEPOSIT_VOUCHER -> "Toma una foto del comprobante de deposito bancario."
+    }
+    val icon = when (photoType) {
+        PhotoType.CLOCK_IN_SELFIE -> Icons.Default.CameraAlt
+        PhotoType.FACADE -> Icons.Default.Storefront
+        PhotoType.DEPOSIT_VOUCHER -> Icons.Default.Receipt
+    }
+
     // Dialog-style card centered on screen
     Box(
         modifier = Modifier
@@ -658,7 +678,7 @@ private fun ClockInPhotoPrompt(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            Icons.Default.CameraAlt,
+                            icon,
                             contentDescription = null,
                             modifier = Modifier.size(40.dp),
                             tint = MaterialTheme.colorScheme.onPrimaryContainer
@@ -668,7 +688,7 @@ private fun ClockInPhotoPrompt(
 
                 // Title
                 Text(
-                    text = "Foto de Verificación",
+                    text = title,
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center
@@ -689,7 +709,7 @@ private fun ClockInPhotoPrompt(
 
                 // Description
                 Text(
-                    text = "Se requiere una foto selfie para registrar tu entrada. También se guardará tu ubicación GPS.",
+                    text = description,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
@@ -752,11 +772,18 @@ private fun PhotoConfirmationScreen(
     staffName: String,
     localPath: String,
     isClockOut: Boolean,
+    photoType: PhotoType = PhotoType.CLOCK_IN_SELFIE,
     onConfirm: () -> Unit,
     onRetake: () -> Unit,
     onCancel: () -> Unit
 ) {
     val context = LocalContext.current
+
+    val confirmTitle = when (photoType) {
+        PhotoType.CLOCK_IN_SELFIE -> "Confirmar Foto de Entrada"
+        PhotoType.FACADE -> "Confirmar Foto de Fachada"
+        PhotoType.DEPOSIT_VOUCHER -> "Confirmar Foto de Voucher"
+    }
 
     // Load the image from local path
     val imageBitmap = remember(localPath) {
@@ -789,7 +816,7 @@ private fun PhotoConfirmationScreen(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = if (isClockOut) "Confirmar Foto de Salida" else "Confirmar Foto de Entrada",
+                        text = confirmTitle,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                         color = Color.White

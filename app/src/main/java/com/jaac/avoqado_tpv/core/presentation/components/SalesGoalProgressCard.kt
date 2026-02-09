@@ -39,8 +39,7 @@ import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleSalesGoal
 import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalPeriod
 import java.math.BigDecimal
 import java.math.RoundingMode
-import java.text.NumberFormat
-import java.util.Locale
+import com.jaac.avoqado_tpv.core.util.rememberCurrencyFormat
 
 /**
  * Sales Goal Progress Card
@@ -100,7 +99,7 @@ fun SalesGoalProgressCard(
     )
 
     // Currency formatter
-    val currencyFormat = NumberFormat.getCurrencyInstance(Locale("es", "MX"))
+    val currencyFormat = rememberCurrencyFormat()
 
     Card(
         modifier = modifier.fillMaxWidth(),

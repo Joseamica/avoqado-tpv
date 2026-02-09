@@ -67,6 +67,7 @@ fun SettingsBottomSheet(
     isDarkMode: Boolean = false,
     onDarkModeToggle: (() -> Unit)? = null,
 ) {
+    timber.log.Timber.d("[PERF] SettingsBottomSheet SHOW")
     // ✅ Skip partially expanded state - open fully
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 

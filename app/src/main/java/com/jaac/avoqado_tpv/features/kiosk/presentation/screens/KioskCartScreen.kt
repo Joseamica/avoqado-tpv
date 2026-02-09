@@ -67,8 +67,8 @@ import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskExitPinD
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.math.BigDecimal
+import com.jaac.avoqado_tpv.core.util.rememberCurrencyFormat
 import java.text.NumberFormat
-import java.util.Locale
 
 /**
  * Kiosk Cart Screen - Order Summary
@@ -119,9 +119,7 @@ fun KioskCartScreen(
     val isSearchingCustomers by viewModel.isSearchingCustomers.collectAsStateWithLifecycle()
     val isCreatingCustomer by viewModel.isCreatingCustomer.collectAsStateWithLifecycle()
 
-    val currencyFormat = remember {
-        NumberFormat.getCurrencyInstance(Locale("es", "MX"))
-    }
+    val currencyFormat = rememberCurrencyFormat()
 
     Timber.d("🥝 [KIOSK-CART] Composing CartScreen (items: ${cartItems.size}, total: $cartTotal, isEmpty: ${cartItems.isEmpty()})")
 

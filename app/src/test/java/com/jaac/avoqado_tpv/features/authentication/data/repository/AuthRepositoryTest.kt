@@ -163,10 +163,13 @@ class AuthRepositoryTest {
         // Then: Result is error with rate limit message
         assertTrue("Expected error result", result is Result.Error)
         val errorResult = result as Result.Error
+        // Backend message "Too many requests" is in customUserMessage, HTTP code in message
+        val apiEx = errorResult.exception as? com.jaac.avoqado_tpv.core.domain.models.ApiException
         assertTrue(
-            "Expected rate limit message",
-            errorResult.exception.message?.contains("Demasiados intentos") == true ||
-            errorResult.exception.message?.contains("Too many") == true
+            "Expected rate limit: got message='${errorResult.exception.message}' userMessage='${apiEx?.userMessage}'",
+            errorResult.exception.message?.contains("429") == true ||
+            apiEx?.userMessage?.contains("Too many") == true ||
+            apiEx?.userMessage?.contains("Demasiados") == true
         )
     }
 

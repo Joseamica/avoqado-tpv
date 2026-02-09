@@ -18,6 +18,8 @@ data class TimeEntry(
     val breakMinutes: Int,
     val status: TimeEntryStatus,
     val checkInPhotoUrl: String?, // Firebase Storage URL of clock-in photo (anti-fraud)
+    val facadePhotoUrl: String? = null, // Firebase URL: store front photo at clock-in
+    val depositPhotoUrl: String? = null, // Firebase URL: bank deposit voucher at clock-out
     val breaks: List<TimeEntryBreak>,
     val autoClockOut: Boolean = false, // Was this entry auto-closed by the system?
     val autoClockOutNote: String? = null // Reason for auto clock-out

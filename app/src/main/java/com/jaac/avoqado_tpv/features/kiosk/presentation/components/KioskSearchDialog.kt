@@ -65,8 +65,7 @@ import coil.request.ImageRequest
 import com.jaac.avoqado_tpv.features.kiosk.domain.model.KioskProduct
 import timber.log.Timber
 import java.math.BigDecimal
-import java.text.NumberFormat
-import java.util.Locale
+import com.jaac.avoqado_tpv.core.util.rememberCurrencyFormat
 
 /**
  * Kiosk Search Dialog
@@ -368,9 +367,7 @@ private fun SearchResultCard(
     searchQuery: String,
     onClick: () -> Unit
 ) {
-    val currencyFormat = remember {
-        NumberFormat.getCurrencyInstance(Locale("es", "MX"))
-    }
+    val currencyFormat = rememberCurrencyFormat()
 
     Card(
         modifier = Modifier

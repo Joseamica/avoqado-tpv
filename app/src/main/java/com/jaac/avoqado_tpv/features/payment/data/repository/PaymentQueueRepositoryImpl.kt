@@ -130,6 +130,19 @@ class PaymentQueueRepositoryImpl @Inject constructor(
         }
     }
 
+    override suspend fun resetAllFailed(): Int = withContext(Dispatchers.IO) {
+        try {
+            val count = pendingPaymentDao.resetAllFailed()
+            if (count > 0) {
+                Timber.i("🔄 [Payment Queue] Reset $count failed payments back to PENDING")
+            }
+            count
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Payment Queue] Failed to reset failed payments")
+            0
+        }
+    }
+
     // ===========================================================================================
     // Mapping Functions: Domain ←→ Entity
     // ===========================================================================================

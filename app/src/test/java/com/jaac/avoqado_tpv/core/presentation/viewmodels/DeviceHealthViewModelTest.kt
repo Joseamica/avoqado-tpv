@@ -45,6 +45,7 @@ class DeviceHealthViewModelTest {
     private lateinit var simulatedAlertsManager: SimulatedAlertsManager
     private lateinit var connectionStateManager: ConnectionStateManager
     private lateinit var updateCheckManager: UpdateCheckManager
+    private lateinit var paymentQueueStateManager: com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
 
     private val fakeNetworkStatus = MutableSharedFlow<NetworkStatus>()
     private val fakeSimulatedAlerts = MutableStateFlow<Set<DeviceAlert>>(emptySet())
@@ -82,6 +83,7 @@ class DeviceHealthViewModelTest {
         simulatedAlertsManager = mockk(relaxed = true)
         connectionStateManager = mockk(relaxed = true)
         updateCheckManager = mockk(relaxed = true)
+        paymentQueueStateManager = com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager()
 
         every { deviceHealthMonitor.getSystemHealth() } returns healthySystem()
         every { networkMonitor.getCurrentNetworkInfo() } returns connectedNetworkInfo
@@ -104,7 +106,8 @@ class DeviceHealthViewModelTest {
             connectivityObserver = connectivityObserver,
             simulatedAlertsManager = simulatedAlertsManager,
             connectionStateManager = connectionStateManager,
-            updateCheckManager = updateCheckManager
+            updateCheckManager = updateCheckManager,
+            paymentQueueStateManager = paymentQueueStateManager
         )
     }
 
@@ -302,6 +305,161 @@ class DeviceHealthViewModelTest {
 
         val alerts = viewModel.activeAlerts.value
         assertThat(alerts.any { it is DeviceAlert.NoInternet }).isTrue()
+        viewModel.viewModelScope.cancel()
+    }
+
+    // ========================================
+    // SLOW CONNECTION ALERT TESTS
+    // ========================================
+
+    @Test
+    fun `slow connection alert when isSlowConnection is true`() = runTest(testDispatcher) {
+        fakeConnectionState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
+            hasInternet = true,
+            hasServer = true,
+            latencyMs = 3732,
+            isSlowConnection = true
+        )
+
+        val viewModel = createViewModel()
+
+        val alerts = viewModel.activeAlerts.value
+        assertThat(alerts.any { it is DeviceAlert.SlowConnection }).isTrue()
+        val slowAlert = alerts.first { it is DeviceAlert.SlowConnection } as DeviceAlert.SlowConnection
+        assertThat(slowAlert.latencyMs).isEqualTo(3732)
+        assertThat(slowAlert.message).isEqualTo("Internet lento")
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `no slow connection alert when isSlowConnection is false`() = runTest(testDispatcher) {
+        fakeConnectionState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
+            hasInternet = true,
+            hasServer = true,
+            latencyMs = 1578,
+            isSlowConnection = false
+        )
+
+        val viewModel = createViewModel()
+
+        val alerts = viewModel.activeAlerts.value
+        assertThat(alerts.none { it is DeviceAlert.SlowConnection }).isTrue()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `slow connection alert with null latencyMs during cooldown does not crash`() = runTest(testDispatcher) {
+        // During hysteresis cooldown, isSlowConnection can be true while latencyMs is null
+        fakeConnectionState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
+            hasInternet = true,
+            hasServer = true,
+            latencyMs = null,
+            isSlowConnection = true
+        )
+
+        val viewModel = createViewModel()
+
+        val alerts = viewModel.activeAlerts.value
+        assertThat(alerts.any { it is DeviceAlert.SlowConnection }).isTrue()
+        val slowAlert = alerts.first { it is DeviceAlert.SlowConnection } as DeviceAlert.SlowConnection
+        assertThat(slowAlert.latencyMs).isEqualTo(0L)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `no slow connection alert when disconnected even with slow flag`() = runTest(testDispatcher) {
+        fakeConnectionState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
+            hasInternet = false,
+            hasServer = false,
+            latencyMs = 10000,
+            isSlowConnection = true
+        )
+
+        val viewModel = createViewModel()
+
+        val alerts = viewModel.activeAlerts.value
+        // Should have NoInternet, not SlowConnection
+        assertThat(alerts.none { it is DeviceAlert.SlowConnection }).isTrue()
+        assertThat(alerts.any { it is DeviceAlert.NoInternet }).isTrue()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `slow connection alert is dismissable`() = runTest(testDispatcher) {
+        fakeConnectionState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
+            hasInternet = true,
+            hasServer = true,
+            latencyMs = 6000,
+            isSlowConnection = true
+        )
+
+        val viewModel = createViewModel()
+
+        val alerts = viewModel.activeAlerts.value
+        assertThat(alerts.any { it is DeviceAlert.SlowConnection }).isTrue()
+
+        viewModel.dismissAlert(alerts.first { it is DeviceAlert.SlowConnection })
+
+        assertThat(viewModel.activeAlerts.value.none { it is DeviceAlert.SlowConnection }).isTrue()
+        viewModel.viewModelScope.cancel()
+    }
+
+    // ========================================
+    // PENDING PAYMENTS ALERT TESTS
+    // ========================================
+
+    @Test
+    fun `pending payments alert when queue has pending items`() = runTest(testDispatcher) {
+        paymentQueueStateManager.refreshCounts(pendingCount = 3, failedCount = 0)
+
+        val viewModel = createViewModel()
+
+        val alerts = viewModel.activeAlerts.value
+        assertThat(alerts.any { it is DeviceAlert.PendingPayments }).isTrue()
+        val paymentAlert = alerts.first { it is DeviceAlert.PendingPayments } as DeviceAlert.PendingPayments
+        assertThat(paymentAlert.pendingCount).isEqualTo(3)
+        assertThat(paymentAlert.failedCount).isEqualTo(0)
+        assertThat(paymentAlert.message).isEqualTo("3 pagos pendientes")
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `pending payments alert shows failed count when failures exist`() = runTest(testDispatcher) {
+        paymentQueueStateManager.refreshCounts(pendingCount = 1, failedCount = 2)
+
+        val viewModel = createViewModel()
+
+        val alerts = viewModel.activeAlerts.value
+        assertThat(alerts.any { it is DeviceAlert.PendingPayments }).isTrue()
+        val paymentAlert = alerts.first { it is DeviceAlert.PendingPayments } as DeviceAlert.PendingPayments
+        assertThat(paymentAlert.failedCount).isEqualTo(2)
+        assertThat(paymentAlert.message).isEqualTo("2 pagos fallidos")
+        assertThat(paymentAlert.description).isEqualTo("Toca para reintentar sincronización")
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `no pending payments alert when queue is empty`() = runTest(testDispatcher) {
+        // Default state — no payments
+        val viewModel = createViewModel()
+
+        val alerts = viewModel.activeAlerts.value
+        assertThat(alerts.none { it is DeviceAlert.PendingPayments }).isTrue()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `pending payments alert is dismissable`() = runTest(testDispatcher) {
+        paymentQueueStateManager.refreshCounts(pendingCount = 2, failedCount = 0)
+
+        val viewModel = createViewModel()
+
+        val alerts = viewModel.activeAlerts.value
+        assertThat(alerts.any { it is DeviceAlert.PendingPayments }).isTrue()
+
+        viewModel.dismissAlert(alerts.first { it is DeviceAlert.PendingPayments })
+
+        assertThat(viewModel.activeAlerts.value.none { it is DeviceAlert.PendingPayments }).isTrue()
         viewModel.viewModelScope.cancel()
     }
 }

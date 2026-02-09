@@ -32,12 +32,15 @@ import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
 import com.jaac.avoqado_tpv.core.util.UpdateCheckManager
 import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleSalesGoal
 import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalPeriod
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
+import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -88,7 +91,12 @@ class HomeViewModel @Inject constructor(
     // 📦 Update Check Manager - Check for app updates after login
     private val updateCheckManager: UpdateCheckManager,
     // 🔄 Session Manager - Observe token refresh for Socket.IO reconnection
-    private val sessionManager: SessionManager
+    private val sessionManager: SessionManager,
+    // 💳 Payment Queue - Reset failed payments on reconnection
+    private val paymentQueueRepository: PaymentQueueRepository,
+    private val paymentQueueStateManager: PaymentQueueStateManager,
+    // 📊 Observability - Production error tracking (Crashlytics + Remote + File)
+    private val observabilityManager: com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -107,6 +115,13 @@ class HomeViewModel @Inject constructor(
     // Error message if initialization failed (null if no error)
     private val _blumonInitError = MutableStateFlow<String?>(null)
     val blumonInitError: StateFlow<String?> = _blumonInitError.asStateFlow()
+
+    // Elapsed seconds since Blumon init started (for progressive warnings)
+    private val _blumonInitElapsedSeconds = MutableStateFlow(0)
+    val blumonInitElapsedSeconds: StateFlow<Int> = _blumonInitElapsedSeconds.asStateFlow()
+
+    // Job reference for Blumon init (so it can be cancelled)
+    private var blumonInitJob: Job? = null
 
     // ═══════════════════════════════════════════════════════════════════════════
     // USER PROFILE STATE
@@ -160,23 +175,33 @@ class HomeViewModel @Inject constructor(
     private val _salesGoal = MutableStateFlow<ModuleSalesGoal?>(null)
     val salesGoal: StateFlow<ModuleSalesGoal?> = _salesGoal.asStateFlow()
 
+    private val initStartTime = System.currentTimeMillis()
+
     init {
+        Timber.d("[PERF] HomeVM.init START at ${initStartTime}ms")
+
+        // ═══════════════════════════════════════════════════════════════════
+        // CRITICAL (immediate) — needed for UI and real-time
+        // ═══════════════════════════════════════════════════════════════════
+        initializeObservability()
         loadStaffInfo()
-        // 🔌 Connect Socket.IO if session was restored (app restart)
         connectSocketIfNeeded()
         collectSocketEvents()
-        // 🔧 Initialize Blumon SDK in background (so it's ready when user opens payment)
-        initializeBlumonSDK()
-        // 📦 Warm up product cache (so "Quick Order" opens instantly)
-        warmUpProductCache()
-        // 🎯 Fetch sales goal for progress bar display
-        fetchSalesGoal()
-        // 🔄 Listen for connection restored to re-fetch merchants if using fallback
-        listenForConnectionRestored()
-        // 📦 Check for app updates (shows banner if available)
-        checkForUpdates()
-        // 🔄 Observe token refresh → reconnect Socket.IO with fresh token
         observeTokenRefresh()
+
+        // ═══════════════════════════════════════════════════════════════════
+        // DEFERRED — staggered to avoid thread pool congestion on 1GB RAM
+        // Each function has an internal delay before doing real work.
+        // UnconfinedTestDispatcher skips delays automatically in tests.
+        // ═══════════════════════════════════════════════════════════════════
+        listenForConnectionRestored()       // delay(1_000)
+        initializeBlumonSDK()               // delay(2_000) — blocks UI until ready
+        fetchSalesGoal()                    // delay(2_500)
+        warmUpProductCache()                // delay(3_000)
+        checkForUpdates()                   // delay(4_000)
+        loadInitialQueueCounts()            // delay(3_000)
+
+        Timber.d("[PERF] HomeVM.init ALL LAUNCHED in ${System.currentTimeMillis() - initStartTime}ms")
     }
 
     /**
@@ -191,13 +216,13 @@ class HomeViewModel @Inject constructor(
     private fun warmUpProductCache() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                // Wait 1s to let critical home screen UI render first
-                delay(1000)
+                // Stagger: wait for critical coroutines + Blumon SDK to settle
+                delay(3_000)
 
+                val start = System.currentTimeMillis()
+                Timber.d("[PERF] HomeVM.warmUpProductCache START")
                 val venueId = secureStorage.getVenueId() ?: return@launch
                 val cachedAt = System.currentTimeMillis()
-
-                Timber.d("📦 [HomeViewModel] Warming up product cache for venue: $venueId")
 
                 // Fetch products
                 productRepository.getProducts(venueId).fold(
@@ -221,6 +246,7 @@ class HomeViewModel @Inject constructor(
                     }
                 )
 
+                Timber.d("[PERF] HomeVM.warmUpProductCache DONE (${System.currentTimeMillis() - start}ms)")
             } catch (e: Exception) {
                 Timber.e(e, "⚠️ [HomeViewModel] Error warming up cache")
             }
@@ -233,11 +259,31 @@ class HomeViewModel @Inject constructor(
      * Loads the current logged-in staff member's name for personalized greeting.
      * Clock-in time is a placeholder for future implementation.
      */
+    /**
+     * 📊 Initialize Observability System
+     *
+     * Sets up Crashlytics custom keys (venueId, terminalId, userId) so that
+     * non-fatal errors in Firebase Console can be filtered by terminal.
+     * Also activates RemoteLogger (Socket.IO) and FileLogger (offline).
+     */
+    private fun initializeObservability() {
+        val venueId = secureStorage.getVenueId() ?: return
+        val userId = secureStorage.getStaffId() ?: "unknown"
+        val terminalId = deviceInfoManager.getSerialNumber()
+        observabilityManager.initialize(
+            venueId = venueId,
+            terminalId = terminalId,
+            userId = userId
+        )
+    }
+
     private fun loadStaffInfo() {
         viewModelScope.launch {
+            val start = System.currentTimeMillis()
+            Timber.d("[PERF] HomeVM.loadStaffInfo START")
             val name = authRepository.getStaffName() ?: "Usuario"
             _staffName.value = name
-            Timber.d("👤 [HomeViewModel] Staff name loaded: $name")
+            Timber.d("[PERF] HomeVM.loadStaffInfo DONE (${System.currentTimeMillis() - start}ms)")
 
             // Clock-in time - placeholder for now
             // TODO: Implement clock-in feature and load actual clock-in time
@@ -259,7 +305,9 @@ class HomeViewModel @Inject constructor(
     private fun fetchSalesGoal() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                Timber.d("🎯 [HomeViewModel] Fetching sales goal...")
+                delay(2_500) // Stagger: sales goal is non-critical for initial render
+                val start = System.currentTimeMillis()
+                Timber.d("[PERF] HomeVM.fetchSalesGoal START")
 
                 val response = apiService.getSalesGoal()
                 if (response.isSuccessful) {
@@ -287,6 +335,7 @@ class HomeViewModel @Inject constructor(
                     Timber.w("⚠️ [HomeViewModel] Failed to fetch sales goal: ${response.code()}")
                     _salesGoal.value = null
                 }
+                Timber.d("[PERF] HomeVM.fetchSalesGoal DONE (${System.currentTimeMillis() - start}ms)")
             } catch (e: Exception) {
                 Timber.e(e, "❌ [HomeViewModel] Error fetching sales goal")
                 _salesGoal.value = null
@@ -315,8 +364,11 @@ class HomeViewModel @Inject constructor(
     private fun checkForUpdates() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                Timber.i("📦 [HomeViewModel] Checking for app updates...")
+                delay(4_000) // Stagger: lowest priority, check after everything else settled
+                val start = System.currentTimeMillis()
+                Timber.d("[PERF] HomeVM.checkForUpdates START")
                 val update = updateCheckManager.checkForUpdates()
+                Timber.d("[PERF] HomeVM.checkForUpdates DONE (${System.currentTimeMillis() - start}ms)")
                 if (update != null) {
                     Timber.i("✅ [HomeViewModel] Update available: ${update.versionName} (mode=${update.updateMode})")
                 } else {
@@ -362,9 +414,11 @@ class HomeViewModel @Inject constructor(
     private fun connectSocketIfNeeded() {
         viewModelScope.launch {
             try {
+                val start = System.currentTimeMillis()
+                Timber.d("[PERF] HomeVM.connectSocket START")
                 // Check if socket is already connected (e.g., from LoginViewModel)
                 if (socketManager.isConnected()) {
-                    Timber.d("🔌 [Socket.IO] Already connected - skipping")
+                    Timber.d("[PERF] HomeVM.connectSocket DONE (${System.currentTimeMillis() - start}ms) - already connected")
                     return@launch
                 }
 
@@ -384,7 +438,7 @@ class HomeViewModel @Inject constructor(
                     BuildConfig.SOCKET_URL_DEV  // Sandbox: ngrok URL
                 }
 
-                Timber.d("🔌 [Socket.IO] Connecting on session restore...")
+                Timber.d("[PERF] HomeVM.connectSocket connecting (${System.currentTimeMillis() - start}ms since start)")
                 Timber.d("🔌 [Socket.IO] URL: $socketUrl")
                 Timber.d("🔌 [Socket.IO] Venue ID: $venueId")
 
@@ -392,9 +446,7 @@ class HomeViewModel @Inject constructor(
                 socketManager.connect(
                     url = socketUrl,
                     token = jwtToken,
-                    terminalId = deviceInfoManager.getSerialNumber(),
-                    reconnection = true,
-                    reconnectionAttempts = 5
+                    terminalId = deviceInfoManager.getSerialNumber()
                 )
 
                 // Wait for connection and join venue room
@@ -441,14 +493,26 @@ class HomeViewModel @Inject constructor(
      * - OAuth + DUKPT keys downloaded in advance
      */
     private fun initializeBlumonSDK() {
-        viewModelScope.launch(Dispatchers.IO) {
+        // Reset elapsed timer
+        _blumonInitElapsedSeconds.value = 0
+
+        blumonInitJob?.cancel()
+        blumonInitJob = viewModelScope.launch(Dispatchers.IO) {
             try {
+                val start = System.currentTimeMillis()
+                Timber.d("[PERF] HomeVM.initBlumonSDK START")
                 // 🔄 Start initialization - show loader
                 _isBlumonInitializing.value = true
                 _isBlumonReady.value = false
                 _blumonInitError.value = null
 
-                Timber.i("🔧 [Blumon] Starting SDK initialization (blocking UI)...")
+                // ⏱️ Launch parallel coroutine to track elapsed seconds
+                val timerJob = launch {
+                    while (true) {
+                        delay(1_000)
+                        _blumonInitElapsedSeconds.value++
+                    }
+                }
 
                 // ⏳ Wait 2 seconds for other operations to settle
                 // (Socket.IO, HeartbeatScheduler, ShiftRepository all start on login)
@@ -473,12 +537,14 @@ class HomeViewModel @Inject constructor(
                 // Without this, SDK database has stale posId → "NO AUTORIZADO" on first payment
                 initializationManager.ensureInitialized(defaultMerchantPosId = defaultMerchant?.posId)
                     .onSuccess {
-                        Timber.i("✅ [Blumon] SDK initialized successfully - ready for payments")
+                        timerJob.cancel()
+                        Timber.d("[PERF] HomeVM.initBlumonSDK DONE (${System.currentTimeMillis() - start}ms)")
                         _isBlumonInitializing.value = false
                         _isBlumonReady.value = true
                         _blumonInitError.value = null
                     }
                     .onFailure { error ->
+                        timerJob.cancel()
                         Timber.e(error, "❌ [Blumon] SDK initialization failed")
                         _isBlumonInitializing.value = false
                         _isBlumonReady.value = false
@@ -497,6 +563,9 @@ class HomeViewModel @Inject constructor(
                         }
                     }
 
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Coroutine was cancelled (user tapped Cancel) — don't overwrite error state
+                Timber.d("[Blumon] SDK init coroutine cancelled")
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Blumon] Unexpected error during SDK initialization")
                 _isBlumonInitializing.value = false
@@ -528,14 +597,30 @@ class HomeViewModel @Inject constructor(
     }
 
     /**
+     * ❌ Cancel Blumon SDK initialization
+     * Called from UI when user taps "Cancelar" after progressive warning (30s+)
+     * Sets error state so user can retry later via "Reintentar" button.
+     */
+    fun cancelBlumonInit() {
+        Timber.w("🚫 [Blumon] SDK initialization cancelled by user after ${_blumonInitElapsedSeconds.value}s")
+        blumonInitJob?.cancel()
+        blumonInitJob = null
+        _isBlumonInitializing.value = false
+        _isBlumonReady.value = false
+        _blumonInitError.value = "Inicialización cancelada. Puedes reintentar cuando la conexión mejore."
+    }
+
+    /**
      * 🔄 Listen for connection restored events
      *
      * When connection is restored:
      * 1. Re-fetch merchants if still using fallback accounts
      * 2. Re-check for app updates (in case server was down on initial check)
+     * 3. Reset failed payments + trigger immediate sync
      */
     private fun listenForConnectionRestored() {
         viewModelScope.launch {
+            delay(1_000) // Stagger: wait for critical coroutines to settle
             connectionEventManager.connectionRestoredEvents.collect { event ->
                 Timber.i("🔄 [HomeViewModel] Connection restored (after ${event.attemptsBeforeReconnection} attempts)")
 
@@ -550,6 +635,19 @@ class HomeViewModel @Inject constructor(
                 if (updateCheckManager.pendingUpdate.value == null) {
                     Timber.i("📦 [HomeViewModel] Re-checking for app updates after connection restored...")
                     checkForUpdates()
+                }
+
+                // Reset failed payments (periodic worker will retry them on next run)
+                launch(Dispatchers.IO) {
+                    try {
+                        val resetCount = paymentQueueRepository.resetAllFailed()
+                        if (resetCount > 0) {
+                            Timber.i("💳 [HomeViewModel] Reset $resetCount failed payments after reconnection")
+                        }
+                        refreshQueueCounts()
+                    } catch (e: Exception) {
+                        Timber.e(e, "❌ [HomeViewModel] Error resetting failed payments")
+                    }
                 }
             }
         }
@@ -780,6 +878,44 @@ class HomeViewModel @Inject constructor(
     fun exitMaintenance() {
         Timber.i("🛠️ [Maintenance] Staff exiting maintenance mode locally")
         maintenanceManager.exitMaintenance()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PAYMENT QUEUE STATE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Load initial payment queue counts for DeviceAlertBanner.
+     * Deferred to avoid slowing down critical init path.
+     */
+    private fun loadInitialQueueCounts() {
+        viewModelScope.launch(Dispatchers.IO) {
+            delay(3_000) // Stagger: non-critical, after Blumon SDK init
+            try {
+                val pending = paymentQueueRepository.getPendingCount()
+                val failed = paymentQueueRepository.getFailedCount()
+                paymentQueueStateManager.refreshCounts(pending, failed)
+                if (pending > 0 || failed > 0) {
+                    Timber.i("💳 [HomeViewModel] Payment queue: pending=$pending, failed=$failed")
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [HomeViewModel] Error loading queue counts")
+            }
+        }
+    }
+
+    /**
+     * Refresh payment queue counts (called after sync events)
+     */
+    private suspend fun refreshQueueCounts() {
+        try {
+            val pending = paymentQueueRepository.getPendingCount()
+            val failed = paymentQueueRepository.getFailedCount()
+            paymentQueueStateManager.refreshCounts(pending, failed)
+            Timber.d("💳 [HomeViewModel] Queue counts refreshed: pending=$pending, failed=$failed")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [HomeViewModel] Error refreshing queue counts")
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

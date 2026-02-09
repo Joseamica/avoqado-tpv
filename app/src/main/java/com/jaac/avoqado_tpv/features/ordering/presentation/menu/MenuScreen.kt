@@ -194,19 +194,26 @@ fun MenuScreen(
     // Comp dialog state (Void dialog moved to ActionsTab)
     var showCompDialog by remember { mutableStateOf(false) }
 
+    // [PERF] Composition tracking
+    LaunchedEffect(Unit) {
+        Timber.d("[PERF] MenuScreen COMPOSED at ${android.os.SystemClock.elapsedRealtime()}ms")
+    }
+
     // Load order on first composition
     LaunchedEffect(orderId) {
         viewModel.loadOrder(orderId)
     }
 
     // 🚀 Performance Optimization: Deferred Rendering
-    // Show skeletal UI immediately, then load heavy content (Product Grid) after navigation settles.
-    // Solves 750ms UI freeze ("Skipped 40 frames") on navigation transition.
+    // Show lightweight spinner first, then render heavy Product Grid after initial frame.
+    // Reduced from 300ms arbitrary delay to ~32ms (2 frames at 60fps).
+    val menuComposeTime = remember { android.os.SystemClock.elapsedRealtime() }
     var isHeavyContentReady by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        // Wait 300ms for navigation animation to complete before rendering heavy grids
-        kotlinx.coroutines.delay(300)
+        // Skip 2 frames (~32ms) to let navigation animation start smoothly
+        kotlinx.coroutines.delay(32)
         isHeavyContentReady = true
+        Timber.d("[PERF] MenuScreen HEAVY_CONTENT_READY (${android.os.SystemClock.elapsedRealtime() - menuComposeTime}ms since compose)")
     }
 
     // Extract order and syncError from state (simplified smart cast)

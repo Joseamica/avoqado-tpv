@@ -36,6 +36,33 @@ Available features: `payment`, `order`, `menu`, `bluetooth`, `socket`, `auth`, `
 
 When user says "ya termine de testear" or similar: read logs, analyze errors, stop capture.
 
+## Unit Test Trigger Map
+
+When modifying any of these files, run the corresponding tests:
+
+| Modified file | Tests to run |
+|---------------|-------------|
+| `payment/data/InitializationManager.kt` (sandbox or production) | `*InitializationManagerTest*` |
+| `payment/data/MultiMerchantSDKManager.kt` | `*MultiMerchantSDKManagerTest*` |
+| `payment/presentation/PaymentViewModel.kt` (sandbox or production) | `*PaymentViewModelTest*` |
+| `payment/domain/model/TpvSettings.kt` | `*AttendanceVerificationTest*`, `*PaymentViewModelTest*` |
+| `core/data/network/dto/TpvSettingsDto.kt` | `*AttendanceVerificationTest*` |
+| `payment/domain/model/MerchantAccount.kt` | `*MultiMerchantSDKManagerTest*`, `*PaymentViewModelTest*` |
+| `payment/domain/PaymentState.kt` | `*PaymentViewModelTest*` |
+| `payment/domain/model/PaymentContext.kt` | `*PaymentViewModelTest*` |
+| `payment/domain/model/PaymentFlowOrigin.kt` | `*PaymentViewModelTest*` |
+| `shift/domain/Shift.kt` | `*PaymentViewModelTest*`, `*ShiftViewModelTest*` |
+| `core/domain/TerminalConfig.kt` | `*MultiMerchantSDKManagerTest*`, `*InitializationManagerTest*` |
+
+Quick command for all payment tests:
+```bash
+./gradlew testSandboxDebugUnitTest --tests "*InitializationManagerTest*" \
+  --tests "*MultiMerchantSDKManagerTest*" --tests "*PaymentViewModelTest*" \
+  --tests "*AttendanceVerificationTest*"
+```
+
+Or run the full suite (~70s): `./gradlew testSandboxDebugUnitTest --rerun-tasks`
+
 ## Payment Flow Regression Testing
 
 When touching PaymentViewModel/PaymentScreen, test ALL flows:

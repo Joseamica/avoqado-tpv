@@ -256,16 +256,18 @@ class ConnectionViewModel @Inject constructor(
                 _state.value = ConnectionState.Reconnecting
             }
 
-            // Send lightweight heartbeat
+            // Send lightweight heartbeat (measure round-trip latency)
             val heartbeat = buildLightweightHeartbeat()
+            val heartbeatStartMs = System.currentTimeMillis()
             val result = heartbeatRepository.sendHeartbeat(heartbeat)
+            val latencyMs = System.currentTimeMillis() - heartbeatStartMs
 
             when (result) {
                 is Result.Success -> {
-                    Timber.i("✅ [Connection] Backend connected")
+                    Timber.i("✅ [Connection] Backend connected (latency=${latencyMs}ms)")
 
-                    // Update unified alert system - fully connected
-                    connectionStateManager.updateState(hasInternet = true, hasServer = true)
+                    // Update unified alert system - fully connected with latency
+                    connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = latencyMs)
 
                     // 🎯 Square Terminal API Pattern: Process pending commands from heartbeat response
                     // Commands are delivered via HTTP polling instead of socket push

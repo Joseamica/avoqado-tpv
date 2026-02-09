@@ -136,4 +136,13 @@ interface PaymentQueueRepository {
      * @param daysAgo How many days ago to delete (default 7)
      */
     suspend fun deleteOldSyncedPayments(daysAgo: Int = 7)
+
+    /**
+     * Reset all failed payments back to PENDING for retry.
+     *
+     * **Use Case:** When connection is restored, give failed payments another chance
+     *
+     * @return Number of payments reset
+     */
+    suspend fun resetAllFailed(): Int
 }

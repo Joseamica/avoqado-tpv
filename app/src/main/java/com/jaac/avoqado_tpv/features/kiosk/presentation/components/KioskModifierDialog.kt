@@ -44,8 +44,8 @@ import com.jaac.avoqado_tpv.features.kiosk.domain.model.KioskProduct
 import com.jaac.avoqado_tpv.features.ordering.domain.ModifierType
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier
 import java.math.BigDecimal
+import com.jaac.avoqado_tpv.core.util.rememberCurrencyFormat
 import java.text.NumberFormat
-import java.util.Locale
 
 /**
  * KioskModifierDialog - Modifier Selection for Kiosk Mode
@@ -91,9 +91,7 @@ fun KioskModifierDialog(
     onConfirm: (selectedModifiers: List<ProductModifier>, totalPrice: BigDecimal) -> Unit
 ) {
     // Currency formatter for Mexican pesos
-    val currencyFormat = remember {
-        NumberFormat.getCurrencyInstance(Locale("es", "MX"))
-    }
+    val currencyFormat = rememberCurrencyFormat()
 
     // State: Map of selections
     // For SINGLE_CHOICE: key = groupId, value = selected modifier

@@ -30,10 +30,12 @@ import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.ui.graphics.Color
@@ -153,6 +155,7 @@ fun WelcomeScreen(
     // ═══════════════════════════════════════════════════════════════════════════
     val isBlumonInitializing by viewModel.isBlumonInitializing.collectAsStateWithLifecycle()
     val blumonInitError by viewModel.blumonInitError.collectAsStateWithLifecycle()
+    val blumonInitElapsedSeconds by viewModel.blumonInitElapsedSeconds.collectAsStateWithLifecycle()
 
     // ═══════════════════════════════════════════════════════════════════════════
     // VENUE STATUS (for mid-session detection)
@@ -165,6 +168,11 @@ fun WelcomeScreen(
 
     // Sales goal from HomeViewModel (for progress bar display)
     val salesGoal by viewModel.salesGoal.collectAsStateWithLifecycle()
+
+    // [PERF] Composition tracking
+    LaunchedEffect(Unit) {
+        timber.log.Timber.d("[PERF] WelcomeScreen COMPOSED at ${android.os.SystemClock.elapsedRealtime()}ms")
+    }
 
     // Observe venue status events
     androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -186,18 +194,10 @@ fun WelcomeScreen(
         }
     }
 
-    // ⭐ FIX: Reload shift status whenever WelcomeScreen becomes visible
-    // This ensures shift status is updated when returning from ShiftScreen
-    androidx.compose.runtime.LaunchedEffect(Unit) {
-        shiftViewModel.loadCurrentShift()
-        shiftViewModel.refreshSettings() // Refresh settings too
-    }
-
-    // 🎯 FIX: Refresh sales goal whenever WelcomeScreen becomes visible
-    // This ensures the progress bar updates after payments are completed
-    androidx.compose.runtime.LaunchedEffect(Unit) {
-        viewModel.refreshSalesGoal()
-    }
+    // NOTE: Removed redundant LaunchedEffects for loadCurrentShift(), refreshSettings(),
+    // and refreshSalesGoal(). These are already called in their respective ViewModel init{} blocks.
+    // ShiftViewModel.init{} calls loadCurrentShift() + refreshSettings().
+    // HomeViewModel.init{} calls fetchSalesGoal().
 
     // Main content
     WelcomeScreenContent(
@@ -231,6 +231,7 @@ fun WelcomeScreen(
     // ═══════════════════════════════════════════════════════════════════════════
     // BLUMON SDK INITIALIZATION OVERLAY
     // Shows loader while SDK initializes, blocks user from proceeding to payment
+    // Progressive warnings: 0-15s normal, 15-30s slow hint, 30s+ warning + cancel
     // ═══════════════════════════════════════════════════════════════════════════
     if (isBlumonInitializing || blumonInitError != null) {
         Box(
@@ -256,7 +257,7 @@ fun WelcomeScreen(
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     if (isBlumonInitializing) {
-                        // Loading state
+                        // Loading state with progressive warnings
                         CircularProgressIndicator(
                             modifier = Modifier.size(48.dp),
                             color = MaterialTheme.colorScheme.primary
@@ -266,16 +267,44 @@ fun WelcomeScreen(
                             style = MaterialTheme.typography.titleMedium,
                             textAlign = TextAlign.Center
                         )
+
+                        // Progressive message based on elapsed time
+                        val subtitleText = when {
+                            blumonInitElapsedSeconds >= 30 ->
+                                "Esto está tomando más de lo normal. Verifica tu conexión a internet."
+                            blumonInitElapsedSeconds >= 15 ->
+                                "Esto puede tardar un poco en conexiones lentas"
+                            else ->
+                                "Espere un momento mientras se configura el terminal"
+                        }
+                        val subtitleColor = if (blumonInitElapsedSeconds >= 30)
+                            MaterialTheme.colorScheme.error
+                        else
+                            MaterialTheme.colorScheme.onSurfaceVariant
+
                         Text(
-                            text = "Espere un momento mientras se configura el terminal",
+                            text = subtitleText,
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = subtitleColor,
                             textAlign = TextAlign.Center
                         )
+
+                        // Cancel button after 30s
+                        if (blumonInitElapsedSeconds >= 30) {
+                            OutlinedButton(
+                                onClick = { viewModel.cancelBlumonInit() },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error
+                                )
+                            ) {
+                                Text("Cancelar")
+                            }
+                        }
                     } else if (blumonInitError != null) {
                         // Error state
                         Text(
-                            text = "⚠️ Error de Inicialización",
+                            text = "Error de Inicialización",
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.error,
                             fontWeight = FontWeight.Bold,

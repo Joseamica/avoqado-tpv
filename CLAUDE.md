@@ -32,6 +32,10 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 23)  # Required
 ./gradlew compileDebugKotlin         # Quick compile check
 ./gradlew lint --continue            # Lint (must pass before commit)
 
+# Unit tests (220 tests — run before commits and after refactors)
+./gradlew testSandboxDebugUnitTest                    # All tests
+./gradlew testSandboxDebugUnitTest --tests "com.jaac.avoqado_tpv.ClassName"  # Single class
+
 # ADB monitoring (mandatory after every change)
 adb logcat -c && adb logcat -s PaymentViewModel,MenuViewModel | grep -iE "keyword"
 
@@ -70,6 +74,7 @@ app/src/production/ # Production-specific (same files, different SDK URLs)
 13. **Cross-repo**: Backend deploys in minutes, TPV takes 3-5 days. Backend ALWAYS supports old versions. -> `release-and-git.md`
 14. **Git**: Never commit without permission. No `Co-Authored-By`. -> `release-and-git.md`
 15. **ADB monitoring**: Mandatory after every change. Log capture for testing. -> `testing-and-adb.md`
+16. **Unit tests**: 220 tests, 0 failures. Run before commits and after refactors. -> [unit testing guide](docs/UNIT_TESTING_GUIDE.md)
 
 ## Build Variants
 
@@ -103,7 +108,7 @@ Same branch (`main`), different Gradle configurations:
 [modules system](docs/MODULES_SYSTEM.md) | [force update](docs/FORCE_UPDATE_SYSTEM.md) | [self-update](docs/SELF_UPDATE_SYSTEM.md) | [cross-repo release](docs/CROSS_REPO_RELEASE_FLOW.md) | [attendance](docs/ATTENDANCE_VERIFICATION.md) | [location services](docs/LOCATION_SERVICES.md) | [pre-payment verification](docs/PRE_PAYMENT_VERIFICATION.md) | [camera/verification](docs/CAMERA_VERIFICATION_SYSTEM.md) | [master TOTP](docs/MASTER_TOTP_LOGIN.md) | [receipt printing](docs/RECEIPT_PRINTING.md) | [ordering offline](docs/ORDERING_OFFLINE.md) | [pay later](docs/PAY_LATER_README.md) | [pay later implementation](docs/PAY_LATER_IMPLEMENTATION.md) | [pay later testing](docs/PAY_LATER_TESTING_CHECKLIST.md) | [BLE payments](docs/BLE_PAYMENT_IOS_APP.md) | [BLE queue](docs/BLE_PAYMENT_QUEUE.md) | [kiosk staff session](docs/KIOSK_STAFF_SESSION.md)
 
 **Development:**
-[development workflow](docs/DEVELOPMENT_WORKFLOW.md) | [performance](docs/PERFORMANCE_GUIDE.md) | [UI responsive](docs/UI_RESPONSIVE_GUIDE.md) | [testing](docs/TESTING_GUIDE.md) | [ADB monitoring](docs/ADB_MONITORING_GUIDE.md) | [security](docs/SECURITY_CHECKLIST.md) | [Compose keyboard](docs/COMPOSE_KEYBOARD_HANDLING.md) | [Socket.IO](docs/SOCKET_IO_IMPLEMENTATION.md) | [Socket.IO testing](docs/SOCKET_IO_TESTING.md) | [local-first sync](docs/LOCAL_FIRST_SYNC_PATTERNS.md) | [observability](docs/OBSERVABILITY_GUIDE.md) | [observability testing](docs/OBSERVABILITY_TESTING.md)
+[development workflow](docs/DEVELOPMENT_WORKFLOW.md) | [performance](docs/PERFORMANCE_GUIDE.md) | [UI responsive](docs/UI_RESPONSIVE_GUIDE.md) | [testing](docs/TESTING_GUIDE.md) | [unit testing](docs/UNIT_TESTING_GUIDE.md) | [ADB monitoring](docs/ADB_MONITORING_GUIDE.md) | [security](docs/SECURITY_CHECKLIST.md) | [Compose keyboard](docs/COMPOSE_KEYBOARD_HANDLING.md) | [Socket.IO](docs/SOCKET_IO_IMPLEMENTATION.md) | [Socket.IO testing](docs/SOCKET_IO_TESTING.md) | [local-first sync](docs/LOCAL_FIRST_SYNC_PATTERNS.md) | [observability](docs/OBSERVABILITY_GUIDE.md) | [observability testing](docs/OBSERVABILITY_TESTING.md)
 
 **Cross-repo:** [avoqado-server/docs/README.md](../avoqado-server/docs/README.md) — central hub for architecture, DB, payments, inventory backend
 
@@ -140,6 +145,7 @@ Read `SDK-PAX-1.11.0.2-DocV4` before modifying Blumon SDK integration code.
 
 See `.claude/rules/testing-and-adb.md` for full checklist. Minimum:
 
+- [ ] `./gradlew testSandboxDebugUnitTest` passes (220 tests, 0 failures)
 - [ ] `./gradlew compileDebugKotlin` passes
 - [ ] `./gradlew lint --continue` passes
 - [ ] Room migrations created for @Entity changes

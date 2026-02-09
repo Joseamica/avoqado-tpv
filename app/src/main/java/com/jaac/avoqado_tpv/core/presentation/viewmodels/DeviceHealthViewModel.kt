@@ -8,6 +8,7 @@ import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
 import com.jaac.avoqado_tpv.core.util.DeviceHealthMonitor
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
+import com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
 import com.jaac.avoqado_tpv.core.util.SimulatedAlertsManager
 import com.jaac.avoqado_tpv.core.util.UpdateCheckManager
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -61,7 +62,8 @@ class DeviceHealthViewModel @Inject constructor(
     private val connectivityObserver: ConnectivityObserver,
     private val simulatedAlertsManager: SimulatedAlertsManager,
     private val connectionStateManager: ConnectionStateManager,
-    private val updateCheckManager: UpdateCheckManager
+    private val updateCheckManager: UpdateCheckManager,
+    private val paymentQueueStateManager: PaymentQueueStateManager
 ) : ViewModel() {
 
     // ══════════════════════════════════════════════════════════════════════
@@ -79,6 +81,7 @@ class DeviceHealthViewModel @Inject constructor(
     private var simulatedAlertsObserverJob: Job? = null
     private var connectionStateObserverJob: Job? = null
     private var updateObserverJob: Job? = null
+    private var paymentQueueObserverJob: Job? = null
 
     // Dismissed alerts (user can dismiss non-critical alerts)
     private val dismissedAlerts = mutableSetOf<DeviceAlertType>()
@@ -94,6 +97,7 @@ class DeviceHealthViewModel @Inject constructor(
         observeSimulatedAlerts()
         observeConnectionState()
         observeUpdates()
+        observePaymentQueue()
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -243,6 +247,22 @@ class DeviceHealthViewModel @Inject constructor(
     }
 
     /**
+     * Observe payment queue state from PaymentQueueStateManager
+     * Shows alert when there are pending or failed payments
+     */
+    private fun observePaymentQueue() {
+        paymentQueueObserverJob?.cancel()
+        paymentQueueObserverJob = viewModelScope.launch {
+            paymentQueueStateManager.queueState.collect { state ->
+                if (state.hasAnyPayments) {
+                    Timber.d("💳 [DeviceHealth] Payment queue: pending=${state.pendingCount}, failed=${state.failedCount}")
+                }
+                updateAlerts()
+            }
+        }
+    }
+
+    /**
      * Update the list of active alerts based on current device state
      */
     private fun updateAlerts() {
@@ -284,6 +304,12 @@ class DeviceHealthViewModel @Inject constructor(
             alerts.add(DeviceAlert.ServerDown)
         }
 
+        // P3: Slow connection (only if connected but latency >5s)
+        // latencyMs can be null during cooldown (e.g., heartbeat error), use last known or 0
+        if (connectionState.isFullyConnected && connectionState.isSlowConnection) {
+            alerts.add(DeviceAlert.SlowConnection(connectionState.latencyMs ?: 0L))
+        }
+
         // ══════════════════════════════════════════════════════════════════════
         // DEVICE HEALTH ALERTS (P1, P3-P6)
         // ══════════════════════════════════════════════════════════════════════
@@ -312,6 +338,17 @@ class DeviceHealthViewModel @Inject constructor(
         // P6: Memory low
         if (health.memoryInfo.freeMB in 0..100) {
             alerts.add(DeviceAlert.MemoryLow(health.memoryInfo.freeMB))
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        // PAYMENT QUEUE ALERTS (P4) - Pending or failed payments
+        // ══════════════════════════════════════════════════════════════════════
+        val queueState = paymentQueueStateManager.queueState.value
+        if (queueState.hasAnyPayments) {
+            alerts.add(DeviceAlert.PendingPayments(
+                pendingCount = queueState.pendingCount,
+                failedCount = queueState.failedCount
+            ))
         }
 
         // ══════════════════════════════════════════════════════════════════════
@@ -345,6 +382,7 @@ class DeviceHealthViewModel @Inject constructor(
         simulatedAlertsObserverJob?.cancel()
         connectionStateObserverJob?.cancel()
         updateObserverJob?.cancel()
+        paymentQueueObserverJob?.cancel()
     }
 }
 
@@ -356,14 +394,16 @@ class DeviceHealthViewModel @Inject constructor(
  * Device Alert Types (for tracking dismissed alerts)
  */
 enum class DeviceAlertType {
-    UPDATE_AVAILABLE, // P-1 - Highest priority (special - blue color)
-    NO_INTERNET,      // P0 - Most critical
-    BATTERY_CRITICAL, // P1
-    SERVER_DOWN,      // P2
-    BATTERY_LOW,      // P3
-    STORAGE_LOW,      // P4
-    WEAK_WIFI,        // P5
-    MEMORY_LOW        // P6
+    UPDATE_AVAILABLE,  // P-1 - Highest priority (special - blue color)
+    NO_INTERNET,       // P0 - Most critical
+    BATTERY_CRITICAL,  // P1
+    SERVER_DOWN,       // P2
+    SLOW_CONNECTION,   // P3 - Slow internet (latency >5s)
+    BATTERY_LOW,       // P3
+    STORAGE_LOW,       // P4
+    PENDING_PAYMENTS,  // P4 - Payments waiting to sync
+    WEAK_WIFI,         // P5
+    MEMORY_LOW         // P6
 }
 
 /**
@@ -437,6 +477,27 @@ sealed class DeviceAlert(
     }
 
     /**
+     * Slow internet connection (P3) - Latency >5 seconds
+     * Payments may take longer, warn the cashier
+     */
+    data class SlowConnection(val latencyMs: Long) : DeviceAlert(3, DeviceAlertType.SLOW_CONNECTION) {
+        val message: String get() = "Internet lento"
+        val description: String get() = "Los pagos pueden tardar más — Latencia: ${latencyMs / 1000}s"
+    }
+
+    /**
+     * Pending payments in sync queue (P4)
+     * Orange if failed, yellow if only pending
+     */
+    data class PendingPayments(
+        val pendingCount: Int,
+        val failedCount: Int
+    ) : DeviceAlert(4, DeviceAlertType.PENDING_PAYMENTS) {
+        val message: String get() = if (failedCount > 0) "$failedCount pagos fallidos" else "$pendingCount pagos pendientes"
+        val description: String get() = if (failedCount > 0) "Toca para reintentar sincronización" else "Pendientes de sincronizar"
+    }
+
+    /**
      * Storage low (<1GB) - May cause write failures
      * Database operations could fail
      */
@@ -468,11 +529,13 @@ sealed class DeviceAlert(
  * Extension to get alert color based on priority
  */
 fun DeviceAlert.getAlertColor(): AlertColor {
-    return when (priority) {
-        -1 -> AlertColor.UPDATE        // Blue - Update available (special)
-        0, 1, 2 -> AlertColor.CRITICAL // Red - P0 (No internet), P1 (Battery critical), P2 (Server down)
-        3 -> AlertColor.WARNING        // Orange - P3 (Battery low)
-        else -> AlertColor.CAUTION     // Yellow - P4-P6
+    return when {
+        priority == -1 -> AlertColor.UPDATE        // Blue - Update available (special)
+        priority in 0..2 -> AlertColor.CRITICAL    // Red - P0 (No internet), P1 (Battery critical), P2 (Server down)
+        this is DeviceAlert.SlowConnection -> AlertColor.WARNING  // Orange - Slow connection
+        this is DeviceAlert.PendingPayments && (this as DeviceAlert.PendingPayments).failedCount > 0 -> AlertColor.WARNING  // Orange - Failed payments
+        priority == 3 -> AlertColor.WARNING        // Orange - P3 (Battery low)
+        else -> AlertColor.CAUTION                 // Yellow - P4-P6
     }
 }
 

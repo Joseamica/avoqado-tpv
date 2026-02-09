@@ -4,6 +4,16 @@ import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntry
 import java.math.BigDecimal
 
 /**
+ * Types of photos that can be captured during clock-in/out flow.
+ * Used to drive multi-step photo capture with different UI text per type.
+ */
+enum class PhotoType {
+    CLOCK_IN_SELFIE,   // Existing verification selfie (clock-in)
+    FACADE,            // Panoramic store front photo (clock-in)
+    DEPOSIT_VOUCHER    // Bank deposit receipt photo (clock-out)
+}
+
+/**
  * UI State for the Timeclock screen
  */
 sealed class TimeclockState {
@@ -43,12 +53,14 @@ sealed class TimeclockState {
      * @param staffName Staff member's name for display
      * @param canSkip Whether current user can skip (ADMIN/MANAGER)
      * @param isClockOut true if this is for clock-out, false for clock-in
+     * @param photoType The type of photo being requested (selfie, facade, deposit voucher)
      */
     data class RequiresPhoto(
         val staffId: String,
         val staffName: String,
         val canSkip: Boolean = false,
-        val isClockOut: Boolean = false
+        val isClockOut: Boolean = false,
+        val photoType: PhotoType = PhotoType.CLOCK_IN_SELFIE
     ) : TimeclockState()
 
     /**
@@ -64,12 +76,14 @@ sealed class TimeclockState {
      * @param staffName Staff member's name for display
      * @param localPath Local file path of the captured photo
      * @param isClockOut true if this is for clock-out, false for clock-in
+     * @param photoType The type of photo being previewed
      */
     data class PhotoPreview(
         val staffId: String,
         val staffName: String,
         val localPath: String,
-        val isClockOut: Boolean = false
+        val isClockOut: Boolean = false,
+        val photoType: PhotoType = PhotoType.CLOCK_IN_SELFIE
     ) : TimeclockState()
 
     /**

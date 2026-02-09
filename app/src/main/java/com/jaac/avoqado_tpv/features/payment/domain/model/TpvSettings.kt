@@ -23,6 +23,8 @@ package com.jaac.avoqado_tpv.features.payment.domain.model
  * @param requireClockInPhoto Whether selfie + GPS is required at clock-in
  * @param requireClockOutPhoto Whether selfie + GPS is required at clock-out
  * @param requireClockInToLogin Whether staff must have an active clock-in to access the system.
+ * @param requireFacadePhoto Whether a panoramic photo of the store front is required at clock-in
+ * @param requireDepositPhoto Whether a bank deposit voucher photo is required at clock-out
  *                              If enabled, staff on break or not clocked in cannot log in.
  * @param kioskModeEnabled Whether this terminal can enter self-service kiosk mode.
  *                         Controlled from dashboard settings.
@@ -49,6 +51,9 @@ data class TpvSettings(
     // Attendance verification (clock-in/out with selfie + GPS)
     val requireClockInPhoto: Boolean = false,
     val requireClockOutPhoto: Boolean = false,
+    // Additional attendance evidence photos
+    val requireFacadePhoto: Boolean = false,    // Panoramic store front photo at clock-in
+    val requireDepositPhoto: Boolean = false,   // Bank deposit voucher photo at clock-out
     // Session security: require active clock-in to access system
     val requireClockInToLogin: Boolean = false,
     // Kiosk Mode: allows terminal to enter self-service mode (controlled from dashboard)

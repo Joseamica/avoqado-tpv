@@ -1116,7 +1116,8 @@ class MenuViewModel @Inject constructor(
      * @param orderId "CREATE_QUICK_ORDER", "CREATE_TABLE_ORDER:tableId", or existing CUID
      */
     fun loadOrder(orderId: String) {
-        Timber.d("📖 [VM-DEBUG] loadOrder() START | orderId=$orderId | timestamp=${System.currentTimeMillis()}")
+        val loadStart = android.os.SystemClock.elapsedRealtime()
+        Timber.d("[PERF] MenuVM.loadOrder START | orderId=$orderId")
         viewModelScope.launch {
             try {
                 // 🔄 Toast/Square Pattern: Don't reload if order already loaded
@@ -1280,6 +1281,7 @@ class MenuViewModel @Inject constructor(
                 Timber.d("🔄 [SSOT] _currentOrderId set to ${order.id}")
 
                 _state.value = MenuState.Success(order)
+                Timber.d("[PERF] MenuVM.loadOrder DONE (${android.os.SystemClock.elapsedRealtime() - loadStart}ms)")
 
                 // 🎟️ Sync applied discounts from order
                 _appliedDiscounts.value = order.discounts

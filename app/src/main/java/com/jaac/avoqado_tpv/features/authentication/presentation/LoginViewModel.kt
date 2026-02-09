@@ -238,9 +238,7 @@ class LoginViewModel @Inject constructor(
                 socketManager.connect(
                     url = socketUrl,
                     token = jwtToken,
-                    terminalId = deviceInfoManager.getSerialNumber(),
-                    reconnection = true,
-                    reconnectionAttempts = 5
+                    terminalId = deviceInfoManager.getSerialNumber()
                 )
 
                 // Wait for connection and join venue room

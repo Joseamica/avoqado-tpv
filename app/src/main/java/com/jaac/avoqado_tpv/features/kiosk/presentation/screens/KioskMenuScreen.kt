@@ -78,8 +78,7 @@ import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskStaffBut
 import com.jaac.avoqado_tpv.features.kiosk.presentation.components.KioskStaffInfoDialog
 import timber.log.Timber
 import java.math.BigDecimal
-import java.text.NumberFormat
-import java.util.Locale
+import com.jaac.avoqado_tpv.core.util.rememberCurrencyFormat
 
 /**
  * Kiosk Menu Screen - Product Selection
@@ -607,9 +606,7 @@ private fun KioskProductCard(
     hasModifiers: Boolean = false,
     onAdd: () -> Unit
 ) {
-    val currencyFormat = remember {
-        NumberFormat.getCurrencyInstance(Locale("es", "MX"))
-    }
+    val currencyFormat = rememberCurrencyFormat()
 
     Card(
         modifier = Modifier

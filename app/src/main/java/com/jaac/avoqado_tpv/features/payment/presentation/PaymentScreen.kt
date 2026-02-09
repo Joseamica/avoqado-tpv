@@ -142,6 +142,11 @@ fun PaymentScreen(
     onNavigateToPayLaterOrders: () -> Unit = {},  // 💳 Navigate to pay-later orders list
     viewModel: PaymentViewModel = hiltViewModel()
 ) {
+    // [PERF] Composition tracking
+    LaunchedEffect(Unit) {
+        Timber.d("[PERF] PaymentScreen COMPOSED at ${android.os.SystemClock.elapsedRealtime()}ms")
+    }
+
     val context = LocalContext.current
     val state by viewModel.state.collectAsStateWithLifecycle()
     val merchants by viewModel.merchants.collectAsStateWithLifecycle()
@@ -606,21 +611,56 @@ fun PaymentScreen(
                     }
                 }
 
-                // Payment processing states (EXISTING - No changes)
+                // Payment processing states with progressive timeout warnings
                 is PaymentState.ConfiguringKernel -> {
-                    PaymentLoadingContent("Configurando terminal...")
+                    // Track elapsed time for this state
+                    var elapsedSeconds by remember { mutableIntStateOf(0) }
+                    LaunchedEffect(currentState) {
+                        elapsedSeconds = 0
+                        while (true) {
+                            kotlinx.coroutines.delay(1_000)
+                            elapsedSeconds++
+                        }
+                    }
+                    PaymentLoadingContent(
+                        message = "Configurando terminal...",
+                        showTimeoutWarning = elapsedSeconds >= 30,
+                        onCancel = if (elapsedSeconds >= 45) {{ viewModel.cancelPayment() }} else null
+                    )
                 }
                 is PaymentState.DetectingCard -> {
+                    // Track elapsed time for this state
+                    var elapsedSeconds by remember { mutableIntStateOf(0) }
+                    LaunchedEffect(currentState) {
+                        elapsedSeconds = 0
+                        while (true) {
+                            kotlinx.coroutines.delay(1_000)
+                            elapsedSeconds++
+                        }
+                    }
                     PaymentDetectingCard(
                         amount = currentState.amount,
-                        isRefund = isRefundMode
+                        isRefund = isRefundMode,
+                        showTimeoutWarning = elapsedSeconds >= 30,
+                        onCancel = if (elapsedSeconds >= 30) {{ viewModel.cancelPayment() }} else null
                     )
                 }
                 is PaymentState.Processing -> {
+                    // Track elapsed time for this state
+                    var elapsedSeconds by remember { mutableIntStateOf(0) }
+                    LaunchedEffect(currentState) {
+                        elapsedSeconds = 0
+                        while (true) {
+                            kotlinx.coroutines.delay(1_000)
+                            elapsedSeconds++
+                        }
+                    }
                     PaymentLoadingContent(
                         message = currentState.message,
                         pinState = pinEntryState,  // Show asterisks when user types PIN
-                        showPinSection = isPinDialogVisible  // Keep PIN section visible even when cleared
+                        showPinSection = isPinDialogVisible,  // Keep PIN section visible even when cleared
+                        showTimeoutWarning = elapsedSeconds >= 30,
+                        onCancel = if (elapsedSeconds >= 45) {{ viewModel.cancelPayment() }} else null
                     )
                 }
                 is PaymentState.Success -> {
@@ -1085,7 +1125,9 @@ private fun resolveSuccessRouting(
 @Composable
 private fun PaymentDetectingCard(
     amount: String,
-    isRefund: Boolean = false
+    isRefund: Boolean = false,
+    showTimeoutWarning: Boolean = false,
+    onCancel: (() -> Unit)? = null
 ) {
     // 💸 Refund indicator color (amber/orange like Square's yellow arrow)
     val refundColor = MaterialTheme.avoqadoColors.statusWarning
@@ -1144,6 +1186,28 @@ private fun PaymentDetectingCard(
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
                 textAlign = TextAlign.Center
             )
+
+            // Timeout warning
+            if (showTimeoutWarning) {
+                Text(
+                    text = "Esto está tomando más de lo normal. Verifica tu conexión a internet.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center
+                )
+            }
+
+            // Cancel button
+            if (onCancel != null) {
+                OutlinedButton(
+                    onClick = onCancel,
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Cancelar")
+                }
+            }
         }
     }
 }
@@ -1152,7 +1216,9 @@ private fun PaymentDetectingCard(
 private fun PaymentLoadingContent(
     message: String,
     pinState: String = "",  // Asterisks from SDK ("*", "**", "***", "****")
-    showPinSection: Boolean = false  // True when SDK is waiting for PIN (even if cleared)
+    showPinSection: Boolean = false,  // True when SDK is waiting for PIN (even if cleared)
+    showTimeoutWarning: Boolean = false,
+    onCancel: (() -> Unit)? = null
 ) {
     Column(
         modifier = Modifier
@@ -1209,6 +1275,30 @@ private fun PaymentLoadingContent(
                     color = MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.Center
                 )
+
+                // Timeout warning
+                if (showTimeoutWarning) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Esto está tomando más de lo normal. Verifica tu conexión a internet.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                // Cancel button
+                if (onCancel != null) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    OutlinedButton(
+                        onClick = onCancel,
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Text("Cancelar")
+                    }
+                }
             }
         }
     }

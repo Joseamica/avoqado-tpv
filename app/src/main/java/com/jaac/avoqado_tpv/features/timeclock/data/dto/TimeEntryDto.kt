@@ -26,6 +26,8 @@ data class TimeEntryDto(
     val notes: String?,
     val editedBy: String?,
     val checkInPhotoUrl: String?, // Firebase Storage URL of clock-in photo (anti-fraud)
+    val facadePhotoUrl: String? = null, // Firebase URL: store front photo at clock-in
+    val depositPhotoUrl: String? = null, // Firebase URL: bank deposit voucher at clock-out
     val staff: StaffInfoDto?,
     val breaks: List<TimeEntryBreakDto>?,
     val autoClockOut: Boolean?, // Was this entry auto-closed by the system?
@@ -68,6 +70,7 @@ data class ClockInRequestDto(
     val pin: String,
     val jobRole: String? = null,
     val checkInPhotoUrl: String? = null, // Firebase Storage URL of clock-in photo (anti-fraud)
+    val facadePhotoUrl: String? = null, // Firebase URL: store front photo at clock-in
     // GPS location verification fields
     // Backend expects: latitude, longitude, accuracy (not clockInLatitude, etc.)
     @SerializedName("latitude")
@@ -82,6 +85,7 @@ data class ClockOutRequestDto(
     val staffId: String,
     val pin: String,
     val checkOutPhotoUrl: String? = null, // Firebase Storage URL of clock-out photo (anti-fraud)
+    val depositPhotoUrl: String? = null, // Firebase URL: bank deposit voucher at clock-out
     // GPS location verification fields
     // Backend expects: latitude, longitude, accuracy (not clockOutLatitude, etc.)
     @SerializedName("latitude")
@@ -119,6 +123,8 @@ fun TimeEntryDto.toDomain(): TimeEntry {
         breakMinutes = breakMinutes ?: 0,
         status = parseStatus(status),
         checkInPhotoUrl = checkInPhotoUrl,
+        facadePhotoUrl = facadePhotoUrl,
+        depositPhotoUrl = depositPhotoUrl,
         breaks = breaks?.map { it.toDomain() } ?: emptyList(),
         autoClockOut = autoClockOut ?: false,
         autoClockOutNote = autoClockOutNote

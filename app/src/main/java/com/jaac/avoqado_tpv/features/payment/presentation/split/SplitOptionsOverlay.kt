@@ -47,8 +47,8 @@ import androidx.compose.ui.zIndex
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import java.math.BigDecimal
+import com.jaac.avoqado_tpv.core.util.rememberCurrencyFormat
 import java.text.NumberFormat
-import java.util.Locale
 
 /**
  * Split Options Overlay
@@ -103,9 +103,7 @@ fun SplitOptionsOverlay(
     modifier: Modifier = Modifier
 ) {
     // Currency formatter for MXN
-    val currencyFormatter = remember {
-        NumberFormat.getCurrencyInstance(Locale("es", "MX"))
-    }
+    val currencyFormatter = rememberCurrencyFormat()
 
     // ⭐ Determine which options to show based on lastSplitType
     // Prevents incompatible split combinations (EQUALPARTS ↔ PERPRODUCT)

@@ -80,12 +80,21 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
     }
 
     /**
-     * Initialize Timber logging (DEBUG only)
+     * Initialize Timber logging
+     *
+     * - DEBUG: DebugTree (full logcat output)
+     * - RELEASE: CrashReportingTree (W/E → Firebase Crashlytics as non-fatal exceptions)
+     *
+     * This ensures ALL existing Timber.e() calls throughout the codebase
+     * (payment errors, Blumon failures, network issues, etc.) are automatically
+     * captured in Crashlytics Console for production debugging.
      */
     private fun initializeTimber() {
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
             Timber.d("🚀 Avoqado TPV initialized in DEBUG mode")
+        } else {
+            Timber.plant(com.jaac.avoqado_tpv.core.observability.CrashReportingTree())
         }
     }
 

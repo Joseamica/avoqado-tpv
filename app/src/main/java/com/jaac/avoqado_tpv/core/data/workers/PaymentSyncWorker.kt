@@ -88,15 +88,21 @@ class PaymentSyncWorker @AssistedInject constructor(
 
         /**
          * Maximum retry attempts per payment before marking as FAILED.
-         * Matches PendingPaymentEntity.MAX_RETRY_ATTEMPTS = 3
+         * Matches PendingPaymentEntity.MAX_RETRY_ATTEMPTS = 10
          */
-        private const val MAX_RETRY_ATTEMPTS = 3
+        private const val MAX_RETRY_ATTEMPTS = 10
 
         /**
          * Initial backoff delay in milliseconds (1 second).
-         * Exponential backoff: 1s → 2s → 4s
+         * Exponential backoff: 1s → 2s → 4s → ... capped at MAX_BACKOFF_MS
          */
         private const val INITIAL_BACKOFF_MS = 1000L
+
+        /**
+         * Maximum backoff delay cap (30 seconds).
+         * Prevents exponential backoff from growing beyond reasonable limits.
+         */
+        private const val MAX_BACKOFF_MS = 30_000L
     }
 
     /**
@@ -184,9 +190,10 @@ class PaymentSyncWorker @AssistedInject constructor(
 
         while (currentAttempt <= MAX_RETRY_ATTEMPTS) {
             try {
-                // Calculate exponential backoff delay (except first attempt)
+                // Calculate exponential backoff delay (except first attempt), capped at MAX_BACKOFF_MS
                 if (currentAttempt > 1) {
-                    val backoffDelay = INITIAL_BACKOFF_MS * (1L shl (currentAttempt - 2)) // 2^(n-1)
+                    val exponent = minOf(currentAttempt - 2, 14) // Prevent overflow for high retry counts
+                    val backoffDelay = (INITIAL_BACKOFF_MS * (1L shl exponent)).coerceAtMost(MAX_BACKOFF_MS)
                     Timber.d("⏳ [Payment Sync] Retry attempt $currentAttempt after ${backoffDelay}ms backoff")
                     delay(backoffDelay)
                 } else {

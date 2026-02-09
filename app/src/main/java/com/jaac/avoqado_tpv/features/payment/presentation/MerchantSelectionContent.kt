@@ -7,7 +7,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CreditCard
+import androidx.compose.material.icons.filled.CurrencyBitcoin
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -25,6 +28,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
@@ -236,6 +240,8 @@ fun MerchantSelectionContent(
                     val buttonShape = RoundedCornerShape(12.dp)
                     val cardEnabled = !merchantSwitchingLoading && currentMerchant != null
                     val cashEnabled = !merchantSwitchingLoading
+                    val enabledMethodBackground = MaterialTheme.colorScheme.surfaceVariant
+                    val disabledMethodBackground = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
 
                     Row(
                         modifier = Modifier
@@ -247,95 +253,130 @@ fun MerchantSelectionContent(
                                 color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
                                 shape = buttonShape
                             )
+                            .padding(2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         // Card payment button (left or full width if no cash option)
                         Box(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
+                                .clip(RoundedCornerShape(10.dp))
                                 .background(
-                                    if (cardEnabled) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                    if (cardEnabled) enabledMethodBackground
+                                    else disabledMethodBackground
                                 )
                                 .clickable(enabled = cardEnabled) { onStartPayment() },
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = "Tarjeta",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = if (cardEnabled) MaterialTheme.colorScheme.onPrimary
-                                       else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                            )
+                            val cardTextColor = if (cardEnabled) MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CreditCard,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(10.dp),
+                                    tint = cardTextColor.copy(alpha = 0.8f)
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text(
+                                    text = "Tarjeta",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = cardTextColor
+                                )
+                            }
                         }
 
-                        // 🥝 Only show divider and cash button if showCashOption is true
+                        // 🥝 Only show cash button if showCashOption is true
                         // Kiosk mode = card only (self-service doesn't handle cash)
                         if (showCashOption) {
-                            // Divider
-                            Box(
-                                modifier = Modifier
-                                    .width(1.dp)
-                                    .fillMaxHeight()
-                                    .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
-                            )
-
                             // Cash payment button
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxHeight()
+                                    .clip(RoundedCornerShape(10.dp))
                                     .background(
-                                        if (cashEnabled) MaterialTheme.colorScheme.surfaceVariant
-                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                        if (cashEnabled) enabledMethodBackground
+                                        else disabledMethodBackground
                                     )
                                     .clickable(enabled = cashEnabled) {
                                         showCashConfirmationDialog = true
                                     },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    text = "Efectivo",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (cashEnabled) MaterialTheme.colorScheme.onSurfaceVariant
-                                           else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                                )
+                                val cashTextColor = if (cashEnabled) MaterialTheme.colorScheme.onSurfaceVariant
+                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.AttachMoney,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(10.dp),
+                                        tint = cashTextColor.copy(alpha = 0.8f)
+                                    )
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text(
+                                        text = "Efectivo",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = cashTextColor
+                                    )
+                                }
                             }
                         }
 
-                        // 🪙 Only show divider and crypto button if showCryptoOption is true
+                        // 🪙 Only show crypto button if showCryptoOption is true
                         // B4Bit crypto payment integration
                         if (showCryptoOption) {
-                            // Divider
-                            Box(
-                                modifier = Modifier
-                                    .width(1.dp)
-                                    .fillMaxHeight()
-                                    .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
-                            )
-
                             // Crypto payment button
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
                                     .fillMaxHeight()
+                                    .clip(RoundedCornerShape(10.dp))
                                     .background(
-                                        if (!merchantSwitchingLoading) MaterialTheme.colorScheme.surfaceVariant
-                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                                        if (!merchantSwitchingLoading) enabledMethodBackground
+                                        else disabledMethodBackground
                                     )
                                     .clickable(enabled = !merchantSwitchingLoading) {
                                         onStartCryptoPayment()
                                     },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    text = "Cripto",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (!merchantSwitchingLoading) MaterialTheme.colorScheme.onSurfaceVariant
-                                           else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                                )
+                                val cryptoTextColor = if (!merchantSwitchingLoading) MaterialTheme.colorScheme.onSurfaceVariant
+                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CurrencyBitcoin,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(10.dp),
+                                        tint = cryptoTextColor.copy(alpha = 0.8f)
+                                    )
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text(
+                                        text = "Cripto",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = cryptoTextColor
+                                    )
+                                }
                             }
                         }
                     }

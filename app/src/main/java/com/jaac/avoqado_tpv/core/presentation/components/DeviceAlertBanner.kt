@@ -76,7 +76,7 @@ fun DeviceAlertBanner(
                 isExpanded = isExpanded,
                 onToggleExpand = onToggleExpand,
                 onDismiss = if (topAlert.priority > 2) {{ onDismiss(topAlert) }} else null,
-                onRetry = if (topAlert is DeviceAlert.NoInternet || topAlert is DeviceAlert.ServerDown) onRetry else null,
+                onRetry = if (topAlert is DeviceAlert.NoInternet || topAlert is DeviceAlert.ServerDown || topAlert is DeviceAlert.SlowConnection || topAlert is DeviceAlert.PendingPayments) onRetry else null,
                 onUpdate = if (topAlert is DeviceAlert.UpdateAvailable) onUpdate else null
             )
 
@@ -94,7 +94,7 @@ fun DeviceAlertBanner(
                             isExpanded = false,
                             onToggleExpand = {},
                             onDismiss = if (alert.priority > 2) {{ onDismiss(alert) }} else null,
-                            onRetry = if (alert is DeviceAlert.NoInternet || alert is DeviceAlert.ServerDown) onRetry else null,
+                            onRetry = if (alert is DeviceAlert.NoInternet || alert is DeviceAlert.ServerDown || alert is DeviceAlert.SlowConnection || alert is DeviceAlert.PendingPayments) onRetry else null,
                             onUpdate = if (alert is DeviceAlert.UpdateAvailable) onUpdate else null,
                             isSecondary = true
                         )
@@ -132,6 +132,8 @@ private fun AlertBannerRow(
         is DeviceAlert.NoInternet -> Icons.Default.WifiOff
         is DeviceAlert.BatteryCritical -> Icons.Default.BatteryAlert
         is DeviceAlert.ServerDown -> Icons.Default.CloudOff
+        is DeviceAlert.SlowConnection -> Icons.Default.Speed
+        is DeviceAlert.PendingPayments -> Icons.Default.Sync
         is DeviceAlert.BatteryLow -> Icons.Default.Battery2Bar
         is DeviceAlert.StorageLow -> Icons.Default.Storage
         is DeviceAlert.WeakWifi -> Icons.Default.SignalWifiStatusbarConnectedNoInternet4
@@ -143,6 +145,8 @@ private fun AlertBannerRow(
         is DeviceAlert.NoInternet -> alert.message
         is DeviceAlert.BatteryCritical -> alert.message
         is DeviceAlert.ServerDown -> alert.message
+        is DeviceAlert.SlowConnection -> alert.message
+        is DeviceAlert.PendingPayments -> alert.message
         is DeviceAlert.BatteryLow -> alert.message
         is DeviceAlert.StorageLow -> alert.message
         is DeviceAlert.WeakWifi -> alert.message
@@ -154,6 +158,8 @@ private fun AlertBannerRow(
         is DeviceAlert.NoInternet -> alert.description
         is DeviceAlert.BatteryCritical -> alert.description
         is DeviceAlert.ServerDown -> alert.description
+        is DeviceAlert.SlowConnection -> alert.description
+        is DeviceAlert.PendingPayments -> alert.description
         is DeviceAlert.BatteryLow -> alert.description
         is DeviceAlert.StorageLow -> alert.description
         is DeviceAlert.WeakWifi -> alert.description
@@ -164,6 +170,7 @@ private fun AlertBannerRow(
         modifier = Modifier
             .fillMaxWidth()
             .background(if (isSecondary) backgroundColor.copy(alpha = 0.85f) else backgroundColor)
+            .then(if (!isSecondary) Modifier.statusBarsPadding() else Modifier)
             .clickable(enabled = additionalCount > 0) { onToggleExpand() }
             .padding(horizontal = 12.dp, vertical = if (isSecondary) 4.dp else 6.dp),
         horizontalArrangement = Arrangement.SpaceBetween,

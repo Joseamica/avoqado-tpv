@@ -69,6 +69,9 @@ class HomeViewModelTest {
     private lateinit var bluetoothPaymentService: BluetoothPaymentService
     private lateinit var updateCheckManager: UpdateCheckManager
     private lateinit var sessionManager: SessionManager
+    private lateinit var paymentQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
+    private lateinit var paymentQueueStateManager: com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
+    private lateinit var observabilityManager: com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 
     private val fakeSessionEvents = MutableSharedFlow<com.jaac.avoqado_tpv.core.session.SessionEvent>()
     private val fakeSocketEvents = MutableSharedFlow<com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent>()
@@ -100,6 +103,9 @@ class HomeViewModelTest {
         bluetoothPaymentService = mockk(relaxed = true)
         updateCheckManager = mockk(relaxed = true)
         sessionManager = mockk(relaxed = true)
+        paymentQueueRepository = mockk(relaxed = true)
+        paymentQueueStateManager = com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager()
+        observabilityManager = mockk(relaxed = true)
 
         every { sessionManager.sessionEvents } returns fakeSessionEvents
         every { socketManager.events } returns fakeSocketEvents
@@ -141,7 +147,10 @@ class HomeViewModelTest {
             deviceInfoManager = deviceInfoManager,
             bluetoothPaymentService = bluetoothPaymentService,
             updateCheckManager = updateCheckManager,
-            sessionManager = sessionManager
+            sessionManager = sessionManager,
+            paymentQueueRepository = paymentQueueRepository,
+            paymentQueueStateManager = paymentQueueStateManager,
+            observabilityManager = observabilityManager
         )
     }
 
@@ -245,6 +254,56 @@ class HomeViewModelTest {
         viewModel.exitMaintenance()
 
         verify { maintenanceManager.exitMaintenance() }
+        viewModel.viewModelScope.cancel()
+    }
+
+    // ========================================
+    // CANCEL BLUMON INIT TESTS
+    // ========================================
+    // NOTE: initializeBlumonSDK() uses Dispatchers.IO which can't be controlled
+    // by test dispatcher. But cancelBlumonInit() is synchronous — we can test
+    // it sets the correct state even if the init hasn't actually started.
+
+    @Test
+    fun `cancelBlumonInit sets initializing to false`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+
+        viewModel.cancelBlumonInit()
+
+        assertThat(viewModel.isBlumonInitializing.value).isFalse()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `cancelBlumonInit sets ready to false`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+
+        viewModel.cancelBlumonInit()
+
+        assertThat(viewModel.isBlumonReady.value).isFalse()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `cancelBlumonInit sets error message for retry`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+
+        viewModel.cancelBlumonInit()
+
+        assertThat(viewModel.blumonInitError.value).isNotNull()
+        assertThat(viewModel.blumonInitError.value).contains("cancelada")
+        viewModel.viewModelScope.cancel()
+    }
+
+    // ========================================
+    // BLUMON INIT ELAPSED SECONDS TESTS
+    // ========================================
+
+    @Test
+    fun `blumonInitElapsedSeconds starts at zero`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.blumonInitElapsedSeconds.value).isEqualTo(0)
         viewModel.viewModelScope.cancel()
     }
 }

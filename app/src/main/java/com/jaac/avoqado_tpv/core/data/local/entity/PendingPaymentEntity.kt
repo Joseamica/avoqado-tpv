@@ -102,6 +102,6 @@ data class PendingPaymentEntity(
         const val SYNC_STATUS_SUCCESS = "SUCCESS" // Successfully synced (can be deleted)
         const val SYNC_STATUS_FAILED = "FAILED" // Failed after max retries (manual review needed)
 
-        const val MAX_RETRY_ATTEMPTS = 3 // Max retry attempts before marking as FAILED
+        const val MAX_RETRY_ATTEMPTS = 10 // Max retry attempts before marking as FAILED
     }
 }

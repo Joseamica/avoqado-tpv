@@ -94,10 +94,12 @@ class ShiftViewModel @Inject constructor(
     // ══════════════════════════════════════════════════════════════════════
 
     init {
+        timber.log.Timber.d("[PERF] ShiftVM.init START at ${System.currentTimeMillis()}ms")
         refreshSettings()
         loadCurrentShift()
         listenToConnectionRestored()
         observeConnectivity()
+        timber.log.Timber.d("[PERF] ShiftVM.init ALL LAUNCHED")
     }
 
     /**

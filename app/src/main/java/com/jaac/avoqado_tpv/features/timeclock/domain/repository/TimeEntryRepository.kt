@@ -28,7 +28,8 @@ interface TimeEntryRepository {
         checkInPhotoUrl: String? = null,
         clockInLatitude: Double? = null,
         clockInLongitude: Double? = null,
-        clockInAccuracy: Float? = null
+        clockInAccuracy: Float? = null,
+        facadePhotoUrl: String? = null
     ): Result<TimeEntry>
 
     /**
@@ -50,7 +51,8 @@ interface TimeEntryRepository {
         checkOutPhotoUrl: String? = null,
         clockOutLatitude: Double? = null,
         clockOutLongitude: Double? = null,
-        clockOutAccuracy: Float? = null
+        clockOutAccuracy: Float? = null,
+        depositPhotoUrl: String? = null
     ): Result<TimeEntry>
 
     /**

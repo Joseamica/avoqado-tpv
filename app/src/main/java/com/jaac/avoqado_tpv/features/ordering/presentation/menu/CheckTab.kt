@@ -40,8 +40,9 @@ import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.ordering.domain.*
 import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import java.math.BigDecimal
+import com.jaac.avoqado_tpv.core.util.CurrencyFormatter
+import com.jaac.avoqado_tpv.core.util.rememberCurrencyFormat
 import java.text.NumberFormat
-import java.util.Locale
 
 @Composable
 fun CheckTab(
@@ -55,7 +56,7 @@ fun CheckTab(
     onPrintItem: (OrderItem) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val currencyFormatter = NumberFormat.getCurrencyInstance(Locale("es", "MX"))
+    val currencyFormatter = rememberCurrencyFormat()
     val displayItems = remember(order.items) { order.items.distinctBy { it.id } }
     val calculatedTotal = displayItems.sumOf { it.totalPrice }
     val lineCount = displayItems.size
@@ -346,21 +347,21 @@ private fun SwipeableOrderItem(
                         val discountedPrice = item.totalPrice.subtract(discountAmount)
                         
                         Text(
-                            text = NumberFormat.getCurrencyInstance(Locale("es", "MX")).format(item.totalPrice),
+                            text = CurrencyFormatter.format(item.totalPrice),
                             style = MaterialTheme.typography.bodySmall.copy(
                                 textDecoration = TextDecoration.LineThrough
                             ),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = NumberFormat.getCurrencyInstance(Locale("es", "MX")).format(discountedPrice),
+                            text = CurrencyFormatter.format(discountedPrice),
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
                         )
                     } else {
                         Text(
-                            text = NumberFormat.getCurrencyInstance(Locale("es", "MX")).format(item.totalPrice),
+                            text = CurrencyFormatter.format(item.totalPrice),
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
@@ -454,7 +455,7 @@ private fun KitchenStatusIcon(isSent: Boolean, onPrint: () -> Unit) {
 
 @Composable
 private fun OrderSummaryHeader(lineCount: Int, unitCount: Int, total: BigDecimal, onPrint: () -> Unit, hasItems: Boolean) {
-    val formatter = NumberFormat.getCurrencyInstance(Locale("es", "MX"))
+    val formatter = rememberCurrencyFormat()
     Row(
         modifier = Modifier
             .fillMaxWidth()

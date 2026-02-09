@@ -64,6 +64,13 @@ data class TpvSettingsDto(
     @SerializedName("requireClockOutPhoto")
     val requireClockOutPhoto: Boolean?,
 
+    // Additional attendance evidence photos
+    @SerializedName("requireFacadePhoto")
+    val requireFacadePhoto: Boolean?,
+
+    @SerializedName("requireDepositPhoto")
+    val requireDepositPhoto: Boolean?,
+
     // Session security: require active clock-in to access system
     @SerializedName("requireClockInToLogin")
     val requireClockInToLogin: Boolean?,
@@ -107,6 +114,9 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     // Attendance verification defaults to disabled
     requireClockInPhoto = requireClockInPhoto ?: false,
     requireClockOutPhoto = requireClockOutPhoto ?: false,
+    // Additional attendance evidence photos default to disabled
+    requireFacadePhoto = requireFacadePhoto ?: false,
+    requireDepositPhoto = requireDepositPhoto ?: false,
     // Session security defaults to disabled
     requireClockInToLogin = requireClockInToLogin ?: false,
     // Kiosk Mode defaults to disabled
@@ -135,6 +145,8 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     enableShifts = enableShifts,
     requireClockInPhoto = requireClockInPhoto,
     requireClockOutPhoto = requireClockOutPhoto,
+    requireFacadePhoto = requireFacadePhoto,
+    requireDepositPhoto = requireDepositPhoto,
     requireClockInToLogin = requireClockInToLogin,
     kioskModeEnabled = kioskModeEnabled,
     kioskDefaultMerchantId = kioskDefaultMerchantId,

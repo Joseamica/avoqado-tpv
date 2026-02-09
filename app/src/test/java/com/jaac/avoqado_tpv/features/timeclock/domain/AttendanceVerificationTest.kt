@@ -108,6 +108,8 @@ class AttendanceVerificationTest {
             enableShifts = null,
             requireClockInPhoto = null,  // Null from backend
             requireClockOutPhoto = null,  // Null from backend
+            requireFacadePhoto = null,
+            requireDepositPhoto = null,
             requireClockInToLogin = null,
             kioskModeEnabled = null,
             kioskDefaultMerchantId = null,
@@ -143,6 +145,8 @@ class AttendanceVerificationTest {
             enableShifts = null,
             requireClockInPhoto = true,
             requireClockOutPhoto = true,
+            requireFacadePhoto = null,
+            requireDepositPhoto = null,
             requireClockInToLogin = null,
             kioskModeEnabled = null,
             kioskDefaultMerchantId = null,
@@ -178,6 +182,8 @@ class AttendanceVerificationTest {
             enableShifts = null,
             requireClockInPhoto = false,
             requireClockOutPhoto = false,
+            requireFacadePhoto = null,
+            requireDepositPhoto = null,
             requireClockInToLogin = null,
             kioskModeEnabled = null,
             kioskDefaultMerchantId = null,

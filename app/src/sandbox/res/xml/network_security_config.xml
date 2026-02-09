@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Network Security Config for SANDBOX builds only.
+    Trusts user-installed CA certificates so mitmproxy can intercept HTTPS
+    for debugging and network simulation testing.
+
+    IMPORTANT: This file is ONLY in the sandbox source set.
+    Production builds do NOT have this file and use the platform default
+    (system CAs only + certificate pinning).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <!-- Trust system CAs -->
+            <certificates src="system" />
+            <!-- Trust user-installed CAs (for mitmproxy/Charles) -->
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

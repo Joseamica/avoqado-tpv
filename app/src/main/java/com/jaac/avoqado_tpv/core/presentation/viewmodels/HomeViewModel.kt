@@ -176,6 +176,10 @@ class HomeViewModel @Inject constructor(
     private val _salesGoal = MutableStateFlow<ModuleSalesGoal?>(null)
     val salesGoal: StateFlow<ModuleSalesGoal?> = _salesGoal.asStateFlow()
 
+    // Pull-to-refresh state
+    private val _isRefreshing = MutableStateFlow(false)
+    val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
+
     private val initStartTime = System.currentTimeMillis()
 
     init {
@@ -303,10 +307,10 @@ class HomeViewModel @Inject constructor(
      * 2. Venue-wide goal (if no staff goal)
      * 3. null (no goal configured)
      */
-    private fun fetchSalesGoal() {
+    private fun fetchSalesGoal(skipDelay: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                delay(2_500) // Stagger: sales goal is non-critical for initial render
+                if (!skipDelay) delay(2_500) // Stagger: sales goal is non-critical for initial render
                 val start = System.currentTimeMillis()
                 Timber.d("[PERF] HomeVM.fetchSalesGoal START")
 
@@ -356,6 +360,25 @@ class HomeViewModel @Inject constructor(
      */
     fun refreshSalesGoal() {
         fetchSalesGoal()
+    }
+
+    /**
+     * 🔄 Refresh Dashboard (Pull-to-Refresh)
+     *
+     * Public method to manually refresh all dashboard data.
+     * Called from WelcomeScreen pull-to-refresh gesture.
+     * Refreshes sales goal and staff info without init delays.
+     */
+    fun refreshDashboard() {
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            try {
+                fetchSalesGoal(skipDelay = true)
+                loadStaffInfo()
+            } finally {
+                _isRefreshing.value = false
+            }
+        }
     }
 
     /**

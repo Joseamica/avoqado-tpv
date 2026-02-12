@@ -186,8 +186,14 @@ fun AppNavigation(
 
     // 📥 UPDATE REQUEST OBSERVATION (Remote update commands from dashboard)
     // When dashboard sends REQUEST_UPDATE command, show dialog to user
-    val updateRequestManager = remember { kioskEntryPoint.updateRequestManager() }
-    val updateRequestState by updateRequestManager.updateRequestState.collectAsStateWithLifecycle()
+    val updateRequestManager = remember {
+        if (BuildConfig.ENABLE_PAX_SDK) kioskEntryPoint.updateRequestManager() else null
+    }
+    val updateRequestState = updateRequestManager
+        ?.updateRequestState
+        ?.collectAsStateWithLifecycle()
+        ?.value
+        ?: UpdateRequestState.Idle
     val updateCoroutineScope = rememberCoroutineScope()
 
     // 🔵 EXTERNAL DEVICES (BLE) - Start payment flow from any screen
@@ -563,7 +569,13 @@ fun AppNavigation(
             onToggleExpand = { deviceHealthViewModel.toggleExpanded() },
             onDismiss = { alert -> deviceHealthViewModel.dismissAlert(alert) },
             onRetry = { connectionViewModel.forceCheck() }, // For connection alerts
-            onUpdate = { navController.navigate(NavRoute.SelfUpdate.route) } // For update alerts
+            onUpdate = {
+                if (BuildConfig.ENABLE_PAX_SDK) {
+                    navController.navigate(NavRoute.SelfUpdate.route)
+                } else {
+                    Timber.w("🧪 Self-update disabled for this flavor")
+                }
+            } // For update alerts
         )
 
         // Main navigation content (takes remaining space)
@@ -765,6 +777,7 @@ fun AppNavigation(
             // 🔧 Loading overlay for SDK initialization
             Box(modifier = Modifier.fillMaxSize()) {
             WelcomeScreen(
+                onRefreshConnection = { connectionViewModel.forceCheck() },
                 onStartPaymentWithAmount = { amount ->
                     Timber.d("[PERF] NAV: Welcome → PaymentScreen START")
                     navController.currentBackStackEntry?.savedStateHandle?.set("initialAmount", amount)
@@ -1467,11 +1480,25 @@ fun AppNavigation(
 
         // Self-Update Screen - Check and install app updates via Blumon SDK
         composable(NavRoute.SelfUpdate.route) {
-            com.jaac.avoqado_tpv.features.self_update.presentation.SelfUpdateScreen(
-                onNavigateBack = {
-                    navController.safePopBackStack()
+            if (BuildConfig.ENABLE_PAX_SDK) {
+                com.jaac.avoqado_tpv.features.self_update.presentation.SelfUpdateScreen(
+                    onNavigateBack = {
+                        navController.safePopBackStack()
+                    }
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Self-update no disponible en tutorialEmu",
+                        style = MaterialTheme.typography.titleMedium
+                    )
                 }
-            )
+            }
         }
 
         // Split by Product Screen - Select specific products to pay
@@ -1674,7 +1701,7 @@ fun AppNavigation(
             // 📥 UPDATE REQUEST DIALOG (Remote update command from dashboard)
             // Shows dialog when dashboard sends REQUEST_UPDATE command
             // User can accept (download + install) or dismiss
-            if (updateRequestState !is UpdateRequestState.Idle) {
+            if (BuildConfig.ENABLE_PAX_SDK && updateRequestManager != null && updateRequestState !is UpdateRequestState.Idle) {
                 UpdateRequestDialog(
                     state = updateRequestState,
                     onAccept = {
@@ -1720,7 +1747,7 @@ fun AppNavigation(
     val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
     val isOnSelfUpdateScreen = currentRoute == NavRoute.SelfUpdate.route
 
-    if (forceUpdateAlert != null && !isOnSelfUpdateScreen) {
+    if (BuildConfig.ENABLE_PAX_SDK && forceUpdateAlert != null && !isOnSelfUpdateScreen) {
         Timber.i("🔒 [ForceUpdate] Showing force update dialog for ${forceUpdateAlert.versionName}")
         com.jaac.avoqado_tpv.core.presentation.components.ForceUpdateDialog(
             update = forceUpdateAlert,

@@ -15,6 +15,7 @@ import com.jaac.avoqado_tpv.features.self_update.domain.UpdateRequestManager
 import io.mockk.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
+import javax.inject.Provider
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -76,13 +77,13 @@ class CommandExecutorTest {
         every { mockPackageManager.getPackageInfo(any<String>(), any<Int>()) } throws
             android.content.pm.PackageManager.NameNotFoundException("Mocked for testing")
 
-        // Create CommandExecutor
+        // Create CommandExecutor (updateRequestManager is Provider<> in production code)
         commandExecutor = CommandExecutor(
             context = mockContext,
             lockScreenManager = mockLockScreenManager,
             maintenanceManager = mockMaintenanceManager,
             secureStorage = mockSecureStorage,
-            updateRequestManager = mockUpdateRequestManager,
+            updateRequestManager = Provider { mockUpdateRequestManager },
             avoqadoUpdateRepository = mockAvoqadoUpdateRepository
         )
     }

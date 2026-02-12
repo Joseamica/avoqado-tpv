@@ -77,6 +77,62 @@ fun ActionButtonGrid(
 }
 
 /**
+ * Static (non-lazy) Action Button Grid
+ *
+ * Identical visual output to [ActionButtonGrid] but uses Column+Row
+ * instead of LazyVerticalGrid. This allows embedding inside a scrollable
+ * parent (e.g., Column with verticalScroll) where LazyVerticalGrid can't
+ * be nested due to infinite height constraints.
+ *
+ * Use this for screens that need pull-to-refresh over the entire content
+ * area (e.g., WelcomeScreen). For 6-8 buttons, there's zero performance
+ * difference vs lazy rendering.
+ *
+ * @param buttons List of ActionButton configurations
+ * @param columns Number of columns (default 2)
+ * @param modifier Modifier for the grid container
+ */
+@Composable
+fun StaticActionButtonGrid(
+    buttons: List<ActionButton>,
+    columns: Int = 2,
+    modifier: Modifier = Modifier
+) {
+    val sizes = LocalResponsiveSizes.current
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        buttons.chunked(columns).forEach { rowButtons ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                rowButtons.forEach { button ->
+                    Box(modifier = Modifier.weight(1f)) {
+                        ActionButtonItem(
+                            icon = button.icon,
+                            label = button.label,
+                            enabled = button.enabled,
+                            badge = button.badge,
+                            onClick = button.onClick,
+                            iconSize = 32.dp,
+                            spacing = sizes.spacingSmall
+                        )
+                    }
+                }
+                repeat(columns - rowButtons.size) {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+/**
  * Individual action button item
  *
  * Square/Professional POS Style:

@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -55,9 +57,10 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.core.domain.events.VenueStatusEvent
 import com.jaac.avoqado_tpv.core.presentation.components.ActionButton
-import com.jaac.avoqado_tpv.core.presentation.components.ActionButtonGrid
+import com.jaac.avoqado_tpv.core.presentation.components.StaticActionButtonGrid
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoDialog
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoPullToRefresh
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.SalesGoalProgressCard
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
@@ -113,6 +116,7 @@ fun WelcomeScreen(
     onNavigateToSuperAdmin: () -> Unit = {},
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Telecom: Vender flow (barcode → price → payment)
     onNavigateToInventoryRegister: () -> Unit = {},  // 📦 Telecom: Alta de productos flow
+    onRefreshConnection: () -> Unit = {},
     onLogout: () -> Unit = {},
     isDarkMode: Boolean = false,
     onDarkModeToggle: () -> Unit = {},
@@ -169,6 +173,11 @@ fun WelcomeScreen(
     // Sales goal from HomeViewModel (for progress bar display)
     val salesGoal by viewModel.salesGoal.collectAsStateWithLifecycle()
 
+    // Pull-to-refresh state (combined from both ViewModels)
+    val homeIsRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+    val shiftIsRefreshing by shiftViewModel.isRefreshing.collectAsStateWithLifecycle()
+    val isRefreshing = homeIsRefreshing || shiftIsRefreshing
+
     // [PERF] Composition tracking
     LaunchedEffect(Unit) {
         timber.log.Timber.d("[PERF] WelcomeScreen COMPOSED at ${android.os.SystemClock.elapsedRealtime()}ms")
@@ -210,6 +219,12 @@ fun WelcomeScreen(
         cachedShiftInfo = cachedShiftInfo,
         venueStatus = venueStatus,  // 📊 Pass venue status for banner
         salesGoal = salesGoal,  // 🎯 Pass sales goal for progress bar
+        isRefreshing = isRefreshing,
+        onRefresh = {
+            viewModel.refreshDashboard()
+            shiftViewModel.refresh()
+            onRefreshConnection()
+        },
         onStartPaymentWithAmount = onStartPaymentWithAmount,  // ✅ Modal flow for first-time
         onNavigateToShifts = onNavigateToShifts,
         onNavigateToOrdering = onNavigateToOrdering,
@@ -410,6 +425,8 @@ private fun WelcomeScreenContent(
     cachedShiftInfo: CachedShiftInfo? = null,
     venueStatus: VenueStatus = VenueStatus.ACTIVE,  // 📊 Venue status for banner
     salesGoal: ModuleSalesGoal? = null,  // 🎯 Sales goal from backend
+    isRefreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
     onStartPaymentWithAmount: (String) -> Unit,  // ✅ Modal flow (first-time)
     onNavigateToShifts: () -> Unit,
     onNavigateToOrdering: () -> Unit,
@@ -640,54 +657,61 @@ private fun WelcomeScreenContent(
             // Explicitly use constraints from scope to avoid "unused scope" error                  │
             val sizes = ResponsiveSizes.calculate(this.maxHeight, this.maxWidth)
             CompositionLocalProvider(LocalResponsiveSizes provides sizes) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    // ═══════════════════════════════════════════════════════════════
-                    // VENUE STATUS BANNER (shows only for non-ACTIVE statuses) - FullWidth
-                    // ═══════════════════════════════════════════════════════════════
-                    VenueStatusBanner(status = venueStatus)
+                AvoqadoPullToRefresh(
+                    isRefreshing = isRefreshing,
+                    onRefresh = onRefresh,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    // verticalScroll makes the entire content area scrollable,
+                    // which allows pullToRefresh to detect drag gestures anywhere
+                    // (not just on the button grid). For 6-8 buttons, non-lazy
+                    // rendering via StaticActionButtonGrid has zero perf impact.
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        // ═══════════════════════════════════════════════════════════════
+                        // VENUE STATUS BANNER (shows only for non-ACTIVE statuses) - FullWidth
+                        // ═══════════════════════════════════════════════════════════════
+                        VenueStatusBanner(status = venueStatus)
 
-                    // Shift status banner (with offline state support) - FullWidth
-                    // Hidden in simplified mode when module config disables shifts
-                    val moduleEnableShifts = serializedInventoryConfig?.ui?.enableShifts ?: true
-                    val shouldShowShiftBanner = isShiftSystemEnabled && moduleEnableShifts && !isSimplifiedMode
-                    if (shouldShowShiftBanner) {
-                        ShiftStatusBanner(
-                            shift = currentShift,
-                            isOffline = isOffline,
-                            cachedInfo = cachedShiftInfo,
-                            onClick = onNavigateToShifts,
+                        // Shift status banner (with offline state support) - FullWidth
+                        // Hidden in simplified mode when module config disables shifts
+                        val moduleEnableShifts = serializedInventoryConfig?.ui?.enableShifts ?: true
+                        val shouldShowShiftBanner = isShiftSystemEnabled && moduleEnableShifts && !isSimplifiedMode
+                        if (shouldShowShiftBanner) {
+                            ShiftStatusBanner(
+                                shift = currentShift,
+                                isOffline = isOffline,
+                                cachedInfo = cachedShiftInfo,
+                                onClick = onNavigateToShifts,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+
+                        // ═══════════════════════════════════════════════════════════════
+                        // SALES GOAL PROGRESS CARD
+                        // Shows progress toward staff sales goal when configured.
+                        // Uses salesGoal from HomeViewModel (fetched from backend).
+                        // Falls back to module config if no backend goal (legacy support).
+                        // ═══════════════════════════════════════════════════════════════
+                        val effectiveSalesGoal = salesGoal ?: serializedInventoryConfig?.salesGoal
+                        if (effectiveSalesGoal != null) {
+                            SalesGoalProgressCard(
+                                salesGoal = effectiveSalesGoal,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                            )
+                        }
+
+                        // Action button grid (non-lazy, compatible with verticalScroll)
+                        StaticActionButtonGrid(
+                            buttons = actionButtons,
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
-
-                    // ═══════════════════════════════════════════════════════════════
-                    // SALES GOAL PROGRESS CARD
-                    // Shows progress toward staff sales goal when configured.
-                    // Uses salesGoal from HomeViewModel (fetched from backend).
-                    // Falls back to module config if no backend goal (legacy support).
-                    // ═══════════════════════════════════════════════════════════════
-                    val effectiveSalesGoal = salesGoal ?: serializedInventoryConfig?.salesGoal
-                    if (effectiveSalesGoal != null) {
-                        SalesGoalProgressCard(
-                            salesGoal = effectiveSalesGoal,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 8.dp)
-                        )
-                    }
-
-                        // Content with horizontal padding
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize(), // ⭐ Removed horizontal padding to let Grid handle it (edge-to-edge feel)
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            // Action button grid (LazyVerticalGrid handles its own scrolling)
-                            ActionButtonGrid(
-                                buttons = actionButtons,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
                 }
             }
         }
@@ -807,6 +831,8 @@ private fun WelcomeScreenPreview() {
             staffName = "Juan Pérez",
             clockInTime = null,
             currentShift = null,
+            isRefreshing = false,
+            onRefresh = {},
             onStartPaymentWithAmount = {},
             onNavigateToShifts = {},
             onNavigateToOrdering = {},
@@ -828,6 +854,8 @@ private fun WelcomeScreenPreviewLarge() {
             staffName = "María González",
             clockInTime = "Desde las 09:00",
             currentShift = null,
+            isRefreshing = false,
+            onRefresh = {},
             onStartPaymentWithAmount = {},
             onNavigateToShifts = {},
             onNavigateToOrdering = {},
@@ -848,6 +876,8 @@ private fun WelcomeScreenWithActiveShiftPreview() {
         WelcomeScreenContent(
             staffName = "Juan Pérez",
             clockInTime = null,
+            isRefreshing = false,
+            onRefresh = {},
             currentShift = Shift(
                 id = "shift-123",
                 venueId = "venue-1",

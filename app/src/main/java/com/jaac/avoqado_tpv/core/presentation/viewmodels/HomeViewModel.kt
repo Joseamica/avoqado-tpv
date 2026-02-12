@@ -36,6 +36,7 @@ import com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
 import com.jaac.avoqado_tpv.core.util.UpdateCheckManager
 import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleSalesGoal
 import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalPeriod
+import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalType
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -317,6 +318,10 @@ class HomeViewModel @Inject constructor(
                     if (goalDto != null) {
                         val goal = ModuleSalesGoal(
                             goal = goalDto.goal.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO,
+                            goalType = when (goalDto.goalType?.uppercase()) {
+                                "QUANTITY" -> SalesGoalType.QUANTITY
+                                else -> SalesGoalType.AMOUNT
+                            },
                             period = when (goalDto.period.uppercase()) {
                                 "WEEKLY" -> SalesGoalPeriod.WEEKLY
                                 "MONTHLY" -> SalesGoalPeriod.MONTHLY

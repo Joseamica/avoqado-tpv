@@ -1,5 +1,8 @@
 package com.jaac.avoqado_tpv.core.data.network
 
+import com.jaac.avoqado_tpv.core.data.network.dto.AckMessageRequest
+import com.jaac.avoqado_tpv.core.data.network.dto.SurveyResponseRequest
+import com.jaac.avoqado_tpv.core.data.network.dto.TpvMessageListResponse
 import retrofit2.Response
 import retrofit2.http.*
 
@@ -570,6 +573,51 @@ interface ApiService {
     suspend fun uploadProofOfSale(
         @Body request: ProofOfSaleRequest
     ): Response<ProofOfSaleResponse>
+
+    // ========== TPV Messages (Dashboard → Terminal) ==========
+
+    /**
+     * Get pending messages for this terminal
+     *
+     * GET /tpv/messages/pending
+     *
+     * Used for offline recovery — fetches messages that haven't been
+     * acknowledged or dismissed when terminal reconnects.
+     */
+    @GET("tpv/messages/pending")
+    suspend fun getPendingMessages(): Response<TpvMessageListResponse>
+
+    /**
+     * Acknowledge a message (REST backup for Socket.IO)
+     *
+     * POST /tpv/messages/{messageId}/acknowledge
+     */
+    @POST("tpv/messages/{messageId}/acknowledge")
+    suspend fun acknowledgeMessage(
+        @Path("messageId") messageId: String,
+        @Body body: AckMessageRequest
+    ): Response<Unit>
+
+    /**
+     * Dismiss a message (REST backup for Socket.IO)
+     *
+     * POST /tpv/messages/{messageId}/dismiss
+     */
+    @POST("tpv/messages/{messageId}/dismiss")
+    suspend fun dismissMessage(
+        @Path("messageId") messageId: String
+    ): Response<Unit>
+
+    /**
+     * Submit a survey response (REST backup for Socket.IO)
+     *
+     * POST /tpv/messages/{messageId}/respond
+     */
+    @POST("tpv/messages/{messageId}/respond")
+    suspend fun respondToMessage(
+        @Path("messageId") messageId: String,
+        @Body body: SurveyResponseRequest
+    ): Response<Unit>
 
     // ========== Crypto Payments (B4Bit Integration) ==========
 
@@ -1482,9 +1530,10 @@ data class SalesGoalResponse(
  * All monetary values are strings (BigDecimal on backend)
  */
 data class SalesGoalDto(
-    val goal: String,           // Target amount (e.g., "10000")
+    val goal: String,           // Target amount (e.g., "10000") or unit count (e.g., "50")
+    val goalType: String? = null, // "AMOUNT" or "QUANTITY" (defaults to AMOUNT for backward compat)
     val period: String,         // "DAILY", "WEEKLY", or "MONTHLY"
-    val currentSales: String,   // Current sales (e.g., "5000")
+    val currentSales: String,   // Current sales amount or unit count (e.g., "5000")
     val staffId: String?        // null = venue-wide goal
 )
 

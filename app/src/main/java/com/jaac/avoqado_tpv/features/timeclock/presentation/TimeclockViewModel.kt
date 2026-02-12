@@ -221,7 +221,7 @@ class TimeclockViewModel @Inject constructor(
             Timber.d("⏱️ [CLOCK-OUT] TpvSettings check:")
             Timber.d("   - requireDepositPhoto: ${settings.requireDepositPhoto}")
 
-            // Build photo queue — NO selfie at clock-out
+            // Build photo queue — NO selfie at clock-out, only deposit voucher if configured
             isClockOutFlow = true
             photoQueue.clear()
             pendingDepositPhotoUrl = null
@@ -245,7 +245,7 @@ class TimeclockViewModel @Inject constructor(
         if (photoQueue.isEmpty()) {
             // All photos captured (or none required) — proceed
             if (isClockOutFlow) {
-                performClockOut(staffId, staffName, null, pendingDepositPhotoUrl)
+                performClockOut(staffId, staffName, pendingDepositPhotoUrl)
             } else {
                 performClockIn(staffId, staffName, pendingClockInPhotoUrl, pendingFacadePhotoUrl)
             }
@@ -536,20 +536,18 @@ class TimeclockViewModel @Inject constructor(
      *
      * @param staffId Staff member ID
      * @param staffName Staff member name (for reloading status)
-     * @param photoUrl Optional Firebase Storage URL of clock-out selfie (will be null — no selfie at clock-out)
      * @param depositPhotoUrl Optional Firebase Storage URL of deposit voucher photo
      */
     private suspend fun performClockOut(
         staffId: String,
         staffName: String,
-        photoUrl: String?,
         depositPhotoUrl: String?
     ) {
         _state.value = TimeclockState.Processing("Registrando salida...")
 
         // GPS is automatically captured when deposit photo is required
         val settings = tpvSettingsRepository.getCurrentSettings()
-        val captureGps = settings.requireDepositPhoto || settings.requireClockOutPhoto
+        val captureGps = settings.requireDepositPhoto
 
         // Capture GPS if any photo verification is enabled
         var location: LocationResult? = null
@@ -576,7 +574,7 @@ class TimeclockViewModel @Inject constructor(
             venueId = venueId,
             staffId = staffId,
             pin = pin,
-            checkOutPhotoUrl = photoUrl,
+            checkOutPhotoUrl = null,
             clockOutLatitude = location?.latitude,
             clockOutLongitude = location?.longitude,
             clockOutAccuracy = location?.accuracy,

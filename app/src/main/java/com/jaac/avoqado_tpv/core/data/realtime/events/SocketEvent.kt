@@ -581,6 +581,41 @@ sealed interface SocketEvent {
     ) : SocketEvent
 
     // ========================================
+    // TPV Messages (Dashboard → Terminal)
+    // ========================================
+
+    /**
+     * Message received from dashboard (announcement, survey, or action).
+     * @see avoqado-server event: tpv_message
+     */
+    data class TpvMessageReceived(
+        val messageId: String,
+        val type: String,        // ANNOUNCEMENT | SURVEY | ACTION
+        val title: String,
+        val body: String,
+        val priority: String,    // LOW | NORMAL | HIGH | URGENT
+        val requiresAck: Boolean,
+        val surveyOptions: List<String>?,
+        val surveyMultiSelect: Boolean,
+        val actionLabel: String?,
+        val actionType: String?,
+        val expiresAt: String?,
+        val createdByName: String,
+        val venueId: String,
+        val timestamp: String
+    ) : SocketEvent
+
+    /**
+     * Message cancelled by dashboard admin.
+     * @see avoqado-server event: tpv_message_cancelled
+     */
+    data class TpvMessageCancelled(
+        val messageId: String,
+        val venueId: String,
+        val timestamp: String
+    ) : SocketEvent
+
+    // ========================================
     // Error Events
     // ========================================
 

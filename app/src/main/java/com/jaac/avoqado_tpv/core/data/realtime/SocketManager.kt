@@ -388,6 +388,13 @@ class SocketManager @Inject constructor(
         on("peripheral_error", onPeripheralError)
 
         // ========================================
+        // TPV Messages (Dashboard → Terminal)
+        // ========================================
+
+        on("tpv_message", onTpvMessage)
+        on("tpv_message_cancelled", onTpvMessageCancelled)
+
+        // ========================================
         // Error Events
         // ========================================
 
@@ -1257,6 +1264,101 @@ class SocketManager @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ Error parsing terminal:payment_cancel")
         }
+    }
+
+    // ========================================
+    // Event Handlers - TPV Messages
+    // ========================================
+
+    private val onTpvMessage = Emitter.Listener { args ->
+        try {
+            val data = args.getOrNull(0) as? JSONObject ?: return@Listener
+
+            Timber.i("📨 [Socket] TPV message received: ${data.optString("title")} (${data.optString("type")})")
+
+            // Parse survey options from JSON array
+            val surveyOptionsArray = data.optJSONArray("surveyOptions")
+            val surveyOptions = if (surveyOptionsArray != null) {
+                (0 until surveyOptionsArray.length()).map { surveyOptionsArray.getString(it) }
+            } else null
+
+            _events.tryEmit(
+                SocketEvent.TpvMessageReceived(
+                    messageId = data.optString("messageId", ""),
+                    type = data.optString("type", "ANNOUNCEMENT"),
+                    title = data.optString("title", ""),
+                    body = data.optString("body", ""),
+                    priority = data.optString("priority", "NORMAL"),
+                    requiresAck = data.optBoolean("requiresAck", false),
+                    surveyOptions = surveyOptions,
+                    surveyMultiSelect = data.optBoolean("surveyMultiSelect", false),
+                    actionLabel = data.optString("actionLabel").takeIf { it.isNotEmpty() },
+                    actionType = data.optString("actionType").takeIf { it.isNotEmpty() },
+                    expiresAt = data.optString("expiresAt").takeIf { it.isNotEmpty() && it != "null" },
+                    createdByName = data.optString("createdByName", ""),
+                    venueId = data.optString("venueId", ""),
+                    timestamp = data.optString("timestamp", "")
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error parsing tpv_message")
+        }
+    }
+
+    private val onTpvMessageCancelled = Emitter.Listener { args ->
+        try {
+            val data = args.getOrNull(0) as? JSONObject ?: return@Listener
+
+            Timber.i("📨 [Socket] TPV message cancelled: ${data.optString("messageId")}")
+            _events.tryEmit(
+                SocketEvent.TpvMessageCancelled(
+                    messageId = data.optString("messageId", ""),
+                    venueId = data.optString("venueId", ""),
+                    timestamp = data.optString("timestamp", "")
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error parsing tpv_message_cancelled")
+        }
+    }
+
+    // ========================================
+    // Emit Methods - TPV Messages
+    // ========================================
+
+    /**
+     * Emit message acknowledgment to server
+     */
+    fun emitMessageAck(messageId: String, terminalId: String, action: String, staffId: String? = null) {
+        socket?.emit("tpv_message_ack", JSONObject().apply {
+            put("messageId", messageId)
+            put("terminalId", terminalId)
+            put("action", action) // ACKNOWLEDGED | DISMISSED
+            put("staffId", staffId ?: JSONObject.NULL)
+            put("timestamp", java.time.Instant.now().toString())
+        })
+        Timber.d("📤 Emitted tpv_message_ack: $messageId ($action)")
+    }
+
+    /**
+     * Emit survey response to server
+     */
+    fun emitMessageResponse(
+        messageId: String,
+        terminalId: String,
+        selectedOptions: List<String>,
+        staffId: String? = null,
+        staffName: String? = null
+    ) {
+        socket?.emit("tpv_message_response", JSONObject().apply {
+            put("messageId", messageId)
+            put("terminalId", terminalId)
+            put("selectedOptions", org.json.JSONArray(selectedOptions))
+            put("staffId", staffId ?: JSONObject.NULL)
+            put("staffName", staffName ?: JSONObject.NULL)
+            put("timestamp", java.time.Instant.now().toString())
+        })
+        Timber.d("📤 Emitted tpv_message_response: $messageId options=$selectedOptions")
     }
 
     // ========================================

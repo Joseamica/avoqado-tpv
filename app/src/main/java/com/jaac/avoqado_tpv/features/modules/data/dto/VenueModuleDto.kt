@@ -115,6 +115,9 @@ data class ModuleSalesGoalDto(
     @SerializedName("goal")
     val goal: String? = null,  // BigDecimal as string from backend
 
+    @SerializedName("goalType")
+    val goalType: String? = null,  // "AMOUNT" or "QUANTITY" (defaults to AMOUNT)
+
     @SerializedName("period")
     val period: String? = null,  // "DAILY", "WEEKLY", "MONTHLY"
 
@@ -186,6 +189,10 @@ fun ModuleSalesGoalDto.toDomain(): ModuleSalesGoal? {
 
     return ModuleSalesGoal(
         goal = goalAmount,
+        goalType = when (goalType?.uppercase()) {
+            "QUANTITY" -> SalesGoalType.QUANTITY
+            else -> SalesGoalType.AMOUNT
+        },
         period = when (period?.uppercase()) {
             "WEEKLY" -> SalesGoalPeriod.WEEKLY
             "MONTHLY" -> SalesGoalPeriod.MONTHLY
@@ -242,6 +249,7 @@ fun ModuleAttendance.toDto(): ModuleAttendanceDto = ModuleAttendanceDto(
 
 fun ModuleSalesGoal.toDto(): ModuleSalesGoalDto = ModuleSalesGoalDto(
     goal = goal.toPlainString(),
+    goalType = goalType.name,
     period = period.name,
     currentSales = currentSales.toPlainString(),
     staffId = staffId

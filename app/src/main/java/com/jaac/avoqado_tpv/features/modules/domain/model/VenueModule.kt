@@ -79,17 +79,27 @@ data class ModuleAttendance(
  * Sales goal configuration for staff performance tracking.
  * Allows setting sales targets per staff member with configurable periods.
  *
- * @property goal Target sales amount for the period
+ * @property goal Target sales amount (AMOUNT) or unit count (QUANTITY) for the period
+ * @property goalType Type of goal: AMOUNT (currency) or QUANTITY (units sold)
  * @property period Time period for the goal (DAILY, WEEKLY, MONTHLY)
- * @property currentSales Current sales amount achieved (pre-calculated by backend)
+ * @property currentSales Current sales achieved (amount or count depending on goalType)
  * @property staffId Optional staff ID if goal is per-staff (null = same for all)
  */
 data class ModuleSalesGoal(
     val goal: java.math.BigDecimal,
+    val goalType: SalesGoalType = SalesGoalType.AMOUNT,
     val period: SalesGoalPeriod = SalesGoalPeriod.DAILY,
     val currentSales: java.math.BigDecimal = java.math.BigDecimal.ZERO,
     val staffId: String? = null
 )
+
+/**
+ * Type of sales goal target.
+ */
+enum class SalesGoalType {
+    AMOUNT,    // Currency target (e.g., $10,000)
+    QUANTITY   // Unit count target (e.g., 50 products sold)
+}
 
 /**
  * Time period for sales goals.

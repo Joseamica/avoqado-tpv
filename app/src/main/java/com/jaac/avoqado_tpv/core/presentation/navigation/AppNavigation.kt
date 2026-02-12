@@ -76,6 +76,8 @@ import com.jaac.avoqado_tpv.features.serialized_inventory.presentation.Serialize
 import com.jaac.avoqado_tpv.features.self_update.domain.UpdateRequestManager
 import com.jaac.avoqado_tpv.features.self_update.domain.UpdateRequestState
 import com.jaac.avoqado_tpv.features.self_update.presentation.UpdateRequestDialog
+import com.jaac.avoqado_tpv.features.messaging.presentation.TpvMessageViewModel
+import com.jaac.avoqado_tpv.features.messaging.presentation.components.TpvMessageDialog
 import com.jaac.avoqado_tpv.features.payment.presentation.split.SplitByProductScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.split.SplitByPersonScreen
 import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
@@ -154,6 +156,13 @@ fun AppNavigation(
     )
     val deviceAlerts by deviceHealthViewModel.activeAlerts.collectAsStateWithLifecycle()
     val deviceAlertsExpanded by deviceHealthViewModel.isExpanded.collectAsStateWithLifecycle()
+
+    // 📨 TPV MESSAGES (Dashboard → Terminal messaging)
+    // Anchored to Activity lifecycle — survives navigation without recreation
+    val tpvMessageViewModel: TpvMessageViewModel = hiltViewModel(
+        viewModelStoreOwner = activityOwner
+    )
+    val tpvMessageState by tpvMessageViewModel.uiState.collectAsStateWithLifecycle()
 
     // 🔒 FORCE UPDATE CHECK
     // If there's a forced update, show blocking dialog
@@ -1684,6 +1693,21 @@ fun AppNavigation(
                             updateRequestManager.acceptUpdate()
                         }
                     }
+                )
+            }
+
+            // 📨 TPV MESSAGE DIALOG (Dashboard → Terminal messaging)
+            // Shows announcements, surveys, and action messages from dashboard
+            tpvMessageState.currentMessage?.let { message ->
+                TpvMessageDialog(
+                    message = message,
+                    selectedSurveyOptions = tpvMessageState.selectedSurveyOptions,
+                    isSubmitting = tpvMessageState.isSubmitting,
+                    onAcknowledge = { tpvMessageViewModel.acknowledgeMessage() },
+                    onDismiss = { tpvMessageViewModel.dismissMessage() },
+                    onToggleSurveyOption = { tpvMessageViewModel.toggleSurveyOption(it) },
+                    onSubmitSurvey = { tpvMessageViewModel.submitSurveyResponse() },
+                    onExecuteAction = { tpvMessageViewModel.executeAction() }
                 )
             }
         }  // Close Box

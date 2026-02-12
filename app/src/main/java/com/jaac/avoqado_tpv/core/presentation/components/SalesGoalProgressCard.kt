@@ -37,6 +37,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleSalesGoal
 import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalPeriod
+import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalType
 import java.math.BigDecimal
 import java.math.RoundingMode
 import com.jaac.avoqado_tpv.core.util.rememberCurrencyFormat
@@ -98,7 +99,10 @@ fun SalesGoalProgressCard(
         label = "progress_animation"
     )
 
-    // Currency formatter
+    // Check goal type
+    val isQuantityGoal = salesGoal.goalType == SalesGoalType.QUANTITY
+
+    // Currency formatter (only used for AMOUNT goals)
     val currencyFormat = rememberCurrencyFormat()
 
     Card(
@@ -138,7 +142,11 @@ fun SalesGoalProgressCard(
                     Spacer(modifier = Modifier.width(8.dp))
 
                     Text(
-                        text = if (isGoalAchieved) "Meta Alcanzada!" else "Meta de Ventas",
+                        text = when {
+                            isGoalAchieved -> "Meta Alcanzada!"
+                            isQuantityGoal -> "Meta de Unidades"
+                            else -> "Meta de Ventas"
+                        },
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 16.sp
@@ -187,12 +195,16 @@ fun SalesGoalProgressCard(
                 // Left: Current sales
                 Column {
                     Text(
-                        text = "Vendido",
+                        text = if (isQuantityGoal) "Vendidas" else "Vendido",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
                     Text(
-                        text = currencyFormat.format(salesGoal.currentSales),
+                        text = if (isQuantityGoal) {
+                            "${salesGoal.currentSales.toInt()} uds"
+                        } else {
+                            currencyFormat.format(salesGoal.currentSales)
+                        },
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
                             fontSize = 18.sp
@@ -232,7 +244,11 @@ fun SalesGoalProgressCard(
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
                     Text(
-                        text = currencyFormat.format(salesGoal.goal),
+                        text = if (isQuantityGoal) {
+                            "${salesGoal.goal.toInt()} uds"
+                        } else {
+                            currencyFormat.format(salesGoal.goal)
+                        },
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Medium,
                             fontSize = 16.sp
@@ -248,7 +264,11 @@ fun SalesGoalProgressCard(
 
                 val remaining = salesGoal.goal.subtract(salesGoal.currentSales)
                 Text(
-                    text = "Faltan ${currencyFormat.format(remaining)} para alcanzar tu meta",
+                    text = if (isQuantityGoal) {
+                        "Faltan ${remaining.toInt()} unidades para alcanzar tu meta"
+                    } else {
+                        "Faltan ${currencyFormat.format(remaining)} para alcanzar tu meta"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                     modifier = Modifier.fillMaxWidth()
@@ -351,6 +371,39 @@ private fun SalesGoalProgressCardLowProgressPreview() {
                     goal = BigDecimal("20000"),
                     period = SalesGoalPeriod.DAILY,
                     currentSales = BigDecimal("2000")
+                )
+            )
+        }
+    }
+}
+
+@Preview(showBackground = true, widthDp = 400)
+@Composable
+private fun SalesGoalProgressCardQuantityPreview() {
+    AvoqadoTheme {
+        Column(
+            modifier = Modifier
+                .background(MaterialTheme.colorScheme.background)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // QUANTITY goal - 60% progress
+            SalesGoalProgressCard(
+                salesGoal = ModuleSalesGoal(
+                    goal = BigDecimal("50"),
+                    goalType = SalesGoalType.QUANTITY,
+                    period = SalesGoalPeriod.DAILY,
+                    currentSales = BigDecimal("30")
+                )
+            )
+
+            // QUANTITY goal - achieved
+            SalesGoalProgressCard(
+                salesGoal = ModuleSalesGoal(
+                    goal = BigDecimal("20"),
+                    goalType = SalesGoalType.QUANTITY,
+                    period = SalesGoalPeriod.WEEKLY,
+                    currentSales = BigDecimal("25")
                 )
             )
         }

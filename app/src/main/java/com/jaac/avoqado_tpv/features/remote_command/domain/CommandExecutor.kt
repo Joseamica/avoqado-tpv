@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import com.google.firebase.appdistribution.FirebaseAppDistribution
 import com.google.firebase.appdistribution.FirebaseAppDistributionException
+import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
 import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
@@ -21,6 +22,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import timber.log.Timber
 import java.time.Instant
 import javax.inject.Inject
+import javax.inject.Provider
 import javax.inject.Singleton
 import kotlin.coroutines.resume
 
@@ -59,7 +61,7 @@ class CommandExecutor @Inject constructor(
     private val lockScreenManager: LockScreenManager,
     private val maintenanceManager: MaintenanceManager,
     private val secureStorage: SecureStorage,
-    private val updateRequestManager: UpdateRequestManager,
+    private val updateRequestManager: Provider<UpdateRequestManager>,
     private val avoqadoUpdateRepository: AvoqadoUpdateRepository
 ) {
     companion object {
@@ -539,8 +541,13 @@ class CommandExecutor @Inject constructor(
     private suspend fun executeRequestUpdate(command: TpvCommand): CommandResult {
         Timber.i("📲 [$TAG] Executing REQUEST_UPDATE command")
 
+        if (!BuildConfig.ENABLE_PAX_SDK) {
+            Timber.w("⚠️ [$TAG] REQUEST_UPDATE ignored: update installer is disabled for this flavor")
+            return CommandResult.rejected("REQUEST_UPDATE not supported in emulator/tutorial flavor")
+        }
+
         return try {
-            when (val result = updateRequestManager.handleUpdateRequest(command.commandId)) {
+            when (val result = updateRequestManager.get().handleUpdateRequest(command.commandId)) {
                 is UpdateRequestResult.DialogShown -> {
                     CommandResult.success(
                         message = "Update dialog shown: ${result.versionName}",

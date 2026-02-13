@@ -104,6 +104,14 @@ class InitializationManager @Inject constructor(
      * @return Result.failure if initialization fails
      */
     suspend fun ensureInitialized(defaultMerchantPosId: String? = null): Result<Unit> {
+        if (!com.jaac.avoqado_tpv.BuildConfig.ENABLE_BLUMON_INIT) {
+            if (!_isInitialized.value) {
+                Timber.w("🧪 [InitializationManager] Blumon initialization disabled for this flavor")
+                _isInitialized.value = true
+            }
+            return Result.success(Unit)
+        }
+
         // Fast path: already initialized
         if (_isInitialized.value) {
             Timber.d("✅ [InitializationManager] Already initialized (fast path)")
@@ -360,6 +368,12 @@ class InitializationManager @Inject constructor(
      *                      This follows the same pattern as PaymentViewModel.performOnlineAuthorization().
      */
     suspend fun forceReinitialize(merchantPosId: String? = null): Result<Unit> {
+        if (!com.jaac.avoqado_tpv.BuildConfig.ENABLE_BLUMON_INIT) {
+            _isInitialized.value = true
+            Timber.w("🧪 [InitializationManager] forceReinitialize skipped (Blumon disabled for this flavor)")
+            return Result.success(Unit)
+        }
+
         Timber.w("⚠️ [InitializationManager] Force re-initialization requested (merchantPosId: ${merchantPosId ?: "null"})")
 
         return initMutex.withLock {

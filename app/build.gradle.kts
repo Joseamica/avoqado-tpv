@@ -33,6 +33,8 @@ android {
         buildConfigField("String", "API_BASE_URL_DEV", "\"https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/\"")
         buildConfigField("String", "SOCKET_URL", "\"https://api.avoqado.io\"")
         buildConfigField("String", "SOCKET_URL_DEV", "\"https://patchiest-noncommemorational-willia.ngrok-free.dev\"")
+        buildConfigField("boolean", "ENABLE_PAX_SDK", "true")
+        buildConfigField("boolean", "ENABLE_BLUMON_INIT", "true")
 
         // ⚠️ REMOVED: Hardcoded terminal configuration (2025-11-05)
         // Serial numbers and merchant accounts now fetched dynamically from backend
@@ -83,6 +85,45 @@ android {
             buildConfigField("String", "DEFAULT_TERMINAL_SERIAL", "\"2841548417\"")
             buildConfigField("String", "DEFAULT_TERMINAL_BRAND", "\"PAX\"")
             buildConfigField("String", "DEFAULT_TERMINAL_MODEL", "\"A910S\"")
+        }
+
+        create("tutorialEmu") {
+            dimension = "environment"
+            // Reuse sandbox flavor source/dependency graph where possible.
+            matchingFallbacks += listOf("sandbox")
+            versionNameSuffix = "-tutorial-emu"
+
+            // Firebase Storage environment prefix
+            buildConfigField("String", "STORAGE_ENV_PREFIX", "\"dev\"")
+
+            // Keep sandbox endpoints for safer local screenshots/tutorial runs.
+            buildConfigField("String", "BLUMON_ENV", "\"SAND\"")
+            buildConfigField("String", "TOKEN_SERVER_URL", "\"https://sandbox-tokener.blumonpay.net\"")
+            buildConfigField("String", "CORE_SERVER_URL", "\"https://sandbox-core.blumonpay.net\"")
+
+            // Default terminal config (for fallback - will be fetched from backend)
+            buildConfigField("String", "DEFAULT_TERMINAL_SERIAL", "\"2841548417\"")
+            buildConfigField("String", "DEFAULT_TERMINAL_BRAND", "\"PAX\"")
+            buildConfigField("String", "DEFAULT_TERMINAL_MODEL", "\"A910S\"")
+
+            // Emulator-only mode: disable native PAX/Blumon initialization.
+            buildConfigField("boolean", "ENABLE_PAX_SDK", "false")
+            buildConfigField("boolean", "ENABLE_BLUMON_INIT", "false")
+
+            // Allow installation on modern emulator ABIs.
+            ndk {
+                abiFilters.clear()
+                abiFilters.add("arm64-v8a")
+                abiFilters.add("x86_64")
+            }
+        }
+    }
+
+    sourceSets {
+        getByName("tutorialEmu") {
+            // Reuse sandbox-specific implementation files for tutorial emulator builds.
+            java.srcDirs("src/sandbox/java")
+            res.srcDirs("src/sandbox/res")
         }
     }
 
@@ -173,6 +214,10 @@ dependencies {
     // ⭐ SANDBOX FLAVOR: Blumon SDK AAR files (Sandbox environment)
     "sandboxImplementation"(files("libs/blumon_sdk-debug.aar"))
     "sandboxImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
+
+    // ⭐ TUTORIAL EMULATOR FLAVOR: reuse sandbox SDK API surface for compilation.
+    "tutorialEmuImplementation"(files("libs/blumon_sdk-debug.aar"))
+    "tutorialEmuImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
 
     // ⭐ PRODUCTION FLAVOR: Blumon SDK AAR files (Production environment)
     "productionImplementation"(files("libs/blumon_sdk-prod.aar"))

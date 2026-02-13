@@ -19,6 +19,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
@@ -143,6 +146,7 @@ class MainActivity : ComponentActivity() {
         // Edge-to-edge: content draws behind system bars (status bar, nav bar)
         // This allows ModalBottomSheet scrim to cover the entire screen seamlessly
         enableEdgeToEdge()
+        applyTutorialImmersiveNavigation()
 
         // Check/Request READ_PHONE_STATE permission (MANDATORY on Android 8+)
         checkAndRequestPhoneStatePermission()
@@ -236,6 +240,27 @@ class MainActivity : ComponentActivity() {
                 // Will re-enable when BLE functionality is needed again
                 // restoreBleServerIfPreviouslyRunning()
             }
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            applyTutorialImmersiveNavigation()
+        }
+    }
+
+    /**
+     * Tutorial emulator UX: hide 3-button nav bar so screenshots match PAX hardware.
+     * Only applied when PAX SDK is disabled (tutorialEmu flavor).
+     */
+    private fun applyTutorialImmersiveNavigation() {
+        if (BuildConfig.ENABLE_PAX_SDK) return
+
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.navigationBars())
         }
     }
 

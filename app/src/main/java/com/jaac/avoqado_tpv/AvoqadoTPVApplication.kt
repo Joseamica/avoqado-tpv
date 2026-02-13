@@ -104,6 +104,11 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
      */
     private suspend fun initializeNonCritical() = withContext(Dispatchers.IO) {
         try {
+            if (!BuildConfig.ENABLE_PAX_SDK) {
+                Timber.w("🧪 PAX SDK initialization disabled for this flavor")
+                return@withContext
+            }
+
             // Initialize Blumon PAX SDK
             AppManager.init(this@AvoqadoTPVApplication)
             Timber.d("✅ Blumon PAX SDK initialized")

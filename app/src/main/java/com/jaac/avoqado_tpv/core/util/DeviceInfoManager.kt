@@ -10,6 +10,7 @@ import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import dagger.hilt.android.qualifiers.ApplicationContext
 import timber.log.Timber
+import java.math.BigInteger
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -75,6 +76,16 @@ class DeviceInfoManager @Inject constructor(
      * @throws SecurityException if READ_PHONE_STATE permission not granted (Android 8+)
      */
     fun getSerialNumber(): String {
+        // Emulator/tutorial flavor: Build.getSerial() is blocked even with READ_PHONE_STATE.
+        if (!com.jaac.avoqado_tpv.BuildConfig.ENABLE_PAX_SDK) {
+            val androidId = Settings.Secure.getString(
+                context.contentResolver,
+                Settings.Secure.ANDROID_ID
+            )?.uppercase() ?: "0"
+            val emulatorSerial = generateTutorialSerialSuffix(androidId)
+            return "AVQD-$emulatorSerial"
+        }
+
         val hardwareSerial = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             // Android 8+: Requires READ_PHONE_STATE permission
             // ⚠️ NO FALLBACK - Permission must be granted before calling this
@@ -94,6 +105,24 @@ class DeviceInfoManager @Inject constructor(
         }
 
         return "AVQD-${hardwareSerial.uppercase()}"
+    }
+
+    /**
+     * Convert emulator ANDROID_ID into a short numeric serial for tutorial screenshots.
+     * Keeps format similar to real terminals (10 digits) while remaining deterministic.
+     */
+    private fun generateTutorialSerialSuffix(androidId: String): String {
+        val normalized = androidId.filter { it.isLetterOrDigit() }.ifEmpty { "0" }
+        return try {
+            BigInteger(normalized, 16)
+                .toString(10)
+                .takeLast(10)
+                .padStart(10, '0')
+        } catch (_: NumberFormatException) {
+            ((normalized.hashCode().toLong() and 0x7FFFFFFF).toString())
+                .takeLast(10)
+                .padStart(10, '0')
+        }
     }
 
     /**

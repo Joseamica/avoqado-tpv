@@ -28,7 +28,7 @@ object ShiftAggregator {
         return shifts.filter { shift ->
             try {
                 val shiftStart = Instant.parse(shift.startTime)
-                shiftStart.isAfter(period.startDate) && shiftStart.isBefore(period.endDate)
+                !shiftStart.isBefore(period.startDate) && !shiftStart.isAfter(period.endDate)
             } catch (e: Exception) {
                 // If parsing fails, exclude this shift
                 false

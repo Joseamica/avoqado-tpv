@@ -4,8 +4,10 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.location.LocationResult
 import com.jaac.avoqado_tpv.core.location.LocationService
+import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
@@ -30,6 +32,7 @@ import javax.inject.Inject
 class TimeclockViewModel @Inject constructor(
     private val timeEntryRepository: TimeEntryRepository,
     private val authRepository: AuthRepository,
+    private val secureStorage: SecureStorage,
     private val verificationUploadManager: VerificationUploadManager,
     private val locationService: LocationService,
     private val tpvSettingsRepository: TpvSettingsRepository,
@@ -112,8 +115,8 @@ class TimeclockViewModel @Inject constructor(
             val requireClockInToLogin = settings.requireClockInToLogin
             Timber.d("⏱️ [TIMECLOCK] requireClockInToLogin: $requireClockInToLogin")
 
-            // Get today's date range for filtering
-            val today = LocalDate.now()
+            // Get today's date range for filtering (venue timezone)
+            val today = LocalDate.now(VenueTimeZone.get(secureStorage))
             val startDate = today.atStartOfDay().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
             val endDate = today.plusDays(1).atStartOfDay().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
 

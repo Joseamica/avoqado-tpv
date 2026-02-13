@@ -7,6 +7,7 @@ import com.google.firebase.appdistribution.FirebaseAppDistributionException
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
+import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
 import com.jaac.avoqado_tpv.features.remote_command.data.model.CommandResult
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommand
@@ -311,6 +312,7 @@ class CommandExecutor @Inject constructor(
             // Save timezone if available
             if (!venueTimezone.isNullOrEmpty()) {
                 secureStorage.saveVenueTimezone(venueTimezone)
+                VenueTimeZone.invalidateCache()
             }
 
             Timber.i("✅ [$TAG] Terminal remotely activated successfully")

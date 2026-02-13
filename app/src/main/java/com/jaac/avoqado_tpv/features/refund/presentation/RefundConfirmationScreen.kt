@@ -114,7 +114,7 @@ fun RefundConfirmationScreen(
     // Date formatter
     val dateFormatter = remember {
         DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm")
-            .withZone(ZoneId.systemDefault())
+            .withZone(ZoneId.of("America/Mexico_City"))
     }
 
     Scaffold(

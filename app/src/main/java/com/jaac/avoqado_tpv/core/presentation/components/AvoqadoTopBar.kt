@@ -65,10 +65,11 @@ fun AvoqadoTopBar(
         bottomEnd = bottomRadius
     )
 
-    // Border color - Blue for sandbox to distinguish from production
-    val isSandbox = BuildConfig.BLUMON_ENV == "SAND"
-    val borderColor = if (isSandbox) MaterialTheme.avoqadoColors.statusInfo else MaterialTheme.colorScheme.outline
-    val borderWidth = if (isSandbox) 3.dp else 1.dp
+    // Border color - Blue for sandbox on real terminal builds only.
+    // tutorialEmu uses SAND endpoints but should look like production for screenshots.
+    val showSandboxBorder = BuildConfig.BLUMON_ENV == "SAND" && BuildConfig.ENABLE_PAX_SDK
+    val borderColor = if (showSandboxBorder) MaterialTheme.avoqadoColors.statusInfo else MaterialTheme.colorScheme.outline
+    val borderWidth = if (showSandboxBorder) 3.dp else 1.dp
 
     val resolvedTitleStyle = titleStyle ?: MaterialTheme.typography.titleLarge
 

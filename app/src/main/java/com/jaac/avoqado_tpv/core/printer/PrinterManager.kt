@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.Bitmap
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.R
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.pax.dal.IDAL
 import com.pax.dal.IPrinter
 import com.pax.neptunelite.api.NeptuneLiteUser
@@ -45,8 +47,13 @@ import javax.inject.Singleton
  */
 @Singleton
 class PrinterManager @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val secureStorage: SecureStorage
 ) {
+    /** Venue timezone for formatting dates on receipts */
+    private val venueTimeZone: java.util.TimeZone
+        get() = java.util.TimeZone.getTimeZone(VenueTimeZone.get(secureStorage))
+
     private companion object {
         private const val LINE_WIDTH = 32
         private const val PAPER_WIDTH = 384
@@ -201,8 +208,8 @@ class PrinterManager @Inject constructor(
             printerInstance.printStr("================================\n", null)
 
             // Date & Time + Order info line
-            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale("es", "MX"))
-            val timeFormat = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale("es", "MX"))
+            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale("es", "MX")).apply { timeZone = venueTimeZone }
+            val timeFormat = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale("es", "MX")).apply { timeZone = venueTimeZone }
             val now = java.util.Date()
             val currentDate = dateFormat.format(now)
             val currentTime = timeFormat.format(now)
@@ -823,7 +830,7 @@ class PrinterManager @Inject constructor(
             printerInstance.printStr("($periodLabel)\n\n", null)
 
             // Print timestamp
-            val dateFormat = java.text.SimpleDateFormat("dd MMM yyyy, HH:mm", java.util.Locale("es", "ES"))
+            val dateFormat = java.text.SimpleDateFormat("dd MMM yyyy, HH:mm", java.util.Locale("es", "ES")).apply { timeZone = venueTimeZone }
             val now = dateFormat.format(java.util.Date())
             printerInstance.printStr("Impreso: $now\n", null)
             printerInstance.printStr("--------------------------------\n\n", null)
@@ -972,7 +979,7 @@ class PrinterManager @Inject constructor(
             printerInstance.printStr("${period.subtitle}\n\n", null)
 
             // Print timestamp
-            val dateFormat = java.text.SimpleDateFormat("dd MMM yyyy, HH:mm", java.util.Locale("es", "ES"))
+            val dateFormat = java.text.SimpleDateFormat("dd MMM yyyy, HH:mm", java.util.Locale("es", "ES")).apply { timeZone = venueTimeZone }
             val now = dateFormat.format(java.util.Date())
             printerInstance.printStr("Impreso: $now\n", null)
             printerInstance.printStr("--------------------------------\n\n", null)
@@ -1088,7 +1095,7 @@ class PrinterManager @Inject constructor(
             printerInstance.printStr("${periods.size} períodos\n\n", null)
 
             // Print timestamp
-            val dateFormat = java.text.SimpleDateFormat("dd MMM yyyy, HH:mm", java.util.Locale("es", "ES"))
+            val dateFormat = java.text.SimpleDateFormat("dd MMM yyyy, HH:mm", java.util.Locale("es", "ES")).apply { timeZone = venueTimeZone }
             val now = dateFormat.format(java.util.Date())
             printerInstance.printStr("Impreso: $now\n", null)
             printerInstance.printStr("--------------------------------\n\n", null)
@@ -1209,7 +1216,7 @@ class PrinterManager @Inject constructor(
             }
 
             // Date & Time from payment
-            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", java.util.Locale("es", "MX"))
+            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", java.util.Locale("es", "MX")).apply { timeZone = venueTimeZone }
             val paymentDate = java.util.Date.from(payment.createdAt)
             printerInstance.printStr("\nFecha: ${dateFormat.format(paymentDate)}\n\n", null)
 
@@ -1324,7 +1331,7 @@ class PrinterManager @Inject constructor(
             printerInstance.printStr("Pagos seleccionados: ${payments.size}\n\n", null)
 
             // Print timestamp
-            val dateFormat = java.text.SimpleDateFormat("dd MMM yyyy, HH:mm", java.util.Locale("es", "ES"))
+            val dateFormat = java.text.SimpleDateFormat("dd MMM yyyy, HH:mm", java.util.Locale("es", "ES")).apply { timeZone = venueTimeZone }
             val now = dateFormat.format(java.util.Date())
             printerInstance.printStr("Impreso: $now\n", null)
             printerInstance.printStr("--------------------------------\n\n", null)
@@ -1332,7 +1339,7 @@ class PrinterManager @Inject constructor(
             // ========================================
             // PAYMENTS TABLE
             // ========================================
-            val paymentDateFormat = java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale("es", "ES"))
+            val paymentDateFormat = java.text.SimpleDateFormat("dd MMM HH:mm", java.util.Locale("es", "ES")).apply { timeZone = venueTimeZone }
 
             payments.sortedByDescending { it.createdAt }.forEach { payment ->
                 val date = paymentDateFormat.format(java.util.Date.from(payment.createdAt))
@@ -1485,7 +1492,7 @@ class PrinterManager @Inject constructor(
             printerInstance.printStr("\n", null)
 
             // Timestamp
-            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", java.util.Locale("es", "MX"))
+            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", java.util.Locale("es", "MX")).apply { timeZone = venueTimeZone }
             val currentDateTime = dateFormat.format(java.util.Date())
             printerInstance.printStr("Fecha: $currentDateTime\n", null)
             printerInstance.printStr("--------------------------------\n\n", null)
@@ -1634,7 +1641,7 @@ class PrinterManager @Inject constructor(
             }
 
             // Timestamp
-            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", java.util.Locale("es", "MX"))
+            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", java.util.Locale("es", "MX")).apply { timeZone = venueTimeZone }
             val currentDateTime = dateFormat.format(java.util.Date())
             printerInstance.printStr("Fecha: $currentDateTime\n", null)
             printerInstance.printStr("--------------------------------\n\n", null)
@@ -1767,7 +1774,7 @@ class PrinterManager @Inject constructor(
             }
 
             // Timestamp
-            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", java.util.Locale("es", "MX"))
+            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy  HH:mm:ss", java.util.Locale("es", "MX")).apply { timeZone = venueTimeZone }
             val currentDateTime = dateFormat.format(java.util.Date())
             printerInstance.printStr("Fecha: $currentDateTime\n\n", null)
 

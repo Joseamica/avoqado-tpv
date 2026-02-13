@@ -104,7 +104,7 @@ data class PinVerificationRequestDto(
 
 private val isoFormatter = DateTimeFormatter.ISO_DATE_TIME
 
-fun TimeEntryDto.toDomain(): TimeEntry {
+fun TimeEntryDto.toDomain(zoneId: ZoneId = ZoneId.of("America/Mexico_City")): TimeEntry {
     val staffName = if (staff != null) {
         listOfNotNull(staff.firstName, staff.lastName).joinToString(" ").ifEmpty { "Empleado" }
     } else {
@@ -116,8 +116,8 @@ fun TimeEntryDto.toDomain(): TimeEntry {
         staffId = staffId,
         staffName = staffName,
         venueId = venueId,
-        clockInTime = parseDateTime(clockInTime),
-        clockOutTime = clockOutTime?.let { parseDateTime(it) },
+        clockInTime = parseDateTime(clockInTime, zoneId),
+        clockOutTime = clockOutTime?.let { parseDateTime(it, zoneId) },
         jobRole = jobRole,
         totalHours = totalHours?.let { BigDecimal(it) },
         breakMinutes = breakMinutes ?: 0,
@@ -125,34 +125,32 @@ fun TimeEntryDto.toDomain(): TimeEntry {
         checkInPhotoUrl = checkInPhotoUrl,
         facadePhotoUrl = facadePhotoUrl,
         depositPhotoUrl = depositPhotoUrl,
-        breaks = breaks?.map { it.toDomain() } ?: emptyList(),
+        breaks = breaks?.map { it.toDomain(zoneId) } ?: emptyList(),
         autoClockOut = autoClockOut ?: false,
         autoClockOutNote = autoClockOutNote
     )
 }
 
-fun TimeEntryBreakDto.toDomain(): TimeEntryBreak {
+fun TimeEntryBreakDto.toDomain(zoneId: ZoneId = ZoneId.of("America/Mexico_City")): TimeEntryBreak {
     return TimeEntryBreak(
         id = id,
-        startTime = parseDateTime(startTime),
-        endTime = endTime?.let { parseDateTime(it) }
+        startTime = parseDateTime(startTime, zoneId),
+        endTime = endTime?.let { parseDateTime(it, zoneId) }
     )
 }
 
-private fun parseDateTime(isoString: String): LocalDateTime {
+private fun parseDateTime(isoString: String, zoneId: ZoneId = ZoneId.of("America/Mexico_City")): LocalDateTime {
     return try {
-        // 1. Try as Instant (standard ISO-8601 with Z) - This converts UTC to Local System Time
-        // Example: 2025-01-07T12:00:00Z -> 2025-01-07T06:00:00 (if CST)
+        // 1. Try as Instant (standard ISO-8601 with Z) - Converts UTC to venue timezone
         val instant = Instant.parse(isoString)
-        LocalDateTime.ofInstant(instant, ZoneId.systemDefault())
+        LocalDateTime.ofInstant(instant, zoneId)
     } catch (e: Exception) {
         try {
             // 2. Try with Offset (e.g. +05:00)
             val zdt = ZonedDateTime.parse(isoString, DateTimeFormatter.ISO_DATE_TIME)
-            zdt.withZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime()
+            zdt.withZoneSameInstant(zoneId).toLocalDateTime()
         } catch (e2: Exception) {
             // 3. Fallback: Treat as Local Time (no conversion)
-            // Remove 'Z' if present to prevent parser error if we fell through
             val localIso = isoString.replace("Z", "")
             LocalDateTime.parse(localIso, DateTimeFormatter.ISO_LOCAL_DATE_TIME)
         }

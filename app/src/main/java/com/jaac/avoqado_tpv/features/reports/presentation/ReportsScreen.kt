@@ -247,7 +247,7 @@ private fun ReportsScreenContent(
                         if (selectedTab == ReportTab.SUMMARY) {
                             if (isComparisonEnabled && state.period.previousPeriodStart != null) {
                                 // Show both periods when comparing
-                                val formatter = java.text.SimpleDateFormat("dd MMM", java.util.Locale("es", "ES"))
+                                val formatter = java.text.SimpleDateFormat("dd MMM", java.util.Locale("es", "ES")).apply { timeZone = java.util.TimeZone.getTimeZone("America/Mexico_City") }
                                 val currentStart = formatter.format(java.util.Date.from(state.period.startDate))
                                 val currentEnd = formatter.format(java.util.Date.from(state.period.endDate))
                                 val previousStart = formatter.format(java.util.Date.from(state.period.previousPeriodStart))

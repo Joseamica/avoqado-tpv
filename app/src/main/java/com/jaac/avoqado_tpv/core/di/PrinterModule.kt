@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.core.di
 
 import android.content.Context
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import dagger.Module
 import dagger.Provides
@@ -52,8 +53,9 @@ object PrinterModule {
     @Provides
     @Singleton
     fun providePrinterManager(
-        @ApplicationContext context: Context
+        @ApplicationContext context: Context,
+        secureStorage: SecureStorage
     ): PrinterManager {
-        return PrinterManager(context)
+        return PrinterManager(context, secureStorage)
     }
 }

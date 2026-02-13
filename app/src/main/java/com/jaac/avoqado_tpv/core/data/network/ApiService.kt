@@ -1033,6 +1033,19 @@ interface ApiService {
     @GET("tpv/sales-goal")
     suspend fun getSalesGoal(): Response<SalesGoalResponse>
 
+    /**
+     * GET /tpv/sales-goals (plural)
+     * Get all effective sales goals resolved via venue > organization hierarchy.
+     *
+     * Returns goals relevant to this staff member (staff-specific + venue-wide).
+     * Each goal includes a `source` field indicating whether it came from
+     * the venue's own config or the organization's default.
+     *
+     * @return List of sales goals with source info
+     */
+    @GET("tpv/sales-goals")
+    suspend fun getSalesGoals(): Response<SalesGoalsResponse>
+
     // ========== Shifts (Timeclock) - DEPRECATED ==========
     // TODO: Remove these after shift management migration complete
 
@@ -1534,7 +1547,16 @@ data class SalesGoalDto(
     val goalType: String? = null, // "AMOUNT" or "QUANTITY" (defaults to AMOUNT for backward compat)
     val period: String,         // "DAILY", "WEEKLY", or "MONTHLY"
     val currentSales: String,   // Current sales amount or unit count (e.g., "5000")
-    val staffId: String?        // null = venue-wide goal
+    val staffId: String? = null, // null = venue-wide goal
+    val source: String? = null  // "venue" | "organization" (null for old endpoint backward compat)
+)
+
+/**
+ * Response from GET /tpv/sales-goals (plural)
+ * Contains all effective sales goals resolved via venue > organization hierarchy
+ */
+data class SalesGoalsResponse(
+    val salesGoals: List<SalesGoalDto>
 )
 
 // ========== Crypto Payment DTOs (B4Bit Integration) ==========

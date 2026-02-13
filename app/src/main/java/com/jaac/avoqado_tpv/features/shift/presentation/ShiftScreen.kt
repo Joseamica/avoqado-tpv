@@ -638,10 +638,10 @@ private fun ShiftDetailRow(
 /**
  * Format time from ISO 8601 to HH:mm
  */
-private fun formatTime(isoTime: String): String {
+private fun formatTime(isoTime: String, zoneId: ZoneId = ZoneId.of("America/Mexico_City")): String {
     return try {
         val instant = Instant.parse(isoTime)
-        val localTime = instant.atZone(ZoneId.systemDefault()).toLocalTime()
+        val localTime = instant.atZone(zoneId).toLocalTime()
         DateTimeFormatter.ofPattern("HH:mm").format(localTime)
     } catch (e: Exception) {
         "N/A"
@@ -689,10 +689,10 @@ private fun formatDurationForHistory(minutes: Int?): String {
 /**
  * Format date from ISO 8601 to "dd MMM, HH:mm"
  */
-private fun formatDate(isoTime: String): String {
+private fun formatDate(isoTime: String, zoneId: ZoneId = ZoneId.of("America/Mexico_City")): String {
     return try {
         val instant = Instant.parse(isoTime)
-        val dateTime = instant.atZone(ZoneId.systemDefault())
+        val dateTime = instant.atZone(zoneId)
         DateTimeFormatter.ofPattern("dd MMM, HH:mm").format(dateTime)
     } catch (e: Exception) {
         "N/A"

@@ -90,7 +90,8 @@ data class ModuleSalesGoal(
     val goalType: SalesGoalType = SalesGoalType.AMOUNT,
     val period: SalesGoalPeriod = SalesGoalPeriod.DAILY,
     val currentSales: java.math.BigDecimal = java.math.BigDecimal.ZERO,
-    val staffId: String? = null
+    val staffId: String? = null,
+    val source: SalesGoalSource = SalesGoalSource.VENUE
 )
 
 /**
@@ -108,4 +109,12 @@ enum class SalesGoalPeriod {
     DAILY,    // Reset every day
     WEEKLY,   // Reset every week (Monday)
     MONTHLY   // Reset every month (1st)
+}
+
+/**
+ * Source of the sales goal (venue > organization inheritance hierarchy).
+ */
+enum class SalesGoalSource {
+    VENUE,         // Goal configured directly on the venue
+    ORGANIZATION   // Goal inherited from the organization
 }

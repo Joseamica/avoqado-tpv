@@ -345,7 +345,7 @@ private fun InfoRow(
  * @return Formatted date string (e.g., "15 Enero 2025")
  */
 private fun formatDate(instant: Instant): String {
-    val formatter = java.text.SimpleDateFormat("dd MMMM yyyy", java.util.Locale("es", "ES"))
+    val formatter = java.text.SimpleDateFormat("dd MMMM yyyy", java.util.Locale("es", "ES")).apply { timeZone = java.util.TimeZone.getTimeZone("America/Mexico_City") }
     return formatter.format(java.util.Date.from(instant))
 }
 

@@ -636,14 +636,13 @@ private fun ScanResultCard(
 /**
  * Format ISO timestamp to localized date/time with fallback to raw string
  */
-private fun formatSoldAtDate(isoTimestamp: String): String {
+private fun formatSoldAtDate(isoTimestamp: String, zoneId: ZoneId = ZoneId.of("America/Mexico_City")): String {
     return try {
         val instant = Instant.parse(isoTimestamp)
         DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT)
-            .withZone(ZoneId.systemDefault())
+            .withZone(zoneId)
             .format(instant)
     } catch (e: Exception) {
-        // Fallback to raw string if parsing fails
         isoTimestamp
     }
 }

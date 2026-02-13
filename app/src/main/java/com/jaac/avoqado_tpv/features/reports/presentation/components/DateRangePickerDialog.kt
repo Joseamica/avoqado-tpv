@@ -69,7 +69,8 @@ import java.util.Locale
 @Composable
 fun DateRangePickerDialog(
     onDismiss: () -> Unit,
-    onConfirm: (startDate: Instant, endDate: Instant) -> Unit
+    onConfirm: (startDate: Instant, endDate: Instant) -> Unit,
+    zoneId: ZoneId = ZoneId.of("America/Mexico_City")
 ) {
     // Current month being displayed
     var currentMonth by remember { mutableStateOf(YearMonth.now()) }
@@ -153,8 +154,8 @@ fun DateRangePickerDialog(
             TextButton(
                 onClick = {
                     if (startDate != null && endDate != null) {
-                        val start = startDate!!.atStartOfDay(ZoneId.systemDefault()).toInstant()
-                        val end = endDate!!.atTime(23, 59, 59).atZone(ZoneId.systemDefault()).toInstant()
+                        val start = startDate!!.atStartOfDay(zoneId).toInstant()
+                        val end = endDate!!.atTime(23, 59, 59).atZone(zoneId).toInstant()
                         onConfirm(start, end)
                     }
                 },

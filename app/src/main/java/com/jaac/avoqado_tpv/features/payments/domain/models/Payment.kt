@@ -103,7 +103,7 @@ data class Payment(
      * Format timestamp for display
      * Example: "15 Ene 2025, 14:30"
      */
-    fun formatTimestamp(zoneId: ZoneId = ZoneId.systemDefault()): String {
+    fun formatTimestamp(zoneId: ZoneId = ZoneId.of("America/Mexico_City")): String {
         val formatter = DateTimeFormatter
             .ofPattern("dd MMM yyyy, HH:mm", Locale("es", "MX"))
             .withZone(zoneId)
@@ -114,7 +114,7 @@ data class Payment(
      * Format date only (for grouping)
      * Example: "15 Ene 2025"
      */
-    fun formatDate(zoneId: ZoneId = ZoneId.systemDefault()): String {
+    fun formatDate(zoneId: ZoneId = ZoneId.of("America/Mexico_City")): String {
         val formatter = DateTimeFormatter
             .ofPattern("dd MMM yyyy", Locale("es", "MX"))
             .withZone(zoneId)

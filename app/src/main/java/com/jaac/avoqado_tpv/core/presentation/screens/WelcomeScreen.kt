@@ -44,6 +44,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,6 +55,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.core.domain.events.VenueStatusEvent
 import com.jaac.avoqado_tpv.core.presentation.components.ActionButton
@@ -62,7 +66,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoDialog
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoPullToRefresh
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
-import com.jaac.avoqado_tpv.core.presentation.components.SalesGoalProgressCard
+import com.jaac.avoqado_tpv.core.presentation.components.SalesGoalsPager
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.SettingsBottomSheet
@@ -170,8 +174,8 @@ fun WelcomeScreen(
     var showVenueSuspendedDialog by remember { mutableStateOf(false) }
     var showVenueClosedDialog by remember { mutableStateOf(false) }
 
-    // Sales goal from HomeViewModel (for progress bar display)
-    val salesGoal by viewModel.salesGoal.collectAsStateWithLifecycle()
+    // Sales goals from HomeViewModel (for progress bar display)
+    val salesGoals by viewModel.salesGoals.collectAsStateWithLifecycle()
 
     // Pull-to-refresh state (combined from both ViewModels)
     val homeIsRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
@@ -203,10 +207,23 @@ fun WelcomeScreen(
         }
     }
 
-    // NOTE: Removed redundant LaunchedEffects for loadCurrentShift(), refreshSettings(),
-    // and refreshSalesGoal(). These are already called in their respective ViewModel init{} blocks.
-    // ShiftViewModel.init{} calls loadCurrentShift() + refreshSettings().
-    // HomeViewModel.init{} calls fetchSalesGoal().
+    // Refresh sales goals when WelcomeScreen resumes (e.g., after completing a payment).
+    // Skip first resume since HomeViewModel.init{} already fetches on startup.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        var isFirstResume = true
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (isFirstResume) {
+                    isFirstResume = false
+                } else {
+                    viewModel.refreshSalesGoal()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     // Main content
     WelcomeScreenContent(
@@ -218,7 +235,7 @@ fun WelcomeScreen(
         isOffline = isOffline,
         cachedShiftInfo = cachedShiftInfo,
         venueStatus = venueStatus,  // 📊 Pass venue status for banner
-        salesGoal = salesGoal,  // 🎯 Pass sales goal for progress bar
+        salesGoals = salesGoals,  // 🎯 Pass sales goals for progress pager
         isRefreshing = isRefreshing,
         onRefresh = {
             viewModel.refreshDashboard()
@@ -424,7 +441,7 @@ private fun WelcomeScreenContent(
     isOffline: Boolean = false,
     cachedShiftInfo: CachedShiftInfo? = null,
     venueStatus: VenueStatus = VenueStatus.ACTIVE,  // 📊 Venue status for banner
-    salesGoal: ModuleSalesGoal? = null,  // 🎯 Sales goal from backend
+    salesGoals: List<ModuleSalesGoal> = emptyList(),  // 🎯 Sales goals from backend
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     onStartPaymentWithAmount: (String) -> Unit,  // ✅ Modal flow (first-time)
@@ -691,15 +708,17 @@ private fun WelcomeScreenContent(
                         }
 
                         // ═══════════════════════════════════════════════════════════════
-                        // SALES GOAL PROGRESS CARD
-                        // Shows progress toward staff sales goal when configured.
-                        // Uses salesGoal from HomeViewModel (fetched from backend).
-                        // Falls back to module config if no backend goal (legacy support).
+                        // SALES GOALS PAGER
+                        // Shows progress toward sales goals in a horizontal pager.
+                        // Uses salesGoals from HomeViewModel (fetched from backend).
+                        // Falls back to module config if no backend goals (legacy support).
                         // ═══════════════════════════════════════════════════════════════
-                        val effectiveSalesGoal = salesGoal ?: serializedInventoryConfig?.salesGoal
-                        if (effectiveSalesGoal != null) {
-                            SalesGoalProgressCard(
-                                salesGoal = effectiveSalesGoal,
+                        val effectiveGoals = salesGoals.ifEmpty {
+                            listOfNotNull(serializedInventoryConfig?.salesGoal)
+                        }
+                        if (effectiveGoals.isNotEmpty()) {
+                            SalesGoalsPager(
+                                salesGoals = effectiveGoals,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(horizontal = 16.dp, vertical = 8.dp)

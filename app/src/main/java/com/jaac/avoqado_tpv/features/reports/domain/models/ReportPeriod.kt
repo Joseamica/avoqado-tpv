@@ -45,7 +45,7 @@ data class ReportPeriod(
         PeriodType.LAST_90_DAYS -> "Últimos 90 días"
         PeriodType.CUSTOM -> {
             // Use SimpleDateFormat for API < 26 compatibility
-            val formatter = java.text.SimpleDateFormat("dd MMM", java.util.Locale("es", "ES"))
+            val formatter = java.text.SimpleDateFormat("dd MMM", java.util.Locale("es", "ES")).apply { timeZone = java.util.TimeZone.getTimeZone("America/Mexico_City") }
             val start = formatter.format(java.util.Date.from(startDate))
             val end = formatter.format(java.util.Date.from(endDate))
             "$start - $end"
@@ -58,10 +58,8 @@ data class ReportPeriod(
          *
          * **Default period** - Most managers check "today's sales" first thing
          */
-        fun today(): ReportPeriod {
-            val now = Instant.now()
-            val zoneId = java.time.ZoneId.systemDefault()
-            val today = java.time.LocalDate.now(zoneId)
+        fun today(zoneId: ZoneId = ZoneId.of("America/Mexico_City")): ReportPeriod {
+            val today = LocalDate.now(zoneId)
 
             val startOfDay = today.atStartOfDay(zoneId).toInstant()
             val endOfDay = today.atTime(23, 59, 59).atZone(zoneId).toInstant()

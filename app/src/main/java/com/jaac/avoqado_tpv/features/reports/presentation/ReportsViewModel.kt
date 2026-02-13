@@ -15,6 +15,7 @@ import com.jaac.avoqado_tpv.features.reports.domain.models.PeriodType
 import com.jaac.avoqado_tpv.features.reports.domain.models.ReportPeriod
 import com.jaac.avoqado_tpv.features.reports.domain.models.SalesSummary
 import com.jaac.avoqado_tpv.features.reports.domain.repository.ReportsRepository
+import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -79,7 +80,9 @@ class ReportsViewModel @Inject constructor(
     private val _isComparisonEnabled = MutableStateFlow(false)
     val isComparisonEnabled: StateFlow<Boolean> = _isComparisonEnabled.asStateFlow()
 
-    private var currentPeriod: ReportPeriod = ReportPeriod.today()  // ← Default: Today's sales
+    private val venueZoneId get() = VenueTimeZone.get(secureStorage)
+
+    private var currentPeriod: ReportPeriod = ReportPeriod.today(VenueTimeZone.get(secureStorage))  // ← Default: Today's sales
 
     // Cache: Store reports by period type to avoid re-fetching
     // Note: Cache keys don't include comparison flag - cache is only for non-comparison periods
@@ -277,7 +280,7 @@ class ReportsViewModel @Inject constructor(
         }
 
         val newPeriod = when (periodType) {
-            PeriodType.TODAY -> ReportPeriod.today()
+            PeriodType.TODAY -> ReportPeriod.today(venueZoneId)
             PeriodType.LAST_7_DAYS -> ReportPeriod.last7Days()
             PeriodType.LAST_30_DAYS -> ReportPeriod.last30Days()
             PeriodType.LAST_90_DAYS -> ReportPeriod.last90Days()
@@ -327,7 +330,7 @@ class ReportsViewModel @Inject constructor(
         } else {
             // Disable comparison: Use base period without previous dates
             when (currentPeriod.type) {
-                PeriodType.TODAY -> ReportPeriod.today()
+                PeriodType.TODAY -> ReportPeriod.today(venueZoneId)
                 PeriodType.LAST_7_DAYS -> ReportPeriod.last7Days()
                 PeriodType.LAST_30_DAYS -> ReportPeriod.last30Days()
                 PeriodType.LAST_90_DAYS -> ReportPeriod.last90Days()

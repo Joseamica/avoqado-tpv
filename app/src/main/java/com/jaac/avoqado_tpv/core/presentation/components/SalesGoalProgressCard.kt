@@ -37,6 +37,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleSalesGoal
 import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalPeriod
+import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalSource
 import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalType
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -155,8 +156,16 @@ fun SalesGoalProgressCard(
                     )
                 }
 
-                // Right: Period badge
-                PeriodBadge(period = salesGoal.period)
+                // Right: Source badge (if org) + Period badge
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (salesGoal.source == SalesGoalSource.ORGANIZATION) {
+                        SourceBadge()
+                    }
+                    PeriodBadge(period = salesGoal.period)
+                }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -308,6 +317,32 @@ private fun PeriodBadge(
                 fontWeight = FontWeight.Medium
             ),
             color = color
+        )
+    }
+}
+
+/**
+ * Source Badge
+ *
+ * Small chip indicating the goal came from the organization level.
+ * Only shown for ORGANIZATION source goals.
+ */
+@Composable
+private fun SourceBadge(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .background(
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                shape = RoundedCornerShape(16.dp)
+            )
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+    ) {
+        Text(
+            text = "Org",
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontWeight = FontWeight.Medium
+            ),
+            color = MaterialTheme.colorScheme.onTertiaryContainer
         )
     }
 }

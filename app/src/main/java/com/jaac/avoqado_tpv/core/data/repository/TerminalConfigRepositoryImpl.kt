@@ -1,9 +1,11 @@
 package com.jaac.avoqado_tpv.core.data.repository
 
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.network.dto.toDomain
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalInfo
+import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import timber.log.Timber
 import javax.inject.Inject
@@ -24,7 +26,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class TerminalConfigRepositoryImpl @Inject constructor(
-    private val apiService: ApiService
+    private val apiService: ApiService,
+    private val secureStorage: SecureStorage
 ) : TerminalConfigRepository {
 
     override suspend fun fetchConfig(serialNumber: String): Result<Pair<TerminalInfo, List<MerchantAccount>>> {
@@ -70,6 +73,12 @@ class TerminalConfigRepositoryImpl @Inject constructor(
             val data = body.data
             val terminal = data.terminal
             val venue = terminal.venue
+
+            // Save venue timezone for date/time display throughout the app
+            venue?.timezone?.let {
+                secureStorage.saveVenueTimezone(it)
+                VenueTimeZone.invalidateCache()
+            }
 
             // Map terminal DTO to TerminalInfo
             val terminalInfo = TerminalInfo(

@@ -36,6 +36,7 @@ import com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
 import com.jaac.avoqado_tpv.core.util.UpdateCheckManager
 import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleSalesGoal
 import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalPeriod
+import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalSource
 import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalType
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
@@ -172,9 +173,9 @@ class HomeViewModel @Inject constructor(
     // SALES GOAL (staff performance tracking)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    // Current sales goal for the logged-in staff member
-    private val _salesGoal = MutableStateFlow<ModuleSalesGoal?>(null)
-    val salesGoal: StateFlow<ModuleSalesGoal?> = _salesGoal.asStateFlow()
+    // All effective sales goals for the logged-in staff (resolved via venue > org hierarchy)
+    private val _salesGoals = MutableStateFlow<List<ModuleSalesGoal>>(emptyList())
+    val salesGoals: StateFlow<List<ModuleSalesGoal>> = _salesGoals.asStateFlow()
 
     // Pull-to-refresh state
     private val _isRefreshing = MutableStateFlow(false)
@@ -297,15 +298,15 @@ class HomeViewModel @Inject constructor(
     }
 
     /**
-     * 🎯 Fetch Sales Goal
+     * 🎯 Fetch Sales Goals
      *
-     * Fetches the current staff's sales goal from the backend.
-     * Shows a progress bar on WelcomeScreen if a goal is configured.
+     * Fetches all effective sales goals from the backend using the plural endpoint.
+     * Falls back to the singular endpoint for backward compatibility with older backends.
      *
-     * **Goal Priority:**
-     * 1. Staff-specific goal (if exists)
-     * 2. Venue-wide goal (if no staff goal)
-     * 3. null (no goal configured)
+     * **Resolution hierarchy (handled by backend):**
+     * 1. Venue-level goals (if configured) → source: VENUE
+     * 2. Organization-level goals (fallback) → source: ORGANIZATION
+     * 3. Empty list (no goals configured)
      */
     private fun fetchSalesGoal(skipDelay: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -314,48 +315,76 @@ class HomeViewModel @Inject constructor(
                 val start = System.currentTimeMillis()
                 Timber.d("[PERF] HomeVM.fetchSalesGoal START")
 
+                // Try plural endpoint first (new backend)
+                try {
+                    val multiResponse = apiService.getSalesGoals()
+                    if (multiResponse.isSuccessful) {
+                        val goals = multiResponse.body()?.salesGoals?.map { dto ->
+                            mapDtoToGoal(dto)
+                        } ?: emptyList()
+                        _salesGoals.value = goals
+                        Timber.i("✅ [HomeViewModel] Sales goals loaded: ${goals.size} goals")
+                        goals.forEach { g ->
+                            Timber.d("  → ${g.currentSales}/${g.goal} (${g.period}, source=${g.source})")
+                        }
+                        Timber.d("[PERF] HomeVM.fetchSalesGoal DONE (${System.currentTimeMillis() - start}ms)")
+                        return@launch
+                    }
+                } catch (e: Exception) {
+                    Timber.d("ℹ️ [HomeViewModel] Plural endpoint not available, falling back to singular")
+                }
+
+                // Fallback to singular endpoint (old backend — backward compat)
                 val response = apiService.getSalesGoal()
                 if (response.isSuccessful) {
-                    val body = response.body()
-                    val goalDto = body?.salesGoal
-
+                    val goalDto = response.body()?.salesGoal
                     if (goalDto != null) {
-                        val goal = ModuleSalesGoal(
-                            goal = goalDto.goal.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO,
-                            goalType = when (goalDto.goalType?.uppercase()) {
-                                "QUANTITY" -> SalesGoalType.QUANTITY
-                                else -> SalesGoalType.AMOUNT
-                            },
-                            period = when (goalDto.period.uppercase()) {
-                                "WEEKLY" -> SalesGoalPeriod.WEEKLY
-                                "MONTHLY" -> SalesGoalPeriod.MONTHLY
-                                else -> SalesGoalPeriod.DAILY
-                            },
-                            currentSales = goalDto.currentSales.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO,
-                            staffId = goalDto.staffId
-                        )
-                        _salesGoal.value = goal
-                        Timber.i("✅ [HomeViewModel] Sales goal loaded: ${goal.currentSales}/${goal.goal} (${goal.period})")
+                        _salesGoals.value = listOf(mapDtoToGoal(goalDto))
+                        Timber.i("✅ [HomeViewModel] Sales goal loaded (singular fallback): ${goalDto.currentSales}/${goalDto.goal}")
                     } else {
-                        _salesGoal.value = null
+                        _salesGoals.value = emptyList()
                         Timber.d("ℹ️ [HomeViewModel] No sales goal configured for this staff/venue")
                     }
                 } else {
                     Timber.w("⚠️ [HomeViewModel] Failed to fetch sales goal: ${response.code()}")
-                    _salesGoal.value = null
+                    _salesGoals.value = emptyList()
                 }
                 Timber.d("[PERF] HomeVM.fetchSalesGoal DONE (${System.currentTimeMillis() - start}ms)")
             } catch (e: Exception) {
-                Timber.e(e, "❌ [HomeViewModel] Error fetching sales goal")
-                _salesGoal.value = null
+                Timber.e(e, "❌ [HomeViewModel] Error fetching sales goals")
+                _salesGoals.value = emptyList()
             }
         }
     }
 
     /**
-     * 🔄 Refresh Sales Goal
+     * Map a SalesGoalDto to domain model ModuleSalesGoal
+     */
+    private fun mapDtoToGoal(dto: com.jaac.avoqado_tpv.core.data.network.SalesGoalDto): ModuleSalesGoal {
+        return ModuleSalesGoal(
+            goal = dto.goal.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO,
+            goalType = when (dto.goalType?.uppercase()) {
+                "QUANTITY" -> SalesGoalType.QUANTITY
+                else -> SalesGoalType.AMOUNT
+            },
+            period = when (dto.period.uppercase()) {
+                "WEEKLY" -> SalesGoalPeriod.WEEKLY
+                "MONTHLY" -> SalesGoalPeriod.MONTHLY
+                else -> SalesGoalPeriod.DAILY
+            },
+            currentSales = dto.currentSales.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO,
+            staffId = dto.staffId,
+            source = when (dto.source?.lowercase()) {
+                "organization" -> SalesGoalSource.ORGANIZATION
+                else -> SalesGoalSource.VENUE
+            }
+        )
+    }
+
+    /**
+     * 🔄 Refresh Sales Goals
      *
-     * Public method to manually refresh the sales goal.
+     * Public method to manually refresh the sales goals.
      * Called after a payment is completed to update progress.
      */
     fun refreshSalesGoal() {

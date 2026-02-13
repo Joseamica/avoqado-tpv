@@ -250,6 +250,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        applyTutorialImmersiveNavigation()
+    }
+
     /**
      * Tutorial emulator UX: hide 3-button nav bar so screenshots match PAX hardware.
      * Only applied when PAX SDK is disabled (tutorialEmu flavor).
@@ -260,7 +265,13 @@ class MainActivity : ComponentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            hide(WindowInsetsCompat.Type.navigationBars())
+            hide(WindowInsetsCompat.Type.systemBars())
+        }
+
+        // Some transient surfaces (dialogs/sheets) can request bars again;
+        // posting a second hide keeps tutorial screenshots clean.
+        window.decorView.post {
+            WindowInsetsControllerCompat(window, window.decorView).hide(WindowInsetsCompat.Type.systemBars())
         }
     }
 

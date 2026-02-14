@@ -75,6 +75,7 @@ app/src/production/ # Production-specific (same files, different SDK URLs)
 14. **Git**: Never commit without permission. No `Co-Authored-By`. -> `release-and-git.md`
 15. **ADB monitoring**: Mandatory after every change. Log capture for testing. -> `testing-and-adb.md`
 16. **Unit tests**: 220 tests, 0 failures. Run before commits and after refactors. -> [unit testing guide](docs/UNIT_TESTING_GUIDE.md)
+17. **Timezone**: Never use `ZoneId.systemDefault()`. Use `VenueTimeZone.get(secureStorage)` or `ZoneId.of("America/Mexico_City")`. -> `critical-warnings.md`
 
 ## Build Variants
 
@@ -89,7 +90,7 @@ Same branch (`main`), different Gradle configurations:
 ## Documentation Router
 
 ### Auto-loaded rules (`.claude/rules/`)
-- `critical-warnings.md` — PaymentVM safety, Blumon, variants, Room migrations, auth, money, performance, API paths
+- `critical-warnings.md` — PaymentVM safety, Blumon, variants, Room migrations, auth, money, performance, API paths, timezone
 - `release-and-git.md` — APK signing, version bumps, permissions, cross-repo, git workflow
 - `testing-and-adb.md` — Regression prevention, ADB monitoring, log capture
 

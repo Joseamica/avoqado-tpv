@@ -38,14 +38,13 @@ data class ReportPeriod(
     /**
      * Get human-readable label for this period
      */
-    fun getLabel(): String = when (type) {
+    fun getLabel(zoneId: ZoneId = ZoneId.of("America/Mexico_City")): String = when (type) {
         PeriodType.TODAY -> "Hoy"
         PeriodType.LAST_7_DAYS -> "Últimos 7 días"
         PeriodType.LAST_30_DAYS -> "Últimos 30 días"
         PeriodType.LAST_90_DAYS -> "Últimos 90 días"
         PeriodType.CUSTOM -> {
-            // Use SimpleDateFormat for API < 26 compatibility
-            val formatter = java.text.SimpleDateFormat("dd MMM", java.util.Locale("es", "ES")).apply { timeZone = java.util.TimeZone.getTimeZone("America/Mexico_City") }
+            val formatter = java.text.SimpleDateFormat("dd MMM", java.util.Locale("es", "ES")).apply { timeZone = java.util.TimeZone.getTimeZone(zoneId.id) }
             val start = formatter.format(java.util.Date.from(startDate))
             val end = formatter.format(java.util.Date.from(endDate))
             "$start - $end"

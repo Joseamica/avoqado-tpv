@@ -5,6 +5,8 @@ import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.features.reports.data.aggregators.ComparisonCalculator
 import com.jaac.avoqado_tpv.features.reports.data.aggregators.ShiftAggregator
 import com.jaac.avoqado_tpv.features.reports.data.dto.toDomain
+import com.jaac.avoqado_tpv.features.reports.data.dto.toPaymentBreakdown
+import com.jaac.avoqado_tpv.features.reports.data.dto.toSalesSummary
 import com.jaac.avoqado_tpv.features.reports.domain.models.ComparisonMetrics
 import com.jaac.avoqado_tpv.features.reports.domain.models.PaymentMethodBreakdown
 import com.jaac.avoqado_tpv.features.reports.domain.models.ReportPeriod
@@ -46,6 +48,9 @@ class ReportsRepositoryImpl @Inject constructor(
 
     /**
      * Get sales summary for a specific period
+     *
+     * Uses backend shifts-summary endpoint which aggregates both
+     * shift-based and orphan payments (venues without shifts module).
      */
     override suspend fun getSalesSummary(
         venueId: String,
@@ -54,23 +59,26 @@ class ReportsRepositoryImpl @Inject constructor(
         try {
             Timber.d("📊 Fetching sales summary for period: ${period.getLabel()}")
 
-            // Fetch shifts from repository
-            val shiftsResult = fetchShiftsForPeriod(venueId, period)
+            val response = apiService.getShiftsSummary(
+                venueId = venueId,
+                startTime = period.startDate.toString(),
+                endTime = period.endDate.toString()
+            )
 
-            when (shiftsResult) {
-                is Result.Success -> {
-                    val shifts = shiftsResult.data
-
-                    // Aggregate using ShiftAggregator
-                    val summary = ShiftAggregator.getSummaryForPeriod(shifts, period)
-
-                    Timber.i("✅ Sales summary: ${summary.totalSales}, ${summary.totalOrders} orders")
-                    Result.Success(summary)
-                }
-
-                is Result.Error -> {
-                    Timber.e("❌ Failed to fetch shifts: ${shiftsResult.exception}")
-                    Result.Error(shiftsResult.exception)
+            if (response.isSuccessful && response.body() != null) {
+                val summary = response.body()!!.data.toSalesSummary()
+                Timber.i("✅ Sales summary: ${summary.totalSales}, ${summary.totalOrders} orders")
+                Result.Success(summary)
+            } else {
+                Timber.w("⚠️ shifts-summary failed (${response.code()}), falling back to raw shifts")
+                // Fallback: fetch raw shifts and aggregate client-side
+                val shiftsResult = fetchShiftsForPeriod(venueId, period)
+                when (shiftsResult) {
+                    is Result.Success -> {
+                        val summary = ShiftAggregator.getSummaryForPeriod(shiftsResult.data, period)
+                        Result.Success(summary)
+                    }
+                    is Result.Error -> Result.Error(shiftsResult.exception)
                 }
             }
         } catch (e: Exception) {
@@ -81,6 +89,9 @@ class ReportsRepositoryImpl @Inject constructor(
 
     /**
      * Get payment method breakdown for a specific period
+     *
+     * Uses backend shifts-summary endpoint which aggregates both
+     * shift-based and orphan payments (venues without shifts module).
      */
     override suspend fun getPaymentMethodBreakdown(
         venueId: String,
@@ -89,23 +100,25 @@ class ReportsRepositoryImpl @Inject constructor(
         try {
             Timber.d("💳 Fetching payment breakdown for period: ${period.getLabel()}")
 
-            // Fetch shifts from repository
-            val shiftsResult = fetchShiftsForPeriod(venueId, period)
+            val response = apiService.getShiftsSummary(
+                venueId = venueId,
+                startTime = period.startDate.toString(),
+                endTime = period.endDate.toString()
+            )
 
-            when (shiftsResult) {
-                is Result.Success -> {
-                    val shifts = shiftsResult.data
-
-                    // Aggregate using ShiftAggregator
-                    val breakdown = ShiftAggregator.getPaymentBreakdownForPeriod(shifts, period)
-
-                    Timber.i("✅ Payment breakdown: Cash ${breakdown.cashPercentage}%, Card ${breakdown.cardPercentage}%")
-                    Result.Success(breakdown)
-                }
-
-                is Result.Error -> {
-                    Timber.e("❌ Failed to fetch shifts: ${shiftsResult.exception}")
-                    Result.Error(shiftsResult.exception)
+            if (response.isSuccessful && response.body() != null) {
+                val breakdown = response.body()!!.data.toPaymentBreakdown()
+                Timber.i("✅ Payment breakdown: Cash ${breakdown.cashPercentage}%, Card ${breakdown.cardPercentage}%")
+                Result.Success(breakdown)
+            } else {
+                Timber.w("⚠️ shifts-summary failed (${response.code()}), falling back to raw shifts")
+                val shiftsResult = fetchShiftsForPeriod(venueId, period)
+                when (shiftsResult) {
+                    is Result.Success -> {
+                        val breakdown = ShiftAggregator.getPaymentBreakdownForPeriod(shiftsResult.data, period)
+                        Result.Success(breakdown)
+                    }
+                    is Result.Error -> Result.Error(shiftsResult.exception)
                 }
             }
         } catch (e: Exception) {

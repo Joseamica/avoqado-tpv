@@ -1343,6 +1343,7 @@ fun AppNavigation(
             if (selectedPeriod != null) {
                 com.jaac.avoqado_tpv.features.reports.presentation.HistoricalPeriodDetailScreen(
                     period = selectedPeriod!!,
+                    venueZoneId = reportsViewModel.venueZoneId,
                     onNavigateBack = {
                         reportsViewModel.clearSelectedPeriod()
                         navController.safePopBackStack()

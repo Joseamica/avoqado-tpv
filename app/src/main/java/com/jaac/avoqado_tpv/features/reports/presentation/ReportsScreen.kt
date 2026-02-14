@@ -127,9 +127,12 @@ fun ReportsScreen(
     val selectedPeriodsForPrint by viewModel.selectedPeriodsForPrint.collectAsStateWithLifecycle()
     val showHistoricalPrintDialog by viewModel.showHistoricalPrintDialog.collectAsStateWithLifecycle()
 
+    val venueZoneId = remember { viewModel.venueZoneId }
+
     ReportsScreenContent(
         state = state,
         isComparisonEnabled = isComparisonEnabled,
+        venueZoneId = venueZoneId,
         historicalState = historicalState,
         historicalGrouping = historicalGrouping,
         isHistoricalPrintMode = isHistoricalPrintMode,
@@ -213,6 +216,7 @@ fun ReportsScreen(
 private fun ReportsScreenContent(
     state: ReportsState,
     isComparisonEnabled: Boolean,
+    venueZoneId: java.time.ZoneId = java.time.ZoneId.of("America/Mexico_City"),
     historicalState: HistoricalReportsState,
     historicalGrouping: HistoricalGrouping,
     isHistoricalPrintMode: Boolean,
@@ -247,14 +251,14 @@ private fun ReportsScreenContent(
                         if (selectedTab == ReportTab.SUMMARY) {
                             if (isComparisonEnabled && state.period.previousPeriodStart != null) {
                                 // Show both periods when comparing
-                                val formatter = java.text.SimpleDateFormat("dd MMM", java.util.Locale("es", "ES")).apply { timeZone = java.util.TimeZone.getTimeZone("America/Mexico_City") }
+                                val formatter = java.text.SimpleDateFormat("dd MMM", java.util.Locale("es", "ES")).apply { timeZone = java.util.TimeZone.getTimeZone(venueZoneId.id) }
                                 val currentStart = formatter.format(java.util.Date.from(state.period.startDate))
                                 val currentEnd = formatter.format(java.util.Date.from(state.period.endDate))
                                 val previousStart = formatter.format(java.util.Date.from(state.period.previousPeriodStart))
                                 val previousEnd = formatter.format(java.util.Date.from(state.period.previousPeriodEnd))
                                 "$currentStart - $currentEnd vs $previousStart - $previousEnd"
                             } else {
-                                state.period.getLabel()
+                                state.period.getLabel(venueZoneId)
                             }
                         } else {
                             null  // No subtitle for HISTORY tab

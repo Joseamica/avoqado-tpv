@@ -422,15 +422,16 @@ private fun PulseStatusCard(
 
 @Composable
 private fun RealtimeClock(color: Color) {
-    var currentTime by remember { mutableStateOf(LocalTime.now()) }
+    val venueZone = remember { java.time.ZoneId.of("America/Mexico_City") }
+    var currentTime by remember { mutableStateOf(LocalTime.now(venueZone)) }
     LaunchedEffect(Unit) {
         while (true) {
-            currentTime = LocalTime.now()
+            currentTime = LocalTime.now(venueZone)
             delay(1000)
         }
     }
     val formatter = remember { DateTimeFormatter.ofPattern("HH:mm") }
-    
+
     // 1. Fix Jittery Timer (Monospace)
     Text(
         text = currentTime.format(formatter),
@@ -443,7 +444,7 @@ private fun RealtimeClock(color: Color) {
         color = color
     )
     Text(
-        text = LocalDateTime.now().format(DateTimeFormatter.ofPattern("d MMM", Locale("es", "MX"))),
+        text = LocalDateTime.now(venueZone).format(DateTimeFormatter.ofPattern("d MMM", Locale("es", "MX"))),
         style = MaterialTheme.typography.bodyLarge,
         color = color.copy(alpha = 0.8f)
     )
@@ -451,10 +452,11 @@ private fun RealtimeClock(color: Color) {
 
 @Composable
 private fun ElapsedTimeHero(startTime: LocalDateTime, color: Color) {
+    val venueZone = remember { java.time.ZoneId.of("America/Mexico_City") }
     var duration by remember { mutableStateOf(Duration.ZERO) }
     LaunchedEffect(startTime) {
         while (true) {
-            duration = Duration.between(startTime, LocalDateTime.now())
+            duration = Duration.between(startTime, LocalDateTime.now(venueZone))
             delay(1000)
         }
     }

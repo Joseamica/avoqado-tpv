@@ -105,7 +105,7 @@ data class SalesSummary(
      * Examples: $1,234.56 | $10,000.00 | $0.00
      */
     private fun formatCurrency(amount: BigDecimal): String {
-        val formatter = java.text.DecimalFormat("#,##0.00")
+        val formatter = java.text.DecimalFormat("#,##0.00", java.text.DecimalFormatSymbols(java.util.Locale.US))
         return "$${formatter.format(amount)}"
     }
 }

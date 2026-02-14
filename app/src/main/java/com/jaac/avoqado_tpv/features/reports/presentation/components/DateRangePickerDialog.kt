@@ -275,7 +275,7 @@ private fun CalendarGrid(
         datesList
     }
 
-    val today = remember { LocalDate.now() }
+    val today = remember { LocalDate.now(ZoneId.of("America/Mexico_City")) }
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(7),

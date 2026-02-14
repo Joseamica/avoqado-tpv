@@ -80,7 +80,7 @@ class ReportsViewModel @Inject constructor(
     private val _isComparisonEnabled = MutableStateFlow(false)
     val isComparisonEnabled: StateFlow<Boolean> = _isComparisonEnabled.asStateFlow()
 
-    private val venueZoneId get() = VenueTimeZone.get(secureStorage)
+    val venueZoneId get() = VenueTimeZone.get(secureStorage)
 
     private var currentPeriod: ReportPeriod = ReportPeriod.today(VenueTimeZone.get(secureStorage))  // ← Default: Today's sales
 
@@ -148,7 +148,7 @@ class ReportsViewModel @Inject constructor(
     fun loadReports(period: ReportPeriod) {
         viewModelScope.launch {
             try {
-                Timber.d("📊 Loading reports for period: ${period.getLabel()}")
+                Timber.d("📊 Loading reports for period: ${period.getLabel(venueZoneId)}")
 
                 // Check cache first (except for comparison mode, which should always refresh)
                 if (period.previousPeriodStart == null) {
@@ -289,7 +289,7 @@ class ReportsViewModel @Inject constructor(
 
         // Apply comparison if enabled
         val periodToLoad = if (_isComparisonEnabled.value) {
-            Timber.d("📊 Applying comparison to new period: ${newPeriod.getLabel()}")
+            Timber.d("📊 Applying comparison to new period: ${newPeriod.getLabel(venueZoneId)}")
             ReportPeriod.comparison(
                 currentStart = newPeriod.startDate,
                 currentEnd = newPeriod.endDate,
@@ -608,7 +608,7 @@ class ReportsViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 // Format date range
-                val formatter = java.text.SimpleDateFormat("dd MMM yyyy", java.util.Locale("es", "ES"))
+                val formatter = java.text.SimpleDateFormat("dd MMM yyyy", java.util.Locale("es", "ES")).apply { timeZone = java.util.TimeZone.getTimeZone(venueZoneId) }
                 val startDateFormatted = formatter.format(java.util.Date.from(currentState.period.startDate))
                 val endDateFormatted = formatter.format(java.util.Date.from(currentState.period.endDate))
                 val dateRange = "$startDateFormatted - $endDateFormatted"
@@ -648,7 +648,7 @@ class ReportsViewModel @Inject constructor(
 
                 // Print report
                 val result = printerManager.printReport(
-                    periodLabel = currentState.period.getLabel(),
+                    periodLabel = currentState.period.getLabel(venueZoneId),
                     dateRange = dateRange,
                     totalSales = totalSales,
                     totalOrders = currentState.summary.totalOrders,

@@ -112,6 +112,40 @@ Base URL already includes `/api/v1/`. Don't add `/v1/` again:
 @GET("tpv/v1/modules")    // WRONG — becomes /api/v1/tpv/v1/modules
 ```
 
+## Timezone: Venue Timezone, Never Device Timezone
+
+**Never use `ZoneId.systemDefault()`**, `LocalDate.now()` (no-arg), `LocalDateTime.now()` (no-arg), or `SimpleDateFormat` without setting timezone. The device timezone may not match the venue's timezone.
+
+Backend stores all timestamps in **UTC**. TPV converts to **venue timezone** for display.
+
+**Where the timezone comes from:**
+1. Backend sends `venue.timezone` (IANA string, e.g. `"America/Mexico_City"`) in terminal config response
+2. TPV saves it via `SecureStorage.saveVenueTimezone()`
+3. `VenueTimeZone.get(secureStorage)` reads it with in-memory cache (fallback: `"America/Mexico_City"`)
+
+**Usage patterns:**
+
+```kotlin
+// In ViewModels / Repositories — inject SecureStorage
+private val venueZoneId get() = VenueTimeZone.get(secureStorage)
+val today = LocalDate.now(venueZoneId)
+
+// In @Composable functions — pass ZoneId as parameter or use fallback
+val venueZone = remember { ZoneId.of("America/Mexico_City") }
+val currentTime = LocalTime.now(venueZone)
+
+// SimpleDateFormat — ALWAYS set timezone
+val formatter = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("es", "MX"))
+    .apply { timeZone = java.util.TimeZone.getTimeZone(venueZoneId) }
+```
+
+**Cache invalidation:** Call `VenueTimeZone.invalidateCache()` when venue changes (REMOTE_ACTIVATE, terminal config fetch, logout).
+
+**Exceptions** (OK to use device/fixed timezone):
+- Internal log file timestamps (`FileLogger`)
+- Firebase Storage paths (file naming, not user-facing)
+- Camera photo file names
+
 ## Common Pitfalls
 
 | Problem | Cause | Solution |
@@ -125,3 +159,4 @@ Base URL already includes `/api/v1/`. Don't add `/v1/` again:
 | Module config stale after logout | `remember {}` not Flow | `collectAsStateWithLifecycle()` on StateFlow |
 | Feature button not appearing | Permission not in DEFAULT_PERMISSIONS | Add to `permissions.ts` DEFAULT_PERMISSIONS + INDIVIDUAL_PERMISSIONS_BY_RESOURCE |
 | Permission check fails silently | Name mismatch TPV vs Backend | Verify EXACT name in both `checkPermission()` and `hasPermission()` |
+| Wrong time on receipts/reports | `ZoneId.systemDefault()` or no-arg `LocalDate.now()` | Use `VenueTimeZone.get(secureStorage)` or `ZoneId.of("America/Mexico_City")` |

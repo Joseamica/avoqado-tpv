@@ -807,6 +807,20 @@ interface ApiService {
         @Query("pageNumber") pageNumber: Int = 1
     ): Response<com.jaac.avoqado_tpv.features.shift.data.dto.ShiftHistoryResponse>
 
+    /**
+     * GET /tpv/venues/{venueId}/shifts-summary
+     *
+     * Backend-aggregated sales summary including orphan payments (no shift).
+     * Works for venues with AND without the shifts module enabled.
+     */
+    @GET("tpv/venues/{venueId}/shifts-summary")
+    suspend fun getShiftsSummary(
+        @Path("venueId") venueId: String,
+        @Query("startTime") startTime: String? = null,
+        @Query("endTime") endTime: String? = null,
+        @Query("staffId") staffId: String? = null
+    ): Response<com.jaac.avoqado_tpv.features.reports.data.dto.ShiftsSummaryResponse>
+
     // ========== Reports (Analytics) ==========
 
     /**

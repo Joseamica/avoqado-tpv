@@ -24,7 +24,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachMoney
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
-import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 
 /**
  * Metric Card Component
@@ -120,59 +119,6 @@ fun MetricCard(
     }
 }
 
-/**
- * Comparison Badge Component
- *
- * Shows percentage change with color-coded trend indicator.
- *
- * @param text Comparison text (e.g., "+12.5%", "-3.2%")
- * @param trend Trend indicator (UP = green, DOWN = red, NEUTRAL = gray)
- */
-@Composable
-fun ComparisonBadge(
-    text: String,
-    trend: ComparisonTrend,
-    modifier: Modifier = Modifier
-) {
-    val backgroundColor = when (trend) {
-        ComparisonTrend.UP -> MaterialTheme.avoqadoColors.statusSuccess.copy(alpha = 0.15f)
-        ComparisonTrend.DOWN -> MaterialTheme.avoqadoColors.statusError.copy(alpha = 0.15f)
-        ComparisonTrend.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f)
-    }
-
-    val textColor = when (trend) {
-        ComparisonTrend.UP -> MaterialTheme.avoqadoColors.statusSuccess
-        ComparisonTrend.DOWN -> MaterialTheme.avoqadoColors.statusError
-        ComparisonTrend.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-
-    Card(
-        colors = CardDefaults.cardColors(containerColor = backgroundColor),
-        modifier = modifier
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = text,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Medium,
-                color = textColor
-            )
-        }
-    }
-}
-
-/**
- * Trend indicator for comparison badges
- */
-enum class ComparisonTrend {
-    UP,      // Positive growth (green)
-    DOWN,    // Decline (red)
-    NEUTRAL  // Flat or no change (gray)
-}
 
 // ══════════════════════════════════════════════════════════════════════
 // PREVIEWS

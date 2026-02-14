@@ -1,6 +1,5 @@
 package com.jaac.avoqado_tpv.features.reports.presentation.components
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -15,50 +14,48 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 
 /**
+ * Trend indicator for comparison badges
+ */
+enum class ComparisonTrend {
+    UP,      // Positive growth (green)
+    DOWN,    // Decline (red)
+    NEUTRAL  // Flat or no change (gray)
+}
+
+/**
  * Comparison Badge Component
  *
- * Displays period-over-period change with color-coded background and arrow indicator.
+ * Displays period-over-period change with color-coded background.
  *
- * **World-Class Pattern (Stripe Terminal + Toast POS)**:
- * - Green background for positive changes (+12% ↑)
- * - Red background for negative changes (-3% ↓)
- * - Clear visual hierarchy with background color
- * - Compact design for list items
+ * **Pattern (Stripe Terminal + Toast POS)**:
+ * - Green background for positive changes (+12%)
+ * - Red background for negative changes (-3%)
+ * - Gray background for neutral/flat
+ * - Compact design for list items and metric cards
  *
- * **Design**:
- * ```
- * ┌─────────┐
- * │ +12% ↑  │ ← Green background
- * └─────────┘
- *
- * ┌─────────┐
- * │ -3.2% ↓ │ ← Red background
- * └─────────┘
- * ```
- *
- * @param change Formatted change string (e.g., "+12.5% ↑", "-3.2% ↓")
- * @param isPositive Whether the change is positive (green) or negative (red)
+ * @param text Formatted change string (e.g., "+12.5%", "-3.2%")
+ * @param trend Trend indicator (UP = green, DOWN = red, NEUTRAL = gray)
  * @param modifier Modifier for customization
  */
 @Composable
 fun ComparisonBadge(
-    change: String,
-    isPositive: Boolean,
+    text: String,
+    trend: ComparisonTrend,
     modifier: Modifier = Modifier
 ) {
-    // Don't show badge if change is empty
-    if (change.isBlank()) return
+    // Don't show badge if text is empty
+    if (text.isBlank()) return
 
-    val backgroundColor = if (isPositive) {
-        MaterialTheme.avoqadoColors.statusSuccess.copy(alpha = 0.1f)
-    } else {
-        MaterialTheme.avoqadoColors.statusError.copy(alpha = 0.1f)
+    val backgroundColor = when (trend) {
+        ComparisonTrend.UP -> MaterialTheme.avoqadoColors.statusSuccess.copy(alpha = 0.15f)
+        ComparisonTrend.DOWN -> MaterialTheme.avoqadoColors.statusError.copy(alpha = 0.15f)
+        ComparisonTrend.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f)
     }
 
-    val textColor = if (isPositive) {
-        MaterialTheme.avoqadoColors.statusSuccess
-    } else {
-        MaterialTheme.avoqadoColors.statusError
+    val textColor = when (trend) {
+        ComparisonTrend.UP -> MaterialTheme.avoqadoColors.statusSuccess
+        ComparisonTrend.DOWN -> MaterialTheme.avoqadoColors.statusError
+        ComparisonTrend.NEUTRAL -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
     Surface(
@@ -67,7 +64,7 @@ fun ComparisonBadge(
         shape = RoundedCornerShape(4.dp)
     ) {
         Text(
-            text = change,
+            text = text,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.SemiBold,
@@ -85,8 +82,8 @@ fun ComparisonBadge(
 private fun ComparisonBadgePositivePreview() {
     AvoqadoTheme {
         ComparisonBadge(
-            change = "+12.5% ↑",
-            isPositive = true
+            text = "+12.5%",
+            trend = ComparisonTrend.UP
         )
     }
 }
@@ -96,8 +93,19 @@ private fun ComparisonBadgePositivePreview() {
 private fun ComparisonBadgeNegativePreview() {
     AvoqadoTheme {
         ComparisonBadge(
-            change = "-3.2% ↓",
-            isPositive = false
+            text = "-3.2%",
+            trend = ComparisonTrend.DOWN
+        )
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun ComparisonBadgeNeutralPreview() {
+    AvoqadoTheme {
+        ComparisonBadge(
+            text = "0%",
+            trend = ComparisonTrend.NEUTRAL
         )
     }
 }

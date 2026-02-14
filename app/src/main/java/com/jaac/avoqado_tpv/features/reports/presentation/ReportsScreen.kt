@@ -132,6 +132,7 @@ fun ReportsScreen(
     ReportsScreenContent(
         state = state,
         isComparisonEnabled = isComparisonEnabled,
+        isRefreshing = isRefreshing,
         venueZoneId = venueZoneId,
         historicalState = historicalState,
         historicalGrouping = historicalGrouping,
@@ -139,6 +140,7 @@ fun ReportsScreen(
         selectedPeriodsForPrint = selectedPeriodsForPrint,
         showHistoricalPrintDialog = showHistoricalPrintDialog,
         onNavigateBack = onNavigateBack,
+        onRefresh = { viewModel.refresh() },
         onPeriodSelected = { periodType ->
             if (periodType == PeriodType.CUSTOM) {
                 showDatePicker = true
@@ -216,6 +218,7 @@ fun ReportsScreen(
 private fun ReportsScreenContent(
     state: ReportsState,
     isComparisonEnabled: Boolean,
+    isRefreshing: Boolean = false,
     venueZoneId: java.time.ZoneId = java.time.ZoneId.of("America/Mexico_City"),
     historicalState: HistoricalReportsState,
     historicalGrouping: HistoricalGrouping,
@@ -223,6 +226,7 @@ private fun ReportsScreenContent(
     selectedPeriodsForPrint: Set<String>,
     showHistoricalPrintDialog: Boolean,
     onNavigateBack: () -> Unit,
+    onRefresh: () -> Unit = {},
     onPeriodSelected: (PeriodType) -> Unit,
     onComparisonToggle: (Boolean) -> Unit,
     onPrintReport: () -> Unit,
@@ -355,17 +359,22 @@ private fun ReportsScreenContent(
                     is ReportsState.Success -> {
                         when (selectedTab) {
                             ReportTab.SUMMARY -> {
-                                ReportsSuccessContent(
-                                    summary = state.summary,
-                                    paymentBreakdown = state.paymentBreakdown,
-                                    shifts = state.shifts,
-                                    comparison = state.comparison,
-                                    period = state.period,
-                                    isComparisonEnabled = isComparisonEnabled,
-                                    onPeriodSelected = onPeriodSelected,
-                                    onComparisonToggle = onComparisonToggle,
-                                    onNavigateToProductPerformance = onNavigateToProductPerformance
-                                )
+                                AvoqadoPullToRefresh(
+                                    isRefreshing = isRefreshing,
+                                    onRefresh = onRefresh
+                                ) {
+                                    ReportsSuccessContent(
+                                        summary = state.summary,
+                                        paymentBreakdown = state.paymentBreakdown,
+                                        shifts = state.shifts,
+                                        comparison = state.comparison,
+                                        period = state.period,
+                                        isComparisonEnabled = isComparisonEnabled,
+                                        onPeriodSelected = onPeriodSelected,
+                                        onComparisonToggle = onComparisonToggle,
+                                        onNavigateToProductPerformance = onNavigateToProductPerformance
+                                    )
+                                }
                             }
 
                             ReportTab.HISTORY -> {
@@ -390,7 +399,8 @@ private fun ReportsScreenContent(
 
                     is ReportsState.Error -> {
                         ReportsErrorContent(
-                            message = state.message
+                            message = state.message,
+                            onRetry = onRefresh
                         )
                     }
                 }
@@ -429,7 +439,7 @@ private fun ReportsSuccessContent(
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(sizes.spacingLarge)
+        verticalArrangement = Arrangement.spacedBy(sizes.spacingSmall)
     ) {
         // Period filter chips
         item {
@@ -439,7 +449,7 @@ private fun ReportsSuccessContent(
             )
         }
 
-        // Comparison toggle
+        // Comparison toggle (tight with chips — same control group)
         item {
             ComparisonToggle(
                 isEnabled = isComparisonEnabled,
@@ -447,30 +457,34 @@ private fun ReportsSuccessContent(
             )
         }
 
-        // Section header
+        // Section header — extra top padding for section separation
         item(key = "header_sales") {
             Text(
                 text = "RESUMEN DE VENTAS",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
-                modifier = Modifier.padding(horizontal = sizes.paddingScreen)
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(
+                    top = sizes.spacingSmall,
+                    start = sizes.paddingScreen,
+                    end = sizes.paddingScreen
+                )
             )
         }
 
-        // Metric cards row 1 (lazy composition)
+        // Metric cards row 1
         item(key = "metrics_row_1") {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = sizes.paddingScreen),
-                horizontalArrangement = Arrangement.spacedBy(sizes.spacingMedium)
+                horizontalArrangement = Arrangement.spacedBy(sizes.spacingSmall)
             ) {
                 MetricCard(
                     value = formattedSales,
                     label = "Ventas",
                     icon = Icons.Default.AttachMoney,
-                    comparisonText = comparison?.salesChange?.let { "+${it}%" },
+                    comparisonText = comparison?.salesChange?.let { formatComparisonText(it) },
                     comparisonTrend = comparison?.getSalesComparison()?.trend?.toComparisonTrend()
                         ?: ComparisonTrend.NEUTRAL,
                     modifier = Modifier.weight(1f)
@@ -480,7 +494,7 @@ private fun ReportsSuccessContent(
                     value = summary.totalOrders.toString(),
                     label = "Órdenes",
                     icon = Icons.Default.Receipt,
-                    comparisonText = comparison?.ordersChange?.let { "+${it}%" },
+                    comparisonText = comparison?.ordersChange?.let { formatComparisonText(it) },
                     comparisonTrend = comparison?.getOrdersComparison()?.trend?.toComparisonTrend()
                         ?: ComparisonTrend.NEUTRAL,
                     modifier = Modifier.weight(1f)
@@ -494,13 +508,13 @@ private fun ReportsSuccessContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = sizes.paddingScreen),
-                horizontalArrangement = Arrangement.spacedBy(sizes.spacingMedium)
+                horizontalArrangement = Arrangement.spacedBy(sizes.spacingSmall)
             ) {
                 MetricCard(
                     value = summary.totalProductsSold.toString(),
                     label = "Productos",
                     icon = Icons.Default.ShoppingCart,
-                    comparisonText = comparison?.productsChange?.let { "+${it}%" },
+                    comparisonText = comparison?.productsChange?.let { formatComparisonText(it) },
                     comparisonTrend = comparison?.getProductsComparison()?.trend?.toComparisonTrend()
                         ?: ComparisonTrend.NEUTRAL,
                     modifier = Modifier.weight(1f)
@@ -510,7 +524,7 @@ private fun ReportsSuccessContent(
                     value = formattedAvgOrder,
                     label = "Ticket Promedio",
                     icon = Icons.Default.Assessment,
-                    comparisonText = comparison?.avgOrderValueChange?.let { "+${it}%" },
+                    comparisonText = comparison?.avgOrderValueChange?.let { formatComparisonText(it) },
                     comparisonTrend = comparison?.getAvgOrderValueComparison()?.trend?.toComparisonTrend()
                         ?: ComparisonTrend.NEUTRAL,
                     modifier = Modifier.weight(1f)
@@ -524,7 +538,7 @@ private fun ReportsSuccessContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = sizes.paddingScreen),
-                horizontalArrangement = Arrangement.spacedBy(sizes.spacingMedium)
+                horizontalArrangement = Arrangement.spacedBy(sizes.spacingSmall)
             ) {
                 MetricCard(
                     value = formattedProductsPerOrder,
@@ -538,26 +552,32 @@ private fun ReportsSuccessContent(
             }
         }
 
-        // Payment methods section
+        // Payment methods section — extra top padding for section separation
         item {
             PaymentMethodsChart(
                 breakdown = paymentBreakdown,
-                modifier = Modifier.padding(horizontal = sizes.paddingScreen)
+                modifier = Modifier.padding(
+                    top = sizes.spacingSmall,
+                    start = sizes.paddingScreen,
+                    end = sizes.paddingScreen
+                )
             )
         }
 
-        // Shift history section
+        // Shift history section — extra top padding for section separation
         item {
             Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(sizes.spacingMedium)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = sizes.spacingSmall),
+                verticalArrangement = Arrangement.spacedBy(sizes.spacingSmall)
             ) {
                 // Section header
                 Text(
                     text = "HISTORIAL DE TURNOS",
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = sizes.paddingScreen)
                 )
 
@@ -575,10 +595,8 @@ private fun ReportsSuccessContent(
         // Shift cards
         items(
             items = shifts,
-            key = { shift -> shift.id }  // ⚡ Performance: Stable key prevents full recomposition
+            key = { shift -> shift.id }
         ) { shift ->
-            // TODO: Create ShiftCard component or display shift info inline
-            // For now, just show a placeholder card
             androidx.compose.material3.Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -588,12 +606,12 @@ private fun ReportsSuccessContent(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp)
+                        .padding(sizes.paddingCard)
                 ) {
                     Text(
                         text = shift.staffName,
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                        fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = "Ventas: ${shift.totalSales}",
@@ -609,7 +627,7 @@ private fun ReportsSuccessContent(
 
         // Bottom spacer
         item {
-            Spacer(modifier = Modifier.height(sizes.spacingLarge))
+            Spacer(modifier = Modifier.height(sizes.spacingMedium))
         }
     }
 }
@@ -617,19 +635,30 @@ private fun ReportsSuccessContent(
 /**
  * Reports Error Content
  *
- * Displays error message when reports fail to load.
+ * Displays error message with retry button when reports fail to load.
  */
 @Composable
 private fun ReportsErrorContent(
     message: String,
+    onRetry: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Column(
         modifier = modifier
             .fillMaxSize()
             .padding(16.dp),
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        Icon(
+            imageVector = Icons.Default.Warning,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.error,
+            modifier = Modifier.size(48.dp)
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
         Text(
             text = "Error al cargar reportes",
             style = MaterialTheme.typography.headlineSmall,
@@ -644,6 +673,14 @@ private fun ReportsErrorContent(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
         )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        androidx.compose.material3.OutlinedButton(
+            onClick = onRetry
+        ) {
+            Text("Reintentar")
+        }
     }
 }
 
@@ -947,6 +984,13 @@ private fun ComparisonMetrics.Trend.toComparisonTrend(): ComparisonTrend {
         ComparisonMetrics.Trend.DOWN -> ComparisonTrend.DOWN
         ComparisonMetrics.Trend.FLAT -> ComparisonTrend.NEUTRAL
     }
+}
+
+/**
+ * Format comparison percentage with correct +/- prefix
+ */
+private fun formatComparisonText(value: java.math.BigDecimal): String {
+    return if (value >= java.math.BigDecimal.ZERO) "+${value}%" else "${value}%"
 }
 
 /**

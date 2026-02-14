@@ -100,8 +100,8 @@ fun HistoricalPeriodCard(
                 // Comparison badge
                 if (period.salesChange != null) {
                     ComparisonBadge(
-                        change = period.formatSalesChange(),
-                        isPositive = period.isSalesIncreasing()
+                        text = period.formatSalesChange(),
+                        trend = if (period.isSalesIncreasing()) ComparisonTrend.UP else ComparisonTrend.DOWN
                     )
                 }
 

@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.reports.domain.models.HistoricalGrouping
 
@@ -37,11 +38,13 @@ fun HistoricalGroupingSelector(
     onGroupingSelected: (HistoricalGrouping) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val sizes = LocalResponsiveSizes.current
+
     Row(
         modifier = modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = sizes.paddingScreen),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         GroupingChip(

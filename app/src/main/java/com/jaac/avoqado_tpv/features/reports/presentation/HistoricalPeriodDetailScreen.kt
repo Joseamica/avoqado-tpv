@@ -30,6 +30,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.reports.domain.models.HistoricalGrouping
 import com.jaac.avoqado_tpv.features.reports.domain.models.HistoricalPeriod
 import com.jaac.avoqado_tpv.features.reports.presentation.components.ComparisonBadge
+import com.jaac.avoqado_tpv.features.reports.presentation.components.ComparisonTrend
 import com.jaac.avoqado_tpv.features.reports.presentation.components.MetricCard
 import java.math.BigDecimal
 import java.time.Instant
@@ -301,8 +302,8 @@ private fun ComparisonRow(
         )
 
         ComparisonBadge(
-            change = change,
-            isPositive = isPositive
+            text = change,
+            trend = if (isPositive) ComparisonTrend.UP else ComparisonTrend.DOWN
         )
     }
 }

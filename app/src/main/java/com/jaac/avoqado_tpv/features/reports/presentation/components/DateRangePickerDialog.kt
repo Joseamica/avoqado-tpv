@@ -117,6 +117,7 @@ fun DateRangePickerDialog(
                     currentMonth = currentMonth,
                     startDate = startDate,
                     endDate = endDate,
+                    zoneId = zoneId,
                     onDateClick = { clickedDate ->
                         when {
                             startDate == null -> {
@@ -247,6 +248,7 @@ private fun CalendarGrid(
     currentMonth: YearMonth,
     startDate: LocalDate?,
     endDate: LocalDate?,
+    zoneId: ZoneId,
     onDateClick: (LocalDate) -> Unit
 ) {
     // Get all dates for current month (including empty cells for alignment)
@@ -275,13 +277,13 @@ private fun CalendarGrid(
         datesList
     }
 
-    val today = remember { LocalDate.now(ZoneId.of("America/Mexico_City")) }
+    val today = remember { LocalDate.now(zoneId) }
 
     LazyVerticalGrid(
         columns = GridCells.Fixed(7),
         modifier = Modifier
             .fillMaxWidth()
-            .height(240.dp), // Fixed height for 6 rows max
+            .height(280.dp), // Fixed height for 6 rows — ensures 44dp+ touch targets
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {

@@ -21,12 +21,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -39,6 +36,7 @@ import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -48,6 +46,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -69,16 +69,17 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.Size
+import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 import com.jaac.avoqado_tpv.features.ordering.domain.Customer
 import com.jaac.avoqado_tpv.features.ordering.domain.CustomerGroup
 import com.jaac.avoqado_tpv.features.ordering.domain.CustomerSearchState
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderCustomer
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
-import kotlinx.coroutines.delay
 import java.math.BigDecimal
-import java.time.LocalDateTime
 
 /**
  * GuestTab - Customer lookup and guest information management
@@ -172,62 +173,74 @@ fun GuestTab(
         )
     }
 
+    // PAX A910S: 720x1280 @ xhdpi (2x) = 360x640dp
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
             .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .padding(horizontal = Spacing.Space3, vertical = Spacing.Space2),
+        verticalArrangement = Arrangement.spacedBy(Spacing.Space2)
     ) {
-        // ==========================================
-        // CUSTOMER SECTION (Multi-Customer)
-        // ==========================================
+        // ─── SECTION 1: Customer Lookup ──────────────────
         Text(
-            text = "Clientes de la Orden",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Bold
+            text = "CLIENTES",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            letterSpacing = 1.2.sp
         )
 
-        Text(
-            text = "Click en un cliente para agregarlo. El primer cliente agregado recibe los puntos de lealtad.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        // Search button (opens modal)
-        OutlinedButton(
+        // Search bar — tappable surface that looks like a text field
+        Surface(
             onClick = {
-                onLoadRecentCustomers()
-                showSearchModal = true
+                if (!isAddingCustomer) {
+                    onLoadRecentCustomers()
+                    showSearchModal = true
+                }
             },
             modifier = Modifier.fillMaxWidth(),
-            enabled = !isAddingCustomer
+            shape = RoundedCornerShape(Spacing.Space2),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            tonalElevation = 0.dp
         ) {
-            if (isAddingCustomer) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(16.dp),
-                    strokeWidth = 2.dp
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Agregando...")
-            } else {
-                Icon(
-                    Icons.Default.Search,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Buscar y Agregar Cliente")
+            Row(
+                modifier = Modifier.padding(horizontal = Spacing.Space3, vertical = Spacing.Space3),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.Space2)
+            ) {
+                if (isAddingCustomer) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(Size.IconSmall),
+                        strokeWidth = 2.dp
+                    )
+                    Text(
+                        "Agregando...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(Size.IconSmall),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "Buscar por nombre, teléfono o email...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    )
+                }
             }
         }
 
-        // Customer chips (multi-customer)
+        // Customer chips
         if (orderCustomers.isNotEmpty()) {
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(Spacing.Space1),
+                verticalArrangement = Arrangement.spacedBy(Spacing.Space1)
             ) {
                 orderCustomers.forEach { orderCustomer ->
                     OrderCustomerChip(
@@ -240,7 +253,7 @@ fun GuestTab(
             }
         }
 
-        // Inline create customer form (expandable)
+        // "Crear nuevo" — inline text link
         InlineCreateCustomerForm(
             isExpanded = isCreateFormExpanded,
             onExpandToggle = { isCreateFormExpanded = !isCreateFormExpanded },
@@ -251,115 +264,117 @@ fun GuestTab(
             isLoading = isAddingCustomer
         )
 
-        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-
-        // ==========================================
-        // GUEST INFORMATION SECTION (existing form)
-        // ==========================================
-        Text(
-            text = "Información del Cliente",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold
-        )
-        Text(
-            text = when (order.orderType) {
-                OrderType.DINE_IN -> "Actualiza los datos del cliente y restricciones alimentarias"
-                OrderType.TAKEOUT -> "Información de contacto para orden para llevar"
-                OrderType.DELIVERY -> "Información de contacto y entrega"
-                OrderType.PICKUP -> "Información de contacto para recoger orden"
-            },
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        // Form card
-        Card(
+        // ─── SECTION 2: Guest Info Form ──────────────────
+        Surface(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
-            )
+            shape = RoundedCornerShape(Size.CardCornerRadius),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 1.dp
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                    .padding(Spacing.Space3),
+                verticalArrangement = Arrangement.spacedBy(Spacing.Space2)
             ) {
+                // Section label inside card
+                Text(
+                    text = when (order.orderType) {
+                        OrderType.DINE_IN -> "DATOS DEL CLIENTE"
+                        OrderType.TAKEOUT -> "DATOS DE CONTACTO"
+                        OrderType.DELIVERY -> "DATOS DE ENTREGA"
+                        OrderType.PICKUP -> "DATOS PARA RECOGER"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    letterSpacing = 0.8.sp
+                )
+
                 when (order.orderType) {
                     OrderType.DINE_IN -> {
-                        // Covers field
-                        OutlinedTextField(
-                            value = covers.toString(),
-                            onValueChange = { newValue ->
-                                newValue.toIntOrNull()?.let { covers = it.coerceIn(1, 20) }
-                            },
-                            label = { Text("Número de Comensales") },
-                            placeholder = { Text("2") },
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Number
-                            ),
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
-                        )
+                            horizontalArrangement = Arrangement.spacedBy(Spacing.Space2)
+                        ) {
+                            OutlinedTextField(
+                                value = covers.toString(),
+                                onValueChange = { newValue ->
+                                    newValue.toIntOrNull()?.let { covers = it.coerceIn(1, 20) }
+                                },
+                                label = { Text("Comensales") },
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Number
+                                ),
+                                modifier = Modifier.width(90.dp),
+                                singleLine = true,
+                                shape = PillFieldShape,
+                                colors = compactFieldColors()
+                            )
 
-                        // Customer name (auto-filled from selected customer)
-                        OutlinedTextField(
-                            value = customerName,
-                            onValueChange = { customerName = it },
-                            label = { Text("Nombre del Cliente (Opcional)") },
-                            placeholder = { Text("Juan Pérez") },
-                            keyboardOptions = KeyboardOptions(
-                                capitalization = KeyboardCapitalization.Words
-                            ),
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
-                        )
+                            OutlinedTextField(
+                                value = customerName,
+                                onValueChange = { customerName = it },
+                                label = { Text("Nombre (Opcional)") },
+                                keyboardOptions = KeyboardOptions(
+                                    capitalization = KeyboardCapitalization.Words
+                                ),
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                shape = PillFieldShape,
+                                colors = compactFieldColors()
+                            )
+                        }
 
-                        // Special requests
                         OutlinedTextField(
                             value = specialRequests,
                             onValueChange = { specialRequests = it },
-                            label = { Text("Alergias / Restricciones Alimentarias") },
+                            label = { Text("Alergias / Restricciones") },
                             placeholder = { Text("Sin nueces, sin gluten...") },
                             keyboardOptions = KeyboardOptions(
                                 capitalization = KeyboardCapitalization.Sentences
                             ),
                             modifier = Modifier.fillMaxWidth(),
-                            minLines = 2,
-                            maxLines = 4
+                            maxLines = 2,
+                            shape = PillFieldShape,
+                            colors = compactFieldColors()
                         )
                     }
 
                     OrderType.TAKEOUT, OrderType.DELIVERY, OrderType.PICKUP -> {
-                        // Customer name (required)
-                        OutlinedTextField(
-                            value = customerName,
-                            onValueChange = { customerName = it },
-                            label = { Text("Nombre del Cliente *") },
-                            placeholder = { Text("Juan Pérez") },
-                            keyboardOptions = KeyboardOptions(
-                                capitalization = KeyboardCapitalization.Words
-                            ),
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            isError = customerName.isBlank()
-                        )
+                            horizontalArrangement = Arrangement.spacedBy(Spacing.Space2)
+                        ) {
+                            OutlinedTextField(
+                                value = customerName,
+                                onValueChange = { customerName = it },
+                                label = { Text("Nombre *") },
+                                keyboardOptions = KeyboardOptions(
+                                    capitalization = KeyboardCapitalization.Words
+                                ),
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                isError = customerName.isBlank(),
+                                shape = PillFieldShape,
+                                colors = compactFieldColors()
+                            )
 
-                        // Phone (required)
-                        OutlinedTextField(
-                            value = customerPhone,
-                            onValueChange = { customerPhone = it },
-                            label = { Text("Teléfono *") },
-                            placeholder = { Text("5512345678") },
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Phone
-                            ),
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            isError = customerPhone.isBlank()
-                        )
+                            OutlinedTextField(
+                                value = customerPhone,
+                                onValueChange = { customerPhone = it },
+                                label = { Text("Teléfono *") },
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Phone
+                                ),
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                isError = customerPhone.isBlank(),
+                                shape = PillFieldShape,
+                                colors = compactFieldColors()
+                            )
+                        }
 
-                        // Special requests
                         OutlinedTextField(
                             value = specialRequests,
                             onValueChange = { specialRequests = it },
@@ -369,15 +384,16 @@ fun GuestTab(
                                 capitalization = KeyboardCapitalization.Sentences
                             ),
                             modifier = Modifier.fillMaxWidth(),
-                            minLines = 2,
-                            maxLines = 4
+                            maxLines = 2,
+                            shape = PillFieldShape,
+                            colors = compactFieldColors()
                         )
                     }
                 }
             }
         }
 
-        // Save button
+        // Save button — Avoqado green accent
         Button(
             onClick = {
                 val coversValue = if (order.orderType == OrderType.DINE_IN) covers else null
@@ -398,12 +414,33 @@ fun GuestTab(
                     customerName.isNotBlank() && customerPhone.isNotBlank()
                 }
             },
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(Size.ButtonHeight),
+            shape = PillFieldShape,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary
+            )
         ) {
-            Text("Guardar Información")
+            Text(
+                "Guardar",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
         }
     }
 }
+
+/** Pill-shaped field shape for all inputs */
+private val PillFieldShape = RoundedCornerShape(50)
+
+/** Field colors with visible border */
+@Composable
+private fun compactFieldColors() = OutlinedTextFieldDefaults.colors(
+    unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
+    unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+    focusedBorderColor = MaterialTheme.colorScheme.primary
+)
 
 // ==========================================
 // ORDER CUSTOMER CHIP (Multi-Customer)
@@ -418,7 +455,7 @@ private fun OrderCustomerChip(
     orderCustomer: OrderCustomer,
     onRemove: () -> Unit,
     isRemoving: Boolean = false,
-    loyaltyActive: Boolean = false,  // Toast/Square pattern
+    loyaltyActive: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val customer = orderCustomer.customer
@@ -431,77 +468,62 @@ private fun OrderCustomerChip(
             else
                 MaterialTheme.colorScheme.surfaceVariant
         ),
-        shape = RoundedCornerShape(12.dp)
+        shape = RoundedCornerShape(Spacing.Space2)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            modifier = Modifier.padding(start = Spacing.Space2, top = Spacing.Space1, bottom = Spacing.Space1),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(Spacing.Space1)
         ) {
-            // Avatar
+            // Avatar — 22dp ultra-compact
             Box(
                 modifier = Modifier
-                    .size(32.dp)
+                    .size(22.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = customer.shortName.take(2).uppercase(),
-                    style = MaterialTheme.typography.labelMedium,
+                    text = customer.shortName.take(1).uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
             }
 
-            // Customer info
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = customer.displayName,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (customer.isVip) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Icon(
-                            Icons.Default.Star,
-                            contentDescription = "VIP",
-                            tint = Color(0xFFFFD700),
-                            modifier = Modifier.size(14.dp)
-                        )
-                    }
-                    if (orderCustomer.isPrimary) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "★",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-                // 🎁 Toast/Square pattern: Only show loyalty points if program is active
-                if (loyaltyActive) {
-                    Text(
-                        text = customer.formattedLoyaltyPoints,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+            Text(
+                text = customer.displayName,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (customer.isVip) {
+                Icon(
+                    Icons.Default.Star,
+                    contentDescription = "VIP",
+                    tint = Color(0xFFFFD700),
+                    modifier = Modifier.size(12.dp)
+                )
+            }
+            if (loyaltyActive) {
+                Text(
+                    text = customer.formattedLoyaltyPoints,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
-            // Remove button
+            // Remove — compact 28dp
             IconButton(
                 onClick = onRemove,
                 enabled = !isRemoving,
-                modifier = Modifier.size(24.dp)
+                modifier = Modifier.size(28.dp)
             ) {
                 Icon(
                     Icons.Default.Close,
-                    contentDescription = "Quitar cliente",
-                    modifier = Modifier.size(16.dp),
+                    contentDescription = "Quitar",
+                    modifier = Modifier.size(14.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -540,41 +562,46 @@ private fun InlineCreateCustomerForm(
 
     val hasAtLeastOneField = firstName.isNotBlank() || phone.isNotBlank() || email.isNotBlank()
 
-    Card(
+    // Compact expandable — Surface card for visual grouping
+    Surface(
         modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        ),
-        shape = RoundedCornerShape(12.dp)
+        shape = RoundedCornerShape(Size.CardCornerRadius),
+        color = if (isExpanded) MaterialTheme.colorScheme.surface
+        else Color.Transparent,
+        tonalElevation = if (isExpanded) 1.dp else 0.dp
     ) {
-        Column {
-            // Header (always visible - toggle to expand)
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Header row — clickable toggle
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable(onClick = onExpandToggle)
-                    .padding(16.dp),
+                    .padding(horizontal = Spacing.Space3, vertical = Spacing.Space2),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.Space1)
+                ) {
                     Icon(
                         Icons.Default.PersonAdd,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(Size.IconSmall)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = "Crear Nuevo Cliente",
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Medium
                     )
                 }
                 Icon(
                     if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                     contentDescription = if (isExpanded) "Colapsar" else "Expandir",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(Size.IconSmall)
                 )
             }
 
@@ -587,82 +614,92 @@ private fun InlineCreateCustomerForm(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                        .padding(bottom = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                        .padding(horizontal = Spacing.Space3)
+                        .padding(bottom = Spacing.Space3),
+                    verticalArrangement = Arrangement.spacedBy(Spacing.Space2)
                 ) {
-                    Text(
-                        text = "Ingresa al menos nombre, teléfono o email",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)
                     )
 
-                    OutlinedTextField(
-                        value = firstName,
-                        onValueChange = { firstName = it },
-                        label = { Text("Nombre") },
-                        placeholder = { Text("Juan Pérez") },
-                        keyboardOptions = KeyboardOptions(
-                            capitalization = KeyboardCapitalization.Words
-                        ),
+                    // Name + Phone side by side
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        enabled = !isLoading
-                    )
-
-                    OutlinedTextField(
-                        value = phone,
-                        onValueChange = { phone = it },
-                        label = { Text("Teléfono") },
-                        placeholder = { Text("5512345678") },
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Phone
-                        ),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        enabled = !isLoading
-                    )
-
-                    OutlinedTextField(
-                        value = email,
-                        onValueChange = { email = it },
-                        label = { Text("Email") },
-                        placeholder = { Text("cliente@email.com") },
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Email
-                        ),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        enabled = !isLoading
-                    )
-
-                    Button(
-                        onClick = {
-                            onCreate(
-                                firstName.trim().ifBlank { null },
-                                phone.trim().ifBlank { null },
-                                email.trim().ifBlank { null }
-                            )
-                        },
-                        enabled = hasAtLeastOneField && !isLoading,
-                        modifier = Modifier.fillMaxWidth()
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.Space2)
                     ) {
-                        if (isLoading) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.onPrimary
+                        OutlinedTextField(
+                            value = firstName,
+                            onValueChange = { firstName = it },
+                            label = { Text("Nombre") },
+                            keyboardOptions = KeyboardOptions(
+                                capitalization = KeyboardCapitalization.Words
+                            ),
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            enabled = !isLoading,
+                            shape = PillFieldShape,
+                            colors = compactFieldColors()
+                        )
+
+                        OutlinedTextField(
+                            value = phone,
+                            onValueChange = { phone = it },
+                            label = { Text("Teléfono") },
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Phone
+                            ),
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            enabled = !isLoading,
+                            shape = PillFieldShape,
+                            colors = compactFieldColors()
+                        )
+                    }
+
+                    // Email + Create button side by side
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.Space2),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = email,
+                            onValueChange = { email = it },
+                            label = { Text("Email") },
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Email
+                            ),
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            enabled = !isLoading,
+                            shape = PillFieldShape,
+                            colors = compactFieldColors()
+                        )
+
+                        Button(
+                            onClick = {
+                                onCreate(
+                                    firstName.trim().ifBlank { null },
+                                    phone.trim().ifBlank { null },
+                                    email.trim().ifBlank { null }
+                                )
+                            },
+                            enabled = hasAtLeastOneField && !isLoading,
+                            modifier = Modifier.height(Size.ButtonHeightSmall),
+                            shape = PillFieldShape,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary
                             )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Creando...")
-                        } else {
-                            Icon(
-                                Icons.Default.Add,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Crear y Agregar")
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(Size.IconSmall),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                            } else {
+                                Text("Crear", style = MaterialTheme.typography.labelLarge)
+                            }
                         }
                     }
                 }
@@ -679,53 +716,55 @@ private fun InlineCreateCustomerForm(
 private fun SelectedCustomerCard(
     customer: Customer,
     onClear: () -> Unit,
-    loyaltyActive: Boolean = false,  // Toast/Square pattern
+    loyaltyActive: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.primaryContainer
-        )
+        ),
+        shape = RoundedCornerShape(Size.CardCornerRadius)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(Spacing.Space3),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Customer avatar
+            // Customer avatar — 40dp for compact card
             Box(
                 modifier = Modifier
-                    .size(48.dp)
+                    .size(40.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = customer.shortName.take(2).uppercase(),
+                    style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onPrimary,
                     fontWeight = FontWeight.Bold
                 )
             }
 
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(Spacing.Space3))
 
             // Customer info
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = customer.displayName,
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.Bold
                     )
                     if (customer.isVip) {
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(Spacing.Space1))
                         Icon(
                             Icons.Default.Star,
                             contentDescription = "VIP",
                             tint = Color(0xFFFFD700),
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(Size.IconSmall)
                         )
                     }
                 }
@@ -735,23 +774,27 @@ private fun SelectedCustomerCard(
                     GroupBadge(group = group)
                 }
 
-                // Stats - Toast/Square pattern: Only show loyalty points if active
+                // Stats
                 Text(
                     text = if (loyaltyActive)
                         "${customer.formattedLoyaltyPoints} • ${customer.totalVisits} visitas • ${customer.formattedTotalSpent}"
                     else
                         "${customer.totalVisits} visitas • ${customer.formattedTotalSpent}",
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                 )
             }
 
             // Remove button
-            IconButton(onClick = onClear) {
+            IconButton(
+                onClick = onClear,
+                modifier = Modifier.size(Size.ButtonHeightSmall)
+            ) {
                 Icon(
                     Icons.Default.Close,
                     contentDescription = "Quitar cliente",
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(Size.IconMedium)
                 )
             }
         }
@@ -766,12 +809,12 @@ private fun SelectedCustomerCard(
 private fun CustomerSearchResults(
     customers: List<Customer>,
     onSelect: (Customer) -> Unit,
-    loyaltyActive: Boolean = false,  // Toast/Square pattern
+    loyaltyActive: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     Column(
         modifier = modifier,
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        verticalArrangement = Arrangement.spacedBy(Spacing.Space2)
     ) {
         customers.take(5).forEach { customer ->
             CustomerResultCard(
@@ -787,7 +830,7 @@ private fun CustomerSearchResults(
 private fun CustomerResultCard(
     customer: Customer,
     onClick: () -> Unit,
-    loyaltyActive: Boolean = false,  // Toast/Square pattern
+    loyaltyActive: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -796,18 +839,19 @@ private fun CustomerResultCard(
             .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
-        )
+        ),
+        shape = RoundedCornerShape(Size.CardCornerRadius)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(Spacing.Space3),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Avatar
+            // Avatar — 36dp for result cards
             Box(
                 modifier = Modifier
-                    .size(40.dp)
+                    .size(36.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.surfaceVariant),
                 contentAlignment = Alignment.Center
@@ -815,21 +859,22 @@ private fun CustomerResultCard(
                 Icon(
                     Icons.Default.Person,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(Size.IconMedium)
                 )
             }
 
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(Spacing.Space3))
 
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = customer.displayName,
-                        style = MaterialTheme.typography.bodyLarge,
+                        style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium
                     )
                     if (customer.isVip) {
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(Spacing.Space1))
                         Icon(
                             Icons.Default.Star,
                             contentDescription = "VIP",
@@ -839,14 +884,16 @@ private fun CustomerResultCard(
                     }
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.Space2)
+                ) {
                     customer.phone?.let { phone ->
                         Text(
                             text = phone,
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
                     }
                     customer.customerGroup?.let { group ->
                         GroupBadge(group = group, small = true)
@@ -854,7 +901,7 @@ private fun CustomerResultCard(
                 }
             }
 
-            // Loyalty points / Stats - Toast/Square pattern
+            // Loyalty points / Stats
             Column(horizontalAlignment = Alignment.End) {
                 if (loyaltyActive) {
                     Text(
@@ -866,7 +913,7 @@ private fun CustomerResultCard(
                 }
                 Text(
                     text = "${customer.totalVisits} visitas",
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -888,30 +935,35 @@ private fun NoResultsCard(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
+        ),
+        shape = RoundedCornerShape(Size.CardCornerRadius)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(Spacing.Space4),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
                 text = "No se encontraron clientes",
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium
             )
             Text(
                 text = "para \"$searchQuery\"",
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(Spacing.Space3))
 
             OutlinedButton(onClick = onCreateCustomer) {
-                Icon(Icons.Default.Add, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(Size.IconSmall)
+                )
+                Spacer(modifier = Modifier.width(Spacing.Space2))
                 Text("Crear Nuevo Cliente")
             }
         }
@@ -938,44 +990,51 @@ private fun QuickCreateCustomerCard(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
-        )
+        ),
+        shape = RoundedCornerShape(Size.CardCornerRadius)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(Spacing.Space3),
+            verticalArrangement = Arrangement.spacedBy(Spacing.Space2)
         ) {
             Text(
                 text = "Crear Nuevo Cliente",
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
 
-            OutlinedTextField(
-                value = firstName,
-                onValueChange = { firstName = it },
-                label = { Text("Nombre") },
-                placeholder = { Text("Juan Pérez") },
-                keyboardOptions = KeyboardOptions(
-                    capitalization = KeyboardCapitalization.Words
-                ),
+            // Name + Phone in a row for compact layout
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
+                horizontalArrangement = Arrangement.spacedBy(Spacing.Space2)
+            ) {
+                OutlinedTextField(
+                    value = firstName,
+                    onValueChange = { firstName = it },
+                    label = { Text("Nombre") },
+                    placeholder = { Text("Juan Pérez") },
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Words
+                    ),
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
 
-            OutlinedTextField(
-                value = phone,
-                onValueChange = { phone = it },
-                label = { Text("Teléfono *") },
-                placeholder = { Text("5512345678") },
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Phone
-                ),
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                isError = phone.isBlank() && email.isBlank()
-            )
+                OutlinedTextField(
+                    value = phone,
+                    onValueChange = { phone = it },
+                    label = { Text("Teléfono *") },
+                    placeholder = { Text("5512345678") },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Phone
+                    ),
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    isError = phone.isBlank() && email.isBlank()
+                )
+            }
 
             OutlinedTextField(
                 value = email,
@@ -989,19 +1048,15 @@ private fun QuickCreateCustomerCard(
                 singleLine = true
             )
 
-            Text(
-                text = "* Se requiere teléfono o email",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(Spacing.Space2)
             ) {
                 OutlinedButton(
                     onClick = onCancel,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(Size.ButtonHeightSmall)
                 ) {
                     Text("Cancelar")
                 }
@@ -1009,13 +1064,15 @@ private fun QuickCreateCustomerCard(
                     onClick = {
                         onCreate(
                             firstName.ifBlank { null },
-                            null, // lastName
+                            null,
                             phone.ifBlank { null },
                             email.ifBlank { null }
                         )
                     },
                     enabled = phone.isNotBlank() || email.isNotBlank(),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(Size.ButtonHeightSmall)
                 ) {
                     Text("Crear")
                 }
@@ -1040,12 +1097,17 @@ private fun GroupBadge(
         MaterialTheme.colorScheme.primaryContainer
     }
 
+    val badgeShape = RoundedCornerShape(Spacing.Space1)
+
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(4.dp))
+            .clip(badgeShape)
             .background(backgroundColor.copy(alpha = 0.2f))
-            .border(1.dp, backgroundColor.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
-            .padding(horizontal = if (small) 4.dp else 8.dp, vertical = if (small) 2.dp else 4.dp)
+            .border(Size.BorderThin, backgroundColor.copy(alpha = 0.5f), badgeShape)
+            .padding(
+                horizontal = if (small) Spacing.Space1 else Spacing.Space2,
+                vertical = if (small) 2.dp else Spacing.Space1
+            )
     ) {
         Text(
             text = "${group.emoji} ${group.name}",

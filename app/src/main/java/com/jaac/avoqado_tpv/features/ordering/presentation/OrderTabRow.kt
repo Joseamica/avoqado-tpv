@@ -19,6 +19,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+private val CheckTabBadgeSize = 28.dp
+
 /**
  * Top tab row for MenuScreen
  *
@@ -60,20 +62,22 @@ fun OrderTabRow(
                                 style = MaterialTheme.typography.labelMedium,
                                 maxLines = 1
                             )
+                            val badgeText = if (orderItemCount > 99) "99+" else orderItemCount.toString()
+                            val badgeFontSize = if (badgeText.length > 2) 10.sp else 12.sp
                             // Badge with item count
                             Box(
                                 modifier = Modifier
+                                    .size(CheckTabBadgeSize)
                                     .background(
                                         color = MaterialTheme.colorScheme.primary,
                                         shape = CircleShape
-                                    )
-                                    .padding(horizontal = 7.dp, vertical = 4.dp),
+                                    ),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = orderItemCount.toString(),
+                                    text = badgeText,
                                     style = MaterialTheme.typography.labelSmall.copy(
-                                        fontSize = 12.sp,
+                                        fontSize = badgeFontSize,
                                         fontWeight = FontWeight.Bold
                                     ),
                                     color = MaterialTheme.colorScheme.onPrimary

@@ -18,6 +18,11 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoButton
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoCard
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
@@ -346,6 +351,15 @@ private fun SuperAdminScreenContent(
                         onSimulateMultipleAlerts = onSimulateMultipleAlerts,
                         onClearSimulatedAlerts = onClearSimulatedAlerts
                     )
+                }
+
+                // Blumon Error Response Simulator
+                item {
+                    SectionHeader(title = "Blumon Error Simulator")
+                }
+
+                item {
+                    BlumonErrorSimulatorCard()
                 }
 
                 // Status Messages
@@ -913,6 +927,298 @@ private fun DeviceHealthSimulationCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// BLUMON ERROR SIMULATOR
+// ══════════════════════════════════════════════════════════════════════
+
+private data class BlumonError(val code: String, val description: String)
+
+private val BLUMON_ERRORS = listOf(
+    // Bank issuer codes
+    BlumonError("0", "APROBADA"),
+    BlumonError("1", "LLAME EMISOR"),
+    BlumonError("3", "COMERCIO INVALIDO"),
+    BlumonError("4", "RETENER TARJETA"),
+    BlumonError("5", "TRANSACCIÓN INVALIDA"),
+    BlumonError("6", "REINTENTE"),
+    BlumonError("12", "TRANSACCIÓN NO PERMITIDA"),
+    BlumonError("14", "TARJETA INVALIDA"),
+    BlumonError("30", "ERROR DE FORMATO"),
+    BlumonError("51", "FONDOS INSUFICIENTES"),
+    BlumonError("54", "TARJETA VENCIDA"),
+    BlumonError("55", "PIN INVALIDO"),
+    BlumonError("57", "PAGO NO PERMITIDO EMISOR"),
+    BlumonError("61", "LIMITE EXCEDIDO"),
+    BlumonError("75", "PIN INVALIDO/EXCEDIDO"),
+    BlumonError("89", "TIPO DE PLAN / PLAZO INVALIDO"),
+    BlumonError("94", "TRANSACCION DUPLICADA"),
+    BlumonError("100", "DENEGADA"),
+    BlumonError("101", "TARJETA VENCIDA / FECHA NO VALIDA"),
+    BlumonError("106", "INTENTOS DE PIN EXCEDIDOS"),
+    BlumonError("109", "COMERCIO NO VALIDO"),
+    BlumonError("110", "MONTO NO VALIDO"),
+    BlumonError("117", "PIN NO VALIDO"),
+    BlumonError("122", "CODIGO DE SEGURIDAD NO VALIDO"),
+    BlumonError("181", "ERROR DE SISTEMA"),
+    BlumonError("187", "TARJETA NO ACTIVA"),
+    BlumonError("200", "TARJETA NO VALIDA"),
+    BlumonError("909", "ERROR DE SISTEMA"),
+    BlumonError("912", "EMISOR NO DISPONIBLE"),
+    BlumonError("914", "TRANSACCION ORIGINAL NO ENCONTRADA"),
+    BlumonError("188", "CUENTA CANCELADA"),
+    BlumonError("130", "PRUEBE CON OTRO DISPOSITIVO"),
+    BlumonError("T2", "ERROR EN TERMINAL"),
+    BlumonError("T5", "TARJETA SIN ACTIVAR"),
+    BlumonError("T9", "MONEDA INVÁLIDA"),
+    BlumonError("Q8", "TARJETA NO ACTIVA"),
+    BlumonError("1001", "ERROR EN LECTURA DE CHIP"),
+    BlumonError("1002", "CHIP INVALIDO"),
+    BlumonError("1003", "CHIP NO SOPORTADO"),
+    // Blumon platform (BP) errors
+    BlumonError("BP", "EL DISPOSITIVO NO EXISTE"),
+    BlumonError("BP", "EL DISPOSITIVO NO SE ENCUENTRA ACTIVO"),
+    BlumonError("BP", "LA SUCURSAL NO EXISTE"),
+    BlumonError("BP", "EL COMERCIO NO EXISTE"),
+    BlumonError("BP", "LA TRANSACCIÓN EXCEDE EL MONTO PERMITIDO"),
+    BlumonError("BP", "LA TRANSACCIÓN EXCEDE EL MONTO DIARIO PERMITIDO"),
+    BlumonError("BP", "TIEMPO EXCEDIDO PARA REALIZAR CANCELACIÓN"),
+    BlumonError("BP", "TRANSACCIÓN CANCELADA ANTERIORMENTE"),
+    BlumonError("BP", "EXCEDE LAS TRANSACCIONES DIARIAS PERMITIDAS"),
+    BlumonError("BP", "LA TRANSACCIÓN NO PERMITE TRANSACCIONES DE TIPO CONTACTLESS"),
+)
+
+/**
+ * Simulates the error message parsing logic from PaymentViewModel.
+ * Tests both paths: regex extraction success and raw fallback.
+ */
+private fun simulateBlumonErrorMessage(error: BlumonError): Pair<String, String> {
+    val description = error.description
+
+    // Path 1: Regex extraction succeeds (specificErrorDescription != null)
+    val extractedMessage = "Pago rechazado:\n\n$description\n\nPor favor, solicita otra forma de pago."
+
+    // Path 2: Simulate raw failure.toString() when regex fails
+    val rawFailureString = "MomentumDataFailure(code=${error.code}, description=$description)"
+    val fallbackMessage = "Pago rechazado.\n\n$rawFailureString"
+
+    return Pair(extractedMessage, fallbackMessage)
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BlumonErrorSimulatorCard() {
+    var selectedError by remember { mutableStateOf<BlumonError?>(null) }
+    var isDropdownExpanded by remember { mutableStateOf(false) }
+    var showPreview by remember { mutableStateOf(false) }
+    var previewIsRefund by remember { mutableStateOf(false) }
+    var previewUseFallback by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.CreditCardOff,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(32.dp)
+                )
+                Column {
+                    Text(
+                        text = "Simular respuesta Blumon",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = "Previsualiza exactamente lo que ve el usuario",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Error selector dropdown
+            ExposedDropdownMenuBox(
+                expanded = isDropdownExpanded,
+                onExpandedChange = { isDropdownExpanded = it }
+            ) {
+                OutlinedTextField(
+                    value = selectedError?.let { "[${it.code}] ${it.description}" } ?: "",
+                    onValueChange = {},
+                    readOnly = true,
+                    placeholder = { Text("Selecciona un error Blumon...") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = isDropdownExpanded) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor(),
+                    textStyle = MaterialTheme.typography.bodyMedium
+                )
+
+                ExposedDropdownMenu(
+                    expanded = isDropdownExpanded,
+                    onDismissRequest = { isDropdownExpanded = false }
+                ) {
+                    BLUMON_ERRORS.forEach { error ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    "[${error.code}] ${error.description}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            },
+                            onClick = {
+                                selectedError = error
+                                isDropdownExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            // Toggle options
+            if (selectedError != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilterChip(
+                        selected = previewIsRefund,
+                        onClick = { previewIsRefund = !previewIsRefund },
+                        label = { Text("Reembolso") }
+                    )
+                    FilterChip(
+                        selected = previewUseFallback,
+                        onClick = { previewUseFallback = !previewUseFallback },
+                        label = { Text("Fallback (sin regex)") }
+                    )
+                }
+
+                Button(
+                    onClick = { showPreview = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Visibility,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Previsualizar pantalla de error")
+                }
+            }
+        }
+    }
+
+    // Full-screen error preview dialog
+    if (showPreview && selectedError != null) {
+        val (extracted, fallback) = simulateBlumonErrorMessage(selectedError!!)
+        val errorMessage = if (previewUseFallback) fallback else extracted
+
+        Dialog(
+            onDismissRequest = { showPreview = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background
+            ) {
+                // Exact replica of PaymentErrorContent from PaymentScreen.kt
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    AvoqadoCard(
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "X",
+                                style = MaterialTheme.typography.displayLarge,
+                                color = MaterialTheme.colorScheme.error
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = if (previewIsRefund) "Error en el Reembolso" else "Error en el Pago",
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                textAlign = TextAlign.Center
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = errorMessage,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+
+                            Spacer(modifier = Modifier.height(32.dp))
+
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                AvoqadoButton(
+                                    text = "Reintentar",
+                                    onClick = { showPreview = false },
+                                    fullWidth = true
+                                )
+
+                                AvoqadoButton(
+                                    text = "Cancelar",
+                                    onClick = { showPreview = false },
+                                    fullWidth = true
+                                )
+                            }
+                        }
+                    }
+
+                    // Simulator badge at the bottom
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                        )
+                    ) {
+                        Text(
+                            text = "SIMULADOR — [${selectedError!!.code}] ${selectedError!!.description}" +
+                                    if (previewUseFallback) " (fallback)" else " (regex)",
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
         }
     }
 }

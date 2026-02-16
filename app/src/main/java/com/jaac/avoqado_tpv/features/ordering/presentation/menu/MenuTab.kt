@@ -1,30 +1,31 @@
 package com.jaac.avoqado_tpv.features.ordering.presentation.menu
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoPullToRefresh
@@ -40,51 +42,36 @@ import com.jaac.avoqado_tpv.features.ordering.domain.Order
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductDisplayMode
-import com.jaac.avoqado_tpv.features.ordering.presentation.components.CategoryTabs
+import com.jaac.avoqado_tpv.features.ordering.presentation.components.CategoryRow
 import com.jaac.avoqado_tpv.features.ordering.presentation.components.ProductGrid
 
 /**
- * MenuTab - Product browsing and adding to order
+ * MenuTab - Square POS-style product catalog
  *
- * Extracted from MenuScreen as part of 4-tab interface redesign.
- * This tab shows the product catalog with category filtering and inline search.
+ * Two-state drill-down navigation:
  *
- * ## Layout (Collapsed Mode)
+ * ## Home View (selectedCategory == null)
  * ```
  * ┌─────────────────────────────────────┐
- * │ [🔍] [Bebidas] [Comida] [Postres]   │ ← Search icon + Category tabs
+ * │  [Display Mode ▾]                   │
  * ├─────────────────────────────────────┤
- * │                                     │
- * │   [Product Grid]                    │ ← Products
- * │   ┌─────┐ ┌─────┐ ┌─────┐          │
- * │   │ Img │ │ Img │ │ Img │          │
- * │   │Name │ │Name │ │Name │          │
- * │   │Price│ │Price│ │Price│          │
- * │   └─────┘ └─────┘ └─────┘          │
- * │                                     │
+ * │  [🥤 Bebidas    5 articulos    >]   │ ← Category rows
+ * │  [🍽️ Comidas    5 articulos    >]   │
+ * │  [🍰 Postres    5 articulos    >]   │
+ * ├─────────────────────────────────────┤
+ * │  [Product Grid / List - All]        │ ← All products below
  * └─────────────────────────────────────┘
  * ```
  *
- * ## Layout (Expanded Search Mode)
+ * ## Category View (selectedCategory != null)
  * ```
  * ┌─────────────────────────────────────┐
- * │ [✕] [🔍 Search field...]            │ ← Close + TextField (fullwidth)
+ * │  [←] Bebidas                        │ ← Back header
+ * │  [🔍 Buscar...]                     │ ← Search bar
  * ├─────────────────────────────────────┤
- * │                                     │
- * │   [Product Grid - Filtered]         │ ← Filtered products
- * │   ┌─────┐ ┌─────┐                  │
- * │   │ Res │ │ Res │                  │
- * │   └─────┘ └─────┘                  │
- * │                                     │
+ * │  [Product Grid / List - Filtered]   │ ← Category products
  * └─────────────────────────────────────┘
  * ```
- *
- * ## Features
- * - **Inline Search**: Click search icon to expand search field (Google/Twitter pattern)
- * - **Categories**: Horizontal scrollable tabs from backend (hidden when search expanded)
- * - **Products**: Grid of products with quick-add or modal
- * - **Modifiers**: Product click triggers callback, handled by MenuScreen
- * - **Quick Add**: If no modifiers, add directly with quantity 1
  *
  * @param order Current order (to check if can add items)
  * @param products Filtered products from ViewModel
@@ -119,8 +106,10 @@ fun MenuTab(
     onRefresh: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    // Local state for inline search expansion
-    var isSearchExpanded by remember { mutableStateOf(false) }
+    // Filter out the synthetic "Todos" category — only real categories as rows
+    val realCategories = remember(categories) {
+        categories.filter { it.id != "all" }
+    }
 
     Column(
         modifier = modifier
@@ -129,96 +118,227 @@ fun MenuTab(
     ) {
         val scrollResetKey = "${selectedCategory?.id ?: "all"}|$searchQuery"
 
-        // Product grid with pull-to-refresh (takes all available space)
-        AvoqadoPullToRefresh(
-            isRefreshing = isRefreshing,
-            onRefresh = onRefresh,
-            modifier = Modifier.weight(1f)
-        ) {
-            ProductGrid(
-                products = products,
-                selectedCategory = selectedCategory,
-                displayMode = productDisplayMode,
-                onProductClick = onProductClick,
-                headerContent = {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 2.dp),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        ProductDisplayModeSelector(
-                            currentMode = productDisplayMode,
-                            onModeSelected = onProductDisplayModeChange
-                        )
-                    }
-                },
-                modifier = Modifier.fillMaxSize(),
-                scrollResetKey = scrollResetKey
-            )
-        }
+        if (selectedCategory == null) {
+            // ── HOME VIEW: Search + categories + all products ──
 
-        // Bottom bar: Search icon + Category tabs OR expanded search field
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(start = 8.dp, end = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (isSearchExpanded) {
-                // Expanded search mode: Show TextField with close button
-                IconButton(onClick = {
-                    onClearSearch()
-                    isSearchExpanded = false
-                }) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Cerrar búsqueda"
-                    )
-                }
+            val isSearching = searchQuery.isNotEmpty()
 
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = onSearchQueryChange,
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Nombre, SKU o descripción...") },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = "Buscar"
-                        )
-                    },
-                    singleLine = true
-                )
-            } else {
-                // Collapsed mode: Show search icon + category tabs
-                IconButton(
-                    onClick = { isSearchExpanded = true }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = "Buscar productos",
-                        tint = if (searchQuery.isNotEmpty()) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
+            AvoqadoPullToRefresh(
+                isRefreshing = isRefreshing,
+                onRefresh = onRefresh,
+                modifier = Modifier.weight(1f)
+            ) {
+                ProductGrid(
+                    products = products,
+                    selectedCategory = null,
+                    displayMode = productDisplayMode,
+                    onProductClick = onProductClick,
+                    headerContent = {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            // Full-width search bar (always visible)
+                            HomeSearchBar(
+                                query = searchQuery,
+                                onChange = onSearchQueryChange,
+                                onClear = onClearSearch
+                            )
+
+                            // Display mode selector
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                ProductDisplayModeSelector(
+                                    currentMode = productDisplayMode,
+                                    onModeSelected = onProductDisplayModeChange
+                                )
+                            }
+
+                            // Category rows — hidden when searching
+                            if (!isSearching) {
+                                Column(
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    realCategories.forEach { category ->
+                                        CategoryRow(
+                                            category = category,
+                                            onClick = {
+                                                onClearSearch()
+                                                onCategorySelected(category)
+                                            }
+                                        )
+                                    }
+                                }
+
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(vertical = 4.dp),
+                                    color = MaterialTheme.colorScheme.outlineVariant
+                                )
+                            }
                         }
-                    )
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    scrollResetKey = scrollResetKey
+                )
+            }
+        } else {
+            // ── CATEGORY VIEW: Back header + search + filtered products ──
+
+            // Back header
+            CategoryViewHeader(
+                categoryName = selectedCategory.name,
+                onBack = {
+                    onClearSearch()
+                    onCategorySelected(null)
                 }
+            )
 
-                Spacer(modifier = Modifier.width(4.dp))
+            // Search bar
+            CategorySearchBar(
+                query = searchQuery,
+                onChange = onSearchQueryChange,
+                onClear = onClearSearch
+            )
 
-                // Category tabs
-                CategoryTabs(
-                    categories = categories,
+            // Filtered product grid
+            AvoqadoPullToRefresh(
+                isRefreshing = isRefreshing,
+                onRefresh = onRefresh,
+                modifier = Modifier.weight(1f)
+            ) {
+                ProductGrid(
+                    products = products,
                     selectedCategory = selectedCategory,
-                    onCategorySelected = onCategorySelected,
-                    modifier = Modifier.weight(1f)
+                    displayMode = productDisplayMode,
+                    onProductClick = onProductClick,
+                    headerContent = {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            ProductDisplayModeSelector(
+                                currentMode = productDisplayMode,
+                                onModeSelected = onProductDisplayModeChange
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    scrollResetKey = scrollResetKey
                 )
             }
         }
     }
+}
+
+// ── Private composables ─────────────────────────────────────────
+
+@Composable
+private fun CategoryViewHeader(
+    categoryName: String,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 4.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "Volver a categorias"
+            )
+        }
+
+        Text(
+            text = categoryName,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+@Composable
+private fun HomeSearchBar(
+    query: String,
+    onChange: (String) -> Unit,
+    onClear: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onChange,
+        modifier = modifier.fillMaxWidth(),
+        placeholder = {
+            Text(
+                "Buscar en todos los articulos...",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        },
+        leadingIcon = {
+            Icon(
+                imageVector = Icons.Default.Search,
+                contentDescription = "Buscar"
+            )
+        },
+        trailingIcon = {
+            if (query.isNotEmpty()) {
+                IconButton(onClick = onClear) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Limpiar"
+                    )
+                }
+            }
+        },
+        singleLine = true,
+        shape = RoundedCornerShape(50),
+        textStyle = MaterialTheme.typography.bodyMedium
+    )
+}
+
+@Composable
+private fun CategorySearchBar(
+    query: String,
+    onChange: (String) -> Unit,
+    onClear: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onChange,
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        placeholder = {
+            Text(
+                "Buscar en esta categoria...",
+                style = MaterialTheme.typography.bodySmall
+            )
+        },
+        leadingIcon = {
+            Icon(
+                imageVector = Icons.Default.Search,
+                contentDescription = "Buscar"
+            )
+        },
+        trailingIcon = {
+            if (query.isNotEmpty()) {
+                IconButton(onClick = onClear) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Limpiar"
+                    )
+                }
+            }
+        },
+        singleLine = true,
+        shape = RoundedCornerShape(50),
+        textStyle = MaterialTheme.typography.bodySmall,
+        colors = OutlinedTextFieldDefaults.colors()
+    )
 }
 
 @Composable
@@ -230,7 +350,7 @@ private fun ProductDisplayModeSelector(
     var isMenuExpanded by remember { mutableStateOf(false) }
 
     Box(modifier = modifier) {
-        TextButton(onClick = { isMenuExpanded = true }) {
+        OutlinedButton(onClick = { isMenuExpanded = true }) {
             Text(currentMode.shortLabel())
         }
 

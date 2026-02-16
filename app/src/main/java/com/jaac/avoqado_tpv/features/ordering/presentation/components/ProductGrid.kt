@@ -117,7 +117,7 @@ fun ProductGrid(
                 top = 8.dp,
                 bottom = 80.dp
             ),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             if (headerContent != null) {
                 item(

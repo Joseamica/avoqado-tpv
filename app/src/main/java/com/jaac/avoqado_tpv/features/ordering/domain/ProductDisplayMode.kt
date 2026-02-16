@@ -17,7 +17,7 @@ enum class ProductDisplayMode(
 
     companion object {
         fun fromPreference(value: String?): ProductDisplayMode {
-            return values().firstOrNull { it.preferenceValue == value } ?: GRID_3
+            return values().firstOrNull { it.preferenceValue == value } ?: LIST
         }
     }
 }

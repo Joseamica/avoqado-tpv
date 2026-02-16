@@ -143,8 +143,8 @@ val LightOnPrimaryContainer = Color(0xFF064E3B) // Green 900
 
 val LightSecondary = AvoqadoOrange
 val LightOnSecondary = Color.White
-val LightSecondaryContainer = Color(0xFFFEF3C7) // Amber 100
-val LightOnSecondaryContainer = Color(0xFF78350F) // Amber 900
+val LightSecondaryContainer = Gray100 // Neutral gray (was Amber 100 — too yellow for M3 auto-use)
+val LightOnSecondaryContainer = Gray900
 
 val LightTertiary = AvoqadoBlue
 val LightOnTertiary = Color.White

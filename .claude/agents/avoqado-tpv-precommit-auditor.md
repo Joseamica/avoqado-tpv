@@ -47,6 +47,12 @@ For EVERY changed file, systematically verify against the checklist below.
 
 ## AUDIT CHECKLIST
 
+### 🔴 CRITICAL: Changelog (PRIORITY #1)
+- `CHANGELOG.md` MUST be updated under `## [Unreleased]` with every code change
+- If `CHANGELOG.md` is NOT in the staged/unstaged changes, this is an automatic **BLOCKED** verdict
+- Entries must be categorized under **Added**, **Changed**, or **Fixed**
+- Format: `- **Bold label**: Concise description`
+
 ### 🔴 CRITICAL: Security (POS/Payments)
 - No hardcoded API keys, tokens, secrets, or credentials
 - No hardcoded URLs (must use BuildConfig or environment variables)

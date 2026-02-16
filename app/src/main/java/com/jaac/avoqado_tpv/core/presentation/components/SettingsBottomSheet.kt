@@ -10,6 +10,7 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.outlined.RestartAlt
+import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material3.*
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -73,6 +74,7 @@ fun SettingsBottomSheet(
     kioskModeAvailable: Boolean = false,
     isDarkMode: Boolean = false,
     onDarkModeToggle: (() -> Unit)? = null,
+    onCheckForUpdates: (() -> Unit)? = null,
 ) {
     timber.log.Timber.d("[PERF] SettingsBottomSheet SHOW")
     // ✅ Skip partially expanded state - open fully
@@ -155,7 +157,18 @@ fun SettingsBottomSheet(
                 onClick = { onSettings?.invoke() }
             )
 
-            // Option 5: Ayuda (Future)
+            // Option 6: Buscar Actualizaciones
+            if (onCheckForUpdates != null) {
+                SettingsOption(
+                    icon = Icons.Outlined.SystemUpdate,
+                    label = "Buscar Actualizaciones",
+                    description = "Versión ${BuildConfig.VERSION_NAME}",
+                    enabled = true,
+                    onClick = { onCheckForUpdates.invoke() }
+                )
+            }
+
+            // Option 7: Ayuda (Future)
             SettingsOption(
                 icon = Icons.AutoMirrored.Filled.Help,
                 label = "Ayuda",

@@ -47,6 +47,8 @@ import java.time.Instant
 fun PaymentsScreen(
     modifier: Modifier = Modifier,
     viewModel: PaymentsViewModel = hiltViewModel(),
+    refreshAfterRefund: Boolean = false,
+    onRefundRefreshConsumed: () -> Unit = {},
     onBack: () -> Unit = {},
     onNavigateToRefund: (Payment) -> Unit = {}
 ) {
@@ -70,6 +72,14 @@ fun PaymentsScreen(
         paymentForRefund?.let { payment ->
             onNavigateToRefund(payment)
             viewModel.clearRefundNavigation()
+        }
+    }
+
+    // Auto-refresh after returning from refund
+    LaunchedEffect(refreshAfterRefund) {
+        if (refreshAfterRefund) {
+            viewModel.refresh()
+            onRefundRefreshConsumed()
         }
     }
 

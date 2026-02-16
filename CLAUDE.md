@@ -59,23 +59,24 @@ app/src/production/ # Production-specific (same files, different SDK URLs)
 
 ## Critical Rules (brief — details in `.claude/rules/`)
 
-1. **PaymentViewModel safety**: 8 features share payment code. Test ALL flows, sync both variants. -> `critical-warnings.md`
-2. **Blumon distinction**: Always "Blumon TPV" or "Blumon E-commerce", never just "Blumon". -> `critical-warnings.md`
-3. **Build variants**: Sync sandbox/ and production/ files. Production uses REAL money. -> `critical-warnings.md`
-4. **Room migrations**: ALWAYS create migration when adding @Entity fields. Missing = 100% crash. -> `critical-warnings.md`
-5. **Auth**: Use `authRepository.getAuthContext()`. No `req.user` — that's backend. -> `critical-warnings.md`
-6. **Tenant isolation**: Every DB query filters by `venueId`. No exceptions. -> `critical-warnings.md`
-7. **Money**: `BigDecimal`, never Float. -> `critical-warnings.md`
-8. **Performance**: Paginate everything. 1GB RAM target. -> `critical-warnings.md`
-9. **API paths**: Base URL already has `/api/v1/`. Don't add `/v1/` again. -> `critical-warnings.md`
-10. **Permissions**: New features need backend + TPV + dashboard permissions. Exact name match. -> `release-and-git.md`
-11. **Release build**: apksigner v2 (not jarsigner), save to iCloud, send to Blumon. -> `release-and-git.md`
-12. **Version bumps**: "Can user do something new?" Yes=MINOR, No=PATCH. -> `release-and-git.md`
-13. **Cross-repo**: Backend deploys in minutes, TPV takes 3-5 days. Backend ALWAYS supports old versions. -> `release-and-git.md`
-14. **Git**: Never commit without permission. No `Co-Authored-By`. -> `release-and-git.md`
-15. **ADB monitoring**: Mandatory after every change. Log capture for testing. -> `testing-and-adb.md`
-16. **Unit tests**: 220 tests, 0 failures. Run before commits and after refactors. -> [unit testing guide](docs/UNIT_TESTING_GUIDE.md)
-17. **Timezone**: Never use `ZoneId.systemDefault()`. Use `VenueTimeZone.get(secureStorage)` or `ZoneId.of("America/Mexico_City")`. -> `critical-warnings.md`
+1. **Changelog**: EVERY modification must be logged in `CHANGELOG.md` under `[Unreleased]`. No exceptions. Rotate at ~50KB. -> `changelog-policy.md`
+2. **PaymentViewModel safety**: 8 features share payment code. Test ALL flows, sync both variants. -> `critical-warnings.md`
+3. **Blumon distinction**: Always "Blumon TPV" or "Blumon E-commerce", never just "Blumon". -> `critical-warnings.md`
+4. **Build variants**: Sync sandbox/ and production/ files. Production uses REAL money. -> `critical-warnings.md`
+5. **Room migrations**: ALWAYS create migration when adding @Entity fields. Missing = 100% crash. -> `critical-warnings.md`
+6. **Auth**: Use `authRepository.getAuthContext()`. No `req.user` — that's backend. -> `critical-warnings.md`
+7. **Tenant isolation**: Every DB query filters by `venueId`. No exceptions. -> `critical-warnings.md`
+8. **Money**: `BigDecimal`, never Float. -> `critical-warnings.md`
+9. **Performance**: Paginate everything. 1GB RAM target. -> `critical-warnings.md`
+10. **API paths**: Base URL already has `/api/v1/`. Don't add `/v1/` again. -> `critical-warnings.md`
+11. **Permissions**: New features need backend + TPV + dashboard permissions. Exact name match. -> `release-and-git.md`
+12. **Release build**: apksigner v2 (not jarsigner), save to iCloud, send to Blumon. -> `release-and-git.md`
+13. **Version bumps**: "Can user do something new?" Yes=MINOR, No=PATCH. -> `release-and-git.md`
+14. **Cross-repo**: Backend deploys in minutes, TPV takes 3-5 days. Backend ALWAYS supports old versions. -> `release-and-git.md`
+15. **Git**: Never commit without permission. No `Co-Authored-By`. -> `release-and-git.md`
+16. **ADB monitoring**: Mandatory after every change. Log capture for testing. -> `testing-and-adb.md`
+17. **Unit tests**: 220 tests, 0 failures. Run before commits and after refactors. -> [unit testing guide](docs/UNIT_TESTING_GUIDE.md)
+18. **Timezone**: Never use `ZoneId.systemDefault()`. Use `VenueTimeZone.get(secureStorage)` or `ZoneId.of("America/Mexico_City")`. -> `critical-warnings.md`
 
 ## Build Variants
 

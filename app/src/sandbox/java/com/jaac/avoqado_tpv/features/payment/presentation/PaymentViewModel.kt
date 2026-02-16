@@ -3145,8 +3145,9 @@ class PaymentViewModel @Inject constructor(
                             "Solicita otra forma de pago."
                         }
                         else -> {
-                            "Error en autorización con banco.\n\n" +
-                            "Por favor, intenta nuevamente o contacta soporte."
+                            // Always include raw Blumon error so it's never swallowed
+                            Timber.e("⚠️ [SaleIcc] Unrecognized error — showing raw: $errorString")
+                            "$rejectedPrefix.\n\n$errorString"
                         }
                     }
 
@@ -3323,18 +3324,20 @@ class PaymentViewModel @Inject constructor(
                         Timber.w(e, "⚠️ [Error Parsing] Failed to parse refund error details")
                     }
 
+                    val refundErrorString = failure.toString()
                     val userMessage = when {
                         specificErrorDescription != null -> {
                             "Reembolso rechazado:\n\n$specificErrorDescription"
                         }
-                        failure.toString().contains("NetworkConnection", ignoreCase = true) -> {
+                        refundErrorString.contains("NetworkConnection", ignoreCase = true) -> {
                             "Sin conexión a internet.\n\nVerifique su conexión e intente nuevamente."
                         }
-                        failure.toString().contains("timeout", ignoreCase = true) -> {
+                        refundErrorString.contains("timeout", ignoreCase = true) -> {
                             "El banco no respondió a tiempo.\n\nPor favor, intente nuevamente."
                         }
                         else -> {
-                            "Error procesando el reembolso.\n\nPor favor, intente nuevamente."
+                            Timber.e("⚠️ [CancelIcc] Unrecognized error — showing raw: $refundErrorString")
+                            "Reembolso rechazado.\n\n$refundErrorString"
                         }
                     }
 

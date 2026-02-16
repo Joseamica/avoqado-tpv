@@ -117,6 +117,7 @@ fun WelcomeScreen(
     onNavigateToPayments: () -> Unit = {},  // ⭐ NEW: Navigate to Payments screen
     onNavigateToSupport: () -> Unit = {},  // ⭐ NEW: Navigate to Support screen
     onNavigateToSettings: () -> Unit = {},  // ⚙️ Navigate to Settings screen
+    onNavigateToSelfUpdate: () -> Unit = {},  // 🔄 Navigate to Self-Update screen
     onNavigateToSuperAdmin: () -> Unit = {},
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Telecom: Vender flow (barcode → price → payment)
     onNavigateToInventoryRegister: () -> Unit = {},  // 📦 Telecom: Alta de productos flow
@@ -249,6 +250,7 @@ fun WelcomeScreen(
         onNavigateToPayments = onNavigateToPayments,  // ⭐ NEW: Pass payments navigation
         onNavigateToSupport = onNavigateToSupport,  // ⭐ NEW: Pass support navigation
         onNavigateToSettings = onNavigateToSettings,  // ⚙️ Pass settings navigation
+        onNavigateToSelfUpdate = onNavigateToSelfUpdate,  // 🔄 Pass self-update navigation
         onNavigateToSuperAdmin = onNavigateToSuperAdmin,
         onNavigateToSerializedSale = onNavigateToSerializedSale,  // 📱 Telecom: Vender
         onNavigateToInventoryRegister = onNavigateToInventoryRegister,  // 📦 Telecom: Alta
@@ -451,6 +453,7 @@ private fun WelcomeScreenContent(
     onNavigateToPayments: () -> Unit,  // ⭐ NEW: Navigate to Payments screen
     onNavigateToSupport: () -> Unit,  // ⭐ NEW: Navigate to Support screen
     onNavigateToSettings: () -> Unit,  // ⚙️ Navigate to Settings screen
+    onNavigateToSelfUpdate: () -> Unit = {},  // 🔄 Navigate to Self-Update screen
     onNavigateToSuperAdmin: () -> Unit,
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Telecom: Vender flow
     onNavigateToInventoryRegister: () -> Unit = {},  // 📦 Telecom: Alta de productos
@@ -792,7 +795,11 @@ private fun WelcomeScreenContent(
                 }
             } else null,
             isDarkMode = isDarkMode,
-            onDarkModeToggle = { onDarkModeToggle() }
+            onDarkModeToggle = { onDarkModeToggle() },
+            onCheckForUpdates = {
+                showSettingsModal = false
+                onNavigateToSelfUpdate()
+            }
         )
     }
 

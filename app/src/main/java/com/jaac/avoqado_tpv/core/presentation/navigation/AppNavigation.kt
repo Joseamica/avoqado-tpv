@@ -807,6 +807,9 @@ fun AppNavigation(
                     // Navigate to Settings screen
                     navController.navigate(NavRoute.Settings.route)
                 },
+                onNavigateToSelfUpdate = {
+                    navController.navigate(NavRoute.SelfUpdate.route)
+                },
                 onNavigateToSuperAdmin = {
                     // Navigate to SuperAdmin screen
                     navController.navigate(NavRoute.SuperAdmin.route)
@@ -1172,7 +1175,9 @@ fun AppNavigation(
                     }
                 },
                 onRefundComplete = {
-                    // 💸 Refund success: return to Payments list (not RefundConfirmation)
+                    // 💸 Refund success: signal Payments to refresh, then return
+                    navController.getBackStackEntry(NavRoute.Payments.route)
+                        .savedStateHandle["refreshAfterRefund"] = true
                     val popped = navController.safePopBackStack(NavRoute.Payments.route, inclusive = false)
                     if (!popped) {
                         navController.navigate(NavRoute.Payments.route) {
@@ -1359,8 +1364,15 @@ fun AppNavigation(
         }
 
         // Payments Screen - Payment history with pagination and filters
-        composable(NavRoute.Payments.route) {
+        composable(NavRoute.Payments.route) { backStackEntry ->
+            // Auto-refresh after refund completion
+            val refreshAfterRefund = backStackEntry.savedStateHandle
+                .get<Boolean>("refreshAfterRefund") == true
             com.jaac.avoqado_tpv.features.payments.presentation.PaymentsScreen(
+                refreshAfterRefund = refreshAfterRefund,
+                onRefundRefreshConsumed = {
+                    backStackEntry.savedStateHandle.remove<Boolean>("refreshAfterRefund")
+                },
                 onBack = {
                     navController.safePopBackStack()
                 },

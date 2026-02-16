@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -139,39 +140,32 @@ fun ProductListItem(
 
     Card(
         modifier = modifier
-            .fillMaxWidth()
-            .border(
-                width = 0.5.dp,
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-                shape = CardShape
-            ),
+            .fillMaxWidth(),
         onClick = onClick,
         shape = CardShape,
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
+            containerColor = MaterialTheme.colorScheme.surface
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 64.dp),
+                .heightIn(min = 56.dp)
+                .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .width(CategoryAccentWidth)
-                    .background(
-                        color = categoryColor,
-                        shape = CategoryAccentShape
-                    )
+            ProductThumbnail(
+                name = product.name,
+                imageUrl = product.imageUrl,
+                categoryColor = categoryColor,
+                size = 48.dp
             )
 
+            Spacer(modifier = Modifier.width(12.dp))
+
             Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Text(
@@ -191,7 +185,7 @@ fun ProductListItem(
             }
 
             Column(
-                modifier = Modifier.padding(start = 8.dp, end = 14.dp),
+                modifier = Modifier.padding(start = 8.dp, end = 6.dp),
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
@@ -213,7 +207,7 @@ fun ProductListItem(
 }
 
 @Composable
-private fun rememberCategoryColor(product: Product): Color {
+internal fun rememberCategoryColor(product: Product): Color {
     return remember(product.effectiveCategoryColor) {
         try {
             Color(android.graphics.Color.parseColor(product.effectiveCategoryColor))

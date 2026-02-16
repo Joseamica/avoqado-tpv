@@ -14,7 +14,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -149,8 +151,18 @@ class OrderSyncCoordinator @Inject constructor(
      *
      * ✅ P1 FIX: Use SupervisorJob to prevent one sync failure from cancelling all syncs
      * Without SupervisorJob, if one sync throws CancellationException, the entire scope dies.
+     *
+     * Re-creatable: cancelled on cleanup() (logout), auto-recreated on next access.
      */
-    private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var _syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val syncScope: CoroutineScope
+        get() {
+            if (!_syncScope.isActive) {
+                _syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+                Timber.d("🔄 [Sync] Recreated syncScope (previous was cancelled)")
+            }
+            return _syncScope
+        }
 
     /**
      * Sync events emitted to ViewModels for UI updates.
@@ -166,6 +178,25 @@ class OrderSyncCoordinator @Inject constructor(
     // ========================================
     // PUBLIC API
     // ========================================
+
+    /**
+     * Release all resources held by this coordinator.
+     * Called on logout to prevent memory leaks on PAX A80 (1GB RAM).
+     *
+     * - Cancels syncScope (stops all in-flight syncs)
+     * - Clears all ConcurrentHashMaps (frees retained Mutex/Job references)
+     * - Scope auto-recreates on next access via [syncScope] getter
+     */
+    fun cleanup() {
+        Timber.i("🧹 [Sync] Cleanup | pendingJobs=${pendingSyncJobs.size} remaps=${orderIdRemap.size} mutexes=${syncMutexes.size}")
+        _syncScope.cancel()
+        pendingSyncJobs.clear()
+        activeSyncOrders.clear()
+        dirtyOrders.clear()
+        orderIdRemap.clear()
+        syncMutexes.clear()
+        itemMutationMutexes.clear()
+    }
 
     /**
      * Create order locally (instant UI).
@@ -1247,6 +1278,12 @@ class OrderSyncCoordinator @Inject constructor(
         val replacementStartTime = System.currentTimeMillis()
         Timber.w("🔀 [SYNC-DEBUG] ID REPLACEMENT START | old=${draftOrder.id} → new=${serverOrder.id} | timestamp=$replacementStartTime")
 
+        // ⭐ Record mapping BEFORE DB rename to prevent race condition.
+        // If a concurrent operation (e.g., addItem) resolves the order ID between the DB rename
+        // and the map update, it would find neither the old ID in DB nor the new ID in the map.
+        // Recording the mapping first ensures resolveExistingOrderId() can always find the new ID.
+        recordOrderIdReplacement(draftOrder.id, serverOrder.id)
+
         withContext(NonCancellable) {
             draftOrderDao.replaceLocalIdWithServerCuid(
                 localId = draftOrder.id,
@@ -1271,9 +1308,6 @@ class OrderSyncCoordinator @Inject constructor(
 
         Timber.d("✅ [Sync] Order ID replaced | oldId=${draftOrder.id} | newId=${serverOrder.id} | version=$finalVersion")
         Timber.d("   → ON UPDATE CASCADE automatically updated ${pendingItems.size} items")
-
-        // Record mapping for local-first writes during the transition window
-        recordOrderIdReplacement(draftOrder.id, serverOrder.id)
 
         Timber.i("📣 [SYNC-DEBUG] SyncEvent.Synced ABOUT TO EMIT | serverId=${serverOrder.id} | version=$finalVersion | timestamp=${System.currentTimeMillis()}")
         _syncEvents.emit(SyncEvent.Synced(serverOrder.id, finalVersion))

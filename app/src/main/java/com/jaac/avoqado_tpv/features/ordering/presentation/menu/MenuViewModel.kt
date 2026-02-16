@@ -21,6 +21,7 @@ import com.jaac.avoqado_tpv.features.ordering.domain.OrderStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
 import com.jaac.avoqado_tpv.features.ordering.domain.PaymentStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
+import com.jaac.avoqado_tpv.features.ordering.domain.ProductDisplayMode
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier
 import com.jaac.avoqado_tpv.features.ordering.domain.Discount
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountRepository
@@ -122,6 +123,10 @@ class MenuViewModel @Inject constructor(
     // 🔍 Search functionality (Issue #4)
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    // 🎛️ Product catalog display mode (persisted per device)
+    private val _productDisplayMode = MutableStateFlow(secureStorage.getOrderingProductDisplayMode())
+    val productDisplayMode: StateFlow<ProductDisplayMode> = _productDisplayMode.asStateFlow()
 
     // Processing flag to prevent rapid clicks during backend operations
     private val _isProcessing = MutableStateFlow(false)
@@ -1079,6 +1084,17 @@ class MenuViewModel @Inject constructor(
     fun clearSearch() {
         _searchQuery.value = ""
         Timber.d("🔍 [Search] Query cleared")
+    }
+
+    /**
+     * Update product catalog display mode (3-col, 2-col, list).
+     * Persisted in secure storage as a device-level preference.
+     */
+    fun setProductDisplayMode(mode: ProductDisplayMode) {
+        if (_productDisplayMode.value == mode) return
+        _productDisplayMode.value = mode
+        secureStorage.saveOrderingProductDisplayMode(mode)
+        Timber.d("🎛️ [Menu] Product display mode updated: $mode")
     }
 
     /**

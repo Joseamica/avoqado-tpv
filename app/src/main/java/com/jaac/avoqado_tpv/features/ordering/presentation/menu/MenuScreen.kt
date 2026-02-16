@@ -406,6 +406,7 @@ fun MenuScreen(
                                 val filteredProducts by viewModel.filteredProducts.collectAsStateWithLifecycle()
                                 val categories by viewModel.categories.collectAsStateWithLifecycle()
                                 val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+                                val productDisplayMode by viewModel.productDisplayMode.collectAsStateWithLifecycle()
                                 val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
 
                                 // Menu tab: Product browsing and adding
@@ -414,10 +415,12 @@ fun MenuScreen(
                                     products = filteredProducts,
                                     categories = categories,
                                     searchQuery = searchQuery,
+                                    productDisplayMode = productDisplayMode,
                                     selectedCategory = selectedCategory,
                                     onCategorySelected = { selectedCategory = it },
                                     onSearchQueryChange = { query -> viewModel.setSearchQuery(query) },
                                     onClearSearch = { viewModel.clearSearch() },
+                                    onProductDisplayModeChange = { mode -> viewModel.setProductDisplayMode(mode) },
                                     isRefreshing = isRefreshing,
                                     onRefresh = { viewModel.refreshProducts() },
                                     onProductClick = { product ->

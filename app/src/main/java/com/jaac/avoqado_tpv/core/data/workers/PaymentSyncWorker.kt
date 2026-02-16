@@ -103,6 +103,13 @@ class PaymentSyncWorker @AssistedInject constructor(
          * Prevents exponential backoff from growing beyond reasonable limits.
          */
         private const val MAX_BACKOFF_MS = 30_000L
+
+        /**
+         * Maximum payments to process per worker run.
+         * Prevents WorkManager 10-minute timeout when queue is large.
+         * Remaining payments will be processed in the next periodic run (15 min).
+         */
+        private const val MAX_PAYMENTS_PER_RUN = 10
     }
 
     /**
@@ -134,11 +141,17 @@ class PaymentSyncWorker @AssistedInject constructor(
 
             Timber.i("🔄 [Payment Sync] Found ${pendingPayments.size} pending payments to sync")
 
+            // Process payments in batches to avoid WorkManager 10-minute timeout
+            val batch = pendingPayments.take(MAX_PAYMENTS_PER_RUN)
+            if (batch.size < pendingPayments.size) {
+                Timber.w("⚠️ [Payment Sync] Processing ${batch.size}/${pendingPayments.size} (batch limit) — rest in next run")
+            }
+
             // Process each payment independently (one failure doesn't block others)
             var successCount = 0
             var failedCount = 0
 
-            for (payment in pendingPayments) {
+            for (payment in batch) {
                 val success = syncPayment(payment)
                 if (success) {
                     successCount++
@@ -150,7 +163,7 @@ class PaymentSyncWorker @AssistedInject constructor(
             // Log summary
             Timber.i(
                 "✅ [Payment Sync] Worker completed | " +
-                        "success=$successCount | failed=$failedCount | total=${pendingPayments.size}"
+                        "success=$successCount | failed=$failedCount | batch=${batch.size} | total=${pendingPayments.size}"
             )
 
             // ALWAYS return success to continue periodic runs

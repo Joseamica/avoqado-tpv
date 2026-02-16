@@ -1,6 +1,8 @@
 package com.jaac.avoqado_tpv.features.ordering.presentation.menu
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,13 +14,17 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.ime
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +39,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
+import com.jaac.avoqado_tpv.features.ordering.domain.ProductDisplayMode
 import com.jaac.avoqado_tpv.features.ordering.presentation.components.CategoryTabs
 import com.jaac.avoqado_tpv.features.ordering.presentation.components.ProductGrid
 
@@ -83,10 +90,12 @@ import com.jaac.avoqado_tpv.features.ordering.presentation.components.ProductGri
  * @param products Filtered products from ViewModel
  * @param categories Product categories from backend
  * @param searchQuery Current search query
+ * @param productDisplayMode Current visual mode for product catalog
  * @param selectedCategory Currently selected category filter
  * @param onCategorySelected Callback when category is selected
  * @param onSearchQueryChange Callback when search query changes
  * @param onClearSearch Callback to clear search
+ * @param onProductDisplayModeChange Callback when display mode changes
  * @param onProductClick Callback when product is clicked (handled by MenuScreen)
  * @param isRefreshing Whether a refresh is in progress
  * @param onRefresh Callback to trigger a refresh
@@ -99,10 +108,12 @@ fun MenuTab(
     products: List<Product>,
     categories: List<ProductCategory>,
     searchQuery: String,
+    productDisplayMode: ProductDisplayMode,
     selectedCategory: ProductCategory?,
     onCategorySelected: (ProductCategory?) -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onClearSearch: () -> Unit,
+    onProductDisplayModeChange: (ProductDisplayMode) -> Unit,
     onProductClick: (Product) -> Unit,
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
@@ -127,7 +138,21 @@ fun MenuTab(
             ProductGrid(
                 products = products,
                 selectedCategory = selectedCategory,
+                displayMode = productDisplayMode,
                 onProductClick = onProductClick,
+                headerContent = {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 2.dp),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        ProductDisplayModeSelector(
+                            currentMode = productDisplayMode,
+                            onModeSelected = onProductDisplayModeChange
+                        )
+                    }
+                },
                 modifier = Modifier.fillMaxSize(),
                 scrollResetKey = scrollResetKey
             )
@@ -194,6 +219,56 @@ fun MenuTab(
             }
         }
     }
+}
+
+@Composable
+private fun ProductDisplayModeSelector(
+    currentMode: ProductDisplayMode,
+    onModeSelected: (ProductDisplayMode) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var isMenuExpanded by remember { mutableStateOf(false) }
+
+    Box(modifier = modifier) {
+        TextButton(onClick = { isMenuExpanded = true }) {
+            Text(currentMode.shortLabel())
+        }
+
+        DropdownMenu(
+            expanded = isMenuExpanded,
+            onDismissRequest = { isMenuExpanded = false }
+        ) {
+            ProductDisplayMode.values().forEach { mode ->
+                DropdownMenuItem(
+                    text = { Text(mode.fullLabel()) },
+                    trailingIcon = {
+                        if (mode == currentMode) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = null
+                            )
+                        }
+                    },
+                    onClick = {
+                        onModeSelected(mode)
+                        isMenuExpanded = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+private fun ProductDisplayMode.shortLabel(): String = when (this) {
+    ProductDisplayMode.GRID_3 -> "3 cols"
+    ProductDisplayMode.GRID_2 -> "2 cols"
+    ProductDisplayMode.LIST -> "Lista"
+}
+
+private fun ProductDisplayMode.fullLabel(): String = when (this) {
+    ProductDisplayMode.GRID_3 -> "Cuadricula 3 columnas"
+    ProductDisplayMode.GRID_2 -> "Cuadricula 2 columnas"
+    ProductDisplayMode.LIST -> "Lista detallada"
 }
 
 // ============================================================

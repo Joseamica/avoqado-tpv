@@ -9,6 +9,7 @@ import com.google.gson.reflect.TypeToken
 import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.modules.data.dto.VenueModuleDto
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
+import com.jaac.avoqado_tpv.features.ordering.domain.ProductDisplayMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import timber.log.Timber
@@ -86,6 +87,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_IS_OFFLINE_MODE = "is_offline_mode"
         private const val KEY_SELECTED_LANGUAGE = "selected_language"
         private const val KEY_IS_DARK_MODE = "is_dark_mode"
+        private const val KEY_ORDERING_PRODUCT_DISPLAY_MODE = "ordering_product_display_mode"
 
         // Terminal activation keys
         private const val KEY_SERIAL_NUMBER = "serial_number"
@@ -853,6 +855,27 @@ class SecureStorage @Inject constructor(
      */
     fun getIsDarkMode(): Boolean {
         return encryptedPrefs.getBoolean(KEY_IS_DARK_MODE, true)
+    }
+
+    /**
+     * Save product catalog display mode (Menu tab).
+     *
+     * Device-level preference, not tied to session.
+     * Persists across logout/login for consistent operator workflow.
+     */
+    fun saveOrderingProductDisplayMode(mode: ProductDisplayMode) {
+        encryptedPrefs.edit()
+            .putString(KEY_ORDERING_PRODUCT_DISPLAY_MODE, mode.preferenceValue)
+            .apply()
+    }
+
+    /**
+     * Get product catalog display mode preference.
+     * Defaults to 3-column grid for fastest scanning/tap density.
+     */
+    fun getOrderingProductDisplayMode(): ProductDisplayMode {
+        val stored = encryptedPrefs.getString(KEY_ORDERING_PRODUCT_DISPLAY_MODE, null)
+        return ProductDisplayMode.fromPreference(stored)
     }
 
     // ========== Terminal Activation ==========

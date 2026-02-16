@@ -20,6 +20,7 @@ import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.UpdateCheckManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
+import com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
 import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
@@ -72,6 +73,7 @@ class HomeViewModelTest {
     private lateinit var paymentQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
     private lateinit var paymentQueueStateManager: com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
     private lateinit var observabilityManager: com.jaac.avoqado_tpv.core.observability.ObservabilityManager
+    private lateinit var orderSyncCoordinator: OrderSyncCoordinator
 
     private val fakeSessionEvents = MutableSharedFlow<com.jaac.avoqado_tpv.core.session.SessionEvent>()
     private val fakeSocketEvents = MutableSharedFlow<com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent>()
@@ -106,6 +108,7 @@ class HomeViewModelTest {
         paymentQueueRepository = mockk(relaxed = true)
         paymentQueueStateManager = com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager()
         observabilityManager = mockk(relaxed = true)
+        orderSyncCoordinator = mockk(relaxed = true)
 
         every { sessionManager.sessionEvents } returns fakeSessionEvents
         every { socketManager.events } returns fakeSocketEvents
@@ -150,7 +153,8 @@ class HomeViewModelTest {
             sessionManager = sessionManager,
             paymentQueueRepository = paymentQueueRepository,
             paymentQueueStateManager = paymentQueueStateManager,
-            observabilityManager = observabilityManager
+            observabilityManager = observabilityManager,
+            orderSyncCoordinator = orderSyncCoordinator
         )
     }
 

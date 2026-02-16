@@ -189,6 +189,14 @@ class AvoqadoUpdateRepository @Inject constructor(
             try {
                 Timber.d("📥 [Avoqado] Downloading APK: ${updateInfo.downloadUrl}")
 
+                // Reject non-HTTPS URLs to prevent MITM attacks during APK download
+                if (!updateInfo.downloadUrl.startsWith("https://", ignoreCase = true)) {
+                    Timber.e("❌ [Avoqado] Rejected non-HTTPS download URL: ${updateInfo.downloadUrl}")
+                    return@withContext DownloadResult.Error(
+                        message = "URL de descarga inválida (debe ser HTTPS)"
+                    )
+                }
+
                 val request = Request.Builder()
                     .url(updateInfo.downloadUrl)
                     .build()

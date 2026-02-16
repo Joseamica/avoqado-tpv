@@ -2455,7 +2455,14 @@ class PaymentViewModel @Inject constructor(
 
             } catch (e: Exception) {
                 Timber.e(e, "❌ [BlumonPayment] Unexpected error in payment flow")
-                _state.value = PaymentState.Error("Error inesperado: ${e.message}")
+                // ⭐ Clean up SDK state and release guard to allow retry
+                try { stopDetectCardUseCase.runInfallible(StopDetectCardParams()) } catch (_: Exception) {}
+                _isPaymentInProgress.value = false
+                _state.value = PaymentState.Error(
+                    message = "Error inesperado: ${e.message}",
+                    context = createPaymentContext(),
+                    canRetry = true
+                )
             }
         }
     }
@@ -2675,6 +2682,9 @@ class PaymentViewModel @Inject constructor(
                 throw e // Don't catch coroutine cancellation
             } catch (e: Exception) {
                 Timber.e(e, "❌ [REFUND] Unexpected error")
+                // ⭐ Clean up SDK state and release guard to allow retry
+                try { stopDetectCardUseCase.runInfallible(StopDetectCardParams()) } catch (_: Exception) {}
+                _isPaymentInProgress.value = false
                 _state.value = PaymentState.Error(
                     message = "Error inesperado en reembolso: ${e.message}",
                     canRetry = true
@@ -2801,6 +2811,8 @@ class PaymentViewModel @Inject constructor(
             throw e
         } catch (e: Exception) {
             Timber.e(e, "❌ [REFUND] Unexpected error in chip refund flow")
+            try { stopDetectCardUseCase.runInfallible(StopDetectCardParams()) } catch (_: Exception) {}
+            _isPaymentInProgress.value = false
             _state.value = PaymentState.Error(message = "Error inesperado: ${e.message}", canRetry = true)
         }
     }
@@ -2865,6 +2877,8 @@ class PaymentViewModel @Inject constructor(
 
         } catch (e: Exception) {
             Timber.e(e, "❌ [CONTACTLESS REFUND] Unexpected error")
+            try { stopDetectCardUseCase.runInfallible(StopDetectCardParams()) } catch (_: Exception) {}
+            _isPaymentInProgress.value = false
             _state.value = PaymentState.Error(message = "Error inesperado: ${e.message}", canRetry = true)
         }
     }
@@ -2945,6 +2959,8 @@ class PaymentViewModel @Inject constructor(
 
         } catch (e: Exception) {
             Timber.e(e, "❌ [CONTACTLESS REFUND ONLINE] Unexpected error")
+            try { stopDetectCardUseCase.runInfallible(StopDetectCardParams()) } catch (_: Exception) {}
+            _isPaymentInProgress.value = false
             _state.value = PaymentState.Error(message = "Error inesperado: ${e.message}", canRetry = true)
         }
     }
@@ -3462,6 +3478,12 @@ class PaymentViewModel @Inject constructor(
                         amount = calculateTotal(getAmountForFlow(), getTipForFlow()),
                         tipAmount = getTipForFlow()
                     )
+
+                    // ⭐ Record offline payment to backend (same pattern as offline refunds)
+                    handlePaymentSuccess(
+                        saleData = null,
+                        entryMode = CardEntryMode.CONTACTLESS,
+                    )
                 }
 
                 TransResultEnum.RESULT_OFFLINE_DENIED -> {
@@ -3485,9 +3507,13 @@ class PaymentViewModel @Inject constructor(
 
         } catch (e: Exception) {
             Timber.e(e, "❌ [CONTACTLESS] Unexpected error in contactless payment flow")
+            // ⭐ Clean up SDK state and release guard to allow retry
+            try { stopDetectCardUseCase.runInfallible(StopDetectCardParams()) } catch (_: Exception) {}
+            _isPaymentInProgress.value = false
             _state.value = PaymentState.Error(
                 message = "Error inesperado en pago contactless: ${e.message}",
-                context = createPaymentContext()  // 🔄 Preserve context for smart retry
+                context = createPaymentContext(),
+                canRetry = true
             )
         }
     }
@@ -3650,9 +3676,13 @@ class PaymentViewModel @Inject constructor(
 
         } catch (e: Exception) {
             Timber.e(e, "❌ [CONTACTLESS ONLINE] Unexpected error")
+            // ⭐ Clean up SDK state and release guard to allow retry
+            try { stopDetectCardUseCase.runInfallible(StopDetectCardParams()) } catch (_: Exception) {}
+            _isPaymentInProgress.value = false
             _state.value = PaymentState.Error(
                 message = "Error inesperado: ${e.message}",
-                context = createPaymentContext()  // 🔄 Preserve context for smart retry
+                context = createPaymentContext(),
+                canRetry = true
             )
         }
     }
@@ -4941,29 +4971,38 @@ class PaymentViewModel @Inject constructor(
      * @param entryMode How the card was read (CHIP, CONTACTLESS, SWIPE)
      */
     private fun handlePaymentSuccess(
-        saleData: Any, // Blumon SDK SaleData object (type from com.example.clean_lib_services)
+        saleData: Any?, // Blumon SDK SaleData object (null for offline-approved contactless)
         entryMode: CardEntryMode,
         blumonOperationNumber: Int? = null, // 💸 Operation number from SDK for refunds
     ) {
         viewModelScope.launch {
             try {
                 // Extract authorization and reference using reflection (SDK type not directly accessible)
-                val authorizationNumber = try {
-                    val authField = saleData::class.java.getDeclaredField("authorization")
-                    authField.isAccessible = true
-                    authField.get(saleData)?.toString() ?: ""
-                } catch (e: Exception) {
-                    Timber.w("Could not extract authorization from saleData: ${e.message}")
-                    ""
+                // Null-safe: offline-approved contactless has no saleData (same pattern as handleRefundSuccess)
+                val authorizationNumber = if (saleData != null) {
+                    try {
+                        val authField = saleData::class.java.getDeclaredField("authorization")
+                        authField.isAccessible = true
+                        authField.get(saleData)?.toString() ?: ""
+                    } catch (e: Exception) {
+                        Timber.w("Could not extract authorization from saleData: ${e.message}")
+                        ""
+                    }
+                } else {
+                    "OFFLINE_APPROVED"
                 }
 
-                val referenceNumber = try {
-                    val refField = saleData::class.java.getDeclaredField("reference")
-                    refField.isAccessible = true
-                    refField.get(saleData)?.toString() ?: ""
-                } catch (e: Exception) {
-                    Timber.w("Could not extract reference from saleData: ${e.message}")
-                    ""
+                val referenceNumber = if (saleData != null) {
+                    try {
+                        val refField = saleData::class.java.getDeclaredField("reference")
+                        refField.isAccessible = true
+                        refField.get(saleData)?.toString() ?: ""
+                    } catch (e: Exception) {
+                        Timber.w("Could not extract reference from saleData: ${e.message}")
+                        ""
+                    }
+                } else {
+                    "OFFLINE-${System.currentTimeMillis()}"
                 }
 
                 Timber.d("💾 [Backend Recording] Starting payment record | auth=$authorizationNumber | ref=$referenceNumber")
@@ -4987,10 +5026,20 @@ class PaymentViewModel @Inject constructor(
                 }
 
                 // 1. Extract card details from Blumon SDK response (includes real card brand from binInformation)
-                val cardDetails = extractCardDetailsFromBlumonResponse(
-                    saleData = saleData,
-                    entryMode = entryMode
-                )
+                val cardDetails = if (saleData != null) {
+                    extractCardDetailsFromBlumonResponse(
+                        saleData = saleData,
+                        entryMode = entryMode
+                    )
+                } else {
+                    // Offline-approved contactless - minimal card details
+                    CardDetails(
+                        maskedPan = "****",
+                        cardBrand = CardBrand.UNKNOWN,
+                        entryMode = entryMode,
+                        isInternational = false
+                    )
+                }
 
                 Timber.d("💾 [Backend Recording] Card details: brand=${cardDetails.cardBrand} | masked=${cardDetails.maskedPan} | entry=${cardDetails.entryMode}")
 

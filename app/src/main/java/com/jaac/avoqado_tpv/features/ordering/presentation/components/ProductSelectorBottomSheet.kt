@@ -12,10 +12,15 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -41,7 +46,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -110,6 +117,7 @@ fun ProductSelectorBottomSheet(
     var quantity by remember(product.id) { mutableIntStateOf(1) }
     var notes by remember(product.id) { mutableStateOf("") }
     var selectedModifiers by remember(product.id) { mutableStateOf<Map<String, ProductModifier>>(emptyMap()) }
+    val focusManager = LocalFocusManager.current
 
     // Calculate total price (base + modifiers) × quantity
     val modifiersTotal = selectedModifiers.values.sumOf { it.priceAdjustment }
@@ -157,11 +165,15 @@ fun ProductSelectorBottomSheet(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.surface)
+                    .statusBarsPadding()
                     .padding(horizontal = 8.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onDismiss) {
+                IconButton(onClick = {
+                    focusManager.clearFocus(force = true)
+                    onDismiss()
+                }) {
                     Icon(
                         imageVector = Icons.Default.Close,
                         contentDescription = "Cerrar",
@@ -182,6 +194,7 @@ fun ProductSelectorBottomSheet(
                 IconButton(
                     onClick = {
                         if (allSelectionRulesMet) {
+                            focusManager.clearFocus(force = true)
                             onAddToCart(quantity, selectedModifiers.values.toList(), notes)
                             onDismiss()
                         }
@@ -455,6 +468,22 @@ fun ProductSelectorBottomSheet(
                             onValueChange = { notes = it },
                             modifier = Modifier.fillMaxWidth(),
                             placeholder = { Text("Ej: Sin aceitunas, para llevar") },
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                            keyboardActions = KeyboardActions(
+                                onDone = {
+                                    focusManager.clearFocus(force = true)
+                                }
+                            ),
+                            trailingIcon = {
+                                if (notes.isNotEmpty()) {
+                                    IconButton(onClick = { notes = "" }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Limpiar notas"
+                                        )
+                                    }
+                                }
+                            },
                             maxLines = 2,
                             textStyle = MaterialTheme.typography.bodyMedium
                         )
@@ -474,6 +503,8 @@ fun ProductSelectorBottomSheet(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.background)
+                    .navigationBarsPadding()
+                    .imePadding()
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -520,6 +551,7 @@ fun ProductSelectorBottomSheet(
                 Button(
                     onClick = {
                         if (allSelectionRulesMet) {
+                            focusManager.clearFocus(force = true)
                             onAddToCart(quantity, selectedModifiers.values.toList(), notes)
                             onDismiss()
                         }

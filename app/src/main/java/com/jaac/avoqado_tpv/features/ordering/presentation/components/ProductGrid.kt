@@ -6,10 +6,13 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
@@ -23,46 +26,45 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.ordering.domain.MockProducts
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
+import com.jaac.avoqado_tpv.features.ordering.domain.ProductDisplayMode
+
+private const val PAGE_SIZE = 15
+private const val PAGINATION_THRESHOLD = 3
 
 /**
- * Product grid for menu display
+ * Product catalog view for menu display.
  *
- * 3-column grid (portrait) with pagination for better performance.
+ * Supports configurable view modes:
+ * - 3-column grid (dense)
+ * - 2-column grid (readable)
+ * - Detailed list (name, price, SKU, stock)
+ *
+ * Uses incremental pagination for all modes to keep memory usage low
+ * on constrained terminal devices.
+ *
  * Products can be filtered by category.
- *
- * Design:
- * - GridCells.Fixed(3) for portrait handheld devices (larger touch targets)
- * - Responsive spacing using LocalResponsiveSizes
- * - Bottom padding for collapsed top panel (48dp + 16dp margin)
- * - Scrollable (LazyVerticalGrid with pagination for performance)
- *
- * Features:
- * - Filter by category
- * - Tap product → Opens quantity selector
- * - Only shows available products
- * - Pagination: Shows 15 products initially, loads more on scroll
  *
  * @param products List of all products
  * @param selectedCategory Filter by this category (null = show all)
+ * @param displayMode Visual mode for the product catalog
  * @param onProductClick Callback when product is tapped
  * @param modifier Modifier for customization
- * @param scrollResetKey Key that resets pagination + scroll (use category/search changes, not backend refresh)
+ * @param scrollResetKey Key that resets pagination + scroll
  */
 @Composable
 fun ProductGrid(
     products: List<Product>,
     selectedCategory: ProductCategory?,
+    displayMode: ProductDisplayMode = ProductDisplayMode.GRID_3,
     onProductClick: (Product) -> Unit,
+    headerContent: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier,
     scrollResetKey: Any? = selectedCategory?.id
 ) {
-    val sizes = LocalResponsiveSizes.current
-
     // ⚡ PERFORMANCE: Use remember to avoid filtering on every recomposition
     val availableProducts = remember(products, selectedCategory) {
         // Filter by category first
@@ -76,20 +78,82 @@ fun ProductGrid(
         categoryFiltered.filter { it.available }
     }
 
-    val resetKey = scrollResetKey ?: selectedCategory?.id
+    val resetKey = "${scrollResetKey ?: selectedCategory?.id ?: "all"}|${displayMode.preferenceValue}"
 
-    // 🔢 PAGINATION: State management (reset only on filter/search changes)
-    var displayedItemCount by remember(resetKey) { mutableStateOf(15) }
-    val gridState = rememberLazyGridState()
-
-    // 📜 SCROLL RESET: Scroll to top only on filter/search changes
-    LaunchedEffect(resetKey) {
-        gridState.scrollToItem(0)  // Always start at the top
-    }
+    // 🔢 PAGINATION: reset on filter/search/layout changes
+    var displayedItemCount by remember(resetKey) { mutableStateOf(PAGE_SIZE) }
 
     // 🔢 PAGINATION: Only show first N products
     val displayedProducts = remember(availableProducts, displayedItemCount) {
         availableProducts.take(displayedItemCount)
+    }
+
+    if (displayMode == ProductDisplayMode.LIST) {
+        val listState = rememberLazyListState()
+
+        LaunchedEffect(resetKey) {
+            listState.scrollToItem(0)
+        }
+
+        LaunchedEffect(listState, availableProducts) {
+            snapshotFlow { listState.layoutInfo }
+                .collect { layoutInfo ->
+                    val totalItems = layoutInfo.totalItemsCount
+                    val lastVisibleItem = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                    if (totalItems > 0 &&
+                        lastVisibleItem >= totalItems - PAGINATION_THRESHOLD &&
+                        displayedProducts.size < availableProducts.size) {
+                        displayedItemCount = minOf(displayedItemCount + PAGE_SIZE, availableProducts.size)
+                    }
+                }
+        }
+
+        LazyColumn(
+            state = listState,
+            modifier = modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 12.dp,
+                end = 12.dp,
+                top = 8.dp,
+                bottom = 80.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            if (headerContent != null) {
+                item(
+                    key = "catalog_header",
+                    contentType = "catalog_header"
+                ) {
+                    headerContent()
+                }
+            }
+
+            items(
+                items = displayedProducts,
+                key = { it.id },
+                contentType = { it.categoryId }
+            ) { product ->
+                ProductListItem(
+                    product = product,
+                    onClick = { onProductClick(product) }
+                )
+            }
+
+            if (displayedProducts.size < availableProducts.size) {
+                item {
+                    LoadingFooter()
+                }
+            }
+        }
+        return
+    }
+
+    val columns = if (displayMode == ProductDisplayMode.GRID_2) 2 else 3
+    val gridState = rememberLazyGridState()
+
+    // 📜 SCROLL RESET: Scroll to top only on filter/search/layout changes
+    LaunchedEffect(resetKey) {
+        gridState.scrollToItem(0)
     }
 
     // 🔄 LAZY LOADING: Load more when scrolling near end
@@ -99,32 +163,41 @@ fun ProductGrid(
                 val totalItems = layoutInfo.totalItemsCount
                 val lastVisibleItem = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
 
-                // Load more when within 3 items of the end (less aggressive)
                 if (totalItems > 0 &&
-                    lastVisibleItem >= totalItems - 3 &&
+                    lastVisibleItem >= totalItems - PAGINATION_THRESHOLD &&
                     displayedProducts.size < availableProducts.size) {
-                    displayedItemCount = minOf(displayedItemCount + 15, availableProducts.size)
+                    displayedItemCount = minOf(displayedItemCount + PAGE_SIZE, availableProducts.size)
                 }
             }
     }
 
     LazyVerticalGrid(
-        columns = GridCells.Fixed(3),  // Portrait: 3 columns (larger touch targets, fewer products)
+        columns = GridCells.Fixed(columns),
         state = gridState,
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(
-            start = 8.dp,
-            end = 8.dp,
-            top = 4.dp,
-            bottom = 80.dp  // Space for collapsed top panel + margin
+            start = 12.dp,
+            end = 12.dp,
+            top = 8.dp,
+            bottom = 80.dp
         ),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),  // Slightly wider spacing for 3 columns
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        items(
+        if (headerContent != null) {
+            item(
+                span = { GridItemSpan(columns) },
+                key = "catalog_header",
+                contentType = "catalog_header"
+            ) {
+                headerContent()
+            }
+        }
+
+        gridItems(
             items = displayedProducts,
             key = { it.id },
-            contentType = { it.categoryId }  // ⚡ Reuse slots for products in same category
+            contentType = { it.categoryId }
         ) { product ->
             ProductCard(
                 product = product,
@@ -132,19 +205,23 @@ fun ProductGrid(
             )
         }
 
-        // ⏳ LOADING INDICATOR: Show when more products are available
         if (displayedProducts.size < availableProducts.size) {
-            item(span = { GridItemSpan(3) }) {  // Span all 3 columns
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator()
-                }
+            item(span = { GridItemSpan(columns) }) {
+                LoadingFooter()
             }
         }
+    }
+}
+
+@Composable
+private fun LoadingFooter() {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        CircularProgressIndicator()
     }
 }
 
@@ -159,6 +236,7 @@ private fun ProductGridAllPreview() {
         ProductGrid(
             products = MockProducts.allProducts,
             selectedCategory = null,  // Show all
+            displayMode = ProductDisplayMode.GRID_3,
             onProductClick = {}
         )
     }
@@ -171,6 +249,7 @@ private fun ProductGridBebidasPreview() {
         ProductGrid(
             products = MockProducts.allProducts,
             selectedCategory = MockProducts.categories[0],  // Bebidas
+            displayMode = ProductDisplayMode.GRID_2,
             onProductClick = {}
         )
     }
@@ -183,6 +262,7 @@ private fun ProductGridComidasPreview() {
         ProductGrid(
             products = MockProducts.allProducts,
             selectedCategory = MockProducts.categories[1],  // Comidas
+            displayMode = ProductDisplayMode.LIST,
             onProductClick = {}
         )
     }
@@ -195,6 +275,7 @@ private fun ProductGridPostresPreview() {
         ProductGrid(
             products = MockProducts.allProducts,
             selectedCategory = MockProducts.categories[2],  // Postres
+            displayMode = ProductDisplayMode.GRID_3,
             onProductClick = {}
         )
     }
@@ -207,6 +288,7 @@ private fun ProductGridEmptyPreview() {
         ProductGrid(
             products = emptyList(),
             selectedCategory = null,
+            displayMode = ProductDisplayMode.GRID_3,
             onProductClick = {}
         )
     }

@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.ordering.presentation.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,7 +10,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,53 +22,32 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.ordering.domain.MockProducts
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import java.math.BigDecimal
 
-// ⚡ PERFORMANCE: Reusable shape constants (avoid allocations on each recomposition)
+private val CardShape = RoundedCornerShape(12.dp)
 private val InventoryBadgeShape = RoundedCornerShape(4.dp)
-private val CategoryBorderShape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp)
-
-// Category border width (subtle, Toast pattern)
-private val CategoryBorderWidth = 3.dp
+private val CategoryAccentShape = RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp)
+private val CategoryAccentWidth = 4.dp
 
 /**
- * Product card for menu grid (Square POS style)
+ * Product card for grid display.
  *
- * ⚡ PERFORMANCE OPTIMIZATIONS (1GB RAM devices):
- * - Reusable CardElevation and Shape constants (avoid allocations)
- * - Inventory colors computed ONCE per badge (not 6 times)
- * - Simplified layout hierarchy (minimal nesting)
- * - Direct TextStyle properties (no style override)
- * - remember() for expensive calculations
- *
- * Design:
- * - Rectangular aspect ratio (1.7:1) - wider than tall (Square POS style)
- * - 3 columns in portrait mode (Square POS layout)
- * - Tappable → Opens quantity selector
- * - Large, readable text (14sp) - Square pattern
- * - Left-aligned text - easier to scan
- *
- * Space efficiency:
- * - No price displayed (cleaner UI)
- * - No images (faster loading, minimal data usage)
+ * Visual strategy:
+ * - Neutral card background for calmer UI
+ * - Subtle category accent strip (instead of full-card color fill)
+ * - Always show price for faster decision/tap flow
  *
  * @param product Product to display
  * @param onClick Callback when card is tapped
  * @param modifier Modifier for customization
- *
- * @see com.jaac.avoqado_tpv.features.ordering.domain.Product
- * @see com.jaac.avoqado_tpv.features.ordering.domain.MockProducts
  */
 @Composable
 fun ProductCard(
@@ -75,106 +55,222 @@ fun ProductCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // ⚡ OPTIMIZATION: Compute inventory badge colors ONCE (not 6 times in when expressions)
-    val colorScheme = MaterialTheme.colorScheme
-    val showInventoryBadge = product.trackInventory && product.availableQuantity != null
-    val inventoryColors = if (showInventoryBadge) {
-        remember(product.availableQuantity, colorScheme) {
-            val quantity = product.availableQuantity!!
-            when {
-                quantity == 0 -> InventoryColors(
-                    backgroundColor = colorScheme.error,
-                    textColor = colorScheme.onError
-                )
-                quantity <= 5 -> InventoryColors(
-                    backgroundColor = colorScheme.errorContainer,
-                    textColor = colorScheme.onErrorContainer
-                )
-                else -> InventoryColors(
-                    backgroundColor = colorScheme.primaryContainer,
-                    textColor = colorScheme.onPrimaryContainer
-                )
-            }
-        }
-    } else null
+    val categoryColor = rememberCategoryColor(product)
+    val inventoryColors = rememberInventoryColors(product)
 
-    // 🎨 CATEGORY COLOR: Parse hex color for card background
-    val categoryColor = remember(product.effectiveCategoryColor) {
-        try {
-            Color(android.graphics.Color.parseColor(product.effectiveCategoryColor))
-        } catch (e: Exception) {
-            Color.Gray  // Fallback if parsing fails
-        }
-    }
-
-    // 🎨 Calculate contrasting text color (white or black based on luminance)
-    val textColor = remember(categoryColor) {
-        val luminance = (0.299 * categoryColor.red + 0.587 * categoryColor.green + 0.114 * categoryColor.blue)
-        if (luminance > 0.5) Color.Black else Color.White
-    }
-
-    // ✅ Box padre permite que el badge sobresalga del Card
-    Box(modifier = modifier) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1.7f),  // Rectangular - wider than tall (Square POS style)
-            onClick = onClick,
-            colors = CardDefaults.cardColors(
-                containerColor = categoryColor  // 🎨 Full card background with category color
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .aspectRatio(1.45f)
+            .border(
+                width = 0.5.dp,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                shape = CardShape
             ),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-        ) {
-            // Product content (centered, full background color)
+        onClick = onClick,
+        shape = CardShape,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(CategoryAccentWidth)
+                    .background(
+                        color = categoryColor,
+                        shape = CategoryAccentShape
+                    )
+            )
+
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(8.dp),
-                horizontalAlignment = Alignment.Start,
-                verticalArrangement = Arrangement.Center
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // ⚡ OPTIMIZATION: Direct TextStyle properties (no style override)
                 Text(
                     text = product.name,
-                    fontSize = 14.sp,
+                    style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
-                    lineHeight = 16.sp,
-                    color = textColor,  // 🎨 Contrasting text color
-                    textAlign = TextAlign.Start,
                     maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.fillMaxWidth()
+                    overflow = TextOverflow.Ellipsis
                 )
-            }
-        }
 
-        // ✅ Badge FUERA del Card (no se corta)
-        // Inventory badge (floating outside card bounds - top-right)
-        // ⚡ OPTIMIZATION: Only render if needed, colors computed once
-        if (inventoryColors != null) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .offset(x = 4.dp, y = (-4).dp)  // ✅ Float outside card (right, up)
-                    .background(
-                        color = inventoryColors.backgroundColor,
-                        shape = InventoryBadgeShape  // ⚡ Reusable constant
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = product.formattedPrice,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
                     )
-                    .padding(horizontal = 4.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    text = product.availableQuantity.toString(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = inventoryColors.textColor,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 8.sp
-                )
+
+                    if (inventoryColors != null) {
+                        InventoryBadge(
+                            quantity = product.availableQuantity,
+                            colors = inventoryColors
+                        )
+                    }
+                }
             }
         }
     }
 }
 
-// ⚡ PERFORMANCE: Data class for inventory colors (computed once, cached by remember)
+/**
+ * Product row for list display.
+ *
+ * Shows name + SKU + price with larger tap target and stock badge.
+ */
+@Composable
+fun ProductListItem(
+    product: Product,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val categoryColor = rememberCategoryColor(product)
+    val inventoryColors = rememberInventoryColors(product)
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .border(
+                width = 0.5.dp,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                shape = CardShape
+            ),
+        onClick = onClick,
+        shape = CardShape,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 64.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(CategoryAccentWidth)
+                    .background(
+                        color = categoryColor,
+                        shape = CategoryAccentShape
+                    )
+            )
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = product.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = if (product.sku.isNotBlank()) product.sku else product.categoryName,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Column(
+                modifier = Modifier.padding(start = 8.dp, end = 14.dp),
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = product.formattedPrice,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                if (inventoryColors != null) {
+                    InventoryBadge(
+                        quantity = product.availableQuantity,
+                        colors = inventoryColors
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun rememberCategoryColor(product: Product): Color {
+    return remember(product.effectiveCategoryColor) {
+        try {
+            Color(android.graphics.Color.parseColor(product.effectiveCategoryColor))
+        } catch (_: Exception) {
+            Color.Gray
+        }
+    }
+}
+
+@Composable
+private fun rememberInventoryColors(product: Product): InventoryColors? {
+    val colorScheme = MaterialTheme.colorScheme
+    val showInventoryBadge = product.trackInventory && product.availableQuantity != null
+    if (!showInventoryBadge) return null
+
+    return remember(product.availableQuantity, colorScheme) {
+        val quantity = product.availableQuantity ?: 0
+        when {
+            quantity == 0 -> InventoryColors(
+                backgroundColor = colorScheme.error,
+                textColor = colorScheme.onError
+            )
+            quantity <= 5 -> InventoryColors(
+                backgroundColor = colorScheme.errorContainer,
+                textColor = colorScheme.onErrorContainer
+            )
+            else -> InventoryColors(
+                backgroundColor = colorScheme.primaryContainer,
+                textColor = colorScheme.onPrimaryContainer
+            )
+        }
+    }
+}
+
+@Composable
+private fun InventoryBadge(
+    quantity: Int?,
+    colors: InventoryColors,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .background(
+                color = colors.backgroundColor,
+                shape = InventoryBadgeShape
+            )
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text = quantity.toString(),
+            style = MaterialTheme.typography.labelSmall,
+            color = colors.textColor,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
 private data class InventoryColors(
     val backgroundColor: Color,
     val textColor: Color
@@ -291,5 +387,17 @@ private fun ProductCardGridPreview() {
                 modifier = Modifier.weight(1f)
             )
         }
+    }
+}
+
+@Preview(name = "List Item", showBackground = true, widthDp = 420)
+@Composable
+private fun ProductListItemPreview() {
+    AvoqadoTheme {
+        ProductListItem(
+            product = MockProducts.allProducts.first(),
+            onClick = {},
+            modifier = Modifier.padding(16.dp)
+        )
     }
 }

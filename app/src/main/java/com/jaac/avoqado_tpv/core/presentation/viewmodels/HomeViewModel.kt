@@ -34,6 +34,7 @@ import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
 import com.jaac.avoqado_tpv.core.util.UpdateCheckManager
+import com.jaac.avoqado_tpv.features.ordering.domain.OrderSyncCoordinator
 import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleSalesGoal
 import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalPeriod
 import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalSource
@@ -98,7 +99,9 @@ class HomeViewModel @Inject constructor(
     private val paymentQueueRepository: PaymentQueueRepository,
     private val paymentQueueStateManager: PaymentQueueStateManager,
     // 📊 Observability - Production error tracking (Crashlytics + Remote + File)
-    private val observabilityManager: com.jaac.avoqado_tpv.core.observability.ObservabilityManager
+    private val observabilityManager: com.jaac.avoqado_tpv.core.observability.ObservabilityManager,
+    // 🔄 Order Sync - Cleanup on logout to prevent memory leaks (PAX A80 1GB)
+    private val orderSyncCoordinator: OrderSyncCoordinator
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1049,6 +1052,9 @@ class HomeViewModel @Inject constructor(
      */
     fun logout() {
         Timber.d("🚪 User initiated logout")
+
+        // 🧹 Cancel pending syncs and release maps before disconnecting
+        orderSyncCoordinator.cleanup()
 
         // 🔌 Disconnect Socket.IO
         socketManager.disconnect()

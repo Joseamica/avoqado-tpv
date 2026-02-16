@@ -607,33 +607,49 @@ private fun WelcomeScreenContent(
             )
         }
 
-        // Always visible buttons
-        allButtons.addAll(listOf(
-            ActionButton(
-                icon = Icons.Default.BarChart,
-                label = "Reportes",
-                enabled = true,
-                onClick = onNavigateToReports
-            ),
+        // Conditionally visible buttons (controlled by tpvSettings)
+        if (tpvSettings.showReports) {
+            allButtons.add(
+                ActionButton(
+                    icon = Icons.Default.BarChart,
+                    label = "Reportes",
+                    enabled = true,
+                    onClick = onNavigateToReports
+                )
+            )
+        }
+
+        // Turnos — always visible (controlled separately by isShiftSystemEnabled)
+        allButtons.add(
             ActionButton(
                 icon = Icons.Default.Schedule,
                 label = "Turnos",
                 enabled = true,
                 onClick = onNavigateToShifts
-            ),
-            ActionButton(
-                icon = Icons.Default.Receipt,
-                label = "Pagos",
-                enabled = true,  // ⭐ ENABLED: Payment history is now implemented
-                onClick = onNavigateToPayments  // ⭐ Navigate to Payments screen
-            ),
-            ActionButton(
-                icon = Icons.AutoMirrored.Filled.Help,
-                label = "Soporte",
-                enabled = true,
-                onClick = onNavigateToSupport
             )
-        ))
+        )
+
+        if (tpvSettings.showPayments) {
+            allButtons.add(
+                ActionButton(
+                    icon = Icons.Default.Receipt,
+                    label = "Pagos",
+                    enabled = true,
+                    onClick = onNavigateToPayments
+                )
+            )
+        }
+
+        if (tpvSettings.showSupport) {
+            allButtons.add(
+                ActionButton(
+                    icon = Icons.AutoMirrored.Filled.Help,
+                    label = "Soporte",
+                    enabled = true,
+                    onClick = onNavigateToSupport
+                )
+            )
+        }
 
         // 🔐 AUTHORIZATION-BASED FILTERING (normal mode only)
         // Add SuperAdmin button ONLY if user has SUPERADMIN role
@@ -719,7 +735,7 @@ private fun WelcomeScreenContent(
                         val effectiveGoals = salesGoals.ifEmpty {
                             listOfNotNull(serializedInventoryConfig?.salesGoal)
                         }
-                        if (effectiveGoals.isNotEmpty()) {
+                        if (tpvSettings.showGoals && effectiveGoals.isNotEmpty()) {
                             SalesGoalsPager(
                                 salesGoals = effectiveGoals,
                                 modifier = Modifier

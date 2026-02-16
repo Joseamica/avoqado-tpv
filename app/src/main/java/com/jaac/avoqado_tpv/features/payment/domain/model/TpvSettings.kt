@@ -63,6 +63,10 @@ data class TpvSettings(
     // Home screen button visibility (controlled from dashboard)
     val showQuickPayment: Boolean = true,
     val showOrderManagement: Boolean = true,
+    val showReports: Boolean = true,
+    val showPayments: Boolean = true,
+    val showSupport: Boolean = true,
+    val showGoals: Boolean = true,
     // Crypto payment option (B4Bit integration)
     val showCryptoOption: Boolean = false
 ) {

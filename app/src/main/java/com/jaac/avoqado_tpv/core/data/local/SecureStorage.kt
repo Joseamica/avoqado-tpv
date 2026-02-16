@@ -133,6 +133,10 @@ class SecureStorage @Inject constructor(
         // Home screen button visibility keys
         private const val KEY_TPV_SHOW_QUICK_PAYMENT = "tpv_show_quick_payment"
         private const val KEY_TPV_SHOW_ORDER_MANAGEMENT = "tpv_show_order_management"
+        private const val KEY_TPV_SHOW_REPORTS = "tpv_show_reports"
+        private const val KEY_TPV_SHOW_PAYMENTS = "tpv_show_payments"
+        private const val KEY_TPV_SHOW_SUPPORT = "tpv_show_support"
+        private const val KEY_TPV_SHOW_GOALS = "tpv_show_goals"
 
         // Crypto payment option (B4Bit integration)
         private const val KEY_TPV_SHOW_CRYPTO_OPTION = "tpv_show_crypto_option"
@@ -1103,6 +1107,10 @@ class SecureStorage @Inject constructor(
             // Home screen button visibility
             putBoolean(KEY_TPV_SHOW_QUICK_PAYMENT, settings.showQuickPayment)
             putBoolean(KEY_TPV_SHOW_ORDER_MANAGEMENT, settings.showOrderManagement)
+            putBoolean(KEY_TPV_SHOW_REPORTS, settings.showReports)
+            putBoolean(KEY_TPV_SHOW_PAYMENTS, settings.showPayments)
+            putBoolean(KEY_TPV_SHOW_SUPPORT, settings.showSupport)
+            putBoolean(KEY_TPV_SHOW_GOALS, settings.showGoals)
             // Crypto payment option
             putBoolean(KEY_TPV_SHOW_CRYPTO_OPTION, settings.showCryptoOption)
         }.apply()
@@ -1155,6 +1163,10 @@ class SecureStorage @Inject constructor(
             // Home screen button visibility (default: enabled)
             showQuickPayment = encryptedPrefs.getBoolean(KEY_TPV_SHOW_QUICK_PAYMENT, true),
             showOrderManagement = encryptedPrefs.getBoolean(KEY_TPV_SHOW_ORDER_MANAGEMENT, true),
+            showReports = encryptedPrefs.getBoolean(KEY_TPV_SHOW_REPORTS, true),
+            showPayments = encryptedPrefs.getBoolean(KEY_TPV_SHOW_PAYMENTS, true),
+            showSupport = encryptedPrefs.getBoolean(KEY_TPV_SHOW_SUPPORT, true),
+            showGoals = encryptedPrefs.getBoolean(KEY_TPV_SHOW_GOALS, true),
             // Crypto payment option (default: disabled)
             showCryptoOption = encryptedPrefs.getBoolean(KEY_TPV_SHOW_CRYPTO_OPTION, false)
         )
@@ -1188,6 +1200,10 @@ class SecureStorage @Inject constructor(
             // Home screen button visibility
             remove(KEY_TPV_SHOW_QUICK_PAYMENT)
             remove(KEY_TPV_SHOW_ORDER_MANAGEMENT)
+            remove(KEY_TPV_SHOW_REPORTS)
+            remove(KEY_TPV_SHOW_PAYMENTS)
+            remove(KEY_TPV_SHOW_SUPPORT)
+            remove(KEY_TPV_SHOW_GOALS)
             // Crypto payment option
             remove(KEY_TPV_SHOW_CRYPTO_OPTION)
         }.apply()

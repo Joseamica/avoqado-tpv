@@ -8,9 +8,6 @@ import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.authentication.domain.models.AuthResponse
-import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
-import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntryStatus
-import com.jaac.avoqado_tpv.features.timeclock.domain.repository.TimeEntryRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -31,9 +28,7 @@ class LoginViewModel @Inject constructor(
     private val authRepository: AuthRepository,
     private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
     private val socketManager: SocketManager,
-    private val deviceInfoManager: DeviceInfoManager,
-    private val tpvSettingsRepository: TpvSettingsRepository,
-    private val timeEntryRepository: TimeEntryRepository
+    private val deviceInfoManager: DeviceInfoManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<LoginState>(LoginState.Idle)
@@ -69,26 +64,15 @@ class LoginViewModel @Inject constructor(
                     // Save venue status for mid-session checks
                     secureStorage.saveVenueStatus(result.data.venue.status)
 
+                    // 🔐 Save PIN for WelcomeScreen → Timeclock navigation
+                    secureStorage.saveStaffPin(pin)
+
                     // 🔌 Connect Socket.IO with JWT token
                     connectSocketIO(result.data)
 
-                    // 🔐 Master TOTP sessions bypass ALL venue rules (clock-in, checkout, etc.)
-                    val isMasterSession = result.data.isMasterLogin
-                    if (isMasterSession) {
-                        Timber.i("🔐 Master session detected - bypassing all venue restrictions")
-                        LoginState.Success(result.data)
-                    } else {
-                        // 🕐 Check if clock-in is required to access the system
-                        val clockInRequired = tpvSettingsRepository.getCurrentSettings().requireClockInToLogin
-                        if (clockInRequired) {
-                            Timber.d("🕐 Clock-in required to login - checking status...")
-                            checkClockInStatus(result.data, pin)
-                        } else {
-                            // NOTE: Blumon SDK init moved to HomeViewModel
-                            // (LoginViewModel gets destroyed on navigation, cancelling coroutines)
-                            LoginState.Success(result.data)
-                        }
-                    }
+                    // NOTE: Clock-in enforcement is handled by WelcomeScreen (attendance gating on action buttons)
+                    // LoginScreen always allows access — WelcomeScreen disables operational buttons if not clocked in
+                    LoginState.Success(result.data)
                 }
                 is Result.Error -> {
                     // ✅ Use userMessage (user-friendly) instead of message (technical)
@@ -147,67 +131,6 @@ class LoginViewModel @Inject constructor(
      */
     fun resetState() {
         _state.value = LoginState.Idle
-    }
-
-    /**
-     * 🕐 Check if staff has an active clock-in before allowing access
-     *
-     * Called when TpvSettings.requireClockInToLogin is enabled.
-     * Checks the staff's time entry status and returns appropriate state.
-     *
-     * @param authResponse Authentication response with staff info
-     * @param pin Staff PIN (needed for navigation to timeclock if clock-in required)
-     * @return LoginState based on clock-in status
-     */
-    private suspend fun checkClockInStatus(authResponse: AuthResponse, pin: String): LoginState {
-        val staffId = authResponse.staff.id
-        val staffName = authResponse.staff.displayName
-        val venueId = authResponse.venueId
-
-        return try {
-            val result = timeEntryRepository.findActiveEntryForStaff(venueId, staffId)
-
-            when {
-                result.isSuccess -> {
-                    val activeEntry = result.getOrNull()
-
-                    when {
-                        activeEntry == null -> {
-                            // No active clock-in
-                            Timber.w("🕐 Staff $staffName has no active clock-in")
-                            LoginState.RequiresClockIn(staffName, staffId, pin)
-                        }
-                        activeEntry.status == TimeEntryStatus.ON_BREAK -> {
-                            // Currently on break - LOGIN DENIED
-                            Timber.w("🕐 Staff $staffName is on break - login denied")
-                            LoginState.Error(
-                                "No puedes acceder al sistema mientras estás en descanso.\n\n" +
-                                    "Termina tu descanso en el Reloj Checador primero."
-                            )
-                        }
-                        activeEntry.status == TimeEntryStatus.CLOCKED_IN -> {
-                            // Actively working - allow login
-                            Timber.i("🕐 Staff $staffName is clocked in, allowing access")
-                            LoginState.Success(authResponse)
-                        }
-                        else -> {
-                            // Any other status (completed, etc.) - no active clock-in
-                            Timber.w("🕐 Staff $staffName has entry with status: ${activeEntry.status}")
-                            LoginState.RequiresClockIn(staffName, staffId, pin)
-                        }
-                    }
-                }
-                else -> {
-                    // Error checking clock-in status - allow login but log warning
-                    Timber.w("⚠️ Failed to check clock-in status, allowing access: ${result.exceptionOrNull()?.message}")
-                    LoginState.Success(authResponse)
-                }
-            }
-        } catch (e: Exception) {
-            // Network error - allow login but log warning
-            Timber.w(e, "⚠️ Error checking clock-in status, allowing access")
-            LoginState.Success(authResponse)
-        }
     }
 
     /**
@@ -301,47 +224,4 @@ sealed class LoginState {
      */
     data class VenueNotOperational(val message: String) : LoginState()
 
-    /**
-     * Clock-In Required State
-     *
-     * This state occurs when:
-     * - TpvSettings.requireClockInToLogin is enabled
-     * - Staff authenticated successfully but has no active clock-in
-     *
-     * UI should:
-     * - Show message explaining clock-in is required before accessing the system
-     * - Provide button to go to Timeclock screen
-     * - NOT allow access to Home until clocked in
-     *
-     * @param staffName Staff member's name for display
-     * @param staffId Staff ID (needed to navigate to timeclock)
-     * @param pin Staff PIN (needed to navigate to timeclock)
-     */
-    data class RequiresClockIn(
-        val staffName: String,
-        val staffId: String,
-        val pin: String
-    ) : LoginState()
-
-    /**
-     * On Break State
-     *
-     * This state occurs when:
-     * - TpvSettings.requireClockInToLogin is enabled
-     * - Staff authenticated successfully but is currently on break
-     *
-     * UI should:
-     * - Show message explaining they must end their break to access the system
-     * - Provide button to go to Timeclock screen to end break
-     * - NOT allow access to Home until break is ended
-     *
-     * @param staffName Staff member's name for display
-     * @param staffId Staff ID (needed to navigate to timeclock)
-     * @param pin Staff PIN (needed to navigate to timeclock)
-     */
-    data class OnBreak(
-        val staffName: String,
-        val staffId: String,
-        val pin: String
-    ) : LoginState()
 }

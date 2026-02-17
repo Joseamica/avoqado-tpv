@@ -31,8 +31,9 @@ sealed class NavRoute(val route: String) {
      * @param venueId Venue identifier
      * @param pin Staff PIN for verification
      */
-    data object Timeclock : NavRoute("timeclock/{venueId}/{pin}") {
-        fun createRoute(venueId: String, pin: String) = "timeclock/$venueId/$pin"
+    data object Timeclock : NavRoute("timeclock/{venueId}/{pin}?fromHome={fromHome}&autoAction={autoAction}") {
+        fun createRoute(venueId: String, pin: String, fromHome: Boolean = false, autoAction: String = "") =
+            "timeclock/$venueId/$pin?fromHome=$fromHome&autoAction=$autoAction"
     }
 
     /**
@@ -192,6 +193,12 @@ sealed class NavRoute(val route: String) {
         fun createRoute(paymentId: String) = "refund_confirmation/$paymentId"
     }
 
+    /**
+     * Messages screen - Full message inbox with filters and pagination
+     * Shows all messages delivered to this terminal with filter chips (All, Unread, Read)
+     */
+    data object Messages : NavRoute("messages")
+
     // ==================== KIOSK MODE ROUTES ====================
 
     /**
@@ -227,6 +234,24 @@ sealed class NavRoute(val route: String) {
      */
     data object KioskSuccess : NavRoute("kiosk/success/{orderNumber}") {
         fun createRoute(orderNumber: String) = "kiosk/success/$orderNumber"
+    }
+
+    // ==================== TRAINING / LMS ROUTES ====================
+
+    /**
+     * Training list screen - Shows available training modules
+     * Card list with progress tracking and required badges
+     */
+    data object Trainings : NavRoute("trainings")
+
+    /**
+     * Training step viewer - Step-by-step training with media
+     * Navigates to quiz after last step if quiz exists
+     *
+     * @param trainingId Training module identifier
+     */
+    data object TrainingViewer : NavRoute("training_viewer/{trainingId}") {
+        fun createRoute(trainingId: String) = "training_viewer/$trainingId"
     }
 
     // ==================== SERIALIZED INVENTORY ROUTES ====================

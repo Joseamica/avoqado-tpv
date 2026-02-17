@@ -64,13 +64,18 @@ fun TpvMessageDialog(
         else -> MaterialTheme.avoqadoColors.statusSuccess
     }
 
+    // Already-handled messages are always dismissable regardless of requiresAck
+    val isAlreadyHandled = message.deliveryStatus == "ACKNOWLEDGED" ||
+        message.deliveryStatus == "DISMISSED"
+    val canDismiss = isAlreadyHandled || !message.requiresAck
+
     Dialog(
         onDismissRequest = {
-            if (!message.requiresAck) onDismiss()
+            if (canDismiss) onDismiss()
         },
         properties = DialogProperties(
-            dismissOnBackPress = !message.requiresAck,
-            dismissOnClickOutside = !message.requiresAck,
+            dismissOnBackPress = canDismiss,
+            dismissOnClickOutside = canDismiss,
             usePlatformDefaultWidth = false
         )
     ) {
@@ -98,6 +103,10 @@ fun TpvMessageDialog(
                 Column(
                     modifier = Modifier.padding(20.dp)
                 ) {
+                    // Already-handled messages from inbox history are read-only
+                    val isReadOnly = message.deliveryStatus == "ACKNOWLEDGED" ||
+                        message.deliveryStatus == "DISMISSED"
+
                     // Header: Type badge + Close button
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -140,8 +149,8 @@ fun TpvMessageDialog(
                             )
                         }
 
-                        // Close button (only if not requires ack)
-                        if (!message.requiresAck) {
+                        // Close button (shown if dismissable)
+                        if (canDismiss) {
                             IconButton(onClick = onDismiss) {
                                 Icon(
                                     Icons.Default.Close,
@@ -178,8 +187,8 @@ fun TpvMessageDialog(
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
                     )
 
-                    // Survey options (only for SURVEY type)
-                    if (message.type == "SURVEY" && !message.surveyOptions.isNullOrEmpty()) {
+                    // Survey options (only for SURVEY type, not in read-only mode)
+                    if (message.type == "SURVEY" && !message.surveyOptions.isNullOrEmpty() && !isReadOnly) {
                         Spacer(modifier = Modifier.height(16.dp))
 
                         Text(
@@ -231,52 +240,62 @@ fun TpvMessageDialog(
 
                     Spacer(modifier = Modifier.height(20.dp))
 
-                    // Action buttons
-                    when (message.type) {
-                        "SURVEY" -> {
-                            Button(
-                                onClick = onSubmitSurvey,
-                                enabled = selectedSurveyOptions.isNotEmpty() && !isSubmitting,
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Enviar respuesta")
-                            }
+                    if (isReadOnly) {
+                        OutlinedButton(
+                            onClick = onDismiss,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("Cerrar")
                         }
-
-                        "ACTION" -> {
-                            Button(
-                                onClick = onExecuteAction,
-                                enabled = !isSubmitting,
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Text(message.actionLabel ?: "Ejecutar")
-                            }
-                        }
-
-                        else -> {
-                            // ANNOUNCEMENT
-                            if (message.requiresAck) {
+                    } else {
+                        // Action buttons (interactive mode)
+                        when (message.type) {
+                            "SURVEY" -> {
                                 Button(
-                                    onClick = onAcknowledge,
-                                    enabled = !isSubmitting,
+                                    onClick = onSubmitSurvey,
+                                    enabled = selectedSurveyOptions.isNotEmpty() && !isSubmitting,
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(12.dp)
                                 ) {
                                     Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Entendido")
+                                    Text("Enviar respuesta")
                                 }
-                            } else {
-                                OutlinedButton(
-                                    onClick = onDismiss,
+                            }
+
+                            "ACTION" -> {
+                                Button(
+                                    onClick = onExecuteAction,
+                                    enabled = !isSubmitting,
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(12.dp)
                                 ) {
-                                    Text("Cerrar")
+                                    Text(message.actionLabel ?: "Ejecutar")
+                                }
+                            }
+
+                            else -> {
+                                // ANNOUNCEMENT
+                                if (message.requiresAck) {
+                                    Button(
+                                        onClick = onAcknowledge,
+                                        enabled = !isSubmitting,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Entendido")
+                                    }
+                                } else {
+                                    OutlinedButton(
+                                        onClick = onDismiss,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Text("Cerrar")
+                                    }
                                 }
                             }
                         }

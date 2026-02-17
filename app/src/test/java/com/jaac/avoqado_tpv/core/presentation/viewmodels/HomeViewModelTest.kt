@@ -74,6 +74,8 @@ class HomeViewModelTest {
     private lateinit var paymentQueueStateManager: com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
     private lateinit var observabilityManager: com.jaac.avoqado_tpv.core.observability.ObservabilityManager
     private lateinit var orderSyncCoordinator: OrderSyncCoordinator
+    private lateinit var timeEntryRepository: com.jaac.avoqado_tpv.features.timeclock.domain.repository.TimeEntryRepository
+    private lateinit var tpvSettingsRepository: com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 
     private val fakeSessionEvents = MutableSharedFlow<com.jaac.avoqado_tpv.core.session.SessionEvent>()
     private val fakeSocketEvents = MutableSharedFlow<com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent>()
@@ -109,6 +111,8 @@ class HomeViewModelTest {
         paymentQueueStateManager = com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager()
         observabilityManager = mockk(relaxed = true)
         orderSyncCoordinator = mockk(relaxed = true)
+        timeEntryRepository = mockk(relaxed = true)
+        tpvSettingsRepository = mockk(relaxed = true)
 
         every { sessionManager.sessionEvents } returns fakeSessionEvents
         every { socketManager.events } returns fakeSocketEvents
@@ -154,7 +158,9 @@ class HomeViewModelTest {
             paymentQueueRepository = paymentQueueRepository,
             paymentQueueStateManager = paymentQueueStateManager,
             observabilityManager = observabilityManager,
-            orderSyncCoordinator = orderSyncCoordinator
+            orderSyncCoordinator = orderSyncCoordinator,
+            timeEntryRepository = timeEntryRepository,
+            tpvSettingsRepository = tpvSettingsRepository
         )
     }
 

@@ -41,12 +41,18 @@ class TimeclockViewModel @Inject constructor(
 
     private val venueId: String = savedStateHandle.get<String>("venueId") ?: ""
     private val pin: String = savedStateHandle.get<String>("pin") ?: ""
+    private val autoAction: String = savedStateHandle.get<String>("autoAction") ?: ""
 
     private val _state = MutableStateFlow<TimeclockState>(TimeclockState.Loading)
     val state: StateFlow<TimeclockState> = _state.asStateFlow()
 
     private val _events = MutableSharedFlow<TimeclockEvent>()
     val events: SharedFlow<TimeclockEvent> = _events.asSharedFlow()
+
+    /** True while auto-action hasn't fired yet (screen shows overlay instead of PulseContent) */
+    private var autoActionTriggered = false
+    val hasAutoAction: Boolean get() = autoAction.isNotEmpty()
+    val isAutoActionPending: Boolean get() = hasAutoAction && !autoActionTriggered
 
     // Store staff info after verification
     private var currentStaffId: String? = null
@@ -150,6 +156,7 @@ class TimeclockViewModel @Inject constructor(
                         totalHoursToday = totalHours,
                         requireClockInToLogin = requireClockInToLogin
                     )
+                    maybeAutoTrigger(activeEntry)
                 },
                 onFailure = { error ->
                     // If no entries found, still show Ready state (not clocked in)
@@ -161,11 +168,48 @@ class TimeclockViewModel @Inject constructor(
                         totalHoursToday = BigDecimal.ZERO,
                         requireClockInToLogin = requireClockInToLogin
                     )
+                    maybeAutoTrigger(null)
                 }
             )
         } catch (e: Exception) {
             Timber.e(e, "❌ Error loading timeclock status")
             _state.value = TimeclockState.Error("Error cargando estado")
+        }
+    }
+
+    /**
+     * Auto-trigger clock-in or clock-out if autoAction is set.
+     * Only fires once — after error recovery the user sees PulseContent for manual retry.
+     */
+    private suspend fun maybeAutoTrigger(activeEntry: TimeEntry?) {
+        if (autoAction.isEmpty() || autoActionTriggered) return
+        autoActionTriggered = true
+
+        val status = activeEntry?.status
+
+        when (autoAction) {
+            "clockIn" -> {
+                if (status == null || status == TimeEntryStatus.CLOCKED_OUT) {
+                    Timber.d("⏱️ [AUTO] Auto-triggering clockIn")
+                    clockIn()
+                } else {
+                    Timber.d("⏱️ [AUTO] Already clocked in — skipping auto clockIn")
+                    _events.emit(TimeclockEvent.AutoActionSkipped)
+                }
+            }
+            "clockOut" -> {
+                if (status == TimeEntryStatus.CLOCKED_IN) {
+                    Timber.d("⏱️ [AUTO] Auto-triggering clockOut")
+                    clockOut()
+                } else {
+                    Timber.d("⏱️ [AUTO] Not clocked in — skipping auto clockOut")
+                    _events.emit(TimeclockEvent.AutoActionSkipped)
+                }
+            }
+            else -> {
+                Timber.w("⏱️ [AUTO] Unknown autoAction: $autoAction")
+                _events.emit(TimeclockEvent.AutoActionSkipped)
+            }
         }
     }
 

@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.core.presentation.screens
 
 import android.content.Context
 import android.content.Intent
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -27,8 +28,10 @@ import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material3.Button
@@ -36,6 +39,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -85,6 +90,10 @@ import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import com.jaac.avoqado_tpv.features.shift.presentation.CachedShiftInfo
 import com.jaac.avoqado_tpv.features.modules.domain.model.ModuleSalesGoal
+import com.jaac.avoqado_tpv.core.presentation.components.TimeclockStatusCard
+import com.jaac.avoqado_tpv.features.messaging.presentation.TpvMessageUiModel
+import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntry
+import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntryStatus
 import dagger.hilt.android.EntryPointAccessors
 import java.math.BigDecimal
 
@@ -121,10 +130,17 @@ fun WelcomeScreen(
     onNavigateToSuperAdmin: () -> Unit = {},
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Telecom: Vender flow (barcode → price → payment)
     onNavigateToInventoryRegister: () -> Unit = {},  // 📦 Telecom: Alta de productos flow
+    onNavigateToTimeclock: () -> Unit = {},  // ⏱ Navigate to TimeclockScreen from WelcomeScreen
+    onNavigateToTimeclockForClockOut: () -> Unit = {},  // ⏱ Navigate to TimeclockScreen for clock-out
+    onNavigateToMessages: () -> Unit = {},  // 📨 Navigate to Messages screen
+    onNavigateToTrainings: () -> Unit = {},  // 🎓 Navigate to Trainings screen
     onRefreshConnection: () -> Unit = {},
     onLogout: () -> Unit = {},
     isDarkMode: Boolean = false,
     onDarkModeToggle: () -> Unit = {},
+    messageHistory: List<TpvMessageUiModel> = emptyList(),
+    isLoadingMessageHistory: Boolean = false,
+    onMessageClick: (TpvMessageUiModel) -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
     shiftViewModel: com.jaac.avoqado_tpv.features.shift.presentation.ShiftViewModel = hiltViewModel()
 ) {
@@ -178,6 +194,11 @@ fun WelcomeScreen(
     // Sales goals from HomeViewModel (for progress bar display)
     val salesGoals by viewModel.salesGoals.collectAsStateWithLifecycle()
 
+    // ⏱ Attendance state from HomeViewModel (for timeclock card + button gating)
+    val currentTimeEntry by viewModel.currentTimeEntry.collectAsStateWithLifecycle()
+    val requireClockInToLogin by viewModel.requireClockInToLogin.collectAsStateWithLifecycle()
+    val isAttendanceLoading by viewModel.isAttendanceLoading.collectAsStateWithLifecycle()
+
     // Pull-to-refresh state (combined from both ViewModels)
     val homeIsRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val shiftIsRefreshing by shiftViewModel.isRefreshing.collectAsStateWithLifecycle()
@@ -208,7 +229,8 @@ fun WelcomeScreen(
         }
     }
 
-    // Refresh sales goals when WelcomeScreen resumes (e.g., after completing a payment).
+    // Refresh sales goals + attendance when WelcomeScreen resumes
+    // (e.g., after completing a payment or returning from TimeclockScreen).
     // Skip first resume since HomeViewModel.init{} already fetches on startup.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -219,6 +241,7 @@ fun WelcomeScreen(
                     isFirstResume = false
                 } else {
                     viewModel.refreshSalesGoal()
+                    viewModel.refreshAttendance()
                 }
             }
         }
@@ -254,6 +277,16 @@ fun WelcomeScreen(
         onNavigateToSuperAdmin = onNavigateToSuperAdmin,
         onNavigateToSerializedSale = onNavigateToSerializedSale,  // 📱 Telecom: Vender
         onNavigateToInventoryRegister = onNavigateToInventoryRegister,  // 📦 Telecom: Alta
+        currentTimeEntry = currentTimeEntry,
+        requireClockInToLogin = requireClockInToLogin,
+        isAttendanceLoading = isAttendanceLoading,
+        onNavigateToTimeclock = onNavigateToTimeclock,
+        onNavigateToTimeclockForClockOut = onNavigateToTimeclockForClockOut,
+        onNavigateToMessages = onNavigateToMessages,
+        onNavigateToTrainings = onNavigateToTrainings,
+        messageHistory = messageHistory,
+        isLoadingMessageHistory = isLoadingMessageHistory,
+        onMessageClick = onMessageClick,
         onLogout = {
             viewModel.logout()
             onLogout()
@@ -457,6 +490,16 @@ private fun WelcomeScreenContent(
     onNavigateToSuperAdmin: () -> Unit,
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Telecom: Vender flow
     onNavigateToInventoryRegister: () -> Unit = {},  // 📦 Telecom: Alta de productos
+    currentTimeEntry: TimeEntry? = null,  // ⏱ Current attendance entry
+    requireClockInToLogin: Boolean = false,  // ⏱ Whether clock-in is required
+    isAttendanceLoading: Boolean = false,  // ⏱ Loading state for attendance
+    onNavigateToTimeclock: () -> Unit = {},  // ⏱ Navigate to TimeclockScreen for clock-in
+    onNavigateToTimeclockForClockOut: () -> Unit = {},  // ⏱ Navigate for clock-out
+    onNavigateToMessages: () -> Unit = {},  // 📨 Navigate to Messages screen
+    onNavigateToTrainings: () -> Unit = {},  // 🎓 Navigate to Trainings screen
+    messageHistory: List<TpvMessageUiModel> = emptyList(),  // 📨 Message inbox history
+    isLoadingMessageHistory: Boolean = false,  // 📨 Loading state for history
+    onMessageClick: (TpvMessageUiModel) -> Unit = {},  // 📨 Open message dialog
     onLogout: () -> Unit,
     isDarkMode: Boolean = false,
     onDarkModeToggle: () -> Unit = {},
@@ -529,6 +572,10 @@ private fun WelcomeScreenContent(
     val hasOpenShift = currentShift?.status == ShiftStatus.OPEN
     val canOperate = hasOpenShift || !isShiftSystemEnabled // Unlock if disabled
 
+    // ⏱ Attendance gating: require clock-in before operational buttons
+    val isClockedIn = currentTimeEntry?.status == TimeEntryStatus.CLOCKED_IN
+    val canWork = isClockedIn || !requireClockInToLogin
+
     // 📱 Get module labels for simplified mode
     val moduleLabels = serializedInventoryConfig?.labels
 
@@ -545,7 +592,8 @@ private fun WelcomeScreenContent(
                 ActionButton(
                     icon = Icons.Default.QrCodeScanner,
                     label = "Vender",
-                    enabled = true,
+                    enabled = canWork,
+                    badge = if (!canWork) "Registra tu entrada" else null,
                     onClick = onNavigateToSerializedSale
                 )
             )
@@ -557,11 +605,36 @@ private fun WelcomeScreenContent(
                     ActionButton(
                         icon = Icons.Default.Inventory2,
                         label = moduleLabels?.register ?: "Alta de Productos",
-                        enabled = true,
+                        enabled = canWork,
+                        badge = if (!canWork) "Registra tu entrada" else null,
                         onClick = onNavigateToInventoryRegister
                     )
                 )
             }
+
+            // 📨 Mensajes — navigates to full Messages screen
+            val pendingMessageCount = messageHistory.count {
+                it.deliveryStatus == "PENDING" || it.deliveryStatus == "DELIVERED"
+            }
+            add(
+                ActionButton(
+                    icon = Icons.Default.Email,
+                    label = "Mensajes",
+                    enabled = true,
+                    badge = if (pendingMessageCount > 0) "$pendingMessageCount" else null,
+                    onClick = onNavigateToMessages
+                )
+            )
+
+            // 🎓 Entrenamientos — step-by-step training modules
+            add(
+                ActionButton(
+                    icon = Icons.Default.School,
+                    label = "Entrenamientos",
+                    enabled = true,
+                    onClick = onNavigateToTrainings
+                )
+            )
 
             // Support always available
             add(
@@ -583,25 +656,37 @@ private fun WelcomeScreenContent(
 
         // ✅ "Pago rápido" - controlled by tpvSettings.showQuickPayment
         if (tpvSettings.showQuickPayment) {
+            val quickPayEnabled = canOperate && canWork
+            val quickPayBadge = when {
+                !canWork -> "Registra tu entrada"
+                !canOperate -> "Abre el turno primero"
+                else -> null
+            }
             allButtons.add(
                 ActionButton(
                     icon = Icons.Default.CreditCard,
                     label = "Pago rápido",
-                    enabled = canOperate,  // ⭐ Only enabled when shift is open (or disabled)
-                    badge = if (!canOperate) "Abre el turno primero" else null,  // ⭐ Show hint when disabled
-                    onClick = { showAmountBottomSheet = true }  // ✅ Open modal (first-time flow)
+                    enabled = quickPayEnabled,
+                    badge = quickPayBadge,
+                    onClick = { showAmountBottomSheet = true }
                 )
             )
         }
 
         // ✅ "Órdenes" - controlled by tpvSettings.showOrderManagement
         if (tpvSettings.showOrderManagement) {
+            val ordersEnabled = canOperate && canWork
+            val ordersBadge = when {
+                !canWork -> "Registra tu entrada"
+                !canOperate -> "Abre el turno primero"
+                else -> null
+            }
             allButtons.add(
                 ActionButton(
                     icon = Icons.Default.Restaurant,
                     label = "Órdenes",
-                    enabled = canOperate,  // ⭐ Only enabled when shift is open (or disabled)
-                    badge = if (!canOperate) "Abre el turno primero" else null,
+                    enabled = ordersEnabled,
+                    badge = ordersBadge,
                     onClick = onNavigateToOrdering
                 )
             )
@@ -727,6 +812,20 @@ private fun WelcomeScreenContent(
                         }
 
                         // ═══════════════════════════════════════════════════════════════
+                        // TIMECLOCK STATUS CARD
+                        // Shows attendance status: clock-in/out, elapsed time
+                        // Visible when requireClockInToLogin is enabled OR user has active entry
+                        // ═══════════════════════════════════════════════════════════════
+                        if (requireClockInToLogin || currentTimeEntry != null) {
+                            TimeclockStatusCard(
+                                currentEntry = currentTimeEntry,
+                                isLoading = isAttendanceLoading,
+                                onClockIn = onNavigateToTimeclock,
+                                onClockOut = onNavigateToTimeclockForClockOut
+                            )
+                        }
+
+                        // ═══════════════════════════════════════════════════════════════
                         // SALES GOALS PAGER
                         // Shows progress toward sales goals in a horizontal pager.
                         // Uses salesGoals from HomeViewModel (fetched from backend).
@@ -837,6 +936,7 @@ private fun WelcomeScreenContent(
             }
         )
     }
+
 }
 
 /**

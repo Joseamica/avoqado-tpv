@@ -258,7 +258,7 @@ class TpvMessageViewModelTest {
         Thread.sleep(200)
 
         coVerify {
-            apiService.acknowledgeMessage("msg-1", any<AckMessageRequest>())
+            apiService.acknowledgeMessage("msg-1", "terminal-001", any<AckMessageRequest>())
         }
 
         viewModel.viewModelScope.cancel()
@@ -289,7 +289,7 @@ class TpvMessageViewModelTest {
         Thread.sleep(200)
 
         coVerify {
-            apiService.dismissMessage("msg-1")
+            apiService.dismissMessage("msg-1", "terminal-001")
         }
 
         viewModel.viewModelScope.cancel()
@@ -564,6 +564,7 @@ class TpvMessageViewModelTest {
         coVerify {
             apiService.respondToMessage(
                 "msg-survey-1",
+                "terminal-001",
                 match<SurveyResponseRequest> { it.selectedOptions == listOf("Option B") }
             )
         }
@@ -654,7 +655,7 @@ class TpvMessageViewModelTest {
             createdAt = "2026-02-11T00:00:00Z"
         )
 
-        coEvery { apiService.getPendingMessages() } returns Response.success(
+        coEvery { apiService.getPendingMessages("terminal-001") } returns Response.success(
             TpvMessageListResponse(success = true, data = listOf(dto))
         )
 
@@ -672,7 +673,7 @@ class TpvMessageViewModelTest {
 
     @Test
     fun `Connected socket event triggers fetchPendingMessages`() = runTest(testDispatcher) {
-        coEvery { apiService.getPendingMessages() } returns Response.success(
+        coEvery { apiService.getPendingMessages("terminal-001") } returns Response.success(
             TpvMessageListResponse(success = true, data = emptyList())
         )
 
@@ -682,14 +683,14 @@ class TpvMessageViewModelTest {
 
         Thread.sleep(300)
 
-        coVerify { apiService.getPendingMessages() }
+        coVerify { apiService.getPendingMessages("terminal-001") }
 
         viewModel.viewModelScope.cancel()
     }
 
     @Test
     fun `fetchPendingMessages handles API failure gracefully`() = runTest(testDispatcher) {
-        coEvery { apiService.getPendingMessages() } throws RuntimeException("Network error")
+        coEvery { apiService.getPendingMessages("terminal-001") } throws RuntimeException("Network error")
 
         val viewModel = createViewModel()
         viewModel.fetchPendingMessages()

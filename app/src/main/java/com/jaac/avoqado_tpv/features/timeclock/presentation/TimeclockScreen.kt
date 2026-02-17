@@ -64,10 +64,19 @@ fun TimeclockScreen(
         File(context.cacheDir, "clockin_photos").apply { mkdirs() }
     }
 
+    val hasAutoAction = viewModel.hasAutoAction
+
     LaunchedEffect(Unit) {
         viewModel.events.collect { event ->
             when (event) {
                 is TimeclockEvent.NavigateToLogin -> onAutoLogin()
+                is TimeclockEvent.ClockInSuccess -> {
+                    if (hasAutoAction) onAutoLogin()
+                }
+                is TimeclockEvent.ClockOutSuccess -> {
+                    if (hasAutoAction) onAutoLogin()
+                }
+                is TimeclockEvent.AutoActionSkipped -> onAutoLogin()
                 else -> {}
             }
         }
@@ -118,19 +127,21 @@ fun TimeclockScreen(
                             recentEntries = emptyList(),
                             totalHoursToday = BigDecimal.ZERO
                         ),
-                        onClockIn = {}, onClockOut = {}, onStartBreak = {}, onEndBreak = {}, onDone = {}
+                        onClockIn = {}, onClockOut = {}, onDone = {}
                     )
                     AvoqadoLoadingOverlay(currentState.message)
                 }
                 is TimeclockState.Ready -> {
-                    PulseContent(
-                        state = currentState,
-                        onClockIn = viewModel::clockIn,
-                        onClockOut = viewModel::clockOut,
-                        onStartBreak = viewModel::startBreak,
-                        onEndBreak = viewModel::endBreak,
-                        onDone = viewModel::navigateToLogin
-                    )
+                    if (viewModel.isAutoActionPending) {
+                        AvoqadoLoadingOverlay("Procesando...")
+                    } else {
+                        PulseContent(
+                            state = currentState,
+                            onClockIn = viewModel::clockIn,
+                            onClockOut = viewModel::clockOut,
+                            onDone = viewModel::navigateToLogin
+                        )
+                    }
                 }
                 is TimeclockState.RequiresPhoto -> {
                     ClockInPhotoPrompt(
@@ -173,8 +184,6 @@ private fun PulseContent(
     state: TimeclockState.Ready,
     onClockIn: () -> Unit,
     onClockOut: () -> Unit,
-    onStartBreak: () -> Unit,
-    onEndBreak: () -> Unit,
     onDone: () -> Unit
 ) {
     val status = state.currentEntry?.status ?: TimeEntryStatus.CLOCKED_OUT
@@ -233,8 +242,6 @@ private fun PulseContent(
             canProceedToLogin = state.canProceedToLogin,
             onClockIn = onClockIn,
             onClockOut = onClockOut,
-            onStartBreak = onStartBreak,
-            onEndBreak = onEndBreak,
             onDone = onDone
         )
     }
@@ -501,8 +508,6 @@ private fun ThumbZoneActions(
     canProceedToLogin: Boolean,
     onClockIn: () -> Unit,
     onClockOut: () -> Unit,
-    onStartBreak: () -> Unit,
-    onEndBreak: () -> Unit,
     onDone: () -> Unit
 ) {
     Column(
@@ -520,14 +525,6 @@ private fun ThumbZoneActions(
                 )
             }
             TimeEntryStatus.CLOCKED_IN -> {
-                // Stacked vertical buttons to prevent text wrapping
-                SecondaryActionButton(
-                    text = "DESCANSO",
-                    icon = Icons.Default.Coffee,
-                    onClick = onStartBreak,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                
                 PrimaryActionButton(
                     text = "SALIDA",
                     icon = Icons.Default.Logout,
@@ -537,13 +534,7 @@ private fun ThumbZoneActions(
                 )
             }
             TimeEntryStatus.ON_BREAK -> {
-                SecondaryActionButton(
-                    text = "FIN DESCANSO",
-                    icon = Icons.Default.PlayArrow,
-                    onClick = onEndBreak,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                
+                // ON_BREAK entries from backend handled same as CLOCKED_IN
                 PrimaryActionButton(
                     text = "SALIDA",
                     icon = Icons.Default.Logout,
@@ -593,29 +584,6 @@ private fun PrimaryActionButton(
         shape = RoundedCornerShape(16.dp),
         colors = ButtonDefaults.buttonColors(containerColor = color),
         elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
-    ) {
-        Icon(icon, null, modifier = Modifier.size(20.dp))
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
-private fun SecondaryActionButton(
-    text: String,
-    icon: ImageVector,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Button(
-        onClick = onClick,
-        modifier = modifier.height(56.dp),
-        shape = RoundedCornerShape(16.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-        ),
-        elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
     ) {
         Icon(icon, null, modifier = Modifier.size(20.dp))
         Spacer(modifier = Modifier.width(8.dp))
@@ -965,7 +933,7 @@ private fun PulseWorkingPreview() {
                 recentEntries = emptyList(),
                 totalHoursToday = BigDecimal.ZERO
             ),
-            {}, {}, {}, {}, {}
+            {}, {}, {}
         )
     }
 }
@@ -999,7 +967,7 @@ private fun PulseAutoClockOutPreview() {
                 ),
                 totalHoursToday = BigDecimal("12.00")
             ),
-            {}, {}, {}, {}, {}
+            {}, {}, {}
         )
     }
 }

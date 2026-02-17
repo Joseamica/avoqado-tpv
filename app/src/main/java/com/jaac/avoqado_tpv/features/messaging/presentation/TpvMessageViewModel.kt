@@ -12,19 +12,34 @@ import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.time.Instant
 import javax.inject.Inject
 
+/**
+ * Filter options for the Messages screen
+ */
+enum class MessageFilter(val label: String) {
+    ALL("Todos"),
+    UNREAD("No vistos"),
+    READ("Vistos")
+}
+
 data class TpvMessageUiState(
     val currentMessage: TpvMessageUiModel? = null,
     val messageQueue: List<TpvMessageUiModel> = emptyList(),
     val selectedSurveyOptions: Set<Int> = emptySet(),
-    val isSubmitting: Boolean = false
+    val isSubmitting: Boolean = false,
+    val messageHistory: List<TpvMessageUiModel> = emptyList(),
+    val isLoadingHistory: Boolean = false
 )
 
 /**
@@ -42,7 +57,9 @@ data class TpvMessageUiModel(
     val actionLabel: String?,
     val actionType: String?,
     val expiresAt: String?,
-    val createdByName: String
+    val createdByName: String,
+    val deliveryStatus: String? = null, // PENDING | DELIVERED | ACKNOWLEDGED | DISMISSED
+    val createdAt: String? = null
 )
 
 @HiltViewModel
@@ -58,6 +75,40 @@ class TpvMessageViewModel @Inject constructor(
     // Track locally dismissed/acknowledged message IDs to prevent re-showing
     // after socket reconnect fetches them as "pending" (server may not have received the dismiss)
     private val handledMessageIds = mutableSetOf<String>()
+
+    // ═══════════════════════════════════════════════════════════════════
+    // PAGINATION + FILTERING STATE (for MessagesScreen)
+    // ═══════════════════════════════════════════════════════════════════
+
+    private val _messageFilter = MutableStateFlow(MessageFilter.ALL)
+    val messageFilter: StateFlow<MessageFilter> = _messageFilter.asStateFlow()
+
+    private val _isLoadingMore = MutableStateFlow(false)
+    val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
+
+    private val _hasMore = MutableStateFlow(true)
+    val hasMore: StateFlow<Boolean> = _hasMore.asStateFlow()
+
+    private var historyOffset = 0
+    private val pageSize = 20
+
+    /**
+     * Filtered messages derived from messageHistory + selected filter
+     */
+    val filteredMessages: StateFlow<List<TpvMessageUiModel>> = combine(
+        _uiState.map { it.messageHistory },
+        _messageFilter
+    ) { messages, filter ->
+        when (filter) {
+            MessageFilter.ALL -> messages
+            MessageFilter.UNREAD -> messages.filter {
+                it.deliveryStatus == "PENDING" || it.deliveryStatus == "DELIVERED"
+            }
+            MessageFilter.READ -> messages.filter {
+                it.deliveryStatus == "ACKNOWLEDGED" || it.deliveryStatus == "DISMISSED"
+            }
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {
         observeSocketEvents()
@@ -134,9 +185,13 @@ class TpvMessageViewModel @Inject constructor(
      * Fetch pending messages via REST API (used on reconnect for offline recovery)
      */
     fun fetchPendingMessages() {
+        val terminalId = secureStorage.getTerminalId() ?: run {
+            Timber.w("⚠️ [TpvMessage] No terminalId — skipping REST pending fetch")
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val response = apiService.getPendingMessages()
+                val response = apiService.getPendingMessages(terminalId)
                 if (response.isSuccessful) {
                     val messages = response.body()?.data ?: emptyList()
                     Timber.d("📨 Fetched ${messages.size} pending messages via REST")
@@ -151,17 +206,88 @@ class TpvMessageViewModel @Inject constructor(
     }
 
     /**
+     * Fetch full message history for the inbox card (all messages, including handled)
+     */
+    fun fetchMessageHistory() {
+        val terminalId = secureStorage.getTerminalId() ?: run {
+            Timber.w("⚠️ [TpvMessage] No terminalId — skipping REST history fetch")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isLoadingHistory = true) }
+            try {
+                val response = apiService.getMessageHistory(terminalId)
+                if (response.isSuccessful) {
+                    val messages = response.body()?.data?.map { dto ->
+                        TpvMessageUiModel(
+                            messageId = dto.id,
+                            type = dto.type,
+                            title = dto.title,
+                            body = dto.body,
+                            priority = dto.priority,
+                            requiresAck = dto.requiresAck,
+                            surveyOptions = dto.surveyOptions,
+                            surveyMultiSelect = dto.surveyMultiSelect,
+                            actionLabel = dto.actionLabel,
+                            actionType = dto.actionType,
+                            expiresAt = dto.expiresAt,
+                            createdByName = dto.createdByName,
+                            deliveryStatus = dto.deliveryStatus,
+                            createdAt = dto.createdAt
+                        )
+                    } ?: emptyList()
+                    Timber.d("📨 Fetched ${messages.size} messages for inbox history")
+                    historyOffset = messages.size
+                    _hasMore.value = messages.size >= pageSize
+                    _uiState.update { it.copy(messageHistory = messages, isLoadingHistory = false) }
+                } else {
+                    Timber.e("❌ Failed to fetch message history: ${response.code()}")
+                    _uiState.update { it.copy(isLoadingHistory = false) }
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "❌ Failed to fetch message history")
+                _uiState.update { it.copy(isLoadingHistory = false) }
+            }
+        }
+    }
+
+    /**
+     * Select a message from the inbox to show in the dialog
+     */
+    fun selectMessage(message: TpvMessageUiModel) {
+        _uiState.update { state ->
+            state.copy(currentMessage = message, selectedSurveyOptions = emptySet())
+        }
+    }
+
+    /**
      * Acknowledge the current message
      */
     fun acknowledgeMessage() {
         val message = _uiState.value.currentMessage ?: return
 
+        // For already-handled messages (from inbox history), just close without network calls
+        if (message.deliveryStatus == "ACKNOWLEDGED" || message.deliveryStatus == "DISMISSED") {
+            _uiState.update { state ->
+                showNextMessage(state.copy(selectedSurveyOptions = emptySet()))
+            }
+            return
+        }
+
         // Mark as handled locally to prevent re-showing on socket reconnect
         handledMessageIds.add(message.messageId)
 
         // Move to next message FIRST (always close dialog regardless of network)
+        // Also update inbox history entry locally
         _uiState.update { state ->
-            showNextMessage(state.copy(isSubmitting = false, selectedSurveyOptions = emptySet()))
+            val updatedHistory = state.messageHistory.map {
+                if (it.messageId == message.messageId) it.copy(deliveryStatus = "ACKNOWLEDGED") else it
+            }
+            showNextMessage(state.copy(
+                isSubmitting = false,
+                selectedSurveyOptions = emptySet(),
+                messageHistory = updatedHistory
+            ))
         }
 
         // Best-effort: notify server about acknowledgment
@@ -173,11 +299,13 @@ class TpvMessageViewModel @Inject constructor(
         }
 
         // Also call REST API as backup
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                apiService.acknowledgeMessage(message.messageId, AckMessageRequest())
-            } catch (e: Exception) {
-                Timber.e(e, "❌ REST acknowledge failed (Socket.IO was primary)")
+        if (terminalId != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    apiService.acknowledgeMessage(message.messageId, terminalId, AckMessageRequest())
+                } catch (e: Exception) {
+                    Timber.e(e, "❌ REST acknowledge failed (Socket.IO was primary)")
+                }
             }
         }
     }
@@ -188,12 +316,27 @@ class TpvMessageViewModel @Inject constructor(
     fun dismissMessage() {
         val message = _uiState.value.currentMessage ?: return
 
+        // For already-handled messages (from inbox history), just close without network calls
+        if (message.deliveryStatus == "ACKNOWLEDGED" || message.deliveryStatus == "DISMISSED") {
+            _uiState.update { state ->
+                showNextMessage(state.copy(selectedSurveyOptions = emptySet()))
+            }
+            return
+        }
+
         // Mark as handled locally to prevent re-showing on socket reconnect
         handledMessageIds.add(message.messageId)
 
         // Move to next message FIRST (always close dialog regardless of network)
+        // Also update inbox history entry locally
         _uiState.update { state ->
-            showNextMessage(state.copy(selectedSurveyOptions = emptySet()))
+            val updatedHistory = state.messageHistory.map {
+                if (it.messageId == message.messageId) it.copy(deliveryStatus = "DISMISSED") else it
+            }
+            showNextMessage(state.copy(
+                selectedSurveyOptions = emptySet(),
+                messageHistory = updatedHistory
+            ))
         }
 
         // Best-effort: notify server about dismissal
@@ -205,11 +348,13 @@ class TpvMessageViewModel @Inject constructor(
         }
 
         // REST backup
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                apiService.dismissMessage(message.messageId)
-            } catch (e: Exception) {
-                Timber.e(e, "❌ REST dismiss failed (Socket.IO was primary)")
+        if (terminalId != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    apiService.dismissMessage(message.messageId, terminalId)
+                } catch (e: Exception) {
+                    Timber.e(e, "❌ REST dismiss failed (Socket.IO was primary)")
+                }
             }
         }
     }
@@ -269,14 +414,17 @@ class TpvMessageViewModel @Inject constructor(
         }
 
         // REST backup
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                apiService.respondToMessage(
-                    message.messageId,
-                    SurveyResponseRequest(selectedOptions = selectedOptionTexts)
-                )
-            } catch (e: Exception) {
-                Timber.e(e, "❌ REST survey response failed (Socket.IO was primary)")
+        if (terminalId != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    apiService.respondToMessage(
+                        message.messageId,
+                        terminalId,
+                        SurveyResponseRequest(selectedOptions = selectedOptionTexts)
+                    )
+                } catch (e: Exception) {
+                    Timber.e(e, "❌ REST survey response failed (Socket.IO was primary)")
+                }
             }
         }
     }
@@ -302,6 +450,79 @@ class TpvMessageViewModel @Inject constructor(
 
         // Acknowledge after executing
         acknowledgeMessage()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // PAGINATION + FILTERING METHODS (for MessagesScreen)
+    // ═══════════════════════════════════════════════════════════════════
+
+    fun setMessageFilter(filter: MessageFilter) {
+        _messageFilter.value = filter
+    }
+
+    /**
+     * Fetch more messages (next page) for infinite scroll
+     */
+    fun fetchMoreMessages() {
+        if (_isLoadingMore.value || !_hasMore.value) return
+
+        val terminalId = secureStorage.getTerminalId() ?: return
+        _isLoadingMore.value = true
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val response = apiService.getMessageHistory(
+                    terminalId = terminalId,
+                    limit = pageSize,
+                    offset = historyOffset
+                )
+                if (response.isSuccessful) {
+                    val newMessages = response.body()?.data?.map { dto ->
+                        TpvMessageUiModel(
+                            messageId = dto.id,
+                            type = dto.type,
+                            title = dto.title,
+                            body = dto.body,
+                            priority = dto.priority,
+                            requiresAck = dto.requiresAck,
+                            surveyOptions = dto.surveyOptions,
+                            surveyMultiSelect = dto.surveyMultiSelect,
+                            actionLabel = dto.actionLabel,
+                            actionType = dto.actionType,
+                            expiresAt = dto.expiresAt,
+                            createdByName = dto.createdByName,
+                            deliveryStatus = dto.deliveryStatus,
+                            createdAt = dto.createdAt
+                        )
+                    } ?: emptyList()
+
+                    historyOffset += newMessages.size
+                    _hasMore.value = newMessages.size == pageSize
+
+                    _uiState.update { state ->
+                        // Deduplicate by messageId
+                        val existingIds = state.messageHistory.map { it.messageId }.toSet()
+                        val uniqueNew = newMessages.filter { it.messageId !in existingIds }
+                        state.copy(messageHistory = state.messageHistory + uniqueNew)
+                    }
+                    Timber.d("📨 Loaded ${newMessages.size} more messages (offset=$historyOffset, hasMore=${_hasMore.value})")
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "❌ Failed to fetch more messages")
+            } finally {
+                _isLoadingMore.value = false
+            }
+        }
+    }
+
+    /**
+     * Refresh messages: reset pagination and reload from scratch
+     */
+    fun refreshMessages() {
+        historyOffset = 0
+        _hasMore.value = true
+        _uiState.update { it.copy(messageHistory = emptyList()) }
+        fetchMessageHistory()
     }
 
     private fun showNextMessage(state: TpvMessageUiState): TpvMessageUiState {

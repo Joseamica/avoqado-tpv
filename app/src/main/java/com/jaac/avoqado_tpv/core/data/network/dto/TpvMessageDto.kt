@@ -55,7 +55,14 @@ data class TpvMessageDto(
     val status: String, // ACTIVE | EXPIRED | CANCELLED
 
     @SerializedName("createdAt")
-    val createdAt: String
+    val createdAt: String,
+
+    // History-only fields (present when fetching from /messages/history)
+    @SerializedName("deliveryStatus")
+    val deliveryStatus: String? = null, // PENDING | DELIVERED | ACKNOWLEDGED | DISMISSED
+
+    @SerializedName("acknowledgedAt")
+    val acknowledgedAt: String? = null
 )
 
 /**
@@ -89,4 +96,24 @@ data class TpvMessageListResponse(
 
     @SerializedName("data")
     val data: List<TpvMessageDto>
+)
+
+/**
+ * Paginated response for message history endpoint
+ */
+data class TpvMessageHistoryResponse(
+    @SerializedName("success")
+    val success: Boolean,
+
+    @SerializedName("data")
+    val data: List<TpvMessageDto>,
+
+    @SerializedName("total")
+    val total: Int,
+
+    @SerializedName("limit")
+    val limit: Int,
+
+    @SerializedName("offset")
+    val offset: Int
 )

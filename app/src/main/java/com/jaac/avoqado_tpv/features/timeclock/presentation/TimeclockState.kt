@@ -117,4 +117,5 @@ sealed class TimeclockEvent {
     data class BreakEnded(val entry: TimeEntry) : TimeclockEvent()
     data class Error(val message: String) : TimeclockEvent()
     data object NavigateToLogin : TimeclockEvent()
+    data object AutoActionSkipped : TimeclockEvent()
 }

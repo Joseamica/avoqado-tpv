@@ -164,6 +164,12 @@ fun AppNavigation(
     )
     val tpvMessageState by tpvMessageViewModel.uiState.collectAsStateWithLifecycle()
 
+    // 📚 TRAINING / LMS
+    // Anchored to Activity lifecycle — survives navigation without recreation
+    val trainingViewModel: com.jaac.avoqado_tpv.features.training.presentation.TrainingViewModel = hiltViewModel(
+        viewModelStoreOwner = activityOwner
+    )
+
     // 🔒 FORCE UPDATE CHECK
     // If there's a forced update, show blocking dialog
     val forceUpdateAlert = deviceAlerts.filterIsInstance<com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceAlert.UpdateAvailable>()
@@ -726,26 +732,25 @@ fun AppNavigation(
                     navController.navigate(NavRoute.Activation.route) {
                         popUpTo(NavRoute.Login.route) { inclusive = true }
                     }
-                },
-                onTimeclockClick = { pin ->
-                    // Navigate to Timeclock screen with venueId and PIN
-                    Timber.d("⏱ Timeclock button clicked - Navigating to Timeclock screen")
-                    navController.navigate(NavRoute.Timeclock.createRoute(venueId, pin))
-                },
-                onNavigateToTimeclockForClockIn = { pin ->
-                    // Navigate to Timeclock screen when clock-in is required before accessing system
-                    val route = NavRoute.Timeclock.createRoute(venueId, pin)
-                    Timber.d("⏱ Clock-in required - Navigating to Timeclock | venueId=$venueId | pin=$pin | route=$route")
-                    navController.navigate(route)
                 }
             )
         }
 
         // Home Screen - Main dashboard
-        composable(NavRoute.Home.route) {
+        composable(NavRoute.Home.route) { homeBackStackEntry ->
             val homeViewModel: com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel = hiltViewModel()
             val homeContext = LocalContext.current
             val homeCoroutineScope = rememberCoroutineScope()
+
+            // Refresh attendance when returning from TimeclockScreen
+            val refreshAttendance = homeBackStackEntry.savedStateHandle
+                .get<Boolean>("refreshAttendance") == true
+            if (refreshAttendance) {
+                homeBackStackEntry.savedStateHandle.remove<Boolean>("refreshAttendance")
+                LaunchedEffect(Unit) {
+                    homeViewModel.refreshAttendance()
+                }
+            }
 
             // 🔧 SDK Initialization for Serialized Sale ("Vender" button)
             // Get InitializationManager to await SDK init before navigating to payment flow
@@ -772,6 +777,11 @@ fun AppNavigation(
                         break
                     }
                 }
+            }
+
+            // 📨 Fetch message history when WelcomeScreen is shown
+            LaunchedEffect(Unit) {
+                tpvMessageViewModel.fetchMessageHistory()
             }
 
             // 🔧 Loading overlay for SDK initialization
@@ -834,6 +844,34 @@ fun AppNavigation(
                     // 📦 Navigate to Serialized Inventory Register screen (Alta flow)
                     navController.navigate(NavRoute.SerializedInventoryRegister.route)
                 },
+                onNavigateToMessages = {
+                    navController.navigate(NavRoute.Messages.route)
+                },
+                onNavigateToTrainings = {
+                    navController.navigate(NavRoute.Trainings.route)
+                },
+                onNavigateToTimeclock = {
+                    // ⏱ Navigate to Timeclock from WelcomeScreen (fromHome=true, auto clock-in)
+                    val pin = secureStorage.getStaffPin()
+                    val vId = secureStorage.getVenueId() ?: ""
+                    if (pin != null && vId.isNotEmpty()) {
+                        Timber.d("⏱ WelcomeScreen → Timeclock (fromHome=true, autoAction=clockIn)")
+                        navController.navigate(NavRoute.Timeclock.createRoute(vId, pin, fromHome = true, autoAction = "clockIn"))
+                    } else {
+                        Timber.w("⚠️ No stored PIN or venueId for timeclock navigation")
+                    }
+                },
+                onNavigateToTimeclockForClockOut = {
+                    // ⏱ Navigate to Timeclock for clock-out from WelcomeScreen (fromHome=true, auto clock-out)
+                    val pin = secureStorage.getStaffPin()
+                    val vId = secureStorage.getVenueId() ?: ""
+                    if (pin != null && vId.isNotEmpty()) {
+                        Timber.d("⏱ WelcomeScreen → Timeclock for clock-out (fromHome=true, autoAction=clockOut)")
+                        navController.navigate(NavRoute.Timeclock.createRoute(vId, pin, fromHome = true, autoAction = "clockOut"))
+                    } else {
+                        Timber.w("⚠️ No stored PIN or venueId for timeclock navigation")
+                    }
+                },
                 onLogout = {
                     // ✅ Square/Toast Pattern: DO NOT stop heartbeat on logout
                     //
@@ -858,6 +896,9 @@ fun AppNavigation(
                         popUpTo(NavRoute.Home.route) { inclusive = true }
                     }
                 },
+                messageHistory = tpvMessageState.messageHistory,
+                isLoadingMessageHistory = tpvMessageState.isLoadingHistory,
+                onMessageClick = { tpvMessageViewModel.selectMessage(it) },
                 isDarkMode = isDarkMode,
                 onDarkModeToggle = onThemeToggle
             )
@@ -1491,6 +1532,49 @@ fun AppNavigation(
             )
         }
 
+        // Messages Screen - Full message inbox with filters and pagination
+        composable(NavRoute.Messages.route) {
+            com.jaac.avoqado_tpv.features.messaging.presentation.MessagesScreen(
+                viewModel = tpvMessageViewModel,
+                onBack = {
+                    navController.safePopBackStack()
+                },
+                onMessageClick = { tpvMessageViewModel.selectMessage(it) }
+            )
+        }
+
+        // Training List Screen - Available training modules
+        composable(NavRoute.Trainings.route) {
+            com.jaac.avoqado_tpv.features.training.presentation.TrainingsListScreen(
+                viewModel = trainingViewModel,
+                onBack = {
+                    navController.safePopBackStack()
+                },
+                onTrainingClick = { trainingId ->
+                    navController.navigate(NavRoute.TrainingViewer.createRoute(trainingId))
+                }
+            )
+        }
+
+        // Training Step Viewer - Step-by-step training with media + quiz
+        composable(
+            NavRoute.TrainingViewer.route,
+            arguments = listOf(
+                androidx.navigation.navArgument("trainingId") {
+                    type = androidx.navigation.NavType.StringType
+                }
+            )
+        ) { backStackEntry ->
+            val trainingId = backStackEntry.arguments?.getString("trainingId") ?: return@composable
+            com.jaac.avoqado_tpv.features.training.presentation.TrainingStepViewer(
+                viewModel = trainingViewModel,
+                trainingId = trainingId,
+                onBack = {
+                    navController.safePopBackStack()
+                }
+            )
+        }
+
         // Self-Update Screen - Check and install app updates via Blumon SDK
         composable(NavRoute.SelfUpdate.route) {
             if (BuildConfig.ENABLE_PAX_SDK) {
@@ -1580,47 +1664,80 @@ fun AppNavigation(
             route = NavRoute.Timeclock.route,
             arguments = listOf(
                 navArgument("venueId") { type = NavType.StringType },
-                navArgument("pin") { type = NavType.StringType }
+                navArgument("pin") { type = NavType.StringType },
+                navArgument("fromHome") {
+                    type = NavType.BoolType
+                    defaultValue = false
+                },
+                navArgument("autoAction") {
+                    type = NavType.StringType
+                    defaultValue = ""
+                }
             )
-        ) {
+        ) { backStackEntry ->
             val context = LocalContext.current
             val timeclockCoroutineScope = rememberCoroutineScope()
+            val fromHome = backStackEntry.arguments?.getBoolean("fromHome") ?: false
 
             TimeclockScreen(
                 onNavigateBack = {
-                    // Clear session when going back (user didn't complete timeclock flow)
-                    Timber.d("🚪 Timeclock back pressed - Clearing session")
-                    secureStorage.clearSession()
-                    navController.safePopBackStack()
+                    if (fromHome) {
+                        // Coming from WelcomeScreen — just pop back (session already active)
+                        Timber.d("🚪 Timeclock back pressed (fromHome) - Popping back to WelcomeScreen")
+                        navController.getBackStackEntry(NavRoute.Home.route)
+                            .savedStateHandle["refreshAttendance"] = true
+                        navController.safePopBackStack()
+                    } else {
+                        // Coming from LoginScreen — clear session when going back
+                        Timber.d("🚪 Timeclock back pressed - Clearing session")
+                        secureStorage.clearSession()
+                        navController.safePopBackStack()
+                    }
                 },
                 onNavigateToLogin = {
-                    // After timeclock action, navigate back to login (session already cleared)
-                    navController.navigate(NavRoute.Login.route) {
-                        popUpTo(NavRoute.Timeclock.route) { inclusive = true }
+                    if (fromHome) {
+                        // Coming from WelcomeScreen — just pop back
+                        Timber.d("🚪 Timeclock → back to WelcomeScreen (fromHome)")
+                        navController.getBackStackEntry(NavRoute.Home.route)
+                            .savedStateHandle["refreshAttendance"] = true
+                        navController.safePopBackStack()
+                    } else {
+                        // After timeclock action, navigate back to login (session already cleared)
+                        navController.navigate(NavRoute.Login.route) {
+                            popUpTo(NavRoute.Timeclock.route) { inclusive = true }
+                        }
                     }
                 },
                 onAutoLogin = {
-                    // Automatic login after timeclock action (Done button)
-                    // Session already saved during PIN verification, just start workers
-                    Timber.d("🔑 Auto-login after timeclock - Starting heartbeat")
-                    HeartbeatScheduler.start(context)
+                    if (fromHome) {
+                        // Coming from WelcomeScreen — just pop back (user already logged in)
+                        Timber.d("🔑 Timeclock done (fromHome) - Popping back to WelcomeScreen")
+                        navController.getBackStackEntry(NavRoute.Home.route)
+                            .savedStateHandle["refreshAttendance"] = true
+                        navController.safePopBackStack()
+                    } else {
+                        // Automatic login after timeclock action (Done button)
+                        // Session already saved during PIN verification, just start workers
+                        Timber.d("🔑 Auto-login after timeclock - Starting heartbeat")
+                        HeartbeatScheduler.start(context)
 
-                    // Start payment sync worker (offline payment queue)
-                    Timber.d("💾 Auto-login after timeclock - Starting payment sync")
-                    PaymentSyncScheduler.start(context)
+                        // Start payment sync worker (offline payment queue)
+                        Timber.d("💾 Auto-login after timeclock - Starting payment sync")
+                        PaymentSyncScheduler.start(context)
 
-                    // 📦 FIX: Ensure modules are loaded before navigating to Home
-                    // Without this, WelcomeScreen shows wrong UI (full instead of simplified)
-                    // because the modules StateFlow might be empty when coming from Timeclock
-                    timeclockCoroutineScope.launch {
-                        Timber.d("📦 Auto-login: Fetching modules before navigating to Home")
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            modulesRepository.fetchAndCache()
-                        }
+                        // 📦 FIX: Ensure modules are loaded before navigating to Home
+                        // Without this, WelcomeScreen shows wrong UI (full instead of simplified)
+                        // because the modules StateFlow might be empty when coming from Timeclock
+                        timeclockCoroutineScope.launch {
+                            Timber.d("📦 Auto-login: Fetching modules before navigating to Home")
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                modulesRepository.fetchAndCache()
+                            }
 
-                        // Navigate to home (must be on Main thread)
-                        navController.navigate(NavRoute.Home.route) {
-                            popUpTo(NavRoute.Timeclock.route) { inclusive = true }
+                            // Navigate to home (must be on Main thread)
+                            navController.navigate(NavRoute.Home.route) {
+                                popUpTo(NavRoute.Timeclock.route) { inclusive = true }
+                            }
                         }
                     }
                 }

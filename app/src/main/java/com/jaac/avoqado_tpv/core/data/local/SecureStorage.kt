@@ -74,6 +74,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_VENUE_STATUS = "venue_status"
         private const val KEY_LOYALTY_ACTIVE = "loyalty_active"  // Toast/Square pattern
         private const val KEY_MASTER_LOGIN = "is_master_login"  // 🔐 Master TOTP bypass flag
+        private const val KEY_STAFF_PIN = "staff_pin"  // 🔐 Staff PIN for WelcomeScreen → Timeclock navigation
 
         // Blumon keys
         private const val KEY_BLUMON_MERCHANT_ID = "blumon_merchant_id"
@@ -276,6 +277,7 @@ class SecureStorage @Inject constructor(
             remove(KEY_STAFF_ROLE)
             remove(KEY_PERMISSIONS)
             remove(KEY_MASTER_LOGIN)  // 🔐 Clear master login flag on logout
+            remove(KEY_STAFF_PIN)  // 🔐 Clear stored PIN on logout
         }.apply()
         Timber.d("Session cleared (venueId, venueSlug, and venueStatus preserved for device activation)")
     }
@@ -652,6 +654,29 @@ class SecureStorage @Inject constructor(
      */
     fun isMasterLogin(): Boolean {
         return encryptedPrefs.getBoolean(KEY_MASTER_LOGIN, false)
+    }
+
+    // ========== Staff PIN (for WelcomeScreen → Timeclock navigation) ==========
+
+    /**
+     * Save staff PIN for timeclock access from WelcomeScreen
+     *
+     * Stored after successful login so WelcomeScreen can navigate to
+     * TimeclockScreen without re-entering PIN.
+     * Cleared on logout (part of clearSession).
+     *
+     * @param pin Staff PIN
+     */
+    fun saveStaffPin(pin: String) {
+        encryptedPrefs.edit().putString(KEY_STAFF_PIN, pin).apply()
+    }
+
+    /**
+     * Get stored staff PIN
+     * @return Staff PIN or null if not stored
+     */
+    fun getStaffPin(): String? {
+        return encryptedPrefs.getString(KEY_STAFF_PIN, null)
     }
 
     /**

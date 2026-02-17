@@ -41,6 +41,9 @@ import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalSource
 import com.jaac.avoqado_tpv.features.modules.domain.model.SalesGoalType
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
+import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
+import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntry
+import com.jaac.avoqado_tpv.features.timeclock.domain.repository.TimeEntryRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -101,7 +104,10 @@ class HomeViewModel @Inject constructor(
     // 📊 Observability - Production error tracking (Crashlytics + Remote + File)
     private val observabilityManager: com.jaac.avoqado_tpv.core.observability.ObservabilityManager,
     // 🔄 Order Sync - Cleanup on logout to prevent memory leaks (PAX A80 1GB)
-    private val orderSyncCoordinator: OrderSyncCoordinator
+    private val orderSyncCoordinator: OrderSyncCoordinator,
+    // ⏱ Attendance state for WelcomeScreen timeclock card
+    private val timeEntryRepository: TimeEntryRepository,
+    private val tpvSettingsRepository: TpvSettingsRepository
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -184,6 +190,19 @@ class HomeViewModel @Inject constructor(
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ATTENDANCE STATE (for WelcomeScreen timeclock card + button gating)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private val _currentTimeEntry = MutableStateFlow<TimeEntry?>(null)
+    val currentTimeEntry: StateFlow<TimeEntry?> = _currentTimeEntry.asStateFlow()
+
+    private val _requireClockInToLogin = MutableStateFlow(false)
+    val requireClockInToLogin: StateFlow<Boolean> = _requireClockInToLogin.asStateFlow()
+
+    private val _isAttendanceLoading = MutableStateFlow(true)
+    val isAttendanceLoading: StateFlow<Boolean> = _isAttendanceLoading.asStateFlow()
+
     private val initStartTime = System.currentTimeMillis()
 
     init {
@@ -203,6 +222,7 @@ class HomeViewModel @Inject constructor(
         // Each function has an internal delay before doing real work.
         // UnconfinedTestDispatcher skips delays automatically in tests.
         // ═══════════════════════════════════════════════════════════════════
+        fetchAttendanceState()                // immediate — needed for button gating
         listenForConnectionRestored()       // delay(1_000)
         initializeBlumonSDK()               // delay(2_000) — blocks UI until ready
         fetchSalesGoal()                    // delay(2_500)
@@ -298,6 +318,60 @@ class HomeViewModel @Inject constructor(
             // TODO: Implement clock-in feature and load actual clock-in time
             _clockInTime.value = null
         }
+    }
+
+    /**
+     * ⏱ Fetch Attendance State
+     *
+     * Loads the current time entry and requireClockInToLogin setting
+     * for the logged-in staff member. Used by WelcomeScreen to:
+     * - Show TimeclockStatusCard with real-time status
+     * - Gate action buttons when clock-in is required
+     */
+    private fun fetchAttendanceState() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                _isAttendanceLoading.value = true
+                val venueId = secureStorage.getVenueId() ?: return@launch
+                val staffId = secureStorage.getStaffId() ?: return@launch
+
+                // Load requireClockInToLogin setting
+                val settings = tpvSettingsRepository.getCurrentSettings()
+                _requireClockInToLogin.value = settings.requireClockInToLogin
+
+                // Load active time entry
+                val result = timeEntryRepository.findActiveEntryForStaff(venueId, staffId)
+                result.onSuccess { entry ->
+                    _currentTimeEntry.value = entry
+                    // Populate clockInTime for backward compat
+                    if (entry != null) {
+                        val formatter = java.time.format.DateTimeFormatter.ofPattern("HH:mm")
+                        _clockInTime.value = "Desde las ${entry.clockInTime.format(formatter)}"
+                    } else {
+                        _clockInTime.value = null
+                    }
+                    Timber.d("⏱ [Attendance] Active entry: ${entry?.status ?: "none"}")
+                }.onFailure { error ->
+                    Timber.w(error, "⚠️ [Attendance] Failed to fetch active entry")
+                    _currentTimeEntry.value = null
+                    _clockInTime.value = null
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Attendance] Error fetching attendance state")
+            } finally {
+                _isAttendanceLoading.value = false
+            }
+        }
+    }
+
+    /**
+     * 🔄 Refresh Attendance State
+     *
+     * Public method to re-fetch attendance status after returning
+     * from TimeclockScreen (clock-in/out).
+     */
+    fun refreshAttendance() {
+        fetchAttendanceState()
     }
 
     /**
@@ -407,6 +481,7 @@ class HomeViewModel @Inject constructor(
             try {
                 fetchSalesGoal(skipDelay = true)
                 loadStaffInfo()
+                fetchAttendanceState()
             } finally {
                 _isRefreshing.value = false
             }

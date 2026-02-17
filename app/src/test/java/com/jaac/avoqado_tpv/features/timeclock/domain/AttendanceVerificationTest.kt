@@ -115,7 +115,11 @@ class AttendanceVerificationTest {
             kioskDefaultMerchantId = null,
             showQuickPayment = null,
             showOrderManagement = null,
-            showCryptoOption = null
+            showCryptoOption = null,
+            showReports = null,
+            showPayments = null,
+            showSupport = null,
+            showGoals = null
         )
 
         val domain = dto.toDomain()
@@ -152,7 +156,11 @@ class AttendanceVerificationTest {
             kioskDefaultMerchantId = null,
             showQuickPayment = null,
             showOrderManagement = null,
-            showCryptoOption = null
+            showCryptoOption = null,
+            showReports = null,
+            showPayments = null,
+            showSupport = null,
+            showGoals = null
         )
 
         val domain = dto.toDomain()
@@ -189,7 +197,11 @@ class AttendanceVerificationTest {
             kioskDefaultMerchantId = null,
             showQuickPayment = null,
             showOrderManagement = null,
-            showCryptoOption = null
+            showCryptoOption = null,
+            showReports = null,
+            showPayments = null,
+            showSupport = null,
+            showGoals = null
         )
 
         val domain = dto.toDomain()

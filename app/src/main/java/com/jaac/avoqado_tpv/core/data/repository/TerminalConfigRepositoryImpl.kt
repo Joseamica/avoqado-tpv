@@ -80,6 +80,9 @@ class TerminalConfigRepositoryImpl @Inject constructor(
                 VenueTimeZone.invalidateCache()
             }
 
+            // Save terminal ID (needed for messaging API and other terminal-specific endpoints)
+            secureStorage.saveTerminalId(terminal.id)
+
             // Map terminal DTO to TerminalInfo
             val terminalInfo = TerminalInfo(
                 serialNumber = terminal.serialNumber,

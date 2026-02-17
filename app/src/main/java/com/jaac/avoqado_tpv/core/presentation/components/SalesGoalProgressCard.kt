@@ -1,8 +1,12 @@
 package com.jaac.avoqado_tpv.core.presentation.components
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +21,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.EmojiEvents
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -25,6 +31,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -70,8 +79,10 @@ import com.jaac.avoqado_tpv.core.util.rememberCurrencyFormat
 @Composable
 fun SalesGoalProgressCard(
     salesGoal: ModuleSalesGoal,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    defaultExpanded: Boolean = false
 ) {
+    var isExpanded by rememberSaveable { mutableStateOf(defaultExpanded) }
     // Calculate progress (0.0 to 1.0, capped at 1.0 for exceeded goals)
     val progress = if (salesGoal.goal > BigDecimal.ZERO) {
         salesGoal.currentSales.divide(salesGoal.goal, 4, RoundingMode.HALF_UP)
@@ -107,7 +118,9 @@ fun SalesGoalProgressCard(
     val currencyFormat = rememberCurrencyFormat()
 
     Card(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable { isExpanded = !isExpanded },
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
@@ -119,7 +132,7 @@ fun SalesGoalProgressCard(
                 .fillMaxWidth()
                 .padding(16.dp)
         ) {
-            // Header row: Title + Period badge
+            // Header row: Title + Period badge + chevron
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -127,7 +140,8 @@ fun SalesGoalProgressCard(
             ) {
                 // Left: Icon + Title
                 Row(
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
                 ) {
                     Icon(
                         imageVector = if (isGoalAchieved) Icons.Default.EmojiEvents else Icons.AutoMirrored.Filled.TrendingUp,
@@ -156,7 +170,7 @@ fun SalesGoalProgressCard(
                     )
                 }
 
-                // Right: Source badge (if org) + Period badge
+                // Right: Source badge (if org) + Period badge + chevron
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -165,6 +179,12 @@ fun SalesGoalProgressCard(
                         SourceBadge()
                     }
                     PeriodBadge(period = salesGoal.period)
+                    Icon(
+                        imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = if (isExpanded) "Colapsar" else "Expandir",
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
             }
 
@@ -193,95 +213,104 @@ fun SalesGoalProgressCard(
                 )
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Bottom row: Current sales + Goal + Percentage
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Bottom
+            // Expandable detail section
+            AnimatedVisibility(
+                visible = isExpanded,
+                enter = expandVertically(),
+                exit = shrinkVertically()
             ) {
-                // Left: Current sales
                 Column {
-                    Text(
-                        text = if (isQuantityGoal) "Vendidas" else "Vendido",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                    )
-                    Text(
-                        text = if (isQuantityGoal) {
-                            "${salesGoal.currentSales.toInt()} uds"
-                        } else {
-                            currencyFormat.format(salesGoal.currentSales)
-                        },
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp
-                        ),
-                        color = if (isGoalAchieved) {
-                            MaterialTheme.avoqadoColors.statusSuccess
-                        } else {
-                            MaterialTheme.colorScheme.tertiary
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Bottom row: Current sales + Goal + Percentage
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Bottom
+                    ) {
+                        // Left: Current sales
+                        Column {
+                            Text(
+                                text = if (isQuantityGoal) "Vendidas" else "Vendido",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                            Text(
+                                text = if (isQuantityGoal) {
+                                    "${salesGoal.currentSales.toInt()} uds"
+                                } else {
+                                    currencyFormat.format(salesGoal.currentSales)
+                                },
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 18.sp
+                                ),
+                                color = if (isGoalAchieved) {
+                                    MaterialTheme.avoqadoColors.statusSuccess
+                                } else {
+                                    MaterialTheme.colorScheme.tertiary
+                                }
+                            )
                         }
-                    )
-                }
 
-                // Center: Percentage
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "$percentage%",
-                        style = MaterialTheme.typography.headlineMedium.copy(
-                            fontWeight = FontWeight.Bold
-                        ),
-                        color = if (isGoalAchieved) {
-                            MaterialTheme.avoqadoColors.statusSuccess
-                        } else {
-                            MaterialTheme.colorScheme.primary
+                        // Center: Percentage
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "$percentage%",
+                                style = MaterialTheme.typography.headlineMedium.copy(
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                color = if (isGoalAchieved) {
+                                    MaterialTheme.avoqadoColors.statusSuccess
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                }
+                            )
                         }
-                    )
+
+                        // Right: Goal amount
+                        Column(
+                            horizontalAlignment = Alignment.End
+                        ) {
+                            Text(
+                                text = "Meta",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                            Text(
+                                text = if (isQuantityGoal) {
+                                    "${salesGoal.goal.toInt()} uds"
+                                } else {
+                                    currencyFormat.format(salesGoal.goal)
+                                },
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 16.sp
+                                ),
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+                            )
+                        }
+                    }
+
+                    // Remaining amount (if not achieved)
+                    if (!isGoalAchieved) {
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        val remaining = salesGoal.goal.subtract(salesGoal.currentSales)
+                        Text(
+                            text = if (isQuantityGoal) {
+                                "Faltan ${remaining.toInt()} unidades para alcanzar tu meta"
+                            } else {
+                                "Faltan ${currencyFormat.format(remaining)} para alcanzar tu meta"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
-
-                // Right: Goal amount
-                Column(
-                    horizontalAlignment = Alignment.End
-                ) {
-                    Text(
-                        text = "Meta",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                    )
-                    Text(
-                        text = if (isQuantityGoal) {
-                            "${salesGoal.goal.toInt()} uds"
-                        } else {
-                            currencyFormat.format(salesGoal.goal)
-                        },
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 16.sp
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
-                    )
-                }
-            }
-
-            // Remaining amount (if not achieved)
-            if (!isGoalAchieved) {
-                Spacer(modifier = Modifier.height(8.dp))
-
-                val remaining = salesGoal.goal.subtract(salesGoal.currentSales)
-                Text(
-                    text = if (isQuantityGoal) {
-                        "Faltan ${remaining.toInt()} unidades para alcanzar tu meta"
-                    } else {
-                        "Faltan ${currencyFormat.format(remaining)} para alcanzar tu meta"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                    modifier = Modifier.fillMaxWidth()
-                )
             }
         }
     }

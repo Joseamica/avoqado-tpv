@@ -2,7 +2,13 @@ package com.jaac.avoqado_tpv.core.data.network
 
 import com.jaac.avoqado_tpv.core.data.network.dto.AckMessageRequest
 import com.jaac.avoqado_tpv.core.data.network.dto.SurveyResponseRequest
+import com.jaac.avoqado_tpv.core.data.network.dto.TpvMessageHistoryResponse
 import com.jaac.avoqado_tpv.core.data.network.dto.TpvMessageListResponse
+import com.jaac.avoqado_tpv.features.training.data.dto.TrainingsListResponse
+import com.jaac.avoqado_tpv.features.training.data.dto.TrainingDetailResponse
+import com.jaac.avoqado_tpv.features.training.data.dto.TrainingProgressListResponse
+import com.jaac.avoqado_tpv.features.training.data.dto.TrainingProgressResponse
+import com.jaac.avoqado_tpv.features.training.data.dto.UpdateProgressRequest
 import retrofit2.Response
 import retrofit2.http.*
 
@@ -585,7 +591,25 @@ interface ApiService {
      * acknowledged or dismissed when terminal reconnects.
      */
     @GET("tpv/messages/pending")
-    suspend fun getPendingMessages(): Response<TpvMessageListResponse>
+    suspend fun getPendingMessages(
+        @Query("terminalId") terminalId: String
+    ): Response<TpvMessageListResponse>
+
+    /**
+     * Get message history for this terminal (all messages, including handled)
+     *
+     * GET /tpv/messages/history
+     *
+     * Returns paginated list of all messages delivered to this terminal
+     * with their delivery status (PENDING, DELIVERED, ACKNOWLEDGED, DISMISSED).
+     * Used for the message inbox UI.
+     */
+    @GET("tpv/messages/history")
+    suspend fun getMessageHistory(
+        @Query("terminalId") terminalId: String,
+        @Query("limit") limit: Int = 50,
+        @Query("offset") offset: Int = 0
+    ): Response<TpvMessageHistoryResponse>
 
     /**
      * Acknowledge a message (REST backup for Socket.IO)
@@ -595,6 +619,7 @@ interface ApiService {
     @POST("tpv/messages/{messageId}/acknowledge")
     suspend fun acknowledgeMessage(
         @Path("messageId") messageId: String,
+        @Query("terminalId") terminalId: String,
         @Body body: AckMessageRequest
     ): Response<Unit>
 
@@ -605,7 +630,8 @@ interface ApiService {
      */
     @POST("tpv/messages/{messageId}/dismiss")
     suspend fun dismissMessage(
-        @Path("messageId") messageId: String
+        @Path("messageId") messageId: String,
+        @Query("terminalId") terminalId: String
     ): Response<Unit>
 
     /**
@@ -616,8 +642,50 @@ interface ApiService {
     @POST("tpv/messages/{messageId}/respond")
     suspend fun respondToMessage(
         @Path("messageId") messageId: String,
+        @Query("terminalId") terminalId: String,
         @Body body: SurveyResponseRequest
     ): Response<Unit>
+
+    // ========== Training / LMS ==========
+
+    /**
+     * List available training modules (auto-filtered by org modules)
+     *
+     * GET /tpv/trainings
+     */
+    @GET("tpv/trainings")
+    suspend fun getTrainings(): Response<TrainingsListResponse>
+
+    /**
+     * Get training detail with steps and quiz
+     *
+     * GET /tpv/trainings/{trainingId}
+     */
+    @GET("tpv/trainings/{trainingId}")
+    suspend fun getTrainingDetail(
+        @Path("trainingId") trainingId: String
+    ): Response<TrainingDetailResponse>
+
+    /**
+     * Update training progress for a staff member
+     *
+     * POST /tpv/trainings/{trainingId}/progress
+     */
+    @POST("tpv/trainings/{trainingId}/progress")
+    suspend fun updateTrainingProgress(
+        @Path("trainingId") trainingId: String,
+        @Body request: UpdateProgressRequest
+    ): Response<TrainingProgressResponse>
+
+    /**
+     * Get all training progress for a staff member
+     *
+     * GET /tpv/trainings/progress
+     */
+    @GET("tpv/trainings/progress")
+    suspend fun getTrainingProgress(
+        @Query("staffId") staffId: String
+    ): Response<TrainingProgressListResponse>
 
     // ========== Crypto Payments (B4Bit Integration) ==========
 

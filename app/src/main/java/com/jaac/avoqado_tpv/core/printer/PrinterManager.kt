@@ -175,7 +175,9 @@ class PrinterManager @Inject constructor(
         orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null,  // 🆕 Order items (for itemized receipt)
         discountAmount: String? = null,  // 🆕 Discount applied to order
         isRefund: Boolean = false,  // 💸 Refund mode - changes header and labels
-        isPortabilidad: Boolean? = null  // 📱 Serialized inventory: null=not serialized, false=línea nueva, true=portabilidad
+        isPortabilidad: Boolean? = null,  // 📱 Serialized inventory: null=not serialized, false=línea nueva, true=portabilidad
+        serialNumber: String? = null,  // 📱 ICCID/serial number for serialized inventory receipt
+        categoryName: String? = null  // 📱 Category name for serialized inventory receipt
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
@@ -232,12 +234,20 @@ class PrinterManager @Inject constructor(
                 printerInstance.printStr("TIPO: $saleType\n", null)
             }
 
+            // 📱 Serial number (ICCID) and category for serialized inventory
+            if (!serialNumber.isNullOrBlank()) {
+                if (!categoryName.isNullOrBlank()) {
+                    printerInstance.printStr("PRODUCTO: $categoryName\n", null)
+                }
+                printerInstance.printStr("ICCID: $serialNumber\n", null)
+            }
+
             printerInstance.printStr("================================\n\n", null)
 
             // ========================================
             // 📦 ORDER ITEMS TABLE (Mexican format: CANT | DESCRIPCION | IMPORTE)
             // ========================================
-            if (!orderItems.isNullOrEmpty()) {
+            if (!orderItems.isNullOrEmpty() && serialNumber.isNullOrBlank()) {
                 // Table header
                 printerInstance.printStr("CANT  DESCRIPCION      IMPORTE\n", null)
                 printerInstance.printStr("--------------------------------\n", null)

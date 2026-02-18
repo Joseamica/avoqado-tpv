@@ -25,7 +25,6 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Receipt
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -50,6 +49,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.sp
@@ -107,6 +107,8 @@ fun PaymentScreen(
     externalSkipReview: Boolean = false,  // 🔵 External device: skip rating/tip screens
     skipLocalOrderValidation: Boolean = false,  // 📱 SERIALIZED SALE: Order exists only on backend, skip local lookup AND sync
     isPortabilidad: Boolean = false,  // 📱 PORTABILIDAD: Controls 1 vs 2 proof-of-sale photos
+    serialNumber: String? = null,  // 📱 SERIALIZED: ICCID/serial number for receipt
+    categoryName: String? = null,  // 📱 SERIALIZED: Category name for receipt
     // ⭐ Split payment params (from SplitByPersonScreen or SplitByProductScreen)
     splitType: String? = null,  // EQUALPARTS, PERPRODUCT, CUSTOMAMOUNT, FULLPAYMENT
     equalPartsPartySize: Int? = null,  // Total people for EQUALPARTS mode
@@ -208,6 +210,11 @@ fun PaymentScreen(
     // 📱 PORTABILIDAD: Set portabilidad mode for proof-of-sale photo count
     LaunchedEffect(isPortabilidad) {
         viewModel.setIsPortabilidad(isPortabilidad)
+    }
+
+    // 📱 SERIALIZED: Pass serial number and category for receipt
+    LaunchedEffect(serialNumber, categoryName) {
+        viewModel.setSerializedItemInfo(serialNumber, categoryName)
     }
 
     // 📡 SOCKET PAYMENT: Pass source info to ViewModel for result callback
@@ -1586,35 +1593,6 @@ private fun PaymentSuccessContent(
                 .weight(1f)
                 .verticalScroll(rememberScrollState())
         ) {
-            // 📸 Warning banner when proof-of-sale photos are incomplete
-            if (showProofOfSaleButton && !proofOfSaleComplete) {
-                Surface(
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Warning,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Text(
-                            text = "Completa el registro para validar tu venta",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer
-                        )
-                    }
-                }
-            }
-
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1627,14 +1605,14 @@ private fun PaymentSuccessContent(
                     painter = painterResource(R.drawable.ilu_ticket_background),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = if (isSerializedFlow) if (showProofOfSaleButton) 32.dp else 16.dp else 70.dp)
-                        .then(if (isSerializedFlow) Modifier.height(180.dp) else Modifier),
+                        .padding(top = if (isSerializedFlow) if (showProofOfSaleButton) 40.dp else 16.dp else 70.dp)
+                        .then(if (isSerializedFlow) Modifier.height(if (showProofOfSaleButton) 200.dp else 180.dp) else Modifier),
                     contentDescription = "",
                     contentScale = ContentScale.FillBounds,
                     colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.surfaceVariant)
                 )
 
-                // QR Code (normal mode) or Camera icon (serialized, non-portabilidad)
+                // QR Code (normal mode) or proof-of-sale photo (serialized mode)
                 if (!isSerializedFlow) {
                     // Normal flow: show QR code
                     Box(
@@ -1671,15 +1649,16 @@ private fun PaymentSuccessContent(
                         }
                     }
                 } else if (showProofOfSaleButton) {
-                    // Serialized flow: proof-of-sale photo section (1 or 2 photos)
+                    // Serialized flow: proof-of-sale photo at TopCenter (like QR)
                     ProofOfSalePhotoSection(
                         isPortabilidad = isPortabilidad,
                         lineaPhotoPath = lineaPhotoPath,
                         portabilidadPhotoPath = portabilidadPhotoPath,
                         isUploading = isUploadingProofOfSale,
+                        isComplete = proofOfSaleComplete,
                         onTapLinea = {
                             if (lineaPhotoPath != null) {
-                                viewingPhotoLabel = "linea"  // Preview existing photo
+                                viewingPhotoLabel = "linea"
                             } else {
                                 currentPhotoLabel = "linea"
                                 showProofOfSaleCamera = true
@@ -1687,7 +1666,7 @@ private fun PaymentSuccessContent(
                         },
                         onTapPortabilidad = {
                             if (portabilidadPhotoPath != null) {
-                                viewingPhotoLabel = "portabilidad"  // Preview existing photo
+                                viewingPhotoLabel = "portabilidad"
                             } else {
                                 currentPhotoLabel = "portabilidad"
                                 showProofOfSaleCamera = true
@@ -1715,17 +1694,14 @@ private fun PaymentSuccessContent(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(if (isSerializedFlow) 8.dp else 20.dp))
+                    Spacer(modifier = Modifier.height(if (isSerializedFlow) 4.dp else 20.dp))
 
-                    // 📦 Order items REMOVED from success screen - shown only in printed receipt
-                    // Reason: With 10+ products, UI becomes cluttered and messy
-                    // QR code section should stay clean and focused
-                    // Product details are fully visible on the printed receipt
+                    // Dashed divider (normal flow only — serialized has photo above)
+                    if (!isSerializedFlow) {
+                        DashedDivider()
+                    }
 
-                    // Dashed divider
-                    DashedDivider()
-
-                    Spacer(modifier = Modifier.height(24.dp))
+                    Spacer(modifier = Modifier.height(if (isSerializedFlow) 4.dp else 24.dp))
 
                     // Total pagado / Total reembolsado
                     Row(
@@ -2706,35 +2682,40 @@ private fun ProofOfSalePhotoSection(
     lineaPhotoPath: String?,
     portabilidadPhotoPath: String?,
     isUploading: Boolean,
+    isComplete: Boolean,
     onTapLinea: () -> Unit,
     onTapPortabilidad: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val showWarning = !isComplete
     if (!isPortabilidad) {
-        // Single photo: "Registro de línea"
+        // Single photo: full-width placeholder with inline warning
         ProofOfSalePlaceholder(
             label = "Registro de línea",
             photoPath = lineaPhotoPath,
+            showWarning = showWarning && lineaPhotoPath == null,
             onClick = onTapLinea,
-            modifier = modifier.size(72.dp)
+            modifier = modifier.size(width = 160.dp, height = 110.dp)
         )
     } else {
         // Two photos side by side
         Row(
-            modifier = modifier.width(160.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = modifier.width(220.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             ProofOfSalePlaceholder(
-                label = "Línea",
+                label = "Reg. línea",
                 photoPath = lineaPhotoPath,
+                showWarning = showWarning && lineaPhotoPath == null,
                 onClick = onTapLinea,
-                modifier = Modifier.weight(1f).height(72.dp)
+                modifier = Modifier.weight(1f).height(96.dp)
             )
             ProofOfSalePlaceholder(
                 label = "Portabilidad",
                 photoPath = portabilidadPhotoPath,
+                showWarning = showWarning && portabilidadPhotoPath == null,
                 onClick = onTapPortabilidad,
-                modifier = Modifier.weight(1f).height(72.dp)
+                modifier = Modifier.weight(1f).height(96.dp)
             )
         }
     }
@@ -2742,16 +2723,20 @@ private fun ProofOfSalePhotoSection(
 
 /**
  * Single proof-of-sale photo placeholder.
- * Dashed border when empty with camera icon + label. Thumbnail when photo taken.
+ * Dashed border when empty with camera icon + label. Red border when warning.
+ * Thumbnail when photo taken.
  */
 @Composable
 private fun ProofOfSalePlaceholder(
     label: String,
     photoPath: String?,
+    showWarning: Boolean = false,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val dashedBorderColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+    val errorColor = MaterialTheme.colorScheme.error
+    val mutedColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+    val dashedBorderColor = if (showWarning) errorColor else mutedColor
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(16.dp))
@@ -2785,22 +2770,34 @@ private fun ProofOfSalePlaceholder(
         } else {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                verticalArrangement = Arrangement.Center,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
             ) {
                 Icon(
                     imageVector = Icons.Default.PhotoCamera,
                     contentDescription = label,
-                    modifier = Modifier.size(20.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    modifier = Modifier.size(24.dp),
+                    tint = if (showWarning) errorColor.copy(alpha = 0.8f) else mutedColor
                 )
-                Spacer(modifier = Modifier.height(2.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = label,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    color = if (showWarning) errorColor.copy(alpha = 0.9f) else mutedColor,
                     textAlign = TextAlign.Center,
                     maxLines = 1
                 )
+                if (showWarning) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = "Toma foto",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 9.sp
+                        ),
+                        color = errorColor.copy(alpha = 0.7f),
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
         }
     }

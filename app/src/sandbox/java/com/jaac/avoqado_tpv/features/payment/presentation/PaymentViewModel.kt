@@ -270,6 +270,10 @@ class PaymentViewModel @Inject constructor(
     private val _proofOfSaleComplete = MutableStateFlow(false)
     val proofOfSaleComplete: StateFlow<Boolean> = _proofOfSaleComplete.asStateFlow()
 
+    // 📱 Serialized item info for receipt (ICCID + category)
+    private var _serialNumber: String? = null
+    private var _categoryName: String? = null
+
     // 👤 Customer search for email receipt dialog
     private val _customerSearchState = MutableStateFlow<CustomerSearchState>(CustomerSearchState.Idle)
     val customerSearchState: StateFlow<CustomerSearchState> = _customerSearchState.asStateFlow()
@@ -847,6 +851,15 @@ class PaymentViewModel @Inject constructor(
         _isPortabilidad.value = isPortabilidad
         Timber.d("📱 [Portabilidad] isPortabilidad=$isPortabilidad (photos=${if (isPortabilidad) 2 else 1})")
         updateSessionSnapshot(reason = "setIsPortabilidad")
+    }
+
+    /**
+     * 📱 SERIALIZED: Store serial number (ICCID) and category name for receipt printing
+     */
+    fun setSerializedItemInfo(serialNumber: String?, categoryName: String?) {
+        _serialNumber = serialNumber
+        _categoryName = categoryName
+        Timber.d("📱 [Serialized] serialNumber=$serialNumber, categoryName=$categoryName")
     }
 
     /**
@@ -4388,6 +4401,8 @@ class PaymentViewModel @Inject constructor(
         cleanupOrphanedProofOfSalePhotos()
         _isPortabilidad.value = false
         _proofOfSaleComplete.value = false
+        _serialNumber = null
+        _categoryName = null
 
         // 🪙 Clear crypto payment state
         currentCryptoRequestId = null
@@ -5904,7 +5919,9 @@ class PaymentViewModel @Inject constructor(
                         orderItems = itemsForPrint,  // 🆕 Order items (for itemized receipt)
                         discountAmount = discountForPrint,  // 🆕 Discount for receipt printing
                         isRefund = currentState.isRefund,  // 💸 Pass refund flag for receipt header
-                        isPortabilidad = if (_isSerializedInventoryActive.value) _isPortabilidad.value else null  // 📱 Sale type for serialized inventory
+                        isPortabilidad = if (_isSerializedInventoryActive.value) _isPortabilidad.value else null,  // 📱 Sale type for serialized inventory
+                        serialNumber = _serialNumber,  // 📱 ICCID/serial for receipt
+                        categoryName = _categoryName  // 📱 Category name for receipt
                     )
                 }
 

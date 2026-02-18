@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+---
+
+## [1.7.0] - 2026-02-18
+
+### **Changed**
+
+- **SerializedSaleScreen (Vender SIM) UX redesign**: Made layout scrollable to prevent overflow on PAX A80 when all form fields are visible. Added visual step progression with numbered circles (primary-colored 24dp badges) that dynamically adjust based on current state (Available, NotRegistered, portabilidad). Replaced flat "Escanear Otro" button with divider pattern ("o escanea otro") matching SerializedInventoryScreen. Changed category dropdown and price input to pill-shaped (RoundedCornerShape(50)) for cleaner look. Removed `Spacer(weight(1f))` incompatible with scrollable Column
+- **SerializedInventoryScreen (Alta de SIM) UX redesign**: Added visual step progression with numbered circle badges (StepRow) for steps 1 (category selection) and 2 (scan barcodes), matching Vender SIM pattern. Changed category dropdown to pill-shaped (RoundedCornerShape(50)) for both loading and active states
+
 ### **Added**
 
 - **Multi-photo proof-of-sale wizard for portabilidad**: Portabilidad sales now require 2 mandatory photos (registro de línea + registro de portabilidad) instead of skipping proof-of-sale. Wizard auto-advances from first to second photo. Warning banner shown until all photos are complete. Navigation blocked ("Nueva Venta" disabled) until all required photos are uploaded. Firebase cleanup for orphaned photos on payment reset or ViewModel destruction. Tapping a filled thumbnail opens full-screen preview with "Retomar foto" option (deletes old Firebase photo, re-opens camera)
@@ -49,6 +58,10 @@
 ### **Changed**
 
 - **Proof-of-sale always mandatory for SERIALIZED_INVENTORY**: Both portabilidad and non-portabilidad flows now require proof-of-sale photos (1 photo for normal, 2 for portabilidad). `skipProofOfSale` flag replaced by `isPortabilidad` throughout navigation chain (SerializedSaleScreen → AppNavigation → PaymentScreen → PaymentViewModel). Firebase upload filenames now include photo label suffix for differentiation
+- **Serialized inventory receipt sale type**: Printed receipt now shows `TIPO: PORTABILIDAD` or `TIPO: LINEA NUEVA` after CAJERO line for serialized inventory sales. Non-serialized receipts are unaffected (`isPortabilidad = null`)
+- **Serialized inventory receipt ICCID/category**: Printed receipt now shows `PRODUCTO: <category>` and `ICCID: <serial>` in the header section. Serial number and category name passed through full navigation chain (SerializedSaleScreen → AppNavigation → PaymentScreen → PaymentViewModel → PrinterManager)
+- **Proof-of-sale placeholder red warning border**: Empty photo placeholders show red dashed border with "Toma foto" hint when photos are incomplete. Separate error banner removed — warning is integrated into the placeholder itself
+- **Proof-of-sale photo section spacing**: Added 48dp top padding to photo placeholders on payment success screen so they sit comfortably inside the receipt ticket background. Increased receipt background height from 200dp to 220dp for serialized proof-of-sale flows
 - **Quiz screen paginated**: TrainingQuizScreen rewritten from scrollable all-questions view to one-question-at-a-time with step dots, progress header, and Anterior/Siguiente/Enviar navigation. Better UX for PAX A80 small screen
 - **CompletionScreen enhanced**: Now shows configurable pass threshold text, attempt counter ("Intento N de M"), "Revisar respuestas" button (always visible when quiz exists), and "Intentos agotados" text when max attempts reached. Added verticalScroll for PAX A80 overflow safety
 - **TrainingStepViewer top bar**: Subtitle now shows "Quiz" during quiz and "Revisión del quiz" during review mode
@@ -70,6 +83,8 @@
 
 ### **Fixed**
 
+- **Serialized inventory receipt missing FOLIO**: `orderNumber` from `QuickSellResult` was not passed through the navigation chain (SerializedSaleScreen → AppNavigation → PaymentScreen). Receipt now prints `FOLIO: ORD-XXX` for serialized inventory sales
+- **Proof-of-sale placeholder label truncated**: "Registro de línea" was cut to "Registro de" because placeholder was only 72dp. Single photo mode now 140x100dp with full label visible. Two-photo mode uses abbreviated "Reg. línea" label. Icon size increased (20→24dp), text allows 2 lines. Warning banner moved inside receipt card below photo area with shorter text "Toma foto para validar tu venta"
 - **Print options dialog for sales report**: New AlertDialog before printing lets user toggle optional sections: "Propinas por mesero" (waiter tips breakdown with name, amount, count) and "Resenas" (ratings count, only shown when reviews enabled in TpvSettings). Average tip percentage always included with waiter tips section
 - **Waiter tips on receipt**: Optional PROPINAS POR MESERO section shows each waiter's name (truncated to 14 chars), tip amount, and order count. Includes average tip percentage line
 - **Ratings count on receipt**: Optional RESENAS section shows total ratings count. Gated by `TpvSettings.showReviewScreen`

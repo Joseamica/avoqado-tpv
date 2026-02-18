@@ -4,7 +4,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -61,7 +64,7 @@ import timber.log.Timber
 @Composable
 fun SerializedSaleScreen(
     onNavigateBack: () -> Unit,
-    onNavigateToPayment: (orderId: String, orderNumber: String?, orderTotal: String, isPortabilidad: Boolean) -> Unit,
+    onNavigateToPayment: (orderId: String, orderNumber: String?, orderTotal: String, isPortabilidad: Boolean, serialNumber: String?, categoryName: String?) -> Unit,
     resetOnEnter: Boolean = false,
     viewModel: SerializedSaleViewModel = hiltViewModel()
 ) {
@@ -168,6 +171,7 @@ fun SerializedSaleScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
                             .padding(Spacing.Space4)
                     ) {
                         // ══════════════════════════════════════════════════════════
@@ -277,95 +281,113 @@ fun SerializedSaleScreen(
                         // Scan Result Card (when item is scanned)
                         // ══════════════════════════════════════════════════════════
                         if (uiState.scanResult != null) {
-                            Timber.d("📦 [Screen] Showing scan result: ${uiState.scanResult!!::class.simpleName}")
-                            ScanResultCard(
-                                scanResult = uiState.scanResult,
-                                serialNumber = uiState.currentSerialNumber,
-                                itemLabel = itemLabel,
-                                barcodeLabel = barcodeLabel,
-                                modifier = Modifier.fillMaxWidth()
-                            )
+                            val scanResult = uiState.scanResult!!
+                            Timber.d("📦 [Screen] Showing scan result: ${scanResult::class.simpleName}")
+
+                            // Dynamic step numbering based on current state
+                            var nextStep = 1
+                            val statusStep = nextStep++
+                            val categoryStep = if (scanResult is ScanResult.NotRegistered) nextStep++ else null
+                            val showPriceSection = scanResult is ScanResult.Available ||
+                                (scanResult is ScanResult.NotRegistered && uiState.selectedCategory != null)
+                            val priceStep = if (showPriceSection) nextStep++ else null
+                            val portabilidadStep = if (uiState.showPortabilidadToggle && showPriceSection) nextStep++ else null
+
+                            // Step 1: Status banner
+                            StepRow(statusStep) {
+                                ScanResultCard(
+                                    scanResult = uiState.scanResult,
+                                    serialNumber = uiState.currentSerialNumber,
+                                    itemLabel = itemLabel,
+                                    barcodeLabel = barcodeLabel,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
 
                             Spacer(modifier = Modifier.height(Spacing.Space3))
 
-                            // Category selector for unregistered items
-                            if (uiState.scanResult is ScanResult.NotRegistered) {
-                                Text(
-                                    text = "Selecciona categoría",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Spacer(modifier = Modifier.height(Spacing.Space1))
+                            // Step 2 (NotRegistered only): Category selector
+                            if (categoryStep != null) {
+                                StepRow(categoryStep) {
+                                    Text(
+                                        text = "Selecciona categoría",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(Spacing.Space1))
 
-                                CategorySelectorDropdown(
-                                    categories = uiState.categories,
-                                    selectedCategory = uiState.selectedCategory,
-                                    onCategorySelected = viewModel::onCategorySelected,
-                                    onCreateCategory = { showCreateCategoryDialog = true },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
+                                    CategorySelectorDropdown(
+                                        categories = uiState.categories,
+                                        selectedCategory = uiState.selectedCategory,
+                                        onCategorySelected = viewModel::onCategorySelected,
+                                        onCreateCategory = { showCreateCategoryDialog = true },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
 
                                 Spacer(modifier = Modifier.height(Spacing.Space3))
                             }
 
-                            // Price input (for available or not_registered with category)
-                            if (uiState.scanResult is ScanResult.Available ||
-                                (uiState.scanResult is ScanResult.NotRegistered && uiState.selectedCategory != null)
-                            ) {
-                                Text(
-                                    text = "Precio de venta",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Spacer(modifier = Modifier.height(Spacing.Space1))
+                            // Step N: Price input
+                            if (priceStep != null) {
+                                StepRow(priceStep) {
+                                    Text(
+                                        text = "Precio de venta",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(Spacing.Space1))
 
-                                // Clickable price display — opens numpad dialog
-                                Surface(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { showAmountInput = true },
-                                    shape = RoundedCornerShape(12.dp),
-                                    border = androidx.compose.foundation.BorderStroke(
-                                        1.dp,
-                                        if (uiState.enteredPrice.isNotEmpty())
-                                            MaterialTheme.colorScheme.primary
-                                        else
-                                            MaterialTheme.colorScheme.outline
-                                    ),
-                                    color = MaterialTheme.colorScheme.surface
-                                ) {
-                                    Row(
+                                    // Clickable price display — opens numpad dialog
+                                    Surface(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(horizontal = 16.dp, vertical = 14.dp),
-                                        verticalAlignment = Alignment.CenterVertically
+                                            .clickable { showAmountInput = true },
+                                        shape = RoundedCornerShape(50),
+                                        border = androidx.compose.foundation.BorderStroke(
+                                            1.dp,
+                                            if (uiState.enteredPrice.isNotEmpty())
+                                                MaterialTheme.colorScheme.primary
+                                            else
+                                                MaterialTheme.colorScheme.outline
+                                        ),
+                                        color = MaterialTheme.colorScheme.surface
                                     ) {
-                                        Text(
-                                            text = if (uiState.enteredPrice.isNotEmpty())
-                                                "$${uiState.enteredPrice}"
-                                            else
-                                                "$0",
-                                            style = MaterialTheme.typography.headlineMedium,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (uiState.enteredPrice.isNotEmpty())
-                                                MaterialTheme.colorScheme.onSurface
-                                            else
-                                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                                        )
-                                        Spacer(modifier = Modifier.weight(1f))
-                                        Icon(
-                                            Icons.Default.Edit,
-                                            contentDescription = "Editar precio",
-                                            modifier = Modifier.size(20.dp),
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 16.dp, vertical = 14.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = if (uiState.enteredPrice.isNotEmpty())
+                                                    "$${uiState.enteredPrice}"
+                                                else
+                                                    "$0",
+                                                style = MaterialTheme.typography.headlineMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (uiState.enteredPrice.isNotEmpty())
+                                                    MaterialTheme.colorScheme.onSurface
+                                                else
+                                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                            )
+                                            Spacer(modifier = Modifier.weight(1f))
+                                            Icon(
+                                                Icons.Default.Edit,
+                                                contentDescription = "Editar precio",
+                                                modifier = Modifier.size(20.dp),
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
                                     }
                                 }
 
                                 Spacer(modifier = Modifier.height(Spacing.Space3))
+                            }
 
-                                // Portabilidad toggle (only when backend enables it)
-                                if (uiState.showPortabilidadToggle) {
+                            // Step N+1: Portabilidad toggle
+                            if (portabilidadStep != null) {
+                                StepRow(portabilidadStep) {
                                     Surface(
                                         modifier = Modifier.fillMaxWidth(),
                                         shape = RoundedCornerShape(12.dp),
@@ -415,20 +437,27 @@ fun SerializedSaleScreen(
                                             )
                                         }
                                     }
-                                    Spacer(modifier = Modifier.height(Spacing.Space3))
                                 }
 
-                                // Confirm sale button
+                                Spacer(modifier = Modifier.height(Spacing.Space3))
+                            }
+
+                            // Confirm sale button (outside StepRow — it's the CTA)
+                            if (showPriceSection) {
                                 Button(
                                     onClick = {
                                         focusManager.clearFocus()
                                         val isPortabilidadValue = uiState.isPortabilidad
+                                        val serialNumberValue = uiState.currentSerialNumber
+                                        val categoryNameValue = uiState.selectedCategory?.name
                                         viewModel.onConfirmSale { result ->
                                             onNavigateToPayment(
                                                 result.orderId,
                                                 result.orderNumber,
                                                 result.total.toPlainString(),
-                                                isPortabilidadValue
+                                                isPortabilidadValue,
+                                                serialNumberValue,
+                                                categoryNameValue
                                             )
                                         }
                                     },
@@ -449,14 +478,22 @@ fun SerializedSaleScreen(
                                 }
                             }
 
-                            // Already sold - show scan another button
-                            if (uiState.scanResult is ScanResult.AlreadySold) {
-                                Spacer(modifier = Modifier.weight(1f))
+                            // Divider + "Escanear Otro" pattern
+                            Spacer(modifier = Modifier.height(Spacing.Space4))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                HorizontalDivider(modifier = Modifier.weight(1f))
+                                Text(
+                                    text = "  o escanea otro  ",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                HorizontalDivider(modifier = Modifier.weight(1f))
                             }
-
                             Spacer(modifier = Modifier.height(Spacing.Space3))
 
-                            // Scan another button
                             OutlinedButton(
                                 onClick = {
                                     scannerInput = ""
@@ -470,6 +507,7 @@ fun SerializedSaleScreen(
                                 Spacer(modifier = Modifier.width(Spacing.Space2))
                                 Text("Escanear Otro")
                             }
+                            Spacer(modifier = Modifier.height(Spacing.Space4))
                         }
                     }
                 }
@@ -685,7 +723,8 @@ private fun CategorySelectorDropdown(
             onClick = onCreateCategory,
             modifier = modifier
                 .fillMaxWidth()
-                .height(Size.SerializedCategorySelectorHeight)
+                .height(Size.SerializedCategorySelectorHeight),
+            shape = RoundedCornerShape(50)
         ) {
             Icon(
                 Icons.Default.Add,
@@ -711,6 +750,7 @@ private fun CategorySelectorDropdown(
                 readOnly = true,
                 singleLine = true,
                 textStyle = MaterialTheme.typography.bodyMedium,
+                shape = RoundedCornerShape(50),
                 leadingIcon = {
                     Icon(
                         Icons.Default.Category,
@@ -931,5 +971,41 @@ fun CreateCategoryDialog(
                 }
             }
         }
+    }
+}
+
+/**
+ * Step indicator row — 24dp primary circle with step number, content on the right.
+ * Provides visual step progression for the sale flow.
+ */
+@Composable
+private fun StepRow(
+    stepNumber: Int,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.Space3)
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(24.dp)
+        ) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "$stepNumber",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+            }
+        }
+        Column(modifier = Modifier.weight(1f)) { content() }
     }
 }

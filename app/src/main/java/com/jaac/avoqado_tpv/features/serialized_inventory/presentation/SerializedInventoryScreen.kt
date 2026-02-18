@@ -399,29 +399,32 @@ private fun InventoryFormContent(
                 })
             }
     ) {
-        // Step 1: Category Selection (Compact dropdown)
-        Text(
-            text = "1. Selecciona categoría",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-
-        CategorySelectorDropdown(
-            categories = uiState.categories,
-            selectedCategory = uiState.selectedCategory,
-            onCategorySelected = onCategorySelected,
-            modifier = Modifier.fillMaxWidth()
-        )
+        // Step 1: Category Selection
+        StepRow(1) {
+            Text(
+                text = "Selecciona categoría",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            CategorySelectorDropdown(
+                categories = uiState.categories,
+                selectedCategory = uiState.selectedCategory,
+                onCategorySelected = onCategorySelected,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Step 2: Scan barcodes (Compact)
-        Text(
-            text = "2. Escanea $itemLabelPlural",
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold
-        )
+        // Step 2: Scan barcodes
+        StepRow(2) {
+            Text(
+                text = "Escanea $itemLabelPlural",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+        }
         Spacer(modifier = Modifier.height(4.dp))
 
         // 📱 Physical scanner input field (compact for PAX A910S)
@@ -722,7 +725,8 @@ private fun CategorySelectorDropdown(
                 .height(Size.SerializedCategorySelectorHeight),
             enabled = false,
             readOnly = true,
-            singleLine = true
+            singleLine = true,
+            shape = RoundedCornerShape(50)
         )
     } else {
         ExposedDropdownMenuBox(
@@ -740,6 +744,7 @@ private fun CategorySelectorDropdown(
                 readOnly = true,
                 singleLine = true,
                 textStyle = MaterialTheme.typography.bodyMedium,
+                shape = RoundedCornerShape(50),
                 trailingIcon = {
                     ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
                 },
@@ -1068,5 +1073,41 @@ private fun RegistrationResultCard(
                 }
             }
         }
+    }
+}
+
+/**
+ * Step indicator row — 24dp primary circle with step number, content on the right.
+ * Provides visual step progression for the inventory flow.
+ */
+@Composable
+private fun StepRow(
+    stepNumber: Int,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(24.dp)
+        ) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "$stepNumber",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+            }
+        }
+        Column(modifier = Modifier.weight(1f)) { content() }
     }
 }

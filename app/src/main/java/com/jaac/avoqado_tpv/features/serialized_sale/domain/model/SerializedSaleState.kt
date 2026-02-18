@@ -45,14 +45,15 @@ sealed class ScanResult {
  */
 data class SerializedItem(
     val id: String,
-    val venueId: String,
+    val venueId: String?, // Nullable for org-level items
     val categoryId: String,
     val serialNumber: String,
     val status: ItemStatus,
     val soldAt: String?,
     val orderItemId: String?,
     val createdAt: String,
-    val category: ItemCategory?
+    val category: ItemCategory?,
+    val source: String? = null // 'venue' | 'organization'
 )
 
 /**
@@ -78,11 +79,12 @@ enum class ItemStatus {
  */
 data class ItemCategory(
     val id: String,
-    val venueId: String,
+    val venueId: String?, // Nullable for org-level categories
     val name: String,
     val description: String?,
     val suggestedPrice: BigDecimal?,
-    val sortOrder: Int?
+    val sortOrder: Int?,
+    val source: String? = null // 'venue' | 'organization'
 )
 
 /**
@@ -93,7 +95,8 @@ data class CategoryWithStock(
     val name: String,
     val description: String?,
     val suggestedPrice: BigDecimal?,
-    val availableCount: Int
+    val availableCount: Int,
+    val source: String? = null // 'venue' | 'organization'
 )
 
 /**

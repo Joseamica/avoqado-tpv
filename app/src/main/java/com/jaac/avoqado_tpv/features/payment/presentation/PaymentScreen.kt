@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -38,10 +39,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -102,7 +106,7 @@ fun PaymentScreen(
     externalRating: Int? = null,  // 🔵 External device rating (1-5)
     externalSkipReview: Boolean = false,  // 🔵 External device: skip rating/tip screens
     skipLocalOrderValidation: Boolean = false,  // 📱 SERIALIZED SALE: Order exists only on backend, skip local lookup AND sync
-    skipProofOfSale: Boolean = false,  // 📱 PORTABILIDAD: Skip proof-of-sale camera FAB on payment success
+    isPortabilidad: Boolean = false,  // 📱 PORTABILIDAD: Controls 1 vs 2 proof-of-sale photos
     // ⭐ Split payment params (from SplitByPersonScreen or SplitByProductScreen)
     splitType: String? = null,  // EQUALPARTS, PERPRODUCT, CUSTOMAMOUNT, FULLPAYMENT
     equalPartsPartySize: Int? = null,  // Total people for EQUALPARTS mode
@@ -154,6 +158,8 @@ fun PaymentScreen(
     // 📸 PROOF-OF-SALE: derived from PaymentSession snapshot (module-driven)
     val showProofOfSale by viewModel.showProofOfSale.collectAsStateWithLifecycle()
     val isUploadingProofOfSale by viewModel.isUploadingProofOfSale.collectAsStateWithLifecycle()
+    val isPortabilidadState by viewModel.isPortabilidad.collectAsStateWithLifecycle()
+    val proofOfSaleComplete by viewModel.proofOfSaleComplete.collectAsStateWithLifecycle()
     val currentMerchant by viewModel.currentMerchant.collectAsStateWithLifecycle()
     val merchantSwitchingLoading by viewModel.merchantSwitchingLoading.collectAsStateWithLifecycle()
     val merchantSwitchMessage by viewModel.merchantSwitchMessage.collectAsStateWithLifecycle()
@@ -199,11 +205,9 @@ fun PaymentScreen(
         viewModel.setKioskPaymentMode(isKioskPayment, kioskStaffId)
     }
 
-    // 📱 PORTABILIDAD: Skip proof-of-sale camera on payment success
-    LaunchedEffect(skipProofOfSale) {
-        if (skipProofOfSale) {
-            viewModel.setSkipProofOfSale(true)
-        }
+    // 📱 PORTABILIDAD: Set portabilidad mode for proof-of-sale photo count
+    LaunchedEffect(isPortabilidad) {
+        viewModel.setIsPortabilidad(isPortabilidad)
     }
 
     // 📡 SOCKET PAYMENT: Pass source info to ViewModel for result callback
@@ -785,7 +789,9 @@ fun PaymentScreen(
                                 onResetCustomerSearch = viewModel::resetCustomerSearch,
                                 // 📸 PROOF-OF-SALE: Show camera FAB when SERIALIZED_INVENTORY is active and we have paymentId
                                 showProofOfSaleButton = showProofOfSale && currentState.receipt?.paymentId != null,
-                                onProofOfSalePhotoTaken = { photoPath ->
+                                isPortabilidad = isPortabilidadState,
+                                proofOfSaleComplete = proofOfSaleComplete,
+                                onProofOfSalePhotoTaken = { photoPath, photoLabel ->
                                     // Handle proof-of-sale photo upload
                                     val paymentId = currentState.receipt?.paymentId
                                     val totalAmount = currentState.receipt?.totalAmount
@@ -795,14 +801,15 @@ fun PaymentScreen(
                                         ?: System.currentTimeMillis().toString().takeLast(8)
 
                                     if (paymentId != null && totalAmount != null) {
-                                        Timber.d("📸 [PROOF-OF-SALE] Uploading photo for payment $paymentId (ref: $orderRef)")
-                                        viewModel.uploadProofOfSale(photoPath, paymentId, orderRef, totalAmount.toString())
+                                        Timber.d("📸 [PROOF-OF-SALE] Uploading $photoLabel photo for payment $paymentId (ref: $orderRef)")
+                                        viewModel.uploadProofOfSale(photoPath, paymentId, orderRef, totalAmount.toString(), photoLabel)
                                     } else {
                                         Timber.e("📸 [PROOF-OF-SALE] Missing required data for upload")
                                         Timber.e("📸 [PROOF-OF-SALE] Missing: paymentId=${paymentId==null}, totalAmount=${totalAmount==null}")
                                     }
                                 },
                                 isUploadingProofOfSale = isUploadingProofOfSale,
+                                onRetakeProofOfSalePhoto = viewModel::retakeProofOfSalePhoto,
                                 isPrinting = isPrinting  // 🖨️ Show "Imprimiendo..." on button
                             )
                         }
@@ -1367,8 +1374,11 @@ private fun PaymentSuccessContent(
     onResetCustomerSearch: () -> Unit = {},
     // 📸 PROOF-OF-SALE
     showProofOfSaleButton: Boolean = false,  // Show camera FAB for SERIALIZED_INVENTORY
-    onProofOfSalePhotoTaken: (String) -> Unit = {},  // Callback when photo is captured (path)
+    isPortabilidad: Boolean = false,  // 📱 Controls 1 vs 2 proof-of-sale photos
+    proofOfSaleComplete: Boolean = false,  // All required photos uploaded
+    onProofOfSalePhotoTaken: (String, String) -> Unit = { _, _ -> },  // Callback (path, photoLabel)
     isUploadingProofOfSale: Boolean = false,  // Show loading during upload
+    onRetakeProofOfSalePhoto: (String) -> Unit = {},  // Retake callback (photoLabel)
     // 🖨️ RECEIPT PRINTING
     isPrinting: Boolean = false  // Show "Imprimiendo..." on print button
 ) {
@@ -1388,9 +1398,13 @@ private fun PaymentSuccessContent(
     // 📧 State for email receipt dialog
     var showEmailDialog by remember { mutableStateOf(false) }
 
-    // 📸 State for proof-of-sale camera
+    // 📸 State for proof-of-sale camera (multi-photo wizard)
     var showProofOfSaleCamera by remember { mutableStateOf(false) }
     var capturedPhotoPath by remember { mutableStateOf<String?>(null) }
+    var lineaPhotoPath by remember { mutableStateOf<String?>(null) }
+    var portabilidadPhotoPath by remember { mutableStateOf<String?>(null) }
+    var currentPhotoLabel by remember { mutableStateOf("linea") }  // which photo camera is capturing
+    var viewingPhotoLabel by remember { mutableStateOf<String?>(null) }  // photo being previewed for retake
 
     // 🥝 KIOSK MODE: Auto-dismiss countdown
     var kioskSecondsRemaining by remember { mutableIntStateOf(kioskCountdownSeconds) }
@@ -1412,22 +1426,7 @@ private fun PaymentSuccessContent(
 
     androidx.compose.material3.Scaffold(
         floatingActionButton = {
-            // 📸 PROOF-OF-SALE: Show camera FAB only when SERIALIZED_INVENTORY is active
-            if (showProofOfSaleButton && !isKioskPayment) {
-                androidx.compose.material3.FloatingActionButton(
-                    onClick = {
-                        Timber.d("📸 [PROOF-OF-SALE] Opening camera for proof-of-sale photo")
-                        showProofOfSaleCamera = true
-                    },
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PhotoCamera,
-                        contentDescription = "Tomar foto de comprobante"
-                    )
-                }
-            }
+            // 📸 PROOF-OF-SALE FAB removed — replaced by inline camera icon on ticket
         }
     ) { paddingValues ->
         Column(
@@ -1463,21 +1462,26 @@ private fun PaymentSuccessContent(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // Home button (left) - Navigate to WelcomeScreen
-                    IconButton(
-                        onClick = onNavigateHome,  // ✅ Navigate to WelcomeScreen
-                        modifier = Modifier
-                            .size(48.dp)
-                            .border(
-                                width = 1.dp,
-                                color = MaterialTheme.colorScheme.outline,
-                                shape = RoundedCornerShape(12.dp)
+                    // Hidden in SERIALIZED_INVENTORY mode (staff must use "Nueva Venta" flow)
+                    if (flowOrigin != PaymentFlowOrigin.SERIALIZED) {
+                        IconButton(
+                            onClick = onNavigateHome,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .border(
+                                    width = 1.dp,
+                                    color = MaterialTheme.colorScheme.outline,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Home,
+                                contentDescription = "Inicio",
+                                tint = MaterialTheme.colorScheme.onSurface
                             )
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Home,  // ✅ Home icon
-                            contentDescription = "Inicio",
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
+                        }
+                    } else {
+                        Spacer(modifier = Modifier.size(48.dp))
                     }
 
                     // Center button - "Listo" (refund), "Continuar pagando" (remaining balance), or "Nueva Orden"/"Nuevo Pago"
@@ -1536,6 +1540,7 @@ private fun PaymentSuccessContent(
 
                                 Button(
                                     onClick = successRouting.onClick,
+                                    enabled = proofOfSaleComplete || !showProofOfSaleButton,
                                     shape = RoundedCornerShape(12.dp),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = MaterialTheme.colorScheme.surface,
@@ -1550,8 +1555,8 @@ private fun PaymentSuccessContent(
                     }
 
                     // Order details sheet button (only if there are order items)
-                    // ✅ Keeps right side balanced with left home button
-                    if (!orderItems.isNullOrEmpty()) {
+                    // Hidden in SERIALIZED_INVENTORY mode
+                    if (!orderItems.isNullOrEmpty() && flowOrigin != PaymentFlowOrigin.SERIALIZED) {
                         IconButton(
                             onClick = { showOrderDetailsModal = true },
                             modifier = Modifier
@@ -1569,7 +1574,6 @@ private fun PaymentSuccessContent(
                             )
                         }
                     } else {
-                        // Spacer to balance layout when no receipt button
                         Spacer(modifier = Modifier.size(48.dp))
                     }
                 }
@@ -1582,59 +1586,115 @@ private fun PaymentSuccessContent(
                 .weight(1f)
                 .verticalScroll(rememberScrollState())
         ) {
+            // 📸 Warning banner when proof-of-sale photos are incomplete
+            if (showProofOfSaleButton && !proofOfSaleComplete) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "Completa el registro para validar tu venta",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                }
+            }
+
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 24.dp)
             ) {
+                val isSerializedFlow = flowOrigin == PaymentFlowOrigin.SERIALIZED
+
                 // Receipt background image (ticket paper texture)
                 Image(
                     painter = painterResource(R.drawable.ilu_ticket_background),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 70.dp), // Reduced from 90dp - less space for QR
+                        .padding(top = if (isSerializedFlow) if (showProofOfSaleButton) 32.dp else 16.dp else 70.dp)
+                        .then(if (isSerializedFlow) Modifier.height(180.dp) else Modifier),
                     contentDescription = "",
                     contentScale = ContentScale.FillBounds,
                     colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.surfaceVariant)
                 )
 
-                // QR Code (centered on top) - ALWAYS shown
-                // ✅ UX: Shimmer loader while waiting for backend receipt (1-2s delay on card payments)
-                // Note: showReceiptOptions only controls the print button below, NOT the QR code
-                Box(
-                    modifier = Modifier
-                        .size(180.dp)
-                        .align(Alignment.TopCenter)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(Color.White)
-                        .border(
-                            width = 10.dp,
-                            color = MaterialTheme.colorScheme.outline,
-                            shape = RoundedCornerShape(24.dp)
-                        )
-                ) {
-                    receipt?.receiptUrl?.let { qrUrl ->
-                        // Receipt arrived from backend → Show QR code
-                        Image(
-                            painter = com.jaac.avoqado_tpv.core.presentation.components.rememberQrBitmapPainter(
-                                content = qrUrl,
-                                size = 140.dp,
-                                padding = 0.dp
-                            ),
-                            contentDescription = "Código QR del recibo",
-                            modifier = Modifier
-                                .size(140.dp)
-                                .align(Alignment.Center)
-                        )
-                    } ?: run {
-                        // Receipt pending (backend response in flight) → Show shimmer
-                        com.jaac.avoqado_tpv.core.presentation.components.ShimmerBox(
-                            modifier = Modifier
-                                .size(140.dp)
-                                .align(Alignment.Center),
-                            cornerRadius = 12.dp
-                        )
+                // QR Code (normal mode) or Camera icon (serialized, non-portabilidad)
+                if (!isSerializedFlow) {
+                    // Normal flow: show QR code
+                    Box(
+                        modifier = Modifier
+                            .size(180.dp)
+                            .align(Alignment.TopCenter)
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(Color.White)
+                            .border(
+                                width = 10.dp,
+                                color = MaterialTheme.colorScheme.outline,
+                                shape = RoundedCornerShape(24.dp)
+                            )
+                    ) {
+                        receipt?.receiptUrl?.let { qrUrl ->
+                            Image(
+                                painter = com.jaac.avoqado_tpv.core.presentation.components.rememberQrBitmapPainter(
+                                    content = qrUrl,
+                                    size = 140.dp,
+                                    padding = 0.dp
+                                ),
+                                contentDescription = "Código QR del recibo",
+                                modifier = Modifier
+                                    .size(140.dp)
+                                    .align(Alignment.Center)
+                            )
+                        } ?: run {
+                            com.jaac.avoqado_tpv.core.presentation.components.ShimmerBox(
+                                modifier = Modifier
+                                    .size(140.dp)
+                                    .align(Alignment.Center),
+                                cornerRadius = 12.dp
+                            )
+                        }
                     }
+                } else if (showProofOfSaleButton) {
+                    // Serialized flow: proof-of-sale photo section (1 or 2 photos)
+                    ProofOfSalePhotoSection(
+                        isPortabilidad = isPortabilidad,
+                        lineaPhotoPath = lineaPhotoPath,
+                        portabilidadPhotoPath = portabilidadPhotoPath,
+                        isUploading = isUploadingProofOfSale,
+                        onTapLinea = {
+                            if (lineaPhotoPath != null) {
+                                viewingPhotoLabel = "linea"  // Preview existing photo
+                            } else {
+                                currentPhotoLabel = "linea"
+                                showProofOfSaleCamera = true
+                            }
+                        },
+                        onTapPortabilidad = {
+                            if (portabilidadPhotoPath != null) {
+                                viewingPhotoLabel = "portabilidad"  // Preview existing photo
+                            } else {
+                                currentPhotoLabel = "portabilidad"
+                                showProofOfSaleCamera = true
+                            }
+                        },
+                        modifier = Modifier.align(Alignment.TopCenter)
+                    )
                 }
 
                 // Receipt content
@@ -1644,16 +1704,18 @@ private fun PaymentSuccessContent(
                         .padding(horizontal = 40.dp)
                         .align(Alignment.BottomCenter)
                 ) {
-                    // Instruction text - QR is always shown
-                    Text(
-                        text = "Escanea el código QR para descargar el recibo y dejar una calificación",
-                        textAlign = TextAlign.Center,
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    // Instruction text - hidden in SERIALIZED_INVENTORY mode
+                    if (!isSerializedFlow) {
+                        Text(
+                            text = "Escanea el código QR para descargar el recibo y dejar una calificación",
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
 
-                    Spacer(modifier = Modifier.height(20.dp))
+                    Spacer(modifier = Modifier.height(if (isSerializedFlow) 8.dp else 20.dp))
 
                     // 📦 Order items REMOVED from success screen - shown only in printed receipt
                     // Reason: With 10+ products, UI becomes cluttered and messy
@@ -1875,17 +1937,37 @@ private fun PaymentSuccessContent(
         )
     }
 
-    // 📸 Photo preview dialog with confirm/retake buttons
+    // 📸 Photo preview dialog with confirm/retake buttons (multi-photo wizard)
     capturedPhotoPath?.let { photoPath ->
         ProofOfSalePhotoPreviewDialog(
             photoPath = photoPath,
             onConfirm = {
-                Timber.d("📸 [PROOF-OF-SALE] Photo confirmed, starting upload")
-                onProofOfSalePhotoTaken(photoPath)
+                Timber.d("📸 [PROOF-OF-SALE] Photo confirmed ($currentPhotoLabel), starting upload")
+                // Store path in the correct slot
+                if (currentPhotoLabel == "linea") {
+                    lineaPhotoPath = photoPath
+                } else {
+                    portabilidadPhotoPath = photoPath
+                }
+                onProofOfSalePhotoTaken(photoPath, currentPhotoLabel)
                 capturedPhotoPath = null
+
+                // Wizard auto-advance: if portabilidad and other photo still needed, open camera for next
+                if (isPortabilidad) {
+                    when {
+                        currentPhotoLabel == "linea" && portabilidadPhotoPath == null -> {
+                            currentPhotoLabel = "portabilidad"
+                            showProofOfSaleCamera = true
+                        }
+                        currentPhotoLabel == "portabilidad" && lineaPhotoPath == null -> {
+                            currentPhotoLabel = "linea"
+                            showProofOfSaleCamera = true
+                        }
+                    }
+                }
             },
             onRetake = {
-                Timber.d("📸 [PROOF-OF-SALE] Retaking photo")
+                Timber.d("📸 [PROOF-OF-SALE] Retaking $currentPhotoLabel photo")
                 capturedPhotoPath = null
                 showProofOfSaleCamera = true
             },
@@ -1894,6 +1976,34 @@ private fun PaymentSuccessContent(
                 capturedPhotoPath = null
             }
         )
+    }
+
+    // 📸 View existing photo with retake option
+    viewingPhotoLabel?.let { label ->
+        val viewingPath = if (label == "linea") lineaPhotoPath else portabilidadPhotoPath
+        viewingPath?.let { path ->
+            ProofOfSalePhotoPreviewDialog(
+                photoPath = path,
+                onConfirm = {
+                    // Just close the preview — photo is already confirmed
+                    viewingPhotoLabel = null
+                },
+                onRetake = {
+                    Timber.d("📸 [PROOF-OF-SALE] Retaking $label photo from preview")
+                    viewingPhotoLabel = null
+                    onRetakeProofOfSalePhoto(label)
+                    // Reset local path
+                    if (label == "linea") lineaPhotoPath = null else portabilidadPhotoPath = null
+                    currentPhotoLabel = label
+                    showProofOfSaleCamera = true
+                },
+                onDismiss = {
+                    viewingPhotoLabel = null
+                },
+                confirmText = "Cerrar",
+                retakeText = "Retomar"
+            )
+        }
     }
 
     // 📸 Show loading overlay during proof-of-sale upload
@@ -2582,6 +2692,121 @@ private fun PaymentSuccessWithReceiptPreview() {
 }
 
 /**
+ * 📸 Proof-of-sale photo section with 1 or 2 photo placeholders.
+ *
+ * - Non-portabilidad: Single full-width placeholder ("Registro de línea")
+ * - Portabilidad: Two side-by-side placeholders ("Registro de línea" + "Registro de portabilidad")
+ *
+ * Each placeholder shows a dashed border when empty, or a thumbnail when photo is taken.
+ * Tapping opens the camera for that specific photo.
+ */
+@Composable
+private fun ProofOfSalePhotoSection(
+    isPortabilidad: Boolean,
+    lineaPhotoPath: String?,
+    portabilidadPhotoPath: String?,
+    isUploading: Boolean,
+    onTapLinea: () -> Unit,
+    onTapPortabilidad: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (!isPortabilidad) {
+        // Single photo: "Registro de línea"
+        ProofOfSalePlaceholder(
+            label = "Registro de línea",
+            photoPath = lineaPhotoPath,
+            onClick = onTapLinea,
+            modifier = modifier.size(72.dp)
+        )
+    } else {
+        // Two photos side by side
+        Row(
+            modifier = modifier.width(160.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            ProofOfSalePlaceholder(
+                label = "Línea",
+                photoPath = lineaPhotoPath,
+                onClick = onTapLinea,
+                modifier = Modifier.weight(1f).height(72.dp)
+            )
+            ProofOfSalePlaceholder(
+                label = "Portabilidad",
+                photoPath = portabilidadPhotoPath,
+                onClick = onTapPortabilidad,
+                modifier = Modifier.weight(1f).height(72.dp)
+            )
+        }
+    }
+}
+
+/**
+ * Single proof-of-sale photo placeholder.
+ * Dashed border when empty with camera icon + label. Thumbnail when photo taken.
+ */
+@Composable
+private fun ProofOfSalePlaceholder(
+    label: String,
+    photoPath: String?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val dashedBorderColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .then(
+                if (photoPath == null) {
+                    Modifier.drawBehind {
+                        drawRoundRect(
+                            color = dashedBorderColor,
+                            style = Stroke(
+                                width = 2.dp.toPx(),
+                                pathEffect = PathEffect.dashPathEffect(
+                                    floatArrayOf(8.dp.toPx(), 6.dp.toPx()),
+                                    0f
+                                )
+                            ),
+                            cornerRadius = CornerRadius(16.dp.toPx())
+                        )
+                    }
+                } else Modifier
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (photoPath != null) {
+            coil.compose.AsyncImage(
+                model = java.io.File(photoPath),
+                contentDescription = label,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PhotoCamera,
+                    contentDescription = label,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    textAlign = TextAlign.Center,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+/**
  * Photo preview dialog for proof-of-sale confirmation.
  *
  * Shows captured photo with Confirm/Retake buttons before uploading.
@@ -2596,7 +2821,9 @@ private fun ProofOfSalePhotoPreviewDialog(
     photoPath: String,
     onConfirm: () -> Unit,
     onRetake: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    confirmText: String = "Confirmar",
+    retakeText: String = "Retomar"
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -2674,7 +2901,7 @@ private fun ProofOfSalePhotoPreviewDialog(
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Retomar")
+                        Text(retakeText)
                     }
 
                     // Confirm button
@@ -2691,7 +2918,7 @@ private fun ProofOfSalePhotoPreviewDialog(
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Confirmar")
+                        Text(confirmText)
                     }
                 }
             }

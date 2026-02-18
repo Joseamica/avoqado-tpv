@@ -61,7 +61,7 @@ import timber.log.Timber
 @Composable
 fun SerializedSaleScreen(
     onNavigateBack: () -> Unit,
-    onNavigateToPayment: (orderId: String, orderTotal: String, skipProofOfSale: Boolean) -> Unit,
+    onNavigateToPayment: (orderId: String, orderNumber: String?, orderTotal: String, isPortabilidad: Boolean) -> Unit,
     resetOnEnter: Boolean = false,
     viewModel: SerializedSaleViewModel = hiltViewModel()
 ) {
@@ -422,12 +422,13 @@ fun SerializedSaleScreen(
                                 Button(
                                     onClick = {
                                         focusManager.clearFocus()
-                                        val skipProof = uiState.isPortabilidad
+                                        val isPortabilidadValue = uiState.isPortabilidad
                                         viewModel.onConfirmSale { result ->
                                             onNavigateToPayment(
                                                 result.orderId,
+                                                result.orderNumber,
                                                 result.total.toPlainString(),
-                                                skipProof
+                                                isPortabilidadValue
                                             )
                                         }
                                     },
@@ -590,7 +591,9 @@ private fun ScanResultCard(
                 Spacer(modifier = Modifier.height(Spacing.Space2))
                 HorizontalDivider()
                 Spacer(modifier = Modifier.height(Spacing.Space2))
-                Row {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Text(
                         text = "Categoría: ",
                         style = MaterialTheme.typography.bodyMedium
@@ -600,6 +603,20 @@ private fun ScanResultCard(
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Bold
                     )
+                    if (scanResult.category.source == "organization") {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Text(
+                                text = "ORG",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
                 }
                 if (scanResult.suggestedPrice != null) {
                     Row {
@@ -738,10 +755,29 @@ private fun CategorySelectorDropdown(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = category.name,
-                                        fontWeight = if (category.id == selectedCategory?.id) FontWeight.Bold else FontWeight.Normal
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = category.name,
+                                            fontWeight = if (category.id == selectedCategory?.id) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                        if (category.source == "organization") {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = MaterialTheme.colorScheme.primaryContainer,
+                                                modifier = Modifier.padding(start = 2.dp)
+                                            ) {
+                                                Text(
+                                                    text = "ORG",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
+                                    }
                                     Text(
                                         text = "${category.availableCount} disponibles",
                                         style = MaterialTheme.typography.bodySmall,

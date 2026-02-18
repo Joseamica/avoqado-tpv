@@ -77,7 +77,8 @@ class SerializedSaleRepositoryImpl @Inject constructor(
                             name = dto.name,
                             description = dto.description,
                             suggestedPrice = dto.suggestedPrice?.toBigDecimalOrNull(),
-                            availableCount = dto.availableCount
+                            availableCount = dto.availableCount,
+                            source = dto.source
                         )
                     }
                     Log.d(TAG, "Fetched ${categories.size} categories")
@@ -304,7 +305,8 @@ class SerializedSaleRepositoryImpl @Inject constructor(
             soldAt = dto.soldAt,
             orderItemId = dto.orderItemId,
             createdAt = dto.createdAt,
-            category = dto.category?.let { mapCategory(it) }
+            category = dto.category?.let { mapCategory(it) },
+            source = dto.source
         )
     }
 
@@ -315,7 +317,8 @@ class SerializedSaleRepositoryImpl @Inject constructor(
             name = dto.name,
             description = dto.description,
             suggestedPrice = dto.suggestedPrice?.toBigDecimalOrNull(),
-            sortOrder = dto.sortOrder
+            sortOrder = dto.sortOrder,
+            source = dto.source
         )
     }
 }

@@ -102,6 +102,13 @@ data class TpvSettingsDto(
     @SerializedName("showGoals")
     val showGoals: Boolean?,
 
+    // Messages & Trainings visibility (controlled from dashboard)
+    @SerializedName("showMessages")
+    val showMessages: Boolean?,
+
+    @SerializedName("showTrainings")
+    val showTrainings: Boolean?,
+
     // Crypto payment option (B4Bit integration)
     @SerializedName("showCryptoOption")
     val showCryptoOption: Boolean?
@@ -142,6 +149,8 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     showPayments = showPayments ?: true,
     showSupport = showSupport ?: true,
     showGoals = showGoals ?: true,
+    showMessages = showMessages ?: true,
+    showTrainings = showTrainings ?: true,
     showCryptoOption = showCryptoOption ?: false
 )
 
@@ -172,6 +181,8 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     showPayments = showPayments,
     showSupport = showSupport,
     showGoals = showGoals,
+    showMessages = showMessages,
+    showTrainings = showTrainings,
     showCryptoOption = showCryptoOption
 )
 

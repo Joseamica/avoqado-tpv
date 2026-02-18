@@ -42,6 +42,12 @@ data class TrainingModuleDto(
     @SerializedName("featureTags")
     val featureTags: List<String> = emptyList(),
 
+    @SerializedName("quizPassThreshold")
+    val quizPassThreshold: Int = 70,
+
+    @SerializedName("quizMaxAttempts")
+    val quizMaxAttempts: Int = 0,
+
     @SerializedName("steps")
     val steps: List<TrainingStepDto>? = null,
 
@@ -85,6 +91,9 @@ data class TrainingQuizQuestionDto(
     @SerializedName("id")
     val id: String,
 
+    @SerializedName("questionType")
+    val questionType: String = "MULTIPLE_CHOICE", // MULTIPLE_CHOICE | TRUE_FALSE | MULTI_SELECT
+
     @SerializedName("question")
     val question: String,
 
@@ -94,8 +103,14 @@ data class TrainingQuizQuestionDto(
     @SerializedName("correctIndex")
     val correctIndex: Int,
 
+    @SerializedName("correctIndices")
+    val correctIndices: List<Int> = emptyList(),
+
     @SerializedName("position")
-    val position: Int
+    val position: Int,
+
+    @SerializedName("explanation")
+    val explanation: String? = null
 )
 
 data class TrainingCountDto(
@@ -130,6 +145,9 @@ data class TrainingProgressDto(
 
     @SerializedName("quizPassed")
     val quizPassed: Boolean? = null,
+
+    @SerializedName("attemptNumber")
+    val attemptNumber: Int = 1,
 
     @SerializedName("startedAt")
     val startedAt: String? = null,
@@ -208,5 +226,8 @@ data class UpdateProgressRequest(
     val quizTotal: Int? = null,
 
     @SerializedName("quizPassed")
-    val quizPassed: Boolean? = null
+    val quizPassed: Boolean? = null,
+
+    @SerializedName("attemptNumber")
+    val attemptNumber: Int? = null
 )

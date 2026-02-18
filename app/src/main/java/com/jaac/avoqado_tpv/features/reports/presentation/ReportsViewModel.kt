@@ -82,6 +82,10 @@ class ReportsViewModel @Inject constructor(
 
     val venueZoneId get() = VenueTimeZone.get(secureStorage)
 
+    /** Whether reviews/ratings feature is enabled in TPV settings */
+    val isReviewsEnabled: Boolean
+        get() = secureStorage.getTpvSettings()?.showReviewScreen ?: false
+
     private var currentPeriod: ReportPeriod = ReportPeriod.today(VenueTimeZone.get(secureStorage))  // ← Default: Today's sales
 
     // Cache: Store reports by period type to avoid re-fetching
@@ -597,7 +601,10 @@ class ReportsViewModel @Inject constructor(
      *
      * @return Result<Unit> success if printed, failure if error
      */
-    fun printReport() {
+    fun printReport(
+        includeWaiterTips: Boolean = false,
+        includeRatings: Boolean = false
+    ) {
         val currentState = _state.value
 
         if (currentState !is ReportsState.Success) {
@@ -643,6 +650,25 @@ class ReportsViewModel @Inject constructor(
                 val cardPercentage = currentState.paymentBreakdown.cardPercentage.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()
                 val voucherPercentage = currentState.paymentBreakdown.voucherPercentage.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()
 
+                val totalTips = currentState.summary.totalTips.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()
+
+                // Waiter tips (optional)
+                val waiterTipsPrint = if (includeWaiterTips && currentState.summary.waiterTips.isNotEmpty()) {
+                    currentState.summary.waiterTips.map { wt ->
+                        com.jaac.avoqado_tpv.core.printer.PrinterManager.WaiterTipPrint(
+                            name = wt.name,
+                            amount = wt.amount.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString(),
+                            count = wt.count
+                        )
+                    }
+                } else null
+
+                val avgTipPct = if (includeWaiterTips && currentState.summary.averageTipPercentage > BigDecimal.ZERO) {
+                    currentState.summary.averageTipPercentage.setScale(1, java.math.RoundingMode.HALF_UP).toPlainString()
+                } else null
+
+                val ratings = if (includeRatings) currentState.summary.ratingsCount else null
+
                 // Get venue name (optional)
                 val venueName = secureStorage.getVenueName()
 
@@ -662,7 +688,11 @@ class ReportsViewModel @Inject constructor(
                     cardPercentage = cardPercentage,
                     voucherPercentage = voucherPercentage,
                     comparisonText = comparisonText,
-                    venueName = venueName
+                    venueName = venueName,
+                    totalTips = totalTips,
+                    averageTipPercentage = avgTipPct,
+                    waiterTips = waiterTipsPrint,
+                    ratingsCount = ratings
                 )
 
                 when {
@@ -670,7 +700,6 @@ class ReportsViewModel @Inject constructor(
                     result.isFailure -> {
                         val error = result.exceptionOrNull()
                         Timber.e(error, "❌ Failed to print report")
-                        // TODO: Show error toast to user
                     }
                 }
             } catch (e: Exception) {

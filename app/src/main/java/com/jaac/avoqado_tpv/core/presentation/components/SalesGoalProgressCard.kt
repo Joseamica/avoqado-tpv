@@ -6,7 +6,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -191,25 +193,35 @@ fun SalesGoalProgressCard(
             Spacer(modifier = Modifier.height(12.dp))
 
             // Progress bar
+            val isDark = isSystemInDarkTheme()
+            val progressShape = RoundedCornerShape(6.dp)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(12.dp)
-                    .clip(RoundedCornerShape(6.dp))
+                    .clip(progressShape)
                     .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .then(
+                        if (isDark) Modifier.border(
+                            width = 1.dp,
+                            color = Color.White.copy(alpha = 0.12f),
+                            shape = progressShape
+                        ) else Modifier
+                    )
             ) {
                 LinearProgressIndicator(
                     progress = { animatedProgress },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(12.dp)
-                        .clip(RoundedCornerShape(6.dp)),
+                        .clip(progressShape),
                     color = if (isGoalAchieved) {
                         MaterialTheme.avoqadoColors.statusSuccess
                     } else {
                         MaterialTheme.colorScheme.primary
                     },
-                    trackColor = Color.Transparent
+                    trackColor = Color.Transparent,
+                    drawStopIndicator = {}
                 )
             }
 

@@ -67,6 +67,9 @@ data class TpvSettings(
     val showPayments: Boolean = true,
     val showSupport: Boolean = true,
     val showGoals: Boolean = true,
+    // Messages & Trainings visibility (controlled from dashboard)
+    val showMessages: Boolean = true,
+    val showTrainings: Boolean = true,
     // Crypto payment option (B4Bit integration)
     val showCryptoOption: Boolean = false
 ) {

@@ -1101,8 +1101,8 @@ fun AppNavigation(
             val tableId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("tableId")
             // 📱 SERIALIZED SALE: Skip local order validation (order exists only on backend)
             val skipLocalOrderValidation = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("skipLocalOrderValidation") ?: false
-            // 📱 PORTABILIDAD: Skip proof-of-sale camera FAB on payment success
-            val skipProofOfSale = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("skipProofOfSale") ?: false
+            // 📱 PORTABILIDAD: Controls 1 vs 2 proof-of-sale photos
+            val isPortabilidad = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("isPortabilidad") ?: false
 
             // ⭐ Split payment params (from SplitByPersonScreen or SplitByProductScreen)
             val splitType = navController.previousBackStackEntry?.savedStateHandle?.get<String>("splitType")
@@ -1159,7 +1159,7 @@ fun AppNavigation(
                 externalRating = externalRating,
                 externalSkipReview = externalSkipReview,
                 skipLocalOrderValidation = skipLocalOrderValidation,  // 📱 SERIALIZED SALE: Order exists only on backend
-                skipProofOfSale = skipProofOfSale,  // 📱 PORTABILIDAD: Skip proof-of-sale camera
+                isPortabilidad = isPortabilidad,  // 📱 PORTABILIDAD: 1 vs 2 proof-of-sale photos
                 // ⭐ Split payment params
                 splitType = splitType,
                 equalPartsPartySize = equalPartsPartySize,
@@ -1754,7 +1754,7 @@ fun AppNavigation(
                 onNavigateBack = {
                     navController.safePopBackStack()
                 },
-                onNavigateToPayment = { orderId, orderTotal, skipProofOfSale ->
+                onNavigateToPayment = { orderId, orderNumber, orderTotal, isPortabilidad ->
                     // Navigate to PaymentScreen with order details
                     // ⚠️ SERIALIZED SALE: Order was created by backend quick-sell API
                     // and doesn't exist locally. Pass skipLocalOrderValidation flag
@@ -1762,12 +1762,13 @@ fun AppNavigation(
                     navController.currentBackStackEntry?.savedStateHandle?.apply {
                         set("initialAmount", orderTotal.toString())
                         set("orderId", orderId)
+                        set("orderNumber", orderNumber)  // 🆕 Pass order number for receipt FOLIO
                         set("skipReview", true)  // Skip tip/review for serialized sales
                         set("skipLocalOrderValidation", true)  // 🆕 Order exists only on backend
-                        set("skipProofOfSale", skipProofOfSale)  // Portabilidad: skip proof-of-sale camera
+                        set("isPortabilidad", isPortabilidad)  // Portabilidad: 1 vs 2 proof-of-sale photos
                     }
                     navController.navigate(NavRoute.Payment.route)
-                    Timber.d("💳 Serialized sale: Navigating to payment for order $orderId, amount $orderTotal (skipLocalValidation=true, skipProofOfSale=$skipProofOfSale)")
+                    Timber.d("💳 Serialized sale: Navigating to payment for order $orderId (#$orderNumber), amount $orderTotal (skipLocalValidation=true, isPortabilidad=$isPortabilidad)")
                 },
                 resetOnEnter = shouldReset
             )

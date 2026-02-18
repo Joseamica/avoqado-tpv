@@ -764,10 +764,28 @@ private fun CategorySelectorDropdown(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = category.name,
-                                    fontWeight = if (category.id == selectedCategory?.id) FontWeight.Bold else FontWeight.Normal
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = category.name,
+                                        fontWeight = if (category.id == selectedCategory?.id) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                    if (category.source == "organization") {
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = MaterialTheme.colorScheme.primaryContainer
+                                        ) {
+                                            Text(
+                                                text = "ORG",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                            )
+                                        }
+                                    }
+                                }
                                 Text(
                                     text = "${category.availableCount} disp.",
                                     style = MaterialTheme.typography.bodySmall,

@@ -119,7 +119,9 @@ class AttendanceVerificationTest {
             showReports = null,
             showPayments = null,
             showSupport = null,
-            showGoals = null
+            showGoals = null,
+            showMessages = null,
+            showTrainings = null
         )
 
         val domain = dto.toDomain()
@@ -160,7 +162,9 @@ class AttendanceVerificationTest {
             showReports = null,
             showPayments = null,
             showSupport = null,
-            showGoals = null
+            showGoals = null,
+            showMessages = null,
+            showTrainings = null
         )
 
         val domain = dto.toDomain()
@@ -201,7 +205,9 @@ class AttendanceVerificationTest {
             showReports = null,
             showPayments = null,
             showSupport = null,
-            showGoals = null
+            showGoals = null,
+            showMessages = null,
+            showTrainings = null
         )
 
         val domain = dto.toDomain()

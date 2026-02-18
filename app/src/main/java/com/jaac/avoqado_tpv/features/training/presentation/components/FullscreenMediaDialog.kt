@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.training.presentation.components
 
+import android.view.ViewGroup
+import android.view.WindowManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -17,10 +19,12 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -45,49 +49,61 @@ fun FullscreenMediaDialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
-            dismissOnClickOutside = true
+            decorFitsSystemWindows = false
         )
     ) {
+        // Force dialog window to fill entire screen
+        val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
+        SideEffect {
+            dialogWindow?.setLayout(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT
+            )
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.95f))
-                .clickable(onClick = onDismiss),
+                .background(Color.Black),
             contentAlignment = Alignment.Center
         ) {
-            // Close button
+            if (mediaType == "VIDEO") {
+                FullscreenVideoPlayer(
+                    videoUrl = mediaUrl,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                // Tap background to dismiss for images
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(onClick = onDismiss),
+                    contentAlignment = Alignment.Center
+                ) {
+                    ZoomableImage(
+                        imageUrl = mediaUrl,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                    )
+                }
+            }
+
+            // Close button — rendered AFTER media so it draws on top (z-order)
             IconButton(
                 onClick = onDismiss,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(12.dp)
-                    .size(40.dp)
+                    .size(44.dp)
                     .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.15f))
+                    .background(Color.Black.copy(alpha = 0.6f))
             ) {
                 Icon(
                     Icons.Default.Close,
                     contentDescription = "Cerrar",
                     tint = Color.White,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            if (mediaType == "VIDEO") {
-                FullscreenVideoPlayer(
-                    videoUrl = mediaUrl,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 24.dp)
-                        .clickable(enabled = false, onClick = {}) // Prevent dismiss on video tap
-                )
-            } else {
-                ZoomableImage(
-                    imageUrl = mediaUrl,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp)
-                        .clickable(enabled = false, onClick = {}) // Prevent dismiss on image tap
+                    modifier = Modifier.size(24.dp)
                 )
             }
         }
@@ -142,9 +158,13 @@ private fun FullscreenVideoPlayer(
                     player = exoPlayer
                     useController = true
                     setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
                 }
             },
-            modifier = modifier.aspectRatio(16f / 9f)
+            modifier = modifier
         )
     }
 }

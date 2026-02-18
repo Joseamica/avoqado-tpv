@@ -29,14 +29,16 @@ data class ScanResponseDto(
  */
 data class SerializedItemDto(
     val id: String,
-    val venueId: String,
+    val venueId: String?, // Nullable for org-level items
     val categoryId: String,
     val serialNumber: String,
     val status: String, // 'AVAILABLE' | 'SOLD'
     val soldAt: String?,
     val orderItemId: String?,
     val createdAt: String,
-    val category: ItemCategoryDto?
+    val category: ItemCategoryDto?,
+    val organizationId: String?, // Non-null for org-level items
+    val source: String? // 'venue' | 'organization'
 )
 
 /**
@@ -44,11 +46,13 @@ data class SerializedItemDto(
  */
 data class ItemCategoryDto(
     val id: String,
-    val venueId: String,
+    val venueId: String?, // Nullable for org-level categories
     val name: String, // "SIM Negra", "SIM Blanca", etc.
     val description: String?,
     val suggestedPrice: String?, // Decimal as string
-    val sortOrder: Int?
+    val sortOrder: Int?,
+    val organizationId: String?, // Non-null for org-level categories
+    val source: String? // 'venue' | 'organization'
 )
 
 // ========== Quick Sell DTOs ==========
@@ -109,7 +113,8 @@ data class CategoryWithStockDto(
     val name: String,
     val description: String?,
     val suggestedPrice: String?,
-    val availableCount: Int
+    val availableCount: Int,
+    val source: String? // 'venue' | 'organization'
 )
 
 // ========== Register Batch DTOs ==========

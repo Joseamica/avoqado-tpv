@@ -19,14 +19,17 @@ import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -129,6 +132,75 @@ fun ReportsScreen(
 
     val venueZoneId = remember { viewModel.venueZoneId }
 
+    // Print options dialog state
+    var showPrintOptionsDialog by remember { mutableStateOf(false) }
+    var printIncludeWaiterTips by remember { mutableStateOf(false) }
+    var printIncludeRatings by remember { mutableStateOf(false) }
+    val isReviewsEnabled = remember { viewModel.isReviewsEnabled }
+
+    if (showPrintOptionsDialog) {
+        AlertDialog(
+            onDismissRequest = { showPrintOptionsDialog = false },
+            title = { Text("Opciones de impresion") },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        "Selecciona las secciones adicionales:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Propinas por mesero")
+                        Switch(
+                            checked = printIncludeWaiterTips,
+                            onCheckedChange = { printIncludeWaiterTips = it }
+                        )
+                    }
+                    if (isReviewsEnabled) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Resenas")
+                            Switch(
+                                checked = printIncludeRatings,
+                                onCheckedChange = { printIncludeRatings = it }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showPrintOptionsDialog = false
+                        viewModel.printReport(
+                            includeWaiterTips = printIncludeWaiterTips,
+                            includeRatings = printIncludeRatings
+                        )
+                    }
+                ) {
+                    Text("Imprimir")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showPrintOptionsDialog = false }
+                ) {
+                    Text("Cancelar")
+                }
+            }
+        )
+    }
+
     ReportsScreenContent(
         state = state,
         isComparisonEnabled = isComparisonEnabled,
@@ -152,7 +224,7 @@ fun ReportsScreen(
             viewModel.toggleComparison(enabled)
         },
         onPrintReport = {
-            viewModel.printReport()
+            showPrintOptionsDialog = true
         },
         onNavigateToProductPerformance = onNavigateToProductPerformance,
         onHistoricalGroupingSelected = { grouping ->

@@ -5,6 +5,8 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
@@ -55,13 +57,20 @@ fun SelfUpdateScreen(
         },
         containerColor = MaterialTheme.colorScheme.background
     ) { paddingValues ->
-        Box(
+        BoxWithConstraints(
             modifier = modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(24.dp),
-            contentAlignment = Alignment.Center
         ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = this@BoxWithConstraints.maxHeight)
+                    .verticalScroll(rememberScrollState())
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
             when (val currentState = state) {
                 is SelfUpdateState.Idle -> {
                     IdleContent(
@@ -136,6 +145,7 @@ fun SelfUpdateScreen(
                     )
                 }
             }
+            }
         }
     }
 }
@@ -147,12 +157,12 @@ private fun IdleContent(
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Icon(
             imageVector = Icons.Outlined.SystemUpdate,
             contentDescription = null,
-            modifier = Modifier.size(80.dp),
+            modifier = Modifier.size(56.dp),
             tint = MaterialTheme.colorScheme.primary
         )
 
@@ -181,7 +191,7 @@ private fun IdleContent(
             onClick = onCheckBlumon,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp)
+                .height(48.dp)
         ) {
             Icon(
                 imageVector = Icons.Default.CloudDownload,
@@ -197,7 +207,7 @@ private fun IdleContent(
             onClick = onCheckAvoqado,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp)
+                .height(48.dp)
         ) {
             Icon(
                 imageVector = Icons.Default.Refresh,
@@ -240,7 +250,7 @@ private fun IdleContent(
 private fun CheckingContent() {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         CircularProgressIndicator(
             modifier = Modifier.size(64.dp),
@@ -275,12 +285,12 @@ private fun UpToDateContent(
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Icon(
             imageVector = Icons.Default.CheckCircle,
             contentDescription = null,
-            modifier = Modifier.size(80.dp),
+            modifier = Modifier.size(56.dp),
             tint = MaterialTheme.colorScheme.primary
         )
 
@@ -302,13 +312,13 @@ private fun UpToDateContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         OutlinedButton(
             onClick = onBack,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp)
+                .height(48.dp)
         ) {
             Text("Volver")
         }
@@ -323,12 +333,12 @@ private fun BlumonUpdateAvailableContent(
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Icon(
             imageVector = Icons.Default.NewReleases,
             contentDescription = null,
-            modifier = Modifier.size(80.dp),
+            modifier = Modifier.size(56.dp),
             tint = MaterialTheme.colorScheme.primary
         )
 
@@ -392,7 +402,7 @@ private fun BlumonUpdateAvailableContent(
             onClick = onDownload,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp)
+                .height(48.dp)
         ) {
             Icon(
                 imageVector = Icons.Default.Download,
@@ -407,7 +417,7 @@ private fun BlumonUpdateAvailableContent(
             onClick = onCancel,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp)
+                .height(48.dp)
         ) {
             Text("Cancelar")
         }
@@ -422,12 +432,12 @@ private fun AvoqadoUpdateAvailableContent(
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Icon(
             imageVector = Icons.Default.NewReleases,
             contentDescription = null,
-            modifier = Modifier.size(80.dp),
+            modifier = Modifier.size(56.dp),
             tint = MaterialTheme.colorScheme.primary
         )
 
@@ -561,7 +571,7 @@ private fun AvoqadoUpdateAvailableContent(
             onClick = onDownload,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp)
+                .height(48.dp)
         ) {
             Icon(
                 imageVector = Icons.Default.Download,
@@ -576,7 +586,7 @@ private fun AvoqadoUpdateAvailableContent(
             onClick = onCancel,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp)
+                .height(48.dp)
         ) {
             Text("Cancelar")
         }
@@ -596,10 +606,10 @@ private fun DownloadingContent(
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         CircularProgressIndicator(
-            modifier = Modifier.size(80.dp),
+            modifier = Modifier.size(56.dp),
             strokeWidth = 6.dp
         )
 
@@ -636,13 +646,13 @@ private fun DownloadingContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         OutlinedButton(
             onClick = onCancel,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp),
+                .height(48.dp),
             colors = ButtonDefaults.outlinedButtonColors(
                 contentColor = MaterialTheme.colorScheme.error
             )
@@ -666,12 +676,12 @@ private fun ReadyToInstallContent(
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Icon(
             imageVector = Icons.Default.InstallMobile,
             contentDescription = null,
-            modifier = Modifier.size(80.dp),
+            modifier = Modifier.size(56.dp),
             tint = MaterialTheme.colorScheme.primary
         )
 
@@ -716,7 +726,7 @@ private fun ReadyToInstallContent(
             onClick = onInstall,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp)
+                .height(48.dp)
         ) {
             Icon(
                 imageVector = Icons.Default.InstallMobile,
@@ -731,7 +741,7 @@ private fun ReadyToInstallContent(
             onClick = onCancel,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp)
+                .height(48.dp)
         ) {
             Text("Cancelar")
         }
@@ -742,10 +752,10 @@ private fun ReadyToInstallContent(
 private fun InstallingContent() {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         CircularProgressIndicator(
-            modifier = Modifier.size(80.dp),
+            modifier = Modifier.size(56.dp),
             strokeWidth = 6.dp
         )
 
@@ -791,12 +801,12 @@ private fun InstallingContent() {
 private fun InstallCompleteContent() {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Icon(
             imageVector = Icons.Default.CheckCircle,
             contentDescription = null,
-            modifier = Modifier.size(80.dp),
+            modifier = Modifier.size(56.dp),
             tint = MaterialTheme.colorScheme.primary
         )
 
@@ -824,12 +834,12 @@ private fun ErrorContent(
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(24.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Icon(
             imageVector = Icons.Default.Error,
             contentDescription = null,
-            modifier = Modifier.size(80.dp),
+            modifier = Modifier.size(56.dp),
             tint = MaterialTheme.colorScheme.error
         )
 
@@ -868,7 +878,7 @@ private fun ErrorContent(
             onClick = onRetry,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp)
+                .height(48.dp)
         ) {
             Icon(
                 imageVector = Icons.Default.Refresh,
@@ -883,7 +893,7 @@ private fun ErrorContent(
             onClick = onBack,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp)
+                .height(48.dp)
         ) {
             Text("Volver")
         }

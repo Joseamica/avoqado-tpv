@@ -72,12 +72,28 @@ fun TrainingStepViewer(
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
-                        if (!state.showQuiz && totalSteps > 0) {
-                            Text(
-                                text = "Paso ${state.currentStepIndex + 1} de $totalSteps",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                        when {
+                            state.showQuizReview -> {
+                                Text(
+                                    text = "Revisión del quiz",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            state.showQuiz -> {
+                                Text(
+                                    text = "Quiz",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            !state.isQuizSubmitted && totalSteps > 0 -> {
+                                Text(
+                                    text = "Paso ${state.currentStepIndex + 1} de $totalSteps",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 },
@@ -115,25 +131,47 @@ fun TrainingStepViewer(
                 }
             }
 
+            // Quiz review mode
+            state.showQuizReview -> {
+                QuizReviewScreen(
+                    questions = training?.quizQuestions ?: emptyList(),
+                    answers = state.quizAnswers,
+                    reviewQuestionIndex = state.reviewQuestionIndex,
+                    onNext = { viewModel.nextReviewQuestion() },
+                    onPrevious = { viewModel.previousReviewQuestion() },
+                    onFinish = { viewModel.exitReview() },
+                    modifier = Modifier.padding(paddingValues)
+                )
+            }
+
             // Quiz submitted -> results screen
             state.isQuizSubmitted -> {
                 CompletionScreen(
                     state = state,
                     hasQuiz = !training?.quizQuestions.isNullOrEmpty(),
+                    passThreshold = training?.quizPassThreshold ?: 70,
+                    maxAttempts = training?.quizMaxAttempts ?: 0,
+                    canRetry = viewModel.canRetryQuiz(),
                     onRetry = { viewModel.retryQuiz() },
+                    onReview = { viewModel.showReview() },
                     onFinish = onBack,
                     modifier = Modifier.padding(paddingValues)
                 )
             }
 
-            // Show quiz
+            // Show quiz (paginated)
             state.showQuiz -> {
                 TrainingQuizScreen(
                     questions = training?.quizQuestions ?: emptyList(),
                     answers = state.quizAnswers,
+                    currentQuestionIndex = state.currentQuestionIndex,
+                    passThreshold = training?.quizPassThreshold ?: 70,
                     onSelectAnswer = { qIndex, optIndex -> viewModel.selectQuizAnswer(qIndex, optIndex) },
+                    onToggleAnswer = { qIndex, optIndex -> viewModel.toggleQuizAnswer(qIndex, optIndex) },
+                    onNext = { viewModel.nextQuestion() },
+                    onPrevious = { viewModel.previousQuestion() },
                     onSubmit = { viewModel.submitQuiz() },
-                    onBack = { viewModel.previousStep() },
+                    onBackToSteps = { viewModel.previousStep() },
                     modifier = Modifier.padding(paddingValues)
                 )
             }
@@ -340,7 +378,11 @@ private fun StepIndicator(
 private fun CompletionScreen(
     state: TrainingDetailState,
     hasQuiz: Boolean,
+    passThreshold: Int,
+    maxAttempts: Int,
+    canRetry: Boolean,
     onRetry: () -> Unit,
+    onReview: () -> Unit,
     onFinish: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -351,6 +393,7 @@ private fun CompletionScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
@@ -378,11 +421,30 @@ private fun CompletionScreen(
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+
+            val thresholdText = if (passed) {
+                "Has aprobado el quiz"
+            } else {
+                "Necesitas $passThreshold% para aprobar"
+            }
             Text(
-                text = if (passed) "Has aprobado el quiz" else "Necesitas 70% para aprobar",
+                text = thresholdText,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
+            )
+
+            // Attempt counter
+            Spacer(modifier = Modifier.height(4.dp))
+            val attemptText = if (maxAttempts == 0) {
+                "Intento ${state.attemptNumber}"
+            } else {
+                "Intento ${state.attemptNumber} de $maxAttempts"
+            }
+            Text(
+                text = attemptText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         } else {
             Spacer(modifier = Modifier.height(8.dp))
@@ -404,15 +466,39 @@ private fun CompletionScreen(
             Text("Volver a entrenamientos")
         }
 
-        if (hasQuiz && !passed) {
+        // Review answers button (always visible when quiz exists)
+        if (hasQuiz) {
             Spacer(modifier = Modifier.height(12.dp))
             OutlinedButton(
-                onClick = onRetry,
+                onClick = onReview,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp)
             ) {
-                Text("Intentar de nuevo")
+                Text("Revisar respuestas")
+            }
+        }
+
+        // Retry button (only when failed and can retry)
+        if (hasQuiz && !passed) {
+            Spacer(modifier = Modifier.height(12.dp))
+            if (canRetry) {
+                OutlinedButton(
+                    onClick = onRetry,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                ) {
+                    Text("Intentar de nuevo")
+                }
+            } else {
+                Text(
+                    text = "Intentos agotados",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
     }

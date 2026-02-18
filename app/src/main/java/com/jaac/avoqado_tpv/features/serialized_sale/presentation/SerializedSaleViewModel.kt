@@ -274,7 +274,7 @@ class SerializedSaleViewModel @Inject constructor(
                 price = price,
                 terminalId = terminalId,
                 isPortabilidad = state.isPortabilidad,
-                skipProofOfSale = state.isPortabilidad
+                skipProofOfSale = false  // Proof-of-sale always required (1 photo normal, 2 photos portabilidad)
             )
                 .onSuccess { result ->
                     Timber.d("Quick sell success: ${result.orderNumber}, terminalId: $terminalId")

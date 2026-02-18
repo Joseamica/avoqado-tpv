@@ -62,6 +62,14 @@ class SocketManager @Inject constructor(
 
     private var currentTerminalId: String? = null
 
+    /** Tracks consecutive auth failures to prevent infinite reconnect loops */
+    @Volatile private var authRetryCount = 0
+    private val MAX_AUTH_RETRIES = 3
+
+    /** Handler + Runnable for delayed auth reconnect (cancellable) */
+    private val reconnectHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    @Volatile private var pendingReconnectRunnable: Runnable? = null
+
     /**
      * Shared Flow for all Socket.IO events
      * Replay = 1: New subscribers get the last emitted event
@@ -104,6 +112,9 @@ class SocketManager @Inject constructor(
         reconnectionAttempts: Int = Int.MAX_VALUE
     ) {
         try {
+            // Cancel any pending auth reconnect from a previous socket
+            cancelPendingReconnect()
+
             // Disconnect existing socket if any
             disconnect()
 
@@ -162,6 +173,7 @@ class SocketManager @Inject constructor(
      * Disconnect from server
      */
     fun disconnect() {
+        cancelPendingReconnect()
         socket?.apply {
             // Remove all listeners before disconnecting
             off()
@@ -172,6 +184,15 @@ class SocketManager @Inject constructor(
         currentToken = null
         _isConnected.tryEmit(false)
         Timber.d("🔌 Socket.IO disconnected")
+    }
+
+    /** Cancel any scheduled auth reconnect */
+    private fun cancelPendingReconnect() {
+        pendingReconnectRunnable?.let {
+            reconnectHandler.removeCallbacks(it)
+            Timber.d("🔄 [Socket.IO] Cancelled pending auth reconnect")
+        }
+        pendingReconnectRunnable = null
     }
 
     /**
@@ -408,6 +429,7 @@ class SocketManager @Inject constructor(
 
     private val onConnect = Emitter.Listener {
         Timber.d("✅ Socket.IO connected: ${socket?.id()}")
+        authRetryCount = 0 // Reset on successful connection
         _isConnected.tryEmit(true)
         _events.tryEmit(SocketEvent.Connected)
     }
@@ -421,9 +443,32 @@ class SocketManager @Inject constructor(
 
     private val onConnectError = Emitter.Listener { args ->
         val error = args.getOrNull(0)
-        Timber.e("❌ Socket.IO connect error: $error")
+        val errorMsg = error?.toString() ?: ""
+        Timber.e("❌ Socket.IO connect error: $errorMsg")
         _isConnected.tryEmit(false)
-        _events.tryEmit(SocketEvent.ConnectionError("Connection error: $error"))
+        _events.tryEmit(SocketEvent.ConnectionError("Connection error: $errorMsg"))
+
+        // Detect auth-related errors and reconnect with fresh token from SecureStorage.
+        // Socket.IO auto-reconnect reuses the same (expired) token, so we must intervene.
+        val isAuthError = errorMsg.contains("token", ignoreCase = true) ||
+            errorMsg.contains("expired", ignoreCase = true) ||
+            errorMsg.contains("authentication", ignoreCase = true) ||
+            errorMsg.contains("unauthorized", ignoreCase = true)
+
+        if (isAuthError && authRetryCount < MAX_AUTH_RETRIES) {
+            authRetryCount++
+            Timber.w("🔄 [Socket.IO] Auth error detected (attempt $authRetryCount/$MAX_AUTH_RETRIES), reconnecting with fresh token...")
+            // Stop Socket.IO's built-in auto-reconnect (it would use the stale token)
+            socket?.off()
+            socket?.disconnect()
+            // Delay gives TokenAuthenticator time to refresh the JWT via HTTP interceptor.
+            // Store the Runnable so connect()/disconnect() can cancel it if called during the delay.
+            val runnable = Runnable { reconnectWithFreshToken() }
+            pendingReconnectRunnable = runnable
+            reconnectHandler.postDelayed(runnable, authRetryCount * 2000L) // 2s, 4s, 6s backoff
+        } else if (isAuthError) {
+            Timber.e("❌ [Socket.IO] Max auth retries reached ($MAX_AUTH_RETRIES). Giving up until next app restart or manual reconnect.")
+        }
     }
 
     // Note: onConnectTimeout and onError handlers removed

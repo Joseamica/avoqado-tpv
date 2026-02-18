@@ -612,29 +612,33 @@ private fun WelcomeScreenContent(
                 )
             }
 
-            // 📨 Mensajes — navigates to full Messages screen
-            val pendingMessageCount = messageHistory.count {
-                it.deliveryStatus == "PENDING" || it.deliveryStatus == "DELIVERED"
+            // 📨 Mensajes — navigates to full Messages screen (controlled by tpvSettings)
+            if (tpvSettings.showMessages) {
+                val pendingMessageCount = messageHistory.count {
+                    it.deliveryStatus == "PENDING" || it.deliveryStatus == "DELIVERED"
+                }
+                add(
+                    ActionButton(
+                        icon = Icons.Default.Email,
+                        label = "Mensajes",
+                        enabled = true,
+                        badge = if (pendingMessageCount > 0) "$pendingMessageCount" else null,
+                        onClick = onNavigateToMessages
+                    )
+                )
             }
-            add(
-                ActionButton(
-                    icon = Icons.Default.Email,
-                    label = "Mensajes",
-                    enabled = true,
-                    badge = if (pendingMessageCount > 0) "$pendingMessageCount" else null,
-                    onClick = onNavigateToMessages
-                )
-            )
 
-            // 🎓 Entrenamientos — step-by-step training modules
-            add(
-                ActionButton(
-                    icon = Icons.Default.School,
-                    label = "Entrenamientos",
-                    enabled = true,
-                    onClick = onNavigateToTrainings
+            // 🎓 Entrenamientos — step-by-step training modules (controlled by tpvSettings)
+            if (tpvSettings.showTrainings) {
+                add(
+                    ActionButton(
+                        icon = Icons.Default.School,
+                        label = "Entrenamientos",
+                        enabled = true,
+                        onClick = onNavigateToTrainings
+                    )
                 )
-            )
+            }
 
             // Support always available
             add(
@@ -732,6 +736,34 @@ private fun WelcomeScreenContent(
                     label = "Soporte",
                     enabled = true,
                     onClick = onNavigateToSupport
+                )
+            )
+        }
+
+        // 📨 Mensajes — navigates to full Messages screen (controlled by tpvSettings)
+        if (tpvSettings.showMessages) {
+            val pendingMessageCount = messageHistory.count {
+                it.deliveryStatus == "PENDING" || it.deliveryStatus == "DELIVERED"
+            }
+            allButtons.add(
+                ActionButton(
+                    icon = Icons.Default.Email,
+                    label = "Mensajes",
+                    enabled = true,
+                    badge = if (pendingMessageCount > 0) "$pendingMessageCount" else null,
+                    onClick = onNavigateToMessages
+                )
+            )
+        }
+
+        // 🎓 Entrenamientos — step-by-step training modules (controlled by tpvSettings)
+        if (tpvSettings.showTrainings) {
+            allButtons.add(
+                ActionButton(
+                    icon = Icons.Default.School,
+                    label = "Entrenamientos",
+                    enabled = true,
+                    onClick = onNavigateToTrainings
                 )
             )
         }

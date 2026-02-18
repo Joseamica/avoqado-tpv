@@ -230,19 +230,20 @@ class VerificationUploadManager @Inject constructor(
         venueSlug: String,
         orderNumber: String,
         amount: String,
+        photoLabel: String = "linea",
         onProgress: ((Float) -> Unit)? = null
     ): Result<String> {
         return try {
-            Timber.d("📸 [$TAG] Starting proof-of-sale upload | path=$localPath | venue=$venueSlug | order=$orderNumber | amount=$amount")
+            Timber.d("📸 [$TAG] Starting proof-of-sale upload | path=$localPath | venue=$venueSlug | order=$orderNumber | amount=$amount | label=$photoLabel")
 
             // Step 1: Compress image
             val compressedBytes = compressImage(localPath)
             Timber.d("📸 [$TAG] Compressed to ${compressedBytes.size / 1024}KB")
 
             // Step 2: Generate storage path
-            // Format: {env}/venues/{venueSlug}/proof-of-sale/{date}/{orderNumber}_{amount}.jpg
+            // Format: {env}/venues/{venueSlug}/proof-of-sale/{date}/{orderNumber}_{amount}_{label}.jpg
             val dateStr = SimpleDateFormat(DATE_FORMAT, Locale.US).format(Date())
-            val fileName = "${orderNumber}_${amount}.jpg"
+            val fileName = "${orderNumber}_${amount}_${photoLabel}.jpg"
             val storagePath = buildStoragePath("venues/$venueSlug/proof-of-sale/$dateStr/$fileName")
 
             Timber.d("📸 [$TAG] Uploading proof-of-sale to: $storagePath")

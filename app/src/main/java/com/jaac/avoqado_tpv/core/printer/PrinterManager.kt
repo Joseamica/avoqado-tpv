@@ -174,7 +174,8 @@ class PrinterManager @Inject constructor(
         orderNumber: String? = null,  // 🆕 Order number (FOLIO)
         orderItems: List<com.jaac.avoqado_tpv.features.ordering.domain.OrderItem>? = null,  // 🆕 Order items (for itemized receipt)
         discountAmount: String? = null,  // 🆕 Discount applied to order
-        isRefund: Boolean = false  // 💸 Refund mode - changes header and labels
+        isRefund: Boolean = false,  // 💸 Refund mode - changes header and labels
+        isPortabilidad: Boolean? = null  // 📱 Serialized inventory: null=not serialized, false=línea nueva, true=portabilidad
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
@@ -223,6 +224,12 @@ class PrinterManager @Inject constructor(
             // Cajero (cashier)
             if (staffName != null) {
                 printerInstance.printStr("CAJERO: $staffName\n", null)
+            }
+
+            // 📱 Sale type for serialized inventory (portabilidad vs línea nueva)
+            if (isPortabilidad != null) {
+                val saleType = if (isPortabilidad) "PORTABILIDAD" else "LINEA NUEVA"
+                printerInstance.printStr("TIPO: $saleType\n", null)
             }
 
             printerInstance.printStr("================================\n\n", null)
@@ -788,6 +795,15 @@ class PrinterManager @Inject constructor(
      * @param venueName Optional venue name for header
      * @return Result.success if printed, Result.failure if printer unavailable/error
      */
+    /**
+     * Waiter tip entry for receipt printing
+     */
+    data class WaiterTipPrint(
+        val name: String,
+        val amount: String,
+        val count: Int
+    )
+
     fun printReport(
         periodLabel: String,
         dateRange: String,
@@ -803,7 +819,11 @@ class PrinterManager @Inject constructor(
         cardPercentage: String,
         voucherPercentage: String,
         comparisonText: String? = null,
-        venueName: String? = null
+        venueName: String? = null,
+        totalTips: String = "0.00",
+        averageTipPercentage: String? = null,
+        waiterTips: List<WaiterTipPrint>? = null,
+        ratingsCount: Int? = null
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
@@ -843,7 +863,11 @@ class PrinterManager @Inject constructor(
             printerInstance.printStr(String.format("%-18s %12d\n", "Total Ordenes:", totalOrders), null)
             printerInstance.printStr(String.format("%-18s %12d\n", "Total Productos:", totalProducts), null)
             printerInstance.printStr(String.format("%-18s %12s\n", "Ticket Promedio:", "$$avgOrderValue"), null)
-            printerInstance.printStr(String.format("%-18s %12s\n\n", "Productos/Orden:", avgProductsPerOrder), null)
+            printerInstance.printStr(String.format("%-18s %12s\n", "Productos/Orden:", avgProductsPerOrder), null)
+            if (totalTips != "0.00") {
+                printerInstance.printStr(String.format("%-18s %12s\n", "Total Propinas:", "$$totalTips"), null)
+            }
+            printerInstance.printStr("\n", null)
 
             // ========================================
             // PAYMENT METHODS
@@ -852,17 +876,17 @@ class PrinterManager @Inject constructor(
             printerInstance.printStr("METODOS DE PAGO\n\n", null)
 
             if (cashAmount != "0.00") {
-                printerInstance.printStr(String.format("%-20s %9s %3s%%\n", "Efectivo:", "$$cashAmount", cashPercentage), null)
+                printerInstance.printStr(String.format("%-14s %9s %4s%%\n", "Efectivo:", "$$cashAmount", cashPercentage), null)
             }
             if (cardAmount != "0.00") {
-                printerInstance.printStr(String.format("%-20s %9s %3s%%\n", "Tarjeta:", "$$cardAmount", cardPercentage), null)
+                printerInstance.printStr(String.format("%-14s %9s %4s%%\n", "Tarjeta:", "$$cardAmount", cardPercentage), null)
             }
             if (voucherAmount != "0.00") {
-                printerInstance.printStr(String.format("%-20s %9s %3s%%\n", "Voucher:", "$$voucherAmount", voucherPercentage), null)
+                printerInstance.printStr(String.format("%-14s %9s %4s%%\n", "Voucher:", "$$voucherAmount", voucherPercentage), null)
             }
 
-            printerInstance.printStr(String.format("%20s -----------\n", ""), null)
-            printerInstance.printStr(String.format("%-20s %9s\n\n", "Total:", "$$totalSales"), null)
+            printerInstance.printStr(String.format("%14s -----------\n", ""), null)
+            printerInstance.printStr(String.format("%-14s %9s\n\n", "Total:", "$$totalSales"), null)
 
             // ========================================
             // COMPARISON (if enabled)
@@ -872,6 +896,34 @@ class PrinterManager @Inject constructor(
                 printerInstance.printStr("COMPARACION\n", null)
                 printerInstance.printStr("(vs periodo anterior)\n\n", null)
                 printerInstance.printStr("$comparisonText\n\n", null)
+            }
+
+            // ========================================
+            // WAITER TIPS (optional)
+            // ========================================
+            if (!waiterTips.isNullOrEmpty()) {
+                printerInstance.printStr("--------------------------------\n", null)
+                printerInstance.printStr("PROPINAS POR MESERO\n\n", null)
+
+                for (wt in waiterTips) {
+                    // Truncate name to 14 chars max to fit line
+                    val name = if (wt.name.length > 14) wt.name.take(13) + "." else wt.name
+                    printerInstance.printStr(String.format("%-14s %9s (%d)\n", "$name:", "$$${wt.amount}", wt.count), null)
+                }
+
+                if (averageTipPercentage != null) {
+                    printerInstance.printStr(String.format("\n%-18s %10s%%\n", "Propina prom.:", averageTipPercentage), null)
+                }
+                printerInstance.printStr("\n", null)
+            }
+
+            // ========================================
+            // RATINGS (optional)
+            // ========================================
+            if (ratingsCount != null && ratingsCount > 0) {
+                printerInstance.printStr("--------------------------------\n", null)
+                printerInstance.printStr("RESENAS\n\n", null)
+                printerInstance.printStr(String.format("%-18s %12d\n\n", "Total resenas:", ratingsCount), null)
             }
 
             // ========================================

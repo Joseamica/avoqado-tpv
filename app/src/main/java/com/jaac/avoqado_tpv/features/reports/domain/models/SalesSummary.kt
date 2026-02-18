@@ -19,6 +19,16 @@ import java.math.RoundingMode
  * @property averageOrderValue Average order value (totalSales / totalOrders)
  * @property averageProductsPerOrder Average products per order
  */
+/**
+ * Per-waiter tip breakdown
+ */
+data class WaiterTip(
+    val staffId: String,
+    val name: String,
+    val amount: BigDecimal,
+    val count: Int
+)
+
 data class SalesSummary(
     val totalSales: BigDecimal,
     val totalOrders: Int,
@@ -26,7 +36,10 @@ data class SalesSummary(
     val totalTips: BigDecimal,
     val totalShifts: Int,
     val averageOrderValue: BigDecimal,
-    val averageProductsPerOrder: BigDecimal
+    val averageProductsPerOrder: BigDecimal,
+    val averageTipPercentage: BigDecimal = BigDecimal.ZERO,
+    val ratingsCount: Int = 0,
+    val waiterTips: List<WaiterTip> = emptyList()
 ) {
     companion object {
         /**

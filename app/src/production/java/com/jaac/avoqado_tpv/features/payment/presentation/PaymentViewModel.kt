@@ -95,6 +95,7 @@ import com.pax.dal.entity.EReaderType
 import com.paxsz.module.emv.process.enums.TransResultEnum
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -257,12 +258,18 @@ class PaymentViewModel @Inject constructor(
     private val _showProofOfSale = MutableStateFlow(false)
     val showProofOfSale: StateFlow<Boolean> = _showProofOfSale.asStateFlow()
 
-    // 📱 PORTABILIDAD: When true, skip proof-of-sale camera FAB on payment success
-    private var _skipProofOfSale = false
+    // 📱 PORTABILIDAD: Controls 1 vs 2 proof-of-sale photos (false=1 photo, true=2 photos)
+    private val _isPortabilidad = MutableStateFlow(false)
+    val isPortabilidad: StateFlow<Boolean> = _isPortabilidad.asStateFlow()
 
     // 📸 Proof-of-sale upload progress (UI overlay)
     private val _isUploadingProofOfSale = MutableStateFlow(false)
     val isUploadingProofOfSale: StateFlow<Boolean> = _isUploadingProofOfSale.asStateFlow()
+
+    // 📸 Proof-of-sale multi-photo tracking (label → Firebase URL)
+    private val _pendingProofOfSaleUrls = mutableMapOf<String, String>()
+    private val _proofOfSaleComplete = MutableStateFlow(false)
+    val proofOfSaleComplete: StateFlow<Boolean> = _proofOfSaleComplete.asStateFlow()
 
     // 👤 Customer search for email receipt dialog
     private val _customerSearchState = MutableStateFlow<CustomerSearchState>(CustomerSearchState.Idle)
@@ -827,12 +834,12 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
-     * 📱 PORTABILIDAD: Skip proof-of-sale camera FAB on payment success
+     * 📱 PORTABILIDAD: Set portabilidad mode (1 photo vs 2 photos for proof-of-sale)
      */
-    fun setSkipProofOfSale(skip: Boolean) {
-        _skipProofOfSale = skip
-        Timber.d("📱 [Portabilidad] skipProofOfSale=$skip")
-        updateSessionSnapshot(reason = "setSkipProofOfSale")
+    fun setIsPortabilidad(isPortabilidad: Boolean) {
+        _isPortabilidad.value = isPortabilidad
+        Timber.d("📱 [Portabilidad] isPortabilidad=$isPortabilidad (photos=${if (isPortabilidad) 2 else 1})")
+        updateSessionSnapshot(reason = "setIsPortabilidad")
     }
 
     /**
@@ -900,7 +907,7 @@ class PaymentViewModel @Inject constructor(
         if (settings.showTipScreen) features += PaymentFeature.TIP_COLLECTION
         if (settings.showReviewScreen) features += PaymentFeature.RATING_COLLECTION
         if (settings.showVerificationScreen || effectiveVerificationContext != null) features += PaymentFeature.PRE_VERIFICATION
-        if (_isSerializedInventoryActive.value && !_skipProofOfSale) features += PaymentFeature.PROOF_OF_SALE
+        if (_isSerializedInventoryActive.value) features += PaymentFeature.PROOF_OF_SALE
 
         val mode = when {
             effectiveRefundContext != null -> PaymentMode.REFUND
@@ -3863,7 +3870,11 @@ class PaymentViewModel @Inject constructor(
         _isPaymentInProgress.value = false  // 🚦 Release payment guard
         isSkipReviewFlow = false
         _flowOrigin.value = PaymentFlowOrigin.FAST
-        _skipProofOfSale = false
+
+        // 📸 Cleanup orphaned proof-of-sale photos and reset state
+        cleanupOrphanedProofOfSalePhotos()
+        _isPortabilidad.value = false
+        _proofOfSaleComplete.value = false
 
         // 🪙 Clear crypto payment state
         currentCryptoRequestId = null
@@ -5254,7 +5265,8 @@ class PaymentViewModel @Inject constructor(
                         orderNumber = OrderNumberFormatter.display(currentState.orderNumber),  // 🆕 Order number (FOLIO)
                         orderItems = itemsForPrint,  // 🆕 Order items (for itemized receipt)
                         discountAmount = discountForPrint,  // 🆕 Discount for receipt printing
-                        isRefund = currentState.isRefund  // 💸 Pass refund flag for receipt header
+                        isRefund = currentState.isRefund,  // 💸 Pass refund flag for receipt header
+                        isPortabilidad = if (_isSerializedInventoryActive.value) _isPortabilidad.value else null  // 📱 Sale type for serialized inventory
                     )
                 }
 
@@ -5368,7 +5380,12 @@ class PaymentViewModel @Inject constructor(
      *
      * **Flow:**
      * 1. Upload photo to Firebase Storage
-     * 2. Call backend API to store photo URL in SaleVerification table
+     * 2. Add URL to pending list
+     * 3. If all required photos collected → call backend API with all URLs, mark complete
+     *
+     * **Multi-photo flow:**
+     * - Non-portabilidad: 1 photo (linea)
+     * - Portabilidad: 2 photos (linea + portabilidad)
      *
      * **Called from:** PaymentScreen when user captures proof-of-sale photo
      *
@@ -5376,17 +5393,20 @@ class PaymentViewModel @Inject constructor(
      * @param paymentId Payment ID from receipt
      * @param orderNumber Order number for filename
      * @param amount Payment amount for filename
+     * @param photoLabel Label for Firebase filename differentiation ("linea" or "portabilidad")
      */
     fun uploadProofOfSale(
         photoPath: String,
         paymentId: String,
         orderNumber: String,
-        amount: String
+        amount: String,
+        photoLabel: String = "linea"
     ) {
         viewModelScope.launch {
             try {
                 _isUploadingProofOfSale.value = true
-                Timber.i("📸 [PROOF-OF-SALE] Starting upload | paymentId=$paymentId | order=$orderNumber")
+                val requiredCount = if (_isPortabilidad.value) 2 else 1
+                Timber.i("📸 [PROOF-OF-SALE] Starting upload | label=$photoLabel | paymentId=$paymentId | order=$orderNumber | required=$requiredCount")
 
                 // Step 1: Get venue slug from auth repository
                 val venueSlug = authRepository.getVenueSlug() ?: run {
@@ -5400,38 +5420,95 @@ class PaymentViewModel @Inject constructor(
                     localPath = photoPath,
                     venueSlug = venueSlug,
                     orderNumber = orderNumber,
-                    amount = amount
+                    amount = amount,
+                    photoLabel = photoLabel
                 )
 
                 uploadResult.onSuccess { photoUrl ->
                     Timber.i("📸 [PROOF-OF-SALE] Firebase upload success: $photoUrl")
 
-                    // Step 3: Call backend API to store URL
-                    val request = com.jaac.avoqado_tpv.core.data.network.ProofOfSaleRequest(
-                        paymentId = paymentId,
-                        photoUrls = listOf(photoUrl)
-                    )
+                    // Step 3: Track pending URL by label for cleanup/retake
+                    _pendingProofOfSaleUrls[photoLabel] = photoUrl
+                    Timber.d("📸 [PROOF-OF-SALE] Pending URLs: ${_pendingProofOfSaleUrls.size}/$requiredCount (labels=${_pendingProofOfSaleUrls.keys})")
 
-                    val response = paymentApiService.uploadProofOfSale(request)
-
-                    if (response.isSuccessful && response.body()?.success == true) {
-                        Timber.i("✅ [PROOF-OF-SALE] Backend record success")
-                        // TODO: Show success toast/snackbar
-                    } else {
-                        val errorMessage = response.body()?.message ?: "Error registrando foto"
-                        Timber.e("❌ [PROOF-OF-SALE] Backend failed: $errorMessage")
-                        // Still mark as success since photo is in Firebase
+                    // Step 4: Check if all required photos are collected
+                    if (_pendingProofOfSaleUrls.size >= requiredCount) {
+                        sendProofOfSaleToBackend(paymentId)
                     }
                 }.onFailure { error ->
                     Timber.e(error, "❌ [PROOF-OF-SALE] Firebase upload failed")
-                    // TODO: Show error toast/snackbar
                 }
 
             } catch (e: Exception) {
                 Timber.e(e, "❌ [PROOF-OF-SALE] Unexpected error")
-                // TODO: Show error toast/snackbar
             } finally {
                 _isUploadingProofOfSale.value = false
+            }
+        }
+    }
+
+    /**
+     * 📸 Send all collected proof-of-sale photo URLs to backend.
+     * Called when all required photos are ready (1 for normal, 2 for portabilidad).
+     */
+    private suspend fun sendProofOfSaleToBackend(paymentId: String) {
+        val allUrls = _pendingProofOfSaleUrls.values.toList()
+        val request = com.jaac.avoqado_tpv.core.data.network.ProofOfSaleRequest(
+            paymentId = paymentId,
+            photoUrls = allUrls
+        )
+
+        val response = paymentApiService.uploadProofOfSale(request)
+
+        if (response.isSuccessful && response.body()?.success == true) {
+            Timber.i("✅ [PROOF-OF-SALE] Backend record success (${allUrls.size} photos)")
+            _proofOfSaleComplete.value = true
+        } else {
+            val errorMessage = response.body()?.message ?: "Error registrando foto"
+            Timber.e("❌ [PROOF-OF-SALE] Backend failed: $errorMessage")
+            // Still mark complete since photos are in Firebase
+            _proofOfSaleComplete.value = true
+        }
+    }
+
+    /**
+     * 📸 Retake a proof-of-sale photo.
+     *
+     * Deletes the existing Firebase photo for the given label and resets completion state
+     * so the user can re-capture and re-upload.
+     *
+     * @param photoLabel "linea" or "portabilidad"
+     */
+    fun retakeProofOfSalePhoto(photoLabel: String) {
+        val existingUrl = _pendingProofOfSaleUrls.remove(photoLabel)
+        _proofOfSaleComplete.value = false
+        Timber.d("📸 [PROOF-OF-SALE] Retaking $photoLabel photo (had URL=${existingUrl != null})")
+        if (existingUrl != null) {
+            viewModelScope.launch {
+                verificationUploadManager.deletePhoto(existingUrl)
+                    .onSuccess { Timber.d("📸 [PROOF-OF-SALE] Deleted old $photoLabel photo from Firebase") }
+                    .onFailure { Timber.w(it, "📸 [PROOF-OF-SALE] Failed to delete old $photoLabel photo") }
+            }
+        }
+    }
+
+    /**
+     * 📸 Cleanup orphaned proof-of-sale photos from Firebase Storage.
+     *
+     * Called when payment is reset or ViewModel is cleared, to delete any photos
+     * that were uploaded to Firebase but never sent to the backend (e.g., app crash
+     * mid-flow, user started a new payment before completing all photos).
+     */
+    private fun cleanupOrphanedProofOfSalePhotos(scope: CoroutineScope = viewModelScope) {
+        if (_pendingProofOfSaleUrls.isEmpty()) return
+        val urlsToDelete = _pendingProofOfSaleUrls.values.toList()
+        _pendingProofOfSaleUrls.clear()
+        Timber.i("📸 [PROOF-OF-SALE] Cleaning up ${urlsToDelete.size} orphaned photo(s)")
+        scope.launch {
+            urlsToDelete.forEach { url ->
+                verificationUploadManager.deletePhoto(url)
+                    .onSuccess { Timber.d("📸 [PROOF-OF-SALE] Deleted orphan: $url") }
+                    .onFailure { Timber.w(it, "📸 [PROOF-OF-SALE] Failed to delete orphan: $url") }
             }
         }
     }
@@ -6833,5 +6910,11 @@ class PaymentViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        // Use standalone scope since viewModelScope is already cancelled
+        cleanupOrphanedProofOfSalePhotos(scope = CoroutineScope(kotlinx.coroutines.Dispatchers.IO))
     }
 }

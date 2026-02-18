@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.reports.data.dto
 import com.google.gson.annotations.SerializedName
 import com.jaac.avoqado_tpv.features.reports.domain.models.PaymentMethodBreakdown
 import com.jaac.avoqado_tpv.features.reports.domain.models.SalesSummary
+import com.jaac.avoqado_tpv.features.reports.domain.models.WaiterTip
 import java.math.BigDecimal
 import java.math.RoundingMode
 
@@ -64,6 +65,15 @@ fun ShiftsSummaryData.toSalesSummary(): SalesSummary {
         BigDecimal.ZERO
     }
 
+    val mappedWaiterTips = waiterTips?.map { wt ->
+        WaiterTip(
+            staffId = wt.staffId,
+            name = wt.name,
+            amount = BigDecimal.valueOf(wt.amount),
+            count = wt.count
+        )
+    } ?: emptyList()
+
     return SalesSummary(
         totalSales = totalSales,
         totalOrders = totalOrders,
@@ -71,7 +81,10 @@ fun ShiftsSummaryData.toSalesSummary(): SalesSummary {
         totalTips = totalTips,
         totalShifts = 0,
         averageOrderValue = averageOrderValue,
-        averageProductsPerOrder = BigDecimal.ZERO
+        averageProductsPerOrder = BigDecimal.ZERO,
+        averageTipPercentage = BigDecimal.valueOf(summary.averageTipPercentage),
+        ratingsCount = summary.ratingsCount ?: 0,
+        waiterTips = mappedWaiterTips
     )
 }
 

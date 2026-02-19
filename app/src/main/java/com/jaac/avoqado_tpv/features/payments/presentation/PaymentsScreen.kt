@@ -27,6 +27,7 @@ import com.jaac.avoqado_tpv.features.payments.domain.models.Payment
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentStatus
 import com.jaac.avoqado_tpv.features.payments.domain.models.StaffSummary
+import com.jaac.avoqado_tpv.features.payments.presentation.components.CardBrandIcon
 import com.jaac.avoqado_tpv.features.payments.presentation.components.PaymentDetailBottomSheet
 import com.jaac.avoqado_tpv.features.payment.domain.model.OrderNumberFormatter
 import java.math.BigDecimal
@@ -376,8 +377,8 @@ private fun PaymentsContent(
                 } else {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(sizes.paddingScreen),
-                        verticalArrangement = Arrangement.spacedBy(sizes.spacingMedium)
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         items(
                             items = payments,
@@ -432,8 +433,6 @@ private fun PaymentCard(
     isSelected: Boolean = false,
     onClick: () -> Unit = {}
 ) {
-    val sizes = LocalResponsiveSizes.current
-
     Card(
         modifier = modifier
             .fillMaxWidth()
@@ -458,7 +457,7 @@ private fun PaymentCard(
         )
     ) {
         Row(
-            modifier = Modifier.padding(sizes.paddingScreen),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Checkbox (only in print mode)
@@ -500,9 +499,9 @@ private fun PaymentCard(
                             ) {
                                 Text(
                                     text = "Reembolso",
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.onErrorContainer
                                 )
                             }
@@ -513,35 +512,45 @@ private fun PaymentCard(
                             ) {
                                 Text(
                                     text = "Reembolsado",
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.onErrorContainer
                                 )
                             }
                         }
 
-                        // Payment method badge
-                        Surface(
-                            shape = MaterialTheme.shapes.small,
-                            color = when (payment.method) {
-                                PaymentMethod.CASH -> MaterialTheme.colorScheme.secondaryContainer
-                                PaymentMethod.CARD -> MaterialTheme.colorScheme.primaryContainer
-                                PaymentMethod.VOUCHER -> MaterialTheme.colorScheme.tertiaryContainer
-                                PaymentMethod.OTHER -> MaterialTheme.colorScheme.surfaceVariant
+                        // Payment method / card brand badge
+                        if (payment.cardBrand != null) {
+                            CardBrandIcon(cardBrand = payment.cardBrand)
+                        } else {
+                            Surface(
+                                shape = MaterialTheme.shapes.small,
+                                color = when (payment.method) {
+                                    PaymentMethod.CASH -> MaterialTheme.colorScheme.secondaryContainer
+                                    PaymentMethod.CARD -> MaterialTheme.colorScheme.primaryContainer
+                                    PaymentMethod.VOUCHER -> MaterialTheme.colorScheme.tertiaryContainer
+                                    PaymentMethod.OTHER -> MaterialTheme.colorScheme.surfaceVariant
+                                }
+                            ) {
+                                Text(
+                                    text = payment.method.label,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = when (payment.method) {
+                                        PaymentMethod.CASH -> MaterialTheme.colorScheme.onSecondaryContainer
+                                        PaymentMethod.CARD -> MaterialTheme.colorScheme.onPrimaryContainer
+                                        PaymentMethod.VOUCHER -> MaterialTheme.colorScheme.onTertiaryContainer
+                                        PaymentMethod.OTHER -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
                             }
-                        ) {
-                            Text(
-                                text = payment.getMethodLabel(),
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Medium
-                            )
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(sizes.spacingSmall))
+                Spacer(modifier = Modifier.height(4.dp))
 
                 // Source (Table or Fast Payment)
                 if (payment.orderNumber != null || payment.tableName != null) {
@@ -591,9 +600,9 @@ private fun PaymentCard(
 
                 // Tip (if present)
                 if (payment.tipAmount > BigDecimal.ZERO) {
-                    Spacer(modifier = Modifier.height(sizes.spacingSmall))
+                    Spacer(modifier = Modifier.height(4.dp))
                     HorizontalDivider()
-                    Spacer(modifier = Modifier.height(sizes.spacingSmall))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween

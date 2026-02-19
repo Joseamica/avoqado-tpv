@@ -26,6 +26,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
+import com.jaac.avoqado_tpv.core.receivers.AppUpdateReceiver
 import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
@@ -105,6 +106,20 @@ class MainActivity : ComponentActivity() {
     private var permissionGranted = mutableStateOf<Boolean?>(null)
 
     /**
+     * Launcher for camera + location permissions (requested on startup)
+     * If granted here, CameraPreviewScreen won't ask again.
+     * If denied, CameraPreviewScreen will re-request when user opens camera.
+     */
+    private val cameraLocationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val cameraGranted = permissions[Manifest.permission.CAMERA] == true
+        val locationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        Timber.d("📸 Startup permissions - Camera: $cameraGranted, Location: $locationGranted")
+    }
+
+    /**
      * Launcher for READ_PHONE_STATE permission request
      *
      * **CRITICAL REQUIREMENT:**
@@ -123,6 +138,9 @@ class MainActivity : ComponentActivity() {
         if (isGranted) {
             Timber.i("✅ READ_PHONE_STATE permission granted - hardware serial: ${deviceInfoManager.getSerialNumber()}")
             permissionGranted.value = true
+
+            // Request camera + location after phone state is resolved (avoid competing dialogs)
+            requestCameraLocationPermissions()
 
             // 🐛 FIX: Start initialization AFTER permission is granted (not in onCreate)
             // On fresh install, permission callback fires AFTER onCreate() completes,
@@ -252,7 +270,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        AppUpdateReceiver.isActivityResumed = true
         applyTutorialImmersiveNavigation()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        AppUpdateReceiver.isActivityResumed = false
     }
 
     /**
@@ -346,6 +370,8 @@ class MainActivity : ComponentActivity() {
                 ) == PackageManager.PERMISSION_GRANTED -> {
                     Timber.d("✅ READ_PHONE_STATE permission already granted")
                     permissionGranted.value = true
+                    // Request camera + location now that phone state is resolved
+                    requestCameraLocationPermissions()
                 }
                 else -> {
                     Timber.d("📱 Requesting READ_PHONE_STATE permission for hardware serial (MANDATORY)")
@@ -356,6 +382,35 @@ class MainActivity : ComponentActivity() {
             // Android 7 and below: Build.SERIAL does not require permission
             Timber.d("📱 Android 7 or below - Build.SERIAL does not require permission")
             permissionGranted.value = true
+        }
+    }
+
+    /**
+     * Request camera + location permissions on startup (non-blocking)
+     *
+     * These are needed for proof-of-sale photos and verification.
+     * If already granted → no dialog shown.
+     * If denied → CameraPreviewScreen will ask again when user actually opens camera.
+     */
+    private fun requestCameraLocationPermissions() {
+        val permissionsToRequest = mutableListOf<String>()
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(Manifest.permission.CAMERA)
+        }
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            permissionsToRequest.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+
+        if (permissionsToRequest.isNotEmpty()) {
+            Timber.d("📸 Requesting camera + location permissions on startup: $permissionsToRequest")
+            cameraLocationPermissionLauncher.launch(permissionsToRequest.toTypedArray())
+        } else {
+            Timber.d("📸 Camera + location permissions already granted")
         }
     }
 

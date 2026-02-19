@@ -55,65 +55,44 @@ fun PinDisplay(
 ) {
     var showPin by remember { mutableStateOf(false) }
 
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
+    // PIN container with border — counter inside
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
-    ) {
-        // PIN container with border
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(
-                    width = 1.dp,
-                    color = if (isError) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.outline
-                    },
-                    shape = RoundedCornerShape(12.dp)
-                )
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-        ) {
-            // PIN text (masked or visible)
-            Text(
-                text = if (pin.isEmpty()) {
-                    ""
-                } else if (showPin) {
-                    pin
-                } else {
-                    "•".repeat(pin.length)
-                },
-                style = MaterialTheme.typography.headlineMedium.copy(
-                    letterSpacing = 8.sp
-                ),
+            .fillMaxWidth()
+            .border(
+                width = 1.dp,
                 color = if (isError) {
                     MaterialTheme.colorScheme.error
                 } else {
-                    MaterialTheme.colorScheme.onSurface
+                    MaterialTheme.colorScheme.outline
                 },
-                textAlign = TextAlign.Center,
-                modifier = Modifier.weight(1f)
+                shape = RoundedCornerShape(12.dp)
             )
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        // PIN text (masked or visible)
+        Text(
+            text = if (pin.isEmpty()) {
+                ""
+            } else if (showPin) {
+                pin
+            } else {
+                "•".repeat(pin.length)
+            },
+            style = MaterialTheme.typography.headlineMedium.copy(
+                letterSpacing = 8.sp
+            ),
+            color = if (isError) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+            textAlign = TextAlign.Center,
+            modifier = Modifier.weight(1f)
+        )
 
-            // Toggle visibility button
-            IconButton(
-                onClick = { showPin = !showPin },
-                modifier = Modifier.size(40.dp)
-            ) {
-                Icon(
-                    imageVector = if (showPin) {
-                        Icons.Default.VisibilityOff
-                    } else {
-                        Icons.Default.Visibility
-                    },
-                    contentDescription = if (showPin) "Ocultar PIN" else "Mostrar PIN",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
-        // Character counter (always visible)
+        // Character counter
         Text(
             text = "${pin.length}/$maxLength",
             style = MaterialTheme.typography.bodySmall,
@@ -121,9 +100,26 @@ fun PinDisplay(
                 MaterialTheme.colorScheme.error
             } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
-            },
-            modifier = Modifier.padding(top = 4.dp)
+            }
         )
+
+        Spacer(modifier = Modifier.width(4.dp))
+
+        // Toggle visibility button
+        IconButton(
+            onClick = { showPin = !showPin },
+            modifier = Modifier.size(40.dp)
+        ) {
+            Icon(
+                imageVector = if (showPin) {
+                    Icons.Default.VisibilityOff
+                } else {
+                    Icons.Default.Visibility
+                },
+                contentDescription = if (showPin) "Ocultar PIN" else "Mostrar PIN",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

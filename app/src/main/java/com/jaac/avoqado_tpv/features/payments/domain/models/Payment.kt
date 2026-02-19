@@ -64,6 +64,10 @@ data class Payment(
     // NOTE: referenceNumber (12-digit) is too large for Blumon's Integer API
     val blumonOperationNumber: Int? = null,
 
+    // 💳 CARD BRAND (from backend Prisma enum)
+    // Null for cash/voucher payments or when backend doesn't provide it
+    val cardBrand: CardBrand? = null,
+
     // 💸 REFUND TRANSACTION FLAG
     // True if this transaction is a refund (money returned to customer)
     // Detected by negative totalAmount or explicit flag from backend
@@ -278,6 +282,33 @@ data class StaffSummary(
 ) {
     fun getFullName(): String {
         return "$firstName $lastName"
+    }
+}
+
+/**
+ * Card Brand Enum
+ *
+ * Matches backend CardBrand Prisma enum.
+ * Used to display brand-specific badges in payment history.
+ */
+enum class CardBrand(val displayName: String) {
+    VISA("Visa"),
+    MASTERCARD("Mastercard"),
+    AMERICAN_EXPRESS("Amex"),
+    DISCOVER("Discover"),
+    DINERS_CLUB("Diners"),
+    JCB("JCB"),
+    MAESTRO("Maestro"),
+    UNIONPAY("UnionPay"),
+    ELO("Elo"),
+    HIPERCARD("Hipercard");
+
+    companion object {
+        fun fromString(value: String?): CardBrand? {
+            if (value == null) return null
+            val normalized = value.uppercase().replace(" ", "_")
+            return entries.firstOrNull { it.name == normalized }
+        }
     }
 }
 

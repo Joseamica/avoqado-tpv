@@ -99,6 +99,7 @@ fun TimeclockScreen(
         topBar = {
             TopAppBar(
                 title = { }, // Title is inside the content for cleaner look
+                windowInsets = androidx.compose.foundation.layout.WindowInsets(0.dp),
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Volver")

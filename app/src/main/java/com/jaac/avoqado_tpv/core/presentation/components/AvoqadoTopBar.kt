@@ -7,6 +7,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -71,7 +72,7 @@ fun AvoqadoTopBar(
     val borderColor = if (showSandboxBorder) MaterialTheme.avoqadoColors.statusInfo else MaterialTheme.colorScheme.outline
     val borderWidth = if (showSandboxBorder) 3.dp else 1.dp
 
-    val resolvedTitleStyle = titleStyle ?: MaterialTheme.typography.titleLarge
+    val resolvedTitleStyle = titleStyle ?: MaterialTheme.typography.titleMedium
 
     // 🔒 Throttle navigation clicks to prevent double-click navigation bugs
     var isNavigationLocked by remember { mutableStateOf(false) }
@@ -156,9 +157,11 @@ fun AvoqadoTopBar(
             // Custom actions
             actions()
         },
+        expandedHeight = 48.dp,
+        windowInsets = WindowInsets(0.dp),
         colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-            containerColor = MaterialTheme.colorScheme.surface,  // Dark surface (#2A2A2A)
-            titleContentColor = MaterialTheme.colorScheme.onSurface,  // White text
+            containerColor = MaterialTheme.colorScheme.surface,
+            titleContentColor = MaterialTheme.colorScheme.onSurface,
             navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
             actionIconContentColor = MaterialTheme.colorScheme.onSurface
         )

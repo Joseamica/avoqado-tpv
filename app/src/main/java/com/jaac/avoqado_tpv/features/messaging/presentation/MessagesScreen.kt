@@ -84,21 +84,9 @@ fun MessagesScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        text = "Mensajes",
-                        fontWeight = FontWeight.Bold
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Regresar"
-                        )
-                    }
-                },
+            com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar(
+                title = "Mensajes",
+                onNavigationClick = onBack,
                 actions = {
                     IconButton(onClick = { viewModel.refreshMessages() }) {
                         Icon(
@@ -106,10 +94,7 @@ fun MessagesScreen(
                             contentDescription = "Actualizar"
                         )
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
+                }
             )
         }
     ) { padding ->

@@ -119,19 +119,9 @@ fun RefundConfirmationScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Confirmar Reembolso") },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Volver"
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
+            com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar(
+                title = "Confirmar Reembolso",
+                onNavigationClick = onNavigateBack
             )
         }
     ) { paddingValues ->

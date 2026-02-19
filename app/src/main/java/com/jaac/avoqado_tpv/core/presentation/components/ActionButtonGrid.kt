@@ -154,7 +154,7 @@ private fun ActionButtonItem(
     Card(
         onClick = if (enabled) onClick else { {} },
         modifier = Modifier
-            .aspectRatio(1.3f) // ⭐ Wider aspect ratio (Square style tiles)
+            .aspectRatio(1.5f) // ⭐ Wider aspect ratio (Square style tiles)
             .fillMaxWidth(),
         enabled = enabled,
         shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp), // ⭐ Professional radius (Square is ~8-12dp)

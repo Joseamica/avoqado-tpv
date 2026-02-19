@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.payments.data.dto
 
 import com.google.gson.annotations.SerializedName
+import com.jaac.avoqado_tpv.features.payments.domain.models.CardBrand
 import com.jaac.avoqado_tpv.features.payments.domain.models.Payment
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentStatus
@@ -70,7 +71,12 @@ data class PaymentDto(
     // 💳 BLUMON PROCESSOR DATA (contains blumonOperationNumber)
     // Backend returns this as JSONB, we extract blumonOperationNumber for refunds
     @SerializedName("processorData")
-    val processorData: ProcessorDataDto? = null
+    val processorData: ProcessorDataDto? = null,
+
+    // 💳 CARD BRAND (Prisma enum: VISA, MASTERCARD, AMERICAN_EXPRESS, etc.)
+    // Backend returns via `...payment` spread in history endpoint
+    @SerializedName("cardBrand")
+    val cardBrand: String? = null
 )
 
 /**
@@ -281,6 +287,8 @@ fun PaymentDto.toDomain(): Payment {
         referenceNumber = referenceNumber,
         // 🎫 CRITICAL: Blumon operationNumber for CancelIcc refunds
         // This is the small integer from Blumon webhook, NOT the SDK's large reference
-        blumonOperationNumber = operationNumber
+        blumonOperationNumber = operationNumber,
+        // Card brand (Visa, Mastercard, etc.) for display in payment history
+        cardBrand = CardBrand.fromString(cardBrand)
     )
 }

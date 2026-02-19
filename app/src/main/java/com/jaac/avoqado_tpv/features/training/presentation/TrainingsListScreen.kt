@@ -52,16 +52,9 @@ fun TrainingsListScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Entrenamientos", fontWeight = FontWeight.Bold) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Volver"
-                        )
-                    }
-                }
+            com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar(
+                title = "Entrenamientos",
+                onNavigationClick = onBack
             )
         }
     ) { paddingValues ->

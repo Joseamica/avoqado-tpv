@@ -64,44 +64,15 @@ fun TrainingStepViewer(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = training?.title ?: "Cargando...",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                        when {
-                            state.showQuizReview -> {
-                                Text(
-                                    text = "Revisión del quiz",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            state.showQuiz -> {
-                                Text(
-                                    text = "Quiz",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            !state.isQuizSubmitted && totalSteps > 0 -> {
-                                Text(
-                                    text = "Paso ${state.currentStepIndex + 1} de $totalSteps",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
+            com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar(
+                title = training?.title ?: "Cargando...",
+                subtitle = when {
+                    state.showQuizReview -> "Revisión del quiz"
+                    state.showQuiz -> "Quiz"
+                    !state.isQuizSubmitted && totalSteps > 0 -> "Paso ${state.currentStepIndex + 1} de $totalSteps"
+                    else -> null
                 },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver")
-                    }
-                }
+                onNavigationClick = onBack
             )
         }
     ) { paddingValues ->

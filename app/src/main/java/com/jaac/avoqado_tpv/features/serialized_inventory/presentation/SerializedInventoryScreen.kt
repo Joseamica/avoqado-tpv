@@ -431,6 +431,7 @@ private fun InventoryFormContent(
         OutlinedTextField(
             value = physicalScannerInput,
             onValueChange = { physicalScannerInput = it },
+            shape = RoundedCornerShape(50),
             modifier = Modifier
                 .fillMaxWidth()
                 .height(Size.SerializedScannerInputHeight)

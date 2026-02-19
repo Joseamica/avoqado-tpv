@@ -836,10 +836,6 @@ private fun WelcomeScreenContent(
                             .fillMaxSize()
                             .verticalScroll(rememberScrollState())
                     ) {
-                        // ═══════════════════════════════════════════════════════════════
-                        // VENUE STATUS BANNER (shows only for non-ACTIVE statuses) - FullWidth
-                        // ═══════════════════════════════════════════════════════════════
-                        VenueStatusBanner(status = venueStatus)
 
                         // Shift status banner (with offline state support) - FullWidth
                         // Hidden in simplified mode when module config disables shifts
@@ -895,6 +891,14 @@ private fun WelcomeScreenContent(
                     }
                 }
             }
+
+            // ═══════════════════════════════════════════════════════════════
+            // VENUE STATUS BANNER - Floating overlay (top, above all content)
+            // ═══════════════════════════════════════════════════════════════
+            VenueStatusBanner(
+                status = venueStatus,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
         }
     }
 

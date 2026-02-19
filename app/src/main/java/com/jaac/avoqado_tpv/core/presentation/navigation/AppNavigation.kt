@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.CircularProgressIndicator
@@ -557,7 +558,11 @@ fun AppNavigation(
         return // Don't show staff navigation when in kiosk mode
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier
+        .fillMaxSize()
+        .background(MaterialTheme.colorScheme.surface) // Fill status bar area with surface color
+        .statusBarsPadding() // Consume status bar inset ONCE here (above banner + screens)
+    ) {
         // 🏥 UNIFIED ALERT SYSTEM (Square/Toast pattern)
         // Shows ALL alerts in priority order: connection (P0, P2) + device health (P1, P3-P6)
         // Single expandable banner instead of separate ConnectionBanner + DeviceAlertBanner

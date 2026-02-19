@@ -7,13 +7,10 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.foundation.background
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
@@ -23,10 +20,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.AsyncImage
-import timber.log.Timber
 import com.jaac.avoqado_tpv.BuildConfig
-import com.jaac.avoqado_tpv.R
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.authentication.presentation.components.PinDisplay
@@ -97,11 +91,24 @@ private fun LoginContent(
                 // ✅ Responsive workflow screen (no scroll)
                 ResponsiveScaffold(
                     modifier = Modifier.padding(padding),
-                    scrollable = true,
+                    scrollable = false,
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
                     val sizes = LocalResponsiveSizes.current
+
+                    // Adaptive PIN button sizing (Square/Clover pattern)
+                    // No scroll — everything fits on screen by adapting sizes
+                    val pinButtonSize = when (sizes.sizeCategory) {
+                        "small" -> 56.dp   // PAX A80 / small screens
+                        "medium" -> 68.dp  // PAX A910S / A920
+                        else -> 80.dp      // Tablets
+                    }
+                    val pinButtonSpacing = when (sizes.sizeCategory) {
+                        "small" -> 6.dp
+                        "medium" -> 8.dp
+                        else -> 12.dp
+                    }
 
                     // Title
                     Text(
@@ -110,7 +117,7 @@ private fun LoginContent(
                         textAlign = TextAlign.Center
                     )
 
-                    Spacer(modifier = Modifier.height(sizes.spacingMedium))
+                    Spacer(modifier = Modifier.height(sizes.spacingSmall))
 
                     // PIN Display (masked digits with show/hide toggle and counter)
                     PinDisplay(
@@ -119,57 +126,66 @@ private fun LoginContent(
                         isError = state is LoginState.Error
                     )
 
-                    Spacer(modifier = Modifier.height(sizes.spacingMedium))
+                    Spacer(modifier = Modifier.height(sizes.spacingSmall))
 
-                    // Custom PIN Pad (Square/Toast style)
-                    PinPad(
-                        onNumberClick = { digit ->
-                            if (pin.length < 10 && isInteractionEnabled) {
-                                pin += digit
-                            }
-                        },
-                        onBackspace = {
-                            if (pin.isNotEmpty() && isInteractionEnabled) {
-                                pin = pin.dropLast(1)
-                            }
-                        },
-                        onClear = {
-                            if (isInteractionEnabled) {
-                                pin = ""
-                            }
-                        },
-                        enabled = isInteractionEnabled
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // Login button (Ir)
-                    ElevatedButton(
-                        onClick = {
-                            if (isPinComplete) {
-                                val currentPin = pin
-                                pin = ""
-                                onPinEntered(currentPin)
-                            }
-                        },
-                        enabled = isPinComplete && isInteractionEnabled,
-                        modifier = Modifier.size(80.dp),
-                        shape = CircleShape,
-                        colors = ButtonDefaults.elevatedButtonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
-                        ),
-                        elevation = ButtonDefaults.elevatedButtonElevation(
-                            defaultElevation = 2.dp,
-                            pressedElevation = 6.dp,
-                            disabledElevation = 0.dp
-                        )
+                    // PinPad + "Ir" button side by side
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(pinButtonSpacing),
+                        modifier = Modifier.height(IntrinsicSize.Min)
                     ) {
-                        Text(
-                            text = "Ir",
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Medium
+                        // Custom PIN Pad (Square/Toast style — adaptive sizing)
+                        PinPad(
+                            onNumberClick = { digit ->
+                                if (pin.length < 10 && isInteractionEnabled) {
+                                    pin += digit
+                                }
+                            },
+                            onBackspace = {
+                                if (pin.isNotEmpty() && isInteractionEnabled) {
+                                    pin = pin.dropLast(1)
+                                }
+                            },
+                            onClear = {
+                                if (isInteractionEnabled) {
+                                    pin = ""
+                                }
+                            },
+                            enabled = isInteractionEnabled,
+                            buttonSize = pinButtonSize,
+                            buttonSpacing = pinButtonSpacing
                         )
+
+                        // Login button (Ir) — same width as PIN buttons, full height of pad
+                        ElevatedButton(
+                            onClick = {
+                                if (isPinComplete) {
+                                    val currentPin = pin
+                                    pin = ""
+                                    onPinEntered(currentPin)
+                                }
+                            },
+                            enabled = isPinComplete && isInteractionEnabled,
+                            modifier = Modifier
+                                .width(pinButtonSize)
+                                .fillMaxHeight(),
+                            shape = RoundedCornerShape(pinButtonSize / 2),
+                            contentPadding = PaddingValues(0.dp),
+                            colors = ButtonDefaults.elevatedButtonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            ),
+                            elevation = ButtonDefaults.elevatedButtonElevation(
+                                defaultElevation = 2.dp,
+                                pressedElevation = 6.dp,
+                                disabledElevation = 0.dp
+                            )
+                        ) {
+                            Text(
+                                text = "Ir",
+                                fontSize = if (pinButtonSize < 72.dp) 16.sp else 20.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
                     }
                 }
 
@@ -328,130 +344,75 @@ private fun LoginContent(
 }
 
 // ========== Previews ==========
-@Preview(
-    name = "Login - Light Mode",
-    showBackground = true,
-    uiMode = Configuration.UI_MODE_NIGHT_NO
-)
+// PAX A910S: 720x1280px @ 320dpi = 360x640dp
+// Using device spec string for accurate DPI-aware rendering (closer to real hardware)
+private const val PAX_A910S = "spec:width=720px,height=1280px,dpi=320"
+
+@Preview(name = "Login - PAX A910S", device = PAX_A910S, showSystemUi = true)
 @Composable
-private fun LoginScreenIdlePreview() {
+private fun LoginScreenPaxA910sPreview() {
     AvoqadoTheme(darkTheme = false) {
         LoginContent(
             state = LoginState.Idle,
             venueLogo = null,
             onPinEntered = {},
-
             onDismissError = {}
         )
     }
 }
 
-@Preview(
-    name = "Login - Dark Mode (Dashboard Web)",
-    showBackground = true,
-    uiMode = Configuration.UI_MODE_NIGHT_YES
-)
+@Preview(name = "Login - PAX A910S Dark", device = PAX_A910S, showSystemUi = true,
+    uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
-private fun LoginScreenIdleDarkPreview() {
+private fun LoginScreenPaxA910sDarkPreview() {
     AvoqadoTheme(darkTheme = true) {
         LoginContent(
             state = LoginState.Idle,
             venueLogo = null,
             onPinEntered = {},
-
             onDismissError = {}
         )
     }
 }
 
-@Preview(
-    name = "Loading - Light Mode",
-    showBackground = true,
-    uiMode = Configuration.UI_MODE_NIGHT_NO
-)
+@Preview(name = "Login - PAX A910S Loading", device = PAX_A910S, showSystemUi = true)
 @Composable
-private fun LoginScreenLoadingPreview() {
+private fun LoginScreenPaxA910sLoadingPreview() {
     AvoqadoTheme(darkTheme = false) {
         LoginContent(
             state = LoginState.Loading,
             venueLogo = null,
             onPinEntered = {},
-
             onDismissError = {}
         )
     }
 }
 
-@Preview(
-    name = "Loading - Dark Mode (Dashboard Web)",
-    showBackground = true,
-    uiMode = Configuration.UI_MODE_NIGHT_YES
-)
+@Preview(name = "Login - PAX A910S Error", device = PAX_A910S, showSystemUi = true)
 @Composable
-private fun LoginScreenLoadingDarkPreview() {
-    AvoqadoTheme(darkTheme = true) {
-        LoginContent(
-            state = LoginState.Loading,
-            venueLogo = null,
-            onPinEntered = {},
-
-            onDismissError = {}
-        )
-    }
-}
-
-@Preview(
-    name = "Error - Light Mode",
-    showBackground = true,
-    uiMode = Configuration.UI_MODE_NIGHT_NO
-)
-@Composable
-private fun LoginScreenErrorPreview() {
+private fun LoginScreenPaxA910sErrorPreview() {
     AvoqadoTheme(darkTheme = false) {
         LoginContent(
             state = LoginState.Error("PIN incorrecto. Intenta de nuevo."),
             venueLogo = null,
             onPinEntered = {},
-
             onDismissError = {}
         )
     }
 }
 
-@Preview(
-    name = "Error - Dark Mode (Dashboard Web)",
-    showBackground = true,
-    uiMode = Configuration.UI_MODE_NIGHT_YES
-)
-@Composable
-private fun LoginScreenErrorDarkPreview() {
-    AvoqadoTheme(darkTheme = true) {
-        LoginContent(
-            state = LoginState.Error("PIN incorrecto. Intenta de nuevo."),
-            venueLogo = null,
-            onPinEntered = {},
-
-            onDismissError = {}
-        )
-    }
-}
-
-@Preview(
-    name = "Rate Limit Error - Dark Mode",
-    showBackground = true,
-    uiMode = Configuration.UI_MODE_NIGHT_YES
-)
+@Preview(name = "Rate Limit Error - Dark", device = PAX_A910S, showSystemUi = true,
+    uiMode = Configuration.UI_MODE_NIGHT_YES)
 @Composable
 private fun LoginScreenRateLimitErrorDarkPreview() {
     AvoqadoTheme(darkTheme = true) {
         LoginContent(
             state = LoginState.Error(
                 "Demasiados intentos. Por favor espera un momento e intenta nuevamente.\n\n" +
-                        "ℹ️ Si estás en desarrollo, el backend debe configurar rate limits más altos para DEV."
+                        "Si estás en desarrollo, el backend debe configurar rate limits más altos para DEV."
             ),
             venueLogo = null,
             onPinEntered = {},
-
             onDismissError = {}
         )
     }

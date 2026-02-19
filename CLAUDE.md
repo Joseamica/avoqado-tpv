@@ -77,6 +77,7 @@ app/src/production/ # Production-specific (same files, different SDK URLs)
 16. **ADB monitoring**: Mandatory after every change. Log capture for testing. -> `testing-and-adb.md`
 17. **Unit tests**: 220 tests, 0 failures. Run before commits and after refactors. -> [unit testing guide](docs/UNIT_TESTING_GUIDE.md)
 18. **Timezone**: Never use `ZoneId.systemDefault()`. Use `VenueTimeZone.get(secureStorage)` or `ZoneId.of("America/Mexico_City")`. -> `critical-warnings.md`
+19. **PAX A910S target device**: 720x1280px, 320dpi (xhdpi), 360x640dp. Always add `@Preview(widthDp=360, heightDp=640)` with banners when creating/modifying screens. No fixed sizes >80dp for buttons. -> `critical-warnings.md`
 
 ## Build Variants
 

@@ -5,13 +5,24 @@
 
 ---
 
-## [Unreleased]
+## [1.7.2] - 2026-02-19
 
 ### **Fixed**
 
+- **AppUpdateReceiver duplicate activity on ADB install**: During `adb install` / `./gradlew installSandboxDebug`, the system launcher starts the app immediately, then `AppUpdateReceiver` fires 100ms later and creates a second `MainActivity` with `FLAG_ACTIVITY_CLEAR_TOP`, destroying the first one. This canceled all running coroutines, causing `LeftCompositionCancellationException`, `JobCancellationException`, canceled HTTP requests, and brief `SERVER_DOWN` alerts. Added foreground guard: if the app is already in the foreground (ADB install scenario), the relaunch is skipped. During real PAX SDK self-updates, the process is killed first so the app won't be in foreground — relaunch still works correctly
 - **Self-update download crash on Android 10+**: Both Avoqado and Blumon update downloads failed with `EACCES (Permission denied)` on Android 10+ because `WRITE_EXTERNAL_STORAGE` is ignored by scoped storage. Changed download directory from public Downloads (`/storage/emulated/0/download/`) to app-scoped external storage (`getExternalFilesDir/apk_updates/`). No permissions needed, readable by PAX system installer, works on all Android versions (7-13+)
-- **LoginScreen buttons crushed on PAX A80**: PIN pad and "Ir" button were miniaturized on small screens because layout was non-scrollable (`scrollable = false`). Changed `ResponsiveScaffold` to `scrollable = true` so content scrolls instead of compressing
+- **LoginScreen PIN pad adaptive sizing (Square/Clover pattern)**: PIN pad and "Ir" button were crushed on small screens due to fixed 80dp button sizes. Replaced with adaptive sizing via ResponsiveSizes: small screens 56dp, medium (PAX A910S) 68dp, large 80dp. Font sizes and icon sizes scale proportionally. No scroll needed — everything fits on screen. Spacers reduced from `spacingMedium` to `spacingSmall`. Previews updated to PAX A910S dimensions (360x640dp)
 - **SuperAdmin button missing in simplified mode**: SuperAdmin tools button only appeared in normal mode (restaurant/retail). Now appears for SUPERADMIN role in both simplified (telecom) and normal modes
+- **LoginScreen unused imports**: Removed unused imports (`AsyncImage`, `Timber`, `clip`, `ContentScale`, `painterResource`, `R`) left from venue logo feature that was never rendered
+
+### **Changed**
+
+- **Payment history list denser layout + card brand icons**: Reduced spacing between payment cards (8dp horizontal padding, 6dp vertical gap vs previous 16dp/12dp). Reduced internal card padding (12x10dp vs 16dp). Card payments now show actual brand logo icons (SVG paths from dashboard's `getIcon.tsx`): Visa (blue wordmark), Mastercard (red/yellow overlapping circles), Amex (blue AMERICAN EXPRESS text) inside 34x24dp bordered containers. Other brands get text-in-box fallback. Cash/voucher keep text badges with theme colors. New `CardBrandIcon` composable in `payments/presentation/components/`. New `CardBrand` enum in domain model maps from backend Prisma `cardBrand` field. Added `cardBrand` to `PaymentDto` and `Payment` domain model
+- **LoginScreen "Ir" button moved to right of PIN pad**: Moved login button from below the PIN pad to a column on the right side, spanning the full height of the 4-row pad. Same width as PIN buttons, pill-shaped (RoundedCornerShape). Saves one full row of vertical space on PAX A910S. Fixed text breaking into 2 lines on real device by removing default 24dp content padding (`contentPadding = PaddingValues(0.dp)`)
+- **PinDisplay counter right-aligned**: Moved "0/10" character counter from centered to right-aligned under the eye toggle icon
+- **ResponsiveScaffold size category stable with banners**: `BoxWithConstraints.maxHeight` was used for size category calculation, so banners (e.g. "Sin conexion a internet" ~56dp) reduced available height from 640dp to 584dp, dropping category from "medium" to "small" and shrinking all PIN buttons from 68dp to 56dp. Now uses `LocalConfiguration.screenHeightDp` (physical screen dimensions) so the size category stays "medium" on PAX A910S regardless of banners or overlays
+- **PAX A910S target device documented**: Added PAX A910S specs (720x1280px, 320dpi, 360x640dp) as priority UI pattern rule in CLAUDE.md, critical-warnings.md, and MEMORY.md. Every screen must have `@Preview(widthDp=360, heightDp=640)` and use adaptive sizing via ResponsiveSizes
+- **SelfUpdateScreen "¡Estás al día!" UI refresh**: Redesigned the UpToDate state with a polished card layout, glow success icon, version pill, and a larger Avoqado logo badge with light background so branding remains readable in dark theme. Added dedicated A910S preview for this state (`app/src/main/java/com/jaac/avoqado_tpv/features/self_update/presentation/SelfUpdateScreen.kt`)
 
 ---
 

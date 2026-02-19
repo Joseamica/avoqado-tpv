@@ -146,6 +146,24 @@ val formatter = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("es", "MX"))
 - Firebase Storage paths (file naming, not user-facing)
 - Camera photo file names
 
+## PAX A910S Target Device (UI Priority)
+
+**Only device in production.** All UI must be tested against PAX A910S dimensions.
+
+| Spec | Value |
+|------|-------|
+| Resolution | 720x1280px |
+| Density | 320dpi (xhdpi) |
+| DP size | 360x640dp |
+| ResponsiveSizes | "medium" (600-700dp height) |
+
+**Rules:**
+1. Every screen MUST have `@Preview(widthDp = 360, heightDp = 640)` — include venue status banner
+2. No fixed button sizes >80dp — use adaptive sizing via `LocalResponsiveSizes.current`
+3. No scroll for primary input UI (PIN pads, keypads) — adapt sizes instead
+4. Minimum touch target: 44dp (prefer 48dp+)
+5. Test with banner visible — it steals ~56dp from usable height
+
 ## Common Pitfalls
 
 | Problem | Cause | Solution |

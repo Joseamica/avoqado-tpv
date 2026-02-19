@@ -10,6 +10,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -46,60 +47,64 @@ fun PinPad(
     onBackspace: () -> Unit,
     onClear: () -> Unit,
     enabled: Boolean = true,
+    buttonSize: Dp = 80.dp,
+    buttonSpacing: Dp = 12.dp,
     modifier: Modifier = Modifier
 ) {
     Column(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(buttonSpacing)
     ) {
         // Row 1: 1 2 3
         Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(buttonSpacing)
         ) {
-            PinButton(text = "1", onClick = { onNumberClick("1") }, enabled = enabled)
-            PinButton(text = "2", onClick = { onNumberClick("2") }, enabled = enabled)
-            PinButton(text = "3", onClick = { onNumberClick("3") }, enabled = enabled)
+            PinButton(text = "1", onClick = { onNumberClick("1") }, enabled = enabled, size = buttonSize)
+            PinButton(text = "2", onClick = { onNumberClick("2") }, enabled = enabled, size = buttonSize)
+            PinButton(text = "3", onClick = { onNumberClick("3") }, enabled = enabled, size = buttonSize)
         }
 
         // Row 2: 4 5 6
         Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(buttonSpacing)
         ) {
-            PinButton(text = "4", onClick = { onNumberClick("4") }, enabled = enabled)
-            PinButton(text = "5", onClick = { onNumberClick("5") }, enabled = enabled)
-            PinButton(text = "6", onClick = { onNumberClick("6") }, enabled = enabled)
+            PinButton(text = "4", onClick = { onNumberClick("4") }, enabled = enabled, size = buttonSize)
+            PinButton(text = "5", onClick = { onNumberClick("5") }, enabled = enabled, size = buttonSize)
+            PinButton(text = "6", onClick = { onNumberClick("6") }, enabled = enabled, size = buttonSize)
         }
 
         // Row 3: 7 8 9
         Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(buttonSpacing)
         ) {
-            PinButton(text = "7", onClick = { onNumberClick("7") }, enabled = enabled)
-            PinButton(text = "8", onClick = { onNumberClick("8") }, enabled = enabled)
-            PinButton(text = "9", onClick = { onNumberClick("9") }, enabled = enabled)
+            PinButton(text = "7", onClick = { onNumberClick("7") }, enabled = enabled, size = buttonSize)
+            PinButton(text = "8", onClick = { onNumberClick("8") }, enabled = enabled, size = buttonSize)
+            PinButton(text = "9", onClick = { onNumberClick("9") }, enabled = enabled, size = buttonSize)
         }
 
         // Row 4: C 0 ⌫
         Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(buttonSpacing)
         ) {
             // Clear button
             PinButton(
                 text = "C",
                 onClick = onClear,
                 enabled = enabled,
-                isAction = true
+                isAction = true,
+                size = buttonSize
             )
 
             // Zero button
-            PinButton(text = "0", onClick = { onNumberClick("0") }, enabled = enabled)
+            PinButton(text = "0", onClick = { onNumberClick("0") }, enabled = enabled, size = buttonSize)
 
             // Backspace button (icon)
             PinButtonIcon(
                 onClick = onBackspace,
                 enabled = enabled,
-                isAction = true
+                isAction = true,
+                size = buttonSize
             )
         }
     }
@@ -117,12 +122,19 @@ private fun PinButton(
     onClick: () -> Unit,
     enabled: Boolean,
     isAction: Boolean = false,
+    size: Dp = 80.dp,
     modifier: Modifier = Modifier
 ) {
+    val fontSize = when {
+        size < 60.dp -> 18.sp
+        size < 72.dp -> 20.sp
+        else -> 24.sp
+    }
+
     ElevatedButton(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier.size(80.dp),
+        modifier = modifier.size(size),
         shape = CircleShape,
         colors = ButtonDefaults.elevatedButtonColors(
             containerColor = if (isAction) {
@@ -144,7 +156,7 @@ private fun PinButton(
     ) {
         Text(
             text = text,
-            fontSize = 24.sp,
+            fontSize = fontSize,
             fontWeight = FontWeight.Medium
         )
     }
@@ -158,12 +170,19 @@ private fun PinButtonIcon(
     onClick: () -> Unit,
     enabled: Boolean,
     isAction: Boolean = false,
+    size: Dp = 80.dp,
     modifier: Modifier = Modifier
 ) {
+    val iconSize = when {
+        size < 60.dp -> 20.dp
+        size < 72.dp -> 24.dp
+        else -> 28.dp
+    }
+
     ElevatedButton(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier.size(80.dp),
+        modifier = modifier.size(size),
         shape = CircleShape,
         colors = ButtonDefaults.elevatedButtonColors(
             containerColor = if (isAction) {
@@ -186,7 +205,7 @@ private fun PinButtonIcon(
         Icon(
             imageVector = Icons.AutoMirrored.Filled.Backspace,
             contentDescription = "Borrar último dígito",
-            modifier = Modifier.size(28.dp)
+            modifier = Modifier.size(iconSize)
         )
     }
 }

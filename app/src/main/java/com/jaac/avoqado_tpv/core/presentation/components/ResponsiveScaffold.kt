@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.core.presentation.components
 
+import android.content.res.Configuration
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -8,6 +9,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -206,8 +208,14 @@ fun ResponsiveScaffold(
     content: @Composable ColumnScope.() -> Unit
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-        // Calculate sizes based on available space
-        val sizes = ResponsiveSizes.calculate(maxHeight, maxWidth)
+        // Calculate sizes based on PHYSICAL screen dimensions (not available space).
+        // Using LocalConfiguration ensures the size category stays stable
+        // even when banners/overlays reduce available space.
+        val configuration = LocalConfiguration.current
+        val sizes = ResponsiveSizes.calculate(
+            height = configuration.screenHeightDp.dp,
+            width = configuration.screenWidthDp.dp
+        )
 
         // Provide sizes to all children via CompositionLocal
         CompositionLocalProvider(LocalResponsiveSizes provides sizes) {

@@ -649,6 +649,18 @@ private fun WelcomeScreenContent(
                     onClick = onNavigateToSupport
                 )
             )
+
+            // 🔐 SuperAdmin button — always visible for SUPERADMIN role, regardless of mode
+            if (currentUserRole == StaffRole.SUPERADMIN) {
+                add(
+                    ActionButton(
+                        icon = Icons.Default.AdminPanelSettings,
+                        label = "SuperAdmin",
+                        enabled = true,
+                        onClick = onNavigateToSuperAdmin
+                    )
+                )
+            }
         }
     } else {
         // ════════════════════════════════════════════════════════════════════

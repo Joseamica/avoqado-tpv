@@ -97,7 +97,7 @@ private fun LoginContent(
                 // ✅ Responsive workflow screen (no scroll)
                 ResponsiveScaffold(
                     modifier = Modifier.padding(padding),
-                    scrollable = false,
+                    scrollable = true,
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {

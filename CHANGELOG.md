@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+### **Fixed**
+
+- **Self-update download crash on Android 10+**: Both Avoqado and Blumon update downloads failed with `EACCES (Permission denied)` on Android 10+ because `WRITE_EXTERNAL_STORAGE` is ignored by scoped storage. Changed download directory from public Downloads (`/storage/emulated/0/download/`) to app-scoped external storage (`getExternalFilesDir/apk_updates/`). No permissions needed, readable by PAX system installer, works on all Android versions (7-13+)
+- **LoginScreen buttons crushed on PAX A80**: PIN pad and "Ir" button were miniaturized on small screens because layout was non-scrollable (`scrollable = false`). Changed `ResponsiveScaffold` to `scrollable = true` so content scrolls instead of compressing
+- **SuperAdmin button missing in simplified mode**: SuperAdmin tools button only appeared in normal mode (restaurant/retail). Now appears for SUPERADMIN role in both simplified (telecom) and normal modes
+
 ---
 
 ## [1.7.0] - 2026-02-18

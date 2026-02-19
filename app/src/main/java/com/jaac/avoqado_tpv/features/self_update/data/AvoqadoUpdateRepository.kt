@@ -1,6 +1,6 @@
 package com.jaac.avoqado_tpv.features.self_update.data
 
-import android.os.Environment
+import android.content.Context
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.network.AvoqadoUpdateInfo
@@ -13,6 +13,7 @@ import timber.log.Timber
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,6 +33,7 @@ import javax.inject.Singleton
 @Singleton
 class AvoqadoUpdateRepository @Inject constructor(
     private val apiService: ApiService,
+    @ApplicationContext private val context: Context,
     // Note: We DON'T use the injected okHttpClient for downloads
     // because it has auth interceptors that break Firebase Storage downloads
 ) {
@@ -217,10 +219,9 @@ class AvoqadoUpdateRepository @Inject constructor(
                     )
                 }
 
-                // Create download directory
-                val downloadDir = Environment.getExternalStoragePublicDirectory(
-                    Environment.DIRECTORY_DOWNLOADS
-                )
+                // App-scoped external storage: no permissions needed on any Android version,
+                // readable by PAX system installer (unlike cacheDir which is private)
+                val downloadDir = File(context.getExternalFilesDir(null), "apk_updates")
                 if (!downloadDir.exists()) {
                     downloadDir.mkdirs()
                 }

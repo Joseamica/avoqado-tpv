@@ -1,6 +1,6 @@
 package com.jaac.avoqado_tpv.features.self_update.presentation
 
-import android.os.Environment
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.blumonpay.pax.shared.installer.domain.use_case.InstallerAppUseCase
@@ -21,6 +21,7 @@ import com.jaac.avoqado_tpv.features.self_update.data.UpdateCheckResult
 import com.jaac.avoqado_tpv.core.util.UpdateCheckManager
 import com.jaac.avoqado_tpv.core.data.network.UpdateMode
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,7 +57,8 @@ class SelfUpdateViewModel @Inject constructor(
     private val installerAppUseCase: InstallerAppUseCase,
     private val getInitDataUseCase: GetInitDataUseCase,
     private val avoqadoUpdateRepository: AvoqadoUpdateRepository,
-    private val updateCheckManager: UpdateCheckManager
+    private val updateCheckManager: UpdateCheckManager,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<SelfUpdateState>(SelfUpdateState.Idle)
@@ -287,9 +289,11 @@ class SelfUpdateViewModel @Inject constructor(
             _state.value = SelfUpdateState.Downloading(progress = 0, source = UpdateSource.BLUMON)
 
             try {
-                val downloadDir = Environment.getExternalStoragePublicDirectory(
-                    Environment.DIRECTORY_DOWNLOADS
-                )
+                // App-scoped external storage: no permissions needed on any Android version,
+                // readable by PAX system installer
+                val downloadDir = File(context.getExternalFilesDir(null), "apk_updates").also {
+                    if (!it.exists()) it.mkdirs()
+                }
 
                 val params = DownloadFileParams(
                     urlFile = update.urlFile,

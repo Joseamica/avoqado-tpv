@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### **Fixed**
+
+- **CancellationException swallowed in HeartbeatWorker and PaymentSyncWorker**: Both workers caught generic `Exception` without rethrowing `CancellationException`, causing false FAILED ACKs for remote commands and potentially marking pending payments as failed when the worker was simply cancelled by the system or app. Added `catch (CancellationException) { throw }` before all generic catch blocks (3 sites: HeartbeatWorker doWork + processPendingCommands, PaymentSyncWorker doWork + syncSinglePayment)
+
 ---
 
 ## [1.7.4] - 2026-02-19

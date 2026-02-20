@@ -8,6 +8,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepos
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import timber.log.Timber
 
@@ -169,6 +170,8 @@ class PaymentSyncWorker @AssistedInject constructor(
             // ALWAYS return success to continue periodic runs
             // Even if some payments failed, we want the worker to run again in 15 minutes
             Result.success()
+        } catch (e: CancellationException) {
+            throw e  // Worker cancelled — don't treat as error
         } catch (e: Exception) {
             // Unexpected error (e.g., database crash)
             Timber.e(e, "💥 [Payment Sync] Worker crashed, will retry")
@@ -302,6 +305,8 @@ class PaymentSyncWorker @AssistedInject constructor(
                         error = errorMessage
                     )
                 }
+            } catch (e: CancellationException) {
+                throw e  // Worker cancelled — don't mark payment as failed
             } catch (e: Exception) {
                 // Unexpected error during sync attempt
                 Timber.e(

@@ -22,6 +22,7 @@ import com.jaac.avoqado_tpv.features.remote_command.data.model.CommandResult
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.CancellationException
 import timber.log.Timber
 import java.time.Instant
 
@@ -241,6 +242,8 @@ class HeartbeatWorker @AssistedInject constructor(
                     androidx.work.ListenableWorker.Result.retry()
                 }
             }
+        } catch (e: CancellationException) {
+            throw e  // Worker cancelled — don't treat as error
         } catch (e: Exception) {
             Timber.e(e, "💥 Heartbeat worker crashed")
             // Retry on unexpected errors
@@ -365,12 +368,16 @@ class HeartbeatWorker @AssistedInject constructor(
                     Timber.w("⚠️ [Heartbeat] Command executed but ACK failed: ${command.commandId}")
                 }
 
+            } catch (e: CancellationException) {
+                throw e  // Don't send false FAILED ACK on cancellation
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Heartbeat] Failed to process command: ${commandDto.commandId}")
                 // Try to send FAILED ACK (with terminalId for security)
                 try {
                     val failResult = CommandResult.failed("Execution error: ${e.message}")
                     heartbeatRepository.sendCommandAck(commandDto.commandId, terminalId, failResult)
+                } catch (ackError: CancellationException) {
+                    throw ackError
                 } catch (ackError: Exception) {
                     Timber.e(ackError, "❌ [Heartbeat] Failed to send FAILED ACK: ${commandDto.commandId}")
                 }

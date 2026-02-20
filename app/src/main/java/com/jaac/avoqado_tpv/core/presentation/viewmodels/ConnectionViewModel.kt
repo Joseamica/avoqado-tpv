@@ -16,12 +16,15 @@ import com.jaac.avoqado_tpv.core.util.NetworkStatus
 import com.jaac.avoqado_tpv.features.remote_command.data.model.CommandResult
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -77,9 +80,17 @@ class ConnectionViewModel @Inject constructor(
 
     private var monitoringJob: Job? = null
     private var networkObserverJob: Job? = null
+    private var reconnectedBannerJob: Job? = null
     private var reconnectionAttempts = 0
     private val maxReconnectionAttempts = Int.MAX_VALUE // Keep trying forever
     private var isDismissed = false  // User manually dismissed banner
+
+    // Anti-stale guard: monotonic counter to prevent race conditions between
+    // concurrent callers (monitoring loop, network observer, forceCheck).
+    // Accessed only from Main dispatcher — no AtomicInteger needed.
+    private var checkVersion = 0
+    private fun nextVersion(): Int = ++checkVersion
+    private fun isLatest(version: Int): Boolean = version == checkVersion
 
     // ══════════════════════════════════════════════════════════════════════
     // INITIALIZATION
@@ -110,7 +121,8 @@ class ConnectionViewModel @Inject constructor(
         monitoringJob?.cancel()
         monitoringJob = viewModelScope.launch {
             while (true) {
-                checkConnection()
+                val version = nextVersion()
+                performFullHeartbeat(version)
 
                 // Adaptive interval based on connection state
                 val interval = when (_state.value) {
@@ -145,7 +157,9 @@ class ConnectionViewModel @Inject constructor(
     fun forceCheck() {
         viewModelScope.launch {
             isDismissed = false  // Clear dismissed state when manually retrying
-            checkConnection()
+            _state.value = ConnectionState.Reconnecting  // Immediate visual feedback
+            val version = nextVersion()
+            probeConnectivity(version)
         }
     }
 
@@ -192,7 +206,8 @@ class ConnectionViewModel @Inject constructor(
                         delay(2000)
                         // Clear dismissed state - network change is a new situation
                         isDismissed = false
-                        checkConnection()
+                        val version = nextVersion()
+                        probeConnectivity(version)
                     }
                     NetworkStatus.Unavailable -> {
                         Timber.w("⚠️ [Connection] Network lost")
@@ -210,53 +225,120 @@ class ConnectionViewModel @Inject constructor(
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // PRIVATE METHODS
+    // CONNECTIVITY CHECKS (Split: UI probe vs full heartbeat)
     // ══════════════════════════════════════════════════════════════════════
 
     /**
-     * Check connection to backend
+     * Fast UI-only connectivity probe
      *
-     * Steps:
-     * 1. Check if terminal is activated (venueId exists)
-     * 2. Check network connectivity (NetworkMonitor)
-     * 3. Send test heartbeat to backend
-     * 4. Update state based on result
+     * Used by forceCheck (Reintentar) and network observer.
+     * Sends a heartbeat with an 8s timeout for UI responsiveness.
+     * Does NOT process pending commands — that's the monitoring loop's job.
+     *
+     * @param version Anti-stale guard — side effects skipped if superseded
      */
-    private suspend fun checkConnection() {
-        // 🔐 Skip connection check if terminal is NOT activated yet
-        // Heartbeat will fail because terminal doesn't exist in backend
-        // This prevents false "Sin conexión" banner on Activation screen
+    private suspend fun probeConnectivity(version: Int) {
         if (!deviceInfoManager.isDeviceActivated()) {
-            Timber.d("🔐 [Connection] Terminal not activated - skipping heartbeat check")
-            _state.value = ConnectionState.Connected  // Don't show banner
+            if (isLatest(version)) _state.value = ConnectionState.Connected
             return
         }
 
-        // Check network connectivity first
         val networkInfo = networkMonitor.getCurrentNetworkInfo()
         if (!networkInfo.isConnected) {
-            Timber.w("⚠️ [Connection] No network connection")
-            // Don't override Dismissed state - user dismissed banner
-            if (!isDismissed) {
-                _state.value = ConnectionState.DisconnectedNoInternet
+            if (isLatest(version)) {
+                if (!isDismissed) _state.value = ConnectionState.DisconnectedNoInternet
+                connectionStateManager.setInternetConnected(false)
+                reconnectionAttempts++
             }
-            // Update unified alert system
-            connectionStateManager.setInternetConnected(false)
-            reconnectionAttempts++
             return
         }
 
-        // Network available → Try backend heartbeat
         try {
-            Timber.d("🌐 [Connection] Checking backend connectivity...")
+            Timber.d("🌐 [Connection] Probe: checking backend connectivity...")
 
-            // ✅ FIX: Only show Reconnecting if we were previously disconnected
-            // This prevents "banner flash" during routine checks when already connected
-            if (_state.value is ConnectionState.DisconnectedNoInternet || _state.value is ConnectionState.DisconnectedServerDown) {
-                _state.value = ConnectionState.Reconnecting
+            if (isLatest(version)) {
+                val wasDisconnected = _state.value is ConnectionState.DisconnectedNoInternet ||
+                        _state.value is ConnectionState.DisconnectedServerDown
+                if (wasDisconnected) _state.value = ConnectionState.Reconnecting
             }
 
-            // Send lightweight heartbeat (measure round-trip latency)
+            val heartbeat = buildLightweightHeartbeat()
+            val startMs = System.currentTimeMillis()
+
+            // Short timeout for UI responsiveness — don't wait the full 30s OkHttp timeout
+            val result = withTimeout(8_000) {
+                heartbeatRepository.sendHeartbeat(heartbeat)
+            }
+            val latencyMs = System.currentTimeMillis() - startMs
+
+            // After suspension point — re-check version before writing ANY side effect
+            if (!isLatest(version)) return
+
+            when (result) {
+                is Result.Success -> {
+                    Timber.i("✅ [Connection] Probe OK (latency=${latencyMs}ms)")
+                    connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = latencyMs)
+                    handleReconnectionSuccess(version)
+                    // NOTE: pendingCommands in result are IGNORED — monitoring loop handles them
+                }
+                is Result.Error -> {
+                    Timber.w("⚠️ [Connection] Probe: backend unreachable: ${result.exception?.message}")
+                    if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
+                    connectionStateManager.updateState(hasInternet = true, hasServer = false)
+                    reconnectionAttempts++
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            if (!isLatest(version)) return
+            Timber.w("⚠️ [Connection] Probe timed out (8s)")
+            if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
+            connectionStateManager.updateState(hasInternet = true, hasServer = false)
+            reconnectionAttempts++
+        } catch (e: CancellationException) {
+            throw e  // Coroutine cancelled — rethrow, don't set error state
+        } catch (e: Exception) {
+            if (!isLatest(version)) return
+            Timber.e(e, "❌ [Connection] Probe failed")
+            if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
+            connectionStateManager.updateState(hasInternet = true, hasServer = false)
+            reconnectionAttempts++
+        }
+    }
+
+    /**
+     * Full heartbeat with command processing
+     *
+     * Used ONLY by the monitoring loop. Sends heartbeat (full OkHttp timeout),
+     * updates UI state, AND processes pending commands from the response.
+     *
+     * @param version Anti-stale guard — UI side effects skipped if superseded.
+     *                Commands ALWAYS execute regardless of staleness.
+     */
+    private suspend fun performFullHeartbeat(version: Int) {
+        if (!deviceInfoManager.isDeviceActivated()) {
+            if (isLatest(version)) _state.value = ConnectionState.Connected
+            return
+        }
+
+        val networkInfo = networkMonitor.getCurrentNetworkInfo()
+        if (!networkInfo.isConnected) {
+            if (isLatest(version)) {
+                if (!isDismissed) _state.value = ConnectionState.DisconnectedNoInternet
+                connectionStateManager.setInternetConnected(false)
+                reconnectionAttempts++
+            }
+            return
+        }
+
+        try {
+            Timber.d("🌐 [Connection] Heartbeat: checking backend connectivity...")
+
+            if (isLatest(version)) {
+                if (_state.value is ConnectionState.DisconnectedNoInternet || _state.value is ConnectionState.DisconnectedServerDown) {
+                    _state.value = ConnectionState.Reconnecting
+                }
+            }
+
             val heartbeat = buildLightweightHeartbeat()
             val heartbeatStartMs = System.currentTimeMillis()
             val result = heartbeatRepository.sendHeartbeat(heartbeat)
@@ -264,58 +346,77 @@ class ConnectionViewModel @Inject constructor(
 
             when (result) {
                 is Result.Success -> {
-                    Timber.i("✅ [Connection] Backend connected (latency=${latencyMs}ms)")
+                    Timber.i("✅ [Connection] Heartbeat OK (latency=${latencyMs}ms)")
 
-                    // Update unified alert system - fully connected with latency
-                    connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = latencyMs)
+                    // UI state — gated by version
+                    if (isLatest(version)) {
+                        connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = latencyMs)
+                        handleReconnectionSuccess(version)
+                    }
 
-                    // 🎯 Square Terminal API Pattern: Process pending commands from heartbeat response
-                    // Commands are delivered via HTTP polling instead of socket push
-                    // This runs every 30 seconds (more reliable than WorkManager's 15-min minimum)
+                    // Commands — ALWAYS processed, never skipped by stale guard
                     val pendingCommands = result.data.pendingCommands
                     if (!pendingCommands.isNullOrEmpty()) {
                         Timber.i("📥 [Connection] Received ${pendingCommands.size} pending command(s)")
                         processPendingCommands(pendingCommands)
                     }
-
-                    // 🔄 Trigger reconciliation sync if connection was restored
-                    if (reconnectionAttempts > 0) {
-                        Timber.i("🔄 [Connection] Connection restored after $reconnectionAttempts attempts - triggering data sync")
-
-                        // Emit event for listeners (HomeViewModel, ShiftViewModel, etc.) via singleton manager
-                        connectionEventManager.emitConnectionRestored(
-                            attemptsBeforeReconnection = reconnectionAttempts
-                        )
-
-                        // Show "Reconnected" banner
-                        _state.value = ConnectionState.Reconnected
-                        // After 2 seconds, switch to Connected
-                        delay(2000)
-                    }
-
-                    _state.value = ConnectionState.Connected
-                    reconnectionAttempts = 0
                 }
                 is Result.Error -> {
-                    Timber.w("⚠️ [Connection] Backend unreachable: ${result.exception?.message}")
-                    // Don't override Dismissed state - user dismissed banner
-                    if (!isDismissed) {
-                        _state.value = ConnectionState.DisconnectedServerDown
+                    Timber.w("⚠️ [Connection] Heartbeat: backend unreachable: ${result.exception?.message}")
+                    if (isLatest(version)) {
+                        if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
+                        connectionStateManager.updateState(hasInternet = true, hasServer = false)
+                        reconnectionAttempts++
                     }
-                    // Update unified alert system - internet OK, server down
-                    connectionStateManager.updateState(hasInternet = true, hasServer = false)
-                    reconnectionAttempts++
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            Timber.e(e, "❌ [Connection] Check failed")
-            // Don't override Dismissed state - user dismissed banner
-            if (!isDismissed) {
-                _state.value = ConnectionState.DisconnectedServerDown
+            Timber.e(e, "❌ [Connection] Heartbeat failed")
+            if (isLatest(version)) {
+                if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
+                connectionStateManager.updateState(hasInternet = true, hasServer = false)
+                reconnectionAttempts++
             }
-            // Update unified alert system - internet OK (we got here), server down
-            connectionStateManager.updateState(hasInternet = true, hasServer = false)
-            reconnectionAttempts++
+        }
+    }
+
+    /**
+     * Handle successful reconnection — show Reconnected banner briefly
+     *
+     * Shared by probeConnectivity and performFullHeartbeat.
+     * Cancels any previous banner timer to avoid duplicates.
+     *
+     * @param version Anti-stale guard
+     */
+    private suspend fun handleReconnectionSuccess(version: Int) {
+        if (!isLatest(version)) return
+
+        if (reconnectionAttempts > 0) {
+            Timber.i("🔄 [Connection] Connection restored after $reconnectionAttempts attempts")
+
+            connectionEventManager.emitConnectionRestored(
+                attemptsBeforeReconnection = reconnectionAttempts
+            )
+
+            // Re-check after suspension point (emitConnectionRestored may suspend)
+            if (!isLatest(version)) return
+
+            _state.value = ConnectionState.Reconnected
+
+            // Cancel previous banner timer to avoid duplicate transitions
+            reconnectedBannerJob?.cancel()
+            reconnectedBannerJob = viewModelScope.launch {
+                delay(2000)
+                if (_state.value is ConnectionState.Reconnected) {
+                    _state.value = ConnectionState.Connected
+                }
+            }
+
+            reconnectionAttempts = 0
+        } else {
+            _state.value = ConnectionState.Connected
         }
     }
 
@@ -387,12 +488,16 @@ class ConnectionViewModel @Inject constructor(
                     Timber.w("⚠️ [Connection] Command executed but ACK failed: ${command.commandId}")
                 }
 
+            } catch (e: CancellationException) {
+                throw e  // Don't send false FAILED ACK on cancellation
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Connection] Failed to process command: ${commandDto.commandId}")
                 // Try to send FAILED ACK (with terminalId for security)
                 try {
                     val failResult = CommandResult.failed("Execution error: ${e.message}")
                     heartbeatRepository.sendCommandAck(commandDto.commandId, terminalId, failResult)
+                } catch (ackError: CancellationException) {
+                    throw ackError
                 } catch (ackError: Exception) {
                     Timber.e(ackError, "❌ [Connection] Failed to send FAILED ACK: ${commandDto.commandId}")
                 }
@@ -430,6 +535,8 @@ class ConnectionViewModel @Inject constructor(
         stopMonitoring()
         networkObserverJob?.cancel()
         networkObserverJob = null
+        reconnectedBannerJob?.cancel()
+        reconnectedBannerJob = null
     }
 }
 

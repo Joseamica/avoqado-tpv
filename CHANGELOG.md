@@ -9,6 +9,14 @@
 
 ---
 
+## [1.7.4] - 2026-02-19
+
+### **Fixed**
+
+- **"Sin conexión" banner stuck after screen unlock / "Reintentar" unresponsive**: `checkConnection()` ran concurrently from 3 paths (monitoring loop, network observer, forceCheck) with no serialization, so a stale 30s-timeout error could overwrite a newer success. Split into `probeConnectivity()` (fast 8s UI probe for forceCheck/network observer) and `performFullHeartbeat()` (full heartbeat + command processing for monitoring loop). Added monotonic `checkVersion` counter — stale results skip all UI side effects. Commands always execute regardless of staleness. Reconnected banner uses cancellable `Job` to prevent duplicates. Added `CancellationException` rethrow in `processPendingCommands` to prevent false FAILED ACKs on coroutine cancellation
+
+---
+
 ## [1.7.3] - 2026-02-19
 
 ### **Fixed**

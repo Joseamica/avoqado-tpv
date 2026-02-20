@@ -5,6 +5,20 @@
 
 ---
 
+## [Unreleased]
+
+---
+
+## [1.7.3] - 2026-02-19
+
+### **Fixed**
+
+- **Proof-of-sale photos deleted from Firebase after successful upload**: After `sendProofOfSaleToBackend()` succeeded, `_pendingProofOfSaleUrls` was not cleared. When the next sale started (`resetPayment()` → `cleanupOrphanedProofOfSalePhotos()`), the cleanup deleted the already-saved photos from Firebase Storage. Dashboard showed broken image thumbnails because the URLs in the DB pointed to deleted files. Fix: clear `_pendingProofOfSaleUrls` immediately after successful backend confirmation
+- **GPS location registering in Texas instead of actual location**: LocationService accepted locations with any accuracy (including 2,635,258m). Added `MAX_ACCURACY_METERS = 1000f` threshold — locations with accuracy worse than 1km are rejected and fall through to the next provider. Defense-in-depth alongside the backend fix (`considerIp: false`)
+- **Permission dialogs dismissed during app initialization**: Camera/location permission dialogs were dismissed when `fetchTerminalConfigIfActivated()` triggered UI recomposition. Moved initialization to `startPostPermissionInitialization()` which runs AFTER all permission dialogs are resolved
+
+---
+
 ## [1.7.2] - 2026-02-19
 
 ### **Fixed**

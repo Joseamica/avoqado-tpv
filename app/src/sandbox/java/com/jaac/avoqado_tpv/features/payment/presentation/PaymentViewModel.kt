@@ -6117,10 +6117,13 @@ class PaymentViewModel @Inject constructor(
 
         if (response.isSuccessful && response.body()?.success == true) {
             Timber.i("✅ [PROOF-OF-SALE] Backend record success (${allUrls.size} photos)")
+            // Clear pending URLs so cleanupOrphanedProofOfSalePhotos() won't delete them from Firebase
+            _pendingProofOfSaleUrls.clear()
             _proofOfSaleComplete.value = true
         } else {
             val errorMessage = response.body()?.message ?: "Error registrando foto"
             Timber.e("❌ [PROOF-OF-SALE] Backend failed: $errorMessage")
+            // Don't clear pending URLs — keep them for cleanup since backend doesn't have them
             // Still mark complete since photos are in Firebase
             _proofOfSaleComplete.value = true
         }

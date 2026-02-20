@@ -117,6 +117,11 @@ class MainActivity : ComponentActivity() {
         val locationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
                 permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         Timber.d("📸 Startup permissions - Camera: $cameraGranted, Location: $locationGranted")
+
+        // Start initialization AFTER all permission dialogs are resolved
+        // Previously this ran in parallel with camera/location dialogs, causing them to be
+        // dismissed when fetchTerminalConfigIfActivated triggered UI recomposition
+        startPostPermissionInitialization()
     }
 
     /**
@@ -140,18 +145,8 @@ class MainActivity : ComponentActivity() {
             permissionGranted.value = true
 
             // Request camera + location after phone state is resolved (avoid competing dialogs)
+            // Initialization will start AFTER user responds to these dialogs
             requestCameraLocationPermissions()
-
-            // 🐛 FIX: Start initialization AFTER permission is granted (not in onCreate)
-            // On fresh install, permission callback fires AFTER onCreate() completes,
-            // so we need to trigger heartbeat + config fetch + BLE server restore here too.
-            lifecycleScope.launch(Dispatchers.IO) {
-                startHeartbeatIfActivated()
-                fetchTerminalConfigIfActivated()
-                // TEMPORARILY DISABLED: BLE server restore - using API + WebSockets instead
-                // Will re-enable when BLE functionality is needed again
-                // restoreBleServerIfPreviouslyRunning()
-            }
         } else {
             Timber.e("❌ READ_PHONE_STATE permission DENIED - app cannot function without hardware serial")
             permissionGranted.value = false
@@ -243,22 +238,9 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // ✅ Square/Toast Pattern: Start heartbeat if terminal is activated
-        // This runs when permission was ALREADY granted (returning user)
-        // For fresh installs, the permission callback handles this (see requestPermissionLauncher)
-        if (permissionGranted.value == true) {
-            // 🚀 Performance Optimization:
-            // Move heavy initialization (SecureStorage disk reads + Network) to IO thread.
-            // This prevents "Skipped frames" and ANRs during app startup.
-            // Previously caused ~1.2s Main Thread block.
-            lifecycleScope.launch(Dispatchers.IO) {
-                startHeartbeatIfActivated()
-                fetchTerminalConfigIfActivated()
-                // TEMPORARILY DISABLED: BLE server restore - using API + WebSockets instead
-                // Will re-enable when BLE functionality is needed again
-                // restoreBleServerIfPreviouslyRunning()
-            }
-        }
+        // Initialization (heartbeat, config fetch) is triggered by startPostPermissionInitialization()
+        // which runs AFTER all permission dialogs are resolved (camera, location, phone state).
+        // This prevents permission dialogs from being dismissed by UI recomposition during init.
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -382,6 +364,7 @@ class MainActivity : ComponentActivity() {
             // Android 7 and below: Build.SERIAL does not require permission
             Timber.d("📱 Android 7 or below - Build.SERIAL does not require permission")
             permissionGranted.value = true
+            requestCameraLocationPermissions()
         }
     }
 
@@ -411,6 +394,8 @@ class MainActivity : ComponentActivity() {
             cameraLocationPermissionLauncher.launch(permissionsToRequest.toTypedArray())
         } else {
             Timber.d("📸 Camera + location permissions already granted")
+            // Permissions already granted (not a fresh install) → start initialization directly
+            startPostPermissionInitialization()
         }
     }
 
@@ -428,6 +413,19 @@ class MainActivity : ComponentActivity() {
      * Start heartbeat monitoring if terminal is activated
      *
      * **Design Pattern (Square/Toast):**
+     * Start heartbeat + config fetch AFTER all permission dialogs are resolved.
+     * This prevents init from causing UI recomposition that dismisses permission dialogs.
+     * Called from: cameraLocationPermissionLauncher callback OR requestCameraLocationPermissions
+     * when permissions are already granted.
+     */
+    private fun startPostPermissionInitialization() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            startHeartbeatIfActivated()
+            fetchTerminalConfigIfActivated()
+        }
+    }
+
+    /**
      * - Heartbeat runs whenever app is open AND terminal is activated
      * - Does NOT depend on login state
      * - Enables backend to track terminal online/offline status

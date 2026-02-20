@@ -67,12 +67,26 @@ class LocationService @Inject constructor(
         context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
     }
 
+    companion object {
+        /**
+         * Maximum acceptable accuracy in meters.
+         * Locations with accuracy worse than this are rejected.
+         * - GPS: 5-20m
+         * - Cell + WiFi: 20-50m
+         * - Cell only: 100-1000m
+         * - IP-based fallback: 2,000,000+ meters (GARBAGE — must reject!)
+         */
+        private const val MAX_ACCURACY_METERS = 1000f
+    }
+
     /**
      * Get current location using the best available strategy for PAX terminals.
      *
      * **Strategy for PAX (No Google Play Services, often indoors):**
      * - Priority 1: Network Location API (Cell ID + WiFi) - INSTANT, works INDOORS
      * - Priority 2: GPS fallback (only if network location fails)
+     *
+     * All results are validated against [MAX_ACCURACY_METERS] threshold.
      *
      * @param timeoutMs Timeout for the entire operation.
      * @return A [LocationResult] or null if no location could be obtained.
@@ -92,12 +106,16 @@ class LocationService @Inject constructor(
             // - Cell ID + WiFi is instant (no 30-60s GPS cold start wait)
             Timber.d("📍 Using Network Location API (Cell ID + WiFi)...")
             getLocationFromCellId()?.let {
-                Timber.i("📍 ✅ Got location via Network API: ${it.latitude}, ${it.longitude} (acc: ${it.accuracy}m)")
-                return@withTimeoutOrNull it
+                if (it.accuracy <= MAX_ACCURACY_METERS) {
+                    Timber.i("📍 ✅ Got location via Network API: ${it.latitude}, ${it.longitude} (acc: ${it.accuracy}m)")
+                    return@withTimeoutOrNull it
+                } else {
+                    Timber.w("📍 ❌ Network API accuracy too poor: ${it.accuracy}m > ${MAX_ACCURACY_METERS}m threshold — falling back to GPS")
+                }
             }
 
-            // Priority 2: GPS fallback (if network location fails - e.g., no SIM, no WiFi)
-            Timber.d("📍 Network location failed. Attempting GPS fallback...")
+            // Priority 2: GPS fallback (if network location fails or accuracy too poor)
+            Timber.d("📍 Attempting GPS fallback...")
 
             if (!isLocationEnabled()) {
                 Timber.w("📍 Location services disabled on device")
@@ -107,22 +125,34 @@ class LocationService @Inject constructor(
             // Try FusedLocationProvider if available
             if (isGooglePlayServicesAvailable()) {
                 getLastKnownLocation()?.let {
-                    Timber.d("📍 Got last known location via Fused: ${it.latitude}, ${it.longitude} (acc: ${it.accuracy})")
-                    return@withTimeoutOrNull it
+                    if (it.accuracy <= MAX_ACCURACY_METERS) {
+                        Timber.d("📍 Got last known location via Fused: ${it.latitude}, ${it.longitude} (acc: ${it.accuracy}m)")
+                        return@withTimeoutOrNull it
+                    } else {
+                        Timber.w("📍 ❌ Fused last known accuracy too poor: ${it.accuracy}m — skipping")
+                    }
                 }
                 getFreshLocation()?.let {
-                    Timber.d("📍 Got fresh location via Fused: ${it.latitude}, ${it.longitude} (acc: ${it.accuracy})")
-                    return@withTimeoutOrNull it
+                    if (it.accuracy <= MAX_ACCURACY_METERS) {
+                        Timber.d("📍 Got fresh location via Fused: ${it.latitude}, ${it.longitude} (acc: ${it.accuracy}m)")
+                        return@withTimeoutOrNull it
+                    } else {
+                        Timber.w("📍 ❌ Fused fresh accuracy too poor: ${it.accuracy}m — skipping")
+                    }
                 }
             }
 
             // Try Android LocationManager (GPS)
             getLocationFromAndroidManager(timeoutMs / 2)?.let {
-                Timber.d("📍 Got location via GPS: ${it.latitude}, ${it.longitude} (acc: ${it.accuracy})")
-                return@withTimeoutOrNull it
+                if (it.accuracy <= MAX_ACCURACY_METERS) {
+                    Timber.d("📍 Got location via GPS: ${it.latitude}, ${it.longitude} (acc: ${it.accuracy}m)")
+                    return@withTimeoutOrNull it
+                } else {
+                    Timber.w("📍 ❌ GPS accuracy too poor: ${it.accuracy}m — rejecting")
+                }
             }
 
-            Timber.w("📍 Failed to get location from any provider (Network API, GPS) within the timeout.")
+            Timber.w("📍 Failed to get location with acceptable accuracy from any provider within the timeout.")
             null
         }
     }

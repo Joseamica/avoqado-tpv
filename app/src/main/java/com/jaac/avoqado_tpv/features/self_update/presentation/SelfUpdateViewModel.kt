@@ -411,9 +411,29 @@ class SelfUpdateViewModel @Inject constructor(
                     return@launch
                 }
 
-                val params = InstallerParams(apkPath)
+                // Copy APK to internal storage (ext4, NOT FUSE) before installing.
+                // PAX ISys.installApp() runs in a separate system process that cannot read
+                // from getExternalFilesDir on Android 10 due to FUSE restrictions.
+                // Internal storage uses ext4 where setReadable(true, false) is guaranteed
+                // to set real Unix permissions (chmod o+r), making the file accessible to
+                // the PAX system service.
+                val installDir = File(context.filesDir, "apk_install")
+                installDir.mkdirs()
+                val installApk = File(installDir, apkFile.name)
+                withContext(Dispatchers.IO) {
+                    apkFile.copyTo(installApk, overwrite = true)
+                }
+                // Set world-readable on ext4 — guaranteed to work (no FUSE)
+                installApk.setReadable(true, false)
+                installDir.setReadable(true, false)
+                installDir.setExecutable(true, false)
+                context.filesDir.setReadable(true, false)
+                context.filesDir.setExecutable(true, false)
 
-                Timber.d("📦 Installing APK: $apkPath (size=${apkFile.length()} bytes)")
+                val installPath = installApk.absolutePath
+                val params = InstallerParams(installPath)
+
+                Timber.d("📦 Installing APK: $installPath (size=${installApk.length()} bytes, original=$apkPath)")
 
                 val result = withContext(Dispatchers.IO) {
                     installerAppUseCase.run(params)
@@ -516,6 +536,11 @@ class SelfUpdateViewModel @Inject constructor(
             }
         }
         downloadedApkPath = null
+        // Also clean up internal storage copy used for installation
+        try {
+            val installDir = File(context.filesDir, "apk_install")
+            installDir.listFiles()?.forEach { it.delete() }
+        } catch (_: Exception) {}
     }
 
     private fun mapInstallerFailure(failure: InstallerFailure): SelfUpdateState.Error {

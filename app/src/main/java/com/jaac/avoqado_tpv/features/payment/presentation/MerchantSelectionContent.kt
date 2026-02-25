@@ -121,9 +121,11 @@ fun MerchantSelectionContent(
                                 // Hero amount - the star of the show
                                 Text(
                                     text = "$$totalAmount",
-                                    style = MaterialTheme.typography.displayLarge,
+                                    style = MaterialTheme.typography.displayMedium,
                                     fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
 
                                 if (hasTip) {
@@ -165,7 +167,9 @@ fun MerchantSelectionContent(
                                 text = "$$totalAmount",
                                 style = MaterialTheme.typography.displayMedium,
                                 fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
 
                             if (hasTip) {

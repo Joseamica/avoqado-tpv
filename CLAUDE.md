@@ -144,6 +144,10 @@ Official Blumon/PAX SDK docs and AARs are stored in iCloud:
 
 Read `SDK-PAX-1.11.0.2-DocV4` before modifying Blumon SDK integration code.
 
+## Pending Verification
+
+- [ ] **Self-updater ext4 install path on Android 10** (v1.7.5+): `ISys.installApp()` (PAX system process) cannot read APK from `getExternalFilesDir` on Android 10 due to FUSE. Fix: copy APK to `context.filesDir/apk_install/` (internal storage, ext4) and `setReadable(true, false)` before installing. ext4 guarantees real Unix permissions. **UNVERIFIED** — needs testing on actual Android 10 PAX terminal. Files: `SelfUpdateViewModel.kt`, `UpdateRequestManager.kt`
+
 ## Pre-Commit Checklist
 
 See `.claude/rules/testing-and-adb.md` for full checklist. Minimum:

@@ -3,9 +3,11 @@ package com.jaac.avoqado_tpv.features.self_update.domain
 import com.blumonpay.pax.shared.installer.domain.use_case.InstallerAppUseCase
 import com.blumonpay.pax.shared.installer.domain.use_case.InstallerParams
 import com.jaac.avoqado_tpv.core.data.network.AvoqadoUpdateInfo
+import android.content.Context
 import com.jaac.avoqado_tpv.features.self_update.data.AvoqadoUpdateRepository
 import com.jaac.avoqado_tpv.features.self_update.data.DownloadResult
 import com.jaac.avoqado_tpv.features.self_update.data.UpdateCheckResult
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,7 +39,8 @@ import javax.inject.Singleton
 @Singleton
 class UpdateRequestManager @Inject constructor(
     private val avoqadoUpdateRepository: AvoqadoUpdateRepository,
-    private val installerAppUseCase: InstallerAppUseCase
+    private val installerAppUseCase: InstallerAppUseCase,
+    @ApplicationContext private val context: Context
 ) {
     companion object {
         private const val TAG = "UpdateRequestManager"
@@ -164,7 +167,23 @@ class UpdateRequestManager @Inject constructor(
         _updateRequestState.value = UpdateRequestState.Installing
 
         try {
-            val params = InstallerParams(apkPath)
+            // Copy APK to internal storage (ext4, NOT FUSE) before installing.
+            // PAX ISys.installApp() runs in a separate system process that cannot read
+            // from getExternalFilesDir on Android 10 due to FUSE restrictions.
+            val apkFile = File(apkPath)
+            val installDir = File(context.filesDir, "apk_install")
+            installDir.mkdirs()
+            val installApk = File(installDir, apkFile.name)
+            withContext(Dispatchers.IO) {
+                apkFile.copyTo(installApk, overwrite = true)
+            }
+            installApk.setReadable(true, false)
+            installDir.setReadable(true, false)
+            installDir.setExecutable(true, false)
+            context.filesDir.setReadable(true, false)
+            context.filesDir.setExecutable(true, false)
+
+            val params = InstallerParams(installApk.absolutePath)
 
             val result = withContext(Dispatchers.IO) {
                 installerAppUseCase.run(params)
@@ -224,6 +243,10 @@ class UpdateRequestManager @Inject constructor(
             }
         }
         downloadedApkPath = null
+        try {
+            val installDir = File(context.filesDir, "apk_install")
+            installDir.listFiles()?.forEach { it.delete() }
+        } catch (_: Exception) {}
     }
 }
 

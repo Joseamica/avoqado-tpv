@@ -7,9 +7,15 @@
 
 ## [Unreleased]
 
+---
+
+## [1.7.6] - 2026-02-24
+
 ### **Fixed**
 
-- **CancellationException swallowed in HeartbeatWorker and PaymentSyncWorker**: Both workers caught generic `Exception` without rethrowing `CancellationException`, causing false FAILED ACKs for remote commands and potentially marking pending payments as failed when the worker was simply cancelled by the system or app. Added `catch (CancellationException) { throw }` before all generic catch blocks (3 sites: HeartbeatWorker doWork + processPendingCommands, PaymentSyncWorker doWork + syncSinglePayment)
+- **Self-updater INSTALL_FAILED on Android 10 PAX terminals**: `ISys.installApp()` (PAX system process) cannot read APK from `getExternalFilesDir` on Android 10 due to FUSE inter-process restrictions. Fix: copy APK to `context.filesDir/apk_install/` (internal storage, ext4) and `setReadable(true, false)` before installing. Applied to both `SelfUpdateViewModel.installUpdate()` and `UpdateRequestManager.installUpdate()`. Android 12 unaffected (FUSE allows app-scoped reads)
+- **CancellationException swallowed in HeartbeatWorker and PaymentSyncWorker**: Both workers caught generic `Exception` without rethrowing `CancellationException`, causing false FAILED ACKs for remote commands. Added `catch (CancellationException) { throw }` before generic catch blocks
+- **Large payment amounts cause line break in merchant selection screen**: Amounts with 5+ digits overflowed single line in `SelectingMerchant` state. Reduced font from `displayLarge` to `displayMedium` and added `maxLines = 1` with `TextOverflow.Ellipsis`
 
 ---
 

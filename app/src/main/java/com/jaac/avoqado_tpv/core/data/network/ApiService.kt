@@ -1367,6 +1367,20 @@ interface ApiService {
     ): Response<GenericResponse>
 
     /**
+     * Report an APK install attempt (success or failure) for diagnostics
+     *
+     * Sends structured data about the install strategy used, timing,
+     * error details, and device info. Backend uses this for monitoring
+     * and alerting on install failures in production.
+     *
+     * @param request Install attempt report with full diagnostics
+     */
+    @POST("tpv/report-install-attempt")
+    suspend fun reportInstallAttempt(
+        @Body request: ReportInstallAttemptRequest
+    ): Response<GenericResponse>
+
+    /**
      * Get specific app version by versionCode (for INSTALL_VERSION command)
      *
      * Used for rollback/upgrade to a specific version.
@@ -1434,6 +1448,25 @@ data class ReportUpdateInstalledRequest(
     val versionName: String,
     val updateSource: String, // "AVOQADO" or "BLUMON"
     val serialNumber: String?
+)
+
+/**
+ * Request to report an APK install attempt (success or failure) for diagnostics.
+ *
+ * Sent after every install attempt so the backend can monitor install success rates
+ * and alert on failures in production.
+ */
+data class ReportInstallAttemptRequest(
+    val versionName: String,
+    val serialNumber: String?,
+    val success: Boolean,
+    val strategy: String,        // "PACKAGE_INSTALLER" | "PAX_SDK" | "BOTH_FAILED"
+    val errorMessage: String?,
+    val androidVersion: Int,
+    val durationMs: Long,
+    val updateSource: String,    // "AVOQADO" | "BLUMON"
+    val deviceModel: String,
+    val packageName: String
 )
 
 /**

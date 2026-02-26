@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+### **Changed**
+
+- **Self-updater replaced with PackageInstaller Session API**: PAX `ISys.installApp()` (NeptuneService system process) cannot read APK files from app-private storage on Android 10+ due to FUSE/SELinux cross-process restrictions ("Unzip error"). Replaced the entire multi-path file-copy strategy with Android's PackageInstaller Session API, which streams APK bytes via IPC — the app reads its own file and writes bytes into a session. No cross-process file path access needed. Works on all Android versions we support (minSdk 27+). PAX SDK `InstallerAppUseCase` kept as fallback on all Android versions. New centralized `ApkInstaller` singleton + `InstallResultReceiver` broadcast receiver used by both `SelfUpdateViewModel` and `UpdateRequestManager`, removing ~350 lines of duplicated multi-path install code. SessionId validation prevents stale callbacks from completing the wrong install. Includes 2-minute install timeout (prevents indefinite "Installing..." hang), `STATUS_PENDING_USER_ACTION` launches system confirm dialog and waits for follow-up callback (120s timeout protection), removal of dead `canRequestPackageInstalls()` check from SelfUpdateScreen, and Mutex for concurrent install protection
+- **Comprehensive install observability**: Every step of the APK install process is now logged via `ObservabilityManager` (routes to Firebase Crashlytics + Socket.IO backend + File). Metadata includes: APK path, file size, Android version, device model, session ID, bytes written, strategy used (PackageInstaller vs PAX SDK), duration, and error details. `InstallResultReceiver` logs every `PackageInstaller.STATUS_*` code with structured metadata. New `tpv/report-install-attempt` API endpoint sends structured install attempt reports (success/failure, strategy, timing, error message) to backend after every install — called from both `SelfUpdateViewModel` and `UpdateRequestManager`. Install failures in production are now visible in Crashlytics, Socket.IO logs, and backend API logs simultaneously
+
+### **Fixed**
+
+- **Missing PAX permission `com.pax.permission.UPDATE_APP`**: Required by `ISys.installApp()` when PAX permission checking is enabled. Added to AndroidManifest.xml
+- **Cell tower location accuracy improved**: Include neighbor towers (not just serving tower) and signal strength (`signalStrength` dBm) in cell tower requests for better triangulation. Reduced GPS timeout from 20s to 8s (3s for Android LocationManager) since PAX terminals are usually indoors
+
 ---
 
 ## [1.7.6] - 2026-02-24

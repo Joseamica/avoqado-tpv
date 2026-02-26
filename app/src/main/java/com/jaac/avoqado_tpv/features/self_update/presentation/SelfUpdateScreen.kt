@@ -1,9 +1,5 @@
 package com.jaac.avoqado_tpv.features.self_update.presentation
 
-import android.content.Intent
-import android.net.Uri
-import android.os.Build
-import android.provider.Settings
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -22,7 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
+
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -57,7 +53,6 @@ fun SelfUpdateScreen(
     viewModel: SelfUpdateViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val context = LocalContext.current
 
     Scaffold(
         topBar = {
@@ -125,20 +120,7 @@ fun SelfUpdateScreen(
                     ReadyToInstallContent(
                         versionName = currentState.versionName,
                         source = currentState.source,
-                        onInstall = {
-                            // Check if we can install from unknown sources
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                if (!context.packageManager.canRequestPackageInstalls()) {
-                                    // Open settings to enable
-                                    val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                                        data = Uri.parse("package:${context.packageName}")
-                                    }
-                                    context.startActivity(intent)
-                                    return@ReadyToInstallContent
-                                }
-                            }
-                            viewModel.installUpdate()
-                        },
+                        onInstall = { viewModel.installUpdate() },
                         onCancel = { viewModel.cancel() }
                     )
                 }
@@ -383,11 +365,11 @@ private fun UpToDateContent(
                     )
                 ) {
                     Image(
-                        painter = painterResource(id = R.drawable.logo_avoqado),
+                        painter = painterResource(id = R.drawable.isotipo),
                         contentDescription = "Fuente Avoqado",
                         modifier = Modifier
-                            .width(86.dp)
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                            .size(56.dp)
+                            .padding(6.dp)
                     )
                 }
             } else {

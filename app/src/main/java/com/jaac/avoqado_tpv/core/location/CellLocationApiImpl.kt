@@ -31,7 +31,8 @@ class CellLocationApiImpl @Inject constructor(
                         mobileCountryCode = tower.mobileCountryCode,
                         mobileNetworkCode = tower.mobileNetworkCode,
                         locationAreaCode = tower.locationAreaCode,
-                        cellId = tower.cellId
+                        cellId = tower.cellId,
+                        signalStrength = if (tower.signalStrength != Int.MIN_VALUE) tower.signalStrength else null
                     )
                 },
                 wifiAccessPoints = wifiAccessPoints.map { wifi ->
@@ -76,7 +77,8 @@ data class CellTowerRequest(
     @SerializedName("mobileCountryCode") val mobileCountryCode: Int,
     @SerializedName("mobileNetworkCode") val mobileNetworkCode: Int,
     @SerializedName("locationAreaCode") val locationAreaCode: Int,
-    @SerializedName("cellId") val cellId: Long
+    @SerializedName("cellId") val cellId: Long,
+    @SerializedName("signalStrength") val signalStrength: Int? = null
 )
 
 data class WifiAccessPointRequest(

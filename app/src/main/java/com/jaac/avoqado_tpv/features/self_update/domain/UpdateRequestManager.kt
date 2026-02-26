@@ -1,18 +1,20 @@
 package com.jaac.avoqado_tpv.features.self_update.domain
 
-import com.blumonpay.pax.shared.installer.domain.use_case.InstallerAppUseCase
-import com.blumonpay.pax.shared.installer.domain.use_case.InstallerParams
-import com.jaac.avoqado_tpv.core.data.network.AvoqadoUpdateInfo
 import android.content.Context
+import android.os.Build
+import com.jaac.avoqado_tpv.core.data.network.AvoqadoUpdateInfo
+import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 import com.jaac.avoqado_tpv.features.self_update.data.AvoqadoUpdateRepository
 import com.jaac.avoqado_tpv.features.self_update.data.DownloadResult
 import com.jaac.avoqado_tpv.features.self_update.data.UpdateCheckResult
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.io.File
 import javax.inject.Inject
@@ -31,7 +33,7 @@ import javax.inject.Singleton
  * 3. Manager checks for Avoqado updates
  * 4. If update available, emits ShowDialog state
  * 5. UI shows dialog to user
- * 6. User accepts → download + install via PAX SDK
+ * 6. User accepts → download + install via PackageInstaller Session API
  * 7. User dismisses → close dialog, command completes
  *
  * @see com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
@@ -39,12 +41,15 @@ import javax.inject.Singleton
 @Singleton
 class UpdateRequestManager @Inject constructor(
     private val avoqadoUpdateRepository: AvoqadoUpdateRepository,
-    private val installerAppUseCase: InstallerAppUseCase,
+    private val apkInstaller: ApkInstaller,
+    private val observability: ObservabilityManager,
     @ApplicationContext private val context: Context
 ) {
     companion object {
         private const val TAG = "UpdateRequestManager"
     }
+
+    private val reportingScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _updateRequestState = MutableStateFlow<UpdateRequestState>(UpdateRequestState.Idle)
     val updateRequestState: StateFlow<UpdateRequestState> = _updateRequestState.asStateFlow()
@@ -160,56 +165,102 @@ class UpdateRequestManager @Inject constructor(
     }
 
     /**
-     * Install downloaded APK via PAX SDK
+     * Install downloaded APK via PackageInstaller Session API (with PAX SDK fallback).
      */
     private suspend fun installUpdate(apkPath: String, versionName: String) {
-        Timber.i("📦 [$TAG] Installing APK: $apkPath")
+        observability.logInfo(TAG, "Install started from remote REQUEST_UPDATE command", mapOf(
+            "apkPath" to apkPath,
+            "versionName" to versionName,
+            "commandId" to (currentCommandId ?: "unknown")
+        ))
         _updateRequestState.value = UpdateRequestState.Installing
+        val startTime = System.currentTimeMillis()
 
         try {
-            // Copy APK to internal storage (ext4, NOT FUSE) before installing.
-            // PAX ISys.installApp() runs in a separate system process that cannot read
-            // from getExternalFilesDir on Android 10 due to FUSE restrictions.
-            val apkFile = File(apkPath)
-            val installDir = File(context.filesDir, "apk_install")
-            installDir.mkdirs()
-            val installApk = File(installDir, apkFile.name)
-            withContext(Dispatchers.IO) {
-                apkFile.copyTo(installApk, overwrite = true)
+            val result = apkInstaller.install(apkPath)
+            val durationMs = System.currentTimeMillis() - startTime
+
+            when (result) {
+                is InstallResult.Success -> {
+                    observability.logInfo(TAG, "Install completed via remote command", mapOf(
+                        "versionName" to versionName,
+                        "strategy" to result.strategy,
+                        "durationMs" to durationMs
+                    ))
+                    _updateRequestState.value = UpdateRequestState.InstallComplete(versionName)
+
+                    reportInstallAttemptToBackend(
+                        versionName = versionName,
+                        success = true,
+                        strategy = result.strategy,
+                        errorMessage = null,
+                        durationMs = durationMs
+                    )
+                }
+                is InstallResult.Error -> {
+                    observability.logCritical(TAG, "Install failed via remote command", metadata = mapOf(
+                        "versionName" to versionName,
+                        "error" to result.message,
+                        "durationMs" to durationMs
+                    ))
+                    _updateRequestState.value = UpdateRequestState.Error(
+                        message = result.message
+                    )
+
+                    reportInstallAttemptToBackend(
+                        versionName = versionName,
+                        success = false,
+                        strategy = "BOTH_FAILED",
+                        errorMessage = result.message,
+                        durationMs = durationMs
+                    )
+                }
             }
-            installApk.setReadable(true, false)
-            installDir.setReadable(true, false)
-            installDir.setExecutable(true, false)
-            context.filesDir.setReadable(true, false)
-            context.filesDir.setExecutable(true, false)
-
-            val params = InstallerParams(installApk.absolutePath)
-
-            val result = withContext(Dispatchers.IO) {
-                installerAppUseCase.run(params)
-            }
-
-            if (result.isLeft) {
-                val failure = result.leftValue()
-                Timber.e("❌ [$TAG] Installation failed: $failure")
-                _updateRequestState.value = UpdateRequestState.Error(
-                    message = "Installation failed: $failure"
-                )
-                cleanupApk()
-                return
-            }
-
-            Timber.i("✅ [$TAG] Installation complete - terminal will restart")
-            _updateRequestState.value = UpdateRequestState.InstallComplete(versionName)
             cleanupApk()
-            // Note: Terminal will go to PAX home menu after install
 
         } catch (e: Exception) {
-            Timber.e(e, "❌ [$TAG] Installation exception")
+            val durationMs = System.currentTimeMillis() - startTime
+            observability.logCritical(TAG, "Install exception via remote command", e, mapOf(
+                "versionName" to versionName,
+                "exception" to (e.message ?: "unknown"),
+                "durationMs" to durationMs
+            ))
             _updateRequestState.value = UpdateRequestState.Error(
                 message = "Installation error: ${e.message}"
             )
+
+            reportInstallAttemptToBackend(
+                versionName = versionName,
+                success = false,
+                strategy = "EXCEPTION",
+                errorMessage = "Exception: ${e.message}",
+                durationMs = durationMs
+            )
             cleanupApk()
+        }
+    }
+
+    /** Report install attempt to backend API (best-effort, non-blocking) */
+    private fun reportInstallAttemptToBackend(
+        versionName: String,
+        success: Boolean,
+        strategy: String,
+        errorMessage: String?,
+        durationMs: Long
+    ) {
+        reportingScope.launch {
+            avoqadoUpdateRepository.reportInstallAttempt(
+                versionName = versionName,
+                serialNumber = null,
+                success = success,
+                strategy = strategy,
+                errorMessage = errorMessage,
+                androidVersion = Build.VERSION.SDK_INT,
+                durationMs = durationMs,
+                updateSource = "AVOQADO",
+                deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}",
+                packageName = context.packageName
+            )
         }
     }
 
@@ -237,16 +288,12 @@ class UpdateRequestManager @Inject constructor(
         downloadedApkPath?.let { path ->
             try {
                 File(path).delete()
-                Timber.d("🗑️ [$TAG] Deleted APK: $path")
+                Timber.d("[$TAG] Deleted APK: $path")
             } catch (e: Exception) {
                 Timber.w(e, "[$TAG] Failed to delete APK")
             }
         }
         downloadedApkPath = null
-        try {
-            val installDir = File(context.filesDir, "apk_install")
-            installDir.listFiles()?.forEach { it.delete() }
-        } catch (_: Exception) {}
     }
 }
 

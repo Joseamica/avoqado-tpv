@@ -124,33 +124,51 @@ suspend fun downloadApk(
 **Why plain OkHttpClient?**
 Injected OkHttpClient has auth interceptors that add `Authorization` header. Firebase Storage URLs don't need auth and reject requests with headers.
 
-### 3. Install APK (PAX SDK)
+### 3. Install APK (PackageInstaller Session API + PAX SDK fallback)
 
-**Manager:** `UpdateRequestManager.kt:162-195`
+**Installer:** `ApkInstaller.kt` (v1.7.8+)
 
-```kotlin
-private suspend fun installUpdate(apkPath: String, versionName: String) {
-    _updateRequestState.value = UpdateRequestState.Installing
+```
+Primary: PackageInstaller Session API (Android 5+)
+  → Streams APK bytes via IPC (no cross-process file access)
+  → Works on Android 10+ with FUSE/SELinux
+  → Shows confirmation dialog (user taps "Install")
 
-    val params = InstallerParams(apkPath)
-    val result = installerAppUseCase.run(params)
-
-    if (result.isLeft) {
-        _updateRequestState.value = UpdateRequestState.Error(...)
-        cleanupApk()
-        return
-    }
-
-    _updateRequestState.value = UpdateRequestState.InstallComplete(versionName)
-    cleanupApk()
-    // Terminal goes to PAX home menu - user must manually open app
-}
+Fallback: PAX SDK ISys.installApp() (Android 9 only)
+  → Direct path install via NeptuneService
+  → Fails on Android 10+ due to FUSE blocking cross-process reads
 ```
 
-**PAX SDK Behavior:**
+**Result handling:** `InstallResultReceiver.kt` (BroadcastReceiver, dynamic registration)
+- Receives `PackageInstaller.STATUS_*` results
+- Handles `STATUS_PENDING_USER_ACTION` (shows system install dialog)
+- Reports to `ApkInstaller` via `CompletableDeferred`
+
+**Observability:** Every install attempt logged to:
+- Firebase Crashlytics (via ObservabilityManager)
+- Backend API: `POST /tpv/report-install-attempt`
+- FileLogger + Socket.IO RemoteLogger
+
+**Post-install behavior:**
 - Terminal reboots to PAX home menu
 - App is NOT auto-launched after install
 - User must tap Avoqado icon to reopen
+
+### 4. INSTALL_VERSION Command (Remote deployment to old terminals)
+
+**For deploying updates to terminals v1.6.0+ that have old installer code:**
+
+```
+Dashboard sends INSTALL_VERSION (versionCode: N)
+  → Terminal calls GET /tpv/get-version (public, no auth required)
+  → Downloads APK from Firebase Storage
+  → Tries pm install via shell → likely fails
+  → Fallback: Intent(ACTION_VIEW) + FileProvider → Android system installer
+  → User confirms → installs
+```
+
+Works offline: command queued by backend, delivered via heartbeat when terminal reconnects.
+Terminals v1.2-v1.5.x: require PAXSTORE distribution (no INSTALL_VERSION command).
 
 ## Trigger Mechanisms
 

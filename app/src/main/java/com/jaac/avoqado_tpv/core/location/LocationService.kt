@@ -92,7 +92,7 @@ class LocationService @Inject constructor(
      * @return A [LocationResult] or null if no location could be obtained.
      */
     @SuppressLint("MissingPermission")
-    suspend fun getCurrentLocation(timeoutMs: Long = 20_000): LocationResult? {
+    suspend fun getCurrentLocation(timeoutMs: Long = 8_000): LocationResult? {
         if (!hasLocationPermission()) {
             Timber.w("📍 Location permission not granted")
             return null
@@ -142,8 +142,8 @@ class LocationService @Inject constructor(
                 }
             }
 
-            // Try Android LocationManager (GPS)
-            getLocationFromAndroidManager(timeoutMs / 2)?.let {
+            // Try Android LocationManager (GPS) — short timeout since PAX is usually indoors
+            getLocationFromAndroidManager(3_000)?.let {
                 if (it.accuracy <= MAX_ACCURACY_METERS) {
                     Timber.d("📍 Got location via GPS: ${it.latitude}, ${it.longitude} (acc: ${it.accuracy}m)")
                     return@withTimeoutOrNull it
@@ -447,12 +447,15 @@ class LocationService @Inject constructor(
         try {
             val allCellInfo = telephonyManager.allCellInfo ?: return emptyList()
 
+            Timber.d("📍 Cell ID: Found ${allCellInfo.size} total cells (registered + neighbors)")
+
             for (cellInfo in allCellInfo) {
-                if (!cellInfo.isRegistered) continue // Only use registered (connected) cells
+                val isServing = cellInfo.isRegistered
 
                 when (cellInfo) {
                     is CellInfoLte -> {
                         val identity = cellInfo.cellIdentity
+                        val signalDbm = cellInfo.cellSignalStrength.dbm
                         val mcc = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                             identity.mccString?.toIntOrNull() ?: identity.mcc
                         } else {
@@ -473,13 +476,15 @@ class LocationService @Inject constructor(
                                 mobileCountryCode = mcc,
                                 mobileNetworkCode = mnc,
                                 locationAreaCode = identity.tac,
-                                cellId = identity.ci.toLong()
+                                cellId = identity.ci.toLong(),
+                                signalStrength = signalDbm
                             ))
-                            Timber.d("📍 Cell ID: LTE tower - MCC=$mcc, MNC=$mnc, TAC=${identity.tac}, CI=${identity.ci}")
+                            Timber.d("📍 Cell ID: LTE ${if (isServing) "SERVING" else "neighbor"} - MCC=$mcc, MNC=$mnc, TAC=${identity.tac}, CI=${identity.ci}, signal=${signalDbm}dBm")
                         }
                     }
                     is CellInfoWcdma -> {
                         val identity = cellInfo.cellIdentity
+                        val signalDbm = cellInfo.cellSignalStrength.dbm
                         val mcc = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                             identity.mccString?.toIntOrNull() ?: identity.mcc
                         } else {
@@ -500,13 +505,15 @@ class LocationService @Inject constructor(
                                 mobileCountryCode = mcc,
                                 mobileNetworkCode = mnc,
                                 locationAreaCode = identity.lac,
-                                cellId = identity.cid.toLong()
+                                cellId = identity.cid.toLong(),
+                                signalStrength = signalDbm
                             ))
-                            Timber.d("📍 Cell ID: WCDMA tower - MCC=$mcc, MNC=$mnc, LAC=${identity.lac}, CID=${identity.cid}")
+                            Timber.d("📍 Cell ID: WCDMA ${if (isServing) "SERVING" else "neighbor"} - MCC=$mcc, MNC=$mnc, LAC=${identity.lac}, CID=${identity.cid}, signal=${signalDbm}dBm")
                         }
                     }
                     is CellInfoGsm -> {
                         val identity = cellInfo.cellIdentity
+                        val signalDbm = cellInfo.cellSignalStrength.dbm
                         val mcc = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                             identity.mccString?.toIntOrNull() ?: identity.mcc
                         } else {
@@ -527,13 +534,16 @@ class LocationService @Inject constructor(
                                 mobileCountryCode = mcc,
                                 mobileNetworkCode = mnc,
                                 locationAreaCode = identity.lac,
-                                cellId = identity.cid.toLong()
+                                cellId = identity.cid.toLong(),
+                                signalStrength = signalDbm
                             ))
-                            Timber.d("📍 Cell ID: GSM tower - MCC=$mcc, MNC=$mnc, LAC=${identity.lac}, CID=${identity.cid}")
+                            Timber.d("📍 Cell ID: GSM ${if (isServing) "SERVING" else "neighbor"} - MCC=$mcc, MNC=$mnc, LAC=${identity.lac}, CID=${identity.cid}, signal=${signalDbm}dBm")
                         }
                     }
                 }
             }
+
+            Timber.i("📍 Cell ID: Sending ${cellTowers.size} towers to backend (from ${allCellInfo.size} visible)")
         } catch (e: SecurityException) {
             Timber.e(e, "📍 Cell ID: Security exception - missing permission")
         } catch (e: Exception) {
@@ -557,6 +567,7 @@ data class CellTowerInfo(
     val radioType: String,        // "gsm", "wcdma", "lte"
     val mobileCountryCode: Int,   // MCC (e.g., 334 for Mexico)
     val mobileNetworkCode: Int,   // MNC (e.g., 020 for Telcel)
+    val signalStrength: Int = Int.MIN_VALUE, // dBm (helps triangulation accuracy)
     val locationAreaCode: Int,    // LAC (GSM/WCDMA) or TAC (LTE)
     val cellId: Long              // Cell ID
 )

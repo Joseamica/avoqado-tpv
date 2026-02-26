@@ -4,6 +4,7 @@ import android.content.Context
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.network.AvoqadoUpdateInfo
+import com.jaac.avoqado_tpv.core.data.network.ReportInstallAttemptRequest
 import com.jaac.avoqado_tpv.core.data.network.ReportUpdateInstalledRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -306,6 +307,48 @@ class AvoqadoUpdateRepository @Inject constructor(
             } catch (e: Exception) {
                 Timber.w(e, "Failed to report update installation")
                 // Don't throw - this is just analytics
+            }
+        }
+    }
+
+    /**
+     * Report an APK install attempt (success or failure) to backend for diagnostics.
+     *
+     * Called by SelfUpdateViewModel and UpdateRequestManager after every install attempt.
+     * Best-effort — does not throw on failure (this is diagnostic data, not critical flow).
+     */
+    suspend fun reportInstallAttempt(
+        versionName: String,
+        serialNumber: String?,
+        success: Boolean,
+        strategy: String,
+        errorMessage: String?,
+        androidVersion: Int,
+        durationMs: Long,
+        updateSource: String,
+        deviceModel: String,
+        packageName: String
+    ) {
+        withContext(Dispatchers.IO) {
+            try {
+                apiService.reportInstallAttempt(
+                    ReportInstallAttemptRequest(
+                        versionName = versionName,
+                        serialNumber = serialNumber,
+                        success = success,
+                        strategy = strategy,
+                        errorMessage = errorMessage,
+                        androidVersion = androidVersion,
+                        durationMs = durationMs,
+                        updateSource = updateSource,
+                        deviceModel = deviceModel,
+                        packageName = packageName
+                    )
+                )
+                Timber.i("[Avoqado] Reported install attempt: success=$success, strategy=$strategy")
+            } catch (e: Exception) {
+                Timber.w(e, "[Avoqado] Failed to report install attempt (non-critical)")
+                // Don't throw — this is diagnostic data
             }
         }
     }

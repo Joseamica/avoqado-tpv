@@ -1,12 +1,9 @@
 package com.jaac.avoqado_tpv.features.self_update.presentation
 
 import android.content.Context
+import android.os.Build
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.blumonpay.pax.shared.installer.domain.use_case.InstallerAppUseCase
-import com.blumonpay.pax.shared.installer.domain.use_case.InstallerParams
-import com.blumonpay.pax.shared.installer.domain.use_case.InstallerFailure
-import com.blumonpay.pax.shared.installer.domain.entity.InstallerError
 import com.example.clean_lib_services.shared.core.domain.use_case.remote_download.check_version.CheckVersionUseCase
 import com.example.clean_lib_services.shared.core.domain.use_case.remote_download.check_version.CheckVersionParams
 import com.example.clean_lib_services.shared.core.domain.use_case.remote_download.downloadFile.DownloadFileUseCase
@@ -15,9 +12,12 @@ import com.example.clean_lib_services.shared.initializer.domain.use_case.get_ini
 import com.example.clean_lib_services.shared.initializer.domain.use_case.get_init_data.GetInitDataUseCase
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.data.network.AvoqadoUpdateInfo
+import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 import com.jaac.avoqado_tpv.features.self_update.data.AvoqadoUpdateRepository
 import com.jaac.avoqado_tpv.features.self_update.data.DownloadResult
 import com.jaac.avoqado_tpv.features.self_update.data.UpdateCheckResult
+import com.jaac.avoqado_tpv.features.self_update.domain.ApkInstaller
+import com.jaac.avoqado_tpv.features.self_update.domain.InstallResult
 import com.jaac.avoqado_tpv.core.util.UpdateCheckManager
 import com.jaac.avoqado_tpv.core.data.network.UpdateMode
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -45,7 +45,7 @@ import javax.inject.Inject
  * Uses:
  * - Blumon SDK use cases for provider updates
  * - AvoqadoUpdateRepository for self-managed updates
- * - PAX InstallerAppUseCase for silent APK installation
+ * - ApkInstaller for APK installation (PackageInstaller Session API + PAX SDK fallback)
  *
  * Note: After successful installation, PAX terminal goes to home menu.
  * User must manually reopen the app.
@@ -54,12 +54,17 @@ import javax.inject.Inject
 class SelfUpdateViewModel @Inject constructor(
     private val checkVersionUseCase: CheckVersionUseCase,
     private val downloadFileUseCase: DownloadFileUseCase,
-    private val installerAppUseCase: InstallerAppUseCase,
+    private val apkInstaller: ApkInstaller,
     private val getInitDataUseCase: GetInitDataUseCase,
     private val avoqadoUpdateRepository: AvoqadoUpdateRepository,
     private val updateCheckManager: UpdateCheckManager,
+    private val observability: ObservabilityManager,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
+
+    companion object {
+        private const val TAG = "SelfUpdateVM"
+    }
 
     private val _state = MutableStateFlow<SelfUpdateState>(SelfUpdateState.Idle)
     val state: StateFlow<SelfUpdateState> = _state.asStateFlow()
@@ -385,85 +390,125 @@ class SelfUpdateViewModel @Inject constructor(
     }
 
     /**
-     * Install the downloaded APK via PAX SDK
+     * Install the downloaded APK via PackageInstaller Session API (with PAX SDK fallback)
      *
      * Note: After successful installation, the terminal will go to PAX home menu.
-     * This is expected PAX SDK behavior and cannot be changed.
+     * This is expected behavior and cannot be changed.
      */
     fun installUpdate() {
         val apkPath = downloadedApkPath ?: return
+        val versionName = currentAvoqadoUpdate?.versionName ?: currentUpdate?.newVersion ?: "unknown"
+        val updateSource = currentUpdateSource.name
 
         viewModelScope.launch {
             _state.value = SelfUpdateState.Installing
+            val startTime = System.currentTimeMillis()
+
+            observability.logInfo(TAG, "Install started from SelfUpdateScreen", mapOf(
+                "apkPath" to apkPath,
+                "versionName" to versionName,
+                "updateSource" to updateSource
+            ))
 
             try {
-                // Verify APK file exists and is readable
-                val apkFile = File(apkPath)
-                Timber.d("📦 APK file check: exists=${apkFile.exists()}, size=${apkFile.length()}, readable=${apkFile.canRead()}")
+                val result = apkInstaller.install(apkPath)
+                val durationMs = System.currentTimeMillis() - startTime
 
-                if (!apkFile.exists()) {
-                    Timber.e("❌ APK file does not exist: $apkPath")
-                    _state.value = SelfUpdateState.Error(
-                        code = UpdateErrorCode.INSTALL_FAILED,
-                        message = "Archivo APK no encontrado",
-                        retryAction = RetryAction.DOWNLOAD
-                    )
-                    return@launch
-                }
+                when (result) {
+                    is InstallResult.Success -> {
+                        observability.logInfo(TAG, "Install completed successfully", mapOf(
+                            "versionName" to versionName,
+                            "updateSource" to updateSource,
+                            "strategy" to result.strategy,
+                            "durationMs" to durationMs
+                        ))
+                        _state.value = SelfUpdateState.InstallComplete
 
-                // Copy APK to internal storage (ext4, NOT FUSE) before installing.
-                // PAX ISys.installApp() runs in a separate system process that cannot read
-                // from getExternalFilesDir on Android 10 due to FUSE restrictions.
-                // Internal storage uses ext4 where setReadable(true, false) is guaranteed
-                // to set real Unix permissions (chmod o+r), making the file accessible to
-                // the PAX system service.
-                val installDir = File(context.filesDir, "apk_install")
-                installDir.mkdirs()
-                val installApk = File(installDir, apkFile.name)
-                withContext(Dispatchers.IO) {
-                    apkFile.copyTo(installApk, overwrite = true)
-                }
-                // Set world-readable on ext4 — guaranteed to work (no FUSE)
-                installApk.setReadable(true, false)
-                installDir.setReadable(true, false)
-                installDir.setExecutable(true, false)
-                context.filesDir.setReadable(true, false)
-                context.filesDir.setExecutable(true, false)
-
-                val installPath = installApk.absolutePath
-                val params = InstallerParams(installPath)
-
-                Timber.d("📦 Installing APK: $installPath (size=${installApk.length()} bytes, original=$apkPath)")
-
-                val result = withContext(Dispatchers.IO) {
-                    installerAppUseCase.run(params)
-                }
-
-                if (result.isLeft) {
-                    val failure = result.leftValue()
-                    // Log detailed error info for debugging
-                    val errorCode = when (failure) {
-                        is InstallerFailure.InstallFailure -> failure.msg?.name ?: "null"
+                        // Report success to backend API
+                        reportInstallAttemptToBackend(
+                            versionName = versionName,
+                            success = true,
+                            strategy = result.strategy,
+                            errorMessage = null,
+                            durationMs = durationMs,
+                            updateSource = updateSource
+                        )
                     }
-                    Timber.e("❌ Installation failed: $failure (errorCode=$errorCode)")
-                    _state.value = mapInstallerFailure(failure)
-                    cleanupApk()
-                    return@launch
-                }
+                    is InstallResult.Error -> {
+                        observability.logCritical(TAG, "Install failed", metadata = mapOf(
+                            "versionName" to versionName,
+                            "updateSource" to updateSource,
+                            "error" to result.message,
+                            "durationMs" to durationMs
+                        ))
+                        _state.value = SelfUpdateState.Error(
+                            code = UpdateErrorCode.INSTALL_FAILED,
+                            message = result.message,
+                            retryAction = RetryAction.INSTALL
+                        )
 
-                Timber.i("✅ Installation complete!")
-                _state.value = SelfUpdateState.InstallComplete
+                        // Report failure to backend API
+                        reportInstallAttemptToBackend(
+                            versionName = versionName,
+                            success = false,
+                            strategy = "BOTH_FAILED",
+                            errorMessage = result.message,
+                            durationMs = durationMs,
+                            updateSource = updateSource
+                        )
+                    }
+                }
                 cleanupApk()
-                // Note: Terminal will now go to PAX home menu
 
             } catch (e: Exception) {
-                Timber.e(e, "❌ Installation exception")
+                val durationMs = System.currentTimeMillis() - startTime
+                observability.logCritical(TAG, "Install exception", e, mapOf(
+                    "versionName" to versionName,
+                    "updateSource" to updateSource,
+                    "exception" to (e.message ?: "unknown"),
+                    "durationMs" to durationMs
+                ))
                 _state.value = SelfUpdateState.Error(
                     code = UpdateErrorCode.INSTALL_FAILED,
-                    message = "Error de instalación: ${e.message}"
+                    message = "Error de instalacion: ${e.message}"
+                )
+
+                // Report exception to backend API
+                reportInstallAttemptToBackend(
+                    versionName = versionName,
+                    success = false,
+                    strategy = "EXCEPTION",
+                    errorMessage = "Exception: ${e.message}",
+                    durationMs = durationMs,
+                    updateSource = updateSource
                 )
                 cleanupApk()
             }
+        }
+    }
+
+    /** Report install attempt to backend API (best-effort, non-blocking) */
+    private fun reportInstallAttemptToBackend(
+        versionName: String,
+        success: Boolean,
+        strategy: String,
+        errorMessage: String?,
+        durationMs: Long,
+        updateSource: String
+    ) {
+        viewModelScope.launch {
+            avoqadoUpdateRepository.reportInstallAttempt(
+                versionName = versionName,
+                serialNumber = null,
+                success = success,
+                strategy = strategy,
+                errorMessage = errorMessage,
+                androidVersion = Build.VERSION.SDK_INT,
+                durationMs = durationMs,
+                updateSource = updateSource,
+                deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}",
+                packageName = context.packageName
+            )
         }
     }
 
@@ -530,52 +575,12 @@ class SelfUpdateViewModel @Inject constructor(
         downloadedApkPath?.let { path ->
             try {
                 File(path).delete()
-                Timber.d("🗑️ Deleted APK: $path")
+                Timber.d("Deleted APK: $path")
             } catch (e: Exception) {
                 Timber.w(e, "Failed to delete APK")
             }
         }
         downloadedApkPath = null
-        // Also clean up internal storage copy used for installation
-        try {
-            val installDir = File(context.filesDir, "apk_install")
-            installDir.listFiles()?.forEach { it.delete() }
-        } catch (_: Exception) {}
-    }
-
-    private fun mapInstallerFailure(failure: InstallerFailure): SelfUpdateState.Error {
-        val message = when (failure) {
-            is InstallerFailure.InstallFailure -> {
-                when (failure.msg) {
-                    InstallerError.INSTALL_PARSE_FAILED_NO_CERTIFICATES ->
-                        "APK sin certificado válido"
-                    InstallerError.UPDATE_PERMISSION_ERROR ->
-                        "Error de permisos"
-                    InstallerError.INSTALL_FAILED_PERMISSION_MODEL_DOWNGRADE ->
-                        "Downgrade de permisos no permitido"
-                    InstallerError.INSTALL_FAILED_VERSION_DOWNGRADE ->
-                        "No se puede instalar versión anterior"
-                    InstallerError.INSTALL_FAILED_VERIFICATION_FAILURE ->
-                        "Verificación de APK falló"
-                    InstallerError.FILE_NOT_EXIST, InstallerError.FILE_NOT_READ_EXIST ->
-                        "Archivo APK no encontrado"
-                    InstallerError.FILE_CAN_NOT_READ ->
-                        "No se puede leer el archivo APK"
-                    InstallerError.SERVICE_NOT_AVAILABLE ->
-                        "Servicio de instalación no disponible"
-                    InstallerError.UPDATE_CUSTOMER_ERR ->
-                        "Error de actualización"
-                    InstallerError.UNKNOWN_ERROR ->
-                        "Error desconocido de instalación"
-                    else -> "Error de instalación"
-                }
-            }
-        }
-        return SelfUpdateState.Error(
-            code = UpdateErrorCode.INSTALL_FAILED,
-            message = message,
-            retryAction = RetryAction.INSTALL
-        )
     }
 }
 

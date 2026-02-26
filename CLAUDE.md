@@ -144,9 +144,20 @@ Official Blumon/PAX SDK docs and AARs are stored in iCloud:
 
 Read `SDK-PAX-1.11.0.2-DocV4` before modifying Blumon SDK integration code.
 
-## Pending Verification
+## Self-Update System (v1.7.8)
 
-- [ ] **Self-updater ext4 install path on Android 10** (v1.7.5+): `ISys.installApp()` (PAX system process) cannot read APK from `getExternalFilesDir` on Android 10 due to FUSE. Fix: copy APK to `context.filesDir/apk_install/` (internal storage, ext4) and `setReadable(true, false)` before installing. ext4 guarantees real Unix permissions. **UNVERIFIED** — needs testing on actual Android 10 PAX terminal. Files: `SelfUpdateViewModel.kt`, `UpdateRequestManager.kt`
+**APK Installation** — `ApkInstaller.kt` (PackageInstaller Session API + PAX SDK fallback):
+- Primary: Android PackageInstaller Session API — streams APK bytes via IPC, no FUSE issues on Android 10+
+- Fallback: PAX SDK `ISys.installApp()` — only works on Android 9 and below
+- Result receiver: `InstallResultReceiver.kt` (dynamic registration, Hilt EntryPoint)
+- Observability: Every step logged to Crashlytics + backend `POST tpv/report-install-attempt`
+- **VERIFIED on PAX A910S** (sandbox Android 10, production) — 2026-02-26
+
+**Deploying to old terminals** (v1.6.0+): Use `INSTALL_VERSION` command from dashboard. This command uses `Intent(ACTION_VIEW)` + FileProvider as fallback (NOT `ISys.installApp()`), which works on Android 10+. Terminals v1.2-v1.5.x require PAXSTORE.
+
+**Backend**: `GET /tpv/get-version` is public (no auth) — allows INSTALL_VERSION to work without active session. `GET /tpv/check-update` also public.
+
+**Dashboard**: `INSTALL_VERSION` works offline — command queued, delivered when terminal reconnects via heartbeat.
 
 ## Pre-Commit Checklist
 

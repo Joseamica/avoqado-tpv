@@ -23,8 +23,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -143,6 +146,8 @@ class ConnectionViewModelTest {
     fun `state becomes DisconnectedNoInternet when no network`() = runTest(testDispatcher) {
         every { networkMonitor.getCurrentNetworkInfo() } returns disconnectedNetworkInfo
         val viewModel = createViewModel()
+        // Grace period: offline not declared immediately (hysteresis)
+        advanceTimeBy(ConnectionViewModel.OFFLINE_GRACE_MS + 1)
         assertThat(viewModel.state.value).isEqualTo(ConnectionState.DisconnectedNoInternet)
         viewModel.viewModelScope.cancel()
     }
@@ -165,6 +170,8 @@ class ConnectionViewModelTest {
     fun `dismissBanner sets Dismissed state`() = runTest(testDispatcher) {
         every { networkMonitor.getCurrentNetworkInfo() } returns disconnectedNetworkInfo
         val viewModel = createViewModel()
+        // Wait for grace period to declare offline
+        advanceTimeBy(ConnectionViewModel.OFFLINE_GRACE_MS + 1)
         assertThat(viewModel.state.value).isEqualTo(ConnectionState.DisconnectedNoInternet)
 
         viewModel.dismissBanner()
@@ -177,6 +184,8 @@ class ConnectionViewModelTest {
     fun `forceCheck clears dismissed and rechecks`() = runTest(testDispatcher) {
         every { networkMonitor.getCurrentNetworkInfo() } returns disconnectedNetworkInfo
         val viewModel = createViewModel()
+        // Wait for grace period, then dismiss
+        advanceTimeBy(ConnectionViewModel.OFFLINE_GRACE_MS + 1)
         viewModel.dismissBanner()
         assertThat(viewModel.state.value).isEqualTo(ConnectionState.Dismissed)
 
@@ -231,6 +240,91 @@ class ConnectionViewModelTest {
         val viewModel = createViewModel()
 
         coVerify { commandExecutor.execute(any()) }
+        viewModel.viewModelScope.cancel()
+    }
+
+    // ========================================
+    // HYSTERESIS / GRACE PERIOD TESTS
+    // Uses StandardTestDispatcher for virtual time control
+    // ========================================
+
+    @Test
+    fun `offline NOT declared before grace period expires`() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+
+        every { networkMonitor.getCurrentNetworkInfo() } returns connectedNetworkInfo
+        coEvery { heartbeatRepository.sendHeartbeat(any()) } returns Result.Success(fakeHeartbeatResponse)
+
+        val viewModel = createViewModel()
+        runCurrent() // Init: heartbeat succeeds → Connected
+        assertThat(viewModel.state.value).isEqualTo(ConnectionState.Connected)
+
+        // Network lost
+        every { networkMonitor.getCurrentNetworkInfo() } returns disconnectedNetworkInfo
+        fakeNetworkStatus.emit(NetworkStatus.Unavailable)
+        runCurrent() // scheduleOfflineTransition starts delay
+
+        // Within grace period — should NOT be offline
+        advanceTimeBy(ConnectionViewModel.OFFLINE_GRACE_MS - 1)
+        assertThat(viewModel.state.value).isNotEqualTo(ConnectionState.DisconnectedNoInternet)
+
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `offline declared after grace period when network stays down`() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+
+        every { networkMonitor.getCurrentNetworkInfo() } returns connectedNetworkInfo
+        coEvery { heartbeatRepository.sendHeartbeat(any()) } returns Result.Success(fakeHeartbeatResponse)
+
+        val viewModel = createViewModel()
+        runCurrent()
+        assertThat(viewModel.state.value).isEqualTo(ConnectionState.Connected)
+
+        // Network lost — stays down
+        every { networkMonitor.getCurrentNetworkInfo() } returns disconnectedNetworkInfo
+        fakeNetworkStatus.emit(NetworkStatus.Unavailable)
+        runCurrent()
+
+        // Past grace period — re-validation confirms offline
+        advanceTimeBy(ConnectionViewModel.OFFLINE_GRACE_MS + 1)
+        assertThat(viewModel.state.value).isEqualTo(ConnectionState.DisconnectedNoInternet)
+
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `offline transition cancelled when network recovers within grace period`() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+
+        every { networkMonitor.getCurrentNetworkInfo() } returns connectedNetworkInfo
+        coEvery { heartbeatRepository.sendHeartbeat(any()) } returns Result.Success(fakeHeartbeatResponse)
+
+        val viewModel = createViewModel()
+        runCurrent()
+        assertThat(viewModel.state.value).isEqualTo(ConnectionState.Connected)
+
+        // Network lost
+        every { networkMonitor.getCurrentNetworkInfo() } returns disconnectedNetworkInfo
+        fakeNetworkStatus.emit(NetworkStatus.Unavailable)
+        runCurrent()
+
+        // Network recovers before grace period — re-validation will see connected
+        advanceTimeBy(1_500)
+        every { networkMonitor.getCurrentNetworkInfo() } returns connectedNetworkInfo
+        fakeNetworkStatus.emit(NetworkStatus.Available)
+        runCurrent() // cancelOfflineTransition() + starts ONLINE_STABILIZATION_MS delay
+
+        // Grace period would have expired — but job was cancelled
+        advanceTimeBy(ConnectionViewModel.OFFLINE_GRACE_MS)
+
+        // Online stabilization completes → probe succeeds
+        advanceTimeBy(ConnectionViewModel.ONLINE_STABILIZATION_MS)
+
+        // Should never have gone offline
+        assertThat(viewModel.state.value).isNotEqualTo(ConnectionState.DisconnectedNoInternet)
+
         viewModel.viewModelScope.cancel()
     }
 }

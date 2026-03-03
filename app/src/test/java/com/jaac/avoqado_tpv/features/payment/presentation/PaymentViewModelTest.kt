@@ -269,7 +269,9 @@ class PaymentViewModelTest {
             apiService = mockk(relaxed = true),
             customerRepository = mockk(relaxed = true),
             secureStorage = mockSecureStorage,
-            modulesRepository = mockModulesRepository
+            modulesRepository = mockModulesRepository,
+            connectionStateManager = mockk(relaxed = true),
+            merchantRepository = mockk(relaxed = true)
         )
     }
 

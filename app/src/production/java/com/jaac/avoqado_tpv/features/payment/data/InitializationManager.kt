@@ -240,6 +240,17 @@ class InitializationManager @Inject constructor(
      */
     private suspend fun executeInitialization(timestamp: Long, merchantPosId: String? = null): Result<Unit> {
         return try {
+            // STEP 0: Ensure PAX DAL is initialized (defensive — may already be done by Application)
+            // AppManager.init() sets lateinit var dal. If Application's background init hasn't
+            // completed yet, the SDK will crash with "lateinit property dal has not been initialized".
+            // This call is idempotent — safe to call multiple times.
+            try {
+                com.blumonpay.pax.utils.AppManager.init(context)
+            } catch (e: Throwable) {
+                // Catches UnsatisfiedLinkError (native lib missing in tests/non-PAX) and any other errors
+                Timber.w(e, "⚠️ [InitializationManager] AppManager.init() failed (non-PAX device?)")
+            }
+
             // STEP 1: InitializerUseCase (OAuth + DUKPT download)
             Timber.i("[INIT STEP 1] InitializerUseCase - OAuth + DUKPT key download...")
             val initParams = InitializerParams(

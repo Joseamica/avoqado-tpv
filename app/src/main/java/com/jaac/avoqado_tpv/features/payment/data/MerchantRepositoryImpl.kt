@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.payment.data
 
+import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
+import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import kotlinx.coroutines.flow.Flow
@@ -12,49 +14,18 @@ import javax.inject.Singleton
 /**
  * Implementation of MerchantRepository
  *
- * **Current State (MVP):**
- * Returns hardcoded sandbox merchant accounts for testing.
- * Edgardo has registered 2 devices in Blumon sandbox:
- * - Serial 2841548417 → Account A
- * - Serial 2841548418 → Account B
- *
- * **Future Enhancement:**
- * Integrate with backend API (avoqado-server):
- * ```
- * GET /api/v1/tpv/merchants?terminalId={deviceId}
- * Response:
- * {
- *   "merchants": [
- *     {
- *       "id": "merchant_001",
- *       "serialNumber": "2841548417",
- *       "displayName": "Main Restaurant",
- *       "description": "Primary sales account",
- *       "environment": "SANDBOX",
- *       "isActive": true
- *     },
- *     ...
- *   ]
- * }
- * ```
+ * Initializes with hardcoded sandbox fallback accounts. On app startup,
+ * MainActivity fetches terminal config and calls updateMerchants() with
+ * real backend accounts. If startup fetch fails (network transition),
+ * refreshMerchants() can be called later to retry.
  *
  * **Data Flow:**
- * ```
- * Backend API
- *     ↓
- * MerchantRepositoryImpl (cache + transform)
- *     ↓
- * GetMerchantsUseCase
- *     ↓
- * PaymentViewModel
- *     ↓
- * MerchantSelectionDialog UI
- * ```
+ * Backend API → TerminalConfigRepository.fetchConfig() → updateMerchants() → Flow
  */
 @Singleton
 class MerchantRepositoryImpl @Inject constructor(
-    // TODO: Inject API service when backend endpoint is ready
-    // private val merchantApiService: MerchantApiService
+    private val terminalConfigRepository: TerminalConfigRepository,
+    private val deviceInfoManager: DeviceInfoManager
 ) : MerchantRepository {
 
     // In-memory cache (StateFlow for reactive updates)
@@ -119,29 +90,37 @@ class MerchantRepositoryImpl @Inject constructor(
     }
 
     /**
-     * Refresh merchants from backend
+     * Refresh merchants from backend via terminal config endpoint.
      *
-     * **Current:** No-op (sandbox accounts are static)
-     * **Future:** Fetch from API, update cache
-     *
-     * Implementation plan:
-     * ```kotlin
-     * override suspend fun refreshMerchants(): Result<Unit> {
-     *     return try {
-     *         val response = merchantApiService.getMerchants(deviceId)
-     *         _merchants.value = response.merchants.map { it.toDomain() }
-     *         Result.success(Unit)
-     *     } catch (e: Exception) {
-     *         Timber.e(e, "Failed to refresh merchants")
-     *         Result.failure(e)
-     *     }
-     * }
-     * ```
+     * Used when fallback accounts are detected (e.g., network was down during startup).
+     * Fetches terminal config, extracts merchant accounts, and replaces fallbacks.
      */
     override suspend fun refreshMerchants(): Result<Unit> {
-        // For sandbox: just return current cached data
-        Timber.d("📋 [MerchantRepository] Refresh requested (no-op for sandbox)")
-        return Result.success(Unit)
+        return try {
+            val serialNumber = deviceInfoManager.getSerialNumber()
+            Timber.i("📋 [MerchantRepository] Refreshing merchants from backend (serial=$serialNumber)...")
+
+            val configResult = terminalConfigRepository.fetchConfig(serialNumber)
+            configResult.fold(
+                onSuccess = { (_, merchantAccounts) ->
+                    if (merchantAccounts.isEmpty()) {
+                        Timber.w("⚠️ [MerchantRepository] Backend returned 0 merchants")
+                        Result.failure(IllegalStateException("Backend returned 0 merchants"))
+                    } else {
+                        updateMerchants(merchantAccounts)
+                        Timber.i("✅ [MerchantRepository] Refreshed ${merchantAccounts.size} merchants from backend")
+                        Result.success(Unit)
+                    }
+                },
+                onFailure = { error ->
+                    Timber.w(error, "⚠️ [MerchantRepository] Failed to refresh merchants from backend")
+                    Result.failure(error)
+                }
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [MerchantRepository] Error refreshing merchants")
+            Result.failure(e)
+        }
     }
 
     /**

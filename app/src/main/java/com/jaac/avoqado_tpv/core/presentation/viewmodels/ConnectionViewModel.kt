@@ -81,9 +81,17 @@ class ConnectionViewModel @Inject constructor(
     private var monitoringJob: Job? = null
     private var networkObserverJob: Job? = null
     private var reconnectedBannerJob: Job? = null
+    private var offlineTransitionJob: Job? = null
     private var reconnectionAttempts = 0
     private val maxReconnectionAttempts = Int.MAX_VALUE // Keep trying forever
     private var isDismissed = false  // User manually dismissed banner
+
+    companion object {
+        /** Grace period before declaring offline — absorbs transient network flickers */
+        const val OFFLINE_GRACE_MS = 3_000L
+        /** Stabilization delay after WiFi Available (DNS/DHCP setup time) */
+        const val ONLINE_STABILIZATION_MS = 2_000L
+    }
 
     // Anti-stale guard: monotonic counter to prevent race conditions between
     // concurrent callers (monitoring loop, network observer, forceCheck).
@@ -201,27 +209,60 @@ class ConnectionViewModel @Inject constructor(
             connectivityObserver.observe().collect { status ->
                 when (status) {
                     NetworkStatus.Available -> {
-                        Timber.i("🌐 [Connection] Network restored - checking connection after grace period")
-                        // Grace period: Wait 2s for network to fully stabilize after wake
-                        delay(2000)
+                        Timber.i("🌐 [Connection] Network restored - checking after stabilization")
+                        cancelOfflineTransition()
+                        // Grace period: Wait for network to fully stabilize after wake (DNS/DHCP)
+                        delay(ONLINE_STABILIZATION_MS)
                         // Clear dismissed state - network change is a new situation
                         isDismissed = false
                         val version = nextVersion()
                         probeConnectivity(version)
                     }
                     NetworkStatus.Unavailable -> {
-                        Timber.w("⚠️ [Connection] Network lost")
-                        // Update state immediately when network is lost
-                        if (!isDismissed) {
-                            _state.value = ConnectionState.DisconnectedNoInternet
-                        }
-                        // Update unified alert system
-                        connectionStateManager.setInternetConnected(false)
-                        reconnectionAttempts++
+                        Timber.w("⚠️ [Connection] Network lost — scheduling offline transition")
+                        scheduleOfflineTransition("observer")
                     }
                 }
             }
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // OFFLINE HYSTERESIS (Asymmetric: slow offline, fast online)
+    // ══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Schedule a delayed transition to DisconnectedNoInternet.
+     *
+     * Absorbs transient network flickers (screen lock/unlock, WiFi roaming).
+     * After [OFFLINE_GRACE_MS], re-checks the network to avoid stale transitions.
+     * If network recovered during the grace period, the transition is skipped.
+     *
+     * @param source Logging label for the caller (observer, probe, heartbeat)
+     */
+    private fun scheduleOfflineTransition(source: String) {
+        if (offlineTransitionJob?.isActive == true) return // Already scheduled
+
+        offlineTransitionJob = viewModelScope.launch {
+            Timber.d("⏳ [Connection] Offline grace period started ($source)")
+            delay(OFFLINE_GRACE_MS)
+
+            // Re-validate: network may have recovered during grace period
+            val networkInfo = networkMonitor.getCurrentNetworkInfo()
+            if (!networkInfo.isConnected) {
+                Timber.w("⚠️ [Connection] Confirmed offline after grace period ($source)")
+                if (!isDismissed) _state.value = ConnectionState.DisconnectedNoInternet
+                connectionStateManager.setInternetConnected(false)
+                reconnectionAttempts++
+            } else {
+                Timber.i("🌐 [Connection] Network recovered during grace period ($source)")
+            }
+        }
+    }
+
+    private fun cancelOfflineTransition() {
+        offlineTransitionJob?.cancel()
+        offlineTransitionJob = null
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -246,9 +287,7 @@ class ConnectionViewModel @Inject constructor(
         val networkInfo = networkMonitor.getCurrentNetworkInfo()
         if (!networkInfo.isConnected) {
             if (isLatest(version)) {
-                if (!isDismissed) _state.value = ConnectionState.DisconnectedNoInternet
-                connectionStateManager.setInternetConnected(false)
-                reconnectionAttempts++
+                scheduleOfflineTransition("probe")
             }
             return
         }
@@ -277,12 +316,14 @@ class ConnectionViewModel @Inject constructor(
             when (result) {
                 is Result.Success -> {
                     Timber.i("✅ [Connection] Probe OK (latency=${latencyMs}ms)")
+                    cancelOfflineTransition()
                     connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = latencyMs)
                     handleReconnectionSuccess(version)
                     // NOTE: pendingCommands in result are IGNORED — monitoring loop handles them
                 }
                 is Result.Error -> {
                     Timber.w("⚠️ [Connection] Probe: backend unreachable: ${result.exception?.message}")
+                    cancelOfflineTransition() // Internet confirmed — cancel pending NoInternet
                     if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
                     connectionStateManager.updateState(hasInternet = true, hasServer = false)
                     reconnectionAttempts++
@@ -291,6 +332,7 @@ class ConnectionViewModel @Inject constructor(
         } catch (e: TimeoutCancellationException) {
             if (!isLatest(version)) return
             Timber.w("⚠️ [Connection] Probe timed out (8s)")
+            cancelOfflineTransition() // Timeout means internet works, server doesn't
             if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
             connectionStateManager.updateState(hasInternet = true, hasServer = false)
             reconnectionAttempts++
@@ -299,6 +341,7 @@ class ConnectionViewModel @Inject constructor(
         } catch (e: Exception) {
             if (!isLatest(version)) return
             Timber.e(e, "❌ [Connection] Probe failed")
+            cancelOfflineTransition()
             if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
             connectionStateManager.updateState(hasInternet = true, hasServer = false)
             reconnectionAttempts++
@@ -323,9 +366,7 @@ class ConnectionViewModel @Inject constructor(
         val networkInfo = networkMonitor.getCurrentNetworkInfo()
         if (!networkInfo.isConnected) {
             if (isLatest(version)) {
-                if (!isDismissed) _state.value = ConnectionState.DisconnectedNoInternet
-                connectionStateManager.setInternetConnected(false)
-                reconnectionAttempts++
+                scheduleOfflineTransition("heartbeat")
             }
             return
         }
@@ -350,6 +391,7 @@ class ConnectionViewModel @Inject constructor(
 
                     // UI state — gated by version
                     if (isLatest(version)) {
+                        cancelOfflineTransition()
                         connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = latencyMs)
                         handleReconnectionSuccess(version)
                     }
@@ -364,6 +406,7 @@ class ConnectionViewModel @Inject constructor(
                 is Result.Error -> {
                     Timber.w("⚠️ [Connection] Heartbeat: backend unreachable: ${result.exception?.message}")
                     if (isLatest(version)) {
+                        cancelOfflineTransition() // Internet confirmed — cancel pending NoInternet
                         if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
                         connectionStateManager.updateState(hasInternet = true, hasServer = false)
                         reconnectionAttempts++
@@ -375,6 +418,7 @@ class ConnectionViewModel @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ [Connection] Heartbeat failed")
             if (isLatest(version)) {
+                cancelOfflineTransition()
                 if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
                 connectionStateManager.updateState(hasInternet = true, hasServer = false)
                 reconnectionAttempts++
@@ -537,6 +581,8 @@ class ConnectionViewModel @Inject constructor(
         networkObserverJob = null
         reconnectedBannerJob?.cancel()
         reconnectedBannerJob = null
+        offlineTransitionJob?.cancel()
+        offlineTransitionJob = null
     }
 }
 

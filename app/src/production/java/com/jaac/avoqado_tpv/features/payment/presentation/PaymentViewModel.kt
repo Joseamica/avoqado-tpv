@@ -97,6 +97,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -182,7 +183,11 @@ class PaymentViewModel @Inject constructor(
     // 🔐 SecureStorage - For deviceSerialNumber (Terminal attribution for reports)
     private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
     // 📦 ModulesRepository - Detect SERIALIZED_INVENTORY for proof-of-sale UI
-    private val modulesRepository: ModulesRepository
+    private val modulesRepository: ModulesRepository,
+    // 🔄 ConnectionStateManager - Check network before merchant retry
+    private val connectionStateManager: com.jaac.avoqado_tpv.core.util.ConnectionStateManager,
+    // 🏪 MerchantRepository - Check fallback status and refresh merchants
+    private val merchantRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentState>(PaymentState.Idle)
@@ -1272,7 +1277,28 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
+     * Wait for network connectivity with timeout.
+     *
+     * Used before merchant refresh when fallback accounts are detected.
+     * Polls ConnectionStateManager every 500ms up to [timeoutMs].
+     *
+     * @return true if connected within timeout, false on timeout
+     */
+    private suspend fun awaitConnectivity(timeoutMs: Long): Boolean {
+        if (connectionStateManager.isFullyConnected()) return true
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            delay(500)
+            if (connectionStateManager.isFullyConnected()) return true
+        }
+        return false
+    }
+
+    /**
      * Helper function to proceed to merchant selection (handles auto-skip for single merchant)
+     *
+     * 🔄 SMART RETRY: If merchants are fallback (startup fetch failed), waits for connectivity
+     * and re-fetches from backend before showing the selection screen.
      *
      * 🥝 KIOSK MODE: When in kiosk mode with a configured default merchant,
      * automatically selects that merchant and starts payment immediately.
@@ -1281,6 +1307,59 @@ class PaymentViewModel @Inject constructor(
     private fun proceedToMerchantSelection(subtotal: String, tipAmount: String, totalAmount: String, rating: Int?) {
         viewModelScope.launch {
             awaitMerchantsLoaded()
+
+            // 🔄 SMART RETRY: Detect fallback merchants and attempt refresh
+            if (merchantRepository.isUsingFallback()) {
+                Timber.w("⚠️ [Payment Flow] Using fallback merchants - attempting refresh before payment")
+
+                // Show SelectingMerchant state with loading overlay
+                _state.value = PaymentState.SelectingMerchant(
+                    subtotal = subtotal,
+                    tipAmount = tipAmount,
+                    totalAmount = totalAmount,
+                    rating = rating
+                )
+                _merchantSwitchingLoading.value = true
+                _merchantSwitchMessage.value = "Verificando cuentas de pago..."
+
+                // Wait for network connectivity (SIM→WiFi transition typically 3-5s)
+                if (!connectionStateManager.isFullyConnected()) {
+                    _merchantSwitchMessage.value = "Esperando conexion..."
+                }
+                val hasConnection = awaitConnectivity(8_000)
+
+                if (!hasConnection) {
+                    _merchantSwitchingLoading.value = false
+                    _merchantSwitchMessage.value = null
+                    _state.value = PaymentState.Error(
+                        message = "Sin conexion a internet.\n\n" +
+                                "No se pudieron verificar las cuentas de pago. " +
+                                "Verifica tu conexion WiFi e intenta de nuevo.",
+                        context = createPaymentContext()
+                    )
+                    return@launch
+                }
+
+                // Fetch real merchants from backend
+                _merchantSwitchMessage.value = "Cargando cuentas de pago..."
+                val refreshResult = withContext(Dispatchers.IO) {
+                    merchantRepository.refreshMerchants()
+                }
+                _merchantSwitchingLoading.value = false
+                _merchantSwitchMessage.value = null
+
+                if (refreshResult.isFailure || merchantRepository.isUsingFallback()) {
+                    Timber.e("❌ [Payment Flow] Merchant refresh failed - still using fallback")
+                    _state.value = PaymentState.Error(
+                        message = "No se pudieron cargar las cuentas de pago.\n\n" +
+                                "Cierra y vuelve a abrir la app, o contacta al administrador.",
+                        context = createPaymentContext()
+                    )
+                    return@launch
+                }
+
+                Timber.i("✅ [Payment Flow] Merchants refreshed successfully - continuing payment flow")
+            }
 
             val merchants = _merchants.value
 
@@ -3897,6 +3976,10 @@ class PaymentViewModel @Inject constructor(
         // 📡 Clear socket payment source
         _paymentSource = null
         _socketRequestId = null
+
+        // 🔄 Clear merchant retry state (prevents stuck loading overlay)
+        _merchantSwitchingLoading.value = false
+        _merchantSwitchMessage.value = null
 
         updateSessionSnapshot(
             reason = "resetPayment",

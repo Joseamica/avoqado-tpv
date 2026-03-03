@@ -474,6 +474,7 @@ fun PaymentScreen(
                         merchants = merchants,
                         currentMerchant = currentMerchant,
                         merchantSwitchingLoading = merchantSwitchingLoading,
+                        merchantSwitchMessage = merchantSwitchMessage,
                         onSelectMerchant = { merchant ->
                             // ✅ FIX: Use updateSelectedMerchant for immediate visual selection
                             // (SDK switch happens later in startPayment if needed)

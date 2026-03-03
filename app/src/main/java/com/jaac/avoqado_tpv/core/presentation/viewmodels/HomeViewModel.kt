@@ -794,14 +794,9 @@ class HomeViewModel @Inject constructor(
     private fun retryFetchMerchantsAndReinitSDK() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val serialNumber = deviceInfoManager.getSerialNumber()
-                val configResult = terminalConfigRepository.fetchConfig(serialNumber)
-
-                configResult.onSuccess { (terminalInfo, merchantAccounts) ->
-                    Timber.i("✅ [HomeViewModel] Re-fetched ${merchantAccounts.size} merchants from backend")
-                    merchantRepository.updateMerchants(merchantAccounts)
-                    secureStorage.saveVenueType(terminalInfo.venueType)
-
+                val result = merchantRepository.refreshMerchants()
+                result.onSuccess {
+                    Timber.i("✅ [HomeViewModel] Merchants refreshed from backend")
                     // Re-init SDK with real merchants if it was initialized with fallback
                     Timber.i("🔧 [HomeViewModel] Re-initializing Blumon SDK with real merchants...")
                     initializeBlumonSDK()

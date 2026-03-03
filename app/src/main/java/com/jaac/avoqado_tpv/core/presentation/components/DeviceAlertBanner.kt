@@ -21,6 +21,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.AlertColor
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceAlert
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.getAlertColor
+import com.jaac.avoqado_tpv.core.util.NetworkType
 
 /**
  * Device Alert Banner
@@ -136,7 +137,7 @@ private fun AlertBannerRow(
         is DeviceAlert.PendingPayments -> Icons.Default.Sync
         is DeviceAlert.BatteryLow -> Icons.Default.Battery2Bar
         is DeviceAlert.StorageLow -> Icons.Default.Storage
-        is DeviceAlert.WeakWifi -> Icons.Default.SignalWifiStatusbarConnectedNoInternet4
+        is DeviceAlert.WeakWifi -> if (alert.networkType == NetworkType.CELLULAR) Icons.Default.SignalCellularAlt else Icons.Default.SignalWifiStatusbarConnectedNoInternet4
         is DeviceAlert.MemoryLow -> Icons.Default.Memory
     }
 

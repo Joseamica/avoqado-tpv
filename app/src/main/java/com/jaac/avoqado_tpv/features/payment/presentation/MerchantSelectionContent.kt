@@ -57,6 +57,7 @@ fun MerchantSelectionContent(
     merchants: List<MerchantAccount>,
     currentMerchant: MerchantAccount?,
     merchantSwitchingLoading: Boolean,
+    merchantSwitchMessage: String? = null,
     onSelectMerchant: (MerchantAccount) -> Unit,
     onStartPayment: () -> Unit,
     onStartCashPayment: () -> Unit,
@@ -65,7 +66,6 @@ fun MerchantSelectionContent(
     showCashOption: Boolean = true,  // 🥝 Show/hide cash button
     showCryptoOption: Boolean = false,  // 🪙 Show/hide crypto button (B4Bit)
     hideAccountSelector: Boolean = false,  // 🥝 KIOSK: Hide merchant list when default is pre-configured
-
 ) {
     // 💵 State for cash payment confirmation dialog
     var showCashConfirmationDialog by remember { mutableStateOf(false) }
@@ -390,10 +390,10 @@ fun MerchantSelectionContent(
             }
         }
 
-        // Loading overlay during merchant switch
+        // Loading overlay during merchant switch or fallback refresh
         if (merchantSwitchingLoading) {
             AvoqadoLoadingOverlay(
-                message = "Cambiando cuenta..."
+                message = merchantSwitchMessage ?: "Cambiando cuenta..."
             )
         }
 

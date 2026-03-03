@@ -8,6 +8,7 @@ import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
 import com.jaac.avoqado_tpv.core.util.DeviceHealthMonitor
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
+import com.jaac.avoqado_tpv.core.util.NetworkType
 import com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
 import com.jaac.avoqado_tpv.core.util.SimulatedAlertsManager
 import com.jaac.avoqado_tpv.core.util.UpdateCheckManager
@@ -328,10 +329,12 @@ class DeviceHealthViewModel @Inject constructor(
             alerts.add(DeviceAlert.StorageLow(health.storageAvailableGB))
         }
 
-        // P5: WiFi weak (only if connected)
-        if (networkInfo.isConnected && networkInfo.signalStrength != null) {
-            if (networkInfo.signalStrength in 0..1) {
-                alerts.add(DeviceAlert.WeakWifi(networkInfo.signalStrength))
+        // P5: Weak signal (WiFi or cellular, not ethernet)
+        if (networkInfo.isConnected && networkInfo.signalStrength != null && networkInfo.signalStrength in 0..1) {
+            when (networkInfo.type) {
+                NetworkType.WIFI -> alerts.add(DeviceAlert.WeakWifi(networkInfo.signalStrength, NetworkType.WIFI))
+                NetworkType.CELLULAR -> alerts.add(DeviceAlert.WeakWifi(networkInfo.signalStrength, NetworkType.CELLULAR))
+                else -> { /* Ethernet/Other — no signal alert */ }
             }
         }
 
@@ -510,8 +513,14 @@ sealed class DeviceAlert(
      * WiFi weak (signal 0-1 out of 4) - May cause slow/failed requests
      * Payments may timeout
      */
-    data class WeakWifi(val signalStrength: Int) : DeviceAlert(5, DeviceAlertType.WEAK_WIFI) {
-        val message: String get() = "Señal WiFi débil"
+    data class WeakWifi(
+        val signalStrength: Int,
+        val networkType: NetworkType = NetworkType.WIFI
+    ) : DeviceAlert(5, DeviceAlertType.WEAK_WIFI) {
+        val message: String get() = when (networkType) {
+            NetworkType.CELLULAR -> "Señal celular débil"
+            else -> "Señal WiFi débil"
+        }
         val description: String get() = "Los pagos pueden ser lentos"
     }
 

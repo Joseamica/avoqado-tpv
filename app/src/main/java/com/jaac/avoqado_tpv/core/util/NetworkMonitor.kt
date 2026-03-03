@@ -149,8 +149,9 @@ class NetworkMonitor @Inject constructor(
     private fun getSignalStrength(capabilities: NetworkCapabilities): Int? {
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // Use signal strength API on Android 10+
                 val signalStrength = capabilities.signalStrength
+                // SIGNAL_STRENGTH_UNSPECIFIED = Integer.MIN_VALUE — not available for this transport
+                if (signalStrength == Int.MIN_VALUE) return null
                 when {
                     signalStrength >= -50 -> 4 // Excellent
                     signalStrength >= -60 -> 3 // Good

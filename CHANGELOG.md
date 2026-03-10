@@ -9,6 +9,14 @@
 
 ---
 
+## [1.8.1] - 2026-03-09
+
+### **Changed**
+
+- **AID-based brand detection for contactless payments**: Per Edgardo's recommendation ("Tendrías que considerar hacer este ajuste por AID, si intentas detectarlas manualmente puede implicar que mandes mal algún tag por marca"), contactless brand detection now uses AID (tag 0x4F) as primary method instead of PAN prefix. AID prefix maps directly to contactless kernel: `A000000004`=Mastercard(K2), `A000000003`=Visa(K3), `A000000025`=AMEX(K4). PAN-based detection kept as fallback if AID is unavailable. Applied to both sandbox and production variants
+
+---
+
 ## [1.8.0] - 2026-03-09
 
 ### **Added**

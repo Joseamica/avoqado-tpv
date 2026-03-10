@@ -3147,9 +3147,30 @@ class PaymentViewModel @Inject constructor(
         try {
             Timber.i("[CONTACTLESS ONLINE] Starting online authorization flow...")
 
-            // PASO 1: Extract Track2 FIRST to detect card brand for brand-specific tag list
+            // PASO 1a: Extract AID (tag 0x4F) for reliable brand detection
+            // Per Edgardo (2026-03-09): "Tendrías que considerar hacer este ajuste por AID"
+            // AID prefix maps directly to contactless kernel: A000000004=MC(K2), A000000003=Visa(K3), A000000025=AMEX(K4)
             _state.value = PaymentState.Processing("Leyendo datos de la tarjeta contactless...")
-            Timber.i("[CONTACTLESS ONLINE PHASE 1] Extracting Track2 to detect card brand...")
+            Timber.i("[CONTACTLESS ONLINE PHASE 1a] Extracting AID (0x4F) for brand detection...")
+
+            val aidParams = GetTagValueParams(
+                tag = 0x4F,  // Application Identifier (AID)
+                cardTech = CardTech.CONTACTLESS
+            )
+            val aidResult = getTagValueUseCase.run(aidParams)
+            val aid = if (aidResult.isRight) {
+                aidResult.rightValue().tagValue ?: ""
+            } else {
+                ""
+            }
+            if (aid.isNotEmpty()) {
+                Timber.i("   ✅ AID extracted: $aid")
+            } else {
+                Timber.w("   ⚠️ AID not available - will fall back to PAN-based detection")
+            }
+
+            // PASO 1b: Extract Track2 (still needed for SaleCtls authorization call)
+            Timber.i("[CONTACTLESS ONLINE PHASE 1b] Extracting Track2 (0x57)...")
 
             val track2Params = GetTagValueParams(
                 tag = 0x57,
@@ -3166,16 +3187,18 @@ class PaymentViewModel @Inject constructor(
                 track2Override = track2
             )
 
-            // Detect card brand from PAN (Track2 format: PAN + 'D' + expiry + service code + ...)
+            // Brand detection: AID-based (preferred) with PAN fallback
+            val aidBrand = if (aid.isNotEmpty()) detectCardBrandFromAid(aid) else CardBrand.UNKNOWN
             val pan = if (track2.isNotEmpty()) track2.split("D", "=").firstOrNull() ?: "" else ""
-            val contactlessBrand = if (pan.isNotEmpty()) detectCardBrand(pan) else CardBrand.UNKNOWN
+            val panBrand = if (pan.isNotEmpty()) detectCardBrand(pan) else CardBrand.UNKNOWN
+            val contactlessBrand = if (aidBrand != CardBrand.UNKNOWN) aidBrand else panBrand
 
             if (track2.isNotEmpty()) {
                 Timber.i("   ✅ Track2 extracted: ${track2.take(16)}... (length: ${track2.length})")
-                Timber.i("   🏷️ [CONTACTLESS] Card brand: $contactlessBrand (PAN prefix: ${pan.take(6)})")
             } else {
-                Timber.w("   ⚠️ Track2 not found - using default Visa/MC tag list")
+                Timber.w("   ⚠️ Track2 not found")
             }
+            Timber.i("   🏷️ [CONTACTLESS] Brand detection: AID=$aidBrand, PAN=$panBrand → using: $contactlessBrand")
 
             // PASO 2: Build brand-specific EMV tag list (per Edgardo's specification 2026-03-09)
             // Each contactless kernel (K2=MC, K3=Visa, K4=AMEX) requires different EMV tags.
@@ -5836,6 +5859,22 @@ class PaymentViewModel @Inject constructor(
      * @param pan Full PAN
      * @return CardBrand enum
      */
+    /**
+     * Detect card brand from AID (Application Identifier) — preferred for contactless.
+     * AID prefix directly maps to the contactless kernel used.
+     * Per Edgardo (2026-03-09): "Tendrías que considerar hacer este ajuste por AID"
+     */
+    private fun detectCardBrandFromAid(aid: String): CardBrand {
+        if (aid.length < 10) return CardBrand.UNKNOWN
+        val aidUpper = aid.uppercase()
+        return when {
+            aidUpper.startsWith("A000000004") -> CardBrand.MASTERCARD  // K2
+            aidUpper.startsWith("A000000003") -> CardBrand.VISA        // K3
+            aidUpper.startsWith("A000000025") -> CardBrand.AMEX        // K4
+            else -> CardBrand.UNKNOWN
+        }
+    }
+
     private fun detectCardBrand(pan: String): CardBrand {
         if (pan.length < 4) return CardBrand.UNKNOWN
 

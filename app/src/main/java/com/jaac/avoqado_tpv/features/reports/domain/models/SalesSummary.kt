@@ -29,6 +29,17 @@ data class WaiterTip(
     val count: Int
 )
 
+/**
+ * Per-staff sales breakdown
+ */
+data class StaffSales(
+    val staffId: String,
+    val name: String,
+    val totalSales: BigDecimal,
+    val totalOrders: Int,
+    val totalTips: BigDecimal
+)
+
 data class SalesSummary(
     val totalSales: BigDecimal,
     val totalOrders: Int,
@@ -39,7 +50,8 @@ data class SalesSummary(
     val averageProductsPerOrder: BigDecimal,
     val averageTipPercentage: BigDecimal = BigDecimal.ZERO,
     val ratingsCount: Int = 0,
-    val waiterTips: List<WaiterTip> = emptyList()
+    val waiterTips: List<WaiterTip> = emptyList(),
+    val staffSales: List<StaffSales> = emptyList()
 ) {
     companion object {
         /**

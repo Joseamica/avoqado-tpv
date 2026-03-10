@@ -9,6 +9,25 @@
 
 ---
 
+## [1.8.0] - 2026-03-09
+
+### **Added**
+
+- **Per-staff sales filter in Reports**: New staff filter chips in Summary tab allow multi-select filtering by staff member. "Ventas por Usuario" breakdown section shows each staff member's total sales, order count, and tips — sorted by highest sales. Metric cards (Ventas, Órdenes, Ticket Promedio) recalculate when staff filter is active. Print option "Ventas por usuario" includes per-staff breakdown on thermal receipt. Graceful degradation when backend doesn't provide `staffSales` data (old backend versions)
+- **Backend `staffSales` in shifts-summary**: New `staffSales` array in `/tpv/venues/:id/shifts-summary` response tracks per-staff total sales, order count, and tips from both shift and orphan payments. Backward compatible — old TPV versions ignore the new field
+
+### **Fixed**
+
+- **Contactless payments registering as "chip" in Blumon**: Root cause found by decompiling Blumon SDK: `SaleIccUseCase` hardcodes `entryMode = EntryMode.CHIP`, while `SaleCtlsUseCase` hardcodes `entryMode = EntryMode.CONTACTLESS`. We were calling `SaleIccUseCase` for ALL transactions (both chip and contactless), so Blumon's platform always saw "chip". Fix: inject `SaleCtlsUseCase` in PaymentViewModel, add `isContactless` flag to `performOnlineAuthorization()`, use `SaleCtlsUseCase` + `SaleCtlsParams` for contactless payments. `SaleCtlsResponse` is converted to `SaleIccResponse` (identical structure) so all downstream code works unchanged. Also includes brand-specific contactless EMV tag lists per Edgardo's specification: Visa K3 / Mastercard K2 with 0x9F6E (Form Factor), AMEX K4 with 0x9F71/0x9F67 (different CVM/Form Factor tags). Track2 extracted first to detect card brand, then kernel-specific tag list applied. Both sandbox and production variants synced
+- **Permission errors silently swallowed on shift operations**: ShiftViewModel used fragile string matching on `exception.message` and had no 403 case — users without `shifts:create` permission saw generic "Error al procesar la solicitud" instead of a permission error. Rewrote `translateError()` to use `ApiException` type matching (HttpError, PermissionDenied, NetworkError). Added proactive permission checks via `PermissionsRepository` with `canOpenShift`/`canCloseShift` StateFlows — buttons are disabled with red helper text when user lacks permission. Guards in `openShift()`/`closeShift()` provide fallback error if button is somehow clicked
+- **403 errors unhandled in OrderRepositoryImpl**: All `when (response.code())` blocks in OrderRepositoryImpl (compItems, voidItems, applyDiscount, createOrder, addItemsToOrder, removeOrderItem, updateGuest, customer operations) had cases for 400/401/404/500 but NOT 403. Added 403 case to all 10 error handling blocks with specific permission-denied messages in Spanish
+- **Comp/discount/guest operations fail silently in MenuViewModel**: `compItems()`, `applyDiscount()`, and `updateGuest()` had `// TODO Step 10: Show error/success Snackbar` comments instead of actual snackbar emissions. Replaced all 9 TODO comments with proper `MenuUiEvent.ShowSnackbar` emissions for success, failure, and exception cases — matching the pattern already used by `voidItems()`
+- **Shift state not updating on WelcomeScreen after closing shift**: WelcomeScreen and ShiftScreen use separate `ShiftViewModel` instances (Hilt scoped to NavBackStackEntry). When a shift was closed in ShiftScreen, WelcomeScreen's ViewModel retained stale state. Added `shiftViewModel.loadCurrentShift()` to the existing `ON_RESUME` lifecycle observer alongside salesGoal and attendance refresh
+- **Switch toggle invisible in dark mode (Reports)**: All `Switch` components in Reports (print dialog, comparison toggle, historical print dialog) used default colors where the unchecked thumb was invisible against dark backgrounds. Applied explicit `SwitchDefaults.colors()` with `onSurfaceVariant`/`surfaceVariant` for unchecked state
+- **Dashboard data not loading after cold start without network**: Several HomeViewModel init tasks (`fetchAttendanceState`, `fetchSalesGoal`, `warmUpProductCache`) make API calls on startup, but if the network is down (e.g., DNS not yet resolved), they fail silently and never retry. When connection is restored, `listenForConnectionRestored()` re-fetched merchants, updates, and payments — but NOT attendance, sales goals, or product cache. Added all three to the connection restored handler so they load automatically once network recovers, without requiring a manual pull-to-refresh. Also added `skipDelay` parameter to `warmUpProductCache()` to avoid unnecessary 3s stagger delay on retry
+
+---
+
 ## [1.7.9] - 2026-03-03
 
 ### **Changed**

@@ -248,7 +248,8 @@ fun KioskStaffAssignDialog(
                                                         staffId = response.staffId,
                                                         staffName = response.staff.displayName,
                                                         staffInitials = KioskStaffSession.generateInitials(response.staff.displayName),
-                                                        role = role
+                                                        role = role,
+                                                        roleDisplayName = response.roleDisplayName
                                                     )
                                                     onStaffAssigned(session)
                                                 } else {

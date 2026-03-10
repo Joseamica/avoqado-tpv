@@ -1810,16 +1810,16 @@ class MenuViewModel @Inject constructor(
                     onSuccess = { updatedOrder ->
                         updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts
                         Timber.d("✅ Guest info updated successfully")
-                        // TODO Step 10: Show success Snackbar
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar("Información del cliente actualizada", isError = false))
                     },
                     onFailure = { error ->
                         Timber.e(error, "❌ Error updating guest info")
-                        // TODO Step 10: Show error Snackbar
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar("Error al actualizar cliente: ${error.message}", isError = true))
                     }
                 )
             } catch (e: Exception) {
                 Timber.e(e, "❌ Error updating guest info")
-                // TODO Step 10: Show error Snackbar
+                _uiEvents.emit(MenuUiEvent.ShowSnackbar("Error inesperado: ${e.message}", isError = true))
             }
         }
     }
@@ -1875,16 +1875,16 @@ class MenuViewModel @Inject constructor(
                     onSuccess = { updatedOrder ->
                         updateStateWithOrder(updatedOrder)  // 🔄 CRITICAL: Comp adds discount!
                         Timber.d("✅ Items comped successfully")
-                        // TODO Step 10: Show success Snackbar
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar("Cortesía aplicada exitosamente", isError = false))
                     },
                     onFailure = { error ->
                         Timber.e(error, "❌ Error comping items")
-                        // TODO Step 10: Show error Snackbar
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar("Error al aplicar cortesía: ${error.message}", isError = true))
                     }
                 )
             } catch (e: Exception) {
                 Timber.e(e, "❌ Error comping items")
-                // TODO Step 10: Show error Snackbar
+                _uiEvents.emit(MenuUiEvent.ShowSnackbar("Error inesperado: ${e.message}", isError = true))
             }
         }
     }
@@ -2107,16 +2107,16 @@ class MenuViewModel @Inject constructor(
                     onSuccess = { updatedOrder ->
                         updateStateWithOrder(updatedOrder)  // 🔄 Syncs _appliedDiscounts
                         Timber.d("✅ Discount applied successfully")
-                        // TODO Step 10: Show success Snackbar
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar("Descuento aplicado exitosamente", isError = false))
                     },
                     onFailure = { error ->
                         Timber.e(error, "❌ Error applying discount")
-                        // TODO Step 10: Show error Snackbar
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar("Error al aplicar descuento: ${error.message}", isError = true))
                     }
                 )
             } catch (e: Exception) {
                 Timber.e(e, "❌ Error applying discount")
-                // TODO Step 10: Show error Snackbar
+                _uiEvents.emit(MenuUiEvent.ShowSnackbar("Error inesperado: ${e.message}", isError = true))
             }
         }
     }

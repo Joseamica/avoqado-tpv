@@ -20,7 +20,7 @@ import retrofit2.http.Path
  * Retrofit service interface for table management endpoints.
  *
  * **Base URL:** https://api.avoqado.io/api/v1/ (production)
- *              https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/ (development)
+ *              https://humane-immortal-pika.ngrok-free.app/api/v1/ (development)
  *
  * **Authentication:** All requests require Bearer token in header.
  * ```

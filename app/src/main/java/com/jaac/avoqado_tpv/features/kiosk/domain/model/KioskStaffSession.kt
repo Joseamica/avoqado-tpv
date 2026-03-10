@@ -26,7 +26,8 @@ data class KioskStaffSession(
     val staffId: String,
     val staffName: String,
     val staffInitials: String,
-    val role: StaffRole
+    val role: StaffRole,
+    val roleDisplayName: String? = null
 ) {
     companion object {
         /**

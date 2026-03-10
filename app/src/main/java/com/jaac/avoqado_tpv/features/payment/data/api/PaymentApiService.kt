@@ -16,7 +16,7 @@ import retrofit2.http.Path
  * Retrofit service interface para payment endpoints del backend.
  *
  * **Base URL:** https://api.avoqado.io/api/v1/ (producción)
- *              https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/ (desarrollo)
+ *              https://humane-immortal-pika.ngrok-free.app/api/v1/ (desarrollo)
  *
  * **Autenticación:** Todas las requests requieren Bearer token en header.
  * ```

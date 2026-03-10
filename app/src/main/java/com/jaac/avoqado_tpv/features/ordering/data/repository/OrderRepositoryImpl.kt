@@ -242,8 +242,9 @@ class OrderRepositoryImpl @Inject constructor(
                 }
             } else {
                 val errorMessage = when (response.code()) {
-                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
                     400 -> "Solicitud inválida. Verifica los datos de la orden."
+                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    403 -> "No tienes permiso para crear órdenes. Contacta a tu administrador."
                     500 -> "Error del servidor. Por favor intenta nuevamente."
                     else -> "Error al crear orden: ${response.code()}"
                 }
@@ -363,8 +364,9 @@ class OrderRepositoryImpl @Inject constructor(
                     Result.failure(ConflictException(serverVersion = "unknown", message = "La orden fue modificada por otra terminal."))
                 } else {
                     val errorMessage = when (response.code()) {
-                        401 -> "No autorizado. Por favor inicia sesión nuevamente."
                         400 -> "Solicitud inválida. Verifica los productos seleccionados."
+                        401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                        403 -> "No tienes permiso para modificar esta orden."
                         404 -> "Orden no encontrada."
                         500 -> "Error del servidor. Por favor intenta nuevamente."
                         else -> "Error al agregar items: ${response.code()}"
@@ -412,8 +414,9 @@ class OrderRepositoryImpl @Inject constructor(
                     Result.failure(ConflictException(serverVersion = "unknown", message = "La orden fue modificada por otra terminal."))
                 } else {
                     val errorMessage = when (response.code()) {
-                        401 -> "No autorizado. Por favor inicia sesión nuevamente."
                         400 -> "La orden ya está pagada y no puede modificarse."
+                        401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                        403 -> "No tienes permiso para eliminar items."
                         404 -> "Orden o item no encontrado."
                         500 -> "Error del servidor. Por favor intenta nuevamente."
                         else -> "Error al eliminar item: ${response.code()}"
@@ -511,6 +514,7 @@ class OrderRepositoryImpl @Inject constructor(
             } else {
                 val errorMessage = when (response.code()) {
                     401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    403 -> "No tienes permiso para modificar esta orden."
                     404 -> "Orden no encontrada."
                     500 -> "Error del servidor. Por favor intenta nuevamente."
                     else -> "Error al actualizar información del cliente: ${response.code()}"
@@ -563,8 +567,9 @@ class OrderRepositoryImpl @Inject constructor(
                 }
             } else {
                 val errorMessage = when (response.code()) {
-                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
                     400 -> "La orden ya está pagada y no puede modificarse."
+                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    403 -> "No tienes permiso para aplicar cortesías. Contacta a tu administrador."
                     404 -> "Orden no encontrada."
                     500 -> "Error del servidor. Por favor intenta nuevamente."
                     else -> "Error al aplicar cortesía: ${response.code()}"
@@ -620,8 +625,9 @@ class OrderRepositoryImpl @Inject constructor(
                     Result.failure(ConflictException(serverVersion = "unknown", message = "La orden fue modificada por otra terminal."))
                 } else {
                     val errorMessage = when (response.code()) {
-                        401 -> "No autorizado. Por favor inicia sesión nuevamente."
                         400 -> "La orden ya está pagada y no puede modificarse."
+                        401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                        403 -> "No tienes permiso para anular items. Contacta a tu administrador."
                         404 -> "Orden no encontrada."
                         500 -> "Error del servidor. Por favor intenta nuevamente."
                         else -> "Error al anular items: ${response.code()}"
@@ -684,8 +690,9 @@ class OrderRepositoryImpl @Inject constructor(
                     Result.failure(ConflictException(serverVersion = "unknown", message = "La orden fue modificada por otra terminal."))
                 } else {
                     val errorMessage = when (response.code()) {
-                        401 -> "No autorizado. Por favor inicia sesión nuevamente."
                         400 -> "Descuento inválido. Verifica el valor ingresado."
+                        401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                        403 -> "No tienes permiso para aplicar descuentos. Contacta a tu administrador."
                         404 -> "Orden no encontrada."
                         500 -> "Error del servidor. Por favor intenta nuevamente."
                         else -> "Error al aplicar descuento: ${response.code()}"
@@ -732,6 +739,7 @@ class OrderRepositoryImpl @Inject constructor(
             } else {
                 val errorMessage = when (response.code()) {
                     401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    403 -> "No tienes permiso para ver esta orden."
                     404 -> "Orden no encontrada."
                     500 -> "Error del servidor. Por favor intenta nuevamente."
                     else -> "Error al obtener clientes: ${response.code()}"
@@ -775,6 +783,7 @@ class OrderRepositoryImpl @Inject constructor(
             } else {
                 val errorMessage = when (response.code()) {
                     401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    403 -> "No tienes permiso para modificar esta orden."
                     404 -> "Orden o cliente no encontrado."
                     409 -> "Este cliente ya está agregado a la orden."
                     500 -> "Error del servidor. Por favor intenta nuevamente."
@@ -818,6 +827,7 @@ class OrderRepositoryImpl @Inject constructor(
             } else {
                 val errorMessage = when (response.code()) {
                     401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    403 -> "No tienes permiso para modificar esta orden."
                     404 -> "Orden o cliente no encontrado."
                     500 -> "Error del servidor. Por favor intenta nuevamente."
                     else -> "Error al quitar cliente: ${response.code()}"
@@ -866,8 +876,9 @@ class OrderRepositoryImpl @Inject constructor(
                 }
             } else {
                 val errorMessage = when (response.code()) {
-                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
                     400 -> "Se requiere al menos nombre, teléfono o email."
+                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    403 -> "No tienes permiso para modificar esta orden."
                     404 -> "Orden no encontrada."
                     500 -> "Error del servidor. Por favor intenta nuevamente."
                     else -> "Error al crear cliente: ${response.code()}"

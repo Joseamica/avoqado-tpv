@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.reports.data.dto
 import com.google.gson.annotations.SerializedName
 import com.jaac.avoqado_tpv.features.reports.domain.models.PaymentMethodBreakdown
 import com.jaac.avoqado_tpv.features.reports.domain.models.SalesSummary
+import com.jaac.avoqado_tpv.features.reports.domain.models.StaffSales
 import com.jaac.avoqado_tpv.features.reports.domain.models.WaiterTip
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -22,7 +23,8 @@ data class ShiftsSummaryData(
     @SerializedName("summary") val summary: SummaryDto,
     @SerializedName("paymentMethods") val paymentMethods: List<PaymentMethodDto>,
     @SerializedName("waiterTips") val waiterTips: List<WaiterTipDto>? = null,
-    @SerializedName("salesTrend") val salesTrend: List<SalesTrendPointDto>? = null
+    @SerializedName("salesTrend") val salesTrend: List<SalesTrendPointDto>? = null,
+    @SerializedName("staffSales") val staffSales: List<StaffSalesDto>? = null
 )
 
 data class SummaryDto(
@@ -44,6 +46,14 @@ data class WaiterTipDto(
     @SerializedName("name") val name: String,
     @SerializedName("amount") val amount: Double,
     @SerializedName("count") val count: Int
+)
+
+data class StaffSalesDto(
+    @SerializedName("staffId") val staffId: String,
+    @SerializedName("name") val name: String,
+    @SerializedName("totalSales") val totalSales: Double,
+    @SerializedName("totalOrders") val totalOrders: Int,
+    @SerializedName("totalTips") val totalTips: Double
 )
 
 data class SalesTrendPointDto(
@@ -74,6 +84,16 @@ fun ShiftsSummaryData.toSalesSummary(): SalesSummary {
         )
     } ?: emptyList()
 
+    val mappedStaffSales = staffSales?.map { ss ->
+        StaffSales(
+            staffId = ss.staffId,
+            name = ss.name,
+            totalSales = BigDecimal.valueOf(ss.totalSales),
+            totalOrders = ss.totalOrders,
+            totalTips = BigDecimal.valueOf(ss.totalTips)
+        )
+    } ?: emptyList()
+
     return SalesSummary(
         totalSales = totalSales,
         totalOrders = totalOrders,
@@ -84,7 +104,8 @@ fun ShiftsSummaryData.toSalesSummary(): SalesSummary {
         averageProductsPerOrder = BigDecimal.ZERO,
         averageTipPercentage = BigDecimal.valueOf(summary.averageTipPercentage),
         ratingsCount = summary.ratingsCount ?: 0,
-        waiterTips = mappedWaiterTips
+        waiterTips = mappedWaiterTips,
+        staffSales = mappedStaffSales
     )
 }
 

@@ -10,6 +10,7 @@ import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.ConnectionRestoredEvent
 import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
@@ -47,6 +48,7 @@ class ShiftViewModelTest {
     private lateinit var connectionEventManager: ConnectionEventManager
     private lateinit var cachedShiftDao: CachedShiftDao
     private lateinit var connectivityObserver: ConnectivityObserver
+    private lateinit var permissionsRepository: PermissionsRepository
 
     // Flows we control
     private val fakeConnectionRestoredEvents = MutableSharedFlow<ConnectionRestoredEvent>()
@@ -80,6 +82,7 @@ class ShiftViewModelTest {
         connectionEventManager = mockk(relaxed = true)
         cachedShiftDao = mockk(relaxed = true)
         connectivityObserver = mockk(relaxed = true)
+        permissionsRepository = mockk(relaxed = true)
 
         // Default returns
         every { secureStorage.getVenueId() } returns "venue-123"
@@ -87,6 +90,10 @@ class ShiftViewModelTest {
         every { secureStorage.isShiftSystemEnabled() } returns true
         every { connectionEventManager.connectionRestoredEvents } returns fakeConnectionRestoredEvents
         every { connectivityObserver.observe() } returns fakeNetworkStatus
+
+        // Default permissions: all allowed
+        coEvery { permissionsRepository.hasPermission("shifts:create") } returns true
+        coEvery { permissionsRepository.hasPermission("shifts:close") } returns true
 
         // Default: no active shift
         coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(null)
@@ -104,7 +111,8 @@ class ShiftViewModelTest {
             secureStorage = secureStorage,
             connectionEventManager = connectionEventManager,
             cachedShiftDao = cachedShiftDao,
-            connectivityObserver = connectivityObserver
+            connectivityObserver = connectivityObserver,
+            permissionsRepository = permissionsRepository
         )
     }
 

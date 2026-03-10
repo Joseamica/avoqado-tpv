@@ -242,11 +242,11 @@ class HomeViewModel @Inject constructor(
      *
      * Solves: "Skipped 40+ frames" delay on Quick Order click.
      */
-    private fun warmUpProductCache() {
+    private fun warmUpProductCache(skipDelay: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 // Stagger: wait for critical coroutines + Blumon SDK to settle
-                delay(3_000)
+                if (!skipDelay) delay(3_000)
 
                 val start = System.currentTimeMillis()
                 Timber.d("[PERF] HomeVM.warmUpProductCache START")
@@ -764,6 +764,11 @@ class HomeViewModel @Inject constructor(
                     Timber.i("🔄 [HomeViewModel] Merchants are fallback - re-fetching from backend...")
                     retryFetchMerchantsAndReinitSDK()
                 }
+
+                // Re-fetch data that may have failed during init due to no connection
+                fetchAttendanceState()
+                fetchSalesGoal(skipDelay = true)
+                warmUpProductCache(skipDelay = true)
 
                 // Re-check for updates (in case initial check failed due to no connection)
                 // Only if there's no pending update already

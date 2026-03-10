@@ -92,6 +92,13 @@ class ReportsViewModel @Inject constructor(
     // Note: Cache keys don't include comparison flag - cache is only for non-comparison periods
     private val reportsCache = mutableMapOf<PeriodType, ReportsState.Success>()
 
+    // Staff filter for per-staff sales breakdown
+    private val _selectedStaffIds = MutableStateFlow<Set<String>>(emptySet())
+    val selectedStaffIds: StateFlow<Set<String>> = _selectedStaffIds.asStateFlow()
+
+    private val _filteredSummary = MutableStateFlow<SalesSummary?>(null)
+    val filteredSummary: StateFlow<SalesSummary?> = _filteredSummary.asStateFlow()
+
     // ══════════════════════════════════════════════════════════════════════
     // STATE - HISTORY TAB (new historical trends functionality)
     // ══════════════════════════════════════════════════════════════════════
@@ -251,6 +258,9 @@ class ReportsViewModel @Inject constructor(
 
                 _state.value = successState
 
+                // Reset staff filter when period changes
+                clearStaffFilter()
+
                 // Store in cache (only for non-comparison periods)
                 if (period.previousPeriodStart == null) {
                     reportsCache[period.type] = successState
@@ -378,6 +388,68 @@ class ReportsViewModel @Inject constructor(
         }
 
         loadReports(periodToLoad)
+    }
+
+    /**
+     * Toggle staff selection for per-staff sales filter.
+     * Multi-select: adds if not present, removes if already selected.
+     */
+    fun toggleStaffSelection(staffId: String) {
+        val current = _selectedStaffIds.value.toMutableSet()
+        if (current.contains(staffId)) {
+            current.remove(staffId)
+        } else {
+            current.add(staffId)
+        }
+        _selectedStaffIds.value = current
+        recalculateFilteredSummary()
+    }
+
+    /**
+     * Clear all staff filters — show aggregate data again
+     */
+    fun clearStaffFilter() {
+        _selectedStaffIds.value = emptySet()
+        _filteredSummary.value = null
+    }
+
+    /**
+     * Recalculate filtered summary based on selected staff IDs.
+     * Aggregates selected staff's sales into a modified SalesSummary.
+     */
+    private fun recalculateFilteredSummary() {
+        val currentState = _state.value
+        if (currentState !is ReportsState.Success) return
+
+        val selectedIds = _selectedStaffIds.value
+        if (selectedIds.isEmpty()) {
+            _filteredSummary.value = null
+            return
+        }
+
+        val selectedStaff = currentState.summary.staffSales.filter { it.staffId in selectedIds }
+        if (selectedStaff.isEmpty()) {
+            _filteredSummary.value = null
+            return
+        }
+
+        val filteredTotalSales = selectedStaff.fold(BigDecimal.ZERO) { acc, s -> acc + s.totalSales }
+        val filteredTotalOrders = selectedStaff.sumOf { it.totalOrders }
+        val filteredTotalTips = selectedStaff.fold(BigDecimal.ZERO) { acc, s -> acc + s.totalTips }
+        val filteredAvgOrder = if (filteredTotalOrders > 0) {
+            filteredTotalSales.divide(BigDecimal(filteredTotalOrders), 2, java.math.RoundingMode.HALF_UP)
+        } else BigDecimal.ZERO
+        val filteredAvgTipPct = if (filteredTotalSales > BigDecimal.ZERO) {
+            filteredTotalTips.divide(filteredTotalSales, 4, java.math.RoundingMode.HALF_UP) * BigDecimal(100)
+        } else BigDecimal.ZERO
+
+        _filteredSummary.value = currentState.summary.copy(
+            totalSales = filteredTotalSales,
+            totalOrders = filteredTotalOrders,
+            totalTips = filteredTotalTips,
+            averageOrderValue = filteredAvgOrder,
+            averageTipPercentage = filteredAvgTipPct
+        )
     }
 
     /**
@@ -603,7 +675,8 @@ class ReportsViewModel @Inject constructor(
      */
     fun printReport(
         includeWaiterTips: Boolean = false,
-        includeRatings: Boolean = false
+        includeRatings: Boolean = false,
+        includeStaffSales: Boolean = false
     ) {
         val currentState = _state.value
 
@@ -669,6 +742,31 @@ class ReportsViewModel @Inject constructor(
 
                 val ratings = if (includeRatings) currentState.summary.ratingsCount else null
 
+                // Staff sales (optional)
+                val staffSalesPrint = if (includeStaffSales && currentState.summary.staffSales.isNotEmpty()) {
+                    val displaySummary = _filteredSummary.value ?: currentState.summary
+                    val staffToShow = if (_selectedStaffIds.value.isNotEmpty()) {
+                        displaySummary.staffSales.filter { it.staffId in _selectedStaffIds.value }
+                    } else {
+                        currentState.summary.staffSales
+                    }
+                    staffToShow.map { ss ->
+                        com.jaac.avoqado_tpv.core.printer.PrinterManager.StaffSalesPrint(
+                            name = ss.name,
+                            totalSales = ss.totalSales.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString(),
+                            totalOrders = ss.totalOrders,
+                            totalTips = ss.totalTips.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()
+                        )
+                    }
+                } else null
+
+                val staffFilterLabel = if (includeStaffSales && _selectedStaffIds.value.isNotEmpty()) {
+                    val names = currentState.summary.staffSales
+                        .filter { it.staffId in _selectedStaffIds.value }
+                        .joinToString(", ") { it.name }
+                    "Filtrado: $names"
+                } else null
+
                 // Get venue name (optional)
                 val venueName = secureStorage.getVenueName()
 
@@ -692,7 +790,9 @@ class ReportsViewModel @Inject constructor(
                     totalTips = totalTips,
                     averageTipPercentage = avgTipPct,
                     waiterTips = waiterTipsPrint,
-                    ratingsCount = ratings
+                    ratingsCount = ratings,
+                    staffSales = staffSalesPrint,
+                    staffFilterLabel = staffFilterLabel
                 )
 
                 when {

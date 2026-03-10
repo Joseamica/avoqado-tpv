@@ -5,10 +5,12 @@ import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.local.dao.CachedShiftDao
 import com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity
+import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -58,7 +60,8 @@ class ShiftViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val connectionEventManager: ConnectionEventManager,
     private val cachedShiftDao: CachedShiftDao,
-    private val connectivityObserver: ConnectivityObserver
+    private val connectivityObserver: ConnectivityObserver,
+    private val permissionsRepository: PermissionsRepository
 ) : ViewModel() {
 
     // ══════════════════════════════════════════════════════════════════════
@@ -89,6 +92,13 @@ class ShiftViewModel @Inject constructor(
     private val _isShiftSystemEnabled = MutableStateFlow(true)
     val isShiftSystemEnabled: StateFlow<Boolean> = _isShiftSystemEnabled.asStateFlow()
 
+    // Permission states
+    private val _canOpenShift = MutableStateFlow(true)
+    val canOpenShift: StateFlow<Boolean> = _canOpenShift.asStateFlow()
+
+    private val _canCloseShift = MutableStateFlow(true)
+    val canCloseShift: StateFlow<Boolean> = _canCloseShift.asStateFlow()
+
     // ══════════════════════════════════════════════════════════════════════
     // INITIALIZATION
     // ══════════════════════════════════════════════════════════════════════
@@ -96,6 +106,7 @@ class ShiftViewModel @Inject constructor(
     init {
         timber.log.Timber.d("[PERF] ShiftVM.init START at ${System.currentTimeMillis()}ms")
         refreshSettings()
+        refreshShiftPermissions()
         loadCurrentShift()
         listenToConnectionRestored()
         observeConnectivity()
@@ -345,6 +356,11 @@ class ShiftViewModel @Inject constructor(
      */
     fun openShift(startingCash: Double) {
         viewModelScope.launch {
+            if (!_canOpenShift.value) {
+                _state.value = ShiftState.Error("No tienes permiso para abrir turnos.\n\nContacta a tu administrador.")
+                return@launch
+            }
+
             _state.value = ShiftState.Loading
 
             val venueId = secureStorage.getVenueId()
@@ -385,6 +401,11 @@ class ShiftViewModel @Inject constructor(
      */
     fun closeShift() {
         viewModelScope.launch {
+            if (!_canCloseShift.value) {
+                _state.value = ShiftState.Error("No tienes permiso para cerrar turnos.\n\nContacta a tu administrador.")
+                return@launch
+            }
+
             val currentState = _state.value
             if (currentState !is ShiftState.ShiftActive) {
                 Timber.w("⚠️ Cannot close shift: No active shift")
@@ -447,30 +468,30 @@ class ShiftViewModel @Inject constructor(
     /**
      * Translate API errors to user-friendly messages
      *
-     * CRITICAL: Never show technical errors to users.
+     * Uses ApiException type matching instead of fragile string matching.
      */
-    private fun translateError(exception: Exception): String {
-        return when {
-            exception.message?.contains("400", ignoreCase = true) == true -> {
-                "Ya existe un turno abierto.\n\n" +
-                "Por favor, cierra el turno actual antes de abrir uno nuevo."
+    private fun translateError(exception: ApiException): String {
+        return when (exception) {
+            is ApiException.HttpError -> when (exception.code) {
+                400 -> "Ya existe un turno abierto.\n\nCierra el turno actual antes de abrir uno nuevo."
+                403 -> "No tienes permiso para esta acción.\n\nContacta a tu administrador."
+                404 -> "No se encontró el turno.\n\nEs posible que ya haya sido cerrado."
+                in 500..599 -> "Error en el servidor.\n\nIntenta nuevamente."
+                else -> exception.userMessage
             }
-            exception.message?.contains("404", ignoreCase = true) == true -> {
-                "No se encontró el turno.\n\n" +
-                "Es posible que ya haya sido cerrado."
-            }
-            exception.message?.contains("NetworkError", ignoreCase = true) == true -> {
-                "No se pudo conectar al servidor.\n\n" +
-                "Verifica tu conexión a internet e intenta nuevamente."
-            }
-            exception.message?.contains("timeout", ignoreCase = true) == true -> {
-                "Tiempo de espera agotado.\n\n" +
-                "Por favor, intenta nuevamente."
-            }
-            else -> {
-                "Error al procesar la solicitud.\n\n" +
-                "Por favor, intenta nuevamente."
-            }
+            is ApiException.PermissionDenied -> "No tienes permiso para esta acción.\n\nContacta a tu administrador."
+            is ApiException.NetworkError -> "No se pudo conectar al servidor.\n\nVerifica tu conexión a internet."
+            else -> exception.userMessage
+        }
+    }
+
+    private fun refreshShiftPermissions() {
+        viewModelScope.launch {
+            val canOpen = permissionsRepository.hasPermission("shifts:create")
+            _canOpenShift.value = canOpen
+            val canClose = permissionsRepository.hasPermission("shifts:close")
+            _canCloseShift.value = canClose
+            Timber.d("🔐 Shift permissions: open=$canOpen, close=$canClose")
         }
     }
 }

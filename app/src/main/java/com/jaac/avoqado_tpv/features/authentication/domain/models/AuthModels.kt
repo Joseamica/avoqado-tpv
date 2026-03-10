@@ -53,7 +53,10 @@ data class AuthResponse(
     val loyaltyActive: Boolean = false,
 
     // 🔐 Master TOTP login flag - bypasses venue rules (clock-in, checkout, etc.)
-    val isMasterLogin: Boolean = false
+    val isMasterLogin: Boolean = false,
+
+    // Custom role display name configured in dashboard (e.g., "Bartender" instead of "Mesero")
+    val roleDisplayName: String? = null
 )
 
 /**

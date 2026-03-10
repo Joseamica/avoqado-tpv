@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
@@ -66,6 +67,8 @@ import com.jaac.avoqado_tpv.features.reports.presentation.components.HistoricalP
 import com.jaac.avoqado_tpv.features.reports.presentation.components.MetricCard
 import com.jaac.avoqado_tpv.features.reports.presentation.components.PaymentMethodsChart
 import com.jaac.avoqado_tpv.features.reports.presentation.components.PeriodFilterChips
+import com.jaac.avoqado_tpv.features.reports.presentation.components.StaffFilterChips
+import com.jaac.avoqado_tpv.features.reports.presentation.components.StaffSalesBreakdown
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import java.math.BigDecimal
 import java.time.Instant
@@ -130,12 +133,17 @@ fun ReportsScreen(
     val selectedPeriodsForPrint by viewModel.selectedPeriodsForPrint.collectAsStateWithLifecycle()
     val showHistoricalPrintDialog by viewModel.showHistoricalPrintDialog.collectAsStateWithLifecycle()
 
+    // Staff filter state
+    val selectedStaffIds by viewModel.selectedStaffIds.collectAsStateWithLifecycle()
+    val filteredSummary by viewModel.filteredSummary.collectAsStateWithLifecycle()
+
     val venueZoneId = remember { viewModel.venueZoneId }
 
     // Print options dialog state
     var showPrintOptionsDialog by remember { mutableStateOf(false) }
     var printIncludeWaiterTips by remember { mutableStateOf(false) }
     var printIncludeRatings by remember { mutableStateOf(false) }
+    var printIncludeStaffSales by remember { mutableStateOf(false) }
     val isReviewsEnabled = remember { viewModel.isReviewsEnabled }
 
     if (showPrintOptionsDialog) {
@@ -160,7 +168,8 @@ fun ReportsScreen(
                         Text("Propinas por mesero")
                         Switch(
                             checked = printIncludeWaiterTips,
-                            onCheckedChange = { printIncludeWaiterTips = it }
+                            onCheckedChange = { printIncludeWaiterTips = it },
+                            colors = switchColors()
                         )
                     }
                     if (isReviewsEnabled) {
@@ -172,7 +181,24 @@ fun ReportsScreen(
                             Text("Resenas")
                             Switch(
                                 checked = printIncludeRatings,
-                                onCheckedChange = { printIncludeRatings = it }
+                                onCheckedChange = { printIncludeRatings = it },
+                                colors = switchColors()
+                            )
+                        }
+                    }
+                    // Staff sales toggle (only if staff data available)
+                    val hasStaffSales = (state as? ReportsState.Success)?.summary?.staffSales?.isNotEmpty() == true
+                    if (hasStaffSales) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Ventas por usuario")
+                            Switch(
+                                checked = printIncludeStaffSales,
+                                onCheckedChange = { printIncludeStaffSales = it },
+                                colors = switchColors()
                             )
                         }
                     }
@@ -184,7 +210,8 @@ fun ReportsScreen(
                         showPrintOptionsDialog = false
                         viewModel.printReport(
                             includeWaiterTips = printIncludeWaiterTips,
-                            includeRatings = printIncludeRatings
+                            includeRatings = printIncludeRatings,
+                            includeStaffSales = printIncludeStaffSales
                         )
                     }
                 ) {
@@ -206,6 +233,8 @@ fun ReportsScreen(
         isComparisonEnabled = isComparisonEnabled,
         isRefreshing = isRefreshing,
         venueZoneId = venueZoneId,
+        selectedStaffIds = selectedStaffIds,
+        filteredSummary = filteredSummary,
         historicalState = historicalState,
         historicalGrouping = historicalGrouping,
         isHistoricalPrintMode = isHistoricalPrintMode,
@@ -223,6 +252,8 @@ fun ReportsScreen(
         onComparisonToggle = { enabled ->
             viewModel.toggleComparison(enabled)
         },
+        onToggleStaffSelection = { staffId -> viewModel.toggleStaffSelection(staffId) },
+        onClearStaffFilter = { viewModel.clearStaffFilter() },
         onPrintReport = {
             showPrintOptionsDialog = true
         },
@@ -292,6 +323,8 @@ private fun ReportsScreenContent(
     isComparisonEnabled: Boolean,
     isRefreshing: Boolean = false,
     venueZoneId: java.time.ZoneId = java.time.ZoneId.of("America/Mexico_City"),
+    selectedStaffIds: Set<String> = emptySet(),
+    filteredSummary: SalesSummary? = null,
     historicalState: HistoricalReportsState,
     historicalGrouping: HistoricalGrouping,
     isHistoricalPrintMode: Boolean,
@@ -301,6 +334,8 @@ private fun ReportsScreenContent(
     onRefresh: () -> Unit = {},
     onPeriodSelected: (PeriodType) -> Unit,
     onComparisonToggle: (Boolean) -> Unit,
+    onToggleStaffSelection: (String) -> Unit = {},
+    onClearStaffFilter: () -> Unit = {},
     onPrintReport: () -> Unit,
     onNavigateToProductPerformance: () -> Unit,
     onHistoricalGroupingSelected: (HistoricalGrouping) -> Unit,
@@ -442,8 +477,12 @@ private fun ReportsScreenContent(
                                         comparison = state.comparison,
                                         period = state.period,
                                         isComparisonEnabled = isComparisonEnabled,
+                                        selectedStaffIds = selectedStaffIds,
+                                        filteredSummary = filteredSummary,
                                         onPeriodSelected = onPeriodSelected,
                                         onComparisonToggle = onComparisonToggle,
+                                        onToggleStaffSelection = onToggleStaffSelection,
+                                        onClearStaffFilter = onClearStaffFilter,
                                         onNavigateToProductPerformance = onNavigateToProductPerformance
                                     )
                                 }
@@ -495,18 +534,25 @@ private fun ReportsSuccessContent(
     comparison: ComparisonMetrics?,
     period: ReportPeriod,
     isComparisonEnabled: Boolean,
+    selectedStaffIds: Set<String> = emptySet(),
+    filteredSummary: SalesSummary? = null,
     onPeriodSelected: (PeriodType) -> Unit,
     onComparisonToggle: (Boolean) -> Unit,
+    onToggleStaffSelection: (String) -> Unit = {},
+    onClearStaffFilter: () -> Unit = {},
     onNavigateToProductPerformance: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val sizes = LocalResponsiveSizes.current
 
+    // Use filtered summary when staff filter is active
+    val displaySummary = filteredSummary ?: summary
+
     // Memoize expensive formatting operations
-    val formattedSales = remember(summary.totalSales) { summary.formatTotalSales() }
-    val formattedAvgOrder = remember(summary.averageOrderValue) { summary.formatAverageOrderValue() }
-    val formattedProductsPerOrder = remember(summary.averageProductsPerOrder) {
-        summary.averageProductsPerOrder.setScale(1, java.math.RoundingMode.HALF_UP).toPlainString()
+    val formattedSales = remember(displaySummary.totalSales) { displaySummary.formatTotalSales() }
+    val formattedAvgOrder = remember(displaySummary.averageOrderValue) { displaySummary.formatAverageOrderValue() }
+    val formattedProductsPerOrder = remember(displaySummary.averageProductsPerOrder) {
+        displaySummary.averageProductsPerOrder.setScale(1, java.math.RoundingMode.HALF_UP).toPlainString()
     }
 
     LazyColumn(
@@ -527,6 +573,18 @@ private fun ReportsSuccessContent(
                 isEnabled = isComparisonEnabled,
                 onToggle = onComparisonToggle
             )
+        }
+
+        // Staff filter chips (only when there are staff members to filter)
+        if (summary.staffSales.size > 1) {
+            item(key = "staff_filter") {
+                StaffFilterChips(
+                    staffSales = summary.staffSales,
+                    selectedStaffIds = selectedStaffIds,
+                    onToggleStaff = onToggleStaffSelection,
+                    onClearFilter = onClearStaffFilter
+                )
+            }
         }
 
         // Section header — extra top padding for section separation
@@ -563,7 +621,7 @@ private fun ReportsSuccessContent(
                 )
 
                 MetricCard(
-                    value = summary.totalOrders.toString(),
+                    value = displaySummary.totalOrders.toString(),
                     label = "Órdenes",
                     icon = Icons.Default.Receipt,
                     comparisonText = comparison?.ordersChange?.let { formatComparisonText(it) },
@@ -583,7 +641,7 @@ private fun ReportsSuccessContent(
                 horizontalArrangement = Arrangement.spacedBy(sizes.spacingSmall)
             ) {
                 MetricCard(
-                    value = summary.totalProductsSold.toString(),
+                    value = displaySummary.totalProductsSold.toString(),
                     label = "Productos",
                     icon = Icons.Default.ShoppingCart,
                     comparisonText = comparison?.productsChange?.let { formatComparisonText(it) },
@@ -633,6 +691,15 @@ private fun ReportsSuccessContent(
                     start = sizes.paddingScreen,
                     end = sizes.paddingScreen
                 )
+            )
+        }
+
+        // Staff sales breakdown (always visible — collapsible section)
+        item(key = "staff_sales_breakdown") {
+            StaffSalesBreakdown(
+                staffSales = summary.staffSales,
+                selectedStaffIds = selectedStaffIds,
+                modifier = Modifier.padding(top = sizes.spacingSmall)
             )
         }
 
@@ -1265,7 +1332,8 @@ private fun HistoricalPrintDialog(
                     Text("Incluir comparaciones")
                     androidx.compose.material3.Switch(
                         checked = includeComparisons,
-                        onCheckedChange = { includeComparisons = it }
+                        onCheckedChange = { includeComparisons = it },
+                        colors = switchColors()
                     )
                 }
 
@@ -1373,6 +1441,18 @@ private fun HistoricalPrintDialog(
         modifier = modifier
     )
 }
+
+/**
+ * Switch colors that are visible in both light and dark mode.
+ * Default dark mode thumb uses DarkOutline (0xFF383838) which is invisible.
+ */
+@Composable
+private fun switchColors() = SwitchDefaults.colors(
+    checkedThumbColor = MaterialTheme.colorScheme.primary,
+    checkedTrackColor = MaterialTheme.colorScheme.primaryContainer,
+    uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
+)
 
 // ══════════════════════════════════════════════════════════════════════
 // PREVIEWS

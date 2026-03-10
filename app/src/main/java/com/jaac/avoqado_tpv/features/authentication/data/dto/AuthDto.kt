@@ -65,7 +65,10 @@ data class AuthResponseDto(
     @SerializedName("loyaltyActive") val loyaltyActive: Boolean? = false,
 
     // 🔐 Master TOTP login flag - bypasses venue rules (clock-in, etc.)
-    @SerializedName("isMasterLogin") val isMasterLogin: Boolean? = false
+    @SerializedName("isMasterLogin") val isMasterLogin: Boolean? = false,
+
+    // Custom role display name configured in dashboard (e.g., "Bartender" instead of "Mesero")
+    @SerializedName("roleDisplayName") val roleDisplayName: String? = null
 )
 
 /**
@@ -204,7 +207,8 @@ fun AuthResponseDto.toDomain(): AuthResponse {
         correlationId = correlationId,
         issuedAt = issuedAt,
         loyaltyActive = loyaltyActive ?: false,
-        isMasterLogin = isMasterLogin ?: false
+        isMasterLogin = isMasterLogin ?: false,
+        roleDisplayName = roleDisplayName
     )
 }
 

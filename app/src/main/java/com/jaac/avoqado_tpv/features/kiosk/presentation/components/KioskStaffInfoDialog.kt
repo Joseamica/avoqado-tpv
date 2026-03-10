@@ -93,9 +93,9 @@ fun KioskStaffInfoDialog(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Role badge
+                // Role badge - prefer backend roleDisplayName, fallback to hardcoded mapping
                 Text(
-                    text = getRoleDisplayName(staffSession.role),
+                    text = staffSession.roleDisplayName ?: getRoleDisplayName(staffSession.role),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

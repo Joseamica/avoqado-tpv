@@ -76,7 +76,8 @@ private val KIOSK_ADMIN_AUTHORIZED_ROLES = setOf(
 data class KioskAdminAuth(
     val staffId: String,
     val staffName: String,
-    val role: StaffRole
+    val role: StaffRole,
+    val roleDisplayName: String? = null
 )
 
 /**
@@ -290,7 +291,8 @@ fun KioskAdminPinDialog(
                                                     val adminAuth = KioskAdminAuth(
                                                         staffId = response.staffId,
                                                         staffName = response.staff.displayName,
-                                                        role = role
+                                                        role = role,
+                                                        roleDisplayName = response.roleDisplayName
                                                     )
                                                     onAuthSuccess(adminAuth)
                                                 } else {

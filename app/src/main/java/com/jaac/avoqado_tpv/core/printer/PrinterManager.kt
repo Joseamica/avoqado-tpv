@@ -814,6 +814,13 @@ class PrinterManager @Inject constructor(
         val count: Int
     )
 
+    data class StaffSalesPrint(
+        val name: String,
+        val totalSales: String,
+        val totalOrders: Int,
+        val totalTips: String
+    )
+
     fun printReport(
         periodLabel: String,
         dateRange: String,
@@ -833,7 +840,9 @@ class PrinterManager @Inject constructor(
         totalTips: String = "0.00",
         averageTipPercentage: String? = null,
         waiterTips: List<WaiterTipPrint>? = null,
-        ratingsCount: Int? = null
+        ratingsCount: Int? = null,
+        staffSales: List<StaffSalesPrint>? = null,
+        staffFilterLabel: String? = null
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
@@ -934,6 +943,28 @@ class PrinterManager @Inject constructor(
                 printerInstance.printStr("--------------------------------\n", null)
                 printerInstance.printStr("RESENAS\n\n", null)
                 printerInstance.printStr(String.format("%-18s %12d\n\n", "Total resenas:", ratingsCount), null)
+            }
+
+            // ========================================
+            // STAFF SALES (optional)
+            // ========================================
+            if (!staffSales.isNullOrEmpty()) {
+                printerInstance.printStr("--------------------------------\n", null)
+                printerInstance.printStr("VENTAS POR USUARIO\n", null)
+                if (staffFilterLabel != null) {
+                    printerInstance.printStr("($staffFilterLabel)\n", null)
+                }
+                printerInstance.printStr("\n", null)
+
+                for (ss in staffSales) {
+                    val name = if (ss.name.length > 20) ss.name.take(19) + "." else ss.name
+                    printerInstance.printStr("$name\n", null)
+                    printerInstance.printStr(String.format("  Ventas: %-9s Ordenes: %d\n", "$$${ss.totalSales}", ss.totalOrders), null)
+                    if (ss.totalTips != "0.00") {
+                        printerInstance.printStr(String.format("  Propinas: %s\n", "$$${ss.totalTips}"), null)
+                    }
+                }
+                printerInstance.printStr("\n", null)
             }
 
             // ========================================

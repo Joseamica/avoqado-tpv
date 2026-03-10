@@ -99,6 +99,8 @@ fun ShiftScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
+    val canOpenShift by viewModel.canOpenShift.collectAsStateWithLifecycle()
+    val canCloseShift by viewModel.canCloseShift.collectAsStateWithLifecycle()
 
     // Dialog states
     var showOpenDialog by remember { mutableStateOf(false) }
@@ -134,7 +136,8 @@ fun ShiftScreen(
                     ) {
                         ActiveShiftContent(
                             shift = currentState.shift,
-                            onCloseShift = { showCloseDialog = true }
+                            onCloseShift = { showCloseDialog = true },
+                            canCloseShift = canCloseShift
                         )
 
                         if (currentState.shiftHistory.isNotEmpty()) {
@@ -152,7 +155,8 @@ fun ShiftScreen(
                         verticalArrangement = Arrangement.spacedBy(24.dp)
                     ) {
                         NoActiveShiftContent(
-                            onOpenShift = { showOpenDialog = true }
+                            onOpenShift = { showOpenDialog = true },
+                            canOpenShift = canOpenShift
                         )
 
                         if (currentState.shiftHistory.isNotEmpty()) {
@@ -224,7 +228,8 @@ fun ShiftScreen(
 @Composable
 private fun ActiveShiftContent(
     shift: Shift,
-    onCloseShift: () -> Unit
+    onCloseShift: () -> Unit,
+    canCloseShift: Boolean = true
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -287,11 +292,22 @@ private fun ActiveShiftContent(
                 Button(
                     onClick = onCloseShift,
                     modifier = Modifier.fillMaxWidth(),
+                    enabled = canCloseShift,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.error  // ✅ Rojo del theme
                     )
                 ) {
                     Text("Cerrar Turno", style = MaterialTheme.typography.bodyLarge)
+                }
+
+                if (!canCloseShift) {
+                    Text(
+                        text = "No tienes permiso para cerrar turnos",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = TextAlign.Center
+                    )
                 }
             }
         }
@@ -305,7 +321,8 @@ private fun ActiveShiftContent(
  */
 @Composable
 private fun NoActiveShiftContent(
-    onOpenShift: () -> Unit
+    onOpenShift: () -> Unit,
+    canOpenShift: Boolean = true
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -355,11 +372,22 @@ private fun NoActiveShiftContent(
 
                 Button(
                     onClick = onOpenShift,
+                    enabled = canOpenShift,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.tertiary  // ✅ Verde Avoqado
                     )
                 ) {
                     Text("Abrir Turno", style = MaterialTheme.typography.bodyLarge)
+                }
+
+                if (!canOpenShift) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "No tienes permiso para abrir turnos",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center
+                    )
                 }
             }
         }

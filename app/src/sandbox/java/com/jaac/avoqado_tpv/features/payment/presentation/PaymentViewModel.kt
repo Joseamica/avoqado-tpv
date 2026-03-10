@@ -35,6 +35,10 @@ import com.example.clean_lib_services.shared.core.domain.entity.sale_data.Cipher
 import com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccParams
 import com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccResponse
 import com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccUseCase
+// ⭐ SaleCtlsUseCase - For CONTACTLESS transactions (sets entryMode = CONTACTLESS)
+// SaleIccUseCase hardcodes entryMode = CHIP, which causes contactless payments to register as "chip"
+import com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_ctls.SaleCtlsParams
+import com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_ctls.SaleCtlsUseCase
 // 💸 CancelIccUseCase - For REFUND transactions (returns money to customer)
 // NOTE: We use CancelIcc (NOT ReverseIcc) because:
 // - ReverseIcc is for reversing PENDING transactions (from SDK internal pending table)
@@ -130,8 +134,11 @@ class PaymentViewModel @Inject constructor(
     private val completeEmvTransUseCase: CompleteEmvTransUseCase,
     // ⭐ ContinueConfirmCardUseCase - CRITICAL: Required to respond to SDK card reading confirmation
     private val continueConfirmCardUseCase: ContinueConfirmCardUseCase,
-    // ⭐ SaleIccUseCase provided automatically by lib-services Hilt modules
+    // ⭐ SaleIccUseCase provided automatically by lib-services Hilt modules (for CHIP payments)
     private val saleIccUseCase: SaleIccUseCase,
+    // ⭐ SaleCtlsUseCase for CONTACTLESS payments (sets entryMode = CONTACTLESS in Blumon API)
+    // Without this, contactless payments register as "chip" in Blumon's platform
+    private val saleCtlsUseCase: SaleCtlsUseCase,
     // 💸 CancelIccUseCase for REFUND transactions - provided by lib-services Hilt modules
     // NOTE: We use CancelIcc (NOT ReverseIcc) because:
     // - ReverseIcc is for reversing PENDING transactions (from SDK internal pending table)
@@ -3065,9 +3072,8 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
-     * ⭐ Perform online authorization with Momentum platform using SaleIccUseCase
-     *
-     * Based on successful implementation from BLUMON_INTEGRATION_GUIDE.md
+     * ⭐ Perform online authorization with Momentum platform
+     * Uses SaleIccUseCase for chip (entryMode=CHIP) or SaleCtlsUseCase for contactless (entryMode=CONTACTLESS)
      */
     /**
      * Result class for online authorization
@@ -3083,7 +3089,8 @@ class PaymentViewModel @Inject constructor(
         amount: String,
         track2: String,
         cardHolderName: String,
-        emvTagList: String
+        emvTagList: String,
+        isContactless: Boolean = false
     ): AuthorizationResult {
         return try {
             // ✅ CRITICAL FIX: Use posId from current merchant instead of SDK database
@@ -3105,53 +3112,72 @@ class PaymentViewModel @Inject constructor(
             Timber.i("   Merchant: ${currentMerchantAccount.displayName}")
             Timber.i("   Serial: ${currentMerchantAccount.serialNumber}")
 
-            Timber.i("🌐 [SaleIcc] Sending online authorization to Momentum...")
+            val saleType = if (isContactless) "SaleCtls (CONTACTLESS)" else "SaleIcc (CHIP)"
+            Timber.i("🌐 [$saleType] Sending online authorization to Momentum...")
             Timber.d("   Amount: $amount")
             Timber.d("   Track2: ${track2.take(16)}...")
             Timber.d("   Cardholder: $cardHolderName")
             Timber.d("   EMV Tags: ${emvTagList.take(50)}...")
 
-            // Build SaleIccParams with REAL EMV data from chip
             // ⚠️ CRITICAL FIX: ALWAYS use CipherType.DUKPT (even in SANDBOX)
-            //
             // REASON: SaleIccUseCase has a bug where CipherType.KUSHKY throws NotImplementedError
-            // Source: lib-services-BP-SAND_1601.aar -> SaleIccUseCase.kt:99
-            //
-            // when (params.cipherType) {
-            //     CipherType.DUKPT -> { /* ✅ Works - Generates DUKPTDataForSale */ }
-            //     CipherType.PLAIN -> { /* ✅ Works - Uses fixed counter */ }
-            //     CipherType.KUSHKY -> { /* ❌ throw NotImplementedError() */ }
-            // }
-            //
-            // SOLUTION: Force DUKPT for both SANDBOX and PROD
-            // - InitializerUseCase already downloaded DUKPT keys (ksn + ipek) from Blumon server
-            // - InitData.kushki.isKsk defaults to false (from server response)
-            // - DUKPT encryption works correctly in both environments
-            //
-            // Reference: AvoqadoPOS/BlumonPaymentViewModel.kt:1445-1473
             val cipherType = CipherType.DUKPT  // ✅ ALWAYS DUKPT (NEVER KUSHKY due to SDK bug)
 
-            val params = SaleIccParams(
-                idMembership = "",  // Empty = no loyalty program (optional field)
-                amount = amount,
-                currency = "484",  // MXN (ISO 4217)
-                track2 = track2,  // ✅ Real Track2 from chip
-                cardHolderName = cardHolderName,  // ✅ Real cardholder name from chip
-                authenticationCard = AuthenticationCard.SIGNATURE,  // TODO: Detect from CVM Results (9F34)
-                emvTagList = emvTagList,  // ✅ Real EMV tags from chip (TLV format)
-                cipherType = cipherType,  // ✅ DUKPT for both SANDBOX and PROD
-                msi = null  // No installments for MVP
-            )
+            // ⭐ CRITICAL: Use SaleCtlsUseCase for contactless, SaleIccUseCase for chip
+            // SaleIccUseCase hardcodes entryMode = EntryMode.CHIP
+            // SaleCtlsUseCase hardcodes entryMode = EntryMode.CONTACTLESS
+            // Using the wrong one causes Blumon's platform to misidentify the entry mode
+            var saleResponse: SaleIccResponse? = null
+            var saleFailure: Any? = null
 
-            // Call SaleIccUseCase (returns Either<Failure, Success>)
-            val result = saleIccUseCase.run(params)
+            if (isContactless) {
+                Timber.i("📡 Using SaleCtlsUseCase (entryMode=CONTACTLESS)")
+                val ctlsParams = SaleCtlsParams(
+                    idMembership = "",
+                    amount = amount,
+                    currency = "484",  // MXN (ISO 4217)
+                    track2 = track2,
+                    cardHolderName = cardHolderName,
+                    authenticationCard = AuthenticationCard.SIGNATURE,
+                    emvTagList = emvTagList,
+                    cipherType = cipherType,
+                    msi = null
+                )
+                val ctlsResult = saleCtlsUseCase.run(ctlsParams)
+                if (ctlsResult.isLeft) {
+                    saleFailure = ctlsResult.leftValue()
+                } else {
+                    val r = ctlsResult.rightValue()
+                    // Convert SaleCtlsResponse → SaleIccResponse (identical structure: operation + saleData)
+                    saleResponse = SaleIccResponse(r.operation, r.saleData)
+                }
+            } else {
+                Timber.i("💳 Using SaleIccUseCase (entryMode=CHIP)")
+                val iccParams = SaleIccParams(
+                    idMembership = "",
+                    amount = amount,
+                    currency = "484",  // MXN (ISO 4217)
+                    track2 = track2,
+                    cardHolderName = cardHolderName,
+                    authenticationCard = AuthenticationCard.SIGNATURE,
+                    emvTagList = emvTagList,
+                    cipherType = cipherType,
+                    msi = null
+                )
+                val iccResult = saleIccUseCase.run(iccParams)
+                if (iccResult.isLeft) {
+                    saleFailure = iccResult.leftValue()
+                } else {
+                    saleResponse = iccResult.rightValue()
+                }
+            }
 
-            // Handle Either<Failure, Success> result
+            // Handle failure or success
             when {
-                result.isLeft -> {
+                saleFailure != null -> {
                     // Handle failure - Translate SDK error to user-friendly message
-                    val failure = result.leftValue()
-                    Timber.e("❌ [SaleIcc] Failed: $failure")
+                    val failure = saleFailure
+                    Timber.e("❌ [$saleType] Failed: $failure")
 
                     // Extract error message from SDK failure object
                     val errorString = failure.toString()
@@ -3252,10 +3278,10 @@ class PaymentViewModel @Inject constructor(
 
                     AuthorizationResult(response = null, userFriendlyError = userMessage)
                 }
-                else -> {
+                saleResponse != null -> {
                     // Handle success
-                    val response = result.rightValue()
-                    Timber.i("✅ [SaleIcc] Success!")
+                    val response = saleResponse
+                    Timber.i("✅ [$saleType] Success!")
                     Timber.i("   Operation: ${response.operation}")
                     Timber.i("   Auth: ${response.saleData.authorization}")
                     Timber.i("   Reference: ${response.saleData.reference}")
@@ -3294,10 +3320,14 @@ class PaymentViewModel @Inject constructor(
 
                     AuthorizationResult(response = response, userFriendlyError = null)
                 }
+                else -> {
+                    Timber.e("❌ [$saleType] Unexpected state: both response and failure are null")
+                    AuthorizationResult(response = null, userFriendlyError = "Error inesperado procesando el pago.")
+                }
             }
 
         } catch (e: Exception) {
-            Timber.e(e, "❌ [SaleIcc] Exception in online authorization")
+            Timber.e(e, "❌ [Sale] Exception in online authorization")
             AuthorizationResult(
                 response = null,
                 userFriendlyError = "Error inesperado procesando el pago.\n\nPor favor, intenta nuevamente."
@@ -3629,52 +3659,13 @@ class PaymentViewModel @Inject constructor(
         try {
             Timber.i("[CONTACTLESS ONLINE] Starting online authorization flow...")
 
-            // PASO 1: Extract EMV tags with CardTech.CONTACTLESS
+            // PASO 1: Extract Track2 FIRST to detect card brand for brand-specific tag list
             _state.value = PaymentState.Processing("Leyendo datos de la tarjeta contactless...")
-            Timber.i("[CONTACTLESS ONLINE PHASE 1] Extracting EMV tags with CardTech.CONTACTLESS...")
+            Timber.i("[CONTACTLESS ONLINE PHASE 1] Extracting Track2 to detect card brand...")
 
-            // ⭐ CRITICAL: Use SAME 21 tags as chip (per Edgardo's specification)
-            // Same tag list + Format.DECIMAL makes contactless work like chip
-            val emvTagParams = GetEmvTagListParam(
-                emvTagList = listOf(
-                    0x9F27,  // Cryptogram Information Data (CID)
-                    0x9F26,  // Application Cryptogram (ARQC)
-                    0x9F37,  // Unpredictable Number
-                    0x9F36,  // Application Transaction Counter (ATC)
-                    0x9C,    // Transaction Type
-                    0x82,    // Application Interchange Profile (AIP)
-                    0x9F33,  // Terminal Capabilities
-                    0x9F34,  // Cardholder Verification Method (CVM) Results
-                    0x9A,    // Transaction Date (YYMMDD)
-                    0x5F2A,  // Transaction Currency Code
-                    0x9F02,  // Amount, Authorized (Numeric)
-                    0x9F03,  // Amount, Other (Numeric) - Cashback
-                    0x9F35,  // Terminal Type
-                    0x5F34,  // Application PAN Sequence Number
-                    0x9F10,  // Issuer Application Data (IAD)
-                    0x84,    // Dedicated File (DF) Name / AID
-                    0x9F09,  // Application Version Number
-                    0x9F1A,  // Terminal Country Code
-                    0x95,    // Terminal Verification Results (TVR)
-                    0x9F1E,  // Interface Device (IFD) Serial Number
-                    0x50,    // Application Label
-                    0x5F28   // 🌍 Issuer Country Code (ISO 3166 numeric, e.g., "484" = Mexico)
-                ),
-                format = Format.DECIMAL,  // ⭐ CRITICAL: DECIMAL (same as chip)
-                cardTech = CardTech.CONTACTLESS  // ⭐ CRITICAL: Use CONTACTLESS instead of CHIP
-            )
-
-            val tagListResult = getEmvTagListUseCase.runInfallible(emvTagParams)
-            val emvTagListStr = tagListResult.emvTagList
-
-            Timber.i("✅ [CONTACTLESS ONLINE PHASE 1] EMV tags extracted (${emvTagListStr.length} chars)")
-            Timber.i("   First 100 chars: ${emvTagListStr.take(100)}...")
-
-            // PASO 2: Extract Track2 using CardTech.CONTACTLESS
-            Timber.d("   Extracting Track2 (tag 0x57) for contactless...")
             val track2Params = GetTagValueParams(
                 tag = 0x57,
-                cardTech = CardTech.CONTACTLESS  // ⭐ CRITICAL: Use CONTACTLESS
+                cardTech = CardTech.CONTACTLESS
             )
             val track2Result = getTagValueUseCase.run(track2Params)
             val track2 = if (track2Result.isRight) {
@@ -3687,11 +3678,63 @@ class PaymentViewModel @Inject constructor(
                 track2Override = track2
             )
 
+            // Detect card brand from PAN (Track2 format: PAN + 'D' + expiry + service code + ...)
+            val pan = if (track2.isNotEmpty()) track2.split("D", "=").firstOrNull() ?: "" else ""
+            val contactlessBrand = if (pan.isNotEmpty()) detectCardBrand(pan) else CardBrand.UNKNOWN
+
             if (track2.isNotEmpty()) {
                 Timber.i("   ✅ Track2 extracted: ${track2.take(16)}... (length: ${track2.length})")
+                Timber.i("   🏷️ [CONTACTLESS] Card brand: $contactlessBrand (PAN prefix: ${pan.take(6)})")
             } else {
-                Timber.w("   ⚠️ Track2 not found - may cause issues")
+                Timber.w("   ⚠️ Track2 not found - using default Visa/MC tag list")
             }
+
+            // PASO 2: Build brand-specific EMV tag list (per Edgardo's specification 2026-03-09)
+            // Each contactless kernel (K2=MC, K3=Visa, K4=AMEX) requires different EMV tags.
+            // Without the correct tags (especially 0x9F6E for Visa/MC), Blumon registers as "chip".
+            val contactlessTagList = when (contactlessBrand) {
+                CardBrand.AMEX -> {
+                    Timber.i("[CONTACTLESS ONLINE PHASE 2] Using AMEX K4 tag list")
+                    listOf(
+                        0x9F27, 0x9F26, 0x9F37, 0x9F36, 0x9C, 0x82, 0x9F33,
+                        0x9F71,  // AMEX CVM Results (replaces 0x9F34)
+                        0x9A, 0x5F2A,
+                        0x9F02, 0x9F03, 0x9F35, 0x5F34, 0x9F10,
+                        // Note: no 0x84 (DF Name) for AMEX K4
+                        0x9F09, 0x9F1A, 0x95, 0x9F1E,
+                        0x9F67,  // AMEX Form Factor (replaces 0x9F6E)
+                        0x50,
+                        0x5F28   // Issuer Country Code (our addition for international card detection)
+                    )
+                }
+                else -> {
+                    // Visa K3 / Mastercard K2 / Unknown — identical tag lists
+                    Timber.i("[CONTACTLESS ONLINE PHASE 2] Using Visa/MC K2/K3 tag list")
+                    listOf(
+                        0x9F27, 0x9F26, 0x9F37, 0x9F36, 0x9C, 0x82, 0x9F33,
+                        0x9F34,  // CVM Results
+                        0x9A, 0x5F2A,
+                        0x9F02, 0x9F03, 0x9F35, 0x5F34, 0x9F10,
+                        0x84,    // DF Name / AID
+                        0x9F09, 0x9F1A, 0x95, 0x9F1E,
+                        0x9F6E,  // Form Factor Indicator (identifies contactless to processor)
+                        0x50,
+                        0x5F28   // Issuer Country Code (our addition for international card detection)
+                    )
+                }
+            }
+
+            val emvTagParams = GetEmvTagListParam(
+                emvTagList = contactlessTagList,
+                format = Format.DECIMAL,
+                cardTech = CardTech.CONTACTLESS
+            )
+
+            val tagListResult = getEmvTagListUseCase.runInfallible(emvTagParams)
+            val emvTagListStr = tagListResult.emvTagList
+
+            Timber.i("✅ [CONTACTLESS ONLINE PHASE 2] EMV tags extracted (${emvTagListStr.length} chars)")
+            Timber.i("   First 100 chars: ${emvTagListStr.take(100)}...")
 
             // 🌍 Extract Issuer Country Code (EMV tag 0x5F28) for international card detection
             try {
@@ -3728,15 +3771,16 @@ class PaymentViewModel @Inject constructor(
             // This was causing duplicate database rows on every contactless payment.
             // InitializationManager ensures init runs once every 24 hours per Edgardo's recommendation.
 
-            // PASO 2: Call SaleIcc for online authorization (same as chip)
+            // PASO 2: Call SaleCtls for online authorization (CONTACTLESS entry mode)
             _state.value = PaymentState.Processing("Autorizando con banco...")
-            Timber.i("[CONTACTLESS ONLINE PHASE 2] Calling SaleIcc for online authorization...")
+            Timber.i("[CONTACTLESS ONLINE PHASE 2] Calling SaleCtls for online authorization (entryMode=CONTACTLESS)...")
 
             val authResult = performOnlineAuthorization(
                 amount = amount,
                 track2 = track2,
                 cardHolderName = "CARDHOLDER",
-                emvTagList = emvTagListStr
+                emvTagList = emvTagListStr,
+                isContactless = true  // ⭐ Use SaleCtlsUseCase (entryMode=CONTACTLESS)
             )
 
             if (authResult.response == null || authResult.userFriendlyError != null) {

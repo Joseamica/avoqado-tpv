@@ -160,7 +160,7 @@ fun KioskAdminBottomSheet(
                 Spacer(modifier = Modifier.height(4.dp))
 
                 Text(
-                    text = "${adminAuth.staffName} - ${adminAuth.role.name}",
+                    text = "${adminAuth.staffName} - ${adminAuth.roleDisplayName ?: adminAuth.role.name}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

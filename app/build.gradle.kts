@@ -16,8 +16,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv"
         minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
         targetSdk = 34
-        versionCode = 33
-        versionName = "1.7.9"
+        versionCode = 34
+        versionName = "1.8.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -30,9 +30,9 @@ android {
 
         // Environment variables (NEVER hardcode secrets in code)
         buildConfigField("String", "API_BASE_URL", "\"https://api.avoqado.io/api/v1/\"")
-        buildConfigField("String", "API_BASE_URL_DEV", "\"https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/\"")
+        buildConfigField("String", "API_BASE_URL_DEV", "\"https://humane-immortal-pika.ngrok-free.app/api/v1/\"")
         buildConfigField("String", "SOCKET_URL", "\"https://api.avoqado.io\"")
-        buildConfigField("String", "SOCKET_URL_DEV", "\"https://patchiest-noncommemorational-willia.ngrok-free.dev\"")
+        buildConfigField("String", "SOCKET_URL_DEV", "\"https://humane-immortal-pika.ngrok-free.app\"")
         buildConfigField("boolean", "ENABLE_PAX_SDK", "true")
         buildConfigField("boolean", "ENABLE_BLUMON_INIT", "true")
 

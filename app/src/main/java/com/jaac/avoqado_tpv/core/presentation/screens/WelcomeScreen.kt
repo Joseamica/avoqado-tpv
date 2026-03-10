@@ -242,6 +242,7 @@ fun WelcomeScreen(
                 } else {
                     viewModel.refreshSalesGoal()
                     viewModel.refreshAttendance()
+                    shiftViewModel.loadCurrentShift()
                 }
             }
         }

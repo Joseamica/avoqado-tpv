@@ -280,6 +280,7 @@ class PaymentViewModel @Inject constructor(
 
     // 📸 Proof-of-sale multi-photo tracking (label → Firebase URL)
     private val _pendingProofOfSaleUrls = mutableMapOf<String, String>()
+    private val _sentToBackendUrls = mutableSetOf<String>() // URLs already sent to backend (don't cleanup from Firebase)
     private val _proofOfSaleComplete = MutableStateFlow(false)
     val proofOfSaleComplete: StateFlow<Boolean> = _proofOfSaleComplete.asStateFlow()
 
@@ -4121,6 +4122,9 @@ class PaymentViewModel @Inject constructor(
             verificationPhotos = verification?.photos ?: emptyList(),
             verificationBarcodes = verification?.barcodes?.map { it.barcode } ?: emptyList(),
             blumonOperationNumber = blumonOperationNumber,
+            // 📸 NON-BLOCKING PROOF-OF-SALE: Send serialized item metadata for PENDING verification
+            isPortabilidad = _isPortabilidad.value,
+            serialNumbers = listOfNotNull(_serialNumber), // ICCID(s) from scanned SIMs
         )
     }
 
@@ -4157,6 +4161,9 @@ class PaymentViewModel @Inject constructor(
             equalPartsPartySize = split?.equalPartsPartySize,
             equalPartsPayedFor = split?.equalPartsPayedFor,
             blumonOperationNumber = blumonOperationNumber,
+            // 📸 NON-BLOCKING PROOF-OF-SALE: Send serialized item metadata for PENDING verification
+            isPortabilidad = _isPortabilidad.value,
+            serialNumbers = listOfNotNull(_serialNumber),
         )
     }
 
@@ -5598,9 +5605,14 @@ class PaymentViewModel @Inject constructor(
                     _pendingProofOfSaleUrls[photoLabel] = photoUrl
                     Timber.d("📸 [PROOF-OF-SALE] Pending URLs: ${_pendingProofOfSaleUrls.size}/$requiredCount (labels=${_pendingProofOfSaleUrls.keys})")
 
-                    // Step 4: Check if all required photos are collected
+                    // Step 4: Send photo to backend immediately (don't wait for all photos)
+                    // Backend appends to PENDING record — if user leaves after 1/2 photos,
+                    // PendingVerificationsScreen will show the missing one(s)
+                    sendSinglePhotoToBackend(paymentId, photoUrl, photoLabel)
+
+                    // Step 5: Mark complete when all required photos sent
                     if (_pendingProofOfSaleUrls.size >= requiredCount) {
-                        sendProofOfSaleToBackend(paymentId)
+                        _proofOfSaleComplete.value = true
                     }
                 }.onFailure { error ->
                     Timber.e(error, "❌ [PROOF-OF-SALE] Firebase upload failed")
@@ -5615,29 +5627,32 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
-     * 📸 Send all collected proof-of-sale photo URLs to backend.
-     * Called when all required photos are ready (1 for normal, 2 for portabilidad).
+     * 📸 Send a single photo URL to backend immediately after Firebase upload.
+     * Backend appends it to the existing PENDING SaleVerification record.
+     * This ensures partial uploads (1 of 2 for portabilidad) are persisted even
+     * if the user navigates away before completing all photos.
      */
-    private suspend fun sendProofOfSaleToBackend(paymentId: String) {
-        val allUrls = _pendingProofOfSaleUrls.values.toList()
+    private suspend fun sendSinglePhotoToBackend(paymentId: String, photoUrl: String, photoLabel: String? = null) {
+        // Map PaymentScreen labels to backend enum values
+        val backendLabel = when (photoLabel) {
+            "linea" -> "Vinculacion"
+            "portabilidad" -> "Portabilidad"
+            else -> photoLabel // Already correct ("Vinculacion"/"Portabilidad") or null
+        }
         val request = com.jaac.avoqado_tpv.core.data.network.ProofOfSaleRequest(
             paymentId = paymentId,
-            photoUrls = allUrls
+            photoUrls = listOf(photoUrl),
+            photoLabel = backendLabel
         )
 
         val response = paymentApiService.uploadProofOfSale(request)
 
         if (response.isSuccessful && response.body()?.success == true) {
-            Timber.i("✅ [PROOF-OF-SALE] Backend record success (${allUrls.size} photos)")
-            // Clear pending URLs so cleanupOrphanedProofOfSalePhotos() won't delete them from Firebase
-            _pendingProofOfSaleUrls.clear()
-            _proofOfSaleComplete.value = true
+            Timber.i("✅ [PROOF-OF-SALE] Backend recorded photo for payment $paymentId")
+            _sentToBackendUrls.add(photoUrl) // Track so cleanup won't delete from Firebase
         } else {
             val errorMessage = response.body()?.message ?: "Error registrando foto"
             Timber.e("❌ [PROOF-OF-SALE] Backend failed: $errorMessage")
-            // Don't clear pending URLs — keep them for cleanup since backend doesn't have them
-            // Still mark complete since photos are in Firebase
-            _proofOfSaleComplete.value = true
         }
     }
 
@@ -5671,8 +5686,11 @@ class PaymentViewModel @Inject constructor(
      */
     private fun cleanupOrphanedProofOfSalePhotos(scope: CoroutineScope = viewModelScope) {
         if (_pendingProofOfSaleUrls.isEmpty()) return
-        val urlsToDelete = _pendingProofOfSaleUrls.values.toList()
+        // Only delete URLs that were NOT already sent to backend
+        val urlsToDelete = _pendingProofOfSaleUrls.values.filter { it !in _sentToBackendUrls }
         _pendingProofOfSaleUrls.clear()
+        _sentToBackendUrls.clear()
+        if (urlsToDelete.isEmpty()) return
         Timber.i("📸 [PROOF-OF-SALE] Cleaning up ${urlsToDelete.size} orphaned photo(s)")
         scope.launch {
             urlsToDelete.forEach { url ->

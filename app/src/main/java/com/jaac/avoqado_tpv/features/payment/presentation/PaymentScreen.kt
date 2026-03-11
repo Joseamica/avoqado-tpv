@@ -1548,7 +1548,7 @@ private fun PaymentSuccessContent(
 
                                 Button(
                                     onClick = successRouting.onClick,
-                                    enabled = proofOfSaleComplete || !showProofOfSaleButton,
+                                    enabled = true, // Non-blocking: staff can start new sale immediately, upload photos later
                                     shape = RoundedCornerShape(12.dp),
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = MaterialTheme.colorScheme.surface,
@@ -1901,6 +1901,13 @@ private fun PaymentSuccessContent(
             dir
         }
 
+        // Map label to display text: "linea" → "1. Vinculación", "portabilidad" → "2. Portabilidad"
+        val cameraLabel = when (currentPhotoLabel) {
+            "linea" -> "1. Vinculación"
+            "portabilidad" -> "2. Portabilidad"
+            else -> null
+        }
+
         com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen(
             onPhotoCaptured = { photoPath ->
                 Timber.d("📸 [PROOF-OF-SALE] Photo captured: $photoPath")
@@ -1910,7 +1917,8 @@ private fun PaymentSuccessContent(
             onClose = {
                 showProofOfSaleCamera = false
             },
-            outputDirectory = outputDirectory
+            outputDirectory = outputDirectory,
+            photoLabel = cameraLabel
         )
     }
 
@@ -2134,6 +2142,7 @@ private fun PaymentSuccessContent(
                 showEmailDialog = false
             },
             isLoading = isSendingReceipt,
+            showCustomerSearch = flowOrigin != PaymentFlowOrigin.SERIALIZED,
             // 👤 Customer search parameters
             customerSearchState = customerSearchState,
             recentCustomers = recentCustomers,
@@ -2264,6 +2273,7 @@ private fun EmailReceiptDialog(
     onDismiss: () -> Unit,
     onSend: (email: String) -> Unit,
     isLoading: Boolean = false,
+    showCustomerSearch: Boolean = true,
     // 👤 Customer search parameters
     customerSearchState: CustomerSearchState = CustomerSearchState.Idle,
     recentCustomers: List<Customer> = emptyList(),
@@ -2278,12 +2288,12 @@ private fun EmailReceiptDialog(
 
     // Load recent customers when dialog opens
     LaunchedEffect(Unit) {
-        onLoadRecentCustomers()
+        if (showCustomerSearch) onLoadRecentCustomers()
     }
 
     // Debounce customer search (300ms)
     LaunchedEffect(searchQuery) {
-        if (searchQuery.length >= 2) {
+        if (showCustomerSearch && searchQuery.length >= 2) {
             delay(300)
             onSearchCustomer(searchQuery)
         } else if (searchQuery.isEmpty()) {
@@ -2346,7 +2356,8 @@ private fun EmailReceiptDialog(
                     color = MaterialTheme.colorScheme.onSurface
                 )
 
-                // 👤 Customer search section
+                // 👤 Customer search section (hidden for SERIALIZED_INVENTORY)
+                if (showCustomerSearch) {
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
@@ -2441,15 +2452,18 @@ private fun EmailReceiptDialog(
                         modifier = Modifier.padding(vertical = 8.dp)
                     )
                 }
+                } // end showCustomerSearch
 
                 // Divider between customer list and manual email
-                HorizontalDivider(
-                    modifier = Modifier.padding(vertical = 4.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant
-                )
+                if (showCustomerSearch) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant
+                    )
+                }
 
                 Text(
-                    text = "o escribe el correo manualmente",
+                    text = if (showCustomerSearch) "o escribe el correo manualmente" else "Escribe el correo",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2692,7 +2706,7 @@ private fun ProofOfSalePhotoSection(
     if (!isPortabilidad) {
         // Single photo: full-width placeholder with inline warning
         ProofOfSalePlaceholder(
-            label = "Registro de línea",
+            label = "Vinculacion",
             photoPath = lineaPhotoPath,
             showWarning = showWarning && lineaPhotoPath == null,
             onClick = onTapLinea,
@@ -2705,7 +2719,7 @@ private fun ProofOfSalePhotoSection(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             ProofOfSalePlaceholder(
-                label = "Reg. línea",
+                label = "Vinculacion",
                 photoPath = lineaPhotoPath,
                 showWarning = showWarning && lineaPhotoPath == null,
                 onClick = onTapLinea,

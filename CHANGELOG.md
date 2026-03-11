@@ -9,6 +9,39 @@
 
 ---
 
+## [1.9.0] - 2026-03-11
+
+### **Added**
+
+- **Non-blocking proof-of-sale verification for SERIALIZED_INVENTORY**: Staff can now immediately start new sales after payment — "Nueva Venta" button is always enabled. Payments with missing proof-of-sale photos appear in a new "Pendientes Verificación" card on WelcomeScreen. Staff-scoped: only the staff who processed the sale sees their pending verifications
+- **Pending verifications screen**: New `PendingVerificationsScreen` with expandable cards showing date, ICCID(s), amount, and photo status (0/1 or 0/2). Camera integration for uploading missing photos. Pull-to-refresh support. Photos upload to Firebase Storage then notify backend
+- **Backend PENDING verification record at payment time**: `createPendingSaleVerification()` creates a SaleVerification with status PENDING immediately after SERIALIZED_INVENTORY payment. Stores `isPortabilidad` and `serialNumbers` fields for display in TPV pending screen
+- **Backend pending verifications endpoint**: `GET /tpv/verification/pending` returns staff-scoped pending verifications with payment details (amount, orderNumber, date, serialNumbers, photo status)
+- **Backend auto-completion on photo upload**: Modified `createOrUpdateProofOfSale()` to accept optional `verificationId`, append photos to existing PENDING record, and auto-transition to COMPLETED when required photo count is met (1 for non-portabilidad, 2 for portabilidad)
+
+### **Changed**
+
+- **Renamed "Registro de línea" → "Vinculación"**: Label renamed in PaymentScreen success (proof-of-sale section) and PendingVerificationsScreen photo slots for consistency with business terminology
+- **Hide customer search in email receipt dialog for SERIALIZED_INVENTORY**: `EmailReceiptDialog` now accepts `showCustomerSearch` param; when flow origin is SERIALIZED, the "Buscar cliente" search field and customer list are hidden — only manual email input is shown
+- **Photo label banner in camera**: `CameraPreviewScreen` now accepts optional `photoLabel` param. When capturing proof-of-sale photos, a colored banner shows "1. Vinculación" or "2. Portabilidad" at the top of the camera screen so staff knows which photo they're taking. Applied to both PaymentScreen (success state) and PendingVerificationsScreen cameras
+- **CASHIER/Promotor role can now register inventory and create categories**: Added `serialized-inventory:create` permission to CASHIER default permissions in backend, enabling promotors to access "Alta de Productos" and create categories in the "Vender" screen
+- **FastPaymentRequest includes serialized inventory metadata**: Added optional `isPortabilidad` and `serialNumbers` fields to `FastPaymentRequest` and `PaymentContext.FastPayment`, passed from PaymentViewModel scanned barcode data
+- **HomeViewModel tracks pending verification count**: New `pendingVerificationsCount` StateFlow with deferred fetch (3s delay). Refreshes on dashboard refresh and lifecycle resume
+- **SaleVerification schema migration**: Added `isPortabilidad` (Boolean, default false) and `serialNumbers` (String[]) fields to Prisma SaleVerification model
+
+### **Fixed**
+
+- **No back button in PAX camera for PendingVerificationsScreen**: Replaced system camera intent (`TakePicture`) with in-app CameraX `CameraPreviewScreen` which has a visible close button (X). PAX system camera hides navigation bar making it impossible to cancel without taking a photo. Also eliminates OOM kill issues since CameraX runs in-process (no Activity transition)
+- **Camera double-tap freeze in PendingVerificationsScreen**: Photo slots are disabled while camera is active via `showCamera` state guard
+- **Photo replace treated as second photo**: When retaking a photo that already exists (e.g., "Vinculacion" already uploaded), the new photo now **replaces** the existing one instead of appending as a second photo. Added `replaceIndex` parameter to `ProofOfSaleRequest` → backend `createOrUpdateProofOfSale()` → replaces `photos[index]` when provided, appends when null (backward compatible)
+- **Partial photo upload lost when leaving PaymentScreen**: For portabilidad (2 photos required), if user uploaded 1 photo in PaymentScreen and navigated away, the photo was in Firebase but never sent to backend — PendingVerificationsScreen showed 0/2. Changed `uploadProofOfSale()` to send each photo to backend immediately after Firebase upload (not batch). Backend appends to PENDING record. Also added `_sentToBackendUrls` tracking so `cleanupOrphanedProofOfSalePhotos()` doesn't delete photos already registered with backend
+- **Photo slot mismatch when uploading out of order**: If user uploaded portabilidad photo first (without vinculacion) from PaymentScreen, it was stored at `photos[0]` but PendingVerificationsScreen always mapped `photos[0]` = Vinculacion — so the photo appeared in the wrong slot. Fixed by adding `photoLabel` parameter to `ProofOfSaleRequest`. Backend now places photos at fixed indices based on label (Vinculacion=0, Portabilidad=1), padding with empty strings for unfilled slots. PendingVerificationsScreen filters empty strings with `takeIf { it.isNotEmpty() }`. Completion checks use non-empty photo count instead of array size
+- **PaymentViewModel sent wrong photoLabel to backend**: Labels from PaymentScreen ("linea"/"portabilidad") didn't match backend Zod enum (`Vinculacion`/`Portabilidad`), so `photoLabel` was silently stripped by validation and photos always appended instead of being placed at fixed slots. Added label mapping in `sendSinglePhotoToBackend`: "linea" → "Vinculacion", "portabilidad" → "Portabilidad"
+- **No photo preview in PendingVerificationsScreen**: Camera captured and uploaded directly without letting the user review the photo. Added `PhotoPreviewDialog` with full-screen preview showing the label, confirm and retake buttons — matching PaymentScreen's existing `ProofOfSalePhotoPreviewDialog` pattern
+- **Upload cancelled when navigating back in PendingVerificationsScreen**: Pressing back during photo upload cancelled the ViewModel coroutine, losing the photo. Added `BackHandler` that blocks back press while uploading, disabled top bar back button during upload, and added a semi-transparent "Subiendo foto..." overlay with spinner so the user knows to wait
+
+---
+
 ## [1.8.1] - 2026-03-09
 
 ### **Changed**

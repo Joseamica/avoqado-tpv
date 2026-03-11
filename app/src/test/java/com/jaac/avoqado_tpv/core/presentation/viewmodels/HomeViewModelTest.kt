@@ -76,6 +76,7 @@ class HomeViewModelTest {
     private lateinit var orderSyncCoordinator: OrderSyncCoordinator
     private lateinit var timeEntryRepository: com.jaac.avoqado_tpv.features.timeclock.domain.repository.TimeEntryRepository
     private lateinit var tpvSettingsRepository: com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
+    private lateinit var saleVerificationRepository: com.jaac.avoqado_tpv.features.payment.data.repository.SaleVerificationRepository
 
     private val fakeSessionEvents = MutableSharedFlow<com.jaac.avoqado_tpv.core.session.SessionEvent>()
     private val fakeSocketEvents = MutableSharedFlow<com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent>()
@@ -113,6 +114,7 @@ class HomeViewModelTest {
         orderSyncCoordinator = mockk(relaxed = true)
         timeEntryRepository = mockk(relaxed = true)
         tpvSettingsRepository = mockk(relaxed = true)
+        saleVerificationRepository = mockk(relaxed = true)
 
         every { sessionManager.sessionEvents } returns fakeSessionEvents
         every { socketManager.events } returns fakeSocketEvents
@@ -160,7 +162,8 @@ class HomeViewModelTest {
             observabilityManager = observabilityManager,
             orderSyncCoordinator = orderSyncCoordinator,
             timeEntryRepository = timeEntryRepository,
-            tpvSettingsRepository = tpvSettingsRepository
+            tpvSettingsRepository = tpvSettingsRepository,
+            saleVerificationRepository = saleVerificationRepository
         )
     }
 

@@ -64,7 +64,8 @@ class DeviceHealthViewModel @Inject constructor(
     private val simulatedAlertsManager: SimulatedAlertsManager,
     private val connectionStateManager: ConnectionStateManager,
     private val updateCheckManager: UpdateCheckManager,
-    private val paymentQueueStateManager: PaymentQueueStateManager
+    private val paymentQueueStateManager: PaymentQueueStateManager,
+    private val paymentQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
 ) : ViewModel() {
 
     // ══════════════════════════════════════════════════════════════════════
@@ -377,6 +378,23 @@ class DeviceHealthViewModel @Inject constructor(
     // ══════════════════════════════════════════════════════════════════════
     // LIFECYCLE
     // ══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Reset all FAILED payments back to PENDING for retry.
+     * Called when user taps the "pending payments" alert.
+     */
+    fun retryFailedPayments() {
+        viewModelScope.launch {
+            val count = paymentQueueRepository.resetAllFailed()
+            if (count > 0) {
+                timber.log.Timber.i("🔄 [DeviceHealth] Reset $count failed payments back to PENDING for retry")
+                // Refresh queue state to update UI
+                val pending = paymentQueueRepository.getPendingCount()
+                val failed = paymentQueueRepository.getFailedCount()
+                paymentQueueStateManager.refreshCounts(pending, failed)
+            }
+        }
+    }
 
     override fun onCleared() {
         super.onCleared()

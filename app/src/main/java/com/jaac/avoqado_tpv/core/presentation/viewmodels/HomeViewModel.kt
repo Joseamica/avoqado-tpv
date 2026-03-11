@@ -107,7 +107,9 @@ class HomeViewModel @Inject constructor(
     private val orderSyncCoordinator: OrderSyncCoordinator,
     // ⏱ Attendance state for WelcomeScreen timeclock card
     private val timeEntryRepository: TimeEntryRepository,
-    private val tpvSettingsRepository: TpvSettingsRepository
+    private val tpvSettingsRepository: TpvSettingsRepository,
+    // 📸 Pending verifications count for WelcomeScreen card
+    private val saleVerificationRepository: com.jaac.avoqado_tpv.features.payment.data.repository.SaleVerificationRepository
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -186,6 +188,13 @@ class HomeViewModel @Inject constructor(
     private val _salesGoals = MutableStateFlow<List<ModuleSalesGoal>>(emptyList())
     val salesGoals: StateFlow<List<ModuleSalesGoal>> = _salesGoals.asStateFlow()
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PENDING VERIFICATIONS (non-blocking proof-of-sale)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private val _pendingVerificationsCount = MutableStateFlow(0)
+    val pendingVerificationsCount: StateFlow<Int> = _pendingVerificationsCount.asStateFlow()
+
     // Pull-to-refresh state
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
@@ -229,6 +238,7 @@ class HomeViewModel @Inject constructor(
         warmUpProductCache()                // delay(3_000)
         checkForUpdates()                   // delay(4_000)
         loadInitialQueueCounts()            // delay(3_000)
+        fetchPendingVerificationsCount()    // delay(3_000)
 
         Timber.d("[PERF] HomeVM.init ALL LAUNCHED in ${System.currentTimeMillis() - initStartTime}ms")
     }
@@ -469,6 +479,33 @@ class HomeViewModel @Inject constructor(
     }
 
     /**
+     * 📸 Fetch pending verifications count (deferred, non-critical)
+     */
+    private fun fetchPendingVerificationsCount() {
+        viewModelScope.launch(Dispatchers.IO) {
+            delay(3_000) // Deferred startup
+            saleVerificationRepository.getPendingVerifications()
+                .onSuccess { verifications ->
+                    _pendingVerificationsCount.value = verifications.size
+                    Timber.d("📸 Pending verifications count: ${verifications.size}")
+                }
+                .onFailure { e ->
+                    Timber.e(e, "📸 Failed to fetch pending verifications count")
+                }
+        }
+    }
+
+    /**
+     * 📸 Refresh pending verifications count (called after returning from upload screen)
+     */
+    fun refreshPendingVerifications() {
+        viewModelScope.launch(Dispatchers.IO) {
+            saleVerificationRepository.getPendingVerifications()
+                .onSuccess { _pendingVerificationsCount.value = it.size }
+        }
+    }
+
+    /**
      * 🔄 Refresh Dashboard (Pull-to-Refresh)
      *
      * Public method to manually refresh all dashboard data.
@@ -482,6 +519,7 @@ class HomeViewModel @Inject constructor(
                 fetchSalesGoal(skipDelay = true)
                 loadStaffInfo()
                 fetchAttendanceState()
+                refreshPendingVerifications()
             } finally {
                 _isRefreshing.value = false
             }

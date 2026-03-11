@@ -579,7 +579,11 @@ fun AppNavigation(
             isExpanded = deviceAlertsExpanded,
             onToggleExpand = { deviceHealthViewModel.toggleExpanded() },
             onDismiss = { alert -> deviceHealthViewModel.dismissAlert(alert) },
-            onRetry = { connectionViewModel.forceCheck() }, // For connection alerts
+            onRetry = {
+                connectionViewModel.forceCheck()
+                deviceHealthViewModel.retryFailedPayments() // Reset FAILED→PENDING for retry
+                PaymentSyncScheduler.runNow(context) // Trigger immediate sync (don't wait 15 min)
+            },
             onUpdate = {
                 if (BuildConfig.ENABLE_PAX_SDK) {
                     navController.navigate(NavRoute.SelfUpdate.route)
@@ -854,6 +858,9 @@ fun AppNavigation(
                 },
                 onNavigateToTrainings = {
                     navController.navigate(NavRoute.Trainings.route)
+                },
+                onNavigateToPendingVerifications = {
+                    navController.navigate("pending_verifications")
                 },
                 onNavigateToTimeclock = {
                     // ⏱ Navigate to Timeclock from WelcomeScreen (fromHome=true, auto clock-in)
@@ -1563,6 +1570,13 @@ fun AppNavigation(
                 onTrainingClick = { trainingId ->
                     navController.navigate(NavRoute.TrainingViewer.createRoute(trainingId))
                 }
+            )
+        }
+
+        // 📸 Pending Verifications - Non-blocking proof-of-sale upload
+        composable("pending_verifications") {
+            com.jaac.avoqado_tpv.features.payment.presentation.PendingVerificationsScreen(
+                navController = navController
             )
         }
 

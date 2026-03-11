@@ -118,4 +118,13 @@ data class FastPaymentRequest(
     // This is the Terminal.serialNumber (e.g., "AVQD-2841548417"), NOT blumonSerialNumber
     @SerializedName("deviceSerialNumber")
     val deviceSerialNumber: String? = null,
+
+    // 📸 NON-BLOCKING PROOF-OF-SALE (2026-03-10)
+    // For SERIALIZED_INVENTORY mode: backend creates PENDING SaleVerification record
+    // Staff can upload photos later from "Pendientes Verificacion" screen
+    @SerializedName("isPortabilidad")
+    val isPortabilidad: Boolean? = null,
+
+    @SerializedName("serialNumbers")
+    val serialNumbers: List<String>? = null, // ICCID(s) from scanned SIMs
 )

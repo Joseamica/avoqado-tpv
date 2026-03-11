@@ -580,6 +580,17 @@ interface ApiService {
         @Body request: ProofOfSaleRequest
     ): Response<ProofOfSaleResponse>
 
+    /**
+     * Get pending verifications for the authenticated staff
+     *
+     * GET /tpv/verification/pending
+     *
+     * Returns verifications with status=PENDING for the staff in the JWT.
+     * Used by the "Pendientes Verificacion" screen on WelcomeScreen.
+     */
+    @GET("tpv/verification/pending")
+    suspend fun getPendingVerifications(): Response<PendingVerificationsResponse>
+
     // ========== TPV Messages (Dashboard → Terminal) ==========
 
     /**
@@ -1634,13 +1645,36 @@ data class ApiErrorResponse(
 
 data class ProofOfSaleRequest(
     val paymentId: String,
-    val photoUrls: List<String>
+    val photoUrls: List<String>,
+    val verificationId: String? = null, // Non-blocking flow: update existing PENDING verification
+    val replaceIndex: Int? = null, // Replace photo at this index instead of appending (0=Vinculacion, 1=Portabilidad)
+    val photoLabel: String? = null // Fixed slot: "Vinculacion"=index 0, "Portabilidad"=index 1
 )
 
 data class ProofOfSaleResponse(
     val success: Boolean,
     val verificationId: String,
+    val status: String? = null, // "PENDING" or "COMPLETED"
     val message: String?
+)
+
+// ========== Pending Verifications DTOs ==========
+
+data class PendingVerificationsResponse(
+    val success: Boolean,
+    val data: List<PendingVerificationDto>
+)
+
+data class PendingVerificationDto(
+    val id: String,
+    val paymentId: String,
+    val amount: Double,
+    val orderNumber: String?,
+    val date: String, // ISO timestamp
+    val serialNumbers: List<String>,
+    val isPortabilidad: Boolean,
+    val photos: List<String>,
+    val requiredPhotos: Int
 )
 
 // ========== Sales Goal DTOs ==========

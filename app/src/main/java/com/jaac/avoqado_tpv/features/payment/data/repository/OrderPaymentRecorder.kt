@@ -299,6 +299,10 @@ class OrderPaymentRecorder @Inject constructor(
             // ⭐ Device Serial Number for Terminal attribution (2026-01-08)
             // Links payment to the Terminal that processed it (for device-based reporting)
             deviceSerialNumber = context.deviceSerialNumber,
+
+            // 📸 NON-BLOCKING PROOF-OF-SALE (2026-03-10)
+            isPortabilidad = context.isPortabilidad.takeIf { it },
+            serialNumbers = context.serialNumbers.takeIf { it.isNotEmpty() },
         )
     }
 }

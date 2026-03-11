@@ -78,6 +78,9 @@ sealed class PaymentContext {
         // 💸 Blumon Operation Number (2025-12-16) - For refunds without webhook
         // This comes from response.operation in SaleIccResponse
         val blumonOperationNumber: Int? = null,
+        // 📸 NON-BLOCKING PROOF-OF-SALE (2026-03-10)
+        val isPortabilidad: Boolean = false,
+        val serialNumbers: List<String> = emptyList(), // ICCID(s) from scanned SIMs
     ) : PaymentContext()
 
     /**
@@ -126,6 +129,9 @@ sealed class PaymentContext {
         // 💸 Blumon Operation Number (2025-12-16) - For refunds without webhook
         // This comes from response.operation in SaleIccResponse
         val blumonOperationNumber: Int? = null,
+        // 📸 NON-BLOCKING PROOF-OF-SALE (2026-03-10)
+        val isPortabilidad: Boolean = false,
+        val serialNumbers: List<String> = emptyList(),
     ) : PaymentContext()
 
     /**

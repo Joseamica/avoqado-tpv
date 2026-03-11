@@ -3,8 +3,11 @@ package com.jaac.avoqado_tpv.core.presentation.screens
 import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -20,10 +23,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Help
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Restaurant
@@ -44,6 +49,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -83,6 +89,7 @@ import com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel
 import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.permissions.di.PermissionsEntryPoint
 import com.jaac.avoqado_tpv.features.remote_command.presentation.LockScreenOverlay
 import com.jaac.avoqado_tpv.features.remote_command.presentation.MaintenanceOverlay
@@ -134,6 +141,7 @@ fun WelcomeScreen(
     onNavigateToTimeclockForClockOut: () -> Unit = {},  // ⏱ Navigate to TimeclockScreen for clock-out
     onNavigateToMessages: () -> Unit = {},  // 📨 Navigate to Messages screen
     onNavigateToTrainings: () -> Unit = {},  // 🎓 Navigate to Trainings screen
+    onNavigateToPendingVerifications: () -> Unit = {},  // 📸 Navigate to Pending Verifications
     onRefreshConnection: () -> Unit = {},
     onLogout: () -> Unit = {},
     isDarkMode: Boolean = false,
@@ -162,6 +170,9 @@ fun WelcomeScreen(
 
     // Initial loading state (shows overlay during post-login sync)
     val isInitialLoading by shiftViewModel.isInitialLoading.collectAsStateWithLifecycle()
+
+    // 📸 Pending verifications count for non-blocking proof-of-sale
+    val pendingVerificationsCount by viewModel.pendingVerificationsCount.collectAsStateWithLifecycle()
 
     // ═══════════════════════════════════════════════════════════════════════════
     // REMOTE COMMAND STATE (Lock & Maintenance)
@@ -232,11 +243,15 @@ fun WelcomeScreen(
     // Refresh sales goals + attendance when WelcomeScreen resumes
     // (e.g., after completing a payment or returning from TimeclockScreen).
     // Skip first resume since HomeViewModel.init{} already fetches on startup.
+    // NOTE: refreshPendingVerifications() runs on EVERY resume (including first)
+    // because the composable may be re-created on navigation back, resetting isFirstResume.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         var isFirstResume = true
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
+                // Always refresh pending verifications (lightweight, no delay needed)
+                viewModel.refreshPendingVerifications()
                 if (isFirstResume) {
                     isFirstResume = false
                 } else {
@@ -285,6 +300,8 @@ fun WelcomeScreen(
         onNavigateToTimeclockForClockOut = onNavigateToTimeclockForClockOut,
         onNavigateToMessages = onNavigateToMessages,
         onNavigateToTrainings = onNavigateToTrainings,
+        pendingVerificationsCount = pendingVerificationsCount,
+        onNavigateToPendingVerifications = onNavigateToPendingVerifications,
         messageHistory = messageHistory,
         isLoadingMessageHistory = isLoadingMessageHistory,
         onMessageClick = onMessageClick,
@@ -498,6 +515,8 @@ private fun WelcomeScreenContent(
     onNavigateToTimeclockForClockOut: () -> Unit = {},  // ⏱ Navigate for clock-out
     onNavigateToMessages: () -> Unit = {},  // 📨 Navigate to Messages screen
     onNavigateToTrainings: () -> Unit = {},  // 🎓 Navigate to Trainings screen
+    pendingVerificationsCount: Int = 0,  // 📸 Pending proof-of-sale verifications
+    onNavigateToPendingVerifications: () -> Unit = {},  // 📸 Navigate to pending verifications
     messageHistory: List<TpvMessageUiModel> = emptyList(),  // 📨 Message inbox history
     isLoadingMessageHistory: Boolean = false,  // 📨 Loading state for history
     onMessageClick: (TpvMessageUiModel) -> Unit = {},  // 📨 Open message dialog
@@ -867,6 +886,18 @@ private fun WelcomeScreenContent(
                         }
 
                         // ═══════════════════════════════════════════════════════════════
+                        // PENDING VERIFICATIONS CARD
+                        // Shows count of sales missing proof-of-sale photos
+                        // Visible only when SERIALIZED_INVENTORY mode has pending items
+                        // ═══════════════════════════════════════════════════════════════
+                        if (pendingVerificationsCount > 0) {
+                            PendingVerificationsCard(
+                                count = pendingVerificationsCount,
+                                onClick = onNavigateToPendingVerifications
+                            )
+                        }
+
+                        // ═══════════════════════════════════════════════════════════════
                         // SALES GOALS PAGER
                         // Shows progress toward sales goals in a horizontal pager.
                         // Uses salesGoals from HomeViewModel (fetched from backend).
@@ -1099,5 +1130,70 @@ private fun WelcomeScreenWithActiveShiftPreview() {
             onNavigateToSuperAdmin = {},
             onLogout = {}
         )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PENDING VERIFICATIONS CARD
+// Shows count of sales with missing proof-of-sale photos (SERIALIZED_INVENTORY)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun PendingVerificationsCard(
+    count: Int,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.12f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.2f),
+                modifier = Modifier.size(40.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.CameraAlt,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.avoqadoColors.statusWarning
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Pendientes Verificacion",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "$count venta${if (count != 1) "s" else ""} sin verificar",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                contentDescription = "Ver pendientes",
+                tint = MaterialTheme.avoqadoColors.statusWarning,
+                modifier = Modifier.size(20.dp)
+            )
+        }
     }
 }

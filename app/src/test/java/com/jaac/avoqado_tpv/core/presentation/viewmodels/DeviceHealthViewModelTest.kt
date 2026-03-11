@@ -46,6 +46,7 @@ class DeviceHealthViewModelTest {
     private lateinit var connectionStateManager: ConnectionStateManager
     private lateinit var updateCheckManager: UpdateCheckManager
     private lateinit var paymentQueueStateManager: com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
+    private lateinit var paymentQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
 
     private val fakeNetworkStatus = MutableSharedFlow<NetworkStatus>()
     private val fakeSimulatedAlerts = MutableStateFlow<Set<DeviceAlert>>(emptySet())
@@ -84,6 +85,7 @@ class DeviceHealthViewModelTest {
         connectionStateManager = mockk(relaxed = true)
         updateCheckManager = mockk(relaxed = true)
         paymentQueueStateManager = com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager()
+        paymentQueueRepository = mockk(relaxed = true)
 
         every { deviceHealthMonitor.getSystemHealth() } returns healthySystem()
         every { networkMonitor.getCurrentNetworkInfo() } returns connectedNetworkInfo
@@ -107,7 +109,8 @@ class DeviceHealthViewModelTest {
             simulatedAlertsManager = simulatedAlertsManager,
             connectionStateManager = connectionStateManager,
             updateCheckManager = updateCheckManager,
-            paymentQueueStateManager = paymentQueueStateManager
+            paymentQueueStateManager = paymentQueueStateManager,
+            paymentQueueRepository = paymentQueueRepository
         )
     }
 

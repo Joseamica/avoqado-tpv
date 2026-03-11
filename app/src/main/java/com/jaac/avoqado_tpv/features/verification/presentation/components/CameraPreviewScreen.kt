@@ -89,7 +89,8 @@ fun CameraPreviewScreen(
     onPhotoCaptured: (String) -> Unit,
     onClose: () -> Unit,
     outputDirectory: File,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    photoLabel: String? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -231,6 +232,7 @@ fun CameraPreviewScreen(
                 onFlashToggle = { flashEnabled = !flashEnabled },
                 onCapture = performCapture,
                 onClose = onClose,
+                photoLabel = photoLabel,
                 modifier = Modifier.fillMaxSize()
             )
         } else {
@@ -333,6 +335,7 @@ private fun CameraControls(
     onFlashToggle: () -> Unit,
     onCapture: () -> Unit,
     onClose: () -> Unit,
+    photoLabel: String? = null,
     modifier: Modifier = Modifier
 ) {
     Box(modifier = modifier) {
@@ -427,9 +430,28 @@ private fun CameraControls(
             }
         }
 
+        // Photo label banner (e.g., "1. Vinculación" or "2. Portabilidad")
+        if (photoLabel != null) {
+            val labelColor = MaterialTheme.avoqadoColors.statusInfo
+            Text(
+                text = photoLabel,
+                color = Color.White,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 72.dp)
+                    .background(
+                        color = labelColor.copy(alpha = 0.85f),
+                        shape = RoundedCornerShape(20.dp)
+                    )
+                    .padding(horizontal = 20.dp, vertical = 10.dp)
+            )
+        }
+
         // Instructions
         Text(
-            text = "Toma una foto de verificacion",
+            text = if (photoLabel != null) "Toma foto de $photoLabel" else "Toma una foto de verificacion",
             color = Color.White,
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier

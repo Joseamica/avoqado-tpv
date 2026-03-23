@@ -212,7 +212,7 @@ fun AppNavigation(
             }
 
             val currentRoute = navController.currentBackStackEntry?.destination?.route
-            if (currentRoute == NavRoute.Payment.route) {
+            if (currentRoute == NavRoute.Payment.route || currentRoute == NavRoute.AngelPayPayment.route) {
                 Timber.w("⚠️ [BLE] Payment already in progress - ignoring amount: ${request.amountCents}")
                 // If this came via socket, send rejection back so iOS doesn't hang
                 if (request.source == com.jaac.avoqado_tpv.core.bluetooth.PaymentSource.SOCKET && request.socketRequestId != null) {
@@ -256,8 +256,8 @@ fun AppNavigation(
             handle.set("socketRequestId", request.socketRequestId)
 
             val sourceLabel = if (request.source == com.jaac.avoqado_tpv.core.bluetooth.PaymentSource.SOCKET) "SOCKET" else "BLE"
-            Timber.i("🔵 [$sourceLabel] Navigating to payment | amount=$formattedAmount | cents=${request.amountCents} | orderId=${request.orderId ?: "null"}")
-            navController.navigate(NavRoute.Payment.route) {
+            Timber.i("🔵 [$sourceLabel] Navigating to payment | amount=$formattedAmount | cents=${request.amountCents} | orderId=${request.orderId ?: "null"} | nexgo=${isAppToAppPayment()}")
+            navController.navigate(getPaymentRoute()) {
                 launchSingleTop = true
             }
         }
@@ -267,7 +267,7 @@ fun AppNavigation(
     LaunchedEffect(bluetoothPaymentService) {
         bluetoothPaymentService.paymentCancelRequests.collect { requestId ->
             val currentRoute = navController.currentBackStackEntry?.destination?.route
-            if (currentRoute == NavRoute.Payment.route) {
+            if (currentRoute == NavRoute.Payment.route || currentRoute == NavRoute.AngelPayPayment.route) {
                 Timber.i("🚫 [Cancel] Cancelling payment (requestId=$requestId) - navigating to Home")
                 navController.navigate(NavRoute.Home.route) {
                     popUpTo(NavRoute.Home.route) { inclusive = false }
@@ -798,9 +798,9 @@ fun AppNavigation(
             WelcomeScreen(
                 onRefreshConnection = { connectionViewModel.forceCheck() },
                 onStartPaymentWithAmount = { amount ->
-                    Timber.d("[PERF] NAV: Welcome → PaymentScreen START")
+                    Timber.d("[PERF] NAV: Welcome → PaymentScreen START (nexgo=${isAppToAppPayment()})")
                     navController.currentBackStackEntry?.savedStateHandle?.set("initialAmount", amount)
-                    navController.navigate(NavRoute.Payment.route)
+                    navController.navigate(getPaymentRoute())
                 },
                 onNavigateToShifts = {
                     Timber.d("[PERF] NAV: Welcome → Shifts START")
@@ -931,7 +931,7 @@ fun AppNavigation(
                 onAmountSubmit = { amount ->
                     // Navigate to PaymentScreen with amount
                     navController.currentBackStackEntry?.savedStateHandle?.set("initialAmount", amount)
-                    navController.navigate(NavRoute.Payment.route)
+                    navController.navigate(getPaymentRoute())
                 }
             )
         }
@@ -1009,8 +1009,8 @@ fun AppNavigation(
                         // 💳 PAY-LATER CONTEXT: Detect if order has customers
                         set("wasPayLaterOrder", isPayLaterOrder)
                     }
-                    navController.navigate(NavRoute.Payment.route)
-                    Timber.d("💳 Navigating to payment: ${order.orderNumber} - Remaining: $${order.remainingBalance} (Total: $${order.total}) | wasPayLater=$isPayLaterOrder | customers=${order.orderCustomers.size}")
+                    navController.navigate(getPaymentRoute())
+                    Timber.d("💳 Navigating to payment: ${order.orderNumber} - Remaining: $${order.remainingBalance} (Total: $${order.total}) | wasPayLater=$isPayLaterOrder | nexgo=${isAppToAppPayment()}")
                 },
                 onProcessPaymentWithAmount = { order, customAmount, splitType ->
                     // Custom amount payment with split type (CUSTOMAMOUNT)
@@ -1024,8 +1024,8 @@ fun AppNavigation(
                         // 💳 PAY-LATER CONTEXT: Detect if order has customers
                         set("wasPayLaterOrder", isPayLaterOrder)
                     }
-                    navController.navigate(NavRoute.Payment.route)
-                    Timber.d("💳 Navigating to custom amount payment: $customAmount with splitType=${splitType.value} | wasPayLater=$isPayLaterOrder | customers=${order.orderCustomers.size}")
+                    navController.navigate(getPaymentRoute())
+                    Timber.d("💳 Navigating to custom amount payment: $customAmount with splitType=${splitType.value} | wasPayLater=$isPayLaterOrder | nexgo=${isAppToAppPayment()}")
                 },
                 onNavigateToSplitByProduct = { splitOrderId, hasCustomers ->
                     // 💳 Pass wasPayLaterOrder through savedStateHandle for split screen to forward
@@ -1793,8 +1793,8 @@ fun AppNavigation(
                         set("serialNumber", serialNumber)  // 📱 ICCID/serial for receipt
                         set("categoryName", categoryName)  // 📱 Category name for receipt
                     }
-                    navController.navigate(NavRoute.Payment.route)
-                    Timber.d("💳 Serialized sale: Navigating to payment for order $orderId (#$orderNumber), amount $orderTotal, serial=$serialNumber, category=$categoryName (skipLocalValidation=true, isPortabilidad=$isPortabilidad)")
+                    navController.navigate(getPaymentRoute())
+                    Timber.d("💳 Serialized sale: Navigating to payment for order $orderId (#$orderNumber), amount $orderTotal, serial=$serialNumber, category=$categoryName (skipLocalValidation=true, isPortabilidad=$isPortabilidad, nexgo=${isAppToAppPayment()})")
                 },
                 resetOnEnter = shouldReset
             )
@@ -1844,6 +1844,38 @@ fun AppNavigation(
                         popUpTo(0) { inclusive = true }
                     }
                 }
+            )
+        }
+
+        // 🔶 ANGELPAY Payment Screen — app-to-app Intent on Nexgo N86 terminals
+        // COMPLETELY ISOLATED from Blumon PaymentScreen (separate ViewModel, state, route)
+        composable(NavRoute.AngelPayPayment.route) {
+            val initialAmount = navController.previousBackStackEntry?.savedStateHandle?.get<String>("initialAmount")
+            val orderId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderId")
+            val orderNumber = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderNumber")
+
+            com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentScreen(
+                initialAmount = initialAmount,
+                orderId = orderId,
+                orderNumber = orderNumber,
+                onNavigateBack = {
+                    val popped = navController.safePopBackStack()
+                    if (!popped) {
+                        navController.safePopBackStack(NavRoute.Home.route, inclusive = false)
+                    }
+                },
+                onNavigateHome = {
+                    val popped = navController.safePopBackStack(NavRoute.Home.route, inclusive = false)
+                    if (!popped) {
+                        navController.navigate(NavRoute.Home.route) {
+                            popUpTo(NavRoute.Home.route) { inclusive = false }
+                            launchSingleTop = true
+                        }
+                    }
+                },
+                onNavigateToShifts = {
+                    navController.navigate(NavRoute.Shifts.route)
+                },
             )
         }
     }
@@ -2198,5 +2230,23 @@ private fun formatAmountFromCents(amountCents: Long): String {
         .movePointLeft(2)
         .setScale(2, RoundingMode.HALF_UP)
         .toPlainString()
+}
+
+/**
+ * Check if this build uses an app-to-app payment processor (AngelPay) instead of embedded SDK (Blumon).
+ * Determined by BuildConfig.ENABLE_PAX_SDK which is set per Gradle flavor:
+ * - sandbox/production → true (Blumon SDK)
+ * - nexgo → false (AngelPay app-to-app)
+ * - tutorialEmu → false (no payment processing)
+ */
+private fun isAppToAppPayment(): Boolean = !com.jaac.avoqado_tpv.BuildConfig.ENABLE_PAX_SDK
+
+/**
+ * Get the appropriate payment route based on build flavor.
+ * - ENABLE_PAX_SDK=false (nexgo) → AngelPayPayment (app-to-app Intent)
+ * - ENABLE_PAX_SDK=true (sandbox/production) → Payment (Blumon SDK)
+ */
+private fun getPaymentRoute(): String {
+    return if (isAppToAppPayment()) NavRoute.AngelPayPayment.route else NavRoute.Payment.route
 }
 

@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.core.data.network.dto
 
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEnvironment
+import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
 
 /**
  * Mapper extensions for TerminalConfigDto → Domain Models
@@ -31,20 +32,26 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEnvironment
  * @return MerchantAccount domain model
  */
 fun MerchantAccountDto.toDomain(): MerchantAccount {
-    val env = when (environment.uppercase()) {
+    val env = when (environment?.uppercase()) {
         "PRODUCTION" -> MerchantEnvironment.PRODUCTION
         else -> MerchantEnvironment.SANDBOX  // Default to sandbox for safety
+    }
+
+    val processor = when (providerCode?.uppercase()) {
+        "ANGELPAY" -> ProcessorType.ANGELPAY
+        else -> ProcessorType.BLUMON
     }
 
     return MerchantAccount(
         id = id,  // Keep for backwards compatibility
         merchantAccountId = id,  // ✅ FIX: Backend CUID for API payment recording
-        serialNumber = serialNumber,
+        serialNumber = serialNumber ?: "",
         posId = posId,
         displayName = displayName,
         description = null,  // Backend doesn't return description in this endpoint
         environment = env,
-        isActive = true  // Backend only returns active merchants in config endpoint
+        isActive = true,  // Backend only returns active merchants in config endpoint
+        processorType = processor
     )
 }
 

@@ -7,6 +7,7 @@ import com.jaac.avoqado_tpv.features.payment.data.dto.RefundRequest
 import com.jaac.avoqado_tpv.features.payment.data.dto.RefundResponse
 import com.jaac.avoqado_tpv.features.payment.data.dto.SendReceiptRequest
 import com.jaac.avoqado_tpv.features.payment.data.dto.SendReceiptResponse
+import com.jaac.avoqado_tpv.features.payment.data.dto.SendWhatsAppReceiptRequest
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.POST
@@ -271,6 +272,21 @@ interface PaymentApiService {
         @Path("venueId") venueId: String,
         @Path("paymentId") paymentId: String,
         @Body request: SendReceiptRequest,
+    ): Response<SendReceiptResponse>
+
+    /**
+     * Envía recibo de pago por WhatsApp.
+     *
+     * @param venueId ID del venue actual
+     * @param paymentId ID del pago para enviar el recibo
+     * @param request Datos del envío (recipientPhone)
+     * @return Response con SendReceiptResponse o error HTTP
+     */
+    @POST("tpv/venues/{venueId}/payments/{paymentId}/send-whatsapp")
+    suspend fun sendReceiptWhatsApp(
+        @Path("venueId") venueId: String,
+        @Path("paymentId") paymentId: String,
+        @Body request: SendWhatsAppReceiptRequest,
     ): Response<SendReceiptResponse>
 
     /**

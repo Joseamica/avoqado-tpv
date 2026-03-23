@@ -130,7 +130,8 @@ fun SerializedInventoryScreen(
                                 lastScanFeedback = when (result) {
                                     is InventoryScanResult.Added -> "✓ Agregado: $barcode"
                                     is InventoryScanResult.AlreadyScanned -> "Ya escaneado: $barcode"
-                                    is InventoryScanResult.Duplicate -> "⚠ Ya registrado"
+                                    is InventoryScanResult.Duplicate -> "⚠ Ya registrado: ${result.serialNumber}"
+                                    is InventoryScanResult.Error -> "⚠ Error de conexión, reintenta"
                                 }
                             }
                             // Don't close scanner - allow continuous scanning
@@ -475,7 +476,8 @@ private fun InventoryFormContent(
                                         scanFeedback = when (result) {
                                             is InventoryScanResult.Added -> "✓ $barcode"
                                             is InventoryScanResult.AlreadyScanned -> "⚠ Ya escaneado"
-                                            is InventoryScanResult.Duplicate -> "⚠ Ya registrado"
+                                            is InventoryScanResult.Duplicate -> "⚠ Ya registrado: ${result.serialNumber}"
+                                            is InventoryScanResult.Error -> "⚠ Error, reintenta"
                                         }
                                     }
                                     physicalScannerInput = ""
@@ -531,7 +533,8 @@ private fun InventoryFormContent(
                             scanFeedback = when (result) {
                                 is InventoryScanResult.Added -> "✓ $barcode"
                                 is InventoryScanResult.AlreadyScanned -> "⚠ Ya escaneado"
-                                is InventoryScanResult.Duplicate -> "⚠ Ya registrado"
+                                is InventoryScanResult.Duplicate -> "⚠ Ya registrado: ${result.serialNumber}"
+                                is InventoryScanResult.Error -> "⚠ Error, reintenta"
                             }
                             Timber.d("📦 Scan result: $scanFeedback")
                         }

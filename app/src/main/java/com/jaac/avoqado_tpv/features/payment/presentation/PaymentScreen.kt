@@ -68,6 +68,7 @@ import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPayme
 import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentQrScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.components.KioskCashConfirmationContent
 import com.jaac.avoqado_tpv.features.payment.presentation.components.PaymentApprovedScreen
+import com.jaac.avoqado_tpv.features.payment.presentation.components.WhatsAppReceiptDialog
 import com.jaac.avoqado_tpv.features.verification.presentation.VerificationScreen
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
 import com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen
@@ -787,6 +788,7 @@ fun PaymentScreen(
                                     onNavigateToPayLaterOrders()
                                 },  // 💳 Navigate to pay-later list
                                 onSendReceipt = viewModel::sendReceiptByEmail,
+                                onSendReceiptWhatsApp = viewModel::sendReceiptByWhatsApp,
                                 isSendingReceipt = isSendingReceipt,
                                 // 👤 Customer search for email receipt dialog
                                 customerSearchState = customerSearchState,
@@ -1372,7 +1374,8 @@ private fun PaymentSuccessContent(
     onContinuePayment: () -> Unit = {},  // ⭐ NEW: Continue paying remaining balance
     onNavigateToPayLaterOrders: () -> Unit = {},  // 💳 Navigate to pay-later orders list
     onSendReceipt: (email: String) -> Unit = {},  // 📧 Send receipt by email
-    isSendingReceipt: Boolean = false,  // 📧 Loading state for sending receipt
+    onSendReceiptWhatsApp: (phone: String) -> Unit = {},  // 💬 Send receipt by WhatsApp
+    isSendingReceipt: Boolean = false,  // 📧💬 Loading state for sending receipt
     // 👤 Customer search for email receipt dialog
     customerSearchState: CustomerSearchState = CustomerSearchState.Idle,
     recentCustomers: List<Customer> = emptyList(),
@@ -1392,10 +1395,12 @@ private fun PaymentSuccessContent(
 ) {
     val displayOrderNumber = OrderNumberFormatter.display(orderNumber)
 
-    // Parse amounts (prefer receipt data if available)
-    val totalAmount = receipt?.totalAmount ?: (amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)  // ✅ FIX: Use totalAmount (includes tip)
-    val tipAmount = receipt?.tipAmount ?: java.math.BigDecimal.ZERO
-    val subtotalAmount = receipt?.baseAmount ?: totalAmount
+    // Parse amounts (prefer receipt data if available) — memoized to avoid repeated BigDecimal parsing
+    val totalAmount = remember(receipt, amount) {
+        receipt?.totalAmount ?: (amount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO)
+    }
+    val tipAmount = remember(receipt) { receipt?.tipAmount ?: java.math.BigDecimal.ZERO }
+    val subtotalAmount = remember(receipt, totalAmount) { receipt?.baseAmount ?: totalAmount }
 
     // ⭐ Check if there's remaining balance (split payment scenario)
     val hasRemainingBalance = remainingBalance != null && remainingBalance > java.math.BigDecimal.ZERO
@@ -1405,6 +1410,8 @@ private fun PaymentSuccessContent(
 
     // 📧 State for email receipt dialog
     var showEmailDialog by remember { mutableStateOf(false) }
+    // 💬 State for WhatsApp receipt dialog
+    var showWhatsAppDialog by remember { mutableStateOf(false) }
 
     // 📸 State for proof-of-sale camera (multi-photo wizard)
     var showProofOfSaleCamera by remember { mutableStateOf(false) }
@@ -1714,8 +1721,11 @@ private fun PaymentSuccessContent(
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurface
                         )
+                        val formattedTotal = remember(totalAmount) {
+                            "$${String.format(java.util.Locale.US, "%.2f", totalAmount)}"
+                        }
                         Text(
-                            text = "$${String.format(java.util.Locale.US, "%.2f", totalAmount)}",
+                            text = formattedTotal,
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -1734,8 +1744,11 @@ private fun PaymentSuccessContent(
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.error  // Red to highlight pending
                             )
+                            val formattedRemaining = remember(remainingBalance) {
+                                "$${String.format(java.util.Locale.US, "%.2f", remainingBalance)}"
+                            }
                             Text(
-                                text = "$${String.format(java.util.Locale.US, "%.2f", remainingBalance)}",
+                                text = formattedRemaining,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.error
@@ -1765,8 +1778,11 @@ private fun PaymentSuccessContent(
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        val formattedSubtotal = remember(subtotalAmount) {
+                            "$${String.format(java.util.Locale.US, "%.2f", subtotalAmount)}"
+                        }
                         Text(
-                            text = "$${String.format(java.util.Locale.US, "%.2f", subtotalAmount)}",
+                            text = formattedSubtotal,
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1782,8 +1798,11 @@ private fun PaymentSuccessContent(
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        val formattedTip = remember(tipAmount) {
+                            "$${String.format(java.util.Locale.US, "%.2f", tipAmount)}"
+                        }
                         Text(
-                            text = "$${String.format(java.util.Locale.US, "%.2f", tipAmount)}",
+                            text = formattedTip,
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1796,8 +1815,9 @@ private fun PaymentSuccessContent(
 
         // ⚙️ TPV Settings: Only show receipt options if showReceiptOptions is enabled
         if (showReceiptOptions) {
-            // Segmented button group for receipt options (side by side)
+            // Segmented button group for receipt options (3-way: Print | Email | WhatsApp)
             val buttonShape = RoundedCornerShape(12.dp)
+            val dividerColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
 
             Row(
                 modifier = Modifier
@@ -1807,11 +1827,11 @@ private fun PaymentSuccessContent(
                     .clip(buttonShape)
                     .border(
                         width = 1.dp,
-                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f),
+                        color = dividerColor,
                         shape = buttonShape
                     )
             ) {
-                // 🖨️ Print receipt button (left) - shows "Imprimiendo..." when printing
+                // 🖨️ Print receipt button (left)
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -1825,7 +1845,6 @@ private fun PaymentSuccessContent(
                         horizontalArrangement = Arrangement.Center
                     ) {
                         if (isPrinting) {
-                            // 🖨️ Show spinner while printing
                             CircularProgressIndicator(
                                 modifier = Modifier.size(16.dp),
                                 strokeWidth = 2.dp,
@@ -1839,10 +1858,10 @@ private fun PaymentSuccessContent(
                                 modifier = Modifier.size(18.dp)
                             )
                         }
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = if (isPrinting) "Imprimiendo..." else "Imprimir",
-                            style = MaterialTheme.typography.labelLarge,
+                            text = if (isPrinting) "..." else "Imprimir",
+                            style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                     }
@@ -1853,16 +1872,16 @@ private fun PaymentSuccessContent(
                     modifier = Modifier
                         .width(1.dp)
                         .fillMaxHeight()
-                        .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                        .background(dividerColor)
                 )
 
-                // 📧 Send receipt by email button (right)
+                // 📧 Email button (center)
                 Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
                         .background(MaterialTheme.colorScheme.surface)
-                        .clickable { showEmailDialog = true },  // Material3 uses theme ripple by default
+                        .clickable { showEmailDialog = true },
                     contentAlignment = Alignment.Center
                 ) {
                     Row(
@@ -1871,14 +1890,50 @@ private fun PaymentSuccessContent(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Email,
-                            contentDescription = "Enviar",
+                            contentDescription = "Email",
                             tint = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.size(18.dp)
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "Enviar",
-                            style = MaterialTheme.typography.labelLarge,
+                            text = "Email",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+
+                // Divider
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .fillMaxHeight()
+                        .background(dividerColor)
+                )
+
+                // 💬 WhatsApp button (right)
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .background(MaterialTheme.colorScheme.surface)
+                        .clickable { showWhatsAppDialog = true },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = "WA",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF25D366),
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "WhatsApp",
+                            style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                     }
@@ -2150,6 +2205,25 @@ private fun PaymentSuccessContent(
             onSearchCustomer = onSearchCustomer,
             onLoadRecentCustomers = onLoadRecentCustomers,
             onResetSearch = onResetCustomerSearch
+        )
+    }
+
+    // 💬 WhatsApp receipt dialog
+    if (showWhatsAppDialog) {
+        WhatsAppReceiptDialog(
+            onDismiss = { showWhatsAppDialog = false },
+            onSend = { phone ->
+                onSendReceiptWhatsApp(phone)
+                showWhatsAppDialog = false
+            },
+            isLoading = isSendingReceipt,
+            showCustomerSearch = flowOrigin != PaymentFlowOrigin.SERIALIZED,
+            customerSearchState = customerSearchState,
+            recentCustomers = recentCustomers,
+            isLoadingRecentCustomers = isLoadingRecentCustomers,
+            onSearchCustomer = onSearchCustomer,
+            onLoadRecentCustomers = onLoadRecentCustomers,
+            onResetSearch = onResetCustomerSearch,
         )
     }
 }

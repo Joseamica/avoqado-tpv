@@ -266,6 +266,12 @@ sealed class NavRoute(val route: String) {
     data object SerializedSale : NavRoute("serialized_sale")
 
     /**
+     * AngelPay Payment screen - Payment via AngelPay app-to-app Intent on Nexgo terminals
+     * Isolated from Blumon PaymentScreen — separate ViewModel and state machine
+     */
+    data object AngelPayPayment : NavRoute("angelpay_payment")
+
+    /**
      * Serialized Inventory Register screen - Batch registration of items
      * Select category → Scan multiple barcodes → Register batch
      *

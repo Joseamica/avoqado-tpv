@@ -246,7 +246,7 @@ class SerializedSaleViewModel @Inject constructor(
         val state = _uiState.value
         val price = state.enteredPrice.toBigDecimalOrNull()
 
-        if (price == null || price <= BigDecimal.ZERO) {
+        if (price == null || price < BigDecimal.ZERO) {
             _uiState.update { it.copy(error = "Ingresa un precio válido") }
             return
         }

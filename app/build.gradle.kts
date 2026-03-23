@@ -16,8 +16,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv"
         minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
         targetSdk = 34
-        versionCode = 36
-        versionName = "1.9.0"
+        versionCode = 37
+        versionName = "1.10.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -68,6 +68,12 @@ android {
             buildConfigField("String", "DEFAULT_TERMINAL_SERIAL", "\"2841548417\"")
             buildConfigField("String", "DEFAULT_TERMINAL_BRAND", "\"PAX\"")
             buildConfigField("String", "DEFAULT_TERMINAL_MODEL", "\"A910S\"")
+
+            // AngelPay not used on PAX sandbox — empty placeholders
+            buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_PASSWORD", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_AFFILIATION", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_COMMERCE_TOKEN", "\"\"")
         }
 
         create("production") {
@@ -85,6 +91,12 @@ android {
             buildConfigField("String", "DEFAULT_TERMINAL_SERIAL", "\"2841548417\"")
             buildConfigField("String", "DEFAULT_TERMINAL_BRAND", "\"PAX\"")
             buildConfigField("String", "DEFAULT_TERMINAL_MODEL", "\"A910S\"")
+
+            // AngelPay not used on PAX production — empty placeholders
+            buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_PASSWORD", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_AFFILIATION", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_COMMERCE_TOKEN", "\"\"")
         }
 
         create("tutorialEmu") {
@@ -110,6 +122,12 @@ android {
             buildConfigField("boolean", "ENABLE_PAX_SDK", "false")
             buildConfigField("boolean", "ENABLE_BLUMON_INIT", "false")
 
+            // AngelPay QA credentials (non-sensitive test environment)
+            buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"contacto@avoqado.io\"")
+            buildConfigField("String", "ANGELPAY_QA_PASSWORD", "\"123456\"")
+            buildConfigField("String", "ANGELPAY_QA_AFFILIATION", "\"9814275\"")
+            buildConfigField("String", "ANGELPAY_QA_COMMERCE_TOKEN", "\"1773083056540lIE\"")
+
             // Allow installation on modern emulator ABIs.
             ndk {
                 abiFilters.clear()
@@ -117,11 +135,56 @@ android {
                 abiFilters.add("x86_64")
             }
         }
+
+        create("nexgo") {
+            dimension = "environment"
+            // Reuse sandbox-specific PaymentViewModel/BlumonInitializer (not used, but required for compilation)
+            matchingFallbacks += listOf("sandbox")
+            // Uses sandbox package ID (.sandbox) — registered in Firebase.
+            // When Nexgo goes to production, register .nexgo in Firebase and change this.
+            applicationIdSuffix = ".sandbox"
+            versionNameSuffix = "-nexgo"
+
+            // Firebase Storage environment prefix
+            buildConfigField("String", "STORAGE_ENV_PREFIX", "\"dev\"")
+
+            // AngelPay QA environment — uses sandbox backend + AngelPay QA app
+            buildConfigField("String", "BLUMON_ENV", "\"SAND\"")
+            buildConfigField("String", "TOKEN_SERVER_URL", "\"https://sandbox-tokener.blumonpay.net\"")
+            buildConfigField("String", "CORE_SERVER_URL", "\"https://sandbox-core.blumonpay.net\"")
+
+            // Nexgo N86 terminal defaults
+            buildConfigField("String", "DEFAULT_TERMINAL_SERIAL", "\"NEXGO-N86\"")
+            buildConfigField("String", "DEFAULT_TERMINAL_BRAND", "\"NEXGO\"")
+            buildConfigField("String", "DEFAULT_TERMINAL_MODEL", "\"N86\"")
+
+            // No Blumon SDK on Nexgo — payments via AngelPay app-to-app Intent
+            buildConfigField("boolean", "ENABLE_PAX_SDK", "false")
+            buildConfigField("boolean", "ENABLE_BLUMON_INIT", "false")
+
+            // AngelPay QA credentials (non-sensitive test environment)
+            buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"contacto@avoqado.io\"")
+            buildConfigField("String", "ANGELPAY_QA_PASSWORD", "\"123456\"")
+            buildConfigField("String", "ANGELPAY_QA_AFFILIATION", "\"9814275\"")
+            buildConfigField("String", "ANGELPAY_QA_COMMERCE_TOKEN", "\"1773083056540lIE\"")
+
+            // Nexgo N86 is arm64-v8a (Android 9, API 28)
+            ndk {
+                abiFilters.clear()
+                abiFilters.add("arm64-v8a")
+            }
+        }
     }
 
     sourceSets {
         getByName("tutorialEmu") {
             // Reuse sandbox-specific implementation files for tutorial emulator builds.
+            java.srcDirs("src/sandbox/java")
+            res.srcDirs("src/sandbox/res")
+        }
+        getByName("nexgo") {
+            // Reuse sandbox-specific implementation files (PaymentViewModel, BlumonInitializer).
+            // These compile but are not invoked on Nexgo — AngelPay flow is in main/.
             java.srcDirs("src/sandbox/java")
             res.srcDirs("src/sandbox/res")
         }
@@ -219,6 +282,11 @@ dependencies {
     // ⭐ TUTORIAL EMULATOR FLAVOR: reuse sandbox SDK API surface for compilation.
     "tutorialEmuImplementation"(files("libs/blumon_sdk-debug.aar"))
     "tutorialEmuImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
+
+    // ⭐ NEXGO FLAVOR: reuse sandbox SDK API surface for Hilt compilation.
+    // These AARs provide Java class stubs — native .so libs are NOT invoked on Nexgo.
+    "nexgoImplementation"(files("libs/blumon_sdk-debug.aar"))
+    "nexgoImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
 
     // ⭐ PRODUCTION FLAVOR: Blumon SDK AAR files (Production environment)
     "productionImplementation"(files("libs/blumon_sdk-prod.aar"))

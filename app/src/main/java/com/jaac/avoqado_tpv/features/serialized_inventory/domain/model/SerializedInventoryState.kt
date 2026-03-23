@@ -8,6 +8,7 @@ import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.CategoryWithSt
 data class SerializedInventoryUiState(
     val isLoading: Boolean = false,
     val isScanning: Boolean = false,
+    val isValidating: Boolean = false,
     val categories: List<CategoryWithStock> = emptyList(),
     val selectedCategory: CategoryWithStock? = null,
     val scannedSerialNumbers: List<String> = emptyList(),
@@ -16,7 +17,7 @@ data class SerializedInventoryUiState(
     val registrationResult: RegistrationResult? = null
 ) {
     val canRegister: Boolean
-        get() = selectedCategory != null && scannedSerialNumbers.isNotEmpty() && !isLoading
+        get() = selectedCategory != null && scannedSerialNumbers.isNotEmpty() && !isLoading && !isValidating
 
     val scannedCount: Int
         get() = scannedSerialNumbers.size
@@ -58,4 +59,6 @@ sealed class InventoryScanResult {
     data class Added(val serialNumber: String) : InventoryScanResult()
     data class Duplicate(val serialNumber: String) : InventoryScanResult()
     data class AlreadyScanned(val serialNumber: String) : InventoryScanResult()
+    /** Network/server error — NOT a duplicate, user should retry */
+    data class Error(val serialNumber: String, val message: String) : InventoryScanResult()
 }

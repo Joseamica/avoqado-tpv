@@ -208,6 +208,51 @@ sealed class PaymentContext {
             return originalTotalAmount - amount
         }
     }
+
+    /**
+     * AngelPay Payment: Pago procesado via AngelPay app-to-app Intent en terminales Nexgo.
+     *
+     * A diferencia de Blumon (SDK integrado), AngelPay se invoca como app externa
+     * via Android Intent. Los datos de tarjeta los devuelve la app de AngelPay.
+     *
+     * **Flujo:**
+     * 1. TPV construye Intent con DO_SALE action + TransactionRequest JSON
+     * 2. AngelPay app procesa el pago (EMV, NFC, etc.)
+     * 3. AngelPay devuelve resultado via onActivityResult
+     * 4. TPV registra en backend usando este PaymentContext
+     *
+     * **Endpoint backend:**
+     * POST /tpv/venues/{venueId}/fast (para fast payments)
+     * POST /tpv/venues/{venueId}/orders/{orderId} (para order payments)
+     *
+     * @param venueId ID del venue actual
+     * @param staffId ID del staff que procesa el pago
+     * @param shiftId ID del turno actual
+     * @param amount Monto total del pago
+     * @param tip Propina
+     * @param cardDetails Detalles de tarjeta (del resultado de AngelPay)
+     * @param authorizationCode Codigo de autorizacion de AngelPay
+     * @param referenceNumber Numero de referencia de AngelPay
+     * @param angelPayTransactionId ID unico de transaccion de AngelPay
+     * @param orderId ID de orden existente (null para fast payment)
+     */
+    data class AngelPayPayment(
+        override val venueId: String,
+        override val staffId: String,
+        override val shiftId: String? = null,
+        override val amount: BigDecimal,
+        override val tip: BigDecimal = BigDecimal.ZERO,
+        override val rating: Int? = null,
+        override val merchantAccountId: String? = null,
+        override val blumonSerialNumber: String = "",
+        override val deviceSerialNumber: String? = null,
+        val cardDetails: CardDetails? = null,
+        val authorizationCode: String = "",
+        val referenceNumber: String = "",
+        val angelPayTransactionId: String? = null,
+        val orderId: String? = null,
+        val orderNumber: String? = null,
+    ) : PaymentContext()
 }
 
 /**

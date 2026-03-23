@@ -13,6 +13,7 @@ import com.jaac.avoqado_tpv.core.util.DeviceHealthMonitor
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
+import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
 import com.jaac.avoqado_tpv.features.remote_command.data.model.CommandResult
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -68,7 +69,8 @@ class ConnectionViewModel @Inject constructor(
     private val deviceHealthMonitor: DeviceHealthMonitor,
     private val connectionEventManager: ConnectionEventManager,
     private val commandExecutor: CommandExecutor,
-    private val connectionStateManager: ConnectionStateManager
+    private val connectionStateManager: ConnectionStateManager,
+    private val initializationManager: InitializationManager,
 ) : ViewModel() {
 
     // ══════════════════════════════════════════════════════════════════════
@@ -217,6 +219,14 @@ class ConnectionViewModel @Inject constructor(
                         isDismissed = false
                         val version = nextVersion()
                         probeConnectivity(version)
+
+                        // Retry Blumon SDK initialization if it failed on startup (e.g., app started offline)
+                        if (!initializationManager.isInitialized.value) {
+                            launch {
+                                Timber.i("🔧 [Connection] SDK not initialized — retrying after network restore")
+                                initializationManager.ensureInitialized()
+                            }
+                        }
                     }
                     NetworkStatus.Unavailable -> {
                         Timber.w("⚠️ [Connection] Network lost — scheduling offline transition")
@@ -319,7 +329,15 @@ class ConnectionViewModel @Inject constructor(
                     cancelOfflineTransition()
                     connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = latencyMs)
                     handleReconnectionSuccess(version)
-                    // NOTE: pendingCommands in result are IGNORED — monitoring loop handles them
+
+                    // Process pending commands — critical for offline→online transition
+                    // Backend marks commands as SENT when included in ANY heartbeat response,
+                    // so we must process them here or they'll be lost (never re-delivered)
+                    val pendingCommands = result.data.pendingCommands
+                    if (!pendingCommands.isNullOrEmpty()) {
+                        Timber.i("📥 [Connection] Probe received ${pendingCommands.size} pending command(s)")
+                        processPendingCommands(pendingCommands)
+                    }
                 }
                 is Result.Error -> {
                     Timber.w("⚠️ [Connection] Probe: backend unreachable: ${result.exception?.message}")

@@ -154,14 +154,17 @@ data class MerchantAccountDto(
     @SerializedName("displayName")
     val displayName: String,
 
+    @SerializedName("providerCode")
+    val providerCode: String? = "BLUMON",  // BLUMON, ANGELPAY, MENTA, etc.
+
     @SerializedName("serialNumber")
-    val serialNumber: String,
+    val serialNumber: String? = null,  // Nullable — AngelPay merchants don't have Blumon serial
 
     @SerializedName("posId")
-    val posId: String,
+    val posId: String? = null,  // Nullable — AngelPay merchants don't have Blumon posId
 
     @SerializedName("environment")
-    val environment: String,
+    val environment: String? = null,  // Nullable — AngelPay merchants don't have Blumon environment
 
     @SerializedName("merchantId")
     val merchantId: String?,

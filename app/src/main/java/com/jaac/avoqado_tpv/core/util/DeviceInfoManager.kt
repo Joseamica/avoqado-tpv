@@ -76,8 +76,9 @@ class DeviceInfoManager @Inject constructor(
      * @throws SecurityException if READ_PHONE_STATE permission not granted (Android 8+)
      */
     fun getSerialNumber(): String {
-        // Emulator/tutorial flavor: Build.getSerial() is blocked even with READ_PHONE_STATE.
-        if (!com.jaac.avoqado_tpv.BuildConfig.ENABLE_PAX_SDK) {
+        // Emulator/tutorial flavor on emulator: Build.getSerial() is blocked.
+        // On real devices (Nexgo, etc.) with PAX SDK disabled, still try hardware serial.
+        if (!com.jaac.avoqado_tpv.BuildConfig.ENABLE_PAX_SDK && isEmulator()) {
             val androidId = Settings.Secure.getString(
                 context.contentResolver,
                 Settings.Secure.ANDROID_ID
@@ -86,17 +87,27 @@ class DeviceInfoManager @Inject constructor(
             return "AVQD-$emulatorSerial"
         }
 
+        // Nexgo stores the real serial in ro.ums.manufacturer.info (format: "XGD|新国都|N860W175781|1")
+        // Build.getSerial() returns placeholder "11111111111111" on Nexgo devices
+        val nexgoSerial = getNexgoSerial()
+        if (nexgoSerial != null) {
+            Timber.d("📟 Nexgo serial detected: $nexgoSerial")
+            return "AVQD-${nexgoSerial.uppercase()}"
+        }
+
         val hardwareSerial = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             // Android 8+: Requires READ_PHONE_STATE permission
-            // ⚠️ NO FALLBACK - Permission must be granted before calling this
             try {
                 Build.getSerial()
             } catch (e: SecurityException) {
-                Timber.e(e, "❌ CRITICAL: READ_PHONE_STATE permission not granted - cannot get hardware serial")
-                throw SecurityException(
-                    "READ_PHONE_STATE permission required to obtain hardware serial number. " +
-                    "Please grant permission in app settings."
-                )
+                // On non-PAX devices (Nexgo, etc.) permission may not be granted.
+                // Fall back to ANDROID_ID to avoid crash.
+                Timber.w(e, "⚠️ READ_PHONE_STATE not granted - falling back to ANDROID_ID")
+                val androidId = Settings.Secure.getString(
+                    context.contentResolver,
+                    Settings.Secure.ANDROID_ID
+                )?.uppercase() ?: "UNKNOWN"
+                androidId
             }
         } else {
             // Android 7 and below: No permission required
@@ -105,6 +116,41 @@ class DeviceInfoManager @Inject constructor(
         }
 
         return "AVQD-${hardwareSerial.uppercase()}"
+    }
+
+    /**
+     * Extract serial from Nexgo's manufacturer info property.
+     * Format: "XGD|新国都|N860W175781|1" → "N860W175781"
+     * Returns null on non-Nexgo devices.
+     */
+    private fun getNexgoSerial(): String? {
+        val model = Build.MODEL?.uppercase() ?: ""
+        if (!model.startsWith("N86") && !model.startsWith("N6") && !model.startsWith("N5") && !model.contains("NEXGO") && !model.contains("XGD")) {
+            return null
+        }
+        return try {
+            val mfgInfo = Class.forName("android.os.SystemProperties")
+                .getMethod("get", String::class.java, String::class.java)
+                .invoke(null, "ro.ums.manufacturer.info", "") as? String
+            // Format: "XGD|新国都|SERIAL|1"
+            val parts = mfgInfo?.split("|")
+            val serial = parts?.getOrNull(2)?.trim()
+            if (!serial.isNullOrBlank() && serial != "unknown") serial else null
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ Could not read Nexgo manufacturer info")
+            null
+        }
+    }
+
+    /** Detect emulator vs real hardware */
+    private fun isEmulator(): Boolean {
+        return Build.FINGERPRINT.startsWith("generic") ||
+            Build.FINGERPRINT.startsWith("unknown") ||
+            Build.MODEL.contains("Emulator") ||
+            Build.MODEL.contains("Android SDK built for") ||
+            Build.MANUFACTURER.contains("Genymotion") ||
+            Build.PRODUCT.contains("sdk") ||
+            Build.PRODUCT.contains("emulator")
     }
 
     /**

@@ -263,10 +263,15 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Tutorial emulator UX: hide 3-button nav bar so screenshots match PAX hardware.
-     * Only applied when PAX SDK is disabled (tutorialEmu flavor).
+     * Only applied when PAX SDK is disabled (tutorialEmu flavor) AND device has no
+     * physical nav buttons (skip on Nexgo and similar terminals that need soft nav bar).
      */
     private fun applyTutorialImmersiveNavigation() {
         if (BuildConfig.ENABLE_PAX_SDK) return
+
+        // Nexgo (and other non-PAX terminals) rely on soft navigation bar — don't hide it
+        val model = android.os.Build.MODEL?.uppercase() ?: ""
+        if (model.startsWith("N86") || model.startsWith("N5") || model.contains("NEXGO")) return
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {

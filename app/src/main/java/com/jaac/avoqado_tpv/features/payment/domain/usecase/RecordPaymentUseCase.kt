@@ -158,6 +158,17 @@ class RecordPaymentUseCase @Inject constructor(
                 orderPaymentRecorder
             }
 
+            is PaymentContext.AngelPayPayment -> {
+                // 🔶 ANGELPAY: Route based on whether it's a fast or order payment
+                if (context.orderId != null) {
+                    Timber.d("📍 Using OrderPaymentRecorder for AngelPay order payment (orderId=${context.orderId})")
+                    orderPaymentRecorder
+                } else {
+                    Timber.d("📍 Using FastPaymentRecorder for AngelPay fast payment")
+                    fastPaymentRecorder
+                }
+            }
+
             is PaymentContext.RefundPayment -> {
                 // 🔐 REFUNDS: Use dedicated RecordRefundUseCase instead
                 // Refunds follow a different flow:

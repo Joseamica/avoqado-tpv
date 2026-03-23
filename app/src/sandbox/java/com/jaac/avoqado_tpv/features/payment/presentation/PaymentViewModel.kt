@@ -5276,6 +5276,7 @@ class PaymentViewModel @Inject constructor(
                     is PaymentContext.FastPayment -> context.blumonOperationNumber
                     is PaymentContext.OrderPayment -> context.blumonOperationNumber
                     is PaymentContext.RefundPayment -> context.originalOperationNumber
+                    is PaymentContext.AngelPayPayment -> null // AngelPay doesn't use Blumon operation numbers
                 }
                 Timber.i("═══════════════════════════════════════════════════════════")
                 Timber.i("🔍 DEBUG TRACE - ViewModel → Recorder handoff")
@@ -6167,6 +6168,62 @@ class PaymentViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Timber.e(e, "❌ [SendReceipt] Unexpected error sending receipt")
+                _sendReceiptMessage.value = "Error de conexión: ${e.message}"
+            } finally {
+                _isSendingReceipt.value = false
+            }
+        }
+    }
+
+    /**
+     * Send digital receipt via WhatsApp to the given phone number.
+     *
+     * **Called from:** PaymentSuccessContent WhatsApp dialog
+     *
+     * **Backend Endpoint:** POST /tpv/venues/{venueId}/payments/{paymentId}/send-whatsapp
+     *
+     * @param phone Full phone number with country code (e.g., "525512345678")
+     */
+    fun sendReceiptByWhatsApp(phone: String) {
+        val currentState = _state.value
+        if (currentState !is PaymentState.Success) {
+            Timber.w("⚠️ [SendWhatsApp] Cannot send: Not in Success state")
+            _sendReceiptMessage.value = "Error: No hay pago completado"
+            return
+        }
+
+        val receipt = currentState.receipt
+        if (receipt == null) {
+            Timber.w("⚠️ [SendWhatsApp] Cannot send: No receipt available")
+            _sendReceiptMessage.value = "Error: No hay recibo disponible"
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                Timber.i("💬 [SendWhatsApp] Sending receipt to: $phone")
+                _isSendingReceipt.value = true
+
+                val request = com.jaac.avoqado_tpv.features.payment.data.dto.SendWhatsAppReceiptRequest(
+                    recipientPhone = phone
+                )
+
+                val response = paymentApiService.sendReceiptWhatsApp(
+                    venueId = currentVenueId,
+                    paymentId = receipt.paymentId,
+                    request = request
+                )
+
+                if (response.isSuccessful && response.body()?.success == true) {
+                    Timber.i("✅ [SendWhatsApp] Receipt sent successfully to $phone")
+                    _sendReceiptMessage.value = "✓ Recibo enviado por WhatsApp"
+                } else {
+                    val errorMessage = response.body()?.message ?: "Error al enviar por WhatsApp"
+                    Timber.e("❌ [SendWhatsApp] Failed: $errorMessage")
+                    _sendReceiptMessage.value = "Error: $errorMessage"
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [SendWhatsApp] Unexpected error sending receipt")
                 _sendReceiptMessage.value = "Error de conexión: ${e.message}"
             } finally {
                 _isSendingReceipt.value = false

@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.payment.domain.model
 
+import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
+
 /**
  * Domain model representing a merchant account for payment routing
  *
@@ -46,7 +48,8 @@ data class MerchantAccount(
     val displayName: String,
     val description: String? = null,
     val environment: MerchantEnvironment = MerchantEnvironment.SANDBOX,
-    val isActive: Boolean = true
+    val isActive: Boolean = true,
+    val processorType: ProcessorType = ProcessorType.BLUMON
 ) {
     /**
      * Get formatted display text for UI

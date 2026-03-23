@@ -78,6 +78,7 @@ fun BarcodeScannerScreen(
     var hasCameraPermission by remember { mutableStateOf(false) }
     var flashEnabled by remember { mutableStateOf(false) }
     var lastScannedBarcode by remember { mutableStateOf<String?>(null) }
+    var lastScanTimeMs by remember { mutableLongStateOf(0L) }
     var barcodeView by remember { mutableStateOf<DecoratedBarcodeView?>(null) }
     // Note: Camera is started internally by ZXingBarcodeScanner via ViewTreeObserver
 
@@ -150,9 +151,15 @@ fun BarcodeScannerScreen(
                     // ⚠️ DON'T start camera here - let LaunchedEffect handle timing
                 },
                 onBarcodeDetected = { barcode, format ->
-                    // Prevent duplicate scans
-                    if (barcode != lastScannedBarcode) {
+                    // Time-based debounce: same barcode allowed again after 2s cooldown
+                    // This prevents decodeContinuous rapid-fire while allowing re-scans
+                    val now = System.currentTimeMillis()
+                    val isSameBarcode = barcode == lastScannedBarcode
+                    val withinCooldown = (now - lastScanTimeMs) < 2000L
+
+                    if (!isSameBarcode || !withinCooldown) {
                         lastScannedBarcode = barcode
+                        lastScanTimeMs = now
                         Timber.d("✅ [BarcodeScannerScreen] Barcode scanned: $barcode (format: $format)")
                         onBarcodeScanned(barcode, format)
                     }
@@ -199,21 +206,17 @@ private fun ZXingBarcodeScanner(
     onBarcodeDetected: (barcode: String, format: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Supported barcode formats
+    // Supported barcode formats — reduced to minimize false positives.
+    // Removed CODE_39, CODABAR, ITF (high false-positive rates per ZXing maintainers),
+    // CODE_93, DATA_MATRIX, PDF_417, AZTEC (unused in our product barcodes).
+    // Kept UPC-A/UPC-E for backward compat with existing product barcodes.
     val formats = listOf(
         BarcodeFormat.EAN_13,
         BarcodeFormat.EAN_8,
         BarcodeFormat.UPC_A,
         BarcodeFormat.UPC_E,
         BarcodeFormat.CODE_128,
-        BarcodeFormat.CODE_39,
-        BarcodeFormat.CODE_93,
         BarcodeFormat.QR_CODE,
-        BarcodeFormat.DATA_MATRIX,
-        BarcodeFormat.ITF,
-        BarcodeFormat.CODABAR,
-        BarcodeFormat.PDF_417,
-        BarcodeFormat.AZTEC
     )
 
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
@@ -237,11 +240,11 @@ private fun ZXingBarcodeScanner(
                 Timber.d("📷 [ZXingBarcodeScanner] Camera settings configured: cameraId=0 (back)")
 
                 // Configure decoder with hints for better 1D barcode detection
-                // ⚠️ PAX A910S has FIXED FOCUS camera - 1D barcodes need extra help
+                // TRY_HARDER needed: PAX A910S has FIXED FOCUS camera
+                // ALSO_INVERTED removed: unnecessary for our barcodes, adds false positives
                 val hints = mapOf(
-                    DecodeHintType.TRY_HARDER to true,  // Spend more time trying to find barcodes
+                    DecodeHintType.TRY_HARDER to true,
                     DecodeHintType.POSSIBLE_FORMATS to formats,
-                    DecodeHintType.ALSO_INVERTED to true  // Also try inverted (white on black)
                 )
                 barcodeView.decoderFactory = DefaultDecoderFactory(formats, hints, null, 0)
 

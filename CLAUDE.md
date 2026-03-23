@@ -83,11 +83,13 @@ app/src/production/ # Production-specific (same files, different SDK URLs)
 
 Same branch (`main`), different Gradle configurations:
 
-| Variant | Command | Use | Blumon |
-|---------|---------|-----|--------|
-| sandboxDebug | `./gradlew installSandboxDebug` | Daily dev (90%) | sandbox-tokener |
-| productionDebug | `./gradlew installProductionDebug` | Debug prod issues | REAL money |
-| productionRelease | `./gradlew assembleProductionRelease` | Final APK | REAL money |
+| Variant | Command | Use | Processor |
+|---------|---------|-----|-----------|
+| sandboxDebug | `./gradlew installSandboxDebug` | Daily dev — PAX (90%) | Blumon sandbox |
+| productionDebug | `./gradlew installProductionDebug` | Debug prod issues — PAX | Blumon REAL money |
+| productionRelease | `./gradlew assembleProductionRelease` | Final APK — PAX | Blumon REAL money |
+| **nexgoDebug** | **`./gradlew installNexgoDebug`** | **Nexgo N86/N5 dev** | **AngelPay QA** |
+| tutorialEmuDebug | `./gradlew installTutorialEmuDebug` | Emulator/screenshots | None |
 
 ## Documentation Router
 
@@ -101,8 +103,8 @@ Same branch (`main`), different Gradle configurations:
 **Architecture & Patterns:**
 [theme & color system](docs/THEME_COLOR_SYSTEM.md) | [Kotlin best practices](docs/KOTLIN_BEST_PRACTICES.md) | [decision matrix](docs/DECISION_MATRIX.md) | [domain rules](docs/DOMAIN_RULES.md)
 
-**Payments & Blumon (READ THESE before touching payment code):**
-[Blumon SDK integration](docs/BLUMON_INTEGRATION_COMPLETE.md) | [multi-merchant reconciliation](docs/PAYMENT_RECONCILIATION.md) | [payment state machine](docs/PAYMENT_STATE_MACHINE.md) | [payment flow origin](docs/PAYMENT_FLOW_ORIGIN.md) | [payment session](docs/PAYMENT_SESSION.md) | [crypto payments](docs/CRYPTO_PAYMENTS.md) | [production deployment](docs/PRODUCTION_DEPLOYMENT.md) | [production build](docs/PRODUCTION_BUILD_GUIDE.md) | [TPV commands](docs/TPV_COMMAND_FLOW.md)
+**Payments & Processors (READ THESE before touching payment code):**
+[Blumon SDK integration](docs/BLUMON_INTEGRATION_COMPLETE.md) | [AngelPay app-to-app](docs/ANGELPAY_INTEGRATION.md) | [multi-merchant reconciliation](docs/PAYMENT_RECONCILIATION.md) | [payment state machine](docs/PAYMENT_STATE_MACHINE.md) | [payment flow origin](docs/PAYMENT_FLOW_ORIGIN.md) | [payment session](docs/PAYMENT_SESSION.md) | [crypto payments](docs/CRYPTO_PAYMENTS.md) | [production deployment](docs/PRODUCTION_DEPLOYMENT.md) | [production build](docs/PRODUCTION_BUILD_GUIDE.md) | [TPV commands](docs/TPV_COMMAND_FLOW.md)
 
 **Core Architecture:**
 [navigation](docs/NAVIGATION_ARCHITECTURE.md) | [SecureStorage](docs/SECURE_STORAGE_GUIDE.md) | [offline sync](docs/OFFLINE_SYNC_ARCHITECTURE.md) | [Room schema](docs/ROOM_DATABASE_SCHEMA.md) | [network interceptors](docs/NETWORK_INTERCEPTORS.md) | [session lifecycle](docs/SESSION_LIFECYCLE.md) | [Hilt DI modules](docs/HILT_DI_MODULES.md) | [error handling](docs/ERROR_HANDLING_PATTERN.md) | [connection management](docs/CONNECTION_MANAGEMENT.md) | [heartbeat & network](docs/HEARTBEAT_AND_NETWORK_MONITORING.md) | [device health](docs/DEVICE_HEALTH_MONITORING.md) | [device identification](docs/DEVICE_IDENTIFICATION.md) | [ProGuard/R8](docs/PROGUARD_AND_OBFUSCATION.md)
@@ -143,6 +145,20 @@ Official Blumon/PAX SDK docs and AARs are stored in iCloud:
 ```
 
 Read `SDK-PAX-1.11.0.2-DocV4` before modifying Blumon SDK integration code.
+
+## AngelPay Vendor Documentation
+
+```
+~/Downloads/
+├── Manual de Integración App Angel Pay-v1-2.pdf   # v1.2 (17/03/2026) — latest
+└── angel-pay-consumer/                            # Example integration app (Kotlin)
+
+~/Library/Mobile Documents/com~apple~CloudDocs/Avoqado/AngelPay/
+└── Manual de Integración App to App.pdf           # v1.0 (original)
+```
+
+Read `Manual de Integración App Angel Pay-v1-2.pdf` before modifying AngelPay integration code.
+AngelPay contact: Rafael Calderon (technical), Norman Saldana (authorization).
 
 ## Self-Update System (v1.7.8)
 

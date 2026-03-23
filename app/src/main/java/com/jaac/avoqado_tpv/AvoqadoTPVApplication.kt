@@ -15,6 +15,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import javax.inject.Inject
 
 /**
@@ -37,11 +38,19 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
     @Inject
     lateinit var workerFactory: HiltWorkerFactory
 
+    @Inject
+    lateinit var secureStorage: SecureStorage
+
     override fun onCreate() {
         super.onCreate()
 
         // ✅ Initialize critical components only (startup optimization)
         initializeTimber()
+
+        // 🔶 NEXGO: Provision AngelPay QA credentials for testing
+        if (!BuildConfig.ENABLE_PAX_SDK) {
+            provisionAngelPayQACredentials()
+        }
 
         // ⚠️ Defer non-critical initialization to background
         applicationScope.launch {
@@ -89,6 +98,24 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
      * (payment errors, Blumon failures, network issues, etc.) are automatically
      * captured in Crashlytics Console for production debugging.
      */
+    /**
+     * Provision AngelPay QA credentials for testing on Nexgo terminals.
+     * Only runs when ENABLE_PAX_SDK=false (nexgo and tutorialEmu flavors).
+     * Saves QA creds if not already present.
+     */
+    private fun provisionAngelPayQACredentials() {
+        val email = BuildConfig.ANGELPAY_QA_EMAIL
+        if (email.isBlank()) return // No QA creds configured for this flavor
+
+        secureStorage.saveAngelPayCredentials(
+            email = email,
+            password = BuildConfig.ANGELPAY_QA_PASSWORD,
+            affiliation = BuildConfig.ANGELPAY_QA_AFFILIATION,
+            commerceToken = BuildConfig.ANGELPAY_QA_COMMERCE_TOKEN,
+        )
+        Timber.i("🔶 [AngelPay] QA credentials provisioned from BuildConfig")
+    }
+
     private fun initializeTimber() {
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
@@ -112,7 +139,8 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
             // Initialize Blumon PAX SDK
             AppManager.init(this@AvoqadoTPVApplication)
             Timber.d("✅ Blumon PAX SDK initialized")
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            // Catches UnsatisfiedLinkError (Error, not Exception) on non-PAX devices
             Timber.e(e, "❌ Error initializing Blumon PAX SDK")
         }
     }

@@ -23,6 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
@@ -52,6 +53,7 @@ class ConnectionViewModelTest {
     private lateinit var connectionEventManager: ConnectionEventManager
     private lateinit var commandExecutor: CommandExecutor
     private lateinit var connectionStateManager: ConnectionStateManager
+    private lateinit var initializationManager: com.jaac.avoqado_tpv.features.payment.data.InitializationManager
 
     private val fakeNetworkStatus = MutableSharedFlow<NetworkStatus>()
 
@@ -102,6 +104,8 @@ class ConnectionViewModelTest {
         connectionEventManager = mockk(relaxed = true)
         commandExecutor = mockk(relaxed = true)
         connectionStateManager = mockk(relaxed = true)
+        initializationManager = mockk(relaxed = true)
+        every { initializationManager.isInitialized } returns MutableStateFlow(true)
 
         every { networkMonitor.getCurrentNetworkInfo() } returns connectedNetworkInfo
         every { deviceHealthMonitor.getSystemHealth() } returns fakeSystemHealth
@@ -127,7 +131,8 @@ class ConnectionViewModelTest {
             deviceHealthMonitor = deviceHealthMonitor,
             connectionEventManager = connectionEventManager,
             commandExecutor = commandExecutor,
-            connectionStateManager = connectionStateManager
+            connectionStateManager = connectionStateManager,
+            initializationManager = initializationManager,
         )
     }
 

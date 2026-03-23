@@ -14,6 +14,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.CustomKeyboard
+import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import java.math.BigDecimal
@@ -70,30 +71,34 @@ fun FastPaymentEntryScreen(
             scrollable = false,  // Keyboard is fixed, no scrolling needed
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            val sizes = LocalResponsiveSizes.current
+            val isCompact = sizes.isSquareScreen
+
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .animateContentSize(animationSpec = tween(durationMillis = 200)),  // Smooth error animation
+                    .padding(horizontal = if (isCompact) 8.dp else 16.dp)
+                    .animateContentSize(animationSpec = tween(durationMillis = 200)),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(if (isCompact) 4.dp else 16.dp))
 
                 // Instructions
                 Text(
                     text = "Ingresa el monto del pago",
-                    style = MaterialTheme.typography.titleMedium,
+                    style = if (isCompact) MaterialTheme.typography.bodyMedium
+                    else MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(if (isCompact) 4.dp else 16.dp))
 
-                // Amount display (large)
+                // Amount display (large on rectangular, compact on square)
                 Text(
                     text = formattedAmount,
-                    fontSize = 48.sp,
+                    fontSize = if (isCompact) 32.sp else 48.sp,
                     fontWeight = FontWeight.Bold,
                     color = if (isValid)
                         MaterialTheme.colorScheme.onSurface
@@ -103,7 +108,7 @@ fun FastPaymentEntryScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(if (isCompact) 8.dp else 24.dp))
 
                 // Custom keyboard
                 CustomKeyboard(
@@ -166,9 +171,20 @@ fun FastPaymentEntryScreen(
 // PREVIEW
 // ══════════════════════════════════════════════════════════════════════════
 
-@Preview(showBackground = true, widthDp = 600, heightDp = 1024)
+private const val PAX_A910S = "spec:width=720px,height=1280px,dpi=320"
+private const val NEXGO_N62 = "spec:width=480px,height=480px,dpi=240"
+
+@Preview(device = PAX_A910S, showSystemUi = true)
 @Composable
 private fun FastPaymentEntryScreenPreview() {
+    AvoqadoTheme {
+        FastPaymentEntryScreen()
+    }
+}
+
+@Preview(device = NEXGO_N62, showSystemUi = true)
+@Composable
+private fun FastPaymentEntryScreenN62Preview() {
     AvoqadoTheme {
         FastPaymentEntryScreen()
     }

@@ -75,49 +75,40 @@ class OrderPaymentRecorder @Inject constructor(
         referenceNumber: String,
     ): Result<PaymentReceipt> = withContext(Dispatchers.IO) {
         try {
-            // 1. Validar que sea OrderPayment
-            require(context is PaymentContext.OrderPayment) {
-                "OrderPaymentRecorder only handles OrderPayment context, got: ${context::class.simpleName}"
+            // 1. Validar que sea OrderPayment o AngelPayPayment (with orderId)
+            require(context is PaymentContext.OrderPayment ||
+                (context is PaymentContext.AngelPayPayment && context.orderId != null)) {
+                "OrderPaymentRecorder only handles OrderPayment/AngelPayPayment(with orderId) context, got: ${context::class.simpleName}"
             }
 
-            // 🔍 DEBUG: Full payment context
-            Timber.i("═══════════════════════════════════════════════════════════")
-            Timber.i("🚀 RECORDING ORDER PAYMENT - START")
-            Timber.i("   venueId: ${context.venueId}")
-            Timber.i("   orderId: ${context.orderId}")
-            Timber.i("   staffId: ${context.staffId}")
-            Timber.i("   ─────────────────────────────────────────────────────")
-            Timber.i("   💰 PAYMENT AMOUNTS:")
-            Timber.i("      amount (pesos): ${context.amount}")
-            Timber.i("      tip (pesos): ${context.tip}")
-            Timber.i("      total (pesos): ${context.amount + context.tip}")
-            Timber.i("   ─────────────────────────────────────────────────────")
-            Timber.i("   🔀 SPLIT PAYMENT INFO:")
-            Timber.i("      splitType: ${context.splitType}")
-            Timber.i("      paidProductIds: ${context.paidProductIds}")
-            Timber.i("      merchantAccountId: ${context.merchantAccountId}")
-            Timber.i("   ─────────────────────────────────────────────────────")
-            Timber.i("   💳 CARD DETAILS:")
-            Timber.i("      cardBrand: ${cardDetails.cardBrand}")
-            Timber.i("      maskedPan: ${cardDetails.maskedPan}")
-            Timber.i("      entryMode: ${cardDetails.entryMode}")
-            Timber.i("      isInternational: ${cardDetails.isInternational}")
-            Timber.i("   ─────────────────────────────────────────────────────")
-            Timber.i("   🔐 AUTHORIZATION:")
-            Timber.i("      authorizationNumber: $authorizationNumber")
-            Timber.i("      referenceNumber: $referenceNumber")
-            Timber.i("═══════════════════════════════════════════════════════════")
+            // Extract orderId based on context type
+            val orderId = when (context) {
+                is PaymentContext.OrderPayment -> context.orderId
+                is PaymentContext.AngelPayPayment -> context.orderId!!
+                else -> error("Unexpected context type")
+            }
+
+            Timber.i("🚀 RECORDING ORDER PAYMENT | venueId=${context.venueId} | orderId=$orderId | processor=${context::class.simpleName}")
 
             // 2. Construir request DTO
-            val request = buildOrderPaymentRequest(context, cardDetails, authorizationNumber, referenceNumber)
+            val request = when (context) {
+                is PaymentContext.OrderPayment -> {
+                    Timber.i("   splitType: ${context.splitType} | paidProductIds: ${context.paidProductIds}")
+                    buildOrderPaymentRequest(context, cardDetails, authorizationNumber, referenceNumber)
+                }
+                is PaymentContext.AngelPayPayment -> {
+                    Timber.d("🔶 [AngelPay] Building order payment request from AngelPayPayment context")
+                    buildAngelPayOrderPaymentRequest(context, cardDetails, authorizationNumber, referenceNumber)
+                }
+                else -> error("Unexpected context type")
+            }
 
-            // 🔍 DEBUG: Request to send
             Timber.d("📤 OrderPaymentRequest: amount=${request.amount}cents, tip=${request.tip}cents, method=${request.method}, splitType=${request.splitType}")
 
             // 3. Llamar al backend (diferente endpoint que fast payment)
             val response = apiService.recordOrderPayment(
                 venueId = context.venueId,
-                orderId = context.orderId, // ← Diferencia clave vs fast payment
+                orderId = orderId,
                 request = request
             )
 
@@ -137,7 +128,7 @@ class OrderPaymentRecorder @Inject constructor(
                     Timber.i("═══════════════════════════════════════════════════════════")
                     Timber.i("✅ ORDER PAYMENT RECORDED SUCCESSFULLY")
                     Timber.i("   paymentId: ${receipt.paymentId}")
-                    Timber.i("   orderId: ${context.orderId}")
+                    Timber.i("   orderId: $orderId")
                     Timber.i("   ─────────────────────────────────────────────────────")
                     Timber.i("   💰 RECORDED AMOUNTS:")
                     Timber.i("      amount: ${receipt.amount}")
@@ -303,6 +294,41 @@ class OrderPaymentRecorder @Inject constructor(
             // 📸 NON-BLOCKING PROOF-OF-SALE (2026-03-10)
             isPortabilidad = context.isPortabilidad.takeIf { it },
             serialNumbers = context.serialNumbers.takeIf { it.isNotEmpty() },
+        )
+    }
+
+    /**
+     * Build OrderPaymentRequest from AngelPayPayment context.
+     * AngelPay uses the same backend endpoint as Blumon for order payments.
+     */
+    private fun buildAngelPayOrderPaymentRequest(
+        context: PaymentContext.AngelPayPayment,
+        cardDetails: CardDetails,
+        authorizationNumber: String,
+        referenceNumber: String,
+    ): OrderPaymentRequest {
+        return OrderPaymentRequest(
+            venueId = context.venueId,
+            amount = (context.amount * 100.toBigDecimal()).toInt(),
+            tip = (context.tip * 100.toBigDecimal()).toInt(),
+            status = "COMPLETED",
+            method = when (cardDetails.cardBrand) {
+                CardBrand.VISA, CardBrand.MASTERCARD, CardBrand.AMEX -> "CREDIT_CARD"
+                else -> "DEBIT_CARD"
+            },
+            source = "AVOQADO_TPV",
+            splitType = "FULLPAYMENT",
+            staffId = context.staffId,
+            authorizationNumber = authorizationNumber,
+            referenceNumber = referenceNumber,
+            maskedPan = cardDetails.maskedPan,
+            cardBrand = if (cardDetails.cardBrand == CardBrand.UNKNOWN) null else cardDetails.cardBrand.backendName,
+            entryMode = cardDetails.entryMode.toBackendString(),
+            currency = "MXN",
+            isInternational = cardDetails.isInternational,
+            reviewRating = context.rating?.toString(),
+            merchantAccountId = context.merchantAccountId,
+            deviceSerialNumber = context.deviceSerialNumber,
         )
     }
 }

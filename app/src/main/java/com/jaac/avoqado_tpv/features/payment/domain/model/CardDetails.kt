@@ -114,6 +114,7 @@ enum class CardEntryMode(val displayName: String) {
     CONTACTLESS("Contactless (NFC)"),
     SWIPE("Swipe (Magnetic)"),
     MANUAL("Manual Entry"),
+    OTHER("Other"),
     UNKNOWN("Unknown");
 
     /**

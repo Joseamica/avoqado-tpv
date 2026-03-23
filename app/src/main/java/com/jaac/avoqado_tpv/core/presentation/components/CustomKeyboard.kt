@@ -9,12 +9,16 @@ import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.abs
 
 /**
  * CustomKeyboard - Teclado numérico reutilizable
@@ -52,6 +56,17 @@ fun CustomKeyboard(
     onConfirmClick: () -> Unit,
     onToggleClick: (() -> Unit)? = null
 ) {
+    // Adaptive sizing: square screens (N62 480x480) get compact buttons
+    // Uses LocalConfiguration directly — safe to use outside ResponsiveScaffold
+    val config = LocalConfiguration.current
+    val isSquare = remember(config.screenHeightDp, config.screenWidthDp) {
+        abs(config.screenHeightDp - config.screenWidthDp) < 80
+    }
+    val btnSize: Dp = if (isSquare) 52.dp else 80.dp
+    val actionWidth: Dp = if (isSquare) 64.dp else 100.dp
+    val gap: Dp = if (isSquare) 4.dp else 8.dp
+    val fontSize: Int = if (isSquare) 18 else 24
+
     val keys = listOf(
         listOf(1, 2, 3),
         listOf(4, 5, 6),
@@ -61,30 +76,33 @@ fun CustomKeyboard(
 
     Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(gap)
     ) {
         // Left side: number grid
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(gap)
         ) {
             keys.forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
                     row.forEach { key ->
                         when (key) {
                             -1 -> KeyboardButton(
-                                modifier = Modifier.size(80.dp),
+                                modifier = Modifier.size(btnSize),
                                 text = "C",
+                                fontSize = fontSize,
                                 onClick = onClearClick
                             )
                             -2 -> KeyboardButton(
-                                modifier = Modifier.size(80.dp),
+                                modifier = Modifier.size(btnSize),
                                 text = ".",
+                                fontSize = fontSize,
                                 onClick = onDecimalClick
                             )
                             else -> KeyboardButton(
-                                modifier = Modifier.size(80.dp),
+                                modifier = Modifier.size(btnSize),
                                 text = key.toString(),
+                                fontSize = fontSize,
                                 onClick = { onNumberClick(key) }
                             )
                         }
@@ -95,13 +113,13 @@ fun CustomKeyboard(
 
         // Right side: action buttons (backspace + toggle? + confirm)
         Column(
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(gap)
         ) {
             // Backspace button
             KeyboardButton(
                 modifier = Modifier
-                    .height(80.dp)
-                    .width(100.dp),
+                    .height(btnSize)
+                    .width(actionWidth),
                 icon = Icons.AutoMirrored.Filled.Backspace,
                 onClick = onBackspaceClick
             )
@@ -110,27 +128,26 @@ fun CustomKeyboard(
             if (showToggle && onToggleClick != null) {
                 KeyboardButton(
                     modifier = Modifier
-                        .height(80.dp)
-                        .width(100.dp),
+                        .height(btnSize)
+                        .width(actionWidth),
                     text = "$/%",
+                    fontSize = fontSize,
                     onClick = onToggleClick
                 )
             }
 
-            // Confirm button - height calculated to match remaining rows
-            // 4 rows (80dp each) + 3 gaps (8dp each) = 344dp total height
-            // Minus backspace (80dp) and toggle (if shown: 80dp + 8dp) and gaps
+            // Confirm button - fills remaining height
+            // Total height: 4 rows * btnSize + 3 gaps
+            val totalHeight = btnSize * 4 + gap * 3
             val confirmHeight = if (showToggle && onToggleClick != null) {
-                // With toggle: 344dp - 80dp (backspace) - 8dp - 80dp (toggle) - 8dp = 168dp
-                168.dp
+                totalHeight - btnSize * 2 - gap * 2
             } else {
-                // Without toggle: 344dp - 80dp (backspace) - 8dp = 256dp
-                256.dp
+                totalHeight - btnSize - gap
             }
 
             KeyboardButton(
                 modifier = Modifier
-                    .width(100.dp)
+                    .width(actionWidth)
                     .height(confirmHeight),
                 icon = Icons.Default.Check,
                 isConfirm = true,
@@ -160,6 +177,7 @@ private fun KeyboardButton(
     text: String? = null,
     icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
     isConfirm: Boolean = false,
+    fontSize: Int = 24,
     onClick: () -> Unit
 ) {
     Surface(
@@ -183,7 +201,7 @@ private fun KeyboardButton(
             text?.let {
                 Text(
                     text = it,
-                    fontSize = 24.sp,
+                    fontSize = fontSize.sp,
                     fontWeight = FontWeight.Bold,
                     color = if (isConfirm)
                         MaterialTheme.colorScheme.onPrimary

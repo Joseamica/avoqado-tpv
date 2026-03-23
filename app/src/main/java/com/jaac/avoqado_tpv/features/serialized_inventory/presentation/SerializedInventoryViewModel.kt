@@ -37,6 +37,9 @@ class SerializedInventoryViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(SerializedInventoryUiState())
     val uiState: StateFlow<SerializedInventoryUiState> = _uiState.asStateFlow()
 
+    /** Tracks serial numbers currently being validated to prevent double-tap duplicates */
+    private val _validatingSerials = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
     // Labels from module config (e.g., "SIM", "ICCID")
     val labels: ModuleLabels?
         get() = modulesRepository.getModuleConfig(ModulesRepository.MODULE_SERIALIZED_INVENTORY)?.labels
@@ -157,60 +160,77 @@ class SerializedInventoryViewModel @Inject constructor(
      * @param onResult Callback with scan result (added, duplicate, or already scanned)
      */
     fun onBarcodeScanned(serialNumber: String, onResult: (InventoryScanResult) -> Unit) {
-        val currentList = _uiState.value.scannedSerialNumbers
-
-        // Check if already in current batch
-        if (currentList.contains(serialNumber)) {
+        // Check if already in current batch (fast-path, no network)
+        if (_uiState.value.scannedSerialNumbers.contains(serialNumber)) {
             Timber.d("Barcode already scanned in batch: $serialNumber")
             onResult(InventoryScanResult.AlreadyScanned(serialNumber))
             return
         }
 
-        // ✅ VALIDATE AGAINST DATABASE before adding
+        // Skip if this serial number is already being validated (prevents double-tap)
+        if (!_validatingSerials.add(serialNumber)) {
+            Timber.d("Barcode already being validated: $serialNumber")
+            onResult(InventoryScanResult.AlreadyScanned(serialNumber))
+            return
+        }
+
+        // VALIDATE AGAINST DATABASE before adding
+        _uiState.update { it.copy(isValidating = true) }
+
         viewModelScope.launch {
-            serializedSaleRepository.scanItem(serialNumber)
-                .onSuccess { scanResult ->
-                    when (scanResult) {
-                        is com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult.Available -> {
-                            // Item already registered in DB - show error
-                            _uiState.update {
-                                it.copy(error = "Este ${getItemLabel()} ya fue registrado anteriormente")
+            try {
+                serializedSaleRepository.scanItem(serialNumber)
+                    .onSuccess { scanResult ->
+                        when (scanResult) {
+                            is com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult.Available -> {
+                                // Item already registered in DB - show serial number so user can verify
+                                _uiState.update {
+                                    it.copy(error = "Código $serialNumber ya registrado")
+                                }
+                                onResult(InventoryScanResult.Duplicate(serialNumber))
                             }
-                            onResult(InventoryScanResult.Duplicate(serialNumber))
-                        }
-                        is com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult.AlreadySold -> {
-                            // Item was sold - show error with sold status
-                            _uiState.update {
-                                it.copy(error = "Este ${getItemLabel()} ya fue registrado y vendido")
+                            is com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult.AlreadySold -> {
+                                // Item was sold - show serial number so user can verify
+                                _uiState.update {
+                                    it.copy(error = "Código $serialNumber ya registrado y vendido")
+                                }
+                                onResult(InventoryScanResult.Duplicate(serialNumber))
                             }
-                            onResult(InventoryScanResult.Duplicate(serialNumber))
-                        }
-                        is com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult.NotRegistered -> {
-                            // ✅ Item is new - add to batch
-                            _uiState.update {
-                                it.copy(
-                                    scannedSerialNumbers = currentList + serialNumber,
-                                    error = null
-                                )
+                            is com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult.NotRegistered -> {
+                                // Item is new - add to batch using CURRENT state (not stale capture)
+                                _uiState.update {
+                                    if (it.scannedSerialNumbers.contains(serialNumber)) {
+                                        it // Already added by concurrent scan — skip
+                                    } else {
+                                        it.copy(
+                                            scannedSerialNumbers = it.scannedSerialNumbers + serialNumber,
+                                            error = null
+                                        )
+                                    }
+                                }
+                                Timber.d("Barcode added to batch: $serialNumber (total: ${_uiState.value.scannedCount})")
+                                onResult(InventoryScanResult.Added(serialNumber))
                             }
-                            Timber.d("Barcode added to batch: $serialNumber (total: ${currentList.size + 1})")
-                            onResult(InventoryScanResult.Added(serialNumber))
-                        }
-                        is com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult.ModuleDisabled -> {
-                            _uiState.update {
-                                it.copy(error = "El módulo de inventario serializado no está habilitado")
+                            is com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult.ModuleDisabled -> {
+                                _uiState.update {
+                                    it.copy(error = "El módulo de inventario serializado no está habilitado")
+                                }
+                                onResult(InventoryScanResult.Duplicate(serialNumber))
                             }
-                            onResult(InventoryScanResult.Duplicate(serialNumber))
                         }
                     }
-                }
-                .onFailure { error ->
-                    Timber.e(error, "Failed to validate serial number")
-                    _uiState.update {
-                        it.copy(error = "Error al validar ${getItemLabel()}: ${error.message}")
+                    .onFailure { error ->
+                        Timber.e(error, "Failed to validate serial number")
+                        _uiState.update {
+                            it.copy(error = "Error de conexión al validar ${getItemLabel()}. Intenta de nuevo.")
+                        }
+                        onResult(InventoryScanResult.Error(serialNumber, error.message ?: "Error de conexión"))
                     }
-                    onResult(InventoryScanResult.Duplicate(serialNumber))
-                }
+            } finally {
+                _validatingSerials.remove(serialNumber)
+                // Update isValidating based on remaining in-flight validations
+                _uiState.update { it.copy(isValidating = _validatingSerials.isNotEmpty()) }
+            }
         }
     }
 

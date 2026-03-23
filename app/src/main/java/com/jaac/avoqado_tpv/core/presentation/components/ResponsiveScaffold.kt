@@ -35,6 +35,7 @@ data class ResponsiveSizes(
     val screenHeight: Dp,
     val screenWidth: Dp,
     val sizeCategory: String,
+    val isSquareScreen: Boolean,
 
     // Element sizes
     val logoSize: Dp,
@@ -52,14 +53,22 @@ data class ResponsiveSizes(
     // Padding
     val paddingScreen: Dp,
     val paddingSection: Dp,
-    val paddingCard: Dp
+    val paddingCard: Dp,
+
+    // Keyboard (adaptive for square screens like Nexgo N62)
+    val keyboardButtonSize: Dp,
+    val keyboardActionWidth: Dp,
+    val keyboardSpacing: Dp,
+    val keyboardFontSize: Int,
 ) {
     companion object {
         /**
          * Calculate responsive sizes based on screen dimensions
          */
         fun calculate(height: Dp, width: Dp): ResponsiveSizes {
+            val isSquare = (height - width).value.let { kotlin.math.abs(it) } < 80f
             val category = when {
+                isSquare -> "small" // Square screens (N62 480x480) = compact
                 height < 600.dp -> "small"
                 height < 700.dp -> "medium"
                 else -> "large"
@@ -69,6 +78,7 @@ data class ResponsiveSizes(
                 screenHeight = height,
                 screenWidth = width,
                 sizeCategory = category,
+                isSquareScreen = isSquare,
 
                 // Element sizes (adjust based on screen size)
                 logoSize = when (category) {
@@ -134,7 +144,21 @@ data class ResponsiveSizes(
                     "small" -> 12.dp
                     "medium" -> 16.dp
                     else -> 20.dp
-                }
+                },
+
+                // Keyboard sizing — square screens need compact buttons
+                keyboardButtonSize = if (isSquare) 52.dp else when (category) {
+                    "small" -> 56.dp
+                    "medium" -> 68.dp
+                    else -> 80.dp
+                },
+                keyboardActionWidth = if (isSquare) 64.dp else when (category) {
+                    "small" -> 72.dp
+                    "medium" -> 88.dp
+                    else -> 100.dp
+                },
+                keyboardSpacing = if (isSquare) 4.dp else 8.dp,
+                keyboardFontSize = if (isSquare) 18 else 24,
             )
         }
     }

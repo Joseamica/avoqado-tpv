@@ -62,26 +62,34 @@ class FastPaymentRecorder @Inject constructor(
         referenceNumber: String,
     ): Result<PaymentReceipt> = withContext(Dispatchers.IO) {
         try {
-            // 1. Validar que sea FastPayment
-            require(context is PaymentContext.FastPayment) {
-                "FastPaymentRecorder only handles FastPayment context, got: ${context::class.simpleName}"
+            // 1. Validar que sea FastPayment o AngelPayPayment (fast)
+            require(context is PaymentContext.FastPayment || context is PaymentContext.AngelPayPayment) {
+                "FastPaymentRecorder only handles FastPayment/AngelPayPayment context, got: ${context::class.simpleName}"
             }
 
             Timber.d(
                 "🚀 Recording fast payment | venue=${context.venueId} | amount=${context.amount} | " +
-                        "tip=${context.tip} | card=${cardDetails.cardBrand} | entry=${cardDetails.entryMode}"
+                        "tip=${context.tip} | card=${cardDetails.cardBrand} | entry=${cardDetails.entryMode} | processor=${context::class.simpleName}"
             )
 
-            // 🔍 DEBUG: Trace blumonOperationNumber through the chain
-            Timber.i("═══════════════════════════════════════════════════════════")
-            Timber.i("🔍 DEBUG TRACE - blumonOperationNumber")
-            Timber.i("   STEP 1 - In PaymentContext:")
-            Timber.i("      context.blumonOperationNumber = ${context.blumonOperationNumber}")
-            Timber.i("      context.blumonOperationNumber type = ${context.blumonOperationNumber?.javaClass?.name ?: "null"}")
-            Timber.i("═══════════════════════════════════════════════════════════")
-
             // 2. Construir request DTO
-            val request = buildFastPaymentRequest(context, cardDetails, authorizationNumber, referenceNumber)
+            val request = when (context) {
+                is PaymentContext.FastPayment -> {
+                    // 🔍 DEBUG: Trace blumonOperationNumber through the chain
+                    Timber.i("═══════════════════════════════════════════════════════════")
+                    Timber.i("🔍 DEBUG TRACE - blumonOperationNumber")
+                    Timber.i("   STEP 1 - In PaymentContext:")
+                    Timber.i("      context.blumonOperationNumber = ${context.blumonOperationNumber}")
+                    Timber.i("      context.blumonOperationNumber type = ${context.blumonOperationNumber?.javaClass?.name ?: "null"}")
+                    Timber.i("═══════════════════════════════════════════════════════════")
+                    buildFastPaymentRequest(context, cardDetails, authorizationNumber, referenceNumber)
+                }
+                is PaymentContext.AngelPayPayment -> {
+                    Timber.d("🔶 [AngelPay] Building fast payment request from AngelPayPayment context")
+                    buildAngelPayFastPaymentRequest(context, cardDetails, authorizationNumber, referenceNumber)
+                }
+                else -> error("Unexpected context type: ${context::class.simpleName}")
+            }
 
             // 🔍 DEBUG: Verify the DTO has the value
             Timber.i("═══════════════════════════════════════════════════════════")
@@ -278,6 +286,42 @@ class FastPaymentRecorder @Inject constructor(
             // 📸 NON-BLOCKING PROOF-OF-SALE (2026-03-10)
             isPortabilidad = context.isPortabilidad.takeIf { it },
             serialNumbers = context.serialNumbers.takeIf { it.isNotEmpty() },
+        )
+    }
+
+    /**
+     * Build FastPaymentRequest from AngelPayPayment context.
+     * AngelPay uses the same backend endpoint as Blumon for fast payments.
+     */
+    private fun buildAngelPayFastPaymentRequest(
+        context: PaymentContext.AngelPayPayment,
+        cardDetails: CardDetails,
+        authorizationNumber: String,
+        referenceNumber: String,
+    ): FastPaymentRequest {
+        return FastPaymentRequest(
+            venueId = context.venueId,
+            amount = (context.amount * 100.toBigDecimal()).toInt(),
+            tip = (context.tip * 100.toBigDecimal()).toInt(),
+            status = "COMPLETED",
+            method = when (cardDetails.cardBrand) {
+                CardBrand.VISA, CardBrand.MASTERCARD, CardBrand.AMEX -> "CREDIT_CARD"
+                else -> "DEBIT_CARD"
+            },
+            source = "AVOQADO_TPV",
+            splitType = "FULLPAYMENT",
+            staffId = context.staffId,
+            authorizationNumber = authorizationNumber,
+            referenceNumber = referenceNumber,
+            merchantAccountId = context.merchantAccountId,
+            blumonSerialNumber = null,
+            maskedPan = cardDetails.maskedPan,
+            cardBrand = if (cardDetails.cardBrand == CardBrand.UNKNOWN) null else cardDetails.cardBrand.backendName,
+            entryMode = cardDetails.entryMode.toBackendString(),
+            currency = "MXN",
+            isInternational = cardDetails.isInternational,
+            reviewRating = context.rating?.toString(),
+            deviceSerialNumber = context.deviceSerialNumber,
         )
     }
 }

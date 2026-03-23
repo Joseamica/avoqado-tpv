@@ -138,9 +138,14 @@ fun TipScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(sizes.spacingMedium)
                 ) {
+                    // Memoize tip calculations — avoids 3× BigDecimal alloc per recomposition
+                    val tipAmounts = remember(subtotal, displaySuggestions) {
+                        displaySuggestions.associateWith { calculateTipAmount(subtotal, it) }
+                    }
+
                     displaySuggestions.forEach { percentage ->
                         val isSelected = selectedTipPercentage == percentage && customTipAmount == null
-                        val tipAmount = calculateTipAmount(subtotal, percentage)
+                        val tipAmount = tipAmounts[percentage] ?: ""
 
                         TipPercentageCard(
                             percentage = percentage,

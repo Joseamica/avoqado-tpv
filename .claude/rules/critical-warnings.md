@@ -50,12 +50,35 @@ Before working on Blumon payments, read in order:
 
 Official Blumon SDK docs: `~/Library/Mobile Documents/com~apple~CloudDocs/Avoqado/Blumon/` (production/ and dev/ folders)
 
-## Build Variants: Sandbox vs Production
+## AngelPay: Isolated Payment Path (Nexgo Terminals)
 
-| Variant | Package ID | Blumon Server | AAR |
-|---------|-----------|---------------|-----|
-| Sandbox | `com.jaac.avoqado_tpv.sandbox` | `sandbox-tokener.blumonpay.net` | `blumon_sdk-debug.aar` |
-| Production | `com.jaac.avoqado_tpv` | `tokener.blumonpay.net` | `blumon_sdk-prod.aar` |
+AngelPay is a **completely separate** payment flow from Blumon. Never mix them.
+
+| | **Blumon (PAX)** | **AngelPay (Nexgo)** |
+|---|---|---|
+| Integration | Embedded SDK (native .so) | App-to-app Intent |
+| ViewModel | `PaymentViewModel` (sandbox/production) | `AngelPayPaymentViewModel` (main/) |
+| Screen | `PaymentScreen` | `AngelPayPaymentScreen` |
+| Route | `NavRoute.Payment` | `NavRoute.AngelPayPayment` |
+| Routing | `ENABLE_PAX_SDK=true` | `ENABLE_PAX_SDK=false` |
+| Refunds | CancelIcc via SDK | Not available (admin only) |
+
+**Rules:**
+- NEVER modify `PaymentViewModel` for AngelPay changes — use `AngelPayPaymentViewModel`
+- Payment routing uses `BuildConfig.ENABLE_PAX_SDK`, NOT `Build.MODEL` (hardware detection failed on Nexgo)
+- AngelPay doesn't return card details (maskedPan, brand, entryMode) — recorded as UNKNOWN
+- QA creds auto-provisioned in `AvoqadoTPVApplication.onCreate()` when `ENABLE_PAX_SDK=false`
+
+Before working on AngelPay, read: `docs/ANGELPAY_INTEGRATION.md`
+
+## Build Variants: Sandbox vs Production vs Nexgo
+
+| Variant | Package ID | Processor | ABI |
+|---------|-----------|-----------|-----|
+| Sandbox | `com.jaac.avoqado_tpv.sandbox` | Blumon sandbox | armeabi |
+| Production | `com.jaac.avoqado_tpv` | Blumon production | armeabi |
+| Nexgo | `com.jaac.avoqado_tpv.sandbox` | AngelPay QA | arm64-v8a |
+| TutorialEmu | `com.jaac.avoqado_tpv.sandbox` | None | arm64-v8a + x86_64 |
 
 Variant-specific files (`sandbox/` and `production/`): `PaymentViewModel.kt`, `InitializationManager.kt`, `BlumonInitializer.kt`
 

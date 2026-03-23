@@ -9,6 +9,52 @@
 
 ---
 
+## [1.10.0] - 2026-03-23
+
+### **Added**
+
+- **WhatsApp receipt sending (Blumon + AngelPay)**: Send payment receipts via WhatsApp Business API. New backend endpoint `POST /tpv/venues/{venueId}/payments/{paymentId}/send-whatsapp` using `receipt_link` template. Country code picker with MX/US/CO/AR/CL/PE, 10-digit phone validation, WhatsApp green UI. 3-way button row (Print | Email | WhatsApp) replaces 2-way row on success screens for both Blumon and AngelPay flows
+- **WhatsAppReceiptDialog composable**: Reusable dialog with customer search (auto-fill phone), country dial code dropdown, numeric phone input, and digit count validation per country
+- **AngelPay email receipt support**: Added `PaymentApiService` dependency to `AngelPayPaymentViewModel` with `sendReceiptByEmail()` and `sendReceiptByWhatsApp()` methods, matching Blumon behavior
+
+### **Fixed**
+
+- **Blumon SDK not re-initializing after offline startup**: When app started without internet, SDK initialization failed and was never retried when connectivity restored — causing `RSADataEntity.getTk()` NPE on first payment. Now `ConnectionViewModel` calls `ensureInitialized()` when network restores and SDK is not initialized
+- **AngelPay app-to-app payment integration**: New isolated payment flow for Nexgo N86 terminals via Android Intent bridge to AngelPay app. Completely separate from Blumon SDK — own ViewModel (`AngelPayPaymentViewModel`), Screen (`AngelPayPaymentScreen`), state machine (`AngelPayPaymentState`), and navigation route (`NavRoute.AngelPayPayment`)
+- **ProcessorType enum**: `BLUMON` and `ANGELPAY` processor types for future multi-processor support. Added as default `BLUMON` field on `MerchantAccount` (backward-compatible)
+- **AngelPayPayment sealed subclass**: New `PaymentContext.AngelPayPayment` for recording AngelPay transactions to backend. Routes to `FastPaymentRecorder` or `OrderPaymentRecorder` based on presence of `orderId`
+- **AngelPay Intent builder**: `AngelPayIntentBuilder` constructs DO_SALE, SEE_HISTORY, and REPORTS intents per AngelPay API spec. Amounts in centavos, JSON-encoded extras, QA/prod package auto-selection via `BuildConfig.BLUMON_ENV`
+- **AngelPay result parser (STUB)**: `AngelPayResultParser` handles `onActivityResult` — currently returns stub values. Blocked on AngelPay docs for response format
+- **AngelPay credentials in SecureStorage**: `saveAngelPayCredentials()`, `getAngelPayCredentials()`, `clearAngelPayCredentials()` using existing EncryptedSharedPreferences
+- **Device-based payment routing**: `isNexgoDevice()` helper detects Nexgo N86/N5 terminals via `Build.MODEL`. Payment navigation automatically routes to AngelPay screen on Nexgo, Blumon screen on PAX/other
+- **AngelPay full pre-payment flow (match Blumon UX)**: Complete rewrite of AngelPay payment flow with Rating → Tip → Merchant Selection → Card/Cash → Success with QR receipt. Reuses existing composables (`ReviewScreen`, `TipScreen`, `MerchantSelectionContent`, `PaymentApprovedScreen`) and `PaymentFlowGate` for screen gating
+- **AngelPay cash payment support**: Cash payments via AngelPay flow — records with `CardDetails.CASH`, `merchantAccountId=null`, `authorizationCode="EFECTIVO"` to backend
+- **AngelPaySuccessContent composable**: New simplified success screen with QR receipt code, amount/tip breakdown, cash indicator, print button, and Home/Nuevo Cobro navigation buttons (matching Blumon success layout)
+- **AngelPay receipt printing**: `PrinterManager` integration for printing receipts from AngelPay success screen
+
+### **Fixed**
+
+- **Serialized Inventory false "Ya registrado"**: Network errors during barcode validation were incorrectly treated as `InventoryScanResult.Duplicate`, showing "Ya registrado" when the real issue was a connection error. Now shows "Error de conexión, reintenta" and uses new `InventoryScanResult.Error` type
+- **Serialized Inventory race condition**: Rapid barcode scanning could lose items from batch due to stale `currentList` capture outside coroutine. Now reads latest state inside `_uiState.update {}` block and guards against concurrent validation of the same serial number
+- **Camera scanner permanent block on re-scan**: `lastScannedBarcode` permanently prevented re-scanning the same barcode (e.g., after network error). Replaced with 2-second time-based debounce — same barcode can be re-scanned after cooldown
+- **ZXing false positives from unused formats**: Removed 7 high-false-positive barcode formats (CODE_39, CODABAR, ITF, CODE_93, DATA_MATRIX, PDF_417, AZTEC) and `ALSO_INVERTED` hint. Kept EAN-13, EAN-8, UPC-A, UPC-E, CODE_128, QR_CODE
+- **Silent scan drop on double-tap**: `_validatingSerials` guard now returns `AlreadyScanned` feedback instead of silently discarding the scan
+- **Register while validating**: Added `isValidating` state to prevent tapping "Registrar" while barcode validations are still in-flight
+
+### **Changed**
+
+- **Serialized Sale allows $0 price**: SIM sales at $0 now allowed (for giveaways/gifts). Validation changed from `price <= 0` to `price < 0`. Backend already accepted $0
+- **RecordPaymentUseCase**: Added `AngelPayPayment` branch — routes to `FastPaymentRecorder` (no orderId) or `OrderPaymentRecorder` (with orderId)
+- **FastPaymentRecorder**: Accepts both `FastPayment` and `AngelPayPayment` contexts. New `buildAngelPayFastPaymentRequest()` method
+- **OrderPaymentRecorder**: Accepts both `OrderPayment` and `AngelPayPayment` (with orderId) contexts. New `buildAngelPayOrderPaymentRequest()` method
+- **AppNavigation payment routing**: Fast payment, order payment, BLE payment, and serialized sale navigation now use `getPaymentRoute()` to auto-select Blumon or AngelPay based on device. BLE cancel and in-progress checks also cover AngelPay route
+- **PaymentViewModel (sandbox + production)**: Added `AngelPayPayment` branch to exhaustive `when` on `PaymentContext` for `blumonOperationNumber` trace logging
+- **AngelPayPaymentState**: Rewritten sealed class with pre-payment states (`CollectingRating`, `CollectingTip`, `SelectingMerchant`, `ProcessingCash`) mirroring Blumon flow. Removed `ReadyToLaunch` state
+- **AngelPayPaymentViewModel**: Full rewrite with `PaymentFlowGate` integration, `TpvSettingsRepository` for screen gating, merchant loading/selection, cash payment flow, `goBackOneStep()` navigation, and `PrinterManager` receipt printing. Removed `startPayment(amount, tip)` in favor of `initPayment(amount)` (tip collected within flow)
+- **AngelPayPaymentScreen**: Rewritten with `when(state)` routing to reusable composables (`ReviewScreen`, `TipScreen`, `MerchantSelectionContent`). Removed Scaffold/TopAppBar — full-screen states. Added `PaymentApprovedScreen` confetti animation before success content
+
+---
+
 ## [1.9.0] - 2026-03-11
 
 ### **Added**

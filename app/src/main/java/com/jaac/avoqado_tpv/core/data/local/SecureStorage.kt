@@ -145,6 +145,12 @@ class SecureStorage @Inject constructor(
         // Module cache keys
         private const val KEY_CACHED_MODULES = "cached_modules"
 
+        // AngelPay credentials (Nexgo N86 app-to-app integration)
+        private const val KEY_ANGELPAY_EMAIL = "angelpay_email"
+        private const val KEY_ANGELPAY_PASSWORD = "angelpay_password"
+        private const val KEY_ANGELPAY_AFFILIATION = "angelpay_affiliation"
+        private const val KEY_ANGELPAY_COMMERCE_TOKEN = "angelpay_commerce_token"
+
         // BLE Payment Server state persistence
         private const val KEY_BLE_SERVER_WAS_RUNNING = "ble_server_was_running"
         private const val KEY_BLE_KNOWN_DEVICES = "ble_known_devices"  // JSON list of known device addresses/names
@@ -1810,5 +1816,48 @@ class SecureStorage @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ [BLE-Known] Failed to save known devices")
         }
+    }
+
+    // ==================== ANGELPAY CREDENTIALS ====================
+
+    fun saveAngelPayCredentials(
+        email: String,
+        password: String,
+        affiliation: String,
+        commerceToken: String,
+    ) {
+        encryptedPrefs.edit().apply {
+            putString(KEY_ANGELPAY_EMAIL, email)
+            putString(KEY_ANGELPAY_PASSWORD, password)
+            putString(KEY_ANGELPAY_AFFILIATION, affiliation)
+            putString(KEY_ANGELPAY_COMMERCE_TOKEN, commerceToken)
+            apply()
+        }
+        Timber.d("🔶 [AngelPay] Credentials saved (email=$email, affiliation=$affiliation)")
+    }
+
+    fun getAngelPayCredentials(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCredentials? {
+        val email = encryptedPrefs.getString(KEY_ANGELPAY_EMAIL, null) ?: return null
+        val password = encryptedPrefs.getString(KEY_ANGELPAY_PASSWORD, null) ?: return null
+        val affiliation = encryptedPrefs.getString(KEY_ANGELPAY_AFFILIATION, null) ?: return null
+        val commerceToken = encryptedPrefs.getString(KEY_ANGELPAY_COMMERCE_TOKEN, null) ?: return null
+
+        return com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCredentials(
+            email = email,
+            password = password,
+            affiliation = affiliation,
+            commerceToken = commerceToken,
+        )
+    }
+
+    fun clearAngelPayCredentials() {
+        encryptedPrefs.edit().apply {
+            remove(KEY_ANGELPAY_EMAIL)
+            remove(KEY_ANGELPAY_PASSWORD)
+            remove(KEY_ANGELPAY_AFFILIATION)
+            remove(KEY_ANGELPAY_COMMERCE_TOKEN)
+            apply()
+        }
+        Timber.d("🔶 [AngelPay] Credentials cleared")
     }
 }

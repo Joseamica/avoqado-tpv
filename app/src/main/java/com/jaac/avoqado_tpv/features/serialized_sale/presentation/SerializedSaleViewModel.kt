@@ -244,9 +244,9 @@ class SerializedSaleViewModel @Inject constructor(
      */
     fun onConfirmSale(onSuccess: (QuickSellResult) -> Unit) {
         val state = _uiState.value
-        val price = state.enteredPrice.toBigDecimalOrNull()
+        val price = state.enteredPrice.ifEmpty { "0" }.toBigDecimalOrNull() ?: BigDecimal.ZERO
 
-        if (price == null || price < BigDecimal.ZERO) {
+        if (price < BigDecimal.ZERO) {
             _uiState.update { it.copy(error = "Ingresa un precio válido") }
             return
         }
@@ -265,7 +265,6 @@ class SerializedSaleViewModel @Inject constructor(
         _uiState.update { it.copy(isLoading = true, error = null) }
 
         viewModelScope.launch {
-            // Get terminalId from settings for sales attribution
             val terminalId = secureStorage.getTerminalId()
 
             serializedSaleRepository.quickSell(
@@ -274,10 +273,10 @@ class SerializedSaleViewModel @Inject constructor(
                 price = price,
                 terminalId = terminalId,
                 isPortabilidad = state.isPortabilidad,
-                skipProofOfSale = false  // Proof-of-sale always required (1 photo normal, 2 photos portabilidad)
+                skipProofOfSale = false
             )
                 .onSuccess { result ->
-                    Timber.d("Quick sell success: ${result.orderNumber}, terminalId: $terminalId")
+                    Timber.d("Quick sell success: ${result.orderNumber}, price: $price, terminalId: $terminalId")
                     _uiState.update {
                         it.copy(
                             isLoading = false,

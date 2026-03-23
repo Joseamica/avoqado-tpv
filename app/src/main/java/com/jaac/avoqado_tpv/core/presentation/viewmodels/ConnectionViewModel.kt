@@ -13,7 +13,6 @@ import com.jaac.avoqado_tpv.core.util.DeviceHealthMonitor
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
-import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
 import com.jaac.avoqado_tpv.features.remote_command.data.model.CommandResult
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -70,7 +69,6 @@ class ConnectionViewModel @Inject constructor(
     private val connectionEventManager: ConnectionEventManager,
     private val commandExecutor: CommandExecutor,
     private val connectionStateManager: ConnectionStateManager,
-    private val initializationManager: InitializationManager,
 ) : ViewModel() {
 
     // ══════════════════════════════════════════════════════════════════════
@@ -220,13 +218,9 @@ class ConnectionViewModel @Inject constructor(
                         val version = nextVersion()
                         probeConnectivity(version)
 
-                        // Retry Blumon SDK initialization if it failed on startup (e.g., app started offline)
-                        if (!initializationManager.isInitialized.value) {
-                            launch {
-                                Timber.i("🔧 [Connection] SDK not initialized — retrying after network restore")
-                                initializationManager.ensureInitialized()
-                            }
-                        }
+                        // NOTE: SDK re-init on network restore is handled by HomeViewModel.listenForConnectionRestored()
+                        // which passes the correct merchantPosId. Do NOT call ensureInitialized() here
+                        // without posId — it causes a race condition that leaves the SDK with stale posId.
                     }
                     NetworkStatus.Unavailable -> {
                         Timber.w("⚠️ [Connection] Network lost — scheduling offline transition")

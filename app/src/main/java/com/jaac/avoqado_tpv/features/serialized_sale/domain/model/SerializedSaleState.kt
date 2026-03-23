@@ -132,12 +132,17 @@ data class SerializedSaleUiState(
     /** Whether the portabilidad toggle is visible (backend-controlled) */
     val showPortabilidadToggle: Boolean = false,
     /** Whether the current sale is a portabilidad (skips proof-of-sale) */
-    val isPortabilidad: Boolean = false
+    val isPortabilidad: Boolean = false,
 ) {
+    val isZeroPrice: Boolean
+        get() {
+            val price = enteredPrice.ifEmpty { "0" }.toBigDecimalOrNull() ?: return false
+            return price.compareTo(java.math.BigDecimal.ZERO) == 0
+        }
+
     val canProceedToSell: Boolean
         get() = scanResult != null &&
-                enteredPrice.isNotEmpty() &&
-                enteredPrice.toBigDecimalOrNull() != null &&
+                (enteredPrice.isEmpty() || enteredPrice.toBigDecimalOrNull() != null) &&
                 (scanResult is ScanResult.Available ||
                  (scanResult is ScanResult.NotRegistered && selectedCategory != null))
 

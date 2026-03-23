@@ -15,6 +15,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import com.jaac.avoqado_tpv.core.presentation.theme.Size
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,6 +30,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.activity.compose.BackHandler
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -443,22 +445,28 @@ fun SerializedSaleScreen(
                             }
 
                             // Confirm sale button (outside StepRow — it's the CTA)
+                            var showGiftConfirmDialog by remember { mutableStateOf(false) }
+
                             if (showPriceSection) {
                                 Button(
                                     onClick = {
                                         focusManager.clearFocus()
-                                        val isPortabilidadValue = uiState.isPortabilidad
-                                        val serialNumberValue = uiState.currentSerialNumber
-                                        val categoryNameValue = uiState.selectedCategory?.name
-                                        viewModel.onConfirmSale { result ->
-                                            onNavigateToPayment(
-                                                result.orderId,
-                                                result.orderNumber,
-                                                result.total.toPlainString(),
-                                                isPortabilidadValue,
-                                                serialNumberValue,
-                                                categoryNameValue
-                                            )
+                                        if (uiState.isZeroPrice) {
+                                            showGiftConfirmDialog = true
+                                        } else {
+                                            val isPortabilidadValue = uiState.isPortabilidad
+                                            val serialNumberValue = uiState.currentSerialNumber
+                                            val categoryNameValue = uiState.selectedCategory?.name
+                                            viewModel.onConfirmSale { result ->
+                                                onNavigateToPayment(
+                                                    result.orderId,
+                                                    result.orderNumber,
+                                                    result.total.toPlainString(),
+                                                    isPortabilidadValue,
+                                                    serialNumberValue,
+                                                    categoryNameValue
+                                                )
+                                            }
                                         }
                                     },
                                     modifier = Modifier
@@ -469,13 +477,46 @@ fun SerializedSaleScreen(
                                     Icon(Icons.Default.Check, contentDescription = null)
                                     Spacer(modifier = Modifier.width(Spacing.Space2))
                                     Text(
-                                        text = if (uiState.isPortabilidad)
-                                            "Portabilidad $${uiState.enteredPrice.ifEmpty { "0" }}"
-                                        else
-                                            "Vender $${uiState.enteredPrice.ifEmpty { "0" }}",
+                                        text = when {
+                                            uiState.isZeroPrice -> "Regalar (Gratis)"
+                                            uiState.isPortabilidad -> "Portabilidad $${uiState.enteredPrice}"
+                                            else -> "Vender $${uiState.enteredPrice.ifEmpty { "0" }}"
+                                        },
                                         style = MaterialTheme.typography.titleMedium
                                     )
                                 }
+                            }
+
+                            // $0 gift confirmation dialog
+                            if (showGiftConfirmDialog) {
+                                AlertDialog(
+                                    onDismissRequest = { showGiftConfirmDialog = false },
+                                    title = { Text("Confirmar regalo") },
+                                    text = { Text("Este ${itemLabel.lowercase()} se registrará gratis, sin cobro.") },
+                                    confirmButton = {
+                                        Button(onClick = {
+                                            showGiftConfirmDialog = false
+                                            val isPortabilidadValue = uiState.isPortabilidad
+                                            val serialNumberValue = uiState.currentSerialNumber
+                                            val categoryNameValue = uiState.selectedCategory?.name
+                                            viewModel.onConfirmSale { result ->
+                                                onNavigateToPayment(
+                                                    result.orderId,
+                                                    result.orderNumber,
+                                                    result.total.toPlainString(),
+                                                    isPortabilidadValue,
+                                                    serialNumberValue,
+                                                    categoryNameValue
+                                                )
+                                            }
+                                        }) { Text("Sí, regalar") }
+                                    },
+                                    dismissButton = {
+                                        TextButton(onClick = { showGiftConfirmDialog = false }) {
+                                            Text("Cancelar")
+                                        }
+                                    }
+                                )
                             }
 
                             // Divider + "Escanear Otro" pattern
@@ -557,6 +598,7 @@ fun SerializedSaleScreen(
                 categoryLabel = labels?.category ?: "Categoría"
             )
         }
+
     }
 }
 
@@ -1009,3 +1051,4 @@ private fun StepRow(
         Column(modifier = Modifier.weight(1f)) { content() }
     }
 }
+

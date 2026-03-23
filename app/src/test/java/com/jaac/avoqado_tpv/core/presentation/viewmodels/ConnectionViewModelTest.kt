@@ -53,7 +53,6 @@ class ConnectionViewModelTest {
     private lateinit var connectionEventManager: ConnectionEventManager
     private lateinit var commandExecutor: CommandExecutor
     private lateinit var connectionStateManager: ConnectionStateManager
-    private lateinit var initializationManager: com.jaac.avoqado_tpv.features.payment.data.InitializationManager
 
     private val fakeNetworkStatus = MutableSharedFlow<NetworkStatus>()
 
@@ -104,8 +103,6 @@ class ConnectionViewModelTest {
         connectionEventManager = mockk(relaxed = true)
         commandExecutor = mockk(relaxed = true)
         connectionStateManager = mockk(relaxed = true)
-        initializationManager = mockk(relaxed = true)
-        every { initializationManager.isInitialized } returns MutableStateFlow(true)
 
         every { networkMonitor.getCurrentNetworkInfo() } returns connectedNetworkInfo
         every { deviceHealthMonitor.getSystemHealth() } returns fakeSystemHealth
@@ -132,7 +129,6 @@ class ConnectionViewModelTest {
             connectionEventManager = connectionEventManager,
             commandExecutor = commandExecutor,
             connectionStateManager = connectionStateManager,
-            initializationManager = initializationManager,
         )
     }
 

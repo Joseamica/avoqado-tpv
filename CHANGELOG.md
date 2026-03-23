@@ -9,6 +9,19 @@
 
 ---
 
+## [1.10.1] - 2026-03-23
+
+### **Added**
+
+- **Serialized Sale $0 gift**: Allow selling SIMs at $0 for giveaways. Button shows "Regalar (Gratis)" with confirmation dialog. Full payment flow (efectivo → success → fotos → QR)
+
+### **Changed**
+
+- **Serialized Sale price validation**: `price <= 0` → `price < 0` (accepts $0)
+- **Serialized Sale button enabled**: Empty price field now enables button (treated as $0)
+
+---
+
 ## [1.10.0] - 2026-03-23
 
 ### **Added**

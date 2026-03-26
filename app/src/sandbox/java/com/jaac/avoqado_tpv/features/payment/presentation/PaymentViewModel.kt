@@ -2469,9 +2469,9 @@ class PaymentViewModel @Inject constructor(
                 // ⚠️ CRITICAL: SaleIcc (Blumon API) expects DECIMAL format, NOT cents!
                 // Per Edgardo Olvera (2025-01-21): "Es float... Si tienes que poner un decimal"
                 // PreTrans uses cents (Long.parseLong), but SaleIcc uses decimal format
-                val amountForSaleIcc = formatAmountDecimal(getAmountForFlow())
+                val amountForSaleIcc = formatAmountDecimal(calculateTotal(getAmountForFlow(), getTipForFlow()))
                 val authResult = performOnlineAuthorization(
-                    amount = amountForSaleIcc,  // ✅ Decimal format for Blumon API (e.g., "10.00")
+                    amount = amountForSaleIcc,  // ✅ Total (subtotal + tip) in decimal format
                     track2 = sessionSnapshot.track2,  // Extracted from emvTagListStr above
                     cardHolderName = "CARDHOLDER",  // TODO: Extract from tag 5F20 if available
                     emvTagList = emvTagListStr

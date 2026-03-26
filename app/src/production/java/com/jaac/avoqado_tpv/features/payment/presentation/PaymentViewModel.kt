@@ -2457,9 +2457,9 @@ class PaymentViewModel @Inject constructor(
                 // PASO 4: ⭐ SaleIcc - ONLINE AUTHORIZATION ⭐
                 _state.value = PaymentState.Processing("Autorizando con banco...")
                 Timber.i("[PHASE 4] SaleIcc - Sending to Momentum for ONLINE authorization...")
-                val amountForSaleIcc = formatAmountDecimal(getAmountForFlow())
+                val amountForSaleIcc = formatAmountDecimal(calculateTotal(getAmountForFlow(), getTipForFlow()))
                 val authResult = performOnlineAuthorization(
-                    amount = amountForSaleIcc,  // ✅ Decimal format for Blumon API (e.g., "10.00")
+                    amount = amountForSaleIcc,  // ✅ Total (subtotal + tip) in decimal format
                     track2 = sessionSnapshot.track2,  // Extracted from emvTagListStr above
                     cardHolderName = "CARDHOLDER",  // TODO: Extract from tag 5F20 if available
                     emvTagList = emvTagListStr

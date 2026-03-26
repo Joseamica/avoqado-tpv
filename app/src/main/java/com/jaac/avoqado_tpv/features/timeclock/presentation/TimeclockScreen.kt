@@ -608,12 +608,12 @@ private fun ClockInPhotoPrompt(
     // Dynamic text based on photo type
     val title = when (photoType) {
         PhotoType.CLOCK_IN_SELFIE -> "Foto de Verificacion"
-        PhotoType.FACADE -> "Foto de Fachada/Tienda"
+        PhotoType.FACADE -> "Tomar foto del modulo de venta"
         PhotoType.DEPOSIT_VOUCHER -> "Foto de Voucher Bancario"
     }
     val description = when (photoType) {
         PhotoType.CLOCK_IN_SELFIE -> "Se requiere una foto selfie para registrar tu entrada. Tambien se guardara tu ubicacion GPS."
-        PhotoType.FACADE -> "Toma una foto panoramica del frente de la tienda."
+        PhotoType.FACADE -> "Toma una foto del modulo de venta."
         PhotoType.DEPOSIT_VOUCHER -> "Toma una foto del comprobante de deposito bancario."
     }
     val icon = when (photoType) {
@@ -754,7 +754,7 @@ private fun PhotoConfirmationScreen(
 
     val confirmTitle = when (photoType) {
         PhotoType.CLOCK_IN_SELFIE -> "Confirmar Foto de Entrada"
-        PhotoType.FACADE -> "Confirmar Foto de Fachada"
+        PhotoType.FACADE -> "Confirmar Foto del Modulo"
         PhotoType.DEPOSIT_VOUCHER -> "Confirmar Foto de Voucher"
     }
 

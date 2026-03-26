@@ -250,15 +250,7 @@ class OrderPaymentRecorder @Inject constructor(
 
             // Payment metadata
             status = "COMPLETED",
-            method = if (isCashPayment) {
-                "CASH"  // ✅ Cash payment (merchantAccountId = null)
-            } else {
-                when (cardDetails.cardBrand) {
-                    CardBrand.VISA, CardBrand.MASTERCARD -> "CREDIT_CARD"
-                    CardBrand.AMEX -> "CREDIT_CARD"
-                    else -> "DEBIT_CARD"
-                }
-            },
+            method = cardDetails.toPaymentMethod(),
             source = "AVOQADO_TPV",
             splitType = context.splitType.value,
             staffId = context.staffId,
@@ -312,10 +304,7 @@ class OrderPaymentRecorder @Inject constructor(
             amount = (context.amount * 100.toBigDecimal()).toInt(),
             tip = (context.tip * 100.toBigDecimal()).toInt(),
             status = "COMPLETED",
-            method = when (cardDetails.cardBrand) {
-                CardBrand.VISA, CardBrand.MASTERCARD, CardBrand.AMEX -> "CREDIT_CARD"
-                else -> "DEBIT_CARD"
-            },
+            method = cardDetails.toPaymentMethod(),
             source = "AVOQADO_TPV",
             splitType = "FULLPAYMENT",
             staffId = context.staffId,

@@ -91,6 +91,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.SplitContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.VerificationContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
+import com.jaac.avoqado_tpv.features.payment.domain.model.CardNature
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
@@ -5549,6 +5550,7 @@ class PaymentViewModel @Inject constructor(
             var bin = ""
             var bank = ""
             var issuerCountryFromBlumon = ""
+            var cardNatureStr = ""
 
             if (binInfo != null) {
                 val binInfoClass = binInfo::class.java
@@ -5617,6 +5619,16 @@ class PaymentViewModel @Inject constructor(
                     Timber.w("Could not extract bank from binInformation: ${e.message}")
                 }
 
+                // 💳 Extract card nature (CREDITO/DEBITO) from binInformation.type
+                try {
+                    val typeField = binInfoClass.getDeclaredField("type")
+                    typeField.isAccessible = true
+                    cardNatureStr = typeField.get(binInfo)?.toString() ?: ""
+                    Timber.d("🎯 [BinInformation] Extracted card type: $cardNatureStr")
+                } catch (e: Exception) {
+                    Timber.w("Could not extract type from binInformation: ${e.message}")
+                }
+
                 // 🌍 Extract country/issuerCountry for international card detection
                 val countryFieldNames = listOf(
                     "country", "countryCode", "issuerCountry", "issuerCountryCode",
@@ -5663,6 +5675,7 @@ class PaymentViewModel @Inject constructor(
                 cardBrand = cardBrand,
                 entryMode = entryMode,
                 isInternational = isInternational,
+                cardNature = CardNature.fromBlumonType(cardNatureStr),
             )
         } catch (e: Exception) {
             Timber.e(e, "Failed to extract card details from Blumon response - falling back to Track2 detection")

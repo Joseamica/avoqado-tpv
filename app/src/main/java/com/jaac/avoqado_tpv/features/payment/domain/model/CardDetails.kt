@@ -28,8 +28,20 @@ data class CardDetails(
     val cardBrand: CardBrand,
     val entryMode: CardEntryMode,
     val isInternational: Boolean = false,
-    val isCash: Boolean = false
+    val isCash: Boolean = false,
+    /** Real card nature from Blumon binInformation.type (CREDITO/DEBITO) */
+    val cardNature: CardNature = CardNature.UNKNOWN
 ) {
+    /** Maps to backend payment method using REAL card nature from processor */
+    fun toPaymentMethod(): String = when {
+        isCash -> "CASH"
+        cardNature == CardNature.DEBIT -> "DEBIT_CARD"
+        cardNature == CardNature.CREDIT -> "CREDIT_CARD"
+        // Fallback: guess from brand (legacy behavior for AngelPay or missing data)
+        cardBrand == CardBrand.AMEX -> "CREDIT_CARD"  // Amex is always credit
+        else -> "CREDIT_CARD"  // Default to credit if unknown
+    }
+
     companion object {
         /**
          * Instancia especial para pagos en efectivo.
@@ -122,4 +134,30 @@ enum class CardEntryMode(val displayName: String) {
      * Backend espera: "CHIP", "CONTACTLESS", "SWIPE"
      */
     fun toBackendString(): String = this.name
+}
+
+/**
+ * Real card nature (credit vs debit) from Blumon binInformation.type.
+ *
+ * Values from Momentum: "CREDITO", "CRÉDITO", "DEBITO", "DÉBITO"
+ */
+enum class CardNature {
+    CREDIT,
+    DEBIT,
+    UNKNOWN;
+
+    companion object {
+        fun fromBlumonType(type: String?): CardNature {
+            if (type.isNullOrBlank()) return UNKNOWN
+            val normalized = type.uppercase()
+                .replace("É", "E")
+                .replace("Í", "I")
+                .trim()
+            return when {
+                normalized.contains("CREDITO") || normalized.contains("CREDIT") -> CREDIT
+                normalized.contains("DEBITO") || normalized.contains("DEBIT") -> DEBIT
+                else -> UNKNOWN
+            }
+        }
+    }
 }

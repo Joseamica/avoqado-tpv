@@ -234,15 +234,7 @@ class FastPaymentRecorder @Inject constructor(
 
             // Payment metadata
             status = "COMPLETED", // Payment is already approved by Blumon (or cash)
-            method = if (cardDetails.isCash) {
-                "CASH"
-            } else {
-                when (cardDetails.cardBrand) {
-                    CardBrand.VISA, CardBrand.MASTERCARD -> "CREDIT_CARD"
-                    CardBrand.AMEX -> "CREDIT_CARD"
-                    else -> "DEBIT_CARD"
-                }
-            },
+            method = cardDetails.toPaymentMethod(),
             source = "AVOQADO_TPV",
             splitType = "FULLPAYMENT",
             staffId = context.staffId,
@@ -304,10 +296,7 @@ class FastPaymentRecorder @Inject constructor(
             amount = (context.amount * 100.toBigDecimal()).toInt(),
             tip = (context.tip * 100.toBigDecimal()).toInt(),
             status = "COMPLETED",
-            method = when (cardDetails.cardBrand) {
-                CardBrand.VISA, CardBrand.MASTERCARD, CardBrand.AMEX -> "CREDIT_CARD"
-                else -> "DEBIT_CARD"
-            },
+            method = cardDetails.toPaymentMethod(),
             source = "AVOQADO_TPV",
             splitType = "FULLPAYMENT",
             staffId = context.staffId,

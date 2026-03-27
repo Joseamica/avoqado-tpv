@@ -84,20 +84,17 @@
 # Logs contain sensitive business logic and flow
 # MUST be removed in release builds
 
+# Remove debug/verbose/info logs in release, but KEEP warn/error for Crashlytics
 -assumenosideeffects class timber.log.Timber {
     public static *** d(...);
     public static *** v(...);
     public static *** i(...);
-    public static *** w(...);
-    public static *** e(...);
 }
 
 -assumenosideeffects class timber.log.Timber$Tree {
     public *** d(...);
     public *** v(...);
     public *** i(...);
-    public *** w(...);
-    public *** e(...);
 }
 
 -assumenosideeffects class android.util.Log {

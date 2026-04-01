@@ -137,6 +137,7 @@ fun WelcomeScreen(
     onNavigateToSuperAdmin: () -> Unit = {},
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Telecom: Vender flow (barcode → price → payment)
     onNavigateToInventoryRegister: () -> Unit = {},  // 📦 Telecom: Alta de productos flow
+    onNavigateToMySales: () -> Unit = {},  // 📊 Telecom: My sales history
     onNavigateToTimeclock: () -> Unit = {},  // ⏱ Navigate to TimeclockScreen from WelcomeScreen
     onNavigateToTimeclockForClockOut: () -> Unit = {},  // ⏱ Navigate to TimeclockScreen for clock-out
     onNavigateToMessages: () -> Unit = {},  // 📨 Navigate to Messages screen
@@ -293,6 +294,7 @@ fun WelcomeScreen(
         onNavigateToSuperAdmin = onNavigateToSuperAdmin,
         onNavigateToSerializedSale = onNavigateToSerializedSale,  // 📱 Telecom: Vender
         onNavigateToInventoryRegister = onNavigateToInventoryRegister,  // 📦 Telecom: Alta
+        onNavigateToMySales = onNavigateToMySales,  // 📊 Telecom: Mis Ventas
         currentTimeEntry = currentTimeEntry,
         requireClockInToLogin = requireClockInToLogin,
         isAttendanceLoading = isAttendanceLoading,
@@ -508,6 +510,7 @@ private fun WelcomeScreenContent(
     onNavigateToSuperAdmin: () -> Unit,
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Telecom: Vender flow
     onNavigateToInventoryRegister: () -> Unit = {},  // 📦 Telecom: Alta de productos
+    onNavigateToMySales: () -> Unit = {},  // 📊 Telecom: My sales history
     currentTimeEntry: TimeEntry? = null,  // ⏱ Current attendance entry
     requireClockInToLogin: Boolean = false,  // ⏱ Whether clock-in is required
     isAttendanceLoading: Boolean = false,  // ⏱ Loading state for attendance
@@ -553,12 +556,14 @@ private fun WelcomeScreenContent(
         ?.config
     val isSimplifiedMode = serializedInventoryConfig?.ui?.simplifiedOrderFlow == true
 
-    // 📦 Check if user has serialized inventory permission (for "Alta de Productos" button)
+    // 📦 Check if user has serialized inventory permissions
     var hasInventoryRegisterPermission by remember { mutableStateOf(false) }
+    var hasInventorySellPermission by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         val result = permissionsRepository.getPermissions(forceRefresh = false)
         val permissions = result.getOrNull()
         hasInventoryRegisterPermission = permissions?.contains("serialized-inventory:create") ?: false
+        hasInventorySellPermission = permissions?.contains("serialized-inventory:sell") ?: false
     }
 
     // 🥝 Kiosk mode state
@@ -628,6 +633,19 @@ private fun WelcomeScreenContent(
                         enabled = canWork,
                         badge = if (!canWork) "Registra tu entrada" else null,
                         onClick = onNavigateToInventoryRegister
+                    )
+                )
+            }
+
+            // 📊 Mis Ventas — promoter's sales history
+            // Shown if user has serialized-inventory:sell permission
+            if (hasInventorySellPermission) {
+                add(
+                    ActionButton(
+                        icon = Icons.Default.Receipt,
+                        label = "Mis Ventas",
+                        enabled = true,
+                        onClick = onNavigateToMySales
                     )
                 )
             }

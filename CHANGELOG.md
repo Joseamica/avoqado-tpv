@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+### **Added**
+
+- **Mis Ventas (My Sales) screen**: New screen showing a promoter's serialized item sales history grouped by day with monthly totals. Includes month navigation, summary card with total count and amount, daily groupings, and gift item indicators. Accessible from simplified mode home screen for users with `serialized-inventory:sell` permission.
+
+### **Fixed**
+
+- **Restrict "+ categoría" button by permission**: The "+ categoría" button in Alta de SIM and Vender screens was visible to all roles. Now only users with `inventory:org-manage` permission (ADMIN/OWNER) can see it. CASHIER/Promotor roles can still register and sell but cannot create new categories.
+
 ---
 
 ## [1.10.1] - 2026-03-23

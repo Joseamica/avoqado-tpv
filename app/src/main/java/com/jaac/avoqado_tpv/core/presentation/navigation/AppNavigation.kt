@@ -73,6 +73,7 @@ import com.jaac.avoqado_tpv.features.ordering.presentation.OrderStatusFilter
 import com.jaac.avoqado_tpv.features.ordering.presentation.menu.MenuScreen
 import com.jaac.avoqado_tpv.features.timeclock.presentation.TimeclockScreen
 import com.jaac.avoqado_tpv.features.serialized_sale.presentation.SerializedSaleScreen
+import com.jaac.avoqado_tpv.features.serialized_sale.presentation.MySalesScreen
 import com.jaac.avoqado_tpv.features.serialized_inventory.presentation.SerializedInventoryScreen
 import com.jaac.avoqado_tpv.features.self_update.domain.UpdateRequestManager
 import com.jaac.avoqado_tpv.features.self_update.domain.UpdateRequestState
@@ -852,6 +853,10 @@ fun AppNavigation(
                 onNavigateToInventoryRegister = {
                     // 📦 Navigate to Serialized Inventory Register screen (Alta flow)
                     navController.navigate(NavRoute.SerializedInventoryRegister.route)
+                },
+                onNavigateToMySales = {
+                    // 📊 Navigate to My Sales screen (promoter sales history)
+                    navController.navigate(NavRoute.MySales.route)
                 },
                 onNavigateToMessages = {
                     navController.navigate(NavRoute.Messages.route)
@@ -1803,6 +1808,15 @@ fun AppNavigation(
         // 📦 Serialized Inventory Register Screen - Batch registration of items
         composable(NavRoute.SerializedInventoryRegister.route) {
             SerializedInventoryScreen(
+                onNavigateBack = {
+                    navController.safePopBackStack()
+                }
+            )
+        }
+
+        // 📊 My Sales Screen - Promoter's serialized item sales history
+        composable(NavRoute.MySales.route) {
+            MySalesScreen(
                 onNavigateBack = {
                     navController.safePopBackStack()
                 }

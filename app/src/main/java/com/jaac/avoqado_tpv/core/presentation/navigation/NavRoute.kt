@@ -272,6 +272,14 @@ sealed class NavRoute(val route: String) {
     data object AngelPayPayment : NavRoute("angelpay_payment")
 
     /**
+     * My Sales screen - Promoter's serialized item sales history
+     * Shows sales grouped by day with monthly totals
+     *
+     * Used by promoters to track their SIM/serialized item sales.
+     */
+    data object MySales : NavRoute("my_sales")
+
+    /**
      * Serialized Inventory Register screen - Batch registration of items
      * Select category → Scan multiple barcodes → Register batch
      *

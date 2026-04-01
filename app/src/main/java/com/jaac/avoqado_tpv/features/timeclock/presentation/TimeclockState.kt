@@ -10,7 +10,8 @@ import java.math.BigDecimal
 enum class PhotoType {
     CLOCK_IN_SELFIE,   // Existing verification selfie (clock-in)
     FACADE,            // Panoramic store front photo (clock-in)
-    DEPOSIT_VOUCHER    // Bank deposit receipt photo (clock-out)
+    DEPOSIT_VOUCHER,   // Bank deposit receipt photo (clock-out)
+    CLOCK_OUT_SELFIE   // Selfie at checkout (clock-out, after deposit voucher)
 }
 
 /**

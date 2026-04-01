@@ -9,6 +9,7 @@ import com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.Registrat
 import com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.SerializedInventoryUiState
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.CategoryWithStock
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.repository.SerializedSaleRepository
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -31,11 +32,16 @@ import javax.inject.Inject
 @HiltViewModel
 class SerializedInventoryViewModel @Inject constructor(
     private val serializedSaleRepository: SerializedSaleRepository,
-    private val modulesRepository: ModulesRepository
+    private val modulesRepository: ModulesRepository,
+    private val permissionsRepository: PermissionsRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SerializedInventoryUiState())
     val uiState: StateFlow<SerializedInventoryUiState> = _uiState.asStateFlow()
+
+    /** Whether the current user can create categories (requires inventory:org-manage) */
+    private val _canCreateCategory = MutableStateFlow(false)
+    val canCreateCategory: StateFlow<Boolean> = _canCreateCategory.asStateFlow()
 
     /** Tracks serial numbers currently being validated to prevent double-tap duplicates */
     private val _validatingSerials = java.util.Collections.synchronizedSet(mutableSetOf<String>())
@@ -46,6 +52,13 @@ class SerializedInventoryViewModel @Inject constructor(
 
     init {
         loadCategories()
+        checkCategoryPermission()
+    }
+
+    private fun checkCategoryPermission() {
+        viewModelScope.launch {
+            _canCreateCategory.value = permissionsRepository.hasPermission("inventory:org-manage")
+        }
     }
 
     /**

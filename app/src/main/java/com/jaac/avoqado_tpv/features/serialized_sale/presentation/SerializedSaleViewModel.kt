@@ -9,6 +9,7 @@ import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.QuickSellResul
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.SerializedSaleUiState
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.repository.SerializedSaleRepository
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,11 +37,16 @@ import javax.inject.Inject
 class SerializedSaleViewModel @Inject constructor(
     private val serializedSaleRepository: SerializedSaleRepository,
     private val modulesRepository: ModulesRepository,
-    private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage
+    private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+    private val permissionsRepository: PermissionsRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SerializedSaleUiState())
     val uiState: StateFlow<SerializedSaleUiState> = _uiState.asStateFlow()
+
+    /** Whether the current user can create categories (requires inventory:org-manage) */
+    private val _canCreateCategory = MutableStateFlow(false)
+    val canCreateCategory: StateFlow<Boolean> = _canCreateCategory.asStateFlow()
 
     // Job for scan operation - allows cancellation when user scans rapidly
     private var scanJob: Job? = null
@@ -52,6 +58,13 @@ class SerializedSaleViewModel @Inject constructor(
     init {
         loadCategories()
         loadPortabilidadConfig()
+        checkCategoryPermission()
+    }
+
+    private fun checkCategoryPermission() {
+        viewModelScope.launch {
+            _canCreateCategory.value = permissionsRepository.hasPermission("inventory:org-manage")
+        }
     }
 
     /**

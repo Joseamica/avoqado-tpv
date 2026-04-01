@@ -610,16 +610,19 @@ private fun ClockInPhotoPrompt(
         PhotoType.CLOCK_IN_SELFIE -> "Foto de Verificacion"
         PhotoType.FACADE -> "Tomar foto del modulo de venta"
         PhotoType.DEPOSIT_VOUCHER -> "Foto de Voucher Bancario"
+        PhotoType.CLOCK_OUT_SELFIE -> "Foto de Registro de Salida"
     }
     val description = when (photoType) {
         PhotoType.CLOCK_IN_SELFIE -> "Se requiere una foto selfie para registrar tu entrada. Tambien se guardara tu ubicacion GPS."
         PhotoType.FACADE -> "Toma una foto del modulo de venta."
         PhotoType.DEPOSIT_VOUCHER -> "Toma una foto del comprobante de deposito bancario."
+        PhotoType.CLOCK_OUT_SELFIE -> "Toma una selfie para confirmar tu registro de salida."
     }
     val icon = when (photoType) {
         PhotoType.CLOCK_IN_SELFIE -> Icons.Default.CameraAlt
         PhotoType.FACADE -> Icons.Default.Storefront
         PhotoType.DEPOSIT_VOUCHER -> Icons.Default.Receipt
+        PhotoType.CLOCK_OUT_SELFIE -> Icons.Default.CameraAlt
     }
 
     // Dialog-style card centered on screen
@@ -756,6 +759,7 @@ private fun PhotoConfirmationScreen(
         PhotoType.CLOCK_IN_SELFIE -> "Confirmar Foto de Entrada"
         PhotoType.FACADE -> "Confirmar Foto del Modulo"
         PhotoType.DEPOSIT_VOUCHER -> "Confirmar Foto de Voucher"
+        PhotoType.CLOCK_OUT_SELFIE -> "Confirmar Foto de Salida"
     }
 
     // Load the image from local path

@@ -68,6 +68,7 @@ fun SerializedInventoryScreen(
     viewModel: SerializedInventoryViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val canCreateCategory by viewModel.canCreateCategory.collectAsState()
     val labels = viewModel.labels
 
     // Use configured labels or defaults
@@ -109,8 +110,10 @@ fun SerializedInventoryScreen(
                 title = registerLabel,
                 onNavigationClick = onNavigateBack,
                 actions = {
-                    TextButton(onClick = { showCreateCategoryDialog = true }) {
-                        Text("+ categoría")
+                    if (canCreateCategory) {
+                        TextButton(onClick = { showCreateCategoryDialog = true }) {
+                            Text("+ categoría")
+                        }
                     }
                 }
             )

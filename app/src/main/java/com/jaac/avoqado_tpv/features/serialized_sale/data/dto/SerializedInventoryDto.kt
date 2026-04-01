@@ -167,3 +167,32 @@ data class CategoryDto(
     val description: String?,
     val suggestedPrice: String?
 )
+
+// ========== My Sales DTOs ==========
+
+/**
+ * Response from my-sales endpoint
+ * GET /tpv/serialized-inventory/my-sales
+ */
+data class MySalesResponse(
+    val success: Boolean,
+    val data: MySalesData?
+)
+
+data class MySalesData(
+    val month: String,
+    val totalSales: Int,
+    val totalAmount: Double,
+    val sales: List<MySaleItem>
+)
+
+data class MySaleItem(
+    val id: String,
+    val orderNumber: String,
+    val serialNumber: String,
+    val categoryName: String,
+    val price: Double,
+    val date: String,
+    val paymentStatus: String,
+    val isGift: Boolean
+)

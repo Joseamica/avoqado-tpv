@@ -16,3 +16,7 @@ local.properties
 app/log.txt
 app/google-services.json
 .kotlin/errors/
+
+# Claude Code / MCP tools internal data
+.claude-flow/
+.serena/

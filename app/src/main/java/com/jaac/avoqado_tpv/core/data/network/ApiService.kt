@@ -1321,6 +1321,26 @@ interface ApiService {
         @Body request: com.jaac.avoqado_tpv.features.serialized_sale.data.dto.RegisterBatchRequestDto
     ): Response<com.jaac.avoqado_tpv.features.serialized_sale.data.dto.RegisterBatchResponseDto>
 
+    /**
+     * Get current staff's serialized item sales history
+     *
+     * GET /tpv/serialized-inventory/my-sales
+     *
+     * Returns the logged-in promoter's sales grouped by month.
+     * Includes daily breakdown, total count, and total amount.
+     *
+     * @param month Target month in "yyyy-MM" format (defaults to current month)
+     * @param limit Max items per page
+     * @param offset Pagination offset
+     * @return Sales history with monthly totals
+     */
+    @GET("tpv/serialized-inventory/my-sales")
+    suspend fun getMySalesHistory(
+        @Query("month") month: String? = null,
+        @Query("limit") limit: Int = 100,
+        @Query("offset") offset: Int = 0
+    ): Response<com.jaac.avoqado_tpv.features.serialized_sale.data.dto.MySalesResponse>
+
     // ========== Geolocation (Cell ID) ==========
 
     /**

@@ -71,6 +71,7 @@ fun SerializedSaleScreen(
     viewModel: SerializedSaleViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val canCreateCategory by viewModel.canCreateCategory.collectAsState()
     val labels = viewModel.labels
 
     // Use configured labels or defaults
@@ -145,8 +146,10 @@ fun SerializedSaleScreen(
                     title = "Vender $itemLabel",
                     onNavigationClick = onNavigateBack,
                     actions = {
-                        TextButton(onClick = { showCreateCategoryDialog = true }) {
-                            Text("+ categoría")
+                        if (canCreateCategory) {
+                            TextButton(onClick = { showCreateCategoryDialog = true }) {
+                                Text("+ categoría")
+                            }
                         }
                     }
                 )
@@ -323,6 +326,7 @@ fun SerializedSaleScreen(
                                         selectedCategory = uiState.selectedCategory,
                                         onCategorySelected = viewModel::onCategorySelected,
                                         onCreateCategory = { showCreateCategoryDialog = true },
+                                        canCreateCategory = canCreateCategory,
                                         modifier = Modifier.fillMaxWidth()
                                     )
                                 }
@@ -755,26 +759,36 @@ private fun CategorySelectorDropdown(
     selectedCategory: CategoryWithStock?,
     onCategorySelected: (CategoryWithStock) -> Unit,
     onCreateCategory: () -> Unit = {},
+    canCreateCategory: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     var expanded by remember { mutableStateOf(false) }
 
     if (categories.isEmpty()) {
-        // When no categories exist, show "Create Category" button instead of loading
-        OutlinedButton(
-            onClick = onCreateCategory,
-            modifier = modifier
-                .fillMaxWidth()
-                .height(Size.SerializedCategorySelectorHeight),
-            shape = RoundedCornerShape(50)
-        ) {
-            Icon(
-                Icons.Default.Add,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp)
+        if (canCreateCategory) {
+            // When no categories exist and user has permission, show "Create Category" button
+            OutlinedButton(
+                onClick = onCreateCategory,
+                modifier = modifier
+                    .fillMaxWidth()
+                    .height(Size.SerializedCategorySelectorHeight),
+                shape = RoundedCornerShape(50)
+            ) {
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Crear categoría")
+            }
+        } else {
+            // No categories and no permission to create
+            Text(
+                text = "No hay categorías. Contacta al administrador.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Crear categoría")
         }
     } else {
         ExposedDropdownMenuBox(

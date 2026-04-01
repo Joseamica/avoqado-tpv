@@ -67,6 +67,7 @@ class TimeclockViewModel @Inject constructor(
     private var pendingClockInPhotoUrl: String? = null
     private var pendingFacadePhotoUrl: String? = null
     private var pendingDepositPhotoUrl: String? = null
+    private var pendingClockOutSelfieUrl: String? = null
 
     init {
         if (venueId.isNotEmpty() && pin.isNotEmpty()) {
@@ -268,13 +269,17 @@ class TimeclockViewModel @Inject constructor(
             Timber.d("⏱️ [CLOCK-OUT] TpvSettings check:")
             Timber.d("   - requireDepositPhoto: ${settings.requireDepositPhoto}")
 
-            // Build photo queue — NO selfie at clock-out, only deposit voucher if configured
+            // Build photo queue for clock-out:
+            // 1. Deposit voucher (if configured)
+            // 2. Checkout selfie (always, after deposit — only if deposit was taken)
             isClockOutFlow = true
             photoQueue.clear()
             pendingDepositPhotoUrl = null
+            pendingClockOutSelfieUrl = null
 
             if (settings.requireDepositPhoto) {
                 photoQueue.add(PhotoType.DEPOSIT_VOUCHER)
+                photoQueue.add(PhotoType.CLOCK_OUT_SELFIE)
             }
 
             Timber.d("⏱️ [CLOCK-OUT] Photo queue: $photoQueue")
@@ -407,6 +412,15 @@ class TimeclockViewModel @Inject constructor(
                         _state.value = TimeclockState.UploadingPhoto(localPath, progress)
                     }
                 )
+                PhotoType.CLOCK_OUT_SELFIE -> verificationUploadManager.uploadClockInPhoto(
+                    localPath = localPath,
+                    venueSlug = storagePath,
+                    staffId = staffId,
+                    timestamp = timestamp,
+                    onProgress = { progress ->
+                        _state.value = TimeclockState.UploadingPhoto(localPath, progress)
+                    }
+                )
             }
 
             uploadResult.fold(
@@ -426,6 +440,7 @@ class TimeclockViewModel @Inject constructor(
                         PhotoType.CLOCK_IN_SELFIE -> pendingClockInPhotoUrl = downloadUrl
                         PhotoType.FACADE -> pendingFacadePhotoUrl = downloadUrl
                         PhotoType.DEPOSIT_VOUCHER -> pendingDepositPhotoUrl = downloadUrl
+                        PhotoType.CLOCK_OUT_SELFIE -> pendingClockOutSelfieUrl = downloadUrl
                     }
 
                     // Continue processing the queue
@@ -500,6 +515,7 @@ class TimeclockViewModel @Inject constructor(
         pendingClockInPhotoUrl = null
         pendingFacadePhotoUrl = null
         pendingDepositPhotoUrl = null
+        pendingClockOutSelfieUrl = null
         isClockOutFlow = false
 
         viewModelScope.launch {
@@ -621,7 +637,7 @@ class TimeclockViewModel @Inject constructor(
             venueId = venueId,
             staffId = staffId,
             pin = pin,
-            checkOutPhotoUrl = null,
+            checkOutPhotoUrl = pendingClockOutSelfieUrl,
             clockOutLatitude = location?.latitude,
             clockOutLongitude = location?.longitude,
             clockOutAccuracy = location?.accuracy,
@@ -651,6 +667,7 @@ class TimeclockViewModel @Inject constructor(
         pendingClockInPhotoUrl = null
         pendingFacadePhotoUrl = null
         pendingDepositPhotoUrl = null
+        pendingClockOutSelfieUrl = null
         isClockOutFlow = false
     }
 

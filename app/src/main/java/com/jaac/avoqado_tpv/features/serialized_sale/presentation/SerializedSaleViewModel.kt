@@ -128,6 +128,10 @@ class SerializedSaleViewModel @Inject constructor(
             Timber.w("📦 [SerializedSale] Ignoring blank serial number")
             return
         }
+        if (serialNumber.trim().length < 15) {
+            _uiState.update { it.copy(error = "El código debe tener al menos 15 dígitos") }
+            return
+        }
 
         // Cancel any previous scan in progress (prevents race condition)
         scanJob?.cancel()

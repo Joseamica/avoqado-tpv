@@ -173,6 +173,13 @@ class SerializedInventoryViewModel @Inject constructor(
      * @param onResult Callback with scan result (added, duplicate, or already scanned)
      */
     fun onBarcodeScanned(serialNumber: String, onResult: (InventoryScanResult) -> Unit) {
+        // Validate minimum length
+        if (serialNumber.trim().length < 15) {
+            _uiState.update { it.copy(error = "El código debe tener al menos 15 dígitos") }
+            onResult(InventoryScanResult.Error(serialNumber, "Código muy corto"))
+            return
+        }
+
         // Check if already in current batch (fast-path, no network)
         if (_uiState.value.scannedSerialNumbers.contains(serialNumber)) {
             Timber.d("Barcode already scanned in batch: $serialNumber")

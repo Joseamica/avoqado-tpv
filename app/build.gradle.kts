@@ -16,8 +16,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv"
         minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
         targetSdk = 34
-        versionCode = 45
-        versionName = "1.10.8"
+        versionCode = 46
+        versionName = "1.10.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

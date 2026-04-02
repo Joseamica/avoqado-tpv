@@ -272,6 +272,16 @@ fun SerializedSaleScreen(
                                 )
                             )
 
+                            // Inline error message (visible immediately under input)
+                            if (uiState.error != null && uiState.scanResult == null) {
+                                Text(
+                                    text = uiState.error!!,
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(start = 4.dp, top = 4.dp)
+                                )
+                            }
+
                             Spacer(modifier = Modifier.height(Spacing.Space3))
 
                             // Hint text

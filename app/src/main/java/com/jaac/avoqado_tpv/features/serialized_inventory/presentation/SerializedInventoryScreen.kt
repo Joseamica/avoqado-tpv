@@ -559,6 +559,16 @@ private fun InventoryFormContent(
             textStyle = MaterialTheme.typography.bodySmall
         )
 
+        // Inline error from ViewModel
+        if (uiState.error != null && !uiState.isScanning) {
+            Text(
+                text = uiState.error!!,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp)
+            )
+        }
+
         // Scan feedback (compact, separate line)
         if (scanFeedback != null) {
             Text(

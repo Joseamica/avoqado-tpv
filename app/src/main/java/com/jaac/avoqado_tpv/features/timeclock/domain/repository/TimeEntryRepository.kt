@@ -52,7 +52,8 @@ interface TimeEntryRepository {
         clockOutLatitude: Double? = null,
         clockOutLongitude: Double? = null,
         clockOutAccuracy: Float? = null,
-        depositPhotoUrl: String? = null
+        depositPhotoUrl: String? = null,
+        skipReason: String? = null
     ): Result<TimeEntry>
 
     /**

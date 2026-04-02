@@ -500,6 +500,26 @@ class TimeclockViewModel @Inject constructor(
     }
 
     /**
+     * Skip all checkout photos with a reason.
+     * Clears the photo queue and proceeds directly to clock-out.
+     */
+    fun skipCheckoutWithReason(reason: CheckoutSkipReason) {
+        val staffId = currentStaffId ?: return
+        val staffName = currentStaffName ?: return
+
+        Timber.d("⏱️ Skipping checkout photos with reason: ${reason.name}")
+
+        // Clear all photos — skipping everything
+        photoQueue.clear()
+        pendingDepositPhotoUrl = null
+        pendingClockOutSelfieUrl = null
+
+        viewModelScope.launch {
+            performClockOut(staffId, staffName, depositPhotoUrl = null, skipReason = reason.displayName)
+        }
+    }
+
+    /**
      * Cancel photo capture and go back to Ready state.
      * Clears the entire photo queue and all pending URLs.
      */
@@ -604,7 +624,8 @@ class TimeclockViewModel @Inject constructor(
     private suspend fun performClockOut(
         staffId: String,
         staffName: String,
-        depositPhotoUrl: String?
+        depositPhotoUrl: String?,
+        skipReason: String? = null
     ) {
         _state.value = TimeclockState.Processing("Registrando salida...")
 
@@ -641,7 +662,8 @@ class TimeclockViewModel @Inject constructor(
             clockOutLatitude = location?.latitude,
             clockOutLongitude = location?.longitude,
             clockOutAccuracy = location?.accuracy,
-            depositPhotoUrl = depositPhotoUrl
+            depositPhotoUrl = depositPhotoUrl,
+            skipReason = skipReason
         )
 
         result.fold(

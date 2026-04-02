@@ -151,7 +151,8 @@ fun TimeclockScreen(
                         photoType = currentState.photoType,
                         onTakePhoto = viewModel::startPhotoCapture,
                         onSkip = viewModel::skipPhoto,
-                        onCancel = viewModel::cancelPhotoCapture
+                        onCancel = viewModel::cancelPhotoCapture,
+                        onSkipWithReason = viewModel::skipCheckoutWithReason
                     )
                 }
                 is TimeclockState.PhotoPreview -> {
@@ -603,8 +604,10 @@ private fun ClockInPhotoPrompt(
     photoType: PhotoType = PhotoType.CLOCK_IN_SELFIE,
     onTakePhoto: () -> Unit,
     onSkip: () -> Unit,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
+    onSkipWithReason: ((CheckoutSkipReason) -> Unit)? = null
 ) {
+    var showSkipReasonDialog by remember { mutableStateOf(false) }
     // Dynamic text based on photo type
     val title = when (photoType) {
         PhotoType.CLOCK_IN_SELFIE -> "Foto de Verificacion"
@@ -724,6 +727,15 @@ private fun ClockInPhotoPrompt(
                     }
                 }
 
+                // Skip with reason button (clock-out only, all roles)
+                if (onSkipWithReason != null && (photoType == PhotoType.DEPOSIT_VOUCHER || photoType == PhotoType.CLOCK_OUT_SELFIE)) {
+                    TextButton(
+                        onClick = { showSkipReasonDialog = true }
+                    ) {
+                        Text("Continuar sin foto", fontSize = 14.sp)
+                    }
+                }
+
                 // Cancel button
                 OutlinedButton(
                     onClick = onCancel,
@@ -736,6 +748,35 @@ private fun ClockInPhotoPrompt(
                 }
             }
         }
+    }
+
+    // Skip reason dialog
+    if (showSkipReasonDialog) {
+        AlertDialog(
+            onDismissRequest = { showSkipReasonDialog = false },
+            title = { Text("Razon para omitir") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CheckoutSkipReason.entries.forEach { reason ->
+                        OutlinedButton(
+                            onClick = {
+                                showSkipReasonDialog = false
+                                onSkipWithReason?.invoke(reason)
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(reason.displayName)
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showSkipReasonDialog = false }) {
+                    Text("Cancelar")
+                }
+            }
+        )
     }
 }
 

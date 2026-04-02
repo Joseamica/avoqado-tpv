@@ -69,12 +69,13 @@ class TimeEntryRepositoryImpl @Inject constructor(
         clockOutLatitude: Double?,
         clockOutLongitude: Double?,
         clockOutAccuracy: Float?,
-        depositPhotoUrl: String?
+        depositPhotoUrl: String?,
+        skipReason: String?
     ): Result<TimeEntry> = withContext(Dispatchers.IO) {
         try {
             val hasGps = clockOutLatitude != null && clockOutLongitude != null
             val hasPhoto = checkOutPhotoUrl != null
-            Timber.d("⏱ Clocking out staff: $staffId at venue: $venueId, hasGps: $hasGps, hasPhoto: $hasPhoto, hasDeposit: ${depositPhotoUrl != null}")
+            Timber.d("⏱ Clocking out staff: $staffId at venue: $venueId, hasGps: $hasGps, hasPhoto: $hasPhoto, hasDeposit: ${depositPhotoUrl != null}, skipReason: $skipReason")
 
             val request = ClockOutRequestDto(
                 staffId = staffId,
@@ -83,7 +84,8 @@ class TimeEntryRepositoryImpl @Inject constructor(
                 depositPhotoUrl = depositPhotoUrl,
                 clockOutLatitude = clockOutLatitude,
                 clockOutLongitude = clockOutLongitude,
-                clockOutAccuracy = clockOutAccuracy
+                clockOutAccuracy = clockOutAccuracy,
+                skipReason = skipReason
             )
 
             val response = apiService.timeEntryClockOut(venueId, request)

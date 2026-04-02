@@ -93,7 +93,8 @@ data class ClockOutRequestDto(
     @SerializedName("longitude")
     val clockOutLongitude: Double? = null,
     @SerializedName("accuracy")
-    val clockOutAccuracy: Float? = null
+    val clockOutAccuracy: Float? = null,
+    val skipReason: String? = null
 )
 
 data class PinVerificationRequestDto(

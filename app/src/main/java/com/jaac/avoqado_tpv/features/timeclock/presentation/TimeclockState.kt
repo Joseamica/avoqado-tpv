@@ -15,6 +15,17 @@ enum class PhotoType {
 }
 
 /**
+ * Reasons for skipping checkout photos.
+ * Stored with the time entry for audit trail.
+ */
+enum class CheckoutSkipReason(val displayName: String) {
+    NO_SYSTEM("Sin sistema"),
+    NO_SALES("No hubo ventas"),
+    EMERGENCY("Emergencia"),
+    OTHER("Otro")
+}
+
+/**
  * UI State for the Timeclock screen
  */
 sealed class TimeclockState {

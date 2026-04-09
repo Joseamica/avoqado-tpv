@@ -36,6 +36,13 @@ sealed class PaymentContext {
     // This is the Terminal.serialNumber (e.g., "AVQD-2841548417"), NOT blumonSerialNumber
     abstract val deviceSerialNumber: String?
 
+    // 🛡️ IDEMPOTENCY KEY (2026-04-08) — Stripe/Square/Toast pattern
+    // UUID v4 generated ONCE per logical payment attempt in the ViewModel and
+    // propagated here. Used by the backend to dedupe retries atomically via
+    // @@unique([venueId, idempotencyKey]). Nullable for refunds (which have
+    // their own type-based dedup) and for contexts that predate this feature.
+    abstract val idempotencyKey: String?
+
     /**
      * Fast Payment: Pago directo sin orden existente.
      *
@@ -67,6 +74,7 @@ sealed class PaymentContext {
         override val merchantAccountId: String?, // ✅ NULLABLE: null for cash (no processor, proper reconciliation)
         override val blumonSerialNumber: String = "", // ⚠️ LEGACY: Blumon serial (deprecated)
         override val deviceSerialNumber: String? = null, // ⭐ Terminal attribution (2026-01-08)
+        override val idempotencyKey: String? = null, // 🛡️ Idempotency key (2026-04-08)
         // 📸 PRE-PAYMENT VERIFICATION (2025-01-14)
         // Order reference generated ONCE when entering VerifyingPrePayment state
         // Ensures Firebase photos match the order number created in backend
@@ -121,6 +129,7 @@ sealed class PaymentContext {
         override val merchantAccountId: String?, // ✅ NULLABLE: null for cash (no processor, proper reconciliation)
         override val blumonSerialNumber: String = "", // ⚠️ LEGACY: Blumon serial (deprecated)
         override val deviceSerialNumber: String? = null, // ⭐ Terminal attribution (2026-01-08)
+        override val idempotencyKey: String? = null, // 🛡️ Idempotency key (2026-04-08)
         // ⭐ SPLIT PAYMENT FIELDS
         val splitType: SplitType = SplitType.FULLPAYMENT,
         val paidProductIds: List<String> = emptyList(), // Product IDs for PERPRODUCT mode
@@ -175,6 +184,7 @@ sealed class PaymentContext {
         override val merchantAccountId: String?, // ⚠️ CRITICAL: MUST match original payment!
         override val blumonSerialNumber: String, // ⚠️ REQUIRED: For SDK merchant switch
         override val deviceSerialNumber: String? = null, // ⭐ Terminal attribution (2026-01-08)
+        override val idempotencyKey: String? = null, // 🛡️ Refunds dedupe via type=REFUND, key optional
 
         // Refund-specific fields
         val originalPaymentId: String, // Payment being refunded
@@ -246,6 +256,7 @@ sealed class PaymentContext {
         override val merchantAccountId: String? = null,
         override val blumonSerialNumber: String = "",
         override val deviceSerialNumber: String? = null,
+        override val idempotencyKey: String? = null, // 🛡️ Idempotency key (2026-04-08)
         val cardDetails: CardDetails? = null,
         val authorizationCode: String = "",
         val referenceNumber: String = "",

@@ -90,6 +90,29 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var cachedVenueId: String? = null
     private var cachedStaffId: String? = null
 
+    // 🛡️ IDEMPOTENCY KEY (2026-04-08) — Stripe/Square/Toast pattern
+    // UUID v4 generated ONCE per logical payment attempt and reused on every retry.
+    // Generated in initPayment() and cleared in resetPayment(). Cleared explicitly so
+    // each new attempt gets a fresh key.
+    private var currentPaymentAttemptId: String? = null
+
+    /**
+     * Get the current idempotency key, generating one if there isn't one yet.
+     * Idempotent — multiple calls during the same attempt return the SAME UUID.
+     * Cleared by resetPayment().
+     */
+    private fun ensurePaymentAttemptId(): String {
+        val existing = currentPaymentAttemptId
+        if (existing != null) {
+            Timber.d("🛡️ [AngelPay Idempotency] Reusing existing paymentAttemptId=$existing")
+            return existing
+        }
+        val generated = java.util.UUID.randomUUID().toString()
+        currentPaymentAttemptId = generated
+        Timber.i("🛡️ [AngelPay Idempotency] Generated new paymentAttemptId=$generated")
+        return generated
+    }
+
     init {
         // Load AngelPay merchants
         viewModelScope.launch {
@@ -174,6 +197,10 @@ class AngelPayPaymentViewModel @Inject constructor(
             cachedShiftId = shift.id
             cachedVenueId = venueId
             cachedStaffId = staffId
+
+            // 🛡️ IDEMPOTENCY KEY (2026-04-08): Generate the UUID NOW for this payment attempt.
+            // Reused by both cash and card flows below, and persisted across all retries.
+            ensurePaymentAttemptId()
 
             // 4. Use PaymentFlowGate to determine first screen
             val settings = tpvSettingsRepository.getCurrentSettings()
@@ -322,6 +349,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 rating = pendingRating,
                 merchantAccountId = null, // Cash = no processor
                 deviceSerialNumber = TerminalConfig.serialNumber,
+                idempotencyKey = ensurePaymentAttemptId(), // 🛡️ Idempotency key (2026-04-08)
                 cardDetails = CardDetails.CASH,
                 authorizationCode = "EFECTIVO",
                 referenceNumber = "CASH-$timestamp",
@@ -430,6 +458,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             rating = pendingRating,
             merchantAccountId = merchantAccountId,
             deviceSerialNumber = TerminalConfig.serialNumber,
+            idempotencyKey = ensurePaymentAttemptId(), // 🛡️ Idempotency key (2026-04-08)
             cardDetails = cardDetails,
             authorizationCode = result.authorizationCode,
             referenceNumber = result.referenceNumber,
@@ -641,6 +670,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         cachedShiftId = null
         cachedVenueId = null
         cachedStaffId = null
+        currentPaymentAttemptId = null // 🛡️ Clear idempotency key so the next attempt generates a fresh one
         _currentMerchant.value = null
         _isSendingReceipt.value = false
         _sendReceiptMessage.value = null

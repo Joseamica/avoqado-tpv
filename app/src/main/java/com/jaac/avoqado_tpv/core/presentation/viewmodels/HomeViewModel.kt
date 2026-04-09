@@ -45,6 +45,7 @@ import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsReposito
 import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntry
 import com.jaac.avoqado_tpv.features.timeclock.domain.repository.TimeEntryRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -135,6 +136,11 @@ class HomeViewModel @Inject constructor(
 
     // Job reference for Blumon init (so it can be cancelled)
     private var blumonInitJob: Job? = null
+
+    private companion object {
+        const val BLUMON_INIT_MAX_ATTEMPTS = 4
+        const val BLUMON_INIT_SETTLE_DELAY_MS = 2_000L
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // USER PROFILE STATE
@@ -671,92 +677,124 @@ class HomeViewModel @Inject constructor(
 
         blumonInitJob?.cancel()
         blumonInitJob = viewModelScope.launch(Dispatchers.IO) {
+            val timerJob = launch {
+                while (true) {
+                    delay(1_000)
+                    _blumonInitElapsedSeconds.value++
+                }
+            }
+
             try {
                 val start = System.currentTimeMillis()
                 Timber.d("[PERF] HomeVM.initBlumonSDK START")
+
                 // 🔄 Start initialization - show loader
                 _isBlumonInitializing.value = true
                 _isBlumonReady.value = false
                 _blumonInitError.value = null
 
-                // ⏱️ Launch parallel coroutine to track elapsed seconds
-                val timerJob = launch {
-                    while (true) {
-                        delay(1_000)
-                        _blumonInitElapsedSeconds.value++
+                var attempt = 1
+                while (attempt <= BLUMON_INIT_MAX_ATTEMPTS) {
+                    if (attempt == 1) {
+                        // ⏳ Wait for startup operations to settle on first attempt
+                        delay(BLUMON_INIT_SETTLE_DELAY_MS)
                     }
-                }
 
-                // ⏳ Wait 2 seconds for other operations to settle
-                // (Socket.IO, HeartbeatScheduler, ShiftRepository all start on login)
-                // This prevents resource contention that causes GenericFailure
-                delay(2000)
+                    Timber.i("🔧 [Blumon] SDK init attempt $attempt/$BLUMON_INIT_MAX_ATTEMPTS")
 
-                // Step 1: Fetch merchants from backend to get real serial numbers
-                val merchants = getMerchantsUseCase().firstOrNull()
-                val defaultMerchant = if (merchants.isNullOrEmpty()) {
-                    Timber.w("⚠️ [Blumon] No merchants found - SDK init will use default serial")
-                    null
-                } else {
-                    // Step 2: Use first merchant's serial for TerminalConfig
-                    val merchant = merchants.first()
-                    Timber.i("🏪 [Blumon] Using merchant for SDK init: ${merchant.displayName} (${merchant.serialNumber})")
-                    TerminalConfig.updateSerial(merchant.serialNumber)
-                    merchant
-                }
+                    // Step 1: Fetch merchants from backend to get real serial numbers
+                    val merchants = getMerchantsUseCase().firstOrNull()
+                    val defaultMerchant = if (merchants.isNullOrEmpty()) {
+                        Timber.w("⚠️ [Blumon] No merchants found - SDK init will use default serial")
+                        null
+                    } else {
+                        // Step 2: Use first merchant's serial for TerminalConfig
+                        val merchant = merchants.first()
+                        Timber.i("🏪 [Blumon] Using merchant for SDK init: ${merchant.displayName} (${merchant.serialNumber})")
+                        TerminalConfig.updateSerial(merchant.serialNumber)
+                        merchant
+                    }
 
-                // Step 3: Initialize SDK with correct serial AND posId
-                // CRITICAL: Pass posId to handle app restart after merchant switch
-                // Without this, SDK database has stale posId → "NO AUTORIZADO" on first payment
-                initializationManager.ensureInitialized(defaultMerchantPosId = defaultMerchant?.posId)
-                    .onSuccess {
-                        timerJob.cancel()
+                    // Step 3: Initialize SDK with correct serial AND posId
+                    // CRITICAL: Pass posId to handle app restart after merchant switch
+                    // Without this, SDK database has stale posId → "NO AUTORIZADO" on first payment
+                    val result = initializationManager.ensureInitialized(defaultMerchantPosId = defaultMerchant?.posId)
+                    if (result.isSuccess) {
                         Timber.d("[PERF] HomeVM.initBlumonSDK DONE (${System.currentTimeMillis() - start}ms)")
                         _isBlumonInitializing.value = false
                         _isBlumonReady.value = true
                         _blumonInitError.value = null
-                    }
-                    .onFailure { error ->
-                        timerJob.cancel()
-                        Timber.e(error, "❌ [Blumon] SDK initialization failed")
-                        _isBlumonInitializing.value = false
-                        _isBlumonReady.value = false
-                        _blumonInitError.value = when {
-                            error is java.net.UnknownHostException ||
-                            error.cause is java.net.UnknownHostException ||
-                            error is java.net.ConnectException ||
-                            error.cause is java.net.ConnectException ||
-                            error is java.net.SocketTimeoutException ||
-                            error.cause is java.net.SocketTimeoutException ||
-                            error.message?.contains("NetworkConnectionFailure", ignoreCase = true) == true ||
-                            error.message?.contains("UnknownHostException", ignoreCase = true) == true ->
-                                "Sin conexión a internet. Verifica tu conexión WiFi e intenta de nuevo."
-                            else ->
-                                "Error al inicializar sistema de pagos. Intente reiniciar."
-                        }
+                        // 🛡️ CRASHLYTICS: Track Blumon SDK init success
+                        try { com.google.firebase.crashlytics.FirebaseCrashlytics.getInstance().setCustomKey("blumon_sdk_status", "READY") } catch (_: Exception) {}
+                        return@launch
                     }
 
-            } catch (e: kotlinx.coroutines.CancellationException) {
+                    val error = result.exceptionOrNull() ?: IllegalStateException("Blumon init failed without exception")
+                    val canRetry = isNetworkRelatedInitError(error) && attempt < BLUMON_INIT_MAX_ATTEMPTS
+                    if (canRetry) {
+                        val retryDelayMs = getRetryDelayMs(attempt)
+                        Timber.w(
+                            error,
+                            "⚠️ [Blumon] SDK init attempt $attempt failed (network). Retrying in ${retryDelayMs}ms..."
+                        )
+                        delay(retryDelayMs)
+                        attempt++
+                        continue
+                    }
+
+                    Timber.e(error, "❌ [Blumon] SDK initialization failed")
+                    _isBlumonInitializing.value = false
+                    _isBlumonReady.value = false
+                    _blumonInitError.value = getBlumonInitUserMessage(error)
+                    // 🛡️ CRASHLYTICS: Track Blumon SDK init failure with reason
+                    try {
+                        com.google.firebase.crashlytics.FirebaseCrashlytics.getInstance().apply {
+                            setCustomKey("blumon_sdk_status", "FAILED")
+                            setCustomKey("blumon_sdk_error", error.message?.take(100) ?: "unknown")
+                        }
+                    } catch (_: Exception) {}
+                    return@launch
+                }
+            } catch (e: CancellationException) {
                 // Coroutine was cancelled (user tapped Cancel) — don't overwrite error state
                 Timber.d("[Blumon] SDK init coroutine cancelled")
+                throw e
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Blumon] Unexpected error during SDK initialization")
                 _isBlumonInitializing.value = false
                 _isBlumonReady.value = false
-                _blumonInitError.value = when {
-                    e is java.net.UnknownHostException ||
-                    e.cause is java.net.UnknownHostException ||
-                    e is java.net.ConnectException ||
-                    e.cause is java.net.ConnectException ||
-                    e is java.net.SocketTimeoutException ||
-                    e.cause is java.net.SocketTimeoutException ||
-                    e.message?.contains("NetworkConnectionFailure", ignoreCase = true) == true ||
-                    e.message?.contains("UnknownHostException", ignoreCase = true) == true ->
-                        "Sin conexión a internet. Verifica tu conexión WiFi e intenta de nuevo."
-                    else ->
-                        "Error inesperado: ${e.message}"
-                }
+                _blumonInitError.value = getBlumonInitUserMessage(e)
+            } finally {
+                timerJob.cancel()
             }
+        }
+    }
+
+    private fun isNetworkRelatedInitError(error: Throwable): Boolean {
+        return error is java.net.UnknownHostException ||
+            error.cause is java.net.UnknownHostException ||
+            error is java.net.ConnectException ||
+            error.cause is java.net.ConnectException ||
+            error is java.net.SocketTimeoutException ||
+            error.cause is java.net.SocketTimeoutException ||
+            error.message?.contains("NetworkConnectionFailure", ignoreCase = true) == true ||
+            error.message?.contains("UnknownHostException", ignoreCase = true) == true
+    }
+
+    private fun getRetryDelayMs(attempt: Int): Long {
+        return when (attempt) {
+            1 -> 2_000L
+            2 -> 5_000L
+            3 -> 10_000L
+            else -> 15_000L
+        }
+    }
+
+    private fun getBlumonInitUserMessage(error: Throwable): String {
+        return if (isNetworkRelatedInitError(error)) {
+            "Sin conexión a internet. Verifica tu conexión WiFi e intenta de nuevo."
+        } else {
+            "Error al inicializar sistema de pagos. Intente reiniciar."
         }
     }
 
@@ -801,6 +839,9 @@ class HomeViewModel @Inject constructor(
                 if (merchantRepository.isUsingFallback()) {
                     Timber.i("🔄 [HomeViewModel] Merchants are fallback - re-fetching from backend...")
                     retryFetchMerchantsAndReinitSDK()
+                } else if (!_isBlumonReady.value && !_isBlumonInitializing.value) {
+                    Timber.i("🔄 [HomeViewModel] SDK not ready after reconnection - retrying init...")
+                    initializeBlumonSDK()
                 }
 
                 // Re-fetch data that may have failed during init due to no connection
@@ -845,6 +886,10 @@ class HomeViewModel @Inject constructor(
                     initializeBlumonSDK()
                 }.onFailure { error ->
                     Timber.w(error, "⚠️ [HomeViewModel] Still can't fetch merchants from backend")
+                    if (!_isBlumonReady.value && !_isBlumonInitializing.value) {
+                        Timber.i("🔁 [HomeViewModel] Retrying SDK init with current merchant cache")
+                        initializeBlumonSDK()
+                    }
                 }
             } catch (e: Exception) {
                 Timber.e(e, "❌ [HomeViewModel] Error re-fetching merchants")

@@ -523,7 +523,10 @@ fun KioskMenuScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = 0.7f))
-                .clickable(enabled = false) { /* Block clicks */ },
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) { /* Block clicks while SDK is not ready */ },
             contentAlignment = Alignment.Center
         ) {
             Card(

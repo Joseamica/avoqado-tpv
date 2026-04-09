@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.core.util
 
+import com.google.firebase.crashlytics.FirebaseCrashlytics
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -100,6 +101,19 @@ class ConnectionStateManager @Inject constructor() {
             val slowStr = if (effectiveSlow) " [SLOW]" else ""
             Timber.i("🔄 [ConnectionState] Updated: internet=$hasInternet, server=$hasServer$latencyStr$slowStr")
             _connectionState.value = newState
+
+            // 🛡️ CRASHLYTICS KEYS (2026-04-09) — Network state at crash time.
+            // Updated every time connection state changes so ANY crash (fatal or non-fatal)
+            // automatically includes the exact network conditions. No more guessing from
+            // WhatsApp screenshots — Crashlytics "Claves" tab shows these directly.
+            try {
+                FirebaseCrashlytics.getInstance().apply {
+                    setCustomKey("network_internet", hasInternet)
+                    setCustomKey("network_server", hasServer)
+                    setCustomKey("network_slow", effectiveSlow)
+                    if (latencyMs != null) setCustomKey("network_latency_ms", latencyMs)
+                }
+            } catch (_: Exception) { /* Firebase not initialized yet during early startup */ }
         }
     }
 

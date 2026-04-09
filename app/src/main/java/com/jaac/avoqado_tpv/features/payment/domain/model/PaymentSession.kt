@@ -29,7 +29,23 @@ data class PaymentSession(
     val kioskStaffId: String? = null,
     val skipLocalOrderValidation: Boolean = false,
     val track2: String = "",
-    val emvIssuerCountry: String = ""
+    val emvIssuerCountry: String = "",
+    /**
+     * 🛡️ IDEMPOTENCY KEY (2026-04-08) — Stripe/Square/Toast pattern.
+     *
+     * UUID v4 generated ONCE per logical payment attempt. Stored on the session so
+     * that **every** coroutine recording the payment reads the SAME value — even if
+     * handlePaymentSuccess() is somehow called multiple times (the Testarudo bug).
+     *
+     * Lifecycle:
+     *   - Generated in startPayment() / processCashPayment() / processCryptoPayment()
+     *     (i.e., the earliest moment of each payment flow)
+     *   - Persisted through the session until the payment succeeds or is reset
+     *   - Cleared on resetPayment(), cancelPayment(), or after a successful record
+     *
+     * Null means: no payment attempt is currently in progress.
+     */
+    val paymentAttemptId: String? = null
 ) {
     companion object {
         fun empty(): PaymentSession = PaymentSession(

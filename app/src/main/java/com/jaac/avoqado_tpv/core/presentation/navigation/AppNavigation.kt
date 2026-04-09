@@ -35,6 +35,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.blumonpay.pax.utils.AppManager
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.R
 import kotlinx.coroutines.delay
@@ -195,7 +196,18 @@ fun AppNavigation(
     // 📥 UPDATE REQUEST OBSERVATION (Remote update commands from dashboard)
     // When dashboard sends REQUEST_UPDATE command, show dialog to user
     val updateRequestManager = remember {
-        if (BuildConfig.ENABLE_PAX_SDK) kioskEntryPoint.updateRequestManager() else null
+        if (!BuildConfig.ENABLE_PAX_SDK) {
+            null
+        } else {
+            try {
+                // Defensive init: prevents SDK DAL race on cold start.
+                AppManager.init(context.applicationContext)
+                kioskEntryPoint.updateRequestManager()
+            } catch (e: Throwable) {
+                Timber.w(e, "⚠️ [AppNavigation] UpdateRequestManager disabled: AppManager init failed")
+                null
+            }
+        }
     }
     val updateRequestState = updateRequestManager
         ?.updateRequestState

@@ -7,12 +7,24 @@
 
 ## [Unreleased]
 
-### **Added**
+---
 
-- **Mis Ventas (My Sales) screen**: New screen showing a promoter's serialized item sales history grouped by day with monthly totals. Includes month navigation, summary card with total count and amount, daily groupings, and gift item indicators. Accessible from simplified mode home screen for users with `serialized-inventory:sell` permission.
+## [1.10.10] - 2026-04-09
 
 ### **Fixed**
 
+- **Payment idempotency (Stripe/Square/Toast pattern)**: Prevent duplicate payment recording from concurrent TPV retries. Client generates UUID per payment attempt, backend deduplicates atomically via unique constraint. Fixes: Testarudo Cafe 5x duplicate charge incident (2026-04-08).
+- **Crash on startup with poor internet (Doña Simona)**: Defensive `AppManager.init()` call before Hilt resolves `UpdateRequestManager`, preventing `lateinit property dal has not been initialized` fatal crash when SDK init is slow due to poor connectivity. Follows v1.7.9 proven pattern.
+- **Blumon init retry with backoff**: Improved SDK initialization with 4 retry attempts and exponential backoff for network failures during startup.
+- **WelcomeScreen clickable deprecation**: Fixed `MutableInteractionSource` warning on SDK init overlay.
+
+### **Added**
+
+- **Crashlytics network diagnostics**: Automatic custom keys (`network_internet`, `network_server`, `network_latency_ms`, `network_slow`, `blumon_sdk_status`) updated on every connection state change. Eliminates need for WhatsApp screenshots to diagnose connectivity issues.
+
+### **Changed**
+
+- **Mis Ventas (My Sales) screen**: New screen showing a promoter's serialized item sales history grouped by day with monthly totals. Includes month navigation, summary card with total count and amount, daily groupings, and gift item indicators. Accessible from simplified mode home screen for users with `serialized-inventory:sell` permission.
 - **Restrict "+ categoría" button by permission**: The "+ categoría" button in Alta de SIM and Vender screens was visible to all roles. Now only users with `inventory:org-manage` permission (ADMIN/OWNER) can see it. CASHIER/Promotor roles can still register and sell but cannot create new categories.
 
 ---

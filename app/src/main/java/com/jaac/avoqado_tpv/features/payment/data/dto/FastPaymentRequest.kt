@@ -127,4 +127,16 @@ data class FastPaymentRequest(
 
     @SerializedName("serialNumbers")
     val serialNumbers: List<String>? = null, // ICCID(s) from scanned SIMs
+
+    // 🛡️ IDEMPOTENCY KEY (2026-04-08) — Stripe/Square/Toast pattern
+    // UUID v4 generated ONCE per logical payment attempt. Reused on every retry
+    // of the same attempt (including offline queue retries and concurrent coroutines)
+    // so the backend can dedupe atomically via @@unique([venueId, idempotencyKey]).
+    //
+    // Incident: Testarudo Cafe 2026-04-08 — 5 duplicates from 2 parallel retry chains
+    // that each had their own "attempt" but were actually retrying the same Blumon
+    // transaction. This key, generated ONCE in startPayment() and stored on the
+    // ViewModel, guarantees all coroutines recording the same payment share it.
+    @SerializedName("idempotencyKey")
+    val idempotencyKey: String? = null,
 )

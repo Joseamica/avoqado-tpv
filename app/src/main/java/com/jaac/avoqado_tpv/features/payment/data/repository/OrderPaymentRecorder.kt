@@ -286,6 +286,11 @@ class OrderPaymentRecorder @Inject constructor(
             // 📸 NON-BLOCKING PROOF-OF-SALE (2026-03-10)
             isPortabilidad = context.isPortabilidad.takeIf { it },
             serialNumbers = context.serialNumbers.takeIf { it.isNotEmpty() },
+
+            // 🛡️ IDEMPOTENCY KEY (2026-04-08) - Stripe/Square/Toast pattern
+            // Generated ONCE per logical payment attempt in PaymentViewModel.startPayment()
+            // and persisted through all retries of that attempt.
+            idempotencyKey = context.idempotencyKey,
         )
     }
 
@@ -318,6 +323,7 @@ class OrderPaymentRecorder @Inject constructor(
             reviewRating = context.rating?.toString(),
             merchantAccountId = context.merchantAccountId,
             deviceSerialNumber = context.deviceSerialNumber,
+            idempotencyKey = context.idempotencyKey, // 🛡️ Idempotency key (2026-04-08)
         )
     }
 }

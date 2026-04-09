@@ -112,4 +112,10 @@ data class OrderPaymentRequest(
 
     @SerializedName("serialNumbers")
     val serialNumbers: List<String>? = null,
+
+    // 🛡️ IDEMPOTENCY KEY (2026-04-08) — Stripe/Square/Toast pattern
+    // UUID v4 generated ONCE per logical payment attempt. See FastPaymentRequest
+    // for full explanation. Backend dedupes atomically via @@unique([venueId, idempotencyKey]).
+    @SerializedName("idempotencyKey")
+    val idempotencyKey: String? = null,
 )

@@ -897,7 +897,10 @@ class PaymentViewModel @Inject constructor(
         track2Override: String? = null,
         track2Clear: Boolean = false,
         emvIssuerCountryOverride: String? = null,
-        emvIssuerCountryClear: Boolean = false
+        emvIssuerCountryClear: Boolean = false,
+        // 🛡️ Idempotency key (2026-04-08)
+        paymentAttemptIdOverride: String? = null,
+        paymentAttemptIdClear: Boolean = false
     ) {
         val settings = tpvSettingsRepository.getCurrentSettings()
         val amountValue = amountOverride ?: getAmountForFlow()
@@ -933,6 +936,12 @@ class PaymentViewModel @Inject constructor(
             emvIssuerCountryOverride != null -> emvIssuerCountryOverride
             else -> sessionSnapshot.emvIssuerCountry
         }
+        // 🛡️ Idempotency key: preserve existing unless explicitly cleared or overridden
+        val effectivePaymentAttemptId = when {
+            paymentAttemptIdClear -> null
+            paymentAttemptIdOverride != null -> paymentAttemptIdOverride
+            else -> sessionSnapshot.paymentAttemptId
+        }
 
         val features = mutableSetOf<PaymentFeature>()
         if (effectiveKioskMode) features += PaymentFeature.KIOSK
@@ -966,11 +975,38 @@ class PaymentViewModel @Inject constructor(
             kioskStaffId = effectiveKioskStaffId,
             skipLocalOrderValidation = effectiveOrderContext?.skipLocalOrderValidation == true,
             track2 = effectiveTrack2,
-            emvIssuerCountry = effectiveEmvIssuerCountry
+            emvIssuerCountry = effectiveEmvIssuerCountry,
+            paymentAttemptId = effectivePaymentAttemptId
         )
 
         _showProofOfSale.value = PaymentFeature.PROOF_OF_SALE in features
         Timber.d("🧾 [PaymentSession] Updated ($reason) | mode=$mode | origin=${_flowOrigin.value} | features=${features.joinToString()}")
+    }
+
+    /**
+     * 🛡️ Get the current idempotency key, generating one if this is a fresh attempt.
+     *
+     * Called at the start of every payment flow (startPayment, processCashPayment,
+     * processCryptoPayment) to establish a UUID v4 that uniquely identifies this
+     * logical payment attempt across all retries and concurrent coroutines.
+     *
+     * The key is stored on the session snapshot so every subsequent read sees the
+     * same value — even from coroutines that were launched in parallel. Cleared by
+     * resetPayment() and cancelPayment().
+     */
+    private fun ensurePaymentAttemptId(): String {
+        val existing = sessionSnapshot.paymentAttemptId
+        if (existing != null) {
+            Timber.d("🛡️ [Idempotency] Reusing existing paymentAttemptId=$existing")
+            return existing
+        }
+        val generated = java.util.UUID.randomUUID().toString()
+        updateSessionSnapshot(
+            reason = "ensurePaymentAttemptId",
+            paymentAttemptIdOverride = generated
+        )
+        Timber.i("🛡️ [Idempotency] Generated new paymentAttemptId=$generated")
+        return generated
     }
 
     private fun getOrderIdForFlow(): String? {
@@ -1971,6 +2007,12 @@ class PaymentViewModel @Inject constructor(
         // 🔒 Lock payment immediately (BEFORE any async work)
         // This prevents race conditions where multiple clicks sneak through
         _isPaymentInProgress.value = true
+
+        // 🛡️ IDEMPOTENCY KEY (2026-04-08): Generate the UUID NOW, before any async
+        // work. This guarantees that EVERY coroutine that later records this payment
+        // (including parallel handlePaymentSuccess calls — the Testarudo bug) reads
+        // the same key from sessionSnapshot, so the backend dedupes them atomically.
+        ensurePaymentAttemptId()
 
         // ⚡ Show loading state IMMEDIATELY (before coroutine launch)
         // This provides instant feedback even on slow networks
@@ -3872,6 +3914,9 @@ class PaymentViewModel @Inject constructor(
     fun processCashPayment(totalAmount: String) {
         Timber.d("💵 [Cash Payment] Processing cash payment: \$$totalAmount")
 
+        // 🛡️ IDEMPOTENCY KEY (2026-04-08): Generate UUID for this cash payment attempt
+        ensurePaymentAttemptId()
+
         viewModelScope.launch {
             try {
                 // Get current payment context from SelectingMerchant state BEFORE changing state
@@ -4112,6 +4157,9 @@ class PaymentViewModel @Inject constructor(
      */
     fun processCryptoPayment(totalAmount: String) {
         Timber.d("🪙 [Crypto Payment] Processing crypto payment: \$$totalAmount")
+
+        // 🛡️ IDEMPOTENCY KEY (2026-04-08): Generate UUID for this crypto payment attempt
+        ensurePaymentAttemptId()
 
         viewModelScope.launch {
             try {
@@ -4387,6 +4435,10 @@ class PaymentViewModel @Inject constructor(
             return
         }
 
+        // 🛡️ IDEMPOTENCY KEY: reuse the one from processCashPayment() if still present,
+        // otherwise generate a new one (safety net for reset edge cases)
+        ensurePaymentAttemptId()
+
         viewModelScope.launch {
             try {
                 // 🧾 Keep snapshot aligned with UI state before recording kiosk cash
@@ -4528,6 +4580,8 @@ class PaymentViewModel @Inject constructor(
         viewModelScope.launch {
             stopDetectCardUseCase.runInfallible(StopDetectCardParams())
             _isPaymentInProgress.value = false  // 🚦 Release guard
+            // 🛡️ Clear idempotency key so the next attempt generates a fresh one
+            updateSessionSnapshot(reason = "cancelPayment", paymentAttemptIdClear = true)
             _state.value = PaymentState.Cancelled
             Timber.d("🚫 Payment cancelled by user")
         }
@@ -4573,7 +4627,9 @@ class PaymentViewModel @Inject constructor(
             refundContextClear = true,
             verificationContextClear = true,
             track2Clear = true,
-            emvIssuerCountryClear = true
+            emvIssuerCountryClear = true,
+            // 🛡️ Clear idempotency key so the next attempt generates a fresh one
+            paymentAttemptIdClear = true
         )
         Timber.d("🔄 Payment state reset (cleared payment-level context)")
     }
@@ -4632,6 +4688,8 @@ class PaymentViewModel @Inject constructor(
             merchantAccountId = merchantAccountId,
             blumonSerialNumber = blumonSerial,
             deviceSerialNumber = secureStorage.getSerialNumber(),
+            // 🛡️ Idempotency key: generated in startPayment/processCashPayment/etc., reused across retries
+            idempotencyKey = session.paymentAttemptId,
             orderReference = verification?.orderReference,
             verificationPhotos = verification?.photos ?: emptyList(),
             verificationBarcodes = verification?.barcodes?.map { it.barcode } ?: emptyList(),
@@ -4670,6 +4728,8 @@ class PaymentViewModel @Inject constructor(
             merchantAccountId = merchantAccountId,
             blumonSerialNumber = blumonSerial,
             deviceSerialNumber = secureStorage.getSerialNumber(),
+            // 🛡️ Idempotency key: generated in startPayment/processCashPayment/etc., reused across retries
+            idempotencyKey = session.paymentAttemptId,
             splitType = splitType,
             paidProductIds = split?.paidProductIds ?: emptyList(),
             equalPartsPartySize = split?.equalPartsPartySize,

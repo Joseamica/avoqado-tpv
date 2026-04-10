@@ -5,7 +5,13 @@
 
 ---
 
-## [Unreleased]
+## [1.10.11] - 2026-04-10
+
+### **Added**
+
+- **Phase 1 WiFi Failover Spike (SuperAdmin)**: Herramienta de diagnóstico en SuperAdmin para probar toggle WiFi programático en PAX A910S usando Neptune DAL API (`EChannelType.WIFI`). Valida que la terminal puede alternar entre WiFi y celular automáticamente. Solo visible en builds DEBUG.
+- **`CHANGE_WIFI_STATE` permission**: Requerido para control programático de WiFi en la funcionalidad de failover celular.
+- **Cellular Failover Plan doc**: Documento de arquitectura `docs/CELLULAR_FAILOVER_PLAN.md` con plan de 3 fases para resiliencia de red en pagos.
 
 ---
 

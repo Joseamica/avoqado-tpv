@@ -28,6 +28,8 @@
     <!-- Required for WiFi scanning to improve geolocation accuracy via Google Geolocation API -->
     <!-- Cell towers alone: ~100-1000m accuracy | Cell + WiFi: ~20-50m accuracy -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- Required for Phase 1 spike to test OS-level WiFi toggle on PAX -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
 
     <!-- Bluetooth Permissions (Remote Payment Initiation - Future Feature) -->
     <!-- Required for Bluetooth Low Energy (BLE) communication with external devices -->

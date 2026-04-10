@@ -1,5 +1,10 @@
 package com.jaac.avoqado_tpv.core.presentation.screens
 
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.net.wifi.WifiManager
+import android.os.Build
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
@@ -27,6 +32,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
+import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.BluetoothCapabilityChecker
@@ -37,12 +43,12 @@ import com.jaac.avoqado_tpv.core.observability.ObservabilityTester
 import com.jaac.avoqado_tpv.core.data.network.interceptors.SlowNetworkInterceptor
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceHealthViewModel
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceAlert
-import android.content.Context
-import android.Manifest
-import android.os.Build
+import com.pax.dal.entity.EChannelType
+import com.pax.neptunelite.api.NeptuneLiteUser
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -132,6 +138,8 @@ fun SuperAdminScreen(
         onToggleBleServer = handleToggleBleServer,
         onTestFirebaseCrash = viewModel::testFirebaseCrash,
         onTestFirebaseError = viewModel::testFirebaseError,
+        onRefreshWifiState = viewModel::refreshWifiState,
+        onSetWifiEnabledForSpike = viewModel::setWifiEnabledForSpike,
         onSimulateNoInternet = { deviceHealthViewModel.simulateAlert(DeviceAlert.NoInternet) },
         onSimulateServerDown = { deviceHealthViewModel.simulateAlert(DeviceAlert.ServerDown) },
         onSimulateBatteryCritical = { deviceHealthViewModel.simulateAlert(DeviceAlert.BatteryCritical(5)) },
@@ -164,6 +172,8 @@ private fun SuperAdminScreenContent(
     onToggleBleServer: (Context) -> Unit,
     onTestFirebaseCrash: () -> Unit = {},
     onTestFirebaseError: () -> Unit = {},
+    onRefreshWifiState: () -> Unit = {},
+    onSetWifiEnabledForSpike: (Boolean) -> Unit = {},
     onSimulateNoInternet: () -> Unit = {},
     onSimulateServerDown: () -> Unit = {},
     onSimulateBatteryCritical: () -> Unit = {},
@@ -331,6 +341,19 @@ private fun SuperAdminScreenContent(
                             SlowNetworkInterceptor.delayMs = delayMs
                         }
                     )
+                }
+
+                // Phase 1 spike: explicit WiFi control probe (debug only)
+                if (BuildConfig.DEBUG) {
+                    item {
+                        WifiFailoverSpikeCard(
+                            isWifiEnabled = state.isWifiEnabled,
+                            isLoading = state.isLoading,
+                            onRefresh = onRefreshWifiState,
+                            onDisableWifi = { onSetWifiEnabledForSpike(false) },
+                            onEnableWifi = { onSetWifiEnabledForSpike(true) }
+                        )
+                    }
                 }
 
                 // 🏥 Device Health Simulation Section
@@ -669,6 +692,92 @@ private fun SlowNetworkCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.avoqadoColors.statusWarning
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun WifiFailoverSpikeCard(
+    isWifiEnabled: Boolean,
+    isLoading: Boolean,
+    onRefresh: () -> Unit,
+    onDisableWifi: () -> Unit,
+    onEnableWifi: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Wifi,
+                    contentDescription = null,
+                    tint = if (isWifiEnabled) MaterialTheme.avoqadoColors.statusSuccess else MaterialTheme.avoqadoColors.offlineOrange,
+                    modifier = Modifier.size(32.dp)
+                )
+                Column {
+                    Text(
+                        text = "Phase 1 WiFi Failover Spike",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = "Estado actual: ${if (isWifiEnabled) "WiFi ON" else "WiFi OFF"}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Text(
+                text = "Prueba controlada: intenta toggle de WiFi por API y valida en logs si PAX lo permite.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onRefresh,
+                    modifier = Modifier.weight(1f),
+                    enabled = !isLoading
+                ) {
+                    Text("Refresh")
+                }
+
+                OutlinedButton(
+                    onClick = onDisableWifi,
+                    modifier = Modifier.weight(1f),
+                    enabled = !isLoading && isWifiEnabled,
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.avoqadoColors.offlineOrange
+                    )
+                ) {
+                    Text("Disable WiFi")
+                }
+
+                Button(
+                    onClick = onEnableWifi,
+                    modifier = Modifier.weight(1f),
+                    enabled = !isLoading && !isWifiEnabled
+                ) {
+                    Text("Enable WiFi")
+                }
             }
         }
     }
@@ -1238,6 +1347,7 @@ data class SuperAdminState(
     val message: String? = null,
     val isError: Boolean = false,
     val isBleServerRunning: Boolean = false,
+    val isWifiEnabled: Boolean = false,
     // 🐢 Slow Network Simulation
     val isSlowNetworkEnabled: Boolean = false,
     val slowNetworkDelayMs: Long = 3000L
@@ -1250,6 +1360,7 @@ data class SuperAdminState(
  */
 @HiltViewModel
 class SuperAdminViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val printerManager: PrinterManager,
     private val deviceInfoManager: DeviceInfoManager,
     private val observability: ObservabilityManager,
@@ -1263,6 +1374,7 @@ class SuperAdminViewModel @Inject constructor(
     init {
         loadDeviceInfo()
         observeBleServerState()
+        refreshWifiState()
     }
 
     /**
@@ -1529,6 +1641,122 @@ class SuperAdminViewModel @Inject constructor(
             message = "❌ $message",
             isError = true
         )
+    }
+
+    /**
+     * Refresh WiFi state snapshot for Phase 1 spike validation.
+     */
+    fun refreshWifiState() {
+        val wifiManager = appContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        _state.value = _state.value.copy(isWifiEnabled = wifiManager.isWifiEnabled)
+    }
+
+    /**
+     * Phase 1 spike probe: attempt OS-level WiFi toggle and log real result.
+     * This is for PAX capability validation only (not production failover behavior).
+     */
+    @Suppress("DEPRECATION")
+    fun setWifiEnabledForSpike(enabled: Boolean) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isLoading = true, message = null)
+
+            val wifiManager = appContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val hasChangeWifiPermission = appContext.checkSelfPermission(
+                Manifest.permission.CHANGE_WIFI_STATE
+            ) == PackageManager.PERMISSION_GRANTED
+
+            val before = wifiManager.isWifiEnabled
+            if (before == enabled) {
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    isWifiEnabled = before,
+                    message = "ℹ️ WiFi ya estaba ${if (before) "ON" else "OFF"}",
+                    isError = false
+                )
+                return@launch
+            }
+
+            try {
+                val requestResult = wifiManager.setWifiEnabled(enabled)
+                delay(1500L)
+                var after = wifiManager.isWifiEnabled
+                var paxChannelAttempted = false
+                var paxChannelError: String? = null
+
+                // Fallback probe: attempt PAX DAL channel control if WifiManager path is blocked.
+                if (after != enabled && BuildConfig.ENABLE_PAX_SDK) {
+                    try {
+                        val dal = NeptuneLiteUser.getInstance().getDal(appContext)
+                        val commManager = dal?.commManager
+                        val wifiChannel = commManager?.getChannel(EChannelType.WIFI)
+                        if (wifiChannel != null) {
+                            paxChannelAttempted = true
+                            if (enabled) {
+                                wifiChannel.enable()
+                            } else {
+                                wifiChannel.disable()
+                            }
+                            delay(1500L)
+                            after = wifiManager.isWifiEnabled
+                        } else {
+                            paxChannelError = "wifiChannel=null"
+                        }
+                    } catch (paxException: Exception) {
+                        paxChannelAttempted = true
+                        paxChannelError = paxException.javaClass.simpleName + ": " + paxException.message
+                        Timber.w(
+                            paxException,
+                            "⚠️ [Phase1Spike] PAX DAL WIFI channel toggle failed"
+                        )
+                    } catch (paxError: Error) {
+                        paxChannelAttempted = true
+                        paxChannelError = paxError.javaClass.simpleName + ": " + paxError.message
+                        Timber.w(
+                            paxError,
+                            "⚠️ [Phase1Spike] PAX DAL WIFI channel toggle error"
+                        )
+                    }
+                }
+
+                val success = after == enabled
+
+                Timber.i(
+                    "📶 [Phase1Spike] setWifiEnabled($enabled) | " +
+                            "permission=$hasChangeWifiPermission | before=$before | requestResult=$requestResult | " +
+                            "paxChannelAttempted=$paxChannelAttempted | paxChannelError=$paxChannelError | after=$after"
+                )
+
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    isWifiEnabled = after,
+                    message = if (success) {
+                        "✅ WiFi toggle aplicado (${if (after) "ON" else "OFF"}) | requestResult=$requestResult | paxChannelAttempted=$paxChannelAttempted"
+                    } else {
+                        "❌ WiFi no cambió | permission=$hasChangeWifiPermission, requestResult=$requestResult, paxChannelAttempted=$paxChannelAttempted, paxChannelError=$paxChannelError, before=$before, after=$after"
+                    },
+                    isError = !success
+                )
+            } catch (securityException: SecurityException) {
+                Timber.e(
+                    securityException,
+                    "❌ [Phase1Spike] SecurityException on setWifiEnabled($enabled)"
+                )
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    isWifiEnabled = wifiManager.isWifiEnabled,
+                    message = "❌ SecurityException: ${securityException.message}",
+                    isError = true
+                )
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [Phase1Spike] setWifiEnabled($enabled) failed")
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    isWifiEnabled = wifiManager.isWifiEnabled,
+                    message = "❌ Error toggling WiFi: ${e.message}",
+                    isError = true
+                )
+            }
+        }
     }
 
     /**

@@ -343,17 +343,15 @@ private fun SuperAdminScreenContent(
                     )
                 }
 
-                // Phase 1 spike: explicit WiFi control probe (debug only)
-                if (BuildConfig.DEBUG) {
-                    item {
-                        WifiFailoverSpikeCard(
-                            isWifiEnabled = state.isWifiEnabled,
-                            isLoading = state.isLoading,
-                            onRefresh = onRefreshWifiState,
-                            onDisableWifi = { onSetWifiEnabledForSpike(false) },
-                            onEnableWifi = { onSetWifiEnabledForSpike(true) }
-                        )
-                    }
+                // Phase 1 spike: explicit WiFi control probe
+                item {
+                    WifiFailoverSpikeCard(
+                        isWifiEnabled = state.isWifiEnabled,
+                        isLoading = state.isLoading,
+                        onRefresh = onRefreshWifiState,
+                        onDisableWifi = { onSetWifiEnabledForSpike(false) },
+                        onEnableWifi = { onSetWifiEnabledForSpike(true) }
+                    )
                 }
 
                 // 🏥 Device Health Simulation Section

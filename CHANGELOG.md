@@ -5,6 +5,14 @@
 
 ---
 
+## [1.10.12] - 2026-04-13
+
+### **Fixed**
+
+- **WiFi Failover Spike visible en producción**: Removida la condición `BuildConfig.DEBUG` que ocultaba la herramienta de WiFi toggle en SuperAdmin en builds de producción. Validado exitosamente en PAX A910S producción.
+
+---
+
 ## [1.10.11] - 2026-04-10
 
 ### **Added**

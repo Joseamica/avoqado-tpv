@@ -383,12 +383,14 @@ sealed class PaymentState {
      * @param context Preserved payment data (amount, tip, rating, merchant)
      * @param canRetry true if user can retry with same context
      * @param showOpenShiftButton true if error is "no shift open" - shows "Abrir Turno" button
+     * @param showCashFallback true if error should offer "Cobrar en Efectivo" fallback action
      */
     data class Error(
         val message: String,
         val context: RetryContext? = null,  // Preserved context for smart retry
         val canRetry: Boolean = true,
-        val showOpenShiftButton: Boolean = false  // ⭐ NEW: Show "Abrir Turno" button for shift validation errors
+        val showOpenShiftButton: Boolean = false,  // ⭐ NEW: Show "Abrir Turno" button for shift validation errors
+        val showCashFallback: Boolean = false
     ) : PaymentState()
     data object Cancelled : PaymentState()
 

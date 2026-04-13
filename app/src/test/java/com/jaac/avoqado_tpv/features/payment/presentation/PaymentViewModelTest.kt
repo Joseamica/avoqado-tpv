@@ -8,6 +8,7 @@ import com.jaac.avoqado_tpv.core.domain.models.Result as AppResult
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
+import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.modules.domain.model.VenueModule
 import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
@@ -83,6 +84,7 @@ class PaymentViewModelTest {
     private lateinit var mockGetMerchantsUseCase: GetMerchantsUseCase
     private lateinit var mockRecordPaymentUseCase: RecordPaymentUseCase
     private lateinit var mockRecordRefundUseCase: RecordRefundUseCase
+    private lateinit var mockConnectionStateManager: ConnectionStateManager
 
     // Flows needed by init block collectors
     private val socketEventsFlow = MutableSharedFlow<SocketEvent>()
@@ -219,6 +221,11 @@ class PaymentViewModelTest {
         // Configure record use cases
         mockRecordPaymentUseCase = mockk(relaxed = true)
         mockRecordRefundUseCase = mockk(relaxed = true)
+
+        // Configure connectivity manager
+        mockConnectionStateManager = mockk(relaxed = true) {
+            every { isFullyConnected() } returns true
+        }
     }
 
     @After
@@ -271,7 +278,7 @@ class PaymentViewModelTest {
             customerRepository = mockk(relaxed = true),
             secureStorage = mockSecureStorage,
             modulesRepository = mockModulesRepository,
-            connectionStateManager = mockk(relaxed = true),
+            connectionStateManager = mockConnectionStateManager,
             merchantRepository = mockk(relaxed = true)
         )
     }
@@ -496,6 +503,25 @@ class PaymentViewModelTest {
         assertThat((state as PaymentState.Error).message).contains("sesión")
         assertThat(viewModel.isPaymentInProgress.value).isFalse()
 
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `startPayment with no connectivity shows cash fallback error`() = runTest {
+        every { mockConnectionStateManager.isFullyConnected() } returns false
+
+        val viewModel = createViewModel()
+        viewModel.startPayment("100.00")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertThat(state).isInstanceOf(PaymentState.Error::class.java)
+        val errorState = state as PaymentState.Error
+        assertThat(errorState.showCashFallback).isTrue()
+        assertThat(errorState.message).contains("Sin conexión")
+        assertThat(viewModel.isPaymentInProgress.value).isFalse()
+
+        coVerify(exactly = 0) { mockInitializationManager.awaitInitialization() }
         viewModel.viewModelScope.cancel()
     }
 

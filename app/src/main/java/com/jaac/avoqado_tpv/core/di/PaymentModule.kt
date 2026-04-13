@@ -115,7 +115,7 @@ object PaymentModule {
      */
     @Provides
     @Singleton
-    fun providePaymentApiService(retrofit: Retrofit): PaymentApiService {
+    fun providePaymentApiService(@PaymentClient retrofit: Retrofit): PaymentApiService {
         return retrofit.create(PaymentApiService::class.java)
     }
 

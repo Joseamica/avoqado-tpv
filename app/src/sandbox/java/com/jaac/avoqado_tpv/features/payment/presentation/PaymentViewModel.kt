@@ -2044,6 +2044,20 @@ class PaymentViewModel @Inject constructor(
             return
         }
 
+        // 🌐 PREFLIGHT CONNECTIVITY CHECK
+        // Block card flow early when terminal is offline and offer cash fallback.
+        if (!connectionStateManager.isFullyConnected()) {
+            Timber.w("⚠️ [Payment] No connectivity - blocking card payment and offering cash fallback")
+            _isPaymentInProgress.value = false  // 🚦 Release guard
+            _state.value = PaymentState.Error(
+                message = "Sin conexión a internet.\n\n¿Cobrar en efectivo?",
+                context = createPaymentContext(),
+                canRetry = true,
+                showCashFallback = true
+            )
+            return
+        }
+
         currentVenueId = venueId
         currentStaffId = staffId
 
@@ -4094,18 +4108,63 @@ class PaymentViewModel @Inject constructor(
                     Timber.d("💚 [Cash Payment] Payment completed successfully")
                 }.onFailure { error ->
                     Timber.e(error, "❌ [Cash Payment] Failed to record payment to backend")
+                    Timber.w("💾 [Offline Queue] Queueing CASH payment for retry | ref=$cashReference")
 
-                    _state.value = PaymentState.Error(
-                        message = "Error registrando pago en efectivo:\n\n${error.message ?: "Error desconocido"}",
-                        context = RetryContext(
-                            amount = currentState.totalAmount,  // ✅ FIX: Use totalAmount for consistency
+                    val queuedPayment = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
+                        queueId = 0, // Auto-generate
+                        referenceNumber = cashReference,
+                        venueId = currentVenueId,
+                        staffId = currentStaffId,
+                        amount = context.amount,
+                        tip = context.tip,
+                        rating = currentState.rating,
+                        merchantAccountId = "", // Empty sentinel; mapped to null for CASH retries
+                        blumonSerialNumber = "",
+                        maskedPan = null,
+                        cardBrand = null,
+                        entryMode = CardDetails.CASH.entryMode.name,
+                        isInternational = false,
+                        authorizationNumber = "EFECTIVO",
+                        createdAt = System.currentTimeMillis(),
+                        retryCount = 0,
+                        lastError = error.message,
+                        syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING
+                    )
+
+                    val queueResult = paymentQueueRepository.enqueue(queuedPayment)
+                    queueResult.onSuccess {
+                        Timber.i("✅ [Offline Queue] CASH payment queued successfully | ref=$cashReference")
+                        Timber.i("   → PaymentSyncWorker will retry when connectivity is available")
+
+                        val orderData = loadOrderData(orderIdForFlow)
+                        _state.value = PaymentState.Success(
+                            authCode = "EFECTIVO",
+                            amount = currentState.totalAmount,
                             tipAmount = currentState.tipAmount,
                             rating = currentState.rating,
-                            merchantAccountId = "",  // No merchant for cash
-                            flowOrigin = sessionSnapshot.flowOrigin
-                        ),
-                        canRetry = true
-                    )
+                            receipt = null, // Pending backend sync
+                            cardDetails = CardDetails.CASH,
+                            referenceNumber = cashReference,
+                            orderId = orderIdForFlow,
+                            orderNumber = getOrderNumberForFlow(),
+                            orderItems = orderData?.items,
+                            remainingBalance = orderData?.remainingBalance,
+                            discountAmount = orderData?.discountAmount?.toPlainString()
+                        )
+                    }.onFailure { queueError ->
+                        Timber.e(queueError, "❌ [Offline Queue] Failed to queue CASH payment - CRITICAL")
+                        _state.value = PaymentState.Error(
+                            message = "Error registrando pago en efectivo:\n\n${error.message ?: "Error desconocido"}",
+                            context = RetryContext(
+                                amount = currentState.totalAmount,  // ✅ FIX: Use totalAmount for consistency
+                                tipAmount = currentState.tipAmount,
+                                rating = currentState.rating,
+                                merchantAccountId = "",  // No merchant for cash
+                                flowOrigin = sessionSnapshot.flowOrigin
+                            ),
+                            canRetry = true
+                        )
+                    }
                 }
 
             } catch (e: IllegalStateException) {
@@ -4519,18 +4578,62 @@ class PaymentViewModel @Inject constructor(
 
                 }.onFailure { error ->
                     Timber.e(error, "❌ [KIOSK CASH] Failed to record confirmed payment")
+                    Timber.w("💾 [Offline Queue] Queueing KIOSK CASH payment for retry | ref=$cashReference")
 
-                    _state.value = PaymentState.Error(
-                        message = "Error registrando pago confirmado:\n\n${error.message ?: "Error desconocido"}",
-                        context = RetryContext(
+                    val queuedPayment = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
+                        queueId = 0,
+                        referenceNumber = cashReference,
+                        venueId = currentVenueId,
+                        staffId = effectiveStaffId,
+                        amount = context.amount,
+                        tip = context.tip,
+                        rating = currentState.rating,
+                        merchantAccountId = "", // Empty sentinel; mapped to null for CASH retries
+                        blumonSerialNumber = "",
+                        maskedPan = null,
+                        cardBrand = null,
+                        entryMode = CardDetails.CASH.entryMode.name,
+                        isInternational = false,
+                        authorizationNumber = "EFECTIVO-CONFIRMADO",
+                        createdAt = System.currentTimeMillis(),
+                        retryCount = 0,
+                        lastError = error.message,
+                        syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING
+                    )
+
+                    val queueResult = paymentQueueRepository.enqueue(queuedPayment)
+                    queueResult.onSuccess {
+                        Timber.i("✅ [Offline Queue] KIOSK CASH payment queued successfully | ref=$cashReference")
+                        val orderData = loadOrderData(currentState.orderId)
+
+                        _state.value = PaymentState.Success(
+                            authCode = "EFECTIVO",
                             amount = currentState.totalAmount,
                             tipAmount = currentState.tipAmount,
                             rating = currentState.rating,
-                            merchantAccountId = "",
-                            flowOrigin = sessionSnapshot.flowOrigin
-                        ),
-                        canRetry = true
-                    )
+                            receipt = null, // Pending backend sync
+                            cardDetails = CardDetails.CASH,
+                            referenceNumber = cashReference,
+                            orderId = currentState.orderId,
+                            orderNumber = currentState.orderNumber,
+                            orderItems = orderData?.items,
+                            remainingBalance = orderData?.remainingBalance,
+                            discountAmount = orderData?.discountAmount?.toPlainString()
+                        )
+                    }.onFailure { queueError ->
+                        Timber.e(queueError, "❌ [Offline Queue] Failed to queue KIOSK CASH payment - CRITICAL")
+                        _state.value = PaymentState.Error(
+                            message = "Error registrando pago confirmado:\n\n${error.message ?: "Error desconocido"}",
+                            context = RetryContext(
+                                amount = currentState.totalAmount,
+                                tipAmount = currentState.tipAmount,
+                                rating = currentState.rating,
+                                merchantAccountId = "",
+                                flowOrigin = sessionSnapshot.flowOrigin
+                            ),
+                            canRetry = true
+                        )
+                    }
                 }
 
             } catch (e: Exception) {
@@ -4757,6 +4860,24 @@ class PaymentViewModel @Inject constructor(
             staffId = staffId,
             shiftId = shiftId
         )
+    }
+
+    /**
+     * Convert an error state with preserved context into cash payment fallback.
+     *
+     * Used by PaymentErrorContent when offline card flow offers "Cobrar en Efectivo".
+     */
+    fun processCashPaymentFromError(context: RetryContext?) {
+        Timber.i("💵 [Error Fallback] Requested cash fallback from error | context=$context")
+
+        if (context == null || !context.isValid()) {
+            Timber.w("⚠️ [Error Fallback] Missing/invalid context - resetting payment flow")
+            resetPayment()
+            return
+        }
+
+        returnToSelectingMerchantFromError(context)
+        processCashPayment(context.amount)
     }
 
     /**

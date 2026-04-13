@@ -60,18 +60,32 @@ data class QueuedPayment(
     val syncStatus: SyncStatus = SyncStatus.PENDING
 ) {
     /**
+     * Cash payments are identified by generated references/auth markers.
+     *
+     * - CASH-* references come from cash fallback and kiosk cash confirmation flows.
+     * - EFECTIVO* authorization markers are used for cash backend recording.
+     */
+    private fun isCashQueuedPayment(): Boolean {
+        val auth = authorizationNumber.orEmpty()
+        return referenceNumber.startsWith("CASH-", ignoreCase = true) ||
+            auth.startsWith("EFECTIVO", ignoreCase = true)
+    }
+
+    /**
      * Convert to PaymentContext.FastPayment for retry.
      *
      * **Use Case:** PaymentSyncWorker calls RecordPaymentUseCase with this context
      */
     fun toPaymentContext(): PaymentContext.FastPayment {
+        val normalizedMerchantAccountId = if (isCashQueuedPayment()) null else merchantAccountId
+
         return PaymentContext.FastPayment(
             venueId = venueId,
             staffId = staffId,
             amount = amount,
             tip = tip,
             rating = rating, // 🆕 Preserve user rating for retry
-            merchantAccountId = merchantAccountId, // 🆕 PRIMARY: Preserve merchant account ID
+            merchantAccountId = normalizedMerchantAccountId, // Cash queue retries must keep merchant null
             blumonSerialNumber = blumonSerialNumber, // ⚠️ LEGACY: Fallback for old records
             deviceSerialNumber = deviceSerialNumber // ⭐ Terminal attribution (2026-01-08)
         )
@@ -83,6 +97,10 @@ data class QueuedPayment(
      * **Use Case:** PaymentSyncWorker calls RecordPaymentUseCase with these card details
      */
     fun toCardDetails(): CardDetails {
+        if (isCashQueuedPayment()) {
+            return CardDetails.CASH
+        }
+
         return CardDetails(
             maskedPan = maskedPan ?: "************",
             cardBrand = cardBrand?.let { brand ->

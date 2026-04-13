@@ -1,5 +1,19 @@
 package com.jaac.avoqado_tpv.features.payment.domain.model
 
+enum class CellularFailoverMode {
+    OFF,
+    MANUAL_TOGGLE,
+    AUTO_SHADOW,
+    AUTO_ENFORCED;
+
+    companion object {
+        fun fromRaw(raw: String?): CellularFailoverMode {
+            if (raw.isNullOrBlank()) return OFF
+            return entries.firstOrNull { it.name == raw } ?: OFF
+        }
+    }
+}
+
 /**
  * TPV Screen Configuration Settings
  *
@@ -34,6 +48,10 @@ package com.jaac.avoqado_tpv.features.payment.domain.model
  *                         Controlled from dashboard settings.
  * @param showOrderManagement Whether to show "Órdenes" button on home screen.
  *                            Controlled from dashboard settings.
+ * @param cellularFailoverMode Cellular failover rollout stage. Default OFF.
+ * @param cellularFailoverBadReadingsThreshold Consecutive bad readings required before failover.
+ * @param cellularFailoverCooldownSeconds Minimum seconds between network toggles.
+ * @param cellularFailoverMinCellHoldSeconds Minimum seconds to stay on cellular before WiFi restore.
  */
 data class TpvSettings(
     val showReviewScreen: Boolean = true,
@@ -71,7 +89,12 @@ data class TpvSettings(
     val showMessages: Boolean = true,
     val showTrainings: Boolean = true,
     // Crypto payment option (B4Bit integration)
-    val showCryptoOption: Boolean = false
+    val showCryptoOption: Boolean = false,
+    // Phase 0: Cellular failover rollout flags (safe defaults)
+    val cellularFailoverMode: CellularFailoverMode = CellularFailoverMode.OFF,
+    val cellularFailoverBadReadingsThreshold: Int = 3,
+    val cellularFailoverCooldownSeconds: Int = 60,
+    val cellularFailoverMinCellHoldSeconds: Int = 120
 ) {
     companion object {
         /**

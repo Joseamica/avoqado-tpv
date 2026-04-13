@@ -5,6 +5,24 @@
 
 ---
 
+## [1.10.13] - 2026-04-13
+
+### **Added**
+
+- **Preflight connectivity check (Phase 2)**: `startPayment()` verifica `connectionStateManager.isFullyConnected()` antes de iniciar pago con tarjeta. Si no hay conexión, muestra error con opción de cobrar en efectivo.
+- **Cash fallback desde error de conectividad**: Botón "Cobrar en Efectivo" en `PaymentErrorContent` cuando `showCashFallback = true`. Llama `processCashPaymentFromError()` que redirige al flujo de efectivo.
+- **Offline queue para pagos en efectivo**: Cuando `recordFastPayment`/`recordOrderPayment` falla para pagos en efectivo, se encola en `paymentQueueRepository` y muestra `PaymentState.Success` inmediatamente. `PaymentSyncWorker` sincroniza después.
+- **Payment-specific network client (Phase 3)**: `@PaymentClient` qualifier con OkHttpClient de timeouts agresivos (5s connect, 10s read/write) para `PaymentApiService`. No afecta otros API calls ni Blumon SDK.
+- **Cellular failover rollout flags (Phase 0)**: Flags en `TpvSettings` (`cellularFailoverMode`, thresholds, cooldowns) con default `OFF`. Wiring en DTO + SecureStorage.
+- **`QueuedPayment.isCashQueuedPayment()`**: Detecta pagos en efectivo encolados y normaliza `merchantAccountId` a null para retries correctos.
+
+### **Changed**
+
+- **Check-out selfie obligatoria**: Eliminada la opción "Continuar sin foto" para selfies de check-out. La foto ahora es obligatoria para verificar presencia en el venue. Solo el voucher de depósito bancario mantiene la opción de omitir.
+- **`PaymentState.Error`**: Nuevo campo `showCashFallback: Boolean = false` para indicar cuándo mostrar opción de efectivo.
+
+---
+
 ## [1.10.12] - 2026-04-13
 
 ### **Fixed**
@@ -20,6 +38,10 @@
 - **Phase 1 WiFi Failover Spike (SuperAdmin)**: Herramienta de diagnóstico en SuperAdmin para probar toggle WiFi programático en PAX A910S usando Neptune DAL API (`EChannelType.WIFI`). Valida que la terminal puede alternar entre WiFi y celular automáticamente. Solo visible en builds DEBUG.
 - **`CHANGE_WIFI_STATE` permission**: Requerido para control programático de WiFi en la funcionalidad de failover celular.
 - **Cellular Failover Plan doc**: Documento de arquitectura `docs/CELLULAR_FAILOVER_PLAN.md` con plan de 3 fases para resiliencia de red en pagos.
+
+### **Changed**
+
+- **Check-in/check-out selfie obligatoria**: Eliminada la opción "Continuar sin foto" para selfies de check-in y check-out. La foto ahora es obligatoria para verificar presencia en el venue. Solo el voucher de depósito bancario mantiene la opción de omitir foto (puede no haber venta).
 
 ---
 

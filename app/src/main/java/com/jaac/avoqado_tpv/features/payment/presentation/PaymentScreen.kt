@@ -830,6 +830,7 @@ fun PaymentScreen(
                         message = currentState.message,
                         canRetry = currentState.canRetry,
                         showOpenShiftButton = currentState.showOpenShiftButton,  // 🆕 Show "Abrir Turno" button
+                        showCashFallback = currentState.showCashFallback,
                         isRefund = isRefundMode,  // 💸 Show "Error en el Reembolso" for refunds
                         onRetry = {
                             // 🔄 Smart Retry: Restore context if available, otherwise reset
@@ -851,7 +852,10 @@ fun PaymentScreen(
                                 viewModel.resetPayment()
                                 navigateBack()
                             }
-                        }
+                        },
+                        onCashFallback = {
+                            viewModel.processCashPaymentFromError(currentState.context)
+                        },
                     )
                 }
                 // 🖨️ Printing state is no longer used for UI transitions - printing feedback
@@ -2233,9 +2237,11 @@ private fun PaymentErrorContent(
     message: String,
     canRetry: Boolean,
     showOpenShiftButton: Boolean = false,  // 🆕 Show "Abrir Turno" instead of "Reintentar"
+    showCashFallback: Boolean = false,
     isRefund: Boolean = false,  // 💸 Show "Error en el Reembolso" instead of "Error en el Pago"
     onRetry: () -> Unit,
     onOpenShift: () -> Unit = {},  // 🆕 Navigate to Shifts screen
+    onCashFallback: () -> Unit = {},
     onCancel: () -> Unit
 ) {
     Column(
@@ -2291,12 +2297,22 @@ private fun PaymentErrorContent(
                             onClick = onOpenShift,
                             fullWidth = true
                         )
-                    } else if (canRetry) {
-                        AvoqadoButton(
-                            text = "Reintentar",
-                            onClick = onRetry,
-                            fullWidth = true
-                        )
+                    } else {
+                        if (showCashFallback) {
+                            AvoqadoButton(
+                                text = "Cobrar en Efectivo",
+                                onClick = onCashFallback,
+                                fullWidth = true
+                            )
+                        }
+
+                        if (canRetry) {
+                            AvoqadoButton(
+                                text = "Reintentar",
+                                onClick = onRetry,
+                                fullWidth = true
+                            )
+                        }
                     }
 
                     AvoqadoButton(

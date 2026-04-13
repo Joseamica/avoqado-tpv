@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.core.data.network.dto
 
 import com.google.gson.annotations.SerializedName
+import com.jaac.avoqado_tpv.features.payment.domain.model.CellularFailoverMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 
 /**
@@ -111,7 +112,20 @@ data class TpvSettingsDto(
 
     // Crypto payment option (B4Bit integration)
     @SerializedName("showCryptoOption")
-    val showCryptoOption: Boolean?
+    val showCryptoOption: Boolean?,
+
+    // Phase 0: Cellular failover rollout flags
+    @SerializedName("cellularFailoverMode")
+    val cellularFailoverMode: String? = null,
+
+    @SerializedName("cellularFailoverBadReadingsThreshold")
+    val cellularFailoverBadReadingsThreshold: Int? = null,
+
+    @SerializedName("cellularFailoverCooldownSeconds")
+    val cellularFailoverCooldownSeconds: Int? = null,
+
+    @SerializedName("cellularFailoverMinCellHoldSeconds")
+    val cellularFailoverMinCellHoldSeconds: Int? = null
 )
 
 /**
@@ -151,7 +165,11 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     showGoals = showGoals ?: true,
     showMessages = showMessages ?: true,
     showTrainings = showTrainings ?: true,
-    showCryptoOption = showCryptoOption ?: false
+    showCryptoOption = showCryptoOption ?: false,
+    cellularFailoverMode = CellularFailoverMode.fromRaw(cellularFailoverMode),
+    cellularFailoverBadReadingsThreshold = cellularFailoverBadReadingsThreshold ?: 3,
+    cellularFailoverCooldownSeconds = cellularFailoverCooldownSeconds ?: 60,
+    cellularFailoverMinCellHoldSeconds = cellularFailoverMinCellHoldSeconds ?: 120
 )
 
 /**
@@ -183,7 +201,11 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     showGoals = showGoals,
     showMessages = showMessages,
     showTrainings = showTrainings,
-    showCryptoOption = showCryptoOption
+    showCryptoOption = showCryptoOption,
+    cellularFailoverMode = cellularFailoverMode.name,
+    cellularFailoverBadReadingsThreshold = cellularFailoverBadReadingsThreshold,
+    cellularFailoverCooldownSeconds = cellularFailoverCooldownSeconds,
+    cellularFailoverMinCellHoldSeconds = cellularFailoverMinCellHoldSeconds
 )
 
 /**

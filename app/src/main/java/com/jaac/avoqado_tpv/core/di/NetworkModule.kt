@@ -139,12 +139,51 @@ object NetworkModule {
     }
 
     /**
+     * Payment-specific OkHttpClient with shorter timeouts.
+     *
+     * This client is used ONLY for backend payment recording calls
+     * (`recordFastPayment` / `recordOrderPayment`) so offline queue fallback
+     * activates faster when backend is slow/unreachable.
+     *
+     * Important: This does NOT affect Blumon SDK networking.
+     */
+    @Provides
+    @Singleton
+    @PaymentClient
+    fun providePaymentOkHttpClient(
+        okHttpClient: OkHttpClient
+    ): OkHttpClient {
+        return okHttpClient.newBuilder()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .writeTimeout(10, TimeUnit.SECONDS)
+            .build()
+    }
+
+    /**
      * Retrofit instance with Gson converter
      */
     @Provides
     @Singleton
     fun provideRetrofit(
         okHttpClient: OkHttpClient,
+        baseUrl: String
+    ): Retrofit {
+        return Retrofit.Builder()
+            .baseUrl(baseUrl)
+            .client(okHttpClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+    }
+
+    /**
+     * Payment-specific Retrofit with shorter timeout client.
+     */
+    @Provides
+    @Singleton
+    @PaymentClient
+    fun providePaymentRetrofit(
+        @PaymentClient okHttpClient: OkHttpClient,
         baseUrl: String
     ): Retrofit {
         return Retrofit.Builder()

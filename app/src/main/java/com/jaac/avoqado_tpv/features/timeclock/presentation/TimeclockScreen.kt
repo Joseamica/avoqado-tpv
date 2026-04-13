@@ -727,8 +727,8 @@ private fun ClockInPhotoPrompt(
                     }
                 }
 
-                // Skip with reason button (clock-out only, all roles)
-                if (onSkipWithReason != null && (photoType == PhotoType.DEPOSIT_VOUCHER || photoType == PhotoType.CLOCK_OUT_SELFIE)) {
+                // Skip with reason button (voucher only — check-in/check-out selfies are mandatory)
+                if (onSkipWithReason != null && photoType == PhotoType.DEPOSIT_VOUCHER) {
                     TextButton(
                         onClick = { showSkipReasonDialog = true }
                     ) {

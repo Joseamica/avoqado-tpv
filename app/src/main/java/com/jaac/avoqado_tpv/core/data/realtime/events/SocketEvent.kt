@@ -616,6 +616,22 @@ sealed interface SocketEvent {
     ) : SocketEvent
 
     // ========================================
+    // SIM Custody (PlayTelecom chain-of-custody, plan §1.8)
+    // ========================================
+
+    /** Backend: 'sim-custody.assigned-to-promoter' — Supervisor assigned N new SIMs. */
+    data class SimCustodyAssignedToPromoter(
+        val targetStaffId: String,
+        val count: Int? = null
+    ) : SocketEvent
+
+    /** Backend: 'sim-custody.recollected-from-promoter' — Supervisor reclaimed one. */
+    data class SimCustodyRecollectedFromPromoter(
+        val targetStaffId: String,
+        val serialNumber: String? = null
+    ) : SocketEvent
+
+    // ========================================
     // Error Events
     // ========================================
 

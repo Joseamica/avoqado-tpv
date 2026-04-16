@@ -16,7 +16,13 @@ import com.jaac.avoqado_tpv.core.util.NetworkInfo
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
 import com.jaac.avoqado_tpv.core.util.NetworkType
+import com.jaac.avoqado_tpv.core.util.WifiToggleResult
+import com.jaac.avoqado_tpv.core.util.WifiFailoverController
 import com.jaac.avoqado_tpv.core.util.SystemHealth
+import com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager
+import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
+import com.jaac.avoqado_tpv.features.payment.domain.model.CellularFailoverMode
+import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
@@ -53,8 +59,12 @@ class ConnectionViewModelTest {
     private lateinit var connectionEventManager: ConnectionEventManager
     private lateinit var commandExecutor: CommandExecutor
     private lateinit var connectionStateManager: ConnectionStateManager
+    private lateinit var tpvSettingsRepository: TpvSettingsRepository
+    private lateinit var wifiFailoverController: WifiFailoverController
+    private lateinit var criticalNetworkOperationManager: CriticalNetworkOperationManager
 
     private val fakeNetworkStatus = MutableSharedFlow<NetworkStatus>()
+    private lateinit var connectionSnapshotState: MutableStateFlow<com.jaac.avoqado_tpv.core.util.ConnectionState>
 
     private val connectedNetworkInfo = NetworkInfo(
         type = NetworkType.WIFI,
@@ -68,6 +78,13 @@ class ConnectionViewModelTest {
         isMetered = false,
         isConnected = false,
         signalStrength = null
+    )
+
+    private val cellularConnectedNetworkInfo = NetworkInfo(
+        type = NetworkType.CELLULAR,
+        isMetered = true,
+        isConnected = true,
+        signalStrength = 3
     )
 
     private val fakeSystemHealth = SystemHealth(
@@ -103,12 +120,34 @@ class ConnectionViewModelTest {
         connectionEventManager = mockk(relaxed = true)
         commandExecutor = mockk(relaxed = true)
         connectionStateManager = mockk(relaxed = true)
+        tpvSettingsRepository = mockk(relaxed = true)
+        wifiFailoverController = mockk(relaxed = true)
+        criticalNetworkOperationManager = mockk(relaxed = true)
+
+        connectionSnapshotState = MutableStateFlow(
+            com.jaac.avoqado_tpv.core.util.ConnectionState(
+                hasInternet = true,
+                hasServer = true,
+                latencyMs = null,
+                isSlowConnection = false
+            )
+        )
 
         every { networkMonitor.getCurrentNetworkInfo() } returns connectedNetworkInfo
         every { deviceHealthMonitor.getSystemHealth() } returns fakeSystemHealth
         every { deviceInfoManager.getSerialNumber() } returns "TEST-SERIAL"
         every { deviceInfoManager.isDeviceActivated() } returns true
         every { connectivityObserver.observe() } returns fakeNetworkStatus
+        every { connectionStateManager.connectionState } returns connectionSnapshotState
+        every { connectionStateManager.updateState(any(), any(), any()) } answers {
+            connectionSnapshotState.value = connectionSnapshotState.value.copy(
+                hasInternet = firstArg(),
+                hasServer = secondArg(),
+                latencyMs = thirdArg()
+            )
+        }
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT
+        every { criticalNetworkOperationManager.isAnyCriticalOperationInProgress() } returns false
 
         coEvery { heartbeatRepository.sendHeartbeat(any()) } returns Result.Success(fakeHeartbeatResponse)
     }
@@ -129,6 +168,9 @@ class ConnectionViewModelTest {
             connectionEventManager = connectionEventManager,
             commandExecutor = commandExecutor,
             connectionStateManager = connectionStateManager,
+            tpvSettingsRepository = tpvSettingsRepository,
+            wifiFailoverController = wifiFailoverController,
+            criticalNetworkOperationManager = criticalNetworkOperationManager,
         )
     }
 
@@ -326,6 +368,197 @@ class ConnectionViewModelTest {
         // Should never have gone offline
         assertThat(viewModel.state.value).isNotEqualTo(ConnectionState.DisconnectedNoInternet)
 
+        viewModel.viewModelScope.cancel()
+    }
+
+    // ========================================
+    // PHASE 1 FAILOVER SAFETY TESTS
+    // ========================================
+
+    @Test
+    fun `auto enforced disables wifi after threshold when wifi is degraded`() = runTest(testDispatcher) {
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT.copy(
+            cellularFailoverMode = CellularFailoverMode.AUTO_ENFORCED,
+            cellularFailoverBadReadingsThreshold = 1,
+            cellularFailoverCooldownSeconds = 0
+        )
+        connectionSnapshotState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
+            hasInternet = false,
+            hasServer = false,
+            latencyMs = 8_000,
+            isSlowConnection = true
+        )
+        coEvery { wifiFailoverController.setWifiEnabled(enabled = false, source = any()) } returns WifiToggleResult(
+            requestedEnabled = false,
+            before = true,
+            after = false,
+            requestResult = true,
+            paxChannelAttempted = false,
+            paxChannelError = null,
+            hasChangeWifiPermission = true
+        )
+
+        val viewModel = createViewModel()
+        runCurrent()
+
+        coVerify(atLeast = 1) { wifiFailoverController.setWifiEnabled(enabled = false, source = any()) }
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `auto enforced does not toggle wifi during critical operations`() = runTest(testDispatcher) {
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT.copy(
+            cellularFailoverMode = CellularFailoverMode.AUTO_ENFORCED,
+            cellularFailoverBadReadingsThreshold = 1,
+            cellularFailoverCooldownSeconds = 0
+        )
+        every { criticalNetworkOperationManager.isAnyCriticalOperationInProgress() } returns true
+        connectionSnapshotState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
+            hasInternet = false,
+            hasServer = false,
+            latencyMs = 8_000,
+            isSlowConnection = true
+        )
+
+        val viewModel = createViewModel()
+        runCurrent()
+
+        coVerify(exactly = 0) { wifiFailoverController.setWifiEnabled(any(), any()) }
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `auto enforced does not restore wifi while cellular remains unhealthy`() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT.copy(
+            cellularFailoverMode = CellularFailoverMode.AUTO_ENFORCED,
+            cellularFailoverBadReadingsThreshold = 1,
+            cellularFailoverCooldownSeconds = 0,
+            cellularFailoverMinCellHoldSeconds = 0
+        )
+        every { networkMonitor.getCurrentNetworkInfo() } returns connectedNetworkInfo
+        connectionSnapshotState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
+            hasInternet = true,
+            hasServer = true,
+            latencyMs = 8_000,
+            isSlowConnection = true
+        )
+
+        coEvery { wifiFailoverController.setWifiEnabled(enabled = false, source = any()) } returns WifiToggleResult(
+            requestedEnabled = false,
+            before = true,
+            after = false,
+            requestResult = true,
+            paxChannelAttempted = false,
+            paxChannelError = null,
+            hasChangeWifiPermission = true
+        )
+        coEvery { wifiFailoverController.setWifiEnabled(enabled = true, source = any()) } returns WifiToggleResult(
+            requestedEnabled = true,
+            before = false,
+            after = true,
+            requestResult = true,
+            paxChannelAttempted = false,
+            paxChannelError = null,
+            hasChangeWifiPermission = true
+        )
+        every { wifiFailoverController.isWifiEnabled() } returns false
+
+        val viewModel = createViewModel()
+        runCurrent()
+        coVerify(atLeast = 1) { wifiFailoverController.setWifiEnabled(enabled = false, source = any()) }
+
+        every { networkMonitor.getCurrentNetworkInfo() } returns cellularConnectedNetworkInfo
+        connectionSnapshotState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
+            hasInternet = true,
+            hasServer = false,
+            latencyMs = 8_000,
+            isSlowConnection = true
+        )
+
+        advanceTimeBy(30_000)
+        runCurrent()
+
+        coVerify(exactly = 0) { wifiFailoverController.setWifiEnabled(enabled = true, source = any()) }
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `auto enforced restores wifi when cellular is healthy`() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT.copy(
+            cellularFailoverMode = CellularFailoverMode.AUTO_ENFORCED,
+            cellularFailoverBadReadingsThreshold = 1,
+            cellularFailoverCooldownSeconds = 0,
+            cellularFailoverMinCellHoldSeconds = 0
+        )
+        every { networkMonitor.getCurrentNetworkInfo() } returns connectedNetworkInfo
+        connectionSnapshotState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
+            hasInternet = true,
+            hasServer = true,
+            latencyMs = 8_000,
+            isSlowConnection = true
+        )
+
+        coEvery { wifiFailoverController.setWifiEnabled(enabled = false, source = any()) } returns WifiToggleResult(
+            requestedEnabled = false,
+            before = true,
+            after = false,
+            requestResult = true,
+            paxChannelAttempted = false,
+            paxChannelError = null,
+            hasChangeWifiPermission = true
+        )
+        coEvery { wifiFailoverController.setWifiEnabled(enabled = true, source = any()) } returns WifiToggleResult(
+            requestedEnabled = true,
+            before = false,
+            after = true,
+            requestResult = true,
+            paxChannelAttempted = false,
+            paxChannelError = null,
+            hasChangeWifiPermission = true
+        )
+        every { wifiFailoverController.isWifiEnabled() } returns false
+
+        val viewModel = createViewModel()
+        runCurrent()
+        coVerify(atLeast = 1) { wifiFailoverController.setWifiEnabled(enabled = false, source = any()) }
+
+        every { networkMonitor.getCurrentNetworkInfo() } returns cellularConnectedNetworkInfo
+        connectionSnapshotState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
+            hasInternet = true,
+            hasServer = true,
+            latencyMs = 200,
+            isSlowConnection = false
+        )
+
+        advanceTimeBy(30_000)
+        runCurrent()
+
+        coVerify(atLeast = 1) { wifiFailoverController.setWifiEnabled(enabled = true, source = any()) }
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `auto shadow never toggles wifi`() = runTest(testDispatcher) {
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT.copy(
+            cellularFailoverMode = CellularFailoverMode.AUTO_SHADOW,
+            cellularFailoverBadReadingsThreshold = 1,
+            cellularFailoverCooldownSeconds = 0
+        )
+        connectionSnapshotState.value = com.jaac.avoqado_tpv.core.util.ConnectionState(
+            hasInternet = false,
+            hasServer = false,
+            latencyMs = 8_000,
+            isSlowConnection = true
+        )
+
+        val viewModel = createViewModel()
+        runCurrent()
+
+        coVerify(exactly = 0) { wifiFailoverController.setWifiEnabled(any(), any()) }
         viewModel.viewModelScope.cancel()
     }
 }

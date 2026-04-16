@@ -133,6 +133,12 @@ data class SerializedSaleUiState(
     val showPortabilidadToggle: Boolean = false,
     /** Whether the current sale is a portabilidad (skips proof-of-sale) */
     val isPortabilidad: Boolean = false,
+    /**
+     * True when the backend rejected the sale because the SIM is not yet
+     * accepted by the current promoter in "Mis SIMs" (custody plan §1.5).
+     * The screen shows a dialog with a deep-link to MisSimsScreen.
+     */
+    val simNotAcceptedError: Boolean = false,
 ) {
     val isZeroPrice: Boolean
         get() {

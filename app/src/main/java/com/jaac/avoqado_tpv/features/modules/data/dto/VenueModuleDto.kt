@@ -136,6 +136,28 @@ data class ModulesApiResponse(
     val modules: List<VenueModuleDto>
 )
 
+/**
+ * Request body for toggling a module ON/OFF (SUPERADMIN only).
+ */
+data class ToggleModuleRequest(
+    @SerializedName("moduleCode")
+    val moduleCode: String,
+
+    @SerializedName("enabled")
+    val enabled: Boolean
+)
+
+/**
+ * Response from toggle module endpoint.
+ */
+data class ToggleModuleResponse(
+    @SerializedName("success")
+    val success: Boolean,
+
+    @SerializedName("message")
+    val message: String? = null
+)
+
 // ===== Mappers: DTO → Domain =====
 
 fun VenueModuleDto.toDomain(): VenueModule = VenueModule(

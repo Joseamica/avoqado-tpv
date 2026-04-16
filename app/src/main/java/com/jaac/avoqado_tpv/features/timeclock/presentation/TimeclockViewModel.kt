@@ -68,6 +68,7 @@ class TimeclockViewModel @Inject constructor(
     private var pendingFacadePhotoUrl: String? = null
     private var pendingDepositPhotoUrl: String? = null
     private var pendingClockOutSelfieUrl: String? = null
+    private var pendingSkipReason: String? = null
 
     init {
         if (venueId.isNotEmpty() && pin.isNotEmpty()) {
@@ -297,7 +298,7 @@ class TimeclockViewModel @Inject constructor(
         if (photoQueue.isEmpty()) {
             // All photos captured (or none required) — proceed
             if (isClockOutFlow) {
-                performClockOut(staffId, staffName, pendingDepositPhotoUrl)
+                performClockOut(staffId, staffName, pendingDepositPhotoUrl, pendingSkipReason)
             } else {
                 performClockIn(staffId, staffName, pendingClockInPhotoUrl, pendingFacadePhotoUrl)
             }
@@ -500,22 +501,22 @@ class TimeclockViewModel @Inject constructor(
     }
 
     /**
-     * Skip all checkout photos with a reason.
-     * Clears the photo queue and proceeds directly to clock-out.
+     * Skip the current photo (voucher) with a reason, then continue to next in queue.
+     * Only the voucher is skippable — checkout selfie remains mandatory.
      */
     fun skipCheckoutWithReason(reason: CheckoutSkipReason) {
         val staffId = currentStaffId ?: return
         val staffName = currentStaffName ?: return
 
-        Timber.d("⏱️ Skipping checkout photos with reason: ${reason.name}")
+        Timber.d("⏱️ Skipping $currentPhotoType with reason: ${reason.name} | remaining queue=${photoQueue.size}")
 
-        // Clear all photos — skipping everything
-        photoQueue.clear()
+        // Store the skip reason for the clock-out call
+        pendingSkipReason = reason.displayName
         pendingDepositPhotoUrl = null
-        pendingClockOutSelfieUrl = null
 
         viewModelScope.launch {
-            performClockOut(staffId, staffName, depositPhotoUrl = null, skipReason = reason.displayName)
+            // Continue to next photo in queue (checkout selfie) instead of skipping everything
+            processNextPhotoOrProceed()
         }
     }
 
@@ -536,6 +537,7 @@ class TimeclockViewModel @Inject constructor(
         pendingFacadePhotoUrl = null
         pendingDepositPhotoUrl = null
         pendingClockOutSelfieUrl = null
+        pendingSkipReason = null
         isClockOutFlow = false
 
         viewModelScope.launch {
@@ -690,6 +692,7 @@ class TimeclockViewModel @Inject constructor(
         pendingFacadePhotoUrl = null
         pendingDepositPhotoUrl = null
         pendingClockOutSelfieUrl = null
+        pendingSkipReason = null
         isClockOutFlow = false
     }
 

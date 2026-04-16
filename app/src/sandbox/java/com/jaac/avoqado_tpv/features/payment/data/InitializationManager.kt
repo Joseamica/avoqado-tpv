@@ -12,6 +12,7 @@ import com.example.clean_lib_services.shared.initializer.domain.use_case.insert_
 import com.example.clean_lib_services.shared.initializer.domain.use_case.insert_init.InsertInitUseCase
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
+import com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,7 +54,8 @@ class InitializationManager @Inject constructor(
     private val secureStorage: SecureStorage,
     private val initializerUseCase: InitializerUseCase,
     private val insertInitUseCase: InsertInitUseCase,
-    private val getInitDataUseCase: GetInitDataUseCase
+    private val getInitDataUseCase: GetInitDataUseCase,
+    private val criticalNetworkOperationManager: CriticalNetworkOperationManager
 ) {
 
     companion object {
@@ -143,7 +145,9 @@ class InitializationManager @Inject constructor(
                 initializationDeferred = deferred
 
                 Timber.i("🔧 [InitializationManager] Running Blumon SDK initialization...")
-                val result = executeInitialization(now, merchantPosId = defaultMerchantPosId)
+                val result = runWithCriticalNetworkGuard {
+                    executeInitialization(now, merchantPosId = defaultMerchantPosId)
+                }
 
                 // Mark as initialized on success
                 if (result.isSuccess) {
@@ -164,7 +168,9 @@ class InitializationManager @Inject constructor(
                     Timber.d("   Reason: Room cache may have stale posId from previous merchant switch")
 
                     // Force full initialization with the correct posId
-                    val result = executeInitialization(now, merchantPosId = defaultMerchantPosId)
+                    val result = runWithCriticalNetworkGuard {
+                        executeInitialization(now, merchantPosId = defaultMerchantPosId)
+                    }
 
                     if (result.isSuccess) {
                         _isInitialized.value = true
@@ -395,7 +401,9 @@ class InitializationManager @Inject constructor(
             val deferred = CompletableDeferred<Result<Unit>>()
             initializationDeferred = deferred
 
-            val result = executeInitialization(System.currentTimeMillis(), merchantPosId)
+            val result = runWithCriticalNetworkGuard {
+                executeInitialization(System.currentTimeMillis(), merchantPosId)
+            }
 
             if (result.isSuccess) {
                 _isInitialized.value = true
@@ -403,6 +411,17 @@ class InitializationManager @Inject constructor(
 
             deferred.complete(result)
             result
+        }
+    }
+
+    private suspend fun runWithCriticalNetworkGuard(
+        block: suspend () -> Result<Unit>
+    ): Result<Unit> {
+        criticalNetworkOperationManager.setSdkInitializationInProgress(true)
+        return try {
+            block()
+        } finally {
+            criticalNetworkOperationManager.setSdkInitializationInProgress(false)
         }
     }
 

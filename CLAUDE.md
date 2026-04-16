@@ -22,6 +22,27 @@ When rules conflict: `.claude/rules/` wins > this file > `docs/`
 
 Kotlin + Jetpack Compose | Clean Architecture (Presentation -> Domain -> Data) | Hilt DI | Room DB | Blumon PAX SDK | Socket.IO | EncryptedSharedPreferences | 1GB RAM target (PAX A80)
 
+## Firebase Crashlytics MCP (Direct Access)
+
+**ALWAYS check Crashlytics when:** payment errors are reported, app crashes, connectivity issues, Blumon SDK failures, or any production incident.
+
+Firebase MCP tools are available via `mcp__plugin_firebase_firebase__crashlytics_*`. No screenshots needed.
+
+```
+# App IDs
+Production: 1:219752736783:android:d09cd5eb6162e7ee52db7a
+Sandbox:    1:219752736783:android:aa8d57cc3022eb9c52db7a
+Project:    avoqado-d0a24
+
+# Quick queries
+crashlytics_get_report(appId, report="topIssues")           # Top crashes
+crashlytics_list_events(appId, filter={issueErrorTypes:["FATAL"]})  # Recent crashes
+crashlytics_get_issue(appId, issueId="<hex>")               # Issue detail
+crashlytics_list_events(appId, filter={issueId:"<hex>"})    # Events for issue
+```
+
+**Proactive rule**: When investigating ANY payment bug, query Crashlytics FIRST before asking the user for screenshots. Check both FATAL and NON_FATAL events filtered by the relevant time window.
+
 ## Commands
 
 ```bash

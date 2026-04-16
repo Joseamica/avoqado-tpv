@@ -26,6 +26,7 @@ Specialized agent roles for the Avoqado TPV Android POS app. Each agent loads di
 - Sync sandbox/ and production/ variants
 - Clear ALL state in `resetPayment()`
 - Read `avoqado-server/docs/blumon-tpv/BLUMON_MULTI_MERCHANT_ANALYSIS.md` before Blumon work
+- **ALWAYS query Firebase Crashlytics MCP FIRST** when investigating payment bugs — before asking for screenshots. Use `crashlytics_get_report(appId="1:219752736783:android:d09cd5eb6162e7ee52db7a", report="topIssues")` to start. Check FATAL + NON_FATAL events.
 
 ## DevOps / Release Engineer
 

@@ -174,8 +174,8 @@ class SerializedInventoryViewModel @Inject constructor(
      */
     fun onBarcodeScanned(serialNumber: String, onResult: (InventoryScanResult) -> Unit) {
         // Validate minimum length
-        if (serialNumber.trim().length < 15) {
-            _uiState.update { it.copy(error = "El código debe tener al menos 15 dígitos") }
+        if (serialNumber.trim().length < 20) {
+            _uiState.update { it.copy(error = "El código debe tener al menos 20 dígitos") }
             onResult(InventoryScanResult.Error(serialNumber, "Código muy corto"))
             return
         }

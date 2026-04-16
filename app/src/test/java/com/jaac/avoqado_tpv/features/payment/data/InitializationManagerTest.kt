@@ -17,6 +17,7 @@ import com.example.clean_lib_services.utils.clean.Failure
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
+import com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager
 import io.mockk.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -46,6 +47,7 @@ class InitializationManagerTest {
     private lateinit var mockInitializerUseCase: InitializerUseCase
     private lateinit var mockInsertInitUseCase: InsertInitUseCase
     private lateinit var mockGetInitDataUseCase: GetInitDataUseCase
+    private lateinit var mockCriticalNetworkOperationManager: CriticalNetworkOperationManager
 
     // System under test
     private lateinit var initializationManager: InitializationManager
@@ -65,6 +67,7 @@ class InitializationManagerTest {
         mockInitializerUseCase = mockk(relaxed = true)
         mockInsertInitUseCase = mockk(relaxed = true)
         mockGetInitDataUseCase = mockk(relaxed = true)
+        mockCriticalNetworkOperationManager = mockk(relaxed = true)
 
         // Default: no previous init timestamp
         every { mockSecureStorage.getLastBlumonInitTimestamp() } returns null
@@ -86,7 +89,8 @@ class InitializationManagerTest {
             secureStorage = mockSecureStorage,
             initializerUseCase = mockInitializerUseCase,
             insertInitUseCase = mockInsertInitUseCase,
-            getInitDataUseCase = mockGetInitDataUseCase
+            getInitDataUseCase = mockGetInitDataUseCase,
+            criticalNetworkOperationManager = mockCriticalNetworkOperationManager
         )
     }
 

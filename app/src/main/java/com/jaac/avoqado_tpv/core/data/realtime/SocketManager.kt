@@ -416,6 +416,13 @@ class SocketManager @Inject constructor(
         on("tpv_message_cancelled", onTpvMessageCancelled)
 
         // ========================================
+        // SIM Custody (PlayTelecom chain-of-custody, plan §1.8)
+        // ========================================
+
+        on("sim-custody.assigned-to-promoter", onSimCustodyAssignedToPromoter)
+        on("sim-custody.recollected-from-promoter", onSimCustodyRecollectedFromPromoter)
+
+        // ========================================
         // Error Events
         // ========================================
 
@@ -1404,6 +1411,42 @@ class SocketManager @Inject constructor(
             put("timestamp", java.time.Instant.now().toString())
         })
         Timber.d("📤 Emitted tpv_message_response: $messageId options=$selectedOptions")
+    }
+
+    // ========================================
+    // Event Handlers - SIM Custody (plan §1.8)
+    // ========================================
+
+    private val onSimCustodyAssignedToPromoter = Emitter.Listener { args ->
+        try {
+            val data = args.getOrNull(0) as? JSONObject
+            val targetStaffId = data?.optString("targetStaffId", "") ?: ""
+            val count = data?.optJSONObject("data")?.optString("count")?.toIntOrNull()
+            _events.tryEmit(
+                SocketEvent.SimCustodyAssignedToPromoter(
+                    targetStaffId = targetStaffId,
+                    count = count
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error parsing sim-custody.assigned-to-promoter")
+        }
+    }
+
+    private val onSimCustodyRecollectedFromPromoter = Emitter.Listener { args ->
+        try {
+            val data = args.getOrNull(0) as? JSONObject
+            val targetStaffId = data?.optString("targetStaffId", "") ?: ""
+            val serialNumber = data?.optJSONObject("data")?.optString("serialNumber")
+            _events.tryEmit(
+                SocketEvent.SimCustodyRecollectedFromPromoter(
+                    targetStaffId = targetStaffId,
+                    serialNumber = serialNumber
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error parsing sim-custody.recollected-from-promoter")
+        }
     }
 
     // ========================================

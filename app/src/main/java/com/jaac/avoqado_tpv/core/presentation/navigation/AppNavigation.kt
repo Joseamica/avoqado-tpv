@@ -870,6 +870,10 @@ fun AppNavigation(
                     // 📊 Navigate to My Sales screen (promoter sales history)
                     navController.navigate(NavRoute.MySales.route)
                 },
+                onNavigateToMisSims = {
+                    // 📱 Navigate to Mis SIMs screen (promoter SIM custody inbox)
+                    navController.navigate(NavRoute.MisSims.route)
+                },
                 onNavigateToMessages = {
                     navController.navigate(NavRoute.Messages.route)
                 },
@@ -1813,7 +1817,11 @@ fun AppNavigation(
                     navController.navigate(getPaymentRoute())
                     Timber.d("💳 Serialized sale: Navigating to payment for order $orderId (#$orderNumber), amount $orderTotal, serial=$serialNumber, category=$categoryName (skipLocalValidation=true, isPortabilidad=$isPortabilidad, nexgo=${isAppToAppPayment()})")
                 },
-                resetOnEnter = shouldReset
+                resetOnEnter = shouldReset,
+                onNavigateToMisSims = {
+                    // Plan §3.3 — deep-link when backend returns SIM_NOT_ACCEPTED
+                    navController.navigate(NavRoute.MisSims.route)
+                }
             )
         }
 
@@ -1832,6 +1840,13 @@ fun AppNavigation(
                 onNavigateBack = {
                     navController.safePopBackStack()
                 }
+            )
+        }
+
+        // 📱 Mis SIMs — promoter's SIM custody inbox (PlayTelecom chain-of-custody, plan §3)
+        composable(NavRoute.MisSims.route) {
+            com.jaac.avoqado_tpv.features.sim_custody.presentation.MisSimsScreen(
+                onBack = { navController.safePopBackStack() }
             )
         }
 

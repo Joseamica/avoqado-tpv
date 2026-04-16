@@ -287,4 +287,18 @@ sealed class NavRoute(val route: String) {
      * Allows registering multiple serial numbers at once.
      */
     data object SerializedInventoryRegister : NavRoute("serialized_inventory_register")
+
+    /**
+     * Mis SIMs screen - Promoter's SIM custody inbox.
+     *
+     * Shows SIMs assigned by the Supervisor in three groupings:
+     *  - Pendientes de aceptar (PROMOTER_PENDING) — requires accept/reject.
+     *  - En mi poder (PROMOTER_HELD) — sellable inventory.
+     *  - Vendidos hoy (SOLD in venue TZ).
+     *
+     * Gated by: role == WAITER && isSerializedInventoryMode &&
+     * permission "tpv-sim-custody:accept". Reached from WelcomeScreen tile
+     * and from the "SIM no aceptado" dialog in SerializedSaleViewModel.
+     */
+    data object MisSims : NavRoute("mis_sims")
 }

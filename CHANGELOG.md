@@ -5,6 +5,30 @@
 
 ---
 
+## [Unreleased]
+
+---
+
+## [1.11.0] - 2026-04-16
+
+### **Added**
+
+- **Mis SIMs (PlayTelecom chain-of-custody)**: Nueva pantalla `MisSimsScreen` para que el Promotor vea los SIMs asignados por su Supervisor, los acepte (individualmente o con "Aceptar todos") o los rechace. Incluye búsqueda por últimos dígitos del ICCID, filtros (Todos / Pendientes / Míos / Vendidos hoy), badges de estado (`PROMOTER_PENDING` ámbar, `PROMOTER_HELD` verde, `SOLD` violeta) y confirmación obligatoria antes de aceptar masivo. Se envía `Idempotency-Key` en cada aceptación para evitar dobles clics. Nav route `NavRoute.MisSims` + gating backend con permisos `tpv-sim-custody:accept` / `tpv-sim-custody:reject`. DTOs, repository y ViewModel en `features/sim_custody/`. Plan §3.1–§3.3.
+- **Tile "Mis SIMs" en pantalla principal**: Botón `SimCard` agregado al grid de `WelcomeScreen` para Promotores (gated por `hasInventorySellPermission`). Navegación cableada desde `AppNavigation.kt` hacia `NavRoute.MisSims`.
+- **Diálogo "SIM no aceptado" en flujo de venta**: Cuando el backend responde `SIM_NOT_ACCEPTED` en `/tpv/serialized-inventory/sell` (modo ENFORCE), `SerializedSaleViewModel` detecta el código y `SerializedSaleScreen` muestra un `AlertDialog` con CTA "Ir a Mis SIMs" que hace deep-link a `MisSimsScreen` para que el Promotor acepte el SIM antes de vender. Nuevo flag `simNotAcceptedError` en `SerializedSaleUiState`.
+
+### **Changed**
+
+- **Rediseño UI "Mis SIMs"**: Se arregló el layout roto en PAX A910S donde (1) el placeholder del buscador se partía en 2 líneas y (2) el chip "Vendidos hoy" se truncaba letra-por-letra porque el Row no scrolleaba. Ahora: placeholder compacto ("Buscar ICCID…"), filtros en `LazyRow` horizontal con `FilterPill` custom (rounded-full, badge numérico para pendientes, acento ámbar/violeta según estado), banner "Pendientes de aceptar" con borde + CTA de mayor contraste, cards de SIM con borde sutil y tipografía jerarquizada, empty state con icono circular en superficie variant. Se eliminó el `Modifier.height8()` y el custom `Modifier.height(Dp)` que duplicaba el built-in.
+- **Validación de SIM: 20 dígitos mínimo**: Cambiado el mínimo de caracteres del código SIM de 15 a 20 dígitos en Vender SIM y Alta SIM. El ID SIM completo de Bait/Play Telecom contiene 20 dígitos. Texto actualizado a "El código debe tener al menos 20 dígitos".
+- **Skip de voucher ya no salta selfie de checkout**: `skipCheckoutWithReason` ahora solo omite el voucher y continúa a la selfie de salida (que es obligatoria), en lugar de saltar todo y cerrar el registro directamente. Razón del skip se preserva en `pendingSkipReason` y se pasa a `performClockOut` cuando la cola se vacía.
+
+### **Backend (cross-repo)**
+
+- **`my-sales` solo incluye ventas PAID**: El endpoint `/tpv/v1/serialized-inventory/my-sales` ahora filtra solo órdenes con `paymentStatus = PAID` (antes incluía PENDING) y excluye `status = CANCELLED`. Fix para el reporte de SIM duplicado en Jesus Maria Qro (13/04): una venta PENDING por pago fallido se mostraba como venta válida en "Mis Ventas", pidiendo depósito por $300 cuando solo se cobró $200.
+
+---
+
 ## [1.10.13] - 2026-04-13
 
 ### **Added**

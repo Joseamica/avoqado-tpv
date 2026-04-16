@@ -194,7 +194,9 @@ class PaymentViewModel @Inject constructor(
     // 🔄 ConnectionStateManager - Check network before merchant retry
     private val connectionStateManager: com.jaac.avoqado_tpv.core.util.ConnectionStateManager,
     // 🏪 MerchantRepository - Check fallback status and refresh merchants
-    private val merchantRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
+    private val merchantRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository,
+    // 🚦 CriticalNetworkOperationManager - Blocks network failover during active payments
+    private val criticalNetworkOperationManager: com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentState>(PaymentState.Idle)
@@ -405,6 +407,9 @@ class PaymentViewModel @Inject constructor(
 
         // 📦 Observe modules for Serialized Inventory proof-of-sale
         observeModules()
+
+        // 🚦 Keep global critical-operation guard synced with payment flow state
+        observePaymentFlowCriticalGuard()
     }
 
     /**
@@ -436,6 +441,14 @@ class PaymentViewModel @Inject constructor(
                 if (previous != isActive) {
                     updateSessionSnapshot(reason = "modulesUpdated")
                 }
+            }
+        }
+    }
+
+    private fun observePaymentFlowCriticalGuard() {
+        viewModelScope.launch {
+            _isPaymentInProgress.collect { inProgress ->
+                criticalNetworkOperationManager.setPaymentFlowInProgress(inProgress)
             }
         }
     }
@@ -7366,6 +7379,7 @@ class PaymentViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
+        criticalNetworkOperationManager.setPaymentFlowInProgress(false)
         // Use standalone scope since viewModelScope is already cancelled
         cleanupOrphanedProofOfSalePhotos(scope = CoroutineScope(kotlinx.coroutines.Dispatchers.IO))
     }

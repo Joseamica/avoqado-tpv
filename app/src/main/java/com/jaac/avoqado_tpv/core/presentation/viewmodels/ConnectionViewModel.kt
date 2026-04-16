@@ -6,6 +6,7 @@ import com.jaac.avoqado_tpv.core.data.network.dto.PendingCommandDto
 import com.jaac.avoqado_tpv.core.data.network.dto.toTpvCommand
 import com.jaac.avoqado_tpv.core.data.repository.HeartbeatRepository
 import com.jaac.avoqado_tpv.core.domain.models.Result
+import com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
@@ -13,6 +14,10 @@ import com.jaac.avoqado_tpv.core.util.DeviceHealthMonitor
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
+import com.jaac.avoqado_tpv.core.util.NetworkType
+import com.jaac.avoqado_tpv.core.util.WifiFailoverController
+import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
+import com.jaac.avoqado_tpv.features.payment.domain.model.CellularFailoverMode
 import com.jaac.avoqado_tpv.features.remote_command.data.model.CommandResult
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -69,6 +74,9 @@ class ConnectionViewModel @Inject constructor(
     private val connectionEventManager: ConnectionEventManager,
     private val commandExecutor: CommandExecutor,
     private val connectionStateManager: ConnectionStateManager,
+    private val tpvSettingsRepository: TpvSettingsRepository,
+    private val wifiFailoverController: WifiFailoverController,
+    private val criticalNetworkOperationManager: CriticalNetworkOperationManager,
 ) : ViewModel() {
 
     // ══════════════════════════════════════════════════════════════════════
@@ -85,6 +93,11 @@ class ConnectionViewModel @Inject constructor(
     private var reconnectionAttempts = 0
     private val maxReconnectionAttempts = Int.MAX_VALUE // Keep trying forever
     private var isDismissed = false  // User manually dismissed banner
+    private var failoverBadReadingsStreak = 0
+    private var failoverHealthyCellStreak = 0
+    private var lastWifiToggleAtMs: Long? = null
+    private var lastAutoWifiDisableAtMs: Long? = null
+    private var failoverTransitionInProgress = false
 
     companion object {
         /** Grace period before declaring offline — absorbs transient network flickers */
@@ -131,6 +144,7 @@ class ConnectionViewModel @Inject constructor(
             while (true) {
                 val version = nextVersion()
                 performFullHeartbeat(version)
+                evaluateCellularFailoverSafely(source = "monitoring_loop")
 
                 // Adaptive interval based on connection state
                 val interval = when (_state.value) {
@@ -168,6 +182,7 @@ class ConnectionViewModel @Inject constructor(
             _state.value = ConnectionState.Reconnecting  // Immediate visual feedback
             val version = nextVersion()
             probeConnectivity(version)
+            evaluateCellularFailoverSafely(source = "force_check")
         }
     }
 
@@ -217,6 +232,7 @@ class ConnectionViewModel @Inject constructor(
                         isDismissed = false
                         val version = nextVersion()
                         probeConnectivity(version)
+                        evaluateCellularFailoverSafely(source = "network_available")
 
                         // NOTE: SDK re-init on network restore is handled by HomeViewModel.listenForConnectionRestored()
                         // which passes the correct merchantPosId. Do NOT call ensureInitialized() here
@@ -225,6 +241,7 @@ class ConnectionViewModel @Inject constructor(
                     NetworkStatus.Unavailable -> {
                         Timber.w("⚠️ [Connection] Network lost — scheduling offline transition")
                         scheduleOfflineTransition("observer")
+                        evaluateCellularFailoverSafely(source = "network_unavailable")
                     }
                 }
             }
@@ -493,6 +510,187 @@ class ConnectionViewModel @Inject constructor(
         val delay = (baseDelay * (1 shl minOf(reconnectionAttempts, 4))).coerceAtMost(maxDelay)
         Timber.d("⏱️ [Connection] Retry in ${delay / 1000}s (attempt #${reconnectionAttempts + 1})")
         return delay
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // PHASE 1: CELLULAR FAILOVER (SAFE, FLAG-DRIVEN)
+    // ══════════════════════════════════════════════════════════════════════
+
+    private suspend fun evaluateCellularFailoverSafely(source: String) {
+        try {
+            evaluateCellularFailover(source = source)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ [Failover] Evaluation failed (source=$source)")
+        }
+    }
+
+    private suspend fun evaluateCellularFailover(source: String) {
+        val settings = tpvSettingsRepository.getCurrentSettings()
+        val mode = settings.cellularFailoverMode
+        if (mode == CellularFailoverMode.OFF || mode == CellularFailoverMode.MANUAL_TOGGLE) {
+            failoverBadReadingsStreak = 0
+            failoverHealthyCellStreak = 0
+            return
+        }
+
+        val networkInfo = networkMonitor.getCurrentNetworkInfo()
+        val connection = connectionStateManager.connectionState.value
+        val threshold = settings.cellularFailoverBadReadingsThreshold.coerceAtLeast(1)
+        val now = System.currentTimeMillis()
+
+        if (networkInfo.type == NetworkType.WIFI) {
+            failoverHealthyCellStreak = 0
+            val badReading = connection.isSlowConnection || !connection.hasInternet
+            failoverBadReadingsStreak = if (badReading) {
+                failoverBadReadingsStreak + 1
+            } else {
+                0
+            }
+
+            if (!badReading) return
+
+            if (failoverBadReadingsStreak < threshold) {
+                Timber.w(
+                    "⚠️ [Failover] Bad WiFi reading ${failoverBadReadingsStreak}/$threshold " +
+                        "(slow=${connection.isSlowConnection}, hasInternet=${connection.hasInternet}, source=$source)"
+                )
+                return
+            }
+
+            val gateReason = failoverToggleGateReason(
+                settings = settings,
+                now = now
+            )
+            if (gateReason != null) {
+                Timber.w("🛑 [Failover] WiFi disable blocked ($gateReason, source=$source)")
+                return
+            }
+
+            if (mode == CellularFailoverMode.AUTO_SHADOW) {
+                Timber.i(
+                    "👤 [Failover][SHADOW] Would disable WiFi (badReadings=${failoverBadReadingsStreak}, source=$source)"
+                )
+                failoverBadReadingsStreak = 0
+                return
+            }
+
+            failoverTransitionInProgress = true
+            try {
+                val result = wifiFailoverController.setWifiEnabled(
+                    enabled = false,
+                    source = "auto_failover:$source"
+                )
+                lastWifiToggleAtMs = now
+                if (result.success) {
+                    lastAutoWifiDisableAtMs = now
+                    failoverBadReadingsStreak = 0
+                    failoverHealthyCellStreak = 0
+                    Timber.i("✅ [Failover] WiFi disabled, forcing cellular route")
+                } else {
+                    Timber.e("❌ [Failover] Failed to disable WiFi for cellular failover")
+                }
+            } finally {
+                failoverTransitionInProgress = false
+            }
+            return
+        }
+
+        failoverBadReadingsStreak = 0
+
+        if (networkInfo.type != NetworkType.CELLULAR) {
+            failoverHealthyCellStreak = 0
+            return
+        }
+
+        val disabledAt = lastAutoWifiDisableAtMs ?: return
+        if (wifiFailoverController.isWifiEnabled()) {
+            // WiFi was re-enabled manually; do not auto-manage until next auto-disable event.
+            lastAutoWifiDisableAtMs = null
+            failoverHealthyCellStreak = 0
+            return
+        }
+
+        val minCellHoldMs = settings.cellularFailoverMinCellHoldSeconds
+            .coerceAtLeast(0)
+            .toLong() * 1000L
+        val elapsedOnCell = now - disabledAt
+        if (elapsedOnCell < minCellHoldMs) {
+            return
+        }
+
+        val healthyCellReading = connection.hasInternet &&
+            connection.hasServer &&
+            !connection.isSlowConnection
+        failoverHealthyCellStreak = if (healthyCellReading) {
+            failoverHealthyCellStreak + 1
+        } else {
+            0
+        }
+        if (failoverHealthyCellStreak < threshold) {
+            Timber.w(
+                "⚠️ [Failover] Cellular health ${failoverHealthyCellStreak}/$threshold before WiFi restore " +
+                    "(slow=${connection.isSlowConnection}, internet=${connection.hasInternet}, server=${connection.hasServer}, source=$source)"
+            )
+            return
+        }
+
+        val gateReason = failoverToggleGateReason(
+            settings = settings,
+            now = now
+        )
+        if (gateReason != null) {
+            Timber.w("🛑 [Failover] WiFi restore blocked ($gateReason, source=$source)")
+            return
+        }
+
+        if (mode == CellularFailoverMode.AUTO_SHADOW) {
+            Timber.i(
+                "👤 [Failover][SHADOW] Would re-enable WiFi (cellHold=${elapsedOnCell}ms, source=$source)"
+            )
+            return
+        }
+
+        failoverTransitionInProgress = true
+        try {
+            val result = wifiFailoverController.setWifiEnabled(
+                enabled = true,
+                source = "auto_restore:$source"
+            )
+            lastWifiToggleAtMs = now
+            if (result.success) {
+                lastAutoWifiDisableAtMs = null
+                failoverHealthyCellStreak = 0
+                Timber.i("✅ [Failover] WiFi re-enabled after cellular hold window")
+            } else {
+                Timber.e("❌ [Failover] Failed to re-enable WiFi after cellular hold window")
+            }
+        } finally {
+            failoverTransitionInProgress = false
+        }
+    }
+
+    private fun failoverToggleGateReason(
+        settings: com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings,
+        now: Long
+    ): String? {
+        if (failoverTransitionInProgress) {
+            return "transition_in_progress"
+        }
+        if (criticalNetworkOperationManager.isAnyCriticalOperationInProgress()) {
+            return "critical_operation_in_progress"
+        }
+
+        val cooldownMs = settings.cellularFailoverCooldownSeconds
+            .coerceAtLeast(0)
+            .toLong() * 1000L
+        val lastToggle = lastWifiToggleAtMs
+        if (lastToggle != null && (now - lastToggle) < cooldownMs) {
+            val remaining = cooldownMs - (now - lastToggle)
+            return "cooldown_active_${remaining}ms"
+        }
+        return null
     }
 
     // ══════════════════════════════════════════════════════════════════════

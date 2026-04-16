@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.payment.data
 
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
+import com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -70,7 +71,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class MultiMerchantSDKManager @Inject constructor(
-    private val initializationManager: InitializationManager
+    private val initializationManager: InitializationManager,
+    private val criticalNetworkOperationManager: CriticalNetworkOperationManager
 ) {
     // Track currently active merchant account
     @Volatile
@@ -124,121 +126,123 @@ class MultiMerchantSDKManager @Inject constructor(
      * @return Result.success if switch succeeded, Result.failure if error occurred
      */
     suspend fun switchMerchant(targetAccount: MerchantAccount): Result<Unit> {
-        return switchMutex.withLock {
-            try {
-                Timber.i("🔄 [MultiMerchantSDKManager] Switching to merchant: ${targetAccount.displayName}")
-                Timber.d("   Current serial: ${TerminalConfig.serialNumber}")
-                Timber.d("   Target serial: ${targetAccount.serialNumber}")
+        return runWithMerchantSwitchGuard {
+            switchMutex.withLock {
+                try {
+                    Timber.i("🔄 [MultiMerchantSDKManager] Switching to merchant: ${targetAccount.displayName}")
+                    Timber.d("   Current serial: ${TerminalConfig.serialNumber}")
+                    Timber.d("   Target serial: ${targetAccount.serialNumber}")
 
-                // Step 1: Check if already on target merchant (optimization)
-                if (isMerchantActive(targetAccount)) {
-                    Timber.d("   ✅ Already on target merchant - skipping switch")
+                    // Step 1: Check if already on target merchant (optimization)
+                    if (isMerchantActive(targetAccount)) {
+                        Timber.d("   ✅ Already on target merchant - skipping switch")
+                        currentMerchant = targetAccount
+                        return@withLock Result.success(Unit)
+                    }
+
+                    // Step 2: Validate account is active
+                    if (!targetAccount.isActive) {
+                        Timber.e("   ❌ Target merchant is inactive: ${targetAccount.displayName}")
+                        return@withLock Result.failure(
+                            IllegalStateException("La cuenta '${targetAccount.displayName}' está inactiva")
+                        )
+                    }
+
+                    // Step 3: Update TerminalConfig (runtime serial number)
+                    val previousSerial = TerminalConfig.serialNumber
+                    Timber.d("   [Step 1/2] Updating TerminalConfig...")
+                    TerminalConfig.updateSerial(targetAccount.serialNumber)
+                    Timber.i("   ✅ TerminalConfig updated: $previousSerial → ${targetAccount.serialNumber}")
+
+                    // Step 4: Force SDK re-initialization with new credentials
+                    // CRITICAL: Pass posId from MerchantAccount to fix multi-merchant switching bug
+                    // GetInitDataUseCase returns stale cache after multiple switches, causing wrong posId
+                    // This follows the same pattern as PaymentViewModel.performOnlineAuthorization()
+                    Timber.d("   [Step 2/2] Re-initializing Blumon SDK with posId: ${targetAccount.posId}...")
+                    val initResult = initializationManager.forceReinitialize(merchantPosId = targetAccount.posId)
+
+                    if (initResult.isFailure) {
+                        // Rollback TerminalConfig on failure
+                        Timber.e("   ❌ SDK re-initialization failed - rolling back TerminalConfig")
+                        TerminalConfig.updateSerial(previousSerial)
+
+                        val error = initResult.exceptionOrNull()
+                        Timber.e(error, "   ❌ [TECHNICAL] SDK init error details")  // Log technical details
+
+                        // Translate technical error to user-friendly message
+                        val userMessage = when {
+                            error?.message?.contains("timeout", ignoreCase = true) == true ||
+                                error?.message?.contains("timed out", ignoreCase = true) == true -> {
+                                "El cambio de cuenta tardó demasiado.\n\n" +
+                                    "Posibles causas:\n" +
+                                    "• Conexión a internet lenta\n" +
+                                    "• Servidor Blumon no disponible\n\n" +
+                                    "Por favor, verifique su conexión e intente nuevamente."
+                            }
+                            error?.message?.contains("network", ignoreCase = true) == true ||
+                                error?.message?.contains("no connection", ignoreCase = true) == true ||
+                                error?.message?.contains("unreachable", ignoreCase = true) == true -> {
+                                "No se pudo conectar al servidor.\n\n" +
+                                    "Posibles causas:\n" +
+                                    "• Sin conexión a internet\n" +
+                                    "• Servidor Blumon no disponible\n\n" +
+                                    "Verifique su conexión a internet e intente nuevamente."
+                            }
+                            error?.message?.contains("unauthorized", ignoreCase = true) == true ||
+                                error?.message?.contains("authentication", ignoreCase = true) == true ||
+                                error?.message?.contains("oauth", ignoreCase = true) == true -> {
+                                "No se pudo autenticar con la cuenta '${targetAccount.displayName}'.\n\n" +
+                                    "Posibles causas:\n" +
+                                    "• Cuenta inactiva en servidor Blumon\n" +
+                                    "• Credenciales incorrectas\n\n" +
+                                    "Contacte a soporte técnico para verificar la cuenta."
+                            }
+                            else -> {
+                                "No se pudo cambiar a la cuenta '${targetAccount.displayName}'.\n\n" +
+                                    "Posibles causas:\n" +
+                                    "• Sin conexión a internet\n" +
+                                    "• Cuenta inactiva\n" +
+                                    "• Problema con servidor Blumon\n\n" +
+                                    "Intente nuevamente o contacte soporte."
+                            }
+                        }
+
+                        return@withLock Result.failure(Exception(userMessage))
+                    }
+
+                    // Step 5: Update current merchant tracking
                     currentMerchant = targetAccount
-                    return@withLock Result.success(Unit)
-                }
+                    Timber.i("✅ [MultiMerchantSDKManager] Successfully switched to: ${targetAccount.displayName}")
+                    Timber.i("   Serial: ${targetAccount.serialNumber}")
+                    Timber.i("   Environment: ${targetAccount.environment}")
 
-                // Step 2: Validate account is active
-                if (!targetAccount.isActive) {
-                    Timber.e("   ❌ Target merchant is inactive: ${targetAccount.displayName}")
-                    return@withLock Result.failure(
-                        IllegalStateException("La cuenta '${targetAccount.displayName}' está inactiva")
-                    )
-                }
+                    Result.success(Unit)
 
-                // Step 3: Update TerminalConfig (runtime serial number)
-                val previousSerial = TerminalConfig.serialNumber
-                Timber.d("   [Step 1/2] Updating TerminalConfig...")
-                TerminalConfig.updateSerial(targetAccount.serialNumber)
-                Timber.i("   ✅ TerminalConfig updated: $previousSerial → ${targetAccount.serialNumber}")
+                } catch (e: Exception) {
+                    Timber.e(e, "❌ [TECHNICAL] Unexpected error during merchant switch")  // Log technical details
 
-                // Step 4: Force SDK re-initialization with new credentials
-                // CRITICAL: Pass posId from MerchantAccount to fix multi-merchant switching bug
-                // GetInitDataUseCase returns stale cache after multiple switches, causing wrong posId
-                // This follows the same pattern as PaymentViewModel.performOnlineAuthorization()
-                Timber.d("   [Step 2/2] Re-initializing Blumon SDK with posId: ${targetAccount.posId}...")
-                val initResult = initializationManager.forceReinitialize(merchantPosId = targetAccount.posId)
-
-                if (initResult.isFailure) {
-                    // Rollback TerminalConfig on failure
-                    Timber.e("   ❌ SDK re-initialization failed - rolling back TerminalConfig")
-                    TerminalConfig.updateSerial(previousSerial)
-
-                    val error = initResult.exceptionOrNull()
-                    Timber.e(error, "   ❌ [TECHNICAL] SDK init error details")  // Log technical details
-
-                    // Translate technical error to user-friendly message
+                    // Translate exception to user-friendly message
                     val userMessage = when {
-                        error?.message?.contains("timeout", ignoreCase = true) == true ||
-                        error?.message?.contains("timed out", ignoreCase = true) == true -> {
-                            "El cambio de cuenta tardó demasiado.\n\n" +
-                            "Posibles causas:\n" +
-                            "• Conexión a internet lenta\n" +
-                            "• Servidor Blumon no disponible\n\n" +
-                            "Por favor, verifique su conexión e intente nuevamente."
+                        e is IllegalStateException -> {
+                            // Already handled above for inactive accounts
+                            e.message ?: "La cuenta seleccionada no está disponible."
                         }
-                        error?.message?.contains("network", ignoreCase = true) == true ||
-                        error?.message?.contains("no connection", ignoreCase = true) == true ||
-                        error?.message?.contains("unreachable", ignoreCase = true) == true -> {
-                            "No se pudo conectar al servidor.\n\n" +
-                            "Posibles causas:\n" +
-                            "• Sin conexión a internet\n" +
-                            "• Servidor Blumon no disponible\n\n" +
-                            "Verifique su conexión a internet e intente nuevamente."
-                        }
-                        error?.message?.contains("unauthorized", ignoreCase = true) == true ||
-                        error?.message?.contains("authentication", ignoreCase = true) == true ||
-                        error?.message?.contains("oauth", ignoreCase = true) == true -> {
-                            "No se pudo autenticar con la cuenta '${targetAccount.displayName}'.\n\n" +
-                            "Posibles causas:\n" +
-                            "• Cuenta inactiva en servidor Blumon\n" +
-                            "• Credenciales incorrectas\n\n" +
-                            "Contacte a soporte técnico para verificar la cuenta."
+                        e.message?.contains("mutex", ignoreCase = true) == true ||
+                            e.message?.contains("lock", ignoreCase = true) == true -> {
+                            "Ya hay un cambio de cuenta en progreso.\n\n" +
+                                "Por favor espere a que termine la operación actual."
                         }
                         else -> {
-                            "No se pudo cambiar a la cuenta '${targetAccount.displayName}'.\n\n" +
-                            "Posibles causas:\n" +
-                            "• Sin conexión a internet\n" +
-                            "• Cuenta inactiva\n" +
-                            "• Problema con servidor Blumon\n\n" +
-                            "Intente nuevamente o contacte soporte."
+                            "Error inesperado al cambiar de cuenta.\n\n" +
+                                "Posibles soluciones:\n" +
+                                "• Cierre y vuelva a abrir la app\n" +
+                                "• Verifique su conexión a internet\n" +
+                                "• Contacte a soporte si el problema persiste"
                         }
                     }
 
-                    return@withLock Result.failure(Exception(userMessage))
+                    Result.failure(Exception(userMessage))
                 }
-
-                // Step 5: Update current merchant tracking
-                currentMerchant = targetAccount
-                Timber.i("✅ [MultiMerchantSDKManager] Successfully switched to: ${targetAccount.displayName}")
-                Timber.i("   Serial: ${targetAccount.serialNumber}")
-                Timber.i("   Environment: ${targetAccount.environment}")
-
-                Result.success(Unit)
-
-            } catch (e: Exception) {
-                Timber.e(e, "❌ [TECHNICAL] Unexpected error during merchant switch")  // Log technical details
-
-                // Translate exception to user-friendly message
-                val userMessage = when {
-                    e is IllegalStateException -> {
-                        // Already handled above for inactive accounts
-                        e.message ?: "La cuenta seleccionada no está disponible."
-                    }
-                    e.message?.contains("mutex", ignoreCase = true) == true ||
-                    e.message?.contains("lock", ignoreCase = true) == true -> {
-                        "Ya hay un cambio de cuenta en progreso.\n\n" +
-                        "Por favor espere a que termine la operación actual."
-                    }
-                    else -> {
-                        "Error inesperado al cambiar de cuenta.\n\n" +
-                        "Posibles soluciones:\n" +
-                        "• Cierre y vuelva a abrir la app\n" +
-                        "• Verifique su conexión a internet\n" +
-                        "• Contacte a soporte si el problema persiste"
-                    }
-                }
-
-                Result.failure(Exception(userMessage))
             }
         }
     }
@@ -254,17 +258,30 @@ class MultiMerchantSDKManager @Inject constructor(
      * @return Result.success if reset succeeded
      */
     suspend fun resetToDefault(): Result<Unit> {
-        Timber.i("🔄 [MultiMerchantSDKManager] Resetting to default merchant...")
-        TerminalConfig.reset()
-        currentMerchant = null
+        return runWithMerchantSwitchGuard {
+            Timber.i("🔄 [MultiMerchantSDKManager] Resetting to default merchant...")
+            TerminalConfig.reset()
+            currentMerchant = null
 
-        val initResult = initializationManager.forceReinitialize()
-        return if (initResult.isSuccess) {
-            Timber.i("✅ Reset to default merchant (serial: ${TerminalConfig.serialNumber})")
-            Result.success(Unit)
-        } else {
-            Timber.e("❌ Failed to reset to default merchant")
-            Result.failure(initResult.exceptionOrNull() ?: Exception("Reset failed"))
+            val initResult = initializationManager.forceReinitialize()
+            if (initResult.isSuccess) {
+                Timber.i("✅ Reset to default merchant (serial: ${TerminalConfig.serialNumber})")
+                Result.success(Unit)
+            } else {
+                Timber.e("❌ Failed to reset to default merchant")
+                Result.failure(initResult.exceptionOrNull() ?: Exception("Reset failed"))
+            }
+        }
+    }
+
+    private suspend fun runWithMerchantSwitchGuard(
+        block: suspend () -> Result<Unit>
+    ): Result<Unit> {
+        criticalNetworkOperationManager.setMerchantSwitchInProgress(true)
+        return try {
+            block()
+        } finally {
+            criticalNetworkOperationManager.setMerchantSwitchInProgress(false)
         }
     }
 

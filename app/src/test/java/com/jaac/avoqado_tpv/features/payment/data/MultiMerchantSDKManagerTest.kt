@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.payment.data
 
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
+import com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEnvironment
 import io.mockk.*
@@ -27,6 +28,7 @@ class MultiMerchantSDKManagerTest {
 
     // Mocks
     private lateinit var mockInitializationManager: InitializationManager
+    private lateinit var mockCriticalNetworkOperationManager: CriticalNetworkOperationManager
 
     // System under test
     private lateinit var manager: MultiMerchantSDKManager
@@ -70,9 +72,13 @@ class MultiMerchantSDKManagerTest {
         }
 
         mockInitializationManager = mockk(relaxed = true)
+        mockCriticalNetworkOperationManager = mockk(relaxed = true)
         coEvery { mockInitializationManager.forceReinitialize(any()) } returns Result.success(Unit)
 
-        manager = MultiMerchantSDKManager(mockInitializationManager)
+        manager = MultiMerchantSDKManager(
+            initializationManager = mockInitializationManager,
+            criticalNetworkOperationManager = mockCriticalNetworkOperationManager
+        )
     }
 
     @After

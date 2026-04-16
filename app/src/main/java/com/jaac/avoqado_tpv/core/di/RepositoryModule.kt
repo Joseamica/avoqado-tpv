@@ -10,6 +10,8 @@ import com.jaac.avoqado_tpv.features.modules.data.repository.ModulesRepositoryIm
 import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
 import com.jaac.avoqado_tpv.features.serialized_sale.data.repository.SerializedSaleRepositoryImpl
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.repository.SerializedSaleRepository
+import com.jaac.avoqado_tpv.features.sim_custody.data.repository.SimCustodyRepositoryImpl
+import com.jaac.avoqado_tpv.features.sim_custody.domain.repository.SimCustodyRepository
 import com.jaac.avoqado_tpv.features.timeclock.data.repository.TimeEntryRepositoryImpl
 import com.jaac.avoqado_tpv.features.timeclock.domain.repository.TimeEntryRepository
 import dagger.Binds
@@ -176,4 +178,13 @@ abstract class RepositoryModule {
     abstract fun bindSerializedSaleRepository(
         impl: SerializedSaleRepositoryImpl
     ): SerializedSaleRepository
+
+    /**
+     * Bind SimCustodyRepository — "Mis SIMs" inbox (plan §3).
+     */
+    @Binds
+    @Singleton
+    abstract fun bindSimCustodyRepository(
+        impl: SimCustodyRepositoryImpl
+    ): SimCustodyRepository
 }

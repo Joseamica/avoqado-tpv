@@ -2,8 +2,6 @@ package com.jaac.avoqado_tpv.core.presentation.screens
 
 import android.Manifest
 import android.content.Context
-import android.content.pm.PackageManager
-import android.net.wifi.WifiManager
 import android.os.Build
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -32,29 +30,29 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
-import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.BluetoothCapabilityChecker
+import com.jaac.avoqado_tpv.core.util.WifiFailoverController
 import com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentServer
 import com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService
 import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 import com.jaac.avoqado_tpv.core.observability.ObservabilityTester
+import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.network.interceptors.SlowNetworkInterceptor
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceHealthViewModel
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceAlert
-import com.pax.dal.entity.EChannelType
-import com.pax.neptunelite.api.NeptuneLiteUser
+import com.jaac.avoqado_tpv.features.modules.data.dto.ToggleModuleRequest
+import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
-import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
 
@@ -140,6 +138,9 @@ fun SuperAdminScreen(
         onTestFirebaseError = viewModel::testFirebaseError,
         onRefreshWifiState = viewModel::refreshWifiState,
         onSetWifiEnabledForSpike = viewModel::setWifiEnabledForSpike,
+        onToggleModule = viewModel::toggleModule,
+        onDismissRestartPrompt = viewModel::dismissRestartPrompt,
+        onRestartApp = { viewModel.restartApp(context) },
         onSimulateNoInternet = { deviceHealthViewModel.simulateAlert(DeviceAlert.NoInternet) },
         onSimulateServerDown = { deviceHealthViewModel.simulateAlert(DeviceAlert.ServerDown) },
         onSimulateBatteryCritical = { deviceHealthViewModel.simulateAlert(DeviceAlert.BatteryCritical(5)) },
@@ -174,6 +175,9 @@ private fun SuperAdminScreenContent(
     onTestFirebaseError: () -> Unit = {},
     onRefreshWifiState: () -> Unit = {},
     onSetWifiEnabledForSpike: (Boolean) -> Unit = {},
+    onToggleModule: (String, Boolean) -> Unit = { _, _ -> },
+    onDismissRestartPrompt: () -> Unit = {},
+    onRestartApp: () -> Unit = {},
     onSimulateNoInternet: () -> Unit = {},
     onSimulateServerDown: () -> Unit = {},
     onSimulateBatteryCritical: () -> Unit = {},
@@ -325,6 +329,33 @@ private fun SuperAdminScreenContent(
                     )
                 }
 
+                // 🎛️ Venue Modules Section
+                item {
+                    SectionHeader(title = "Venue Modules")
+                }
+
+                item {
+                    ModuleToggleCard(
+                        title = "Serialized Inventory",
+                        description = "Habilita/deshabilita venta de SIMs (Bait/Play Telecom) en este venue.",
+                        moduleCode = "SERIALIZED_INVENTORY",
+                        isEnabled = state.isSerializedInventoryEnabled,
+                        isLoading = state.isModulesLoading,
+                        onToggle = onToggleModule
+                    )
+                }
+
+                item {
+                    ModuleToggleCard(
+                        title = "Attendance Tracking",
+                        description = "Habilita/deshabilita registro de entrada/salida con foto y GPS.",
+                        moduleCode = "ATTENDANCE_TRACKING",
+                        isEnabled = state.isAttendanceTrackingEnabled,
+                        isLoading = state.isModulesLoading,
+                        onToggle = onToggleModule
+                    )
+                }
+
                 // 🐢 Slow Network Simulation Section
                 item {
                     SectionHeader(title = "Network Simulation")
@@ -398,6 +429,14 @@ private fun SuperAdminScreenContent(
                     Spacer(modifier = Modifier.height(24.dp))
                 }
             }
+
+        // Restart prompt after module toggle
+        if (state.showRestartPrompt) {
+            RestartPromptDialog(
+                onDismiss = onDismissRestartPrompt,
+                onRestart = onRestartApp
+            )
+        }
     }
 }
 
@@ -779,6 +818,113 @@ private fun WifiFailoverSpikeCard(
             }
         }
     }
+}
+
+@Composable
+private fun ModuleToggleCard(
+    title: String,
+    description: String,
+    moduleCode: String,
+    isEnabled: Boolean,
+    isLoading: Boolean,
+    onToggle: (String, Boolean) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (isEnabled) Icons.Default.ToggleOn else Icons.Default.ToggleOff,
+                            contentDescription = null,
+                            tint = if (isEnabled) MaterialTheme.avoqadoColors.statusSuccess else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "Código: $moduleCode",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = isEnabled,
+                    onCheckedChange = { newValue -> onToggle(moduleCode, newValue) }
+                )
+            }
+            if (isLoading) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
+@Composable
+private fun RestartPromptDialog(
+    onDismiss: () -> Unit,
+    onRestart: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                imageVector = Icons.Default.RestartAlt,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+        },
+        title = {
+            Text(
+                text = "Reiniciar TPV",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Text(
+                text = "Los cambios de módulo se aplicarán completamente después de reiniciar la app. " +
+                    "Algunas pantallas (como el menú principal y selector de flujos) requieren reinicio para reflejar la nueva configuración.\n\n" +
+                    "¿Reiniciar ahora?"
+            )
+        },
+        confirmButton = {
+            Button(onClick = onRestart) {
+                Text("Reiniciar ahora")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Después")
+            }
+        }
+    )
 }
 
 /**
@@ -1348,7 +1494,12 @@ data class SuperAdminState(
     val isWifiEnabled: Boolean = false,
     // 🐢 Slow Network Simulation
     val isSlowNetworkEnabled: Boolean = false,
-    val slowNetworkDelayMs: Long = 3000L
+    val slowNetworkDelayMs: Long = 3000L,
+    // 🎛️ Module toggles (for current venue)
+    val isSerializedInventoryEnabled: Boolean = false,
+    val isAttendanceTrackingEnabled: Boolean = false,
+    val isModulesLoading: Boolean = false,
+    val showRestartPrompt: Boolean = false
 )
 
 /**
@@ -1358,12 +1509,14 @@ data class SuperAdminState(
  */
 @HiltViewModel
 class SuperAdminViewModel @Inject constructor(
-    @ApplicationContext private val appContext: Context,
     private val printerManager: PrinterManager,
     private val deviceInfoManager: DeviceInfoManager,
     private val observability: ObservabilityManager,
     private val observabilityTester: ObservabilityTester,
-    private val bluetoothPaymentService: BluetoothPaymentService
+    private val bluetoothPaymentService: BluetoothPaymentService,
+    private val wifiFailoverController: WifiFailoverController,
+    private val apiService: ApiService,
+    private val modulesRepository: ModulesRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SuperAdminState())
@@ -1373,6 +1526,107 @@ class SuperAdminViewModel @Inject constructor(
         loadDeviceInfo()
         observeBleServerState()
         refreshWifiState()
+        observeModulesCache()
+        refreshModulesFromBackend()
+    }
+
+    /**
+     * Observe modules StateFlow reactively.
+     * This way, when fetchAndCache() updates the repository's cache, the Switch UI
+     * reflects the new state automatically (solves stale-after-restart issue).
+     */
+    private fun observeModulesCache() {
+        viewModelScope.launch {
+            modulesRepository.modules.collect { modules ->
+                val serialized = modules.any { it.moduleCode == ModulesRepository.MODULE_SERIALIZED_INVENTORY }
+                val attendance = modules.any { it.moduleCode == ModulesRepository.MODULE_ATTENDANCE_TRACKING }
+                Timber.d("🎛️ [SuperAdmin] Modules cache changed: serialized=$serialized, attendance=$attendance, total=${modules.size}")
+                _state.value = _state.value.copy(
+                    isSerializedInventoryEnabled = serialized,
+                    isAttendanceTrackingEnabled = attendance
+                )
+            }
+        }
+    }
+
+    /**
+     * Force refresh modules from backend on screen open.
+     * Handles the case where app just restarted and splashscreen fetch hasn't finished.
+     */
+    private fun refreshModulesFromBackend() {
+        viewModelScope.launch {
+            val result = modulesRepository.fetchAndCache()
+            result.onSuccess { modules ->
+                Timber.i("🎛️ [SuperAdmin] Refreshed ${modules.size} modules from backend")
+            }.onFailure { error ->
+                Timber.w("🎛️ [SuperAdmin] Could not refresh modules: ${error.message}")
+            }
+        }
+    }
+
+    /**
+     * Toggle a module ON/OFF for the current venue.
+     * After success, sets showRestartPrompt=true so UI offers reinicio.
+     */
+    fun toggleModule(moduleCode: String, enabled: Boolean) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isModulesLoading = true, message = null, isError = false)
+            try {
+                val response = apiService.toggleModule(
+                    ToggleModuleRequest(moduleCode = moduleCode, enabled = enabled)
+                )
+                if (!response.isSuccessful) {
+                    val errorBody = response.errorBody()?.string() ?: response.message()
+                    Timber.e("❌ [SuperAdmin] Toggle module failed: HTTP ${response.code()} — $errorBody")
+                    _state.value = _state.value.copy(
+                        isModulesLoading = false,
+                        message = "Error ${response.code()}: $errorBody",
+                        isError = true
+                    )
+                    return@launch
+                }
+
+                Timber.i("✅ [SuperAdmin] Module $moduleCode toggled to $enabled")
+
+                // Refresh local cache so other screens see the change after restart
+                modulesRepository.fetchAndCache()
+
+                _state.value = _state.value.copy(
+                    isModulesLoading = false,
+                    message = "✅ ${if (enabled) "Habilitado" else "Deshabilitado"}: $moduleCode",
+                    isError = false,
+                    isSerializedInventoryEnabled = if (moduleCode == ModulesRepository.MODULE_SERIALIZED_INVENTORY) enabled else _state.value.isSerializedInventoryEnabled,
+                    isAttendanceTrackingEnabled = if (moduleCode == ModulesRepository.MODULE_ATTENDANCE_TRACKING) enabled else _state.value.isAttendanceTrackingEnabled,
+                    showRestartPrompt = true
+                )
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [SuperAdmin] Exception toggling module")
+                _state.value = _state.value.copy(
+                    isModulesLoading = false,
+                    message = "Error: ${e.message ?: "desconocido"}",
+                    isError = true
+                )
+            }
+        }
+    }
+
+    /**
+     * Dismiss the restart prompt.
+     */
+    fun dismissRestartPrompt() {
+        _state.value = _state.value.copy(showRestartPrompt = false)
+    }
+
+    /**
+     * Restart the app so module config takes effect everywhere.
+     */
+    fun restartApp(context: Context) {
+        Timber.i("🔄 [SuperAdmin] Restarting app to apply module changes")
+        val packageManager = context.packageManager
+        val intent = packageManager.getLaunchIntentForPackage(context.packageName)
+        intent?.addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
+        kotlin.system.exitProcess(0)
     }
 
     /**
@@ -1645,94 +1899,34 @@ class SuperAdminViewModel @Inject constructor(
      * Refresh WiFi state snapshot for Phase 1 spike validation.
      */
     fun refreshWifiState() {
-        val wifiManager = appContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        _state.value = _state.value.copy(isWifiEnabled = wifiManager.isWifiEnabled)
+        _state.value = _state.value.copy(isWifiEnabled = wifiFailoverController.isWifiEnabled())
     }
 
     /**
      * Phase 1 spike probe: attempt OS-level WiFi toggle and log real result.
      * This is for PAX capability validation only (not production failover behavior).
      */
-    @Suppress("DEPRECATION")
     fun setWifiEnabledForSpike(enabled: Boolean) {
         viewModelScope.launch {
             _state.value = _state.value.copy(isLoading = true, message = null)
-
-            val wifiManager = appContext.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val hasChangeWifiPermission = appContext.checkSelfPermission(
-                Manifest.permission.CHANGE_WIFI_STATE
-            ) == PackageManager.PERMISSION_GRANTED
-
-            val before = wifiManager.isWifiEnabled
-            if (before == enabled) {
-                _state.value = _state.value.copy(
-                    isLoading = false,
-                    isWifiEnabled = before,
-                    message = "ℹ️ WiFi ya estaba ${if (before) "ON" else "OFF"}",
-                    isError = false
-                )
-                return@launch
-            }
-
             try {
-                val requestResult = wifiManager.setWifiEnabled(enabled)
-                delay(1500L)
-                var after = wifiManager.isWifiEnabled
-                var paxChannelAttempted = false
-                var paxChannelError: String? = null
-
-                // Fallback probe: attempt PAX DAL channel control if WifiManager path is blocked.
-                if (after != enabled && BuildConfig.ENABLE_PAX_SDK) {
-                    try {
-                        val dal = NeptuneLiteUser.getInstance().getDal(appContext)
-                        val commManager = dal?.commManager
-                        val wifiChannel = commManager?.getChannel(EChannelType.WIFI)
-                        if (wifiChannel != null) {
-                            paxChannelAttempted = true
-                            if (enabled) {
-                                wifiChannel.enable()
-                            } else {
-                                wifiChannel.disable()
-                            }
-                            delay(1500L)
-                            after = wifiManager.isWifiEnabled
-                        } else {
-                            paxChannelError = "wifiChannel=null"
-                        }
-                    } catch (paxException: Exception) {
-                        paxChannelAttempted = true
-                        paxChannelError = paxException.javaClass.simpleName + ": " + paxException.message
-                        Timber.w(
-                            paxException,
-                            "⚠️ [Phase1Spike] PAX DAL WIFI channel toggle failed"
-                        )
-                    } catch (paxError: Error) {
-                        paxChannelAttempted = true
-                        paxChannelError = paxError.javaClass.simpleName + ": " + paxError.message
-                        Timber.w(
-                            paxError,
-                            "⚠️ [Phase1Spike] PAX DAL WIFI channel toggle error"
-                        )
-                    }
-                }
-
-                val success = after == enabled
-
-                Timber.i(
-                    "📶 [Phase1Spike] setWifiEnabled($enabled) | " +
-                            "permission=$hasChangeWifiPermission | before=$before | requestResult=$requestResult | " +
-                            "paxChannelAttempted=$paxChannelAttempted | paxChannelError=$paxChannelError | after=$after"
+                val result = wifiFailoverController.setWifiEnabled(
+                    enabled = enabled,
+                    source = "superadmin_spike"
                 )
 
                 _state.value = _state.value.copy(
                     isLoading = false,
-                    isWifiEnabled = after,
-                    message = if (success) {
-                        "✅ WiFi toggle aplicado (${if (after) "ON" else "OFF"}) | requestResult=$requestResult | paxChannelAttempted=$paxChannelAttempted"
+                    isWifiEnabled = result.after,
+                    message = if (result.success) {
+                        "✅ WiFi toggle aplicado (${if (result.after) "ON" else "OFF"}) | " +
+                            "requestResult=${result.requestResult} | paxChannelAttempted=${result.paxChannelAttempted}"
                     } else {
-                        "❌ WiFi no cambió | permission=$hasChangeWifiPermission, requestResult=$requestResult, paxChannelAttempted=$paxChannelAttempted, paxChannelError=$paxChannelError, before=$before, after=$after"
+                        "❌ WiFi no cambió | permission=${result.hasChangeWifiPermission}, " +
+                            "requestResult=${result.requestResult}, paxChannelAttempted=${result.paxChannelAttempted}, " +
+                            "paxChannelError=${result.paxChannelError}, before=${result.before}, after=${result.after}"
                     },
-                    isError = !success
+                    isError = !result.success
                 )
             } catch (securityException: SecurityException) {
                 Timber.e(
@@ -1741,7 +1935,7 @@ class SuperAdminViewModel @Inject constructor(
                 )
                 _state.value = _state.value.copy(
                     isLoading = false,
-                    isWifiEnabled = wifiManager.isWifiEnabled,
+                    isWifiEnabled = wifiFailoverController.isWifiEnabled(),
                     message = "❌ SecurityException: ${securityException.message}",
                     isError = true
                 )
@@ -1749,7 +1943,7 @@ class SuperAdminViewModel @Inject constructor(
                 Timber.e(e, "❌ [Phase1Spike] setWifiEnabled($enabled) failed")
                 _state.value = _state.value.copy(
                     isLoading = false,
-                    isWifiEnabled = wifiManager.isWifiEnabled,
+                    isWifiEnabled = wifiFailoverController.isWifiEnabled(),
                     message = "❌ Error toggling WiFi: ${e.message}",
                     isError = true
                 )

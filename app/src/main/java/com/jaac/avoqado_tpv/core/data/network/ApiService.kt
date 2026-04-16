@@ -1102,6 +1102,17 @@ interface ApiService {
         @Header("X-Venue-Id") venueId: String
     ): Response<com.jaac.avoqado_tpv.features.modules.data.dto.ModulesApiResponse>
 
+    /**
+     * Toggle a module ON/OFF for the current venue (SUPERADMIN only).
+     *
+     * POST /tpv/superadmin/modules/toggle
+     * Body: { moduleCode: String, enabled: Boolean }
+     */
+    @POST("tpv/superadmin/modules/toggle")
+    suspend fun toggleModule(
+        @Body request: com.jaac.avoqado_tpv.features.modules.data.dto.ToggleModuleRequest
+    ): Response<com.jaac.avoqado_tpv.features.modules.data.dto.ToggleModuleResponse>
+
     // ========== Sales Goal ==========
 
     /**
@@ -1302,6 +1313,36 @@ interface ApiService {
     suspend fun quickSellSerializedItem(
         @Body request: com.jaac.avoqado_tpv.features.serialized_sale.data.dto.QuickSellRequestDto
     ): Response<com.jaac.avoqado_tpv.features.serialized_sale.data.dto.QuickSellResponseDto>
+
+    // ==========================================
+    // SIM CUSTODY (PlayTelecom chain-of-custody, plan §3)
+    // ==========================================
+
+    /**
+     * Lists SIMs in the current promoter's custody inbox.
+     * Filters by (assignedPromoterId = current staff) AND custodyState IN
+     * (PROMOTER_PENDING, PROMOTER_HELD, SOLD).
+     */
+    @GET("tpv/sim-custody/my-sims")
+    suspend fun getMySims(): Response<com.jaac.avoqado_tpv.features.sim_custody.data.dto.MySimsResponseDto>
+
+    /**
+     * Bulk-accepts pending SIMs. Backend transitions PROMOTER_PENDING → PROMOTER_HELD.
+     * Requires Idempotency-Key header for dedupe.
+     */
+    @POST("tpv/sim-custody/accept")
+    suspend fun acceptSims(
+        @retrofit2.http.Header("Idempotency-Key") idempotencyKey: String,
+        @Body request: com.jaac.avoqado_tpv.features.sim_custody.data.dto.AcceptRequestDto,
+    ): Response<com.jaac.avoqado_tpv.features.sim_custody.data.dto.BulkSimCustodyResponseDto>
+
+    /**
+     * Rejects ONE pending SIM. Idempotency-Key is optional for single-item calls.
+     */
+    @POST("tpv/sim-custody/reject")
+    suspend fun rejectSim(
+        @Body request: com.jaac.avoqado_tpv.features.sim_custody.data.dto.RejectRequestDto,
+    ): Response<com.jaac.avoqado_tpv.features.sim_custody.data.dto.RejectResponseDto>
 
     /**
      * Register batch of serialized items

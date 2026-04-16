@@ -68,6 +68,7 @@ fun SerializedSaleScreen(
     onNavigateBack: () -> Unit,
     onNavigateToPayment: (orderId: String, orderNumber: String?, orderTotal: String, isPortabilidad: Boolean, serialNumber: String?, categoryName: String?) -> Unit,
     resetOnEnter: Boolean = false,
+    onNavigateToMisSims: () -> Unit = {},
     viewModel: SerializedSaleViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -581,6 +582,32 @@ fun SerializedSaleScreen(
                     ) {
                         Text(uiState.error!!)
                     }
+                }
+
+                // SIM_NOT_ACCEPTED dialog — deep-links the promoter to Mis SIMs (plan §3.3)
+                if (uiState.simNotAcceptedError) {
+                    AlertDialog(
+                        onDismissRequest = { viewModel.dismissSimNotAcceptedError() },
+                        title = { Text("SIM no aceptado") },
+                        text = {
+                            Text(
+                                "Debes aceptar la recepción de este SIM en \"Mis SIMs\" antes de venderlo."
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    viewModel.dismissSimNotAcceptedError()
+                                    onNavigateToMisSims()
+                                }
+                            ) { Text("Ir a Mis SIMs") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { viewModel.dismissSimNotAcceptedError() }) {
+                                Text("Cancelar")
+                            }
+                        }
+                    )
                 }
             }
         }

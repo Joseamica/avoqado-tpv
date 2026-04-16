@@ -8,6 +8,7 @@ import com.jaac.avoqado_tpv.core.domain.models.Result as AppResult
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
+import com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager
 import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.modules.domain.model.VenueModule
@@ -85,6 +86,7 @@ class PaymentViewModelTest {
     private lateinit var mockRecordPaymentUseCase: RecordPaymentUseCase
     private lateinit var mockRecordRefundUseCase: RecordRefundUseCase
     private lateinit var mockConnectionStateManager: ConnectionStateManager
+    private lateinit var mockCriticalNetworkOperationManager: CriticalNetworkOperationManager
 
     // Flows needed by init block collectors
     private val socketEventsFlow = MutableSharedFlow<SocketEvent>()
@@ -226,6 +228,8 @@ class PaymentViewModelTest {
         mockConnectionStateManager = mockk(relaxed = true) {
             every { isFullyConnected() } returns true
         }
+
+        mockCriticalNetworkOperationManager = mockk(relaxed = true)
     }
 
     @After
@@ -279,7 +283,8 @@ class PaymentViewModelTest {
             secureStorage = mockSecureStorage,
             modulesRepository = mockModulesRepository,
             connectionStateManager = mockConnectionStateManager,
-            merchantRepository = mockk(relaxed = true)
+            merchantRepository = mockk(relaxed = true),
+            criticalNetworkOperationManager = mockCriticalNetworkOperationManager
         )
     }
 

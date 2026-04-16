@@ -128,8 +128,8 @@ class SerializedSaleViewModel @Inject constructor(
             Timber.w("📦 [SerializedSale] Ignoring blank serial number")
             return
         }
-        if (serialNumber.trim().length < 15) {
-            _uiState.update { it.copy(error = "El código debe tener al menos 15 dígitos") }
+        if (serialNumber.trim().length < 20) {
+            _uiState.update { it.copy(error = "El código debe tener al menos 20 dígitos") }
             return
         }
 
@@ -304,10 +304,16 @@ class SerializedSaleViewModel @Inject constructor(
                 }
                 .onFailure { error ->
                     Timber.e(error, "Quick sell failed")
+                    // Plan §3.3 — surface SIM_NOT_ACCEPTED distinctly so the
+                    // screen can deep-link the promoter to Mis SIMs.
+                    val raw = error.message.orEmpty()
+                    val notAccepted = raw.contains("SIM_NOT_ACCEPTED", ignoreCase = true) ||
+                        raw.contains("aceptar la recepción", ignoreCase = true)
                     _uiState.update {
                         it.copy(
                             isLoading = false,
-                            error = error.message ?: "Error al procesar venta"
+                            simNotAcceptedError = notAccepted,
+                            error = if (notAccepted) null else raw.ifEmpty { "Error al procesar venta" }
                         )
                     }
                 }
@@ -332,6 +338,14 @@ class SerializedSaleViewModel @Inject constructor(
      */
     fun dismissError() {
         _uiState.update { it.copy(error = null) }
+    }
+
+    /**
+     * Dismiss the SIM_NOT_ACCEPTED dialog. Screen decides whether to deep-link
+     * to MisSimsScreen or stay on the scan view.
+     */
+    fun dismissSimNotAcceptedError() {
+        _uiState.update { it.copy(simNotAcceptedError = false) }
     }
 
     /**

@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.Help
 import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.SimCard
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CameraAlt
@@ -139,6 +140,7 @@ fun WelcomeScreen(
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Telecom: Vender flow (barcode → price → payment)
     onNavigateToInventoryRegister: () -> Unit = {},  // 📦 Telecom: Alta de productos flow
     onNavigateToMySales: () -> Unit = {},  // 📊 Telecom: My sales history
+    onNavigateToMisSims: () -> Unit = {},  // 📱 Telecom: SIM custody inbox
     onNavigateToTimeclock: () -> Unit = {},  // ⏱ Navigate to TimeclockScreen from WelcomeScreen
     onNavigateToTimeclockForClockOut: () -> Unit = {},  // ⏱ Navigate to TimeclockScreen for clock-out
     onNavigateToMessages: () -> Unit = {},  // 📨 Navigate to Messages screen
@@ -296,6 +298,7 @@ fun WelcomeScreen(
         onNavigateToSerializedSale = onNavigateToSerializedSale,  // 📱 Telecom: Vender
         onNavigateToInventoryRegister = onNavigateToInventoryRegister,  // 📦 Telecom: Alta
         onNavigateToMySales = onNavigateToMySales,  // 📊 Telecom: Mis Ventas
+        onNavigateToMisSims = onNavigateToMisSims,  // 📱 Telecom: Mis SIMs
         currentTimeEntry = currentTimeEntry,
         requireClockInToLogin = requireClockInToLogin,
         isAttendanceLoading = isAttendanceLoading,
@@ -515,6 +518,7 @@ private fun WelcomeScreenContent(
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Telecom: Vender flow
     onNavigateToInventoryRegister: () -> Unit = {},  // 📦 Telecom: Alta de productos
     onNavigateToMySales: () -> Unit = {},  // 📊 Telecom: My sales history
+    onNavigateToMisSims: () -> Unit = {},  // 📱 Telecom: SIM custody inbox
     currentTimeEntry: TimeEntry? = null,  // ⏱ Current attendance entry
     requireClockInToLogin: Boolean = false,  // ⏱ Whether clock-in is required
     isAttendanceLoading: Boolean = false,  // ⏱ Loading state for attendance
@@ -555,19 +559,26 @@ private fun WelcomeScreenContent(
     // 📱 Check for simplified order flow (telecom/serialized inventory mode)
     // Use StateFlow so changes (e.g., on logout) trigger recomposition
     val currentModules by modulesRepository.modules.collectAsStateWithLifecycle()
-    val serializedInventoryConfig = currentModules
+    val serializedInventoryModule = currentModules
         .find { it.moduleCode == ModulesRepository.MODULE_SERIALIZED_INVENTORY }
-        ?.config
+    val serializedInventoryConfig = serializedInventoryModule?.config
     val isSimplifiedMode = serializedInventoryConfig?.ui?.simplifiedOrderFlow == true
+    // Plan §3.2 — "Mis SIMs" tile only for venues with SERIALIZED_INVENTORY enabled.
+    val isSerializedInventoryMode = serializedInventoryModule?.active == true
 
     // 📦 Check if user has serialized inventory permissions
     var hasInventoryRegisterPermission by remember { mutableStateOf(false) }
     var hasInventorySellPermission by remember { mutableStateOf(false) }
+    // Distinct from `:sell` — the Mis SIMs inbox is about accepting/rejecting
+    // custody, not about selling. Gate with the canonical custody permission
+    // so non-promoter roles that happen to have :sell don't see the tile.
+    var hasSimCustodyAcceptPermission by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         val result = permissionsRepository.getPermissions(forceRefresh = false)
         val permissions = result.getOrNull()
         hasInventoryRegisterPermission = permissions?.contains("serialized-inventory:create") ?: false
         hasInventorySellPermission = permissions?.contains("serialized-inventory:sell") ?: false
+        hasSimCustodyAcceptPermission = permissions?.contains("tpv-sim-custody:accept") ?: false
     }
 
     // 🥝 Kiosk mode state
@@ -650,6 +661,34 @@ private fun WelcomeScreenContent(
                         label = "Mis Ventas",
                         enabled = true,
                         onClick = onNavigateToMySales
+                    )
+                )
+            }
+
+            // 📱 Mis SIMs — promoter's SIM custody inbox (plan §3)
+            // Asana explicitly states: "En la TPV, el PROMOTOR hace click en
+            // una nueva sección de Mis SIMs". The tile is WAITER-only.
+            // Gated by:
+            //   1. SERIALIZED_INVENTORY module enabled for the venue
+            //   2. Staff role is WAITER (the Promotor in PlayTelecom)
+            //   3. `tpv-sim-custody:accept` permission (defense in depth)
+            //
+            // Non-WAITER staff (MANAGER Supervisor, CASHIER, etc.) never see
+            // the tile even if they have the permission — they operate from
+            // the Dashboard web, not TPV. Edge case: a Supervisor that must
+            // temporarily sell can still accept via the deep-link from
+            // "Vender SIM" when the backend returns SIM_NOT_ACCEPTED.
+            if (
+                isSerializedInventoryMode &&
+                currentUserRole == StaffRole.WAITER &&
+                hasSimCustodyAcceptPermission
+            ) {
+                add(
+                    ActionButton(
+                        icon = Icons.Default.SimCard,
+                        label = "Mis SIMs",
+                        enabled = true,
+                        onClick = onNavigateToMisSims
                     )
                 )
             }

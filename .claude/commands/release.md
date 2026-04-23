@@ -1,6 +1,6 @@
 # Release Pipeline: Test, Build, Sign, Deploy, Push
 
-You are executing the full Avoqado TPV release pipeline. Follow each phase strictly. If ANY phase fails, STOP and report the error — do NOT continue to the next phase.
+Executes the full Avoqado TPV release pipeline for **both PAX (Blumon) and Nexgo (AngelPay)** APKs from a single commit. Follow each phase strictly. If ANY phase fails, STOP and report — do NOT continue.
 
 **IMPORTANT**: Before starting, ask the user for the new version number (e.g., "1.8.0") if not provided as argument. If the user provides it as $ARGUMENTS, use that.
 
@@ -8,26 +8,42 @@ Version argument: $ARGUMENTS
 
 ---
 
+## Build Variant Reference
+
+| Variant | Hardware | Processor | ABI | Deploy path |
+|---------|----------|-----------|-----|-------------|
+| `productionRelease` | PAX A910S | Blumon (real money) | armeabi | Blumon → PAX re-sign → 3-5 days |
+| `nexgoRelease` | Nexgo N86 | AngelPay | arm64-v8a | Direct install (no re-sign needed) |
+
+Both APKs share the same `versionCode`/`versionName`. Nexgo APK shows `X.Y.Z-nexgo` internally (`versionNameSuffix`).
+
+### CHANGELOG labels for platform-specific changes
+- `[PAX]` — only affects PAX/Blumon terminals
+- `[Nexgo]` — only affects Nexgo/AngelPay terminals
+- No label — affects both
+
+---
+
 ## Phase 0: Pre-flight Checks
 
-1. Read `app/build.gradle.kts` to get the CURRENT `versionCode` and `versionName`
-2. Determine the NEW version:
-   - If `$ARGUMENTS` is provided, use it as the new `versionName`
-   - If not provided, ask the user what the new version should be
-   - New `versionCode` = current versionCode + 1
-3. Show the user:
+1. Read `app/build.gradle.kts` to get CURRENT `versionCode` and `versionName`
+2. Determine NEW version:
+   - Use `$ARGUMENTS` if provided, otherwise ask
+   - New `versionCode` = current + 1
+3. Show:
    ```
    Current: versionCode=XX, versionName="X.Y.Z"
    New:     versionCode=XX+1, versionName="NEW_VERSION"
+              nexgo internal: "NEW_VERSION-nexgo"
    ```
 4. Check `git status` — warn if there are uncommitted changes that should be committed first
-5. Check `CHANGELOG.md` — verify there are entries under `## [Unreleased]`. If empty, STOP and tell the user to add changelog entries first
+5. Check `CHANGELOG.md` — verify entries exist under `## [Unreleased]`. If empty, STOP.
 
 ---
 
 ## Phase 1: Testing
 
-Run these in parallel:
+Run in parallel:
 ```bash
 export JAVA_HOME=$(/usr/libexec/java_home -v 23)
 ./gradlew testSandboxDebugUnitTest --rerun-tasks
@@ -37,7 +53,7 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 23)
 ./gradlew lint --continue
 ```
 
-**Gate**: ALL tests must pass (0 failures). Lint must pass. If either fails, STOP and report.
+**Gate**: ALL tests pass (0 failures). Lint passes. If either fails, STOP.
 
 ---
 
@@ -47,9 +63,9 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 23)
    - Increment `versionCode` by 1
    - Set `versionName` to the new version
 2. Update `CHANGELOG.md`:
-   - Rename `## [Unreleased]` to `## [NEW_VERSION] - YYYY-MM-DD` (today's date)
-   - Add a fresh empty `## [Unreleased]` section above it with empty Added/Changed/Fixed subsections
-3. Compile check to verify version bump doesn't break anything:
+   - Rename `## [Unreleased]` → `## [NEW_VERSION] - YYYY-MM-DD`
+   - Add fresh empty `## [Unreleased]` section above with Added/Changed/Fixed subsections
+3. Compile check:
    ```bash
    export JAVA_HOME=$(/usr/libexec/java_home -v 23)
    ./gradlew compileSandboxDebugKotlin
@@ -59,23 +75,31 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 23)
 
 ---
 
-## Phase 3: Build Production APK
+## Phase 3: Build Both APKs
+
+Run in parallel:
 
 ```bash
 export JAVA_HOME=$(/usr/libexec/java_home -v 23)
 ./gradlew assembleProductionRelease
 ```
+```bash
+export JAVA_HOME=$(/usr/libexec/java_home -v 23)
+./gradlew assembleNexgoRelease
+```
 
-**Gate**: BUILD SUCCESSFUL. The unsigned APK must exist at:
-`app/build/outputs/apk/production/release/app-production-release-unsigned.apk`
+**Gate**: Both BUILD SUCCESSFUL. Verify APKs exist:
+- `app/build/outputs/apk/production/release/app-production-release-unsigned.apk`
+- `app/build/outputs/apk/nexgo/release/app-nexgo-release-unsigned.apk`
 
 ---
 
-## Phase 4: Sign APK
+## Phase 4: Sign Both APKs
 
-Sign with apksigner (v2 scheme REQUIRED for targetSdk 34+):
+Run in parallel:
 
 ```bash
+# PAX / Blumon
 ~/Library/Android/sdk/build-tools/34.0.0/apksigner sign \
   --ks ~/.android/debug.keystore \
   --ks-pass pass:android \
@@ -83,83 +107,103 @@ Sign with apksigner (v2 scheme REQUIRED for targetSdk 34+):
   --out /tmp/avoqado-tpv-NEW_VERSION-production-signed.apk \
   app/build/outputs/apk/production/release/app-production-release-unsigned.apk
 ```
-
-Then verify the signature:
 ```bash
-~/Library/Android/sdk/build-tools/34.0.0/apksigner verify --verbose /tmp/avoqado-tpv-NEW_VERSION-production-signed.apk
+# Nexgo / AngelPay
+~/Library/Android/sdk/build-tools/34.0.0/apksigner sign \
+  --ks ~/.android/debug.keystore \
+  --ks-pass pass:android \
+  --key-pass pass:android \
+  --out /tmp/avoqado-tpv-NEW_VERSION-nexgo-signed.apk \
+  app/build/outputs/apk/nexgo/release/app-nexgo-release-unsigned.apk
 ```
 
-**Gate**: Must show `Verified using v2 scheme (APK Signature Scheme v2): true`
+Verify both signatures:
+```bash
+~/Library/Android/sdk/build-tools/34.0.0/apksigner verify --verbose /tmp/avoqado-tpv-NEW_VERSION-production-signed.apk
+~/Library/Android/sdk/build-tools/34.0.0/apksigner verify --verbose /tmp/avoqado-tpv-NEW_VERSION-nexgo-signed.apk
+```
+
+**Gate**: Both must show `Verified using v2 scheme (APK Signature Scheme v2): true`
 
 ---
 
 ## Phase 5: Copy to iCloud
-
-Create the version folder structure and copy:
 
 ```bash
 ICLOUD_BASE="/Users/amieva/Library/Mobile Documents/com~apple~CloudDocs/Avoqado/Blumon/APK"
 VERSION="NEW_VERSION"
 
 mkdir -p "${ICLOUD_BASE}/${VERSION}/production"
+mkdir -p "${ICLOUD_BASE}/${VERSION}/nexgo"
 mkdir -p "${ICLOUD_BASE}/${VERSION}/sandbox"
 mkdir -p "${ICLOUD_BASE}/${VERSION}/PAXFIRMADO"
 
+# PAX APK
 cp /tmp/avoqado-tpv-${VERSION}-production-signed.apk \
    "${ICLOUD_BASE}/${VERSION}/production/avoqado-tpv-${VERSION}-production.apk"
+
+# Nexgo APK
+cp /tmp/avoqado-tpv-${VERSION}-nexgo-signed.apk \
+   "${ICLOUD_BASE}/${VERSION}/nexgo/avoqado-tpv-${VERSION}-nexgo.apk"
 ```
 
-**Gate**: File exists in iCloud folder. Verify with `ls -lh`.
+**Gate**: Both files exist. Verify with `ls -lh "${ICLOUD_BASE}/${VERSION}/production/" "${ICLOUD_BASE}/${VERSION}/nexgo/"`.
 
 ---
 
 ## Phase 6: Git Commit + Tag + Push
 
-1. Stage the changed files:
+1. Stage files:
    ```bash
    git add app/build.gradle.kts CHANGELOG.md
    ```
-   Also stage any other modified tracked files that are part of this release (check `git status`).
+   Also stage any other modified tracked files that are part of this release.
    Do NOT stage `.idea/` or `.serena/` files.
 
-2. Create release commit (do NOT include Co-Authored-By):
+2. Release commit (no Co-Authored-By):
    ```
-   release(vNEW_VERSION): <brief summary of what's in the release>
+   release(vNEW_VERSION): <brief summary>
    ```
-   The commit message body should summarize the key changes from the CHANGELOG entries.
+   Body: summarize key changes from CHANGELOG. Note if changes are PAX-only, Nexgo-only, or shared.
 
-3. Create annotated tag:
+3. Annotated tag:
    ```bash
    git tag -a vNEW_VERSION -m "vNEW_VERSION: <brief summary>"
    ```
 
-4. Push to origin:
+4. Push:
    ```bash
    git push origin main --tags
    ```
 
-**Gate**: Push succeeds. Verify with `git log --oneline -3` and `git tag -l -n1 vNEW_VERSION`.
+**Gate**: Push succeeds. Verify with `git log --oneline -3`.
 
 ---
 
 ## Phase 7: Summary
 
-Print a final summary:
-
 ```
 === RELEASE vNEW_VERSION COMPLETE ===
 
-Version:    versionCode=XX, versionName="NEW_VERSION"
-Commit:     <hash> release(vNEW_VERSION): ...
-Tag:        vNEW_VERSION
-APK:        iCloud/.../NEW_VERSION/production/avoqado-tpv-NEW_VERSION-production.apk
-APK size:   XX MB
-Tests:      XXX passed, 0 failed
-Pushed:     origin/main + tags
+Version:      versionCode=XX, versionName="NEW_VERSION"
+              Nexgo internal: "NEW_VERSION-nexgo"
+Commit:       <hash> release(vNEW_VERSION): ...
+Tag:          vNEW_VERSION
 
-Next steps:
-1. Send APK to Blumon for PAX re-signing
+APKs:
+  PAX:        iCloud/.../NEW_VERSION/production/avoqado-tpv-NEW_VERSION-production.apk  (XX MB)
+  Nexgo:      iCloud/.../NEW_VERSION/nexgo/avoqado-tpv-NEW_VERSION-nexgo.apk            (XX MB)
+
+Tests:        XXX passed, 0 failed
+Pushed:       origin/main + tags
+
+Next steps — PAX (Blumon):
+1. Send production APK to Blumon for PAX re-signing
 2. Wait 3-5 days for signed APK
 3. Save PAX-signed APK to iCloud/.../NEW_VERSION/PAXFIRMADO/
-4. Use INSTALL_VERSION from dashboard to deploy to terminals
+4. Use INSTALL_VERSION from dashboard to deploy to PAX terminals
+
+Next steps — Nexgo (AngelPay):
+1. Nexgo APK can be installed directly (no re-sign needed)
+2. Use ADB or INSTALL_VERSION to deploy to Nexgo terminals
 ```

@@ -288,13 +288,19 @@
 -dontwarn java.lang.invoke.**
 
 # ==========================================
-# ANGELPAY SDK - kotlinx.serialization
+# ANGELPAY SDK - kotlinx.serialization & transitive deps
 # ==========================================
-# AngelPay SDK references kotlinx.serialization.json internally.
-# The dependency is NOT in our classpath (it's bundled in the AAR),
-# so R8 can't find it — suppress the warning.
+# AngelPay SDK (fat AAR) bundles kotlinx.serialization, snakeyaml,
+# and references kotlinx.parcelize. These aren't resolvable by R8
+# in the consumer classpath — suppress the warnings.
 -dontwarn kotlinx.serialization.json.Json
 -dontwarn kotlinx.serialization.json.JsonBuilder
+-dontwarn kotlinx.parcelize.Parcelize
+# snakeyaml uses java.beans (not available on Android, only used on JVM server-side)
+-dontwarn java.beans.BeanInfo
+-dontwarn java.beans.Introspector
+-dontwarn java.beans.PropertyDescriptor
+-dontwarn org.slf4j.impl.StaticLoggerBinder
 
 # ==========================================
 # END OF PROGUARD RULES

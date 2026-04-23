@@ -44,9 +44,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -96,7 +96,7 @@ fun CustomerSearchModal(
     modifier: Modifier = Modifier
 ) {
     var searchQuery by remember { mutableStateOf("") }
-    val focusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
 
     // Debounce search
     LaunchedEffect(searchQuery) {
@@ -104,11 +104,6 @@ fun CustomerSearchModal(
             delay(300)
             onSearch(searchQuery)
         }
-    }
-
-    // Auto-focus search field
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
     }
 
     Dialog(
@@ -127,7 +122,12 @@ fun CustomerSearchModal(
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 8.dp
         ) {
-            Column {
+            Column(
+                modifier = Modifier.clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() }
+                ) { focusManager.clearFocus() }
+            ) {
                 // Header
                 Row(
                     modifier = Modifier
@@ -156,14 +156,30 @@ fun CustomerSearchModal(
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    placeholder = { Text("Buscar por teléfono, nombre o email") },
+                    placeholder = {
+                        Text(
+                            "Buscar por teléfono, nombre o email",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    },
                     leadingIcon = {
-                        Icon(Icons.Default.Search, contentDescription = null)
+                        Icon(
+                            Icons.Default.Search,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
                     },
                     trailingIcon = {
                         if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { searchQuery = "" }) {
-                                Icon(Icons.Default.Close, contentDescription = "Limpiar")
+                            IconButton(
+                                onClick = { searchQuery = "" },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Limpiar",
+                                    modifier = Modifier.size(16.dp)
+                                )
                             }
                         }
                     },
@@ -174,12 +190,12 @@ fun CustomerSearchModal(
                     keyboardActions = KeyboardActions(
                         onSearch = { onSearch(searchQuery) }
                     ),
+                    textStyle = MaterialTheme.typography.bodySmall,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                        .focusRequester(focusRequester),
+                        .padding(horizontal = 16.dp, vertical = 2.dp),
                     singleLine = true,
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(10.dp)
                 )
 
                 // Results section

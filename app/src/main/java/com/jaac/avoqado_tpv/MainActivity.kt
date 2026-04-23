@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -19,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -33,6 +36,7 @@ import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
 import com.jaac.avoqado_tpv.core.presentation.navigation.AppNavigation
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import com.jaac.avoqado_tpv.core.util.ForegroundRecoveryGate
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
@@ -154,6 +158,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
 
         // Edge-to-edge: content draws behind system bars (status bar, nav bar)
@@ -253,12 +258,42 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         AppUpdateReceiver.isActivityResumed = true
+        ForegroundRecoveryGate.disarm(reason = "activity_resumed")
         applyTutorialImmersiveNavigation()
     }
 
     override fun onPause() {
         super.onPause()
         AppUpdateReceiver.isActivityResumed = false
+        scheduleForegroundRecoveryIfNeeded()
+    }
+
+    private fun scheduleForegroundRecoveryIfNeeded() {
+        val armSequence = ForegroundRecoveryGate.tryConsumeArm() ?: return
+        if (isChangingConfigurations || isFinishing || isDestroyed) return
+
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
+        } ?: return
+
+        Timber.w("🛡️ [ForegroundRecovery] onPause while armed - scheduling guarded relaunch | seq=$armSequence")
+        val mainHandler = Handler(Looper.getMainLooper())
+        mainHandler.postDelayed({
+            if (ForegroundRecoveryGate.isCurrentArm(armSequence) && !AppUpdateReceiver.isActivityResumed) {
+                startActivity(launchIntent)
+                Timber.w("🛡️ [ForegroundRecovery] Relaunch attempt #1 | seq=$armSequence")
+            }
+        }, 350L)
+        mainHandler.postDelayed({
+            if (ForegroundRecoveryGate.isCurrentArm(armSequence) && !AppUpdateReceiver.isActivityResumed) {
+                startActivity(launchIntent)
+                Timber.w("🛡️ [ForegroundRecovery] Relaunch attempt #2 (fallback) | seq=$armSequence")
+            }
+        }, 900L)
     }
 
     /**

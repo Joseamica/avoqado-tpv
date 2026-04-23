@@ -456,9 +456,6 @@ private fun SimRow(
     onAccept: () -> Unit,
     onReject: () -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    val last4 = sim.serialNumber.takeLast(4)
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -469,9 +466,9 @@ private fun SimRow(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = if (expanded) sim.serialNumber else "···$last4",
+                    text = sim.serialNumber,
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = 16.sp,
+                    fontSize = 14.sp,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
@@ -525,18 +522,7 @@ private fun SimRow(
                 }
             }
 
-            SimCustodyState.PROMOTER_HELD -> {
-                Spacer(Modifier.height(6.dp))
-                TextButton(
-                    onClick = { expanded = !expanded },
-                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
-                ) {
-                    Text(
-                        if (expanded) "Ocultar ICCID completo" else "Ver ICCID completo",
-                        fontSize = 12.sp,
-                    )
-                }
-            }
+            SimCustodyState.PROMOTER_HELD -> Unit
 
             SimCustodyState.SOLD, SimCustodyState.UNKNOWN -> Unit
         }

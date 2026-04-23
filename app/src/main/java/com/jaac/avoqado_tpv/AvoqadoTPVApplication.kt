@@ -6,6 +6,7 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.CameraXConfig
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.angelpay.angelpaysdk.AngelPaySDK
 import com.blumonpay.pax.utils.AppManager
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -51,6 +52,7 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
         if (!BuildConfig.ENABLE_PAX_SDK) {
             provisionAngelPayQACredentials()
         }
+        initializeAngelPaySdkIfEnabled()
 
         // ⚠️ Defer non-critical initialization to background
         applicationScope.launch {
@@ -122,6 +124,21 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
             Timber.d("🚀 Avoqado TPV initialized in DEBUG mode")
         } else {
             Timber.plant(com.jaac.avoqado_tpv.core.observability.CrashReportingTree())
+        }
+    }
+
+    private fun initializeAngelPaySdkIfEnabled() {
+        if (!BuildConfig.ANGELPAY_SDK_ENABLED) {
+            Timber.d("🔶 [AngelPay SDK] Disabled by build flag")
+            return
+        }
+
+        try {
+            val env = if (BuildConfig.BLUMON_ENV == "PROD") "PROD" else "QA"
+            AngelPaySDK.initialize(context = applicationContext, env = env)
+            Timber.i("🔶 [AngelPay SDK] Initialized successfully (env=$env)")
+        } catch (e: Throwable) {
+            Timber.e(e, "❌ [AngelPay SDK] Failed to initialize")
         }
     }
 

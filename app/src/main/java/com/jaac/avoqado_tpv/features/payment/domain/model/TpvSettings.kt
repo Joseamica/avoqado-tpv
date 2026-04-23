@@ -90,6 +90,9 @@ data class TpvSettings(
     val showTrainings: Boolean = true,
     // Crypto payment option (B4Bit integration)
     val showCryptoOption: Boolean = false,
+    // AngelPay SDK rollout flags
+    val angelPaySdkEnabled: Boolean = true,
+    val angelPaySdkFallbackEnabled: Boolean = true,
     // Phase 0: Cellular failover rollout flags (safe defaults)
     val cellularFailoverMode: CellularFailoverMode = CellularFailoverMode.OFF,
     val cellularFailoverBadReadingsThreshold: Int = 3,

@@ -201,6 +201,20 @@ sealed class PaymentContext {
         // referenceNumber (12-digit SDK value like "195978383755") exceeds Integer.MAX_VALUE
         // operationNumber comes from Blumon webhook (processorData.blumonOperationNumber)
         val originalOperationNumber: Int, // e.g., 75656 (fits in Integer)
+
+        /**
+         * Optional tip portion of the refund (in cents) the caller wants booked
+         * against `Payment.tipAmount` instead of `Payment.amount`.
+         *
+         *   - null   → backend default: proportional split sale/tip.
+         *   - 0      → refund 100% from sale; staff tip ledger stays intact.
+         *   - amount → refund booked as tip-only.
+         *
+         * **This does NOT affect Blumon.** Blumon always refunds the full
+         * requested amount to the cardholder. This only drives internal
+         * accounting (shift totals, reports).
+         */
+        val tipRefundCents: Int? = null,
     ) : PaymentContext() {
 
         /**

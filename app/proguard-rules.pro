@@ -288,6 +288,15 @@
 -dontwarn java.lang.invoke.**
 
 # ==========================================
+# ANGELPAY SDK - kotlinx.serialization
+# ==========================================
+# AngelPay SDK references kotlinx.serialization.json internally.
+# The dependency is NOT in our classpath (it's bundled in the AAR),
+# so R8 can't find it — suppress the warning.
+-dontwarn kotlinx.serialization.json.Json
+-dontwarn kotlinx.serialization.json.JsonBuilder
+
+# ==========================================
 # END OF PROGUARD RULES
 # ==========================================
 

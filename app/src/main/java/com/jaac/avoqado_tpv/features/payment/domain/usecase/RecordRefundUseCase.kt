@@ -94,6 +94,7 @@ class RecordRefundUseCase @Inject constructor(
         cardDetails: CardDetails,
         authorizationNumber: String,
         referenceNumber: String,
+        tipRefundCents: Int? = null,
     ): Result<RefundReceipt> {
         // 1. Validate refund amount
         if (!context.isValidRefundAmount()) {
@@ -154,6 +155,7 @@ class RecordRefundUseCase @Inject constructor(
             cardDetails = cardDetails,
             authorizationNumber = authorizationNumber,
             referenceNumber = referenceNumber,
+            tipRefundCents = tipRefundCents,
         )
     }
 

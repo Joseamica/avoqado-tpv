@@ -3,6 +3,8 @@ package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import com.angelpay.angelpaysdk.AngelPayPaymentContract
+import com.angelpay.angelpaysdk.models.PaymentResult
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,6 +41,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
+import com.jaac.avoqado_tpv.core.util.ForegroundRecoveryGate
 import com.jaac.avoqado_tpv.features.payment.presentation.MerchantSelectionContent
 import com.jaac.avoqado_tpv.features.payment.presentation.ReviewScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.TipScreen
@@ -65,6 +68,7 @@ fun AngelPayPaymentScreen(
     orderNumber: String? = null,
     onNavigateBack: () -> Unit,
     onNavigateHome: () -> Unit,
+    onNavigateToTransactions: () -> Unit = {},
     onNavigateToShifts: () -> Unit = {},
     viewModel: AngelPayPaymentViewModel = hiltViewModel(),
 ) {
@@ -88,7 +92,25 @@ fun AngelPayPaymentScreen(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         Timber.d("🔶 [AngelPay] ActivityResult received | resultCode=${result.resultCode}")
+        if (result.resultCode == Activity.RESULT_OK) {
+            ForegroundRecoveryGate.arm(
+                durationMs = 4500L,
+                reason = "angelpay_app_to_app_result_ok",
+            )
+        }
         viewModel.onAngelPayResult(result.resultCode, result.data)
+    }
+    val angelPaySdkLauncher = rememberLauncherForActivityResult(
+        contract = AngelPayPaymentContract(),
+    ) { result: PaymentResult ->
+        Timber.d("🔶 [AngelPay SDK] ActivityResult received | approved=${result.approved}")
+        if (result.approved) {
+            ForegroundRecoveryGate.arm(
+                durationMs = 4500L,
+                reason = "angelpay_sdk_approved",
+            )
+        }
+        viewModel.onAngelPaySdkResult(result)
     }
 
     // Auto-start payment when screen opens with amount
@@ -105,14 +127,26 @@ fun AngelPayPaymentScreen(
     // Launch AngelPay when intent is ready
     LaunchedEffect(state) {
         val currentState = state
-        if (currentState is AngelPayPaymentState.LaunchingAngelPay) {
-            try {
-                angelPayLauncher.launch(currentState.intent)
-                viewModel.onIntentLaunched()
-            } catch (e: Exception) {
-                Timber.e(e, "🔶 [AngelPay] Failed to launch AngelPay app")
-                viewModel.onAngelPayResult(Activity.RESULT_CANCELED, null)
+        when (currentState) {
+            is AngelPayPaymentState.LaunchingAngelPaySdk -> {
+                try {
+                    angelPaySdkLauncher.launch(currentState.request)
+                    viewModel.onIntentLaunched()
+                } catch (e: Exception) {
+                    Timber.e(e, "🔶 [AngelPay SDK] Failed to launch SDK payment activity")
+                    viewModel.onAngelPayResult(Activity.RESULT_CANCELED, null)
+                }
             }
+            is AngelPayPaymentState.LaunchingAngelPay -> {
+                try {
+                    angelPayLauncher.launch(currentState.intent)
+                    viewModel.onIntentLaunched()
+                } catch (e: Exception) {
+                    Timber.e(e, "🔶 [AngelPay] Failed to launch AngelPay app")
+                    viewModel.onAngelPayResult(Activity.RESULT_CANCELED, null)
+                }
+            }
+            else -> Unit
         }
     }
 
@@ -155,6 +189,7 @@ fun AngelPayPaymentScreen(
                 AngelPaySuccessContent(
                     state = successState,
                     showReceiptScreen = true,
+                    showPrintButton = viewModel.canPrintReceipt,
                     onPrintReceipt = { viewModel.printReceipt(successState.receipt) },
                     onSendReceiptEmail = viewModel::sendReceiptByEmail,
                     onSendReceiptWhatsApp = viewModel::sendReceiptByWhatsApp,
@@ -163,6 +198,7 @@ fun AngelPayPaymentScreen(
                         viewModel.resetPayment()
                         onNavigateHome()
                     },
+                    onViewTransactions = onNavigateToTransactions,
                     onStartNewPayment = {
                         viewModel.resetPayment()
                         showSuccessContent = false
@@ -181,7 +217,8 @@ fun AngelPayPaymentScreen(
         is AngelPayPaymentState.CollectingTip -> "Propina"
         is AngelPayPaymentState.SelectingMerchant -> "Metodo de Pago"
         is AngelPayPaymentState.WaitingForResult,
-        is AngelPayPaymentState.LaunchingAngelPay -> "Procesando"
+        is AngelPayPaymentState.LaunchingAngelPay,
+        is AngelPayPaymentState.LaunchingAngelPaySdk -> "Procesando"
         is AngelPayPaymentState.RecordingPayment,
         is AngelPayPaymentState.ProcessingCash -> "Registrando"
         is AngelPayPaymentState.Error -> "Error"
@@ -324,6 +361,9 @@ fun AngelPayPaymentScreen(
 
                 is AngelPayPaymentState.LaunchingAngelPay -> {
                     LoadingContent(message = "Abriendo AngelPay...")
+                }
+                is AngelPayPaymentState.LaunchingAngelPaySdk -> {
+                    LoadingContent(message = "Abriendo AngelPay SDK...")
                 }
 
                 is AngelPayPaymentState.WaitingForResult -> {

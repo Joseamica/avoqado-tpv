@@ -210,7 +210,7 @@ fun SerializedSaleScreen(
                                                 .replace("\n", "")
                                                 .replace("\r", "")
                                                 .replace("\t", "")
-                                                .filter { it.code >= 32 } // Remove control chars
+                                                .filter { it.isLetterOrDigit() }
                                             Timber.d("📦 [Screen] Detected scanner input with Enter - serial: '$serial' (len=${serial.length})")
                                             if (serial.isNotBlank()) {
                                                 Timber.d("📦 [Screen] Calling viewModel.onBarcodeScanned('$serial')")
@@ -221,7 +221,7 @@ fun SerializedSaleScreen(
                                                 scannerInput = ""
                                             }
                                         } else {
-                                            scannerInput = newValue
+                                            scannerInput = newValue.filter { it.isLetterOrDigit() }
                                         }
                                     } catch (e: Exception) {
                                         Timber.e(e, "📦 [Screen] ERROR in onValueChange")

@@ -87,4 +87,20 @@ data class RefundRequest(
 
     @SerializedName("currency")
     val currency: String = "MXN",
+
+    /**
+     * Optional explicit tip portion of the refund, in cents.
+     *
+     * Semantics (backend side, NOT Blumon SDK):
+     *   - `null` → backend default: split proportional to original sale/tip ratio.
+     *   - `0`    → refund categorized 100% as sale (staff tip ledger untouched).
+     *   - `= amount` → refund categorized as tip-only.
+     *
+     * **IMPORTANT:** This does NOT change what Blumon returns to the cardholder.
+     * Blumon always refunds the FULL requested `amount` on the card. This field
+     * only controls how we book the refund internally across Payment.amount /
+     * Payment.tipAmount and Shift.totalSales / Shift.totalTips.
+     */
+    @SerializedName("tipRefundCents")
+    val tipRefundCents: Int? = null,
 )

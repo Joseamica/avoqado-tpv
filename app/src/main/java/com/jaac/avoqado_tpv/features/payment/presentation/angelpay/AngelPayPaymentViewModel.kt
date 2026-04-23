@@ -1,8 +1,12 @@
 package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 
 import android.content.Intent
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.angelpay.angelpaysdk.models.PaymentRequest
+import com.angelpay.angelpaysdk.models.PaymentResult
+import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
@@ -10,9 +14,11 @@ import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthReposito
 import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
 import com.jaac.avoqado_tpv.features.payment.data.dto.SendReceiptRequest
 import com.jaac.avoqado_tpv.features.payment.data.dto.SendWhatsAppReceiptRequest
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCredentials
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayIntentBuilder
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResult
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentFlowGate
 import com.jaac.avoqado_tpv.features.payment.domain.PrePaymentNextStep
@@ -27,11 +33,11 @@ import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepositor
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -53,12 +59,14 @@ import javax.inject.Inject
  */
 @HiltViewModel
 class AngelPayPaymentViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val recordPaymentUseCase: RecordPaymentUseCase,
     private val shiftRepository: ShiftRepository,
     private val authRepository: AuthRepository,
     private val merchantRepository: MerchantRepository,
     private val secureStorage: SecureStorage,
     private val intentBuilder: AngelPayIntentBuilder,
+    private val sdkGateway: AngelPaySdkGateway,
     private val tpvSettingsRepository: TpvSettingsRepository,
     private val printerManager: PrinterManager,
     private val paymentApiService: PaymentApiService,
@@ -79,6 +87,7 @@ class AngelPayPaymentViewModel @Inject constructor(
     // TpvSettings for tip suggestions / default tip percentage
     val tipSuggestions: List<Int> get() = tpvSettingsRepository.getCurrentSettings().tipSuggestions
     val defaultTipPercentage: Int? get() = tpvSettingsRepository.getCurrentSettings().defaultTipPercentage
+    val canPrintReceipt: Boolean get() = printerManager.isPrinterAvailable()
 
     // Cached payment context
     private var pendingAmount: BigDecimal = BigDecimal.ZERO
@@ -111,6 +120,16 @@ class AngelPayPaymentViewModel @Inject constructor(
         currentPaymentAttemptId = generated
         Timber.i("🛡️ [AngelPay Idempotency] Generated new paymentAttemptId=$generated")
         return generated
+    }
+
+    private fun isSdkFlowEnabled(): Boolean {
+        val settings = tpvSettingsRepository.getCurrentSettings()
+        return BuildConfig.ANGELPAY_SDK_ENABLED && settings.angelPaySdkEnabled
+    }
+
+    private fun isAppToAppFallbackEnabled(): Boolean {
+        val settings = tpvSettingsRepository.getCurrentSettings()
+        return BuildConfig.ANGELPAY_SDK_FALLBACK_ENABLED && settings.angelPaySdkFallbackEnabled
     }
 
     init {
@@ -294,7 +313,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         Timber.d("🔶 [AngelPay] Merchant selected: ${merchant.displayName}")
     }
 
-    // ── Card Payment (AngelPay Intent) ───────────────────────────────
+    // ── Card Payment (AngelPay SDK + App-to-App Fallback) ───────────
 
     fun startCardPayment() {
         viewModelScope.launch {
@@ -304,24 +323,145 @@ class AngelPayPaymentViewModel @Inject constructor(
                 return@launch
             }
 
-            val staffName = secureStorage.getStaffName()
-            val intent = intentBuilder.buildSaleIntent(
-                amount = pendingAmount,
+            if (isSdkFlowEnabled()) {
+                startSdkCardPayment(credentials)
+            } else {
+                startAppToAppCardPayment(credentials)
+            }
+        }
+    }
+
+    private suspend fun startSdkCardPayment(credentials: AngelPayCredentials) {
+        val sdkEnv = if (BuildConfig.BLUMON_ENV == "PROD") "PROD" else "QA"
+        val initResult = sdkGateway.ensureInitialized(appContext, sdkEnv)
+        if (initResult.isFailure || !sdkGateway.isInitialized()) {
+            val initError = initResult.exceptionOrNull()
+            Timber.e(initError, "❌ [AngelPay SDK] Not initialized (env=$sdkEnv)")
+            if (isAppToAppFallbackEnabled()) {
+                Timber.w("↩️ [AngelPay] Falling back to app-to-app because SDK is not initialized")
+                startAppToAppCardPayment(credentials)
+                return
+            }
+            _state.value = AngelPayPaymentState.Error(
+                message = initError?.message ?: "AngelPay SDK no está inicializado",
+                canRetry = true,
+            )
+            return
+        }
+
+        val staffName = secureStorage.getStaffName()
+        val paymentAttemptId = ensurePaymentAttemptId()
+
+        val authResult = sdkGateway.ensureAuthenticated(credentials)
+        if (authResult.isFailure) {
+            val error = authResult.exceptionOrNull()
+            Timber.e(error, "❌ [AngelPay SDK] Authentication failed")
+            if (isAppToAppFallbackEnabled()) {
+                Timber.w("↩️ [AngelPay] Falling back to app-to-app after SDK auth failure")
+                startAppToAppCardPayment(credentials)
+                return
+            }
+            _state.value = AngelPayPaymentState.Error(
+                message = error?.message ?: "No se pudo autenticar AngelPay SDK",
+                canRetry = true,
+            )
+            return
+        }
+
+        val primaryRequest = sdkGateway.buildPaymentRequest(
+            subtotal = pendingAmount,
+            tip = pendingTip,
+            waiter = staffName,
+            reference = paymentAttemptId,
+        )
+
+        val validation = sdkGateway.validatePaymentIntent(
+            context = appContext,
+            request = primaryRequest,
+        )
+
+        if (validation.isSuccess) {
+            launchSdkRequest(primaryRequest, usedQaTipFallback = false)
+            return
+        }
+
+        val validationError = validation.exceptionOrNull()
+        val canUseQaTipFallback = BuildConfig.BLUMON_ENV != "PROD" &&
+                pendingTip > BigDecimal.ZERO &&
+                validationError != null &&
+                sdkGateway.isTipUnsupportedError(validationError)
+
+        if (canUseQaTipFallback) {
+            Timber.w(
+                "⚠️ [AngelPay SDK] Tip not supported in QA, applying fallback (subtotal=total, tip=0) | error=${validationError?.message}"
+            )
+            val fallbackRequest = sdkGateway.buildQaTipFallbackRequest(
+                subtotal = pendingAmount,
                 tip = pendingTip,
-                credentials = credentials,
                 waiter = staffName,
+                reference = paymentAttemptId,
             )
 
-            _state.value = AngelPayPaymentState.LaunchingAngelPay(
-                intent = intent,
-                amount = pendingAmount.toPlainString(),
-                tip = pendingTip.toPlainString(),
-                orderId = pendingOrderId,
-                orderNumber = pendingOrderNumber,
+            val fallbackValidation = sdkGateway.validatePaymentIntent(
+                context = appContext,
+                request = fallbackRequest,
             )
-            val totalAmount = pendingAmount.add(pendingTip)
-            Timber.i("🔶 [AngelPay] Intent built for card payment | subtotal=$pendingAmount, tip=$pendingTip, total=$totalAmount")
+
+            if (fallbackValidation.isSuccess) {
+                launchSdkRequest(fallbackRequest, usedQaTipFallback = true)
+                return
+            }
         }
+
+        Timber.e(validationError, "❌ [AngelPay SDK] createPaymentIntent validation failed")
+        if (isAppToAppFallbackEnabled()) {
+            Timber.w("↩️ [AngelPay] Falling back to app-to-app after SDK validation failure")
+            startAppToAppCardPayment(credentials)
+            return
+        }
+
+        _state.value = AngelPayPaymentState.Error(
+            message = validationError?.message ?: "No se pudo iniciar el cobro con AngelPay SDK",
+            canRetry = true,
+        )
+    }
+
+    private fun launchSdkRequest(
+        request: PaymentRequest,
+        usedQaTipFallback: Boolean,
+    ) {
+        _state.value = AngelPayPaymentState.LaunchingAngelPaySdk(
+            request = request,
+            amount = pendingAmount.toPlainString(),
+            tip = pendingTip.toPlainString(),
+            orderId = pendingOrderId,
+            orderNumber = pendingOrderNumber,
+            usedQaTipFallback = usedQaTipFallback,
+        )
+        val totalAmount = pendingAmount.add(pendingTip)
+        Timber.i(
+            "🔶 [AngelPay SDK] Payment request ready | subtotal=$pendingAmount, tip=$pendingTip, total=$totalAmount, qaTipFallback=$usedQaTipFallback"
+        )
+    }
+
+    private fun startAppToAppCardPayment(credentials: AngelPayCredentials) {
+        val staffName = secureStorage.getStaffName()
+        val intent = intentBuilder.buildSaleIntent(
+            amount = pendingAmount,
+            tip = pendingTip,
+            credentials = credentials,
+            waiter = staffName,
+        )
+
+        _state.value = AngelPayPaymentState.LaunchingAngelPay(
+            intent = intent,
+            amount = pendingAmount.toPlainString(),
+            tip = pendingTip.toPlainString(),
+            orderId = pendingOrderId,
+            orderNumber = pendingOrderNumber,
+        )
+        val totalAmount = pendingAmount.add(pendingTip)
+        Timber.i("🔶 [AngelPay] App-to-app intent built | subtotal=$pendingAmount, tip=$pendingTip, total=$totalAmount")
     }
 
     // ── Cash Payment ─────────────────────────────────────────────────
@@ -393,7 +533,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         }
     }
 
-    // ── AngelPay Intent Result ───────────────────────────────────────
+    // ── AngelPay Launchers Result ────────────────────────────────────
 
     /**
      * Called by Screen after launching the AngelPay intent.
@@ -423,6 +563,27 @@ class AngelPayPaymentViewModel @Inject constructor(
                 is AngelPayResult.Cancelled -> {
                     _state.value = AngelPayPaymentState.Cancelled
                 }
+            }
+        }
+    }
+
+    fun onAngelPaySdkResult(result: PaymentResult) {
+        viewModelScope.launch {
+            Timber.i("🔶 [AngelPay SDK] Result received | approved=${result.approved}, status=${result.status}")
+            if (result.approved) {
+                recordCardPayment(result)
+            } else {
+                _state.value = AngelPayPaymentState.Error(
+                    message = buildString {
+                        append(result.message ?: "Pago rechazado")
+                        result.callResult?.let { call ->
+                            if (!call.code.isNullOrBlank()) {
+                                append("\n\nSDK ${call.code}: ${call.message ?: "Sin detalle"}")
+                            }
+                        }
+                    },
+                    canRetry = true,
+                )
             }
         }
     }
@@ -495,6 +656,77 @@ class AngelPayPaymentViewModel @Inject constructor(
                 // AngelPay already processed — show success
                 _state.value = successState
                 Timber.w("🔶 [AngelPay] Card payment NOT recorded to backend")
+            },
+        )
+    }
+
+    private suspend fun recordCardPayment(result: PaymentResult) {
+        _state.value = AngelPayPaymentState.RecordingPayment()
+
+        val venueId = cachedVenueId ?: run {
+            _state.value = AngelPayPaymentState.Error("Error: No hay venue activo")
+            return
+        }
+        val staffId = cachedStaffId ?: run {
+            _state.value = AngelPayPaymentState.Error("Error: No hay staff activo")
+            return
+        }
+
+        val detectedBrand = result.cardBin?.let { CardBrand.fromBin(it) } ?: CardBrand.UNKNOWN
+        val cardDetails = CardDetails(
+            maskedPan = "",
+            cardBrand = detectedBrand,
+            entryMode = CardEntryMode.OTHER,
+        )
+
+        val merchantAccountId = _currentMerchant.value?.merchantAccountId
+        Timber.d("🔶 [AngelPay SDK] Recording card payment | merchantAccountId=$merchantAccountId")
+
+        val paymentContext = PaymentContext.AngelPayPayment(
+            venueId = venueId,
+            staffId = staffId,
+            shiftId = cachedShiftId,
+            amount = pendingAmount,
+            tip = pendingTip,
+            rating = pendingRating,
+            merchantAccountId = merchantAccountId,
+            deviceSerialNumber = TerminalConfig.serialNumber,
+            idempotencyKey = ensurePaymentAttemptId(),
+            cardDetails = cardDetails,
+            authorizationCode = result.authCode ?: "",
+            referenceNumber = result.reference ?: "",
+            orderId = pendingOrderId,
+            orderNumber = pendingOrderNumber,
+        )
+
+        val recordResult = withContext(Dispatchers.IO) {
+            recordPaymentUseCase(
+                context = paymentContext,
+                cardDetails = cardDetails,
+                authorizationNumber = result.authCode ?: "",
+                referenceNumber = result.reference ?: "",
+            )
+        }
+
+        val successState = AngelPayPaymentState.Success(
+            authCode = result.authCode ?: "",
+            amount = pendingAmount.toPlainString(),
+            tipAmount = if (pendingTip > BigDecimal.ZERO) pendingTip.toPlainString() else null,
+            referenceNumber = result.reference,
+            orderId = pendingOrderId,
+            orderNumber = pendingOrderNumber,
+            isCash = false,
+        )
+
+        recordResult.fold(
+            onSuccess = { receipt ->
+                Timber.i("🔶 [AngelPay SDK] Card payment recorded | receipt=${receipt.receiptUrl}")
+                _state.value = successState.copy(receipt = receipt)
+            },
+            onFailure = { error ->
+                Timber.e(error, "🔶 [AngelPay SDK] Card payment failed to record to backend")
+                _state.value = successState
+                Timber.w("🔶 [AngelPay SDK] Card payment NOT recorded to backend")
             },
         )
     }
@@ -635,6 +867,11 @@ class AngelPayPaymentViewModel @Inject constructor(
         viewModelScope.launch {
             if (receipt == null) {
                 Timber.w("🔶 [AngelPay] No receipt to print")
+                return@launch
+            }
+            if (!canPrintReceipt) {
+                Timber.i("🔶 [AngelPay] Print skipped: printer not available on this terminal")
+                _sendReceiptMessage.value = "Esta terminal no tiene impresora"
                 return@launch
             }
             withContext(Dispatchers.IO) {

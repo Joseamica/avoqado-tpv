@@ -1160,6 +1160,8 @@ fun AppNavigation(
             val originalOperationNumber = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("blumonOperationNumber")
             // 🏢 CRITICAL: Payment's venueId for refund API call (NOT auth context's venue!)
             val refundVenueId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("paymentVenueId")
+            // 💸 Explicit tip-split override from RefundConfirmationScreen (null = backend default)
+            val refundTipCents = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("tipRefundCents")
 
             // 💳 PAY-LATER CONTEXT PARAMS (from OrderListScreen/OrderDetailsBottomSheet)
             val wasPayLaterOrder = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("wasPayLaterOrder") ?: false
@@ -1217,6 +1219,8 @@ fun AppNavigation(
                 originalOperationNumber = originalOperationNumber,
                 // 🏢 CRITICAL: Payment's venueId for refund API call (NOT auth context's venue!)
                 refundVenueId = refundVenueId,
+                // 💸 Tip-split override propagated from RefundConfirmationScreen
+                refundTipCents = refundTipCents,
                 // 💳 PAY-LATER CONTEXT PARAMS
                 wasPayLaterOrder = wasPayLaterOrder,
                 payLaterOrdersCount = payLaterOrdersCount,
@@ -1528,10 +1532,10 @@ fun AppNavigation(
                 onNavigateBack = {
                     navController.safePopBackStack()
                 },
-                onConfirmRefund = { refundAmount, refundReason ->
+                onConfirmRefund = { refundAmount, refundReason, tipRefundCents ->
                     // 💸 Navigate to PaymentScreen with refund context
                     // Store refund data for PaymentScreen to process
-                    Timber.i("💸 [Refund] Confirming refund: $refundAmount for payment: $paymentId, reason: $refundReason")
+                    Timber.i("💸 [Refund] Confirming refund: $refundAmount for payment: $paymentId, reason: $refundReason, tipRefundCents: $tipRefundCents")
 
                     navController.currentBackStackEntry?.savedStateHandle?.apply {
                         // Refund mode flag
@@ -1544,6 +1548,8 @@ fun AppNavigation(
                         set("originalOrderId", orderId)
                         set("originalTotalAmount", originalAmount.toString())
                         set("originalTipAmount", originalTipAmount.toString())
+                        // Explicit tip-split override (null = backend default proportional)
+                        set("tipRefundCents", tipRefundCents)
 
                         // Merchant data (CRITICAL for multi-merchant refunds)
                         set("merchantAccountId", merchantAccountId)
@@ -1888,7 +1894,7 @@ fun AppNavigation(
             )
         }
 
-        // 🔶 ANGELPAY Payment Screen — app-to-app Intent on Nexgo N86 terminals
+        // 🔶 ANGELPAY Payment Screen — SDK embebido con fallback app-to-app en Nexgo
         // COMPLETELY ISOLATED from Blumon PaymentScreen (separate ViewModel, state, route)
         composable(NavRoute.AngelPayPayment.route) {
             val initialAmount = navController.previousBackStackEntry?.savedStateHandle?.get<String>("initialAmount")
@@ -1914,9 +1920,27 @@ fun AppNavigation(
                         }
                     }
                 },
+                onNavigateToTransactions = {
+                    navController.navigate(
+                        NavRoute.PaymentTransactions.createRoute("ANGELPAY")
+                    )
+                },
                 onNavigateToShifts = {
                     navController.navigate(NavRoute.Shifts.route)
                 },
+            )
+        }
+
+        composable(
+            route = NavRoute.PaymentTransactions.route,
+            arguments = listOf(
+                navArgument("processorType") { type = NavType.StringType }
+            )
+        ) {
+            com.jaac.avoqado_tpv.features.payment.presentation.transactions.PaymentTransactionsScreen(
+                onNavigateBack = {
+                    navController.safePopBackStack()
+                }
             )
         }
     }
@@ -2274,17 +2298,17 @@ private fun formatAmountFromCents(amountCents: Long): String {
 }
 
 /**
- * Check if this build uses an app-to-app payment processor (AngelPay) instead of embedded SDK (Blumon).
+ * Check if this build uses the Nexgo payment route (AngelPay flow) instead of Blumon route.
  * Determined by BuildConfig.ENABLE_PAX_SDK which is set per Gradle flavor:
  * - sandbox/production → true (Blumon SDK)
- * - nexgo → false (AngelPay app-to-app)
+ * - nexgo → false (AngelPay flow route)
  * - tutorialEmu → false (no payment processing)
  */
 private fun isAppToAppPayment(): Boolean = !com.jaac.avoqado_tpv.BuildConfig.ENABLE_PAX_SDK
 
 /**
  * Get the appropriate payment route based on build flavor.
- * - ENABLE_PAX_SDK=false (nexgo) → AngelPayPayment (app-to-app Intent)
+ * - ENABLE_PAX_SDK=false (nexgo) → AngelPayPayment (SDK/fallback flow)
  * - ENABLE_PAX_SDK=true (sandbox/production) → Payment (Blumon SDK)
  */
 private fun getPaymentRoute(): String {

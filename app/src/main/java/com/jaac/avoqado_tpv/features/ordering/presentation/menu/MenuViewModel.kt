@@ -28,6 +28,8 @@ import com.jaac.avoqado_tpv.features.ordering.domain.DiscountRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.DiscountType
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderDiscount
 import com.jaac.avoqado_tpv.features.ordering.domain.CouponCode
+import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
+import com.jaac.avoqado_tpv.features.payment.data.dto.OrderPaymentRequest
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -86,7 +88,8 @@ class MenuViewModel @Inject constructor(
     private val connectionEventManager: ConnectionEventManager,
     private val productDao: ProductDao,  // ⚡ Cache-first product loading
     private val productCategoryDao: ProductCategoryDao,  // ⚡ Cache-first category loading
-    private val printerManager: PrinterManager  // 🖨️ Kitchen ticket printing
+    private val printerManager: PrinterManager,  // 🖨️ Kitchen ticket printing
+    private val paymentApiService: PaymentApiService  // 🎁 Cortesía: bypass gateway for $0 orders
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<MenuState>(MenuState.Loading)
@@ -684,7 +687,12 @@ class MenuViewModel @Inject constructor(
                 prepareForPayment().fold(
                     onSuccess = { order ->
                         _isPreparingPayment.value = false
-                        onReady(order)
+                        if (order.total.compareTo(BigDecimal.ZERO) == 0) {
+                            // Gateway rejects $0; close directly as CASH. See processComplimentaryOrder.
+                            processComplimentaryOrder(order)
+                        } else {
+                            onReady(order)
+                        }
                     },
                     onFailure = { error ->
                         _isPreparingPayment.value = false
@@ -695,6 +703,86 @@ class MenuViewModel @Inject constructor(
                 _isPreparingPayment.value = false
                 onError(e.message ?: "Error preparando pago")
             }
+        }
+    }
+
+    /**
+     * Close a fully comped order ($0 total) as a CASH payment without touching the gateway.
+     * Bypasses Blumon/AngelPay SDKs (which reject $0). POSTs to the existing
+     * /tpv/venues/{venueId}/orders/{orderId} endpoint which already accepts nonnegative amounts.
+     */
+    private suspend fun processComplimentaryOrder(order: Order) {
+        val venueId = deviceInfoManager.getVenueId()
+        if (venueId == null) {
+            Timber.e("❌ [Cortesía] venueId is null")
+            _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                message = "Venue no configurado",
+                isError = true
+            ))
+            return
+        }
+        val staffId = secureStorage.getStaffId()
+        if (staffId == null) {
+            Timber.e("❌ [Cortesía] staffId is null")
+            _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                message = "Staff no configurado",
+                isError = true
+            ))
+            return
+        }
+
+        Timber.i("🎁 [Cortesía] Closing order | orderId=${order.id} | total=${order.total}")
+
+        try {
+            val request = OrderPaymentRequest(
+                venueId = venueId,
+                amount = 0,
+                tip = 0,
+                status = "COMPLETED",
+                method = "CASH",
+                source = "AVOQADO_TPV",
+                splitType = "FULLPAYMENT",
+                staffId = staffId,
+                paidProductsId = emptyList(),
+                authorizationNumber = null,
+                referenceNumber = null,
+                maskedPan = null,
+                cardBrand = null,
+                entryMode = null,
+                currency = "MXN",
+                isInternational = false,
+                merchantAccountId = null,
+                idempotencyKey = UUID.randomUUID().toString(),
+            )
+
+            val response = paymentApiService.recordOrderPayment(
+                venueId = venueId,
+                orderId = order.id,
+                request = request,
+            )
+
+            if (response.isSuccessful) {
+                Timber.i("✅ [Cortesía] Closed | orderId=${order.id}")
+                _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                    message = "Cuenta cerrada como cortesía",
+                    isError = false
+                ))
+                _currentOrderId.value = null
+                _state.value = MenuState.Loading
+                _uiEvents.emit(MenuUiEvent.NavigateBack)
+            } else {
+                Timber.e("❌ [Cortesía] Backend rejected | status=${response.code()}")
+                _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                    message = "Error cerrando cortesía (${response.code()})",
+                    isError = true
+                ))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Cortesía] Exception")
+            _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                message = "Error: ${e.message ?: "desconocido"}",
+                isError = true
+            ))
         }
     }
 

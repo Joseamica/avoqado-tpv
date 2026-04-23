@@ -114,6 +114,13 @@ data class TpvSettingsDto(
     @SerializedName("showCryptoOption")
     val showCryptoOption: Boolean?,
 
+    // AngelPay SDK rollout flags
+    @SerializedName("angelPaySdkEnabled")
+    val angelPaySdkEnabled: Boolean? = null,
+
+    @SerializedName("angelPaySdkFallbackEnabled")
+    val angelPaySdkFallbackEnabled: Boolean? = null,
+
     // Phase 0: Cellular failover rollout flags
     @SerializedName("cellularFailoverMode")
     val cellularFailoverMode: String? = null,
@@ -166,6 +173,8 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     showMessages = showMessages ?: true,
     showTrainings = showTrainings ?: true,
     showCryptoOption = showCryptoOption ?: false,
+    angelPaySdkEnabled = angelPaySdkEnabled ?: true,
+    angelPaySdkFallbackEnabled = angelPaySdkFallbackEnabled ?: true,
     cellularFailoverMode = CellularFailoverMode.fromRaw(cellularFailoverMode),
     cellularFailoverBadReadingsThreshold = cellularFailoverBadReadingsThreshold ?: 3,
     cellularFailoverCooldownSeconds = cellularFailoverCooldownSeconds ?: 60,
@@ -202,6 +211,8 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     showMessages = showMessages,
     showTrainings = showTrainings,
     showCryptoOption = showCryptoOption,
+    angelPaySdkEnabled = angelPaySdkEnabled,
+    angelPaySdkFallbackEnabled = angelPaySdkFallbackEnabled,
     cellularFailoverMode = cellularFailoverMode.name,
     cellularFailoverBadReadingsThreshold = cellularFailoverBadReadingsThreshold,
     cellularFailoverCooldownSeconds = cellularFailoverCooldownSeconds,

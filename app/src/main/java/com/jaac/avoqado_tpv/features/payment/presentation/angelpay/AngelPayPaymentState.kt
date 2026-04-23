@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 
 import android.content.Intent
+import com.angelpay.angelpaysdk.models.PaymentRequest
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 
 /**
@@ -41,7 +42,17 @@ sealed class AngelPayPaymentState {
         val rating: Int?,
     ) : AngelPayPaymentState()
 
-    /** Intent built, ready for screen to launch ActivityResultLauncher. */
+    /** SDK request built, ready for ActivityResult launcher using AngelPayPaymentContract. */
+    data class LaunchingAngelPaySdk(
+        val request: PaymentRequest,
+        val amount: String,
+        val tip: String,
+        val orderId: String? = null,
+        val orderNumber: String? = null,
+        val usedQaTipFallback: Boolean = false,
+    ) : AngelPayPaymentState()
+
+    /** App-to-app intent fallback, ready for StartActivityForResult launcher. */
     data class LaunchingAngelPay(
         val intent: Intent,
         val amount: String,

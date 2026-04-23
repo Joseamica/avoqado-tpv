@@ -127,6 +127,7 @@ fun PaymentScreen(
     refundBlumonSerialNumber: String? = null,  // 💸 Original payment's terminal serial
     originalOperationNumber: Int? = null,  // 🎫 CRITICAL: Blumon operation number for CancelIcc (from webhook)
     refundVenueId: String? = null,  // 🏢 CRITICAL: Payment's venueId for refund API call (NOT auth context's venue!)
+    refundTipCents: Int? = null,  // 💸 Optional explicit tip portion override (null = backend default proportional, 0 = sale-only)
     // 💳 PAY-LATER CONTEXT PARAMS
     wasPayLaterOrder: Boolean = false,  // 💳 True = order had customers (for contextual button)
     payLaterOrdersCount: Int = 0,  // 💳 Remaining pay-later orders count
@@ -552,7 +553,9 @@ fun PaymentScreen(
                                     (originalTotalAmount?.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO),
                                 // 🎫 CRITICAL: Blumon operation number for CancelIcc (from webhook)
                                 // If null/0, validation will fail with clear error message
-                                originalOperationNumber = originalOperationNumber ?: 0
+                                originalOperationNumber = originalOperationNumber ?: 0,
+                                // Optional tip-split override propagated from RefundConfirmationScreen.
+                                tipRefundCents = refundTipCents,
                             )
 
                             // Start refund flow
@@ -734,6 +737,7 @@ fun PaymentScreen(
                                 tableId = tableId,
                                 remainingBalance = currentState.remainingBalance,
                                 showReceiptOptions = viewModel.showReceiptScreen,
+                                showPrintButton = viewModel.canPrintReceipt,
                                 isRefund = currentState.isRefund,  // 💸 Show refund-specific UI
                                 wasPayLaterOrder = wasPayLaterOrder,  // 💳 Pay-later context
                                 payLaterOrdersCount = payLaterOrdersCount,  // 💳 Remaining count
@@ -1359,6 +1363,7 @@ private fun PaymentSuccessContent(
     tableId: String? = null,  // 🆕 Table ID (for clearing table post-payment)
     remainingBalance: java.math.BigDecimal? = null,  // ⭐ NEW: Amount left to pay (for split payments)
     showReceiptOptions: Boolean = true,  // ⚙️ TPV Settings: Show/hide QR code & print button
+    showPrintButton: Boolean = true,  // 🖨️ Hide on terminals without built-in printer (e.g., N62)
     isRefund: Boolean = false,  // 💸 True = show refund-specific UI text
     wasPayLaterOrder: Boolean = false,  // 💳 True = order had customers (pay-later)
     payLaterOrdersCount: Int = 0,  // 💳 Remaining pay-later orders count
@@ -1819,7 +1824,7 @@ private fun PaymentSuccessContent(
 
         // ⚙️ TPV Settings: Only show receipt options if showReceiptOptions is enabled
         if (showReceiptOptions) {
-            // Segmented button group for receipt options (3-way: Print | Email | WhatsApp)
+            // Segmented button group for receipt options (Print optional by device)
             val buttonShape = RoundedCornerShape(12.dp)
             val dividerColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
 
@@ -1835,49 +1840,51 @@ private fun PaymentSuccessContent(
                         shape = buttonShape
                     )
             ) {
-                // 🖨️ Print receipt button (left)
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .background(MaterialTheme.colorScheme.surface)
-                        .clickable(enabled = !isPrinting) { onPrintReceipt() },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
+                if (showPrintButton) {
+                    // 🖨️ Print receipt button (left)
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.surface)
+                            .clickable(enabled = !isPrinting) { onPrintReceipt() },
+                        contentAlignment = Alignment.Center
                     ) {
-                        if (isPrinting) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            if (isPrinting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Print,
+                                    contentDescription = "Imprimir",
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (isPrinting) "..." else "Imprimir",
+                                style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.Print,
-                                contentDescription = "Imprimir",
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(18.dp)
-                            )
                         }
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = if (isPrinting) "..." else "Imprimir",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
                     }
-                }
 
-                // Divider
-                Box(
-                    modifier = Modifier
-                        .width(1.dp)
-                        .fillMaxHeight()
-                        .background(dividerColor)
-                )
+                    // Divider
+                    Box(
+                        modifier = Modifier
+                            .width(1.dp)
+                            .fillMaxHeight()
+                            .background(dividerColor)
+                    )
+                }
 
                 // 📧 Email button (center)
                 Box(

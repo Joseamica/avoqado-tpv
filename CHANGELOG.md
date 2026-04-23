@@ -7,6 +7,28 @@
 
 ## [Unreleased]
 
+### **Added**
+
+### **Changed**
+
+### **Fixed**
+
+---
+
+## [1.11.1] - 2026-04-23
+
+### **Changed**
+
+- **Mis SIMs — ICCID siempre visible**: El número de SIM ahora se muestra completo en todas las tarjetas de `MisSimsScreen` (PENDING y HELD), sin necesidad de expandir. Eliminado el toggle "Ver ICCID completo / Ocultar" que antes ocultaba el número a solo 4 caracteres
+- **Alta/Venta SIM — filtro de caracteres inválidos**: El campo de escaneo de código SIM ahora filtra en tiempo real cualquier carácter que no sea alfanumérico (letras y números). Comas, espacios, guiones y otros símbolos son descartados al momento de escribir o escanear, tanto en Alta de Productos (`SerializedInventoryScreen`) como en Vender SIM (`SerializedSaleScreen`). El ViewModel ya rechazaba códigos menores a 20 caracteres; esta fix cierra el frente de la entrada sucia antes de que llegue a validación
+- **Buscar Cliente — comportamiento del teclado**: Eliminado auto-focus al abrir el modal de búsqueda de clientes. Agregar toque en cualquier área fuera del campo de texto cierra el teclado sin cerrar el modal
+
+### **Fixed**
+
+- **Dev build URL rota (`https://https://...`)**: Typo en `app/build.gradle.kts` duplicaba el prefijo `https://` en `API_BASE_URL_DEV` y `SOCKET_URL_DEV`, dejando la URL del ngrok malformada → Retrofit no podía parsearla y los requests nunca salían del dispositivo (ngrok no veía tráfico). Fix: quitar el `https://` extra de ambos campos. También se limpió el mismo typo en comentarios docstring de `ApiService.kt`, `PaymentApiService.kt`, `CustomerApiService.kt`, `DiscountApiService.kt`, `TableApiService.kt`, `FloorElementApiService.kt` y `OrderApiService.kt` (no afectaban runtime, sólo docs). Afecta sólo builds sandbox — production usa `api.avoqado.io` y no tenía el bug.
+
+- **Pago cripto: propina $0.00 en pantalla de éxito**: Al completar un pago con criptomoneda, la pantalla de éxito del TPV mostraba "Propina $0.00" y "Total pagado = subtotal" aunque el usuario sí hubiera dejado propina. El dashboard registraba el total correcto (subtotal + tip) porque el recorder va por otra vía. Root cause: `handleCryptoPaymentConfirmed` en `PaymentViewModel.kt` (sandbox + production) construía el `PaymentReceipt` con `tipAmount = BigDecimal.ZERO` hardcoded (comentario legacy: "Crypto payments don't have separate tip in B4Bit") y tomaba `amount` del webhook de B4Bit — el composable de éxito lee del receipt, no del state. Fix: el receipt ahora se construye con `currentState.subtotal` y `currentState.tipAmount`, respetando el contrato `PaymentReceipt` (`amount = subtotal SIN propina`, `tipAmount = propina`). Sincronizado entre variants sandbox y production.
+
 ---
 
 ## [1.11.0] - 2026-04-16

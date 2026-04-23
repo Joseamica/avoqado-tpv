@@ -434,7 +434,7 @@ private fun InventoryFormContent(
         // 📱 Physical scanner input field (compact for PAX A910S)
         OutlinedTextField(
             value = physicalScannerInput,
-            onValueChange = { physicalScannerInput = it },
+            onValueChange = { physicalScannerInput = it.filter { c -> c.isLetterOrDigit() } },
             shape = RoundedCornerShape(50),
             modifier = Modifier
                 .fillMaxWidth()

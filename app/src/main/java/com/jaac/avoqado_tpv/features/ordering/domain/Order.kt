@@ -76,13 +76,17 @@ data class Order(
 
     /**
      * Convenience property: Can process payment?
-     * Allow payments if has items, payment status is PENDING or PARTIAL, AND remainingBalance > 0
-     * ✅ FIX: Added remainingBalance check to prevent paying with amount 0 during sync
+     * Allow payments if has items, payment status is PENDING or PARTIAL, AND either:
+     *   - remainingBalance > 0 (normal pay), OR
+     *   - fully comped cortesía (total == 0 && discountAmount > 0) — closes via CASH $0
+     * The original remainingBalance guard prevents sync-race $0, but a legitimate
+     * 100% discount produces total=0 that MenuViewModel.processComplimentaryOrder handles.
      */
     val canProcessPayment: Boolean
         get() = items.isNotEmpty() &&
                 paymentStatus in listOf(PaymentStatus.PENDING, PaymentStatus.PARTIAL) &&
-                remainingBalance > BigDecimal.ZERO
+                (remainingBalance > BigDecimal.ZERO ||
+                    (total.compareTo(BigDecimal.ZERO) == 0 && discountAmount > BigDecimal.ZERO))
 
     /**
      * Convenience property: Has remaining balance to pay?

@@ -142,6 +142,9 @@ class SecureStorage @Inject constructor(
 
         // Crypto payment option (B4Bit integration)
         private const val KEY_TPV_SHOW_CRYPTO_OPTION = "tpv_show_crypto_option"
+        // AngelPay SDK rollout
+        private const val KEY_TPV_ANGELPAY_SDK_ENABLED = "tpv_angelpay_sdk_enabled"
+        private const val KEY_TPV_ANGELPAY_SDK_FALLBACK_ENABLED = "tpv_angelpay_sdk_fallback_enabled"
         // Phase 0: Cellular failover rollout controls
         private const val KEY_TPV_CELLULAR_FAILOVER_MODE = "tpv_cellular_failover_mode"
         private const val KEY_TPV_CELLULAR_FAILOVER_BAD_READINGS_THRESHOLD = "tpv_cellular_failover_bad_readings_threshold"
@@ -1150,6 +1153,9 @@ class SecureStorage @Inject constructor(
             putBoolean(KEY_TPV_SHOW_GOALS, settings.showGoals)
             // Crypto payment option
             putBoolean(KEY_TPV_SHOW_CRYPTO_OPTION, settings.showCryptoOption)
+            // AngelPay SDK rollout
+            putBoolean(KEY_TPV_ANGELPAY_SDK_ENABLED, settings.angelPaySdkEnabled)
+            putBoolean(KEY_TPV_ANGELPAY_SDK_FALLBACK_ENABLED, settings.angelPaySdkFallbackEnabled)
             // Phase 0: Cellular failover rollout controls
             putString(KEY_TPV_CELLULAR_FAILOVER_MODE, settings.cellularFailoverMode.name)
             putInt(KEY_TPV_CELLULAR_FAILOVER_BAD_READINGS_THRESHOLD, settings.cellularFailoverBadReadingsThreshold)
@@ -1211,6 +1217,9 @@ class SecureStorage @Inject constructor(
             showGoals = encryptedPrefs.getBoolean(KEY_TPV_SHOW_GOALS, true),
             // Crypto payment option (default: disabled)
             showCryptoOption = encryptedPrefs.getBoolean(KEY_TPV_SHOW_CRYPTO_OPTION, false),
+            // AngelPay SDK rollout flags (default: enabled)
+            angelPaySdkEnabled = encryptedPrefs.getBoolean(KEY_TPV_ANGELPAY_SDK_ENABLED, true),
+            angelPaySdkFallbackEnabled = encryptedPrefs.getBoolean(KEY_TPV_ANGELPAY_SDK_FALLBACK_ENABLED, true),
             // Phase 0: Cellular failover rollout controls (default: OFF)
             cellularFailoverMode = CellularFailoverMode.fromRaw(
                 encryptedPrefs.getString(KEY_TPV_CELLULAR_FAILOVER_MODE, null)
@@ -1264,6 +1273,9 @@ class SecureStorage @Inject constructor(
             remove(KEY_TPV_SHOW_GOALS)
             // Crypto payment option
             remove(KEY_TPV_SHOW_CRYPTO_OPTION)
+            // AngelPay SDK rollout flags
+            remove(KEY_TPV_ANGELPAY_SDK_ENABLED)
+            remove(KEY_TPV_ANGELPAY_SDK_FALLBACK_ENABLED)
             // Phase 0: Cellular failover rollout controls
             remove(KEY_TPV_CELLULAR_FAILOVER_MODE)
             remove(KEY_TPV_CELLULAR_FAILOVER_BAD_READINGS_THRESHOLD)

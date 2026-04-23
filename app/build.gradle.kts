@@ -16,8 +16,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv"
         minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
         targetSdk = 34
-        versionCode = 51
-        versionName = "1.11.0"
+        versionCode = 52
+        versionName = "1.11.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -30,11 +30,13 @@ android {
 
         // Environment variables (NEVER hardcode secrets in code)
         buildConfigField("String", "API_BASE_URL", "\"https://api.avoqado.io/api/v1/\"")
-        buildConfigField("String", "API_BASE_URL_DEV", "\"https://humane-immortal-pika.ngrok-free.app/api/v1/\"")
+        buildConfigField("String", "API_BASE_URL_DEV", "\"https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/\"")
         buildConfigField("String", "SOCKET_URL", "\"https://api.avoqado.io\"")
-        buildConfigField("String", "SOCKET_URL_DEV", "\"https://humane-immortal-pika.ngrok-free.app\"")
+        buildConfigField("String", "SOCKET_URL_DEV", "\"https://patchiest-noncommemorational-willia.ngrok-free.dev\"")
         buildConfigField("boolean", "ENABLE_PAX_SDK", "true")
         buildConfigField("boolean", "ENABLE_BLUMON_INIT", "true")
+        buildConfigField("boolean", "ANGELPAY_SDK_ENABLED", "false")
+        buildConfigField("boolean", "ANGELPAY_SDK_FALLBACK_ENABLED", "true")
 
         // ⚠️ REMOVED: Hardcoded terminal configuration (2025-11-05)
         // Serial numbers and merchant accounts now fetched dynamically from backend
@@ -121,6 +123,8 @@ android {
             // Emulator-only mode: disable native PAX/Blumon initialization.
             buildConfigField("boolean", "ENABLE_PAX_SDK", "false")
             buildConfigField("boolean", "ENABLE_BLUMON_INIT", "false")
+            buildConfigField("boolean", "ANGELPAY_SDK_ENABLED", "false")
+            buildConfigField("boolean", "ANGELPAY_SDK_FALLBACK_ENABLED", "true")
 
             // AngelPay QA credentials (non-sensitive test environment)
             buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"contacto@avoqado.io\"")
@@ -161,6 +165,8 @@ android {
             // No Blumon SDK on Nexgo — payments via AngelPay app-to-app Intent
             buildConfigField("boolean", "ENABLE_PAX_SDK", "false")
             buildConfigField("boolean", "ENABLE_BLUMON_INIT", "false")
+            buildConfigField("boolean", "ANGELPAY_SDK_ENABLED", "true")
+            buildConfigField("boolean", "ANGELPAY_SDK_FALLBACK_ENABLED", "false")
 
             // AngelPay QA credentials (non-sensitive test environment)
             buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"contacto@avoqado.io\"")
@@ -171,6 +177,7 @@ android {
             // Nexgo N86 is arm64-v8a (Android 9, API 28)
             ndk {
                 abiFilters.clear()
+                abiFilters.add("armeabi-v7a")
                 abiFilters.add("arm64-v8a")
             }
         }
@@ -233,6 +240,14 @@ android {
         jniLibs {
             useLegacyPackaging = true
         }
+        resources {
+            excludes += setOf(
+                "META-INF/versions/**",
+                "META-INF/NOTICE.md",
+                "META-INF/LICENSE.md",
+                "META-INF/*.kotlin_module"
+            )
+        }
     }
 
     testOptions {
@@ -269,6 +284,16 @@ android {
     }
 }
 
+// AngelPay ships a fat AAR with okhttp/okio classes included.
+// For nexgo variants, exclude Maven okhttp/okio artifacts to avoid duplicate classes.
+configurations.configureEach {
+    if (name.startsWith("nexgo")) {
+        exclude(group = "com.squareup.okhttp3", module = "okhttp")
+        exclude(group = "com.squareup.okio", module = "okio")
+        exclude(group = "com.squareup.okio", module = "okio-jvm")
+    }
+}
+
 dependencies {
     // BlumonPay SDK Modules (project dependencies - common to all flavors)
     implementation(project(":sdk"))  // PAX SDK (PosApi) + Neptune API
@@ -294,10 +319,16 @@ dependencies {
 
     // Common AAR (both flavors)
     implementation(files("libs/nativetouchevent-release.aar"))  // Native touch event library (moved from sdk module)
+    // AngelPay fat AAR:
+    // - compileOnly for all flavors (types available at compile time in main/)
+    // - packaged only in nexgo to avoid duplicate transitive classes in non-nexgo flavors
+    compileOnly(files("libs/angelpaySDK-v1.0.0-fat-release.aar"))
+    "nexgoImplementation"(files("libs/angelpaySDK-v1.0.0-fat-release.aar"))
 
     // AndroidX Core
     implementation(libs.androidx.core.ktx)
     implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.core:core-splashscreen:1.0.1")
     implementation("androidx.fragment:fragment-ktx:1.8.8")
     implementation(libs.androidx.appcompat)
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.0")
@@ -340,8 +371,22 @@ dependencies {
     // Networking (Retrofit + OkHttp)
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
     implementation("com.squareup.retrofit2:converter-gson:2.9.0")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    // OkHttp is flavor-scoped to avoid duplicate classes with AngelPay fat AAR on nexgo.
+    "sandboxImplementation"("com.squareup.okhttp3:okhttp:4.12.0")
+    "sandboxImplementation"("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    "productionImplementation"("com.squareup.okhttp3:okhttp:4.12.0")
+    "productionImplementation"("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    "tutorialEmuImplementation"("com.squareup.okhttp3:okhttp:4.12.0")
+    "tutorialEmuImplementation"("com.squareup.okhttp3:logging-interceptor:4.12.0")
+
+    // Nexgo gets OkHttp from AngelPay fat AAR. Keep logging-interceptor only, excluding bundled okhttp/okio.
+    "nexgoImplementation"("com.squareup.okhttp3:logging-interceptor:4.12.0") {
+        exclude(group = "com.squareup.okhttp3", module = "okhttp")
+        exclude(group = "com.squareup.okio", module = "okio-jvm")
+    }
+    // AngelPay SDK serializers are generated against kotlinx.serialization 1.8+ APIs.
+    // Keep Nexgo aligned to avoid AbstractMethodError in GeneratedSerializer.
+    "nexgoImplementation"("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
 
     // Socket.IO (Real-time communication)
     // Version 2.1.1 is latest stable compatible with Socket.IO Server 4.x
@@ -393,10 +438,10 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.2.1")
     implementation("androidx.media3:media3-ui:1.2.1")
 
-    // Room (para gestión de transacciones local)
-    implementation("androidx.room:room-runtime:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
-    ksp("androidx.room:room-compiler:2.6.1")
+    // Room (align with AngelPay SDK generated database API)
+    implementation("androidx.room:room-runtime:2.7.0")
+    implementation("androidx.room:room-ktx:2.7.0")
+    ksp("androidx.room:room-compiler:2.7.0")
 
     // Testing
     testImplementation(libs.junit)

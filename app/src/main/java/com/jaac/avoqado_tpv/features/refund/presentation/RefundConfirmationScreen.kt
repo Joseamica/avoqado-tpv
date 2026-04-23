@@ -75,7 +75,8 @@ fun RefundConfirmationScreen(
     onNavigateBack: () -> Unit,
     onConfirmRefund: (
         amount: BigDecimal,
-        reason: RefundReason
+        reason: RefundReason,
+        tipRefundCents: Int?,
     ) -> Unit,
 ) {
     // Calculate refundable amount
@@ -88,6 +89,10 @@ fun RefundConfirmationScreen(
     var isPartialRefund by remember { mutableStateOf(false) }
     var showError by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
+    // Default ON → backend default (proportional split between sale and tip).
+    // OFF → we send tipRefundCents=0 so the staff tip ledger stays intact.
+    // Only surfaced when the original payment has a tip.
+    var includeTip by remember { mutableStateOf(true) }
 
     val focusManager = LocalFocusManager.current
     val scrollState = rememberScrollState()
@@ -311,6 +316,55 @@ fun RefundConfirmationScreen(
             }
 
             // ═══════════════════════════════════════════════════════════════
+            // TIP INCLUDE TOGGLE — only when the original payment had a tip.
+            // Does NOT change what Blumon SDK returns to the cardholder;
+            // only affects internal sale/tip booking.
+            // ═══════════════════════════════════════════════════════════════
+            if (originalTipAmount > BigDecimal.ZERO) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium,
+                    tonalElevation = 1.dp,
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = includeTip,
+                            onCheckedChange = { includeTip = it },
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Incluir propina en el reembolso",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Medium,
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = if (includeTip) {
+                                    "Se divide proporcionalmente entre venta y propina del pago original."
+                                } else {
+                                    "Solo se reembolsa el producto; la propina del mesero queda intacta."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(
+                            text = currencyFormatter.format(originalTipAmount),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+
+            // ═══════════════════════════════════════════════════════════════
             // REFUND REASON
             // ═══════════════════════════════════════════════════════════════
             Surface(
@@ -401,7 +455,11 @@ fun RefundConfirmationScreen(
                         }
 
                         showError = false
-                        onConfirmRefund(refundAmount, selectedReason)
+                        // Tip-split override: null when original had no tip OR user
+                        // left checkbox ON (proportional default). Send 0 when the
+                        // user unchecks it so the refund books 100% against sale.
+                        val tipOverrideCents: Int? = if (originalTipAmount > BigDecimal.ZERO && !includeTip) 0 else null
+                        onConfirmRefund(refundAmount, selectedReason, tipOverrideCents)
                     },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
@@ -483,7 +541,7 @@ private fun RefundConfirmationScreenPreview() {
             merchantAccountId = "merchant-abc",
             blumonSerialNumber = "PAX123456",
             onNavigateBack = {},
-            onConfirmRefund = { _, _ -> }
+            onConfirmRefund = { _, _, _ -> }
         )
     }
 }
@@ -503,7 +561,7 @@ private fun RefundConfirmationScreenPartialPreview() {
             blumonSerialNumber = "PAX789012",
             refundedAmount = BigDecimal("50.00"),
             onNavigateBack = {},
-            onConfirmRefund = { _, _ -> }
+            onConfirmRefund = { _, _, _ -> }
         )
     }
 }

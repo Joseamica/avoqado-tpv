@@ -266,10 +266,19 @@ sealed class NavRoute(val route: String) {
     data object SerializedSale : NavRoute("serialized_sale")
 
     /**
-     * AngelPay Payment screen - Payment via AngelPay app-to-app Intent on Nexgo terminals
-     * Isolated from Blumon PaymentScreen — separate ViewModel and state machine
+     * AngelPay Payment screen - Payment via AngelPay SDK on Nexgo terminals
+     * with app-to-app fallback for rollout safety.
+     * Isolated from Blumon PaymentScreen — separate ViewModel and state machine.
      */
     data object AngelPayPayment : NavRoute("angelpay_payment")
+
+    /**
+     * Unified processor transactions screen.
+     * Supports post-operations (history/cancel/refund/tickets) via processor adapters.
+     */
+    data object PaymentTransactions : NavRoute("payment_transactions/{processorType}") {
+        fun createRoute(processorType: String) = "payment_transactions/$processorType"
+    }
 
     /**
      * My Sales screen - Promoter's serialized item sales history

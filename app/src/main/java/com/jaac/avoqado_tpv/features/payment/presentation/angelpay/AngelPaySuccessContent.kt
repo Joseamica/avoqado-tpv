@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Storefront
@@ -68,11 +69,13 @@ private const val PAX_A910S = "spec:width=720px,height=1280px,dpi=320"
 fun AngelPaySuccessContent(
     state: AngelPayPaymentState.Success,
     showReceiptScreen: Boolean,
+    showPrintButton: Boolean = true,
     onPrintReceipt: () -> Unit,
     onSendReceiptEmail: (String) -> Unit = {},
     onSendReceiptWhatsApp: (String) -> Unit = {},
     isSendingReceipt: Boolean = false,
     onNavigateHome: () -> Unit,
+    onViewTransactions: () -> Unit = {},
     onStartNewPayment: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -226,7 +229,7 @@ fun AngelPaySuccessContent(
 
         Spacer(modifier = Modifier.weight(1f))
 
-        // ── Print / Email / WhatsApp buttons (3-way) ────────────────
+        // ── Receipt actions (Print optional per device) ──────────────
         if (state.receipt != null) {
             val buttonShape = RoundedCornerShape(12.dp)
             val dividerColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
@@ -242,53 +245,55 @@ fun AngelPaySuccessContent(
                         shape = buttonShape,
                     ),
             ) {
-                // 🖨️ Print button
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .background(MaterialTheme.colorScheme.surface)
-                        .clickable(enabled = !isPrinting) {
-                            isPrinting = true
-                            onPrintReceipt()
-                            isPrinting = false
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
+                if (showPrintButton) {
+                    // 🖨️ Print button
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.surface)
+                            .clickable(enabled = !isPrinting) {
+                                isPrinting = true
+                                onPrintReceipt()
+                                isPrinting = false
+                            },
+                        contentAlignment = Alignment.Center,
                     ) {
-                        if (isPrinting) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            if (isPrinting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Print,
+                                    contentDescription = "Imprimir",
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (isPrinting) "..." else "Imprimir",
+                                style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.Print,
-                                contentDescription = "Imprimir",
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(18.dp),
-                            )
                         }
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = if (isPrinting) "..." else "Imprimir",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
                     }
-                }
 
-                // Divider
-                Box(
-                    modifier = Modifier
-                        .width(1.dp)
-                        .fillMaxHeight()
-                        .background(dividerColor),
-                )
+                    // Divider
+                    Box(
+                        modifier = Modifier
+                            .width(1.dp)
+                            .fillMaxHeight()
+                            .background(dividerColor),
+                    )
+                }
 
                 // 📧 Email button
                 Box(
@@ -402,8 +407,23 @@ fun AngelPaySuccessContent(
                 Text("Nuevo Cobro", style = MaterialTheme.typography.labelLarge)
             }
 
-            // Spacer to balance the row (right)
-            Spacer(modifier = Modifier.size(48.dp))
+            // Transactions button (right)
+            IconButton(
+                onClick = onViewTransactions,
+                modifier = Modifier
+                    .size(48.dp)
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outline,
+                        shape = RoundedCornerShape(12.dp),
+                    ),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.History,
+                    contentDescription = "Transacciones",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+            }
         }
     }
 

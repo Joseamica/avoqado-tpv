@@ -332,6 +332,8 @@ class PaymentViewModel @Inject constructor(
     // ⚙️ TPV Settings: Expose showReceiptScreen for PaymentSuccessContent
     val showReceiptScreen: Boolean
         get() = tpvSettingsRepository.getCurrentSettings().showReceiptScreen
+    val canPrintReceipt: Boolean
+        get() = printerManager.isPrinterAvailable()
 
     // ═══════════════════════════════════════════════════════════════════════════
     // EMV TAG EXTRACTION USE CASES
@@ -676,13 +678,20 @@ class PaymentViewModel @Inject constructor(
 
         Timber.i("🪙 [CRYPTO] Payment confirmed! txHash=${event.txHash}, amount=${event.cryptoAmount} ${event.cryptoCurrency}")
 
-        // Build receipt from event data
+        // Build receipt from currentState (source of truth for user intent).
+        // Previous version took `amount` from the B4Bit webhook and hardcoded
+        // `tipAmount` to ZERO, which produced a success screen showing
+        // "Propina $0.00 / Total $subtotal" even when the user entered a tip.
+        // The backend payment recorder already stored the correct subtotal+tip,
+        // so the receipt only needs to reflect the same split for the UI.
+        val subtotalBd = currentState.subtotal.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
+        val tipBd = currentState.tipAmount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO
         val receipt = PaymentReceipt(
             paymentId = event.paymentId,
             receiptUrl = event.receiptUrl ?: "",
             accessKey = event.receiptAccessKey ?: "",
-            amount = java.math.BigDecimal(event.amount).divide(java.math.BigDecimal(100)),
-            tipAmount = java.math.BigDecimal.ZERO // Crypto payments don't have separate tip in B4Bit
+            amount = subtotalBd,   // contract: "Monto BASE pagado (subtotal SIN propina)"
+            tipAmount = tipBd,
         )
 
         // Transition to Success state
@@ -7323,12 +7332,14 @@ class PaymentViewModel @Inject constructor(
 
                 Timber.d("💸 [Refund Recording] Card: ${cardDetails.cardBrand} ${cardDetails.maskedPan} | Entry: ${entryMode}")
 
-                // Call RecordRefundUseCase
+                // Call RecordRefundUseCase — pass the tip-split override (if any)
+                // from the RefundConfirmationScreen.
                 val result = recordRefundUseCase(
                     context = refundContext,
                     cardDetails = cardDetails,
                     authorizationNumber = authorizationNumber,
-                    referenceNumber = referenceNumber
+                    referenceNumber = referenceNumber,
+                    tipRefundCents = refundContext.tipRefundCents,
                 )
 
                 result.onSuccess { receipt ->

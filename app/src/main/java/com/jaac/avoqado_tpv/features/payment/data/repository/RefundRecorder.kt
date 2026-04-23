@@ -80,6 +80,7 @@ class RefundRecorder @Inject constructor(
         cardDetails: CardDetails,
         authorizationNumber: String,
         referenceNumber: String,
+        tipRefundCents: Int? = null,
     ): Result<RefundReceipt> = withContext(Dispatchers.IO) {
         try {
             // 1. Validate merchantAccountId is present (multi-merchant critical)
@@ -99,7 +100,7 @@ class RefundRecorder @Inject constructor(
             )
 
             // 2. Build request DTO
-            val request = buildRefundRequest(context, cardDetails, authorizationNumber, referenceNumber)
+            val request = buildRefundRequest(context, cardDetails, authorizationNumber, referenceNumber, tipRefundCents)
 
             // 3. Call backend API
             val response = apiService.recordRefund(
@@ -230,6 +231,7 @@ class RefundRecorder @Inject constructor(
         cardDetails: CardDetails,
         authorizationNumber: String,
         referenceNumber: String,
+        tipRefundCents: Int? = null,
     ): RefundRequest {
         return RefundRequest(
             // Venue and payment identification
@@ -264,6 +266,10 @@ class RefundRecorder @Inject constructor(
 
             // Currency
             currency = "MXN",
+
+            // Optional tip-split override — null = backend default (proportional).
+            // Does NOT change the Blumon charge; only affects internal booking.
+            tipRefundCents = tipRefundCents,
         )
     }
 }

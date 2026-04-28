@@ -2107,6 +2107,16 @@ class PaymentViewModel @Inject constructor(
         // the same key from sessionSnapshot, so the backend dedupes them atomically.
         ensurePaymentAttemptId()
 
+        // 🛡️ Tag the in-flight Blumon card payment for Crashlytics context.
+        com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentContext(
+            processor = "BLUMON",
+            method = if (selectedMsiMonths != null) "CARD_MSI_${selectedMsiMonths}" else "CARD",
+            merchantId = _currentMerchant.value?.merchantAccountId,
+            amount = amount,
+            orderId = getOrderIdForFlow(),
+            attemptId = sessionSnapshot.paymentAttemptId,
+        )
+
         // ⚡ Show loading state IMMEDIATELY (before coroutine launch)
         // This provides instant feedback even on slow networks
         _state.value = PaymentState.Processing("Iniciando pago...")
@@ -3529,6 +3539,15 @@ class PaymentViewModel @Inject constructor(
         // 🛡️ IDEMPOTENCY KEY (2026-04-08): Generate UUID for this cash payment attempt
         ensurePaymentAttemptId()
 
+        com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentContext(
+            processor = "BLUMON",
+            method = "CASH",
+            merchantId = _currentMerchant.value?.merchantAccountId,
+            amount = totalAmount,
+            orderId = getOrderIdForFlow(),
+            attemptId = sessionSnapshot.paymentAttemptId,
+        )
+
         viewModelScope.launch {
             try {
                 // Get current payment context from SelectingMerchant state BEFORE changing state
@@ -3815,6 +3834,15 @@ class PaymentViewModel @Inject constructor(
      */
     fun processCryptoPayment(totalAmount: String) {
         Timber.d("🪙 [Crypto Payment] Processing crypto payment: \$$totalAmount")
+
+        com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentContext(
+            processor = "B4BIT",
+            method = "CRYPTO",
+            merchantId = _currentMerchant.value?.merchantAccountId,
+            amount = totalAmount,
+            orderId = getOrderIdForFlow(),
+            attemptId = sessionSnapshot.paymentAttemptId,
+        )
 
         // 🛡️ IDEMPOTENCY KEY (2026-04-08): Generate UUID for this crypto payment attempt
         ensurePaymentAttemptId()

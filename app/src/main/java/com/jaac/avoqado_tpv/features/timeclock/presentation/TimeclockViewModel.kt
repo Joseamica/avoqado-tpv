@@ -100,7 +100,7 @@ class TimeclockViewModel @Inject constructor(
                         loadTimeclockStatus(staffInfo.id, staffInfo.name)
                     },
                     onFailure = { error ->
-                        Timber.e("❌ PIN verification failed: ${error.message}")
+                        Timber.e(error, "❌ PIN verification failed")
                         _state.value = TimeclockState.InvalidPin(
                             error.message ?: "PIN incorrecto"
                         )
@@ -608,7 +608,7 @@ class TimeclockViewModel @Inject constructor(
                 loadTimeclockStatus(staffId, staffName)
             },
             onFailure = { error ->
-                Timber.e("❌ Clock in failed: ${error.message}")
+                Timber.e(error, "❌ Clock in failed")
                 clearPhotoState()
                 _events.emit(TimeclockEvent.Error(error.message ?: "Error al registrar entrada"))
                 loadTimeclockStatus(staffId, staffName)
@@ -676,7 +676,7 @@ class TimeclockViewModel @Inject constructor(
                 loadTimeclockStatus(staffId, staffName)
             },
             onFailure = { error ->
-                Timber.e("❌ Clock out failed: ${error.message}")
+                Timber.e(error, "❌ Clock out failed")
                 clearPhotoState()
                 _events.emit(TimeclockEvent.Error(error.message ?: "Error al registrar salida"))
                 loadTimeclockStatus(staffId, staffName)
@@ -717,7 +717,7 @@ class TimeclockViewModel @Inject constructor(
                     loadTimeclockStatus(staffId, staffName)
                 },
                 onFailure = { error ->
-                    Timber.e("❌ Start break failed: ${error.message}")
+                    Timber.e(error, "❌ Start break failed")
                     _events.emit(TimeclockEvent.Error(error.message ?: "Error al iniciar descanso"))
                     loadTimeclockStatus(staffId, staffName)
                 }
@@ -746,7 +746,7 @@ class TimeclockViewModel @Inject constructor(
                     loadTimeclockStatus(staffId, staffName)
                 },
                 onFailure = { error ->
-                    Timber.e("❌ End break failed: ${error.message}")
+                    Timber.e(error, "❌ End break failed")
                     _events.emit(TimeclockEvent.Error(error.message ?: "Error al finalizar descanso"))
                     loadTimeclockStatus(staffId, staffName)
                 }

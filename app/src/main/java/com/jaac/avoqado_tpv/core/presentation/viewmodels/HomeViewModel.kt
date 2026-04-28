@@ -604,7 +604,7 @@ class HomeViewModel @Inject constructor(
                 val start = System.currentTimeMillis()
                 Timber.d("[PERF] HomeVM.connectSocket START")
                 // Check if socket is already connected (e.g., from LoginViewModel)
-                if (socketManager.isConnected()) {
+                if (socketManager.isCurrentlyConnected()) {
                     Timber.d("[PERF] HomeVM.connectSocket DONE (${System.currentTimeMillis() - start}ms) - already connected")
                     return@launch
                 }

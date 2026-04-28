@@ -160,7 +160,7 @@ class SocketManagerTest {
         every { mockSocket.connected() } returns true
 
         // When
-        val result = socketManager.isConnected()
+        val result = socketManager.isCurrentlyConnected()
 
         // Then
         assertThat(result).isTrue()

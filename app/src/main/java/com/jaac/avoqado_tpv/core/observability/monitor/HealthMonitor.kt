@@ -192,7 +192,7 @@ class HealthMonitor @Inject constructor(
 
     private fun getConnectivityInfo(): Map<String, Any> {
         return mapOf(
-            "socketConnected" to socketManager.isConnected(),
+            "socketConnected" to socketManager.isCurrentlyConnected(),
             "online" to true // TODO: Add network connectivity check
         )
     }

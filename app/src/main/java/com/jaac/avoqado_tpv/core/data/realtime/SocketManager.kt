@@ -231,9 +231,13 @@ class SocketManager @Inject constructor(
     }
 
     /**
-     * Check if socket is connected
+     * Check if socket is connected (synchronous snapshot).
+     *
+     * Renamed from `isConnected()` to disambiguate from the [isConnected] SharedFlow
+     * property — the JVM bytecode clash (getter `getIsConnected()` + method
+     * `isConnected()`) confused MockK during testing.
      */
-    fun isConnected(): Boolean {
+    fun isCurrentlyConnected(): Boolean {
         return socket?.connected() == true
     }
 

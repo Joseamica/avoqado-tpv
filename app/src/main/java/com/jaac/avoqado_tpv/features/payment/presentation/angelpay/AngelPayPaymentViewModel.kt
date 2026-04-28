@@ -369,6 +369,17 @@ class AngelPayPaymentViewModel @Inject constructor(
                 return@launch
             }
 
+            // 🛡️ Tag in-flight payment so any error during the AngelPay flow carries
+            // processor / amount / merchant / order / attempt context in Crashlytics.
+            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentContext(
+                processor = "ANGELPAY",
+                method = "CARD",
+                merchantId = _currentMerchant.value?.merchantAccountId,
+                amount = pendingAmount.add(pendingTip).toPlainString(),
+                orderId = pendingOrderId,
+                attemptId = currentPaymentAttemptId,
+            )
+
             if (isSdkFlowEnabled()) {
                 startSdkCardPayment(credentials)
             } else {
@@ -519,6 +530,15 @@ class AngelPayPaymentViewModel @Inject constructor(
     fun startCashPayment() {
         viewModelScope.launch {
             _state.value = AngelPayPaymentState.ProcessingCash()
+
+            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentContext(
+                processor = "ANGELPAY",
+                method = "CASH",
+                merchantId = _currentMerchant.value?.merchantAccountId,
+                amount = pendingAmount.add(pendingTip).toPlainString(),
+                orderId = pendingOrderId,
+                attemptId = currentPaymentAttemptId,
+            )
 
             val venueId = cachedVenueId ?: run {
                 _state.value = AngelPayPaymentState.Error("Error: No hay venue activo")
@@ -972,6 +992,15 @@ class AngelPayPaymentViewModel @Inject constructor(
         // 🛡️ Reuse the existing idempotency key if one was generated earlier in
         // this attempt (e.g. user picked card, errored, then switched to crypto).
         ensurePaymentAttemptId()
+
+        com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentContext(
+            processor = "B4BIT",
+            method = "CRYPTO",
+            merchantId = _currentMerchant.value?.merchantAccountId,
+            amount = totalAmount,
+            orderId = pendingOrderId,
+            attemptId = currentPaymentAttemptId,
+        )
 
         viewModelScope.launch {
             try {

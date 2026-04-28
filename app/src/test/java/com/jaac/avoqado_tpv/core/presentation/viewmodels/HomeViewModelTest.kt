@@ -125,8 +125,10 @@ class HomeViewModelTest {
         every { secureStorage.getVenueStatus() } returns VenueStatus.ACTIVE
         every { secureStorage.getVenueId() } returns "venue-123"
         every { secureStorage.getToken() } returns "jwt-token"
-        // Note: socketManager.isConnected() function returns false by default (relaxed mock)
-        // Don't mock it explicitly — conflicts with the isConnected SharedFlow property
+        // Note: socketManager.isCurrentlyConnected() returns false by default (relaxed mock)
+        // No need to mock explicitly — the SharedFlow property and the function used to
+        // share the name `isConnected` and confused MockK; the function was renamed to
+        // `isCurrentlyConnected()` to disambiguate.
     }
 
     @After

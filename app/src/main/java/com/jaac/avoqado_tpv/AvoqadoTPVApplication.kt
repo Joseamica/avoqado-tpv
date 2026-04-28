@@ -127,6 +127,18 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
         } else {
             Timber.plant(com.jaac.avoqado_tpv.core.observability.CrashReportingTree())
         }
+
+        // 🛡️ Static Crashlytics keys — tag every report with the build variant,
+        // environment, and (when available) terminal serial so Operations doesn't
+        // have to guess which device. Safe in DEBUG too — runCatching swallows
+        // missing-Firebase failures.
+        com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setAppContext(
+            buildVariant = BuildConfig.BUILD_TYPE + "/" + BuildConfig.FLAVOR,
+            environment = BuildConfig.BLUMON_ENV,
+            terminalSerial = runCatching { com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber }.getOrNull(),
+            appVersionName = BuildConfig.VERSION_NAME,
+            appVersionCode = BuildConfig.VERSION_CODE,
+        )
     }
 
     private fun initializeAngelPaySdkIfEnabled() {

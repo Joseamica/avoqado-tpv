@@ -140,6 +140,15 @@ class AuthRepository @Inject constructor(
                 // NOTE: Modules are now fetched at app startup (SplashScreen) instead of at login
                 // This ensures features are available from the beginning, before login
 
+                // 🛡️ Tag every Crashlytics report (fatal + non-fatal) with the active
+                // session context so Operations can filter "all errors at venue X" or
+                // "errors when user Y was using the TPV" directly from the dashboard.
+                com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setSessionContext(
+                    venueId = authResponse.venueId,
+                    staffId = authResponse.staffId,
+                    staffRole = authResponse.role.name,
+                )
+
                 Timber.d("✅ Login successful: ${authResponse.staff.displayName}")
                 Result.Success(authResponse)
             } else {
@@ -349,6 +358,10 @@ class AuthRepository @Inject constructor(
 
         // 📦 Clear modules cache
         modulesRepository.clearCache()
+
+        // 🛡️ Drop the venue/staff/role custom keys so post-logout errors aren't
+        // misattributed to the previous user.
+        com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.clearSessionContext()
 
         Timber.d("✅ Session cleared")
     }

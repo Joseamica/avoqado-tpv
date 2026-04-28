@@ -15,6 +15,23 @@
 
 ---
 
+## [1.12.1] - 2026-04-28
+
+### **Added**
+
+- **Crashlytics observability — context keys en cada reporte**: Nuevo helper `core/observability/CrashlyticsContext.kt` que centraliza la inyección de custom keys a Firebase Crashlytics. Tres niveles:
+  - **`setAppContext`** (en `AvoqadoTPVApplication.initializeTimber`): tag estático por terminal — `app_build_variant`, `app_environment`, `app_terminal_serial`, `app_version_name`, `app_version_code`. Aplica desde el primer log del proceso
+  - **`setSessionContext` / `clearSessionContext`** (en `AuthRepository.loginWithPin` / `logout`): `session_venue_id`, `session_staff_id`, `session_staff_role` + Firebase `userId`. Operations puede filtrar por venue o staff afectado
+  - **`setPaymentContext`** (en `PaymentViewModel.startPayment` / `processCashPayment` / `processCryptoPayment` sandbox+production y `AngelPayPaymentViewModel` 3 paths): `payment_processor` (BLUMON / ANGELPAY / B4BIT), `payment_method` (CARD / CARD_MSI_X / CASH / CRYPTO), `payment_merchant_id`, `payment_amount`, `payment_order_id`, `payment_attempt_id`. Cada reporte de Crashlytics durante un cobro incluye el contexto exacto del pago en curso
+
+### **Fixed**
+
+- **Logs sin throwable perdían stack trace en Crashlytics**: 5 sitios en `TimeclockViewModel` (`PIN verification failed`, `Clock in failed`, `Clock out failed`, `Start break failed`, `End break failed`) usaban `Timber.e("...: ${error.message}")` sin pasar el `throwable` como primer argumento. El bridge `CrashReportingTree` reportaba el mensaje pero sin stack trace, dificultando el triage. Convertido a `Timber.e(error, "...")` para que Crashlytics tenga el stack completo. El resto del codebase ya usaba el patrón correcto.
+
+- **`SocketManager.isConnected()` renombrado a `isCurrentlyConnected()`**: La clase tenía a la vez una property `val isConnected: SharedFlow<Boolean>` (uso reactivo, `collect`) y una function `fun isConnected(): Boolean` (snapshot síncrono). Aunque Kotlin permite ambos, en bytecode JVM esto crea un getter `getIsConnected()` y un método `isConnected()` con el mismo nombre que confundían a MockK durante tests — 11 tests de `HomeViewModelTest` fallaban. La function se renombró a `isCurrentlyConnected()` para desambiguar; la property `isConnected` queda como única referencia para el flow reactivo. Callsites actualizados en `HomeViewModel.kt:607` y `HealthMonitor.kt:195`.
+
+---
+
 ## [1.12.0] - 2026-04-28
 
 ### **Added**

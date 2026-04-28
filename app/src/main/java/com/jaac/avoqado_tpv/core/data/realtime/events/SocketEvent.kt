@@ -217,6 +217,17 @@ sealed interface SocketEvent {
         val timestamp: String
     ) : SocketEvent
 
+    /**
+     * Receipt print request received via Socket.IO from backend.
+     * Android app sends a receipt snapshot to backend, which forwards it here.
+     */
+    data class TerminalReceiptPrintRequest(
+        val requestId: String,
+        val receipt: Map<String, Any>,
+        val venueId: String,
+        val timestamp: String
+    ) : SocketEvent
+
     // ========================================
     // Order Events
     // ========================================

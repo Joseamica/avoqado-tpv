@@ -15,6 +15,21 @@
 
 ---
 
+## [1.13.0] - 2026-04-28
+
+### **Added**
+
+- **Remote receipt printing desde dashboard / iOS**: El TPV ahora puede imprimir recibos a petición vía Socket.IO. Backend (dashboard, iOS app) emite `terminal:print_receipt_request` con el receipt serializado; el TPV lo arma con `PrinterManager` y responde con `terminal:print_receipt_result` (`status: success | error`). Habilita el caso de uso "el cliente quiere otra copia del recibo desde la app móvil" sin necesidad de tocar el terminal.
+  - `SocketEvent.TerminalReceiptPrintRequest`: nueva data class
+  - `SocketManager.onTerminalReceiptPrintRequest` + `emitTerminalReceiptPrintResult`
+  - `HomeViewModel.printRemoteReceipt`: parsea el JSON del receipt (items, modifiers, totales en centavos) y delega a `PrinterManager`. Inyectada nueva dependencia `PrinterManager` en `HomeViewModel`
+
+### **Changed**
+
+- **Terminal payment requests vía Socket: manejo de cancelaciones y errores no-reintentables**: Cuando un cobro originado por iOS (vía BLE bridge) se cancela en el TPV, ahora `PaymentViewModel` (sandbox + production) emite `terminal:payment_result` con `status: "cancelled"` para que el iOS sepa que pasó. Errores reintentables (que muestran botón "Reintentar") ya no emiten resultado FAILED inmediatamente — se mantiene la request pendiente hasta que el usuario decida. Antes el iOS recibía un FAILED prematuro y descartaba la request aunque el cajero todavía pudiera reintentar.
+
+---
+
 ## [1.12.1] - 2026-04-28
 
 ### **Added**

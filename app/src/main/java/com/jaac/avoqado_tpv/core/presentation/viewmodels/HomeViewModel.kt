@@ -57,6 +57,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.time.Instant
 import javax.inject.Inject
@@ -95,6 +96,7 @@ class HomeViewModel @Inject constructor(
     private val deviceInfoManager: DeviceInfoManager,
     // 📡 Socket.IO Payment Bridge - Forward socket payment requests to BLE pipeline
     private val bluetoothPaymentService: com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService,
+    private val printerManager: com.jaac.avoqado_tpv.core.printer.PrinterManager,
     // 📦 Update Check Manager - Check for app updates after login
     private val updateCheckManager: UpdateCheckManager,
     // 🔄 Session Manager - Observe token refresh for Socket.IO reconnection
@@ -1028,6 +1030,11 @@ class HomeViewModel @Inject constructor(
                         bluetoothPaymentService.cancelSocketPaymentRequest(event.requestId)
                     }
 
+                    is SocketEvent.TerminalReceiptPrintRequest -> {
+                        Timber.i("🖨️ [Socket] Terminal receipt print request: requestId=${event.requestId}")
+                        printRemoteReceipt(event)
+                    }
+
                     // Other events handled by other ViewModels (PaymentViewModel, OrderViewModel, etc.)
                     else -> {
                         // Ignore events not relevant to HomeViewModel
@@ -1036,6 +1043,120 @@ class HomeViewModel @Inject constructor(
             }
         }
     }
+
+    private fun printRemoteReceipt(event: SocketEvent.TerminalReceiptPrintRequest) {
+        viewModelScope.launch {
+            val result: kotlin.Result<Unit> = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    val receipt = event.receipt
+                    val items = (receipt["items"] as? List<*>)
+                        ?.mapNotNull { it as? Map<*, *> }
+                        ?.mapIndexed { index, item ->
+                            val name = item.stringValue("name") ?: "Articulo"
+                            val quantity = item.intValue("quantity") ?: 1
+                            val unitPrice = item.centsValue("unitPrice").toMoney()
+                            val totalPrice = item.centsValue("totalPrice").toMoney()
+                            val modifiers = (item["modifiers"] as? List<*>)
+                                ?.mapNotNull { modifier -> modifier?.toString()?.takeIf { it.isNotBlank() } }
+                                ?.mapIndexed { modifierIndex, modifierName ->
+                                    com.jaac.avoqado_tpv.features.ordering.domain.ProductModifier(
+                                        id = "remote-${event.requestId}-$index-$modifierIndex",
+                                        name = modifierName,
+                                        priceAdjustment = java.math.BigDecimal.ZERO,
+                                        type = com.jaac.avoqado_tpv.features.ordering.domain.ModifierType.MULTIPLE_CHOICE
+                                    )
+                                }
+                                ?: emptyList()
+
+                            com.jaac.avoqado_tpv.features.ordering.domain.OrderItem(
+                                id = "remote-${event.requestId}-$index",
+                                orderId = event.requestId,
+                                productId = item.stringValue("productId") ?: "remote",
+                                productName = name,
+                                productSku = null,
+                                quantity = quantity,
+                                unitPrice = unitPrice,
+                                totalPrice = totalPrice,
+                                modifiers = modifiers,
+                                notes = item.stringValue("note"),
+                                kitchenStatus = com.jaac.avoqado_tpv.features.ordering.domain.KitchenStatus.PENDING,
+                                createdAt = java.time.Instant.now(),
+                                sentToKitchenAt = null
+                            )
+                        }
+                        ?: emptyList()
+
+                    val paymentMethod = receipt.stringValue("paymentMethod")
+                    val cardDetails = if (paymentMethod.equals("Efectivo", ignoreCase = true)) {
+                        com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails.CASH
+                    } else {
+                        val lastFour = receipt.stringValue("cardLastFour")
+                        if (!lastFour.isNullOrBlank()) {
+                            com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails(
+                                maskedPan = "****$lastFour",
+                                cardBrand = com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand.UNKNOWN,
+                                entryMode = com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode.MANUAL
+                            )
+                        } else {
+                            null
+                        }
+                    }
+
+                    printerManager.printReceipt(
+                        receiptUrl = receipt.stringValue("receiptUrl"),
+                        amount = receipt.centsValue("total").toMoneyString(),
+                        authCode = receipt.stringValue("authCode") ?: receipt.stringValue("transactionId")?.takeLast(6) ?: "",
+                        tipAmount = receipt.optionalCentsValue("tipAmount")?.toMoneyString(),
+                        cardDetails = cardDetails,
+                        referenceNumber = receipt.stringValue("transactionId"),
+                        venueName = receipt.stringValue("venueName") ?: secureStorage.getVenueName(),
+                        venueLogoUrl = secureStorage.getVenueLogo(),
+                        venueLegalName = secureStorage.getVenueLegalName(),
+                        venueRfc = secureStorage.getVenueRfc(),
+                        venueAddress = receipt.stringValue("venueAddress") ?: secureStorage.getVenueAddress(),
+                        venueCity = secureStorage.getVenueCity(),
+                        venueState = secureStorage.getVenueState(),
+                        venueZipCode = secureStorage.getVenueZipCode(),
+                        staffName = receipt.stringValue("cashierName") ?: secureStorage.getStaffName(),
+                        orderNumber = receipt.stringValue("orderNumber"),
+                        orderItems = items,
+                        discountAmount = receipt.optionalCentsValue("discountAmount")?.toMoneyString()
+                    )
+                } catch (e: Exception) {
+                    kotlin.Result.failure(e)
+                }
+            }
+
+            result.onSuccess {
+                socketManager.emitTerminalReceiptPrintResult(event.requestId, "success")
+            }.onFailure { error ->
+                socketManager.emitTerminalReceiptPrintResult(
+                    requestId = event.requestId,
+                    status = "failed",
+                    errorMessage = error.message ?: "No se pudo imprimir en la TPV"
+                )
+            }
+        }
+    }
+
+    private fun Map<*, *>.stringValue(key: String): String? =
+        this[key]?.toString()?.takeIf { it.isNotBlank() && it != "null" }
+
+    private fun Map<*, *>.intValue(key: String): Int? = when (val value = this[key]) {
+        is Number -> value.toInt()
+        is String -> value.toIntOrNull()
+        else -> null
+    }
+
+    private fun Map<*, *>.centsValue(key: String): Int = intValue(key) ?: 0
+
+    private fun Map<*, *>.optionalCentsValue(key: String): Int? =
+        if (containsKey(key)) intValue(key) else null
+
+    private fun Int.toMoney(): java.math.BigDecimal =
+        java.math.BigDecimal(this).divide(java.math.BigDecimal(100), 2, java.math.RoundingMode.HALF_UP)
+
+    private fun Int.toMoneyString(): String = toMoney().toPlainString()
 
     // ═══════════════════════════════════════════════════════════════════════════
     // REMOTE COMMAND EXECUTION

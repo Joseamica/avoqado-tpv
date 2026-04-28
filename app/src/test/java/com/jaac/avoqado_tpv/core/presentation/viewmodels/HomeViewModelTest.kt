@@ -77,6 +77,7 @@ class HomeViewModelTest {
     private lateinit var timeEntryRepository: com.jaac.avoqado_tpv.features.timeclock.domain.repository.TimeEntryRepository
     private lateinit var tpvSettingsRepository: com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
     private lateinit var saleVerificationRepository: com.jaac.avoqado_tpv.features.payment.data.repository.SaleVerificationRepository
+    private lateinit var printerManager: com.jaac.avoqado_tpv.core.printer.PrinterManager
 
     private val fakeSessionEvents = MutableSharedFlow<com.jaac.avoqado_tpv.core.session.SessionEvent>()
     private val fakeSocketEvents = MutableSharedFlow<com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent>()
@@ -115,6 +116,7 @@ class HomeViewModelTest {
         timeEntryRepository = mockk(relaxed = true)
         tpvSettingsRepository = mockk(relaxed = true)
         saleVerificationRepository = mockk(relaxed = true)
+        printerManager = mockk(relaxed = true)
 
         every { sessionManager.sessionEvents } returns fakeSessionEvents
         every { socketManager.events } returns fakeSocketEvents
@@ -157,6 +159,7 @@ class HomeViewModelTest {
             merchantRepository = merchantRepository,
             deviceInfoManager = deviceInfoManager,
             bluetoothPaymentService = bluetoothPaymentService,
+            printerManager = printerManager,
             updateCheckManager = updateCheckManager,
             sessionManager = sessionManager,
             paymentQueueRepository = paymentQueueRepository,

@@ -614,13 +614,29 @@ class PaymentViewModel @Inject constructor(
                         _socketRequestId = null
                     }
                     is PaymentState.Error -> {
-                        Timber.i("📡 [Socket-Payment] Emitting FAILED result for requestId=$requestId")
+                        if (state.canRetry) {
+                            Timber.i("📡 [Socket-Payment] Retryable error reached, keeping Android request pending for requestId=$requestId")
+                            return@collect
+                        }
+
+                        Timber.i("📡 [Socket-Payment] Emitting FAILED result for non-retryable error | requestId=$requestId")
                         socketManager.emitTerminalPaymentResult(
                             requestId = requestId,
                             status = "failed",
                             transactionId = null,
                             cardDetails = null,
                             errorMessage = state.message
+                        )
+                        _socketRequestId = null
+                    }
+                    is PaymentState.Cancelled -> {
+                        Timber.i("📡 [Socket-Payment] Emitting CANCELLED result for requestId=$requestId")
+                        socketManager.emitTerminalPaymentResult(
+                            requestId = requestId,
+                            status = "cancelled",
+                            transactionId = null,
+                            cardDetails = null,
+                            errorMessage = "Pago cancelado en la terminal"
                         )
                         _socketRequestId = null
                     }
@@ -4846,6 +4862,18 @@ class PaymentViewModel @Inject constructor(
      * Use retryPayment() instead to preserve user's entered data.
      */
     fun resetPayment() {
+        if (_paymentSource == "SOCKET" && _socketRequestId != null) {
+            val requestId = _socketRequestId!!
+            socketManager.emitTerminalPaymentResult(
+                requestId = requestId,
+                status = "cancelled",
+                transactionId = null,
+                cardDetails = null,
+                errorMessage = "Pago cancelado en la terminal"
+            )
+            Timber.i("📡 [Socket-Payment] Emitted CANCELLED from resetPayment for requestId=$requestId")
+        }
+
         _state.value = PaymentState.Idle
         _isPaymentInProgress.value = false  // 🚦 Release payment guard
         isSkipReviewFlow = false

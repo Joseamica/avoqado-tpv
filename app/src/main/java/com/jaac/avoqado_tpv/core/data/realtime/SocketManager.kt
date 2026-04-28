@@ -403,6 +403,7 @@ class SocketManager @Inject constructor(
 
         on("terminal:payment_request", onTerminalPaymentRequest)
         on("terminal:payment_cancel", onTerminalPaymentCancel)
+        on("terminal:print_receipt_request", onTerminalReceiptPrintRequest)
 
         // ========================================
         // Hardware Events (NEW)
@@ -1323,6 +1324,25 @@ class SocketManager @Inject constructor(
         }
     }
 
+    private val onTerminalReceiptPrintRequest = Emitter.Listener { args ->
+        try {
+            val data = args.getOrNull(0) as? JSONObject ?: return@Listener
+            val receipt = data.optJSONObject("receipt") ?: JSONObject()
+
+            Timber.i("🖨️ [Socket] Terminal receipt print request received: ${data.optString("requestId")}")
+            _events.tryEmit(
+                SocketEvent.TerminalReceiptPrintRequest(
+                    requestId = data.optString("requestId", ""),
+                    receipt = receipt.toMap(),
+                    venueId = data.optString("venueId", ""),
+                    timestamp = data.optString("timestamp", "")
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error parsing terminal:print_receipt_request")
+        }
+    }
+
     // ========================================
     // Event Handlers - TPV Messages
     // ========================================
@@ -1640,6 +1660,24 @@ class SocketManager @Inject constructor(
             Timber.i("📡 [Socket] Emitted terminal:payment_result | requestId=$requestId | status=$status")
         } catch (e: Exception) {
             Timber.e(e, "❌ Failed to emit terminal:payment_result")
+        }
+    }
+
+    fun emitTerminalReceiptPrintResult(
+        requestId: String,
+        status: String,
+        errorMessage: String? = null
+    ) {
+        try {
+            socket?.emit("terminal:print_receipt_result", JSONObject().apply {
+                put("requestId", requestId)
+                put("status", status)
+                put("errorMessage", errorMessage ?: JSONObject.NULL)
+                put("completedAt", java.time.Instant.now().toString())
+            })
+            Timber.i("📡 [Socket] Emitted terminal:print_receipt_result | requestId=$requestId | status=$status")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Failed to emit terminal:print_receipt_result")
         }
     }
 

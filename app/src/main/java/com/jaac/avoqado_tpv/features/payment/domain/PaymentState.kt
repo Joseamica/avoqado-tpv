@@ -30,6 +30,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentFlowOrigin
  * @param equalPartsPartySize Total people for EQUALPARTS mode
  * @param equalPartsPayedFor People already paid for in EQUALPARTS mode
  * @param paidProductIds Product IDs already paid for in PERPRODUCT mode
+ * @param selectedMsiMonths Selected months without interest, null for direct payment
  */
 data class RetryContext(
     val amount: String,
@@ -44,7 +45,8 @@ data class RetryContext(
     val splitType: String? = null,
     val equalPartsPartySize: Int? = null,
     val equalPartsPayedFor: Int? = null,
-    val paidProductIds: List<String>? = null
+    val paidProductIds: List<String>? = null,
+    val selectedMsiMonths: Int? = null
 ) {
     /**
      * Calculate total amount (amount + tip).

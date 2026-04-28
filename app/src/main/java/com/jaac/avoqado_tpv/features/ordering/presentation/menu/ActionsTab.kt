@@ -150,7 +150,13 @@ private data class ShortcutAction(
     val backgroundColor: Color,
     val enabled: Boolean = true,
     val badge: String? = null,
-    val onClick: () -> Unit
+    val onClick: () -> Unit,
+    /**
+     * If non-null, the card renders disabled with this small caption shown below the title.
+     * Used to surface backend permission gates ("Sin permiso") so the user understands
+     * WHY the action is unavailable instead of seeing a 403 after tapping.
+     */
+    val disabledReason: String? = null,
 )
 
 /**
@@ -222,6 +228,11 @@ fun ActionsTab(
     onLoadRecentCustomers: () -> Unit = {},
     onClearCustomerSearch: () -> Unit = {},
     onCreatePayLaterOrder: (customerId: String) -> Unit = {},
+    // 🔐 Backend permission flags — when false the corresponding action is disabled
+    // and shows "Sin permisos" inline instead of letting the user hit a 403.
+    canApplyDiscount: Boolean = true,
+    canCompItems: Boolean = true,
+    canVoidItems: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     // Navigation state
@@ -257,7 +268,8 @@ fun ActionsTab(
                 title = "Descuentos",
                 icon = Icons.Outlined.Percent,
                 backgroundColor = ActionColors.Discounts,
-                enabled = hasItems,
+                enabled = hasItems && canApplyDiscount,
+                disabledReason = if (!canApplyDiscount) "Sin permisos para descuentos" else null,
                 onClick = { currentNav = ActionsNavigation.DiscountsSubNav }
             )
         )
@@ -290,7 +302,8 @@ fun ActionsTab(
                 title = "Void Items",
                 icon = Icons.Default.Delete,
                 backgroundColor = MaterialTheme.avoqadoColors.statusError,
-                enabled = hasItems,
+                enabled = hasItems && canVoidItems,
+                disabledReason = if (!canVoidItems) "Sin permisos para anular" else null,
                 onClick = { dialogState = ActionsDialogState.VoidItems }
             )
         )
@@ -300,7 +313,8 @@ fun ActionsTab(
                 title = "Cortesia",
                 icon = Icons.Default.Favorite,
                 backgroundColor = MaterialTheme.avoqadoColors.statusSuccess,
-                enabled = hasItems,
+                enabled = hasItems && canCompItems,
+                disabledReason = if (!canCompItems) "Sin permisos para cortesía" else null,
                 onClick = { dialogState = ActionsDialogState.Cortesia }
             )
         )
@@ -522,14 +536,24 @@ private fun ShortcutActionCard(
                 }
             }
 
-            // Title at bottom
-            Text(
-                text = action.title,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = Color.White.copy(alpha = if (action.enabled) 1f else 0.7f),
-                modifier = Modifier.align(Alignment.BottomStart)
-            )
+            // Title at bottom — collapsed into a Column so the disabledReason caption
+            // can sit immediately under the title without overlapping the icon.
+            Column(modifier = Modifier.align(Alignment.BottomStart)) {
+                Text(
+                    text = action.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White.copy(alpha = if (action.enabled) 1f else 0.7f),
+                )
+                action.disabledReason?.let { reason ->
+                    Text(
+                        text = reason,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.85f),
+                        maxLines = 2,
+                    )
+                }
+            }
         }
     }
 }

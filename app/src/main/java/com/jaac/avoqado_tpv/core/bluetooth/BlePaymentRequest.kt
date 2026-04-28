@@ -29,6 +29,7 @@ data class BlePaymentRequest(
     val rating: Int? = null,
     val skipReview: Boolean = false,
     val orderId: String? = null,  // Dual-mode: null = FastPayment, set = OrderPayment
+    val processedByStaffId: String? = null,
     val source: PaymentSource = PaymentSource.BLE,
     val socketRequestId: String? = null  // Only set when source == SOCKET
 )

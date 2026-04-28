@@ -101,11 +101,13 @@ class RefundRecorder @Inject constructor(
 
             // 2. Build request DTO
             val request = buildRefundRequest(context, cardDetails, authorizationNumber, referenceNumber, tipRefundCents)
+            val idempotencyKey = context.idempotencyKey
 
             // 3. Call backend API
             val response = apiService.recordRefund(
                 venueId = context.venueId,
-                request = request
+                request = request,
+                idempotencyKey = idempotencyKey,
             )
 
             // 4. Process response
@@ -260,6 +262,7 @@ class RefundRecorder @Inject constructor(
             maskedPan = cardDetails.maskedPan,
             cardBrand = cardDetails.cardBrand.backendName,
             entryMode = cardDetails.entryMode.toBackendString(),
+            idempotencyKey = context.idempotencyKey,
 
             // Partial refund flag
             isPartialRefund = context.isPartialRefund,

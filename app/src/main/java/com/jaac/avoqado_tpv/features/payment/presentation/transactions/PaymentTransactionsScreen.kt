@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -52,91 +53,101 @@ fun PaymentTransactionsScreen(
             )
         }
     ) { paddingValues ->
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
                 .padding(12.dp),
+            contentPadding = PaddingValues(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedTextField(
-                value = uiState.startDate,
-                onValueChange = viewModel::updateStartDate,
-                label = { Text("Inicio (yyyy-MM-dd)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = uiState.endDate,
-                onValueChange = viewModel::updateEndDate,
-                label = { Text("Fin (yyyy-MM-dd)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = uiState.reference,
-                onValueChange = viewModel::updateReference,
-                label = { Text("Referencia (opcional)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = uiState.terminal,
-                onValueChange = viewModel::updateTerminal,
-                label = { Text("Terminal (opcional)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = viewModel::refreshHistory,
-                    enabled = !uiState.isLoading,
-                ) {
-                    Text("Buscar")
-                }
-                OutlinedButton(
-                    onClick = viewModel::clearMessage,
-                    enabled = !uiState.message.isNullOrBlank(),
-                ) {
-                    Text("Limpiar")
-                }
+            item {
+                OutlinedTextField(
+                    value = uiState.startDate,
+                    onValueChange = viewModel::updateStartDate,
+                    label = { Text("Inicio (yyyy-MM-dd)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
-
-            uiState.message?.let { message ->
-                Text(
-                    text = message,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            item {
+                OutlinedTextField(
+                    value = uiState.endDate,
+                    onValueChange = viewModel::updateEndDate,
+                    label = { Text("Fin (yyyy-MM-dd)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item {
+                OutlinedTextField(
+                    value = uiState.reference,
+                    onValueChange = viewModel::updateReference,
+                    label = { Text("Referencia (opcional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            item {
+                OutlinedTextField(
+                    value = uiState.terminal,
+                    onValueChange = viewModel::updateTerminal,
+                    label = { Text("Terminal (opcional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
 
-            if (uiState.isLoading) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
-                ) {
-                    CircularProgressIndicator()
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = viewModel::refreshHistory,
+                        enabled = !uiState.isLoading,
+                    ) {
+                        Text("Buscar")
+                    }
+                    OutlinedButton(
+                        onClick = viewModel::clearMessage,
+                        enabled = !uiState.message.isNullOrBlank(),
+                    ) {
+                        Text("Limpiar")
+                    }
                 }
             }
 
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(uiState.transactions, key = { "${it.reference}_${it.creationDate}" }) { tx ->
-                    TransactionCard(
-                        transaction = tx,
-                        onCancel = { viewModel.cancelTransaction(tx) },
-                        onRefund = { viewModel.refundTransaction(tx) },
-                        onPrint = { viewModel.printTicket(tx) },
-                        onGetTicketUrl = { viewModel.getTicketUrl(tx) },
-                        onSendEmail = {
-                            emailDialogTx = tx
-                            emailInput = ""
-                        },
+            if (!uiState.message.isNullOrBlank()) {
+                item {
+                    Text(
+                        text = uiState.message.orEmpty(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+            }
+
+            if (uiState.isLoading) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                }
+            }
+            items(uiState.transactions, key = { "${it.reference}_${it.creationDate}" }) { tx ->
+                TransactionCard(
+                    transaction = tx,
+                    canPrint = uiState.canPrintTickets,
+                    onCancel = { viewModel.cancelTransaction(tx) },
+                    onRefund = { viewModel.refundTransaction(tx) },
+                    onPrint = { viewModel.printTicket(tx) },
+                    onGetTicketUrl = { viewModel.getTicketUrl(tx) },
+                    onSendEmail = {
+                        emailDialogTx = tx
+                        emailInput = ""
+                    },
+                )
             }
         }
     }
@@ -188,6 +199,7 @@ fun PaymentTransactionsScreen(
 @Composable
 private fun TransactionCard(
     transaction: UnifiedTransaction,
+    canPrint: Boolean,
     onCancel: () -> Unit,
     onRefund: () -> Unit,
     onPrint: () -> Unit,
@@ -234,7 +246,10 @@ private fun TransactionCard(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                OutlinedButton(onClick = onPrint) { Text("Imprimir") }
+                OutlinedButton(
+                    onClick = onPrint,
+                    enabled = canPrint,
+                ) { Text(if (canPrint) "Imprimir" else "Sin impresora") }
                 OutlinedButton(onClick = onGetTicketUrl) { Text("URL") }
                 OutlinedButton(onClick = onSendEmail) { Text("Email") }
             }

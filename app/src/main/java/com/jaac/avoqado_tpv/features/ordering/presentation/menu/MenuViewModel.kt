@@ -89,7 +89,8 @@ class MenuViewModel @Inject constructor(
     private val productDao: ProductDao,  // ⚡ Cache-first product loading
     private val productCategoryDao: ProductCategoryDao,  // ⚡ Cache-first category loading
     private val printerManager: PrinterManager,  // 🖨️ Kitchen ticket printing
-    private val paymentApiService: PaymentApiService  // 🎁 Cortesía: bypass gateway for $0 orders
+    private val paymentApiService: PaymentApiService,  // 🎁 Cortesía: bypass gateway for $0 orders
+    private val permissionsRepository: com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository  // 🔐 Action gating
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<MenuState>(MenuState.Loading)
@@ -178,6 +179,17 @@ class MenuViewModel @Inject constructor(
     // Coupon validation state
     private val _couponValidationState = MutableStateFlow<CouponValidationState>(CouponValidationState.Idle)
     val couponValidationState: StateFlow<CouponValidationState> = _couponValidationState.asStateFlow()
+
+    // 🔐 Permission flags — keep frontend in sync with backend gates so we can show
+    // "Sin permisos" inline instead of letting the user tap and hit a 403.
+    private val _canApplyDiscount = MutableStateFlow(false)
+    val canApplyDiscount: StateFlow<Boolean> = _canApplyDiscount.asStateFlow()
+
+    private val _canCompItems = MutableStateFlow(false)
+    val canCompItems: StateFlow<Boolean> = _canCompItems.asStateFlow()
+
+    private val _canVoidItems = MutableStateFlow(false)
+    val canVoidItems: StateFlow<Boolean> = _canVoidItems.asStateFlow()
 
     // ============================================================================
     // 💳 Payment Preparation State
@@ -291,6 +303,16 @@ class MenuViewModel @Inject constructor(
     init {
         // Load products on ViewModel creation
         loadProducts(reason = "init", force = true)
+
+        // 🔐 Load permission flags — must match backend `checkPermission(...)` strings.
+        viewModelScope.launch {
+            _canApplyDiscount.value = permissionsRepository.hasPermission("discounts:apply")
+            _canCompItems.value = permissionsRepository.hasPermission("orders:comp")
+            _canVoidItems.value = permissionsRepository.hasPermission("orders:void")
+            Timber.d(
+                "🔐 [Permissions] discount=${_canApplyDiscount.value} comp=${_canCompItems.value} void=${_canVoidItems.value}"
+            )
+        }
 
         // 🎟️ Load available discounts for the venue
         loadAvailableDiscounts()
@@ -2374,9 +2396,16 @@ class MenuViewModel @Inject constructor(
                         val updatedOrder = recalculateOrder(orderWithDiscounts)
                         _state.value = MenuState.Success(updatedOrder)
                         Timber.i("✅ Manual discount applied: ${appliedDiscount.name} | discount=${updatedOrder.discountAmount} | total=${updatedOrder.total}")
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar("Descuento aplicado", isError = false))
                     },
                     onFailure = { error ->
+                        // Surface the backend error to the user — silent Timber-only logging
+                        // hid 403/permission/validation failures and made the bug invisible.
                         Timber.e(error, "❌ Error applying manual discount")
+                        _uiEvents.emit(MenuUiEvent.ShowSnackbar(
+                            "Error al aplicar descuento: ${error.message ?: "error desconocido"}",
+                            isError = true
+                        ))
                     }
                 )
             } finally {

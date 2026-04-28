@@ -2,11 +2,15 @@ package com.jaac.avoqado_tpv.features.payments.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.domain.TerminalConfig
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
+import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
 import com.jaac.avoqado_tpv.features.payments.domain.models.Payment
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod
+import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentStatus
 import com.jaac.avoqado_tpv.features.payments.domain.repository.PaymentRepository
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -566,10 +570,11 @@ class PaymentsViewModel @Inject constructor(
      * @param payment Payment to refund
      */
     fun initiateRefund(payment: Payment) {
+        val availability = getRefundAvailability(payment)
+
         // Validate refundability
-        if (!payment.isRefundable()) {
-            val reason = payment.getNonRefundableReason()
-            Timber.w("⚠️ [PaymentsViewModel] Payment not refundable: $reason")
+        if (!availability.canRefund) {
+            Timber.w("⚠️ [PaymentsViewModel] Payment not refundable on this device: ${availability.reason}")
             return
         }
 
@@ -604,6 +609,108 @@ class PaymentsViewModel @Inject constructor(
             _canProcessRefund.value = hasPermission
             Timber.d("🔐 Refund permission (payments:refund) = $hasPermission")
         }
+    }
+
+    data class RefundAvailability(
+        val canRefund: Boolean,
+        val reason: String? = null,
+    )
+
+    fun getRefundAvailability(payment: Payment): RefundAvailability {
+        if (!_canProcessRefund.value) {
+            return RefundAvailability(
+                canRefund = false,
+                reason = "Solo administradores pueden procesar reembolsos",
+            )
+        }
+
+        val currentProcessor = currentProcessorType()
+        val paymentProcessor = inferPaymentProcessor(payment)
+
+        if (paymentProcessor != null && paymentProcessor != currentProcessor) {
+            val reason = when (paymentProcessor) {
+                ProcessorType.BLUMON ->
+                    "Este pago se procesó en PAX/Blumon. Debes hacer el reembolso en ese dispositivo."
+                ProcessorType.ANGELPAY ->
+                    "Este pago se procesó en Nexgo/AngelPay. Debes hacer el reembolso en ese dispositivo."
+            }
+            return RefundAvailability(canRefund = false, reason = reason)
+        }
+
+        val currentSerial = (secureStorage.getSerialNumber() ?: TerminalConfig.serialNumber).trim()
+        val paymentDeviceSerial = payment.deviceSerialNumber?.trim()
+        if (paymentDeviceSerial?.isNotBlank() == true &&
+            currentSerial.isNotBlank() &&
+            !paymentDeviceSerial.equals(currentSerial, ignoreCase = true)
+        ) {
+            return RefundAvailability(
+                canRefund = false,
+                reason = "Este pago pertenece a otro dispositivo (${paymentDeviceSerial}). Reembolsa desde ese equipo.",
+            )
+        }
+
+        // Processor-specific local checks:
+        // - BLUMON requires operation number (CancelIcc).
+        // - ANGELPAY refund is executed from transactions post-operations, so don't require Blumon fields.
+        if (currentProcessor == ProcessorType.ANGELPAY && paymentProcessor == ProcessorType.ANGELPAY) {
+            val reason = when {
+                payment.status != PaymentStatus.COMPLETED -> "El pago no está completado"
+                payment.isFullyRefunded -> "Este pago ya fue reembolsado"
+                payment.method == PaymentMethod.CASH -> "Los pagos en efectivo no pueden reembolsarse con tarjeta"
+                payment.method != PaymentMethod.CARD -> "Este método de pago no admite reembolso"
+                payment.merchantAccountId.isNullOrBlank() -> "Información de comercio no disponible"
+                else -> null
+            }
+            return RefundAvailability(
+                canRefund = reason == null,
+                reason = reason,
+            )
+        }
+
+        val baseReason = payment.getNonRefundableReason()
+        return RefundAvailability(
+            canRefund = payment.isRefundable(),
+            reason = baseReason,
+        )
+    }
+
+    private fun currentProcessorType(): ProcessorType {
+        return if (BuildConfig.ENABLE_PAX_SDK) ProcessorType.BLUMON else ProcessorType.ANGELPAY
+    }
+
+    private fun inferPaymentProcessor(payment: Payment): ProcessorType? {
+        if (payment.method != PaymentMethod.CARD) return null
+
+        // Prefer explicit backend processor label when available.
+        val normalizedProcessor = payment.processor?.trim()?.uppercase()
+        when {
+            normalizedProcessor?.contains("BLUMON") == true -> return ProcessorType.BLUMON
+            normalizedProcessor?.contains("MENTA") == true -> return ProcessorType.BLUMON
+            normalizedProcessor?.contains("ANGEL") == true -> return ProcessorType.ANGELPAY
+            normalizedProcessor?.contains("B4BIT") == true -> return ProcessorType.ANGELPAY
+        }
+
+        val current = currentProcessorType()
+        val currentSerial = (secureStorage.getSerialNumber() ?: TerminalConfig.serialNumber)
+            .trim()
+            .uppercase()
+        val paymentSerial = payment.deviceSerialNumber
+            ?.trim()
+            ?.uppercase()
+            ?.takeIf { it.isNotBlank() }
+
+        // In Nexgo builds, many legacy rows can include Blumon processorData fields.
+        // If processor label is missing, prefer ANGELPAY for same-device rows.
+        if (current == ProcessorType.ANGELPAY) {
+            if (paymentSerial != null && currentSerial.isNotBlank() && paymentSerial == currentSerial) {
+                return ProcessorType.ANGELPAY
+            }
+            return ProcessorType.ANGELPAY
+        }
+
+        // In PAX builds, keep Blumon fallback based on operation number.
+        if (payment.blumonOperationNumber != null) return ProcessorType.BLUMON
+        return current
     }
 
     // ══════════════════════════════════════════════════════════════════════

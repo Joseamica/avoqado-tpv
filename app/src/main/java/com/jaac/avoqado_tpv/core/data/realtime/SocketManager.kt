@@ -1291,6 +1291,7 @@ class SocketManager @Inject constructor(
                     rating = data.optInt("rating").takeIf { data.has("rating") },
                     skipReview = data.optBoolean("skipReview", true),
                     orderId = data.optString("orderId").takeIf { it.isNotEmpty() },
+                    processedByStaffId = data.optString("processedByStaffId").takeIf { it.isNotEmpty() },
                     senderDeviceName = data.optString("senderDeviceName").takeIf { it.isNotEmpty() },
                     venueId = data.optString("venueId", ""),
                     timestamp = data.optString("timestamp", "")
@@ -1595,6 +1596,7 @@ class SocketManager @Inject constructor(
      *
      * @param requestId The original request ID from terminal:payment_request
      * @param status "success" or "failed"
+     * @param paymentId Backend Payment ID (if success)
      * @param transactionId Blumon transaction ID (if success)
      * @param cardDetails Card info for receipt
      * @param errorMessage Error description (if failed)
@@ -1604,6 +1606,7 @@ class SocketManager @Inject constructor(
     fun emitTerminalPaymentResult(
         requestId: String,
         status: String,
+        paymentId: String? = null,
         transactionId: String? = null,
         cardDetails: Map<String, String?>? = null,
         errorMessage: String? = null,
@@ -1614,6 +1617,7 @@ class SocketManager @Inject constructor(
             socket?.emit("terminal:payment_result", JSONObject().apply {
                 put("requestId", requestId)
                 put("status", status)
+                put("paymentId", paymentId ?: JSONObject.NULL)
                 put("transactionId", transactionId ?: JSONObject.NULL)
                 put("errorMessage", errorMessage ?: JSONObject.NULL)
                 if (cardDetails != null) {

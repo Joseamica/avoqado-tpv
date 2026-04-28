@@ -76,7 +76,14 @@ data class PaymentDto(
     // 💳 CARD BRAND (Prisma enum: VISA, MASTERCARD, AMERICAN_EXPRESS, etc.)
     // Backend returns via `...payment` spread in history endpoint
     @SerializedName("cardBrand")
-    val cardBrand: String? = null
+    val cardBrand: String? = null,
+
+    // ⭐ Terminal attribution (if backend includes it in payment history payload)
+    @SerializedName("deviceSerialNumber")
+    val deviceSerialNumber: String? = null,
+
+    @SerializedName("processor")
+    val processor: String? = null
 )
 
 /**
@@ -289,6 +296,8 @@ fun PaymentDto.toDomain(): Payment {
         // This is the small integer from Blumon webhook, NOT the SDK's large reference
         blumonOperationNumber = operationNumber,
         // Card brand (Visa, Mastercard, etc.) for display in payment history
-        cardBrand = CardBrand.fromString(cardBrand)
+        cardBrand = CardBrand.fromString(cardBrand),
+        deviceSerialNumber = deviceSerialNumber,
+        processor = processor
     )
 }

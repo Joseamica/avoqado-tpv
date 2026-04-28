@@ -71,6 +71,34 @@ sealed class AngelPayPaymentState {
         val message: String = "Registrando pago en efectivo...",
     ) : AngelPayPaymentState()
 
+    /**
+     * 🪙 CRYPTO: Generating QR from B4Bit (loading).
+     * SelectingMerchant → [tap "Cripto"] → GeneratingCryptoQR → AwaitingCryptoPayment
+     */
+    data class GeneratingCryptoQR(
+        val subtotal: String,
+        val tipAmount: String,
+        val totalAmount: String,
+        val rating: Int?,
+    ) : AngelPayPaymentState()
+
+    /**
+     * 🪙 CRYPTO: Awaiting customer payment via QR. Waits for Socket.IO event.
+     */
+    data class AwaitingCryptoPayment(
+        val requestId: String,
+        val paymentId: String,
+        val paymentUrl: String,
+        val subtotal: String,
+        val tipAmount: String,
+        val totalAmount: String,
+        val rating: Int?,
+        val expiresAt: String,
+        val expiresInSeconds: Int,
+        val cryptoAddress: String? = null,
+        val cryptoSymbol: String? = null,
+    ) : AngelPayPaymentState()
+
     /** Card payment result being recorded to backend. */
     data class RecordingPayment(
         val message: String = "Registrando pago...",

@@ -8,6 +8,11 @@ import com.angelpay.angelpaysdk.models.PaymentRequest
 import com.angelpay.angelpaysdk.models.PaymentResult
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.data.network.CancelCryptoPaymentRequest
+import com.jaac.avoqado_tpv.core.data.network.CryptoPaymentRequest
+import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
+import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
@@ -70,6 +75,8 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val tpvSettingsRepository: TpvSettingsRepository,
     private val printerManager: PrinterManager,
     private val paymentApiService: PaymentApiService,
+    private val apiService: ApiService,
+    private val socketManager: SocketManager,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<AngelPayPaymentState>(AngelPayPaymentState.Idle)
@@ -87,7 +94,13 @@ class AngelPayPaymentViewModel @Inject constructor(
     // TpvSettings for tip suggestions / default tip percentage
     val tipSuggestions: List<Int> get() = tpvSettingsRepository.getCurrentSettings().tipSuggestions
     val defaultTipPercentage: Int? get() = tpvSettingsRepository.getCurrentSettings().defaultTipPercentage
-    val canPrintReceipt: Boolean get() = printerManager.isPrinterAvailable()
+    val canPrintReceipt: Boolean
+        get() = runCatching {
+            BuildConfig.ENABLE_PAX_SDK && printerManager.isPrinterAvailable()
+        }.getOrElse { error ->
+            Timber.w(error, "🔶 [AngelPay] Printer capability check failed; disabling print action")
+            false
+        }
 
     // Cached payment context
     private var pendingAmount: BigDecimal = BigDecimal.ZERO
@@ -104,6 +117,20 @@ class AngelPayPaymentViewModel @Inject constructor(
     // Generated in initPayment() and cleared in resetPayment(). Cleared explicitly so
     // each new attempt gets a fresh key.
     private var currentPaymentAttemptId: String? = null
+    // Consumes external payment callback only once per launched attempt.
+    private var consumedResultAttemptId: String? = null
+
+    // 🪙 B4Bit request ID currently in-flight. Used to filter Socket.IO events
+    // so we only react to OUR pending crypto payment.
+    private var currentCryptoRequestId: String? = null
+
+    private fun backendRecordFailureState(paymentLabel: String, error: Throwable): AngelPayPaymentState.Error {
+        val detail = error.message ?: "error desconocido"
+        return AngelPayPaymentState.Error(
+            message = "$paymentLabel fue procesado, pero no se pudo registrar en Avoqado. No vuelvas a cobrar; revisa transacciones o avisa al supervisor. Detalle: $detail",
+            canRetry = false,
+        )
+    }
 
     /**
      * Get the current idempotency key, generating one if there isn't one yet.
@@ -143,6 +170,25 @@ class AngelPayPaymentViewModel @Inject constructor(
                     _currentMerchant.value = angelPayMerchants.first()
                 }
                 Timber.d("🔶 [AngelPay] Merchants loaded: ${angelPayMerchants.size} AngelPay")
+            }
+        }
+
+        // 🪙 Subscribe to Socket.IO crypto events for B4Bit webhook callbacks.
+        // Same logic as PaymentViewModel — only handle events whose requestId
+        // matches our `currentCryptoRequestId`.
+        viewModelScope.launch {
+            socketManager.events.collect { event ->
+                when (event) {
+                    is SocketEvent.CryptoPaymentConfirmed -> {
+                        Timber.i("🪙 [AngelPay Socket] Crypto confirmed: ${event.requestId}")
+                        handleCryptoPaymentConfirmed(event)
+                    }
+                    is SocketEvent.CryptoPaymentFailed -> {
+                        Timber.w("🪙 [AngelPay Socket] Crypto failed: ${event.requestId} - ${event.reason}")
+                        handleCryptoPaymentFailed(event)
+                    }
+                    else -> Unit // Other events handled elsewhere
+                }
             }
         }
     }
@@ -430,6 +476,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         request: PaymentRequest,
         usedQaTipFallback: Boolean,
     ) {
+        prepareExternalLaunch(ensurePaymentAttemptId())
         _state.value = AngelPayPaymentState.LaunchingAngelPaySdk(
             request = request,
             amount = pendingAmount.toPlainString(),
@@ -446,12 +493,15 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     private fun startAppToAppCardPayment(credentials: AngelPayCredentials) {
         val staffName = secureStorage.getStaffName()
+        val paymentAttemptId = ensurePaymentAttemptId()
         val intent = intentBuilder.buildSaleIntent(
             amount = pendingAmount,
             tip = pendingTip,
             credentials = credentials,
             waiter = staffName,
+            integratorReference = paymentAttemptId,
         )
+        prepareExternalLaunch(paymentAttemptId)
 
         _state.value = AngelPayPaymentState.LaunchingAngelPay(
             intent = intent,
@@ -525,8 +575,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 },
                 onFailure = { error ->
                     Timber.e(error, "🔶 [AngelPay] Cash payment failed to record to backend")
-                    // Cash was collected — show success but note backend failure
-                    _state.value = successState
+                    _state.value = backendRecordFailureState("El pago en efectivo", error)
                     Timber.w("🔶 [AngelPay] Cash payment NOT recorded to backend")
                 },
             )
@@ -548,7 +597,9 @@ class AngelPayPaymentViewModel @Inject constructor(
      */
     fun onAngelPayResult(resultCode: Int, data: Intent?) {
         viewModelScope.launch {
+            if (!consumeResultForCurrentAttempt(source = "app_to_app")) return@launch
             Timber.i("🔶 [AngelPay] onAngelPayResult | resultCode=$resultCode")
+            _state.value = AngelPayPaymentState.WaitingForResult(message = "Validando resultado del pago...")
 
             val result = resultParser.parse(resultCode, data)
 
@@ -569,7 +620,9 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     fun onAngelPaySdkResult(result: PaymentResult) {
         viewModelScope.launch {
+            if (!consumeResultForCurrentAttempt(source = "sdk_contract")) return@launch
             Timber.i("🔶 [AngelPay SDK] Result received | approved=${result.approved}, status=${result.status}")
+            _state.value = AngelPayPaymentState.WaitingForResult(message = "Validando resultado del pago...")
             if (result.approved) {
                 recordCardPayment(result)
             } else {
@@ -653,8 +706,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             },
             onFailure = { error ->
                 Timber.e(error, "🔶 [AngelPay] Card payment failed to record to backend")
-                // AngelPay already processed — show success
-                _state.value = successState
+                _state.value = backendRecordFailureState("El pago con tarjeta", error)
                 Timber.w("🔶 [AngelPay] Card payment NOT recorded to backend")
             },
         )
@@ -725,7 +777,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             },
             onFailure = { error ->
                 Timber.e(error, "🔶 [AngelPay SDK] Card payment failed to record to backend")
-                _state.value = successState
+                _state.value = backendRecordFailureState("El pago con tarjeta", error)
                 Timber.w("🔶 [AngelPay SDK] Card payment NOT recorded to backend")
             },
         )
@@ -896,6 +948,243 @@ class AngelPayPaymentViewModel @Inject constructor(
         }
     }
 
+    // ── Crypto (B4Bit) ────────────────────────────────────────────────
+    //
+    // Hardware-agnostic flow — same backend as PAX/Blumon. The customer scans a
+    // QR generated by B4Bit and pays with their crypto wallet. The TPV waits for
+    // a Socket.IO event from the backend (which receives a webhook from B4Bit).
+    //
+    // Flow:
+    //   SelectingMerchant → [tap "Cripto"] → processCryptoPayment()
+    //     → GeneratingCryptoQR (loading) → backend returns paymentUrl
+    //     → AwaitingCryptoPayment (showing QR) → Socket.IO confirms
+    //     → Success
+    //
+    // Server already validates the $20 MXN minimum; the TPV also blocks tap below
+    // that in MerchantSelectionContent for instant feedback.
+
+    /**
+     * Initiate a B4Bit crypto payment. Caller must be in SelectingMerchant state.
+     */
+    fun processCryptoPayment(totalAmount: String) {
+        Timber.d("🪙 [AngelPay Crypto] Processing crypto payment: \$$totalAmount")
+
+        // 🛡️ Reuse the existing idempotency key if one was generated earlier in
+        // this attempt (e.g. user picked card, errored, then switched to crypto).
+        ensurePaymentAttemptId()
+
+        viewModelScope.launch {
+            try {
+                val currentState = _state.value as? AngelPayPaymentState.SelectingMerchant
+                    ?: throw IllegalStateException("Invalid state for crypto payment: ${_state.value}")
+
+                val venueId = authRepository.getVenueId()
+                val staffId = authRepository.getStaffId()
+                if (venueId.isNullOrBlank() || staffId.isNullOrBlank()) {
+                    _state.value = AngelPayPaymentState.Error(
+                        message = "Tu sesión expiró.\n\nPor favor inicia sesión de nuevo.",
+                        canRetry = false,
+                    )
+                    return@launch
+                }
+
+                // Validate shift is open (mirrors initPayment validation)
+                val shift = withContext(Dispatchers.IO) { shiftRepository.getCurrentShift(venueId) }.getOrNull()
+                if (shift == null) {
+                    _state.value = AngelPayPaymentState.Error(
+                        message = "Debes abrir un turno antes de cobrar",
+                        canRetry = false,
+                        showOpenShiftButton = true,
+                    )
+                    return@launch
+                }
+
+                // Transition to GeneratingCryptoQR (loading)
+                _state.value = AngelPayPaymentState.GeneratingCryptoQR(
+                    subtotal = currentState.subtotal,
+                    tipAmount = currentState.tipAmount,
+                    totalAmount = currentState.totalAmount,
+                    rating = currentState.rating,
+                )
+
+                // Convert MXN strings to centavos (server expects cents as Int)
+                val amountCentavos = (BigDecimal(currentState.subtotal.replace(",", "")) * BigDecimal(100))
+                    .toInt()
+                val tipCentavos = currentState.tipAmount.replace(",", "").let { tip ->
+                    if (tip.isBlank() || tip == "0") 0
+                    else (BigDecimal(tip) * BigDecimal(100)).toInt()
+                }
+
+                val deviceSerial = secureStorage.getSerialNumber() ?: "UNKNOWN"
+
+                val request = CryptoPaymentRequest(
+                    amount = amountCentavos,
+                    tip = if (tipCentavos > 0) tipCentavos else null,
+                    staffId = staffId,
+                    orderId = pendingOrderId,
+                    orderNumber = pendingOrderNumber,
+                    deviceSerialNumber = deviceSerial,
+                )
+
+                Timber.d("🪙 [AngelPay Crypto] Calling backend: amount=$amountCentavos centavos, tip=$tipCentavos")
+                val response = apiService.initiateCryptoPayment(venueId, request)
+
+                if (!response.isSuccessful || response.body()?.success != true) {
+                    val errorMessage = response.errorBody()?.string() ?: "Error iniciando pago crypto"
+                    throw Exception(errorMessage)
+                }
+
+                val cryptoData = response.body()?.data
+                    ?: throw Exception("Server returned empty crypto payment data")
+
+                Timber.i("✅ [AngelPay Crypto] B4Bit order created: requestId=${cryptoData.requestId}")
+
+                currentCryptoRequestId = cryptoData.requestId
+
+                _state.value = AngelPayPaymentState.AwaitingCryptoPayment(
+                    requestId = cryptoData.requestId,
+                    paymentId = cryptoData.paymentId,
+                    paymentUrl = cryptoData.paymentUrl,
+                    subtotal = currentState.subtotal,
+                    tipAmount = currentState.tipAmount,
+                    totalAmount = currentState.totalAmount,
+                    rating = currentState.rating,
+                    expiresAt = cryptoData.expiresAt,
+                    expiresInSeconds = cryptoData.expiresInSeconds,
+                    cryptoAddress = cryptoData.cryptoAddress,
+                    cryptoSymbol = cryptoData.cryptoSymbol,
+                )
+            } catch (e: Exception) {
+                Timber.e(e, "❌ [AngelPay Crypto] Failed to start crypto payment")
+                _state.value = AngelPayPaymentState.Error(
+                    message = "Error procesando pago crypto:\n\n${e.message ?: "Error desconocido"}",
+                    canRetry = true,
+                )
+            }
+        }
+    }
+
+    /**
+     * Cancel a pending crypto payment (user-initiated or timeout).
+     * Best-effort backend notification; clears state and returns to SelectingMerchant.
+     */
+    fun cancelCryptoPayment(reason: String? = null) {
+        Timber.i("🪙 [AngelPay Crypto] Cancelling: ${currentCryptoRequestId ?: "no request ID"}")
+
+        val currentState = _state.value
+        if (currentState !is AngelPayPaymentState.AwaitingCryptoPayment &&
+            currentState !is AngelPayPaymentState.GeneratingCryptoQR
+        ) {
+            Timber.w("🪙 [AngelPay Crypto] Cannot cancel — not in crypto state: $currentState")
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                currentCryptoRequestId?.let { requestId ->
+                    val venueId = authRepository.getVenueId() ?: return@let
+                    val cancelRequest = CancelCryptoPaymentRequest(
+                        requestId = requestId,
+                        reason = reason ?: "User cancelled",
+                    )
+                    apiService.cancelCryptoPayment(venueId, cancelRequest)
+                }
+            } catch (e: Exception) {
+                Timber.w(e, "⚠️ [AngelPay Crypto] Cancel notification failed (proceeding anyway)")
+            }
+
+            currentCryptoRequestId = null
+
+            // Restore SelectingMerchant with previous values
+            val (subtotal, tipAmount, totalAmount, rating) = when (currentState) {
+                is AngelPayPaymentState.AwaitingCryptoPayment -> Quad(
+                    currentState.subtotal, currentState.tipAmount, currentState.totalAmount, currentState.rating,
+                )
+                is AngelPayPaymentState.GeneratingCryptoQR -> Quad(
+                    currentState.subtotal, currentState.tipAmount, currentState.totalAmount, currentState.rating,
+                )
+                else -> Quad("0", "0", "0", null) // unreachable
+            }
+
+            _state.value = AngelPayPaymentState.SelectingMerchant(
+                subtotal = subtotal,
+                tipAmount = tipAmount,
+                totalAmount = totalAmount,
+                rating = rating,
+            )
+        }
+    }
+
+    fun handleCryptoTimeout() {
+        Timber.w("🪙 [AngelPay Crypto] Payment timed out")
+        cancelCryptoPayment(reason = "Timeout - customer did not pay")
+        _state.value = AngelPayPaymentState.Error(
+            message = "El tiempo de pago expiró.\n\nEl cliente no completó el pago crypto a tiempo.",
+            canRetry = true,
+        )
+    }
+
+    private fun handleCryptoPaymentConfirmed(event: SocketEvent.CryptoPaymentConfirmed) {
+        if (currentCryptoRequestId != event.requestId) {
+            Timber.d("🪙 [AngelPay Crypto] Ignoring confirmation for different request: ${event.requestId}")
+            return
+        }
+        val currentState = _state.value
+        if (currentState !is AngelPayPaymentState.AwaitingCryptoPayment) {
+            Timber.w("🪙 [AngelPay Crypto] Confirmation arrived but state=$currentState")
+            return
+        }
+
+        Timber.i("🪙 [AngelPay Crypto] Confirmed: txHash=${event.txHash}")
+
+        // Build receipt from currentState (source of truth for user intent — see PaymentViewModel
+        // for the rationale on the subtotal/tip split).
+        val subtotalBd = currentState.subtotal.toBigDecimalOrNull() ?: BigDecimal.ZERO
+        val tipBd = currentState.tipAmount.toBigDecimalOrNull() ?: BigDecimal.ZERO
+        val receipt = PaymentReceipt(
+            paymentId = event.paymentId,
+            receiptUrl = event.receiptUrl ?: "",
+            accessKey = event.receiptAccessKey ?: "",
+            amount = subtotalBd,
+            tipAmount = tipBd,
+        )
+
+        _state.value = AngelPayPaymentState.Success(
+            authCode = event.txHash ?: "CRYPTO-CONFIRMED",
+            amount = currentState.totalAmount,
+            tipAmount = currentState.tipAmount,
+            receipt = receipt,
+            referenceNumber = event.requestId,
+            orderId = event.orderId,
+            orderNumber = event.orderNumber,
+            isCash = false,
+        )
+
+        currentCryptoRequestId = null
+    }
+
+    private fun handleCryptoPaymentFailed(event: SocketEvent.CryptoPaymentFailed) {
+        if (currentCryptoRequestId != event.requestId) {
+            Timber.d("🪙 [AngelPay Crypto] Ignoring failure for different request: ${event.requestId}")
+            return
+        }
+        if (_state.value !is AngelPayPaymentState.AwaitingCryptoPayment) {
+            Timber.w("🪙 [AngelPay Crypto] Failure arrived but state=${_state.value}")
+            return
+        }
+
+        val message = when (event.status) {
+            "EX" -> "El tiempo de pago expiró.\n\nEl cliente no completó el pago a tiempo."
+            "OC" -> "Monto insuficiente.\n\nEl cliente envió menos de lo requerido."
+            else -> "Pago crypto no completado.\n\n${event.reason}"
+        }
+        _state.value = AngelPayPaymentState.Error(message = message, canRetry = true)
+        currentCryptoRequestId = null
+    }
+
+    // Tiny inline tuple to keep cancelCryptoPayment readable.
+    private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
+
     // ── Reset ────────────────────────────────────────────────────────
 
     fun resetPayment() {
@@ -908,10 +1197,40 @@ class AngelPayPaymentViewModel @Inject constructor(
         cachedVenueId = null
         cachedStaffId = null
         currentPaymentAttemptId = null // 🛡️ Clear idempotency key so the next attempt generates a fresh one
-        _currentMerchant.value = null
+        consumedResultAttemptId = null
+        currentCryptoRequestId = null  // 🪙 Drop in-flight crypto request so old socket events are ignored
+        // Do NOT clear _currentMerchant: the merchant account selection is independent of
+        // the payment attempt. Clearing it here breaks retry — init{} auto-selects only when
+        // the merchants Flow emits a NEW value, which doesn't happen on retry, leaving the
+        // card button permanently disabled when there's a single merchant (selector hidden).
         _isSendingReceipt.value = false
         _sendReceiptMessage.value = null
         _state.value = AngelPayPaymentState.Idle
+    }
+
+    private fun prepareExternalLaunch(attemptId: String) {
+        consumedResultAttemptId = null
+        Timber.d("🛡️ [AngelPay] Prepared external launch | paymentAttemptId=$attemptId")
+    }
+
+    private fun consumeResultForCurrentAttempt(source: String): Boolean {
+        val attemptId = currentPaymentAttemptId
+        if (attemptId == null) {
+            val terminalState = _state.value is AngelPayPaymentState.RecordingPayment ||
+                    _state.value is AngelPayPaymentState.Success
+            if (terminalState) {
+                Timber.w("🛡️ [AngelPay] Ignoring duplicate $source result without attemptId (terminal state)")
+                return false
+            }
+            Timber.w("⚠️ [AngelPay] Missing paymentAttemptId when consuming $source result; processing anyway")
+            return true
+        }
+        if (consumedResultAttemptId == attemptId) {
+            Timber.w("🛡️ [AngelPay] Duplicate $source result ignored | paymentAttemptId=$attemptId")
+            return false
+        }
+        consumedResultAttemptId = attemptId
+        return true
     }
 
     // ── Internal helpers ─────────────────────────────────────────────

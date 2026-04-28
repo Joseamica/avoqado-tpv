@@ -71,6 +71,7 @@ class AngelPayIntentBuilder @Inject constructor() {
         tip: BigDecimal = BigDecimal.ZERO,
         credentials: AngelPayCredentials,
         waiter: String? = null,
+        integratorReference: String? = null,
     ): Intent {
         // Workaround: AngelPay QA merchant returns C208 "Propina no soportada"
         // when tip > 0. Send total as subtotal with tip=0 to AngelPay.
@@ -85,7 +86,9 @@ class AngelPayIntentBuilder @Inject constructor() {
                 put("waiter", waiter)
             }
             // installments: null/0 = no MSI
-            // integratorReference: our internal reference (optional)
+            if (!integratorReference.isNullOrBlank()) {
+                put("integratorReference", integratorReference)
+            }
         }
 
         val authExternal = buildAuthJson(credentials)
@@ -100,7 +103,7 @@ class AngelPayIntentBuilder @Inject constructor() {
             addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
         }
 
-        Timber.d("🔶 [AngelPay] Built SALE intent | subtotal=$amount, tip=$tip, totalToProcessor=$totalForProcessor, package=${getPackageName()}, tx=$transactionRequest")
+        Timber.d("🔶 [AngelPay] Built SALE intent | subtotal=$amount, tip=$tip, totalToProcessor=$totalForProcessor, package=${getPackageName()}, integratorReference=$integratorReference, tx=$transactionRequest")
         return intent
     }
 

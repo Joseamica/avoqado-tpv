@@ -68,6 +68,13 @@ data class Payment(
     // Null for cash/voucher payments or when backend doesn't provide it
     val cardBrand: CardBrand? = null,
 
+    // ⭐ Terminal attribution (2026-04-22)
+    // Device serial that originally processed the payment (if backend provides it).
+    val deviceSerialNumber: String? = null,
+
+    // Processor label from backend payment row (if present), e.g. "BLUMON", "B4BIT", "TBD".
+    val processor: String? = null,
+
     // 💸 REFUND TRANSACTION FLAG
     // True if this transaction is a refund (money returned to customer)
     // Detected by negative totalAmount or explicit flag from backend

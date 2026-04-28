@@ -19,6 +19,7 @@ import timber.log.Timber
 
 data class PaymentTransactionsUiState(
     val processorType: ProcessorType = ProcessorType.ANGELPAY,
+    val canPrintTickets: Boolean = com.jaac.avoqado_tpv.BuildConfig.ENABLE_PAX_SDK,
     val startDate: String = "",
     val endDate: String = "",
     val reference: String = "",
@@ -37,6 +38,9 @@ class PaymentTransactionsViewModel @Inject constructor(
     private val processorType: ProcessorType = parseProcessorType(
         savedStateHandle.get<String>("processorType")
     )
+    private val autoRefundReference: String? =
+        savedStateHandle.get<String>("autoRefundReference")?.trim()?.takeIf { it.isNotBlank() }
+    private var autoRefundPending: Boolean = autoRefundReference != null
     private val adapter = adapterFactory.get(processorType)
     private val dateFormatter = DateTimeFormatter.ISO_LOCAL_DATE
 
@@ -45,6 +49,7 @@ class PaymentTransactionsViewModel @Inject constructor(
             processorType = processorType,
             startDate = LocalDate.now().format(dateFormatter),
             endDate = LocalDate.now().format(dateFormatter),
+            reference = autoRefundReference.orEmpty(),
         )
     )
     val uiState: StateFlow<PaymentTransactionsUiState> = _uiState.asStateFlow()
@@ -69,10 +74,13 @@ class PaymentTransactionsViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(terminal = value)
     }
 
-    fun refreshHistory() {
+    fun refreshHistory(showSummaryMessage: Boolean = true) {
         viewModelScope.launch {
             val current = _uiState.value
-            _uiState.value = current.copy(isLoading = true, message = null)
+            _uiState.value = current.copy(
+                isLoading = true,
+                message = if (showSummaryMessage) null else current.message,
+            )
 
             val result = adapter.getTransactionHistory(
                 TransactionHistoryQuery(
@@ -85,11 +93,40 @@ class PaymentTransactionsViewModel @Inject constructor(
 
             result.fold(
                 onSuccess = { items ->
+                    val summaryMessage = "Se encontraron ${items.size} transacciones"
+                    val currentMessage = _uiState.value.message
+                    val message = if (showSummaryMessage) {
+                        summaryMessage
+                    } else {
+                        val base = currentMessage?.trim().orEmpty()
+                        if (base.isBlank()) summaryMessage else "$base\n$summaryMessage"
+                    }
+
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         transactions = items,
-                        message = "Se encontraron ${items.size} transacciones",
+                        message = message,
                     )
+
+                    if (autoRefundPending) {
+                        autoRefundPending = false
+                        val target = items.firstOrNull {
+                            it.reference.equals(autoRefundReference, ignoreCase = true)
+                        }
+
+                        if (target == null) {
+                            Timber.w("⚠️ [Tx] Auto-refund target not found for ref=%s", autoRefundReference)
+                            _uiState.value = _uiState.value.copy(
+                                message = "No se encontró la transacción ${autoRefundReference ?: ""}. Verifica filtros."
+                            )
+                        } else {
+                            Timber.i("🔶 [Tx] Auto-refund start ref=%s", target.reference)
+                            _uiState.value = _uiState.value.copy(
+                                message = "Transacción ${target.reference} encontrada. Ejecutando devolución..."
+                            )
+                            refundTransaction(target, autoTriggered = true)
+                        }
+                    }
                 },
                 onFailure = { error ->
                     Timber.e(error, "❌ [Tx] Failed loading history")
@@ -110,7 +147,14 @@ class PaymentTransactionsViewModel @Inject constructor(
     }
 
     fun refundTransaction(transaction: UnifiedTransaction) {
-        executePostOperation("devolución") {
+        refundTransaction(transaction, autoTriggered = false)
+    }
+
+    private fun refundTransaction(
+        transaction: UnifiedTransaction,
+        autoTriggered: Boolean,
+    ) {
+        executePostOperation(name = "devolución", autoTriggered = autoTriggered) {
             adapter.refundTransaction(transaction)
         }
     }
@@ -175,6 +219,7 @@ class PaymentTransactionsViewModel @Inject constructor(
 
     private fun executePostOperation(
         name: String,
+        autoTriggered: Boolean = false,
         action: suspend () -> Result<com.jaac.avoqado_tpv.features.payment.domain.processor.PostOperationResult>,
     ) {
         viewModelScope.launch {
@@ -187,10 +232,19 @@ class PaymentTransactionsViewModel @Inject constructor(
                     } else {
                         "$name rechazada: ${op.message ?: "sin detalle"}"
                     }
+                    Timber.i(
+                        "🔶 [Tx] %s result approved=%s ref=%s message=%s auto=%s",
+                        name,
+                        op.approved,
+                        op.reference ?: "-",
+                        op.message ?: "-",
+                        autoTriggered,
+                    )
                     _uiState.value = _uiState.value.copy(isLoading = false, message = msg)
-                    refreshHistory()
+                    refreshHistory(showSummaryMessage = false)
                 },
                 onFailure = { error ->
+                    Timber.e(error, "❌ [Tx] %s failed auto=%s", name, autoTriggered)
                     _uiState.value = _uiState.value.copy(
                         isLoading = false,
                         message = "Error en $name: ${error.message}",

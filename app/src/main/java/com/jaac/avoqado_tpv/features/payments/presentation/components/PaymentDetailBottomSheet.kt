@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.payments.presentation.components
 
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Receipt
@@ -54,6 +56,8 @@ import java.time.Instant
 fun PaymentDetailBottomSheet(
     payment: Payment,
     canProcessRefund: Boolean,
+    canRefundOnCurrentDevice: Boolean = payment.isRefundable(),
+    nonRefundableReasonOverride: String? = null,
     onDismiss: () -> Unit,
     onRefundClick: (Payment) -> Unit,
     onSendReceiptByEmail: ((Payment, String) -> Unit)? = null,  // payment, email
@@ -72,9 +76,12 @@ fun PaymentDetailBottomSheet(
         sheetState = sheetState,
         modifier = modifier
     ) {
+        val scrollState = rememberScrollState()
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(scrollState)
+                .navigationBarsPadding()
                 .padding(horizontal = 24.dp)
                 .padding(bottom = 32.dp)
         ) {
@@ -239,8 +246,8 @@ fun PaymentDetailBottomSheet(
             // ═══════════════════════════════════════════════════════════════
 
             // Refund Button (only if authorized AND payment is refundable)
-            val isRefundable = payment.isRefundable()
-            val nonRefundableReason = payment.getNonRefundableReason()
+            val isRefundable = canRefundOnCurrentDevice
+            val nonRefundableReason = nonRefundableReasonOverride ?: payment.getNonRefundableReason()
 
             if (canProcessRefund) {
                 if (isRefundable) {

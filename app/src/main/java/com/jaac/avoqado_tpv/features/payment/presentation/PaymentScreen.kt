@@ -138,6 +138,7 @@ fun PaymentScreen(
     // 📡 SOCKET PAYMENT SOURCE (for sending result back via Socket.IO)
     paymentSource: String? = null,  // "BLE" | "SOCKET" | null (direct)
     socketRequestId: String? = null,  // Request ID for Socket.IO result callback
+    socketProcessedByStaffId: String? = null,
     onNavigateBack: () -> Unit,
     onNavigateHome: () -> Unit = onNavigateBack,
     onRefundComplete: () -> Unit = onNavigateBack,
@@ -220,8 +221,9 @@ fun PaymentScreen(
     }
 
     // 📡 SOCKET PAYMENT: Pass source info to ViewModel for result callback
-    LaunchedEffect(paymentSource, socketRequestId) {
+    LaunchedEffect(paymentSource, socketRequestId, socketProcessedByStaffId) {
         viewModel.setSocketPaymentSource(paymentSource, socketRequestId)
+        viewModel.setSocketProcessedByStaffId(socketProcessedByStaffId)
     }
 
     // 📊 Dynamic step counter based on TPV settings
@@ -487,6 +489,10 @@ fun PaymentScreen(
                             // Backend receives: amount (subtotal) + tip (currentTip) separately
                             viewModel.startPayment(currentState.subtotal)
                         },
+                        onStartPaymentWithMsi = { selectedMsi ->
+                            // ✅ FIX: Pass SUBTOTAL (not totalAmount); MSI only affects Blumon TPV auth params.
+                            viewModel.startPayment(currentState.subtotal, selectedMsi)
+                        },
                         onStartCashPayment = {
                             // ✅ FIX: Pass SUBTOTAL - processCashPayment reads subtotal from state anyway
                             viewModel.processCashPayment(currentState.subtotal)
@@ -503,6 +509,7 @@ fun PaymentScreen(
                         showCashOption = true,
                         // 🪙 Crypto option: controlled by TpvSettings from dashboard
                         showCryptoOption = tpvSettings?.showCryptoOption ?: false,
+                        enableMsiPromotions = true,
                         // 🥝 KIOSK MODE: Hide merchant selector when admin pre-configured a default merchant
                         hideAccountSelector = hideKioskMerchantSelector
                     )

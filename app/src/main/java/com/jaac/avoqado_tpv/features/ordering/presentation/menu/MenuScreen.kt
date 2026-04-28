@@ -138,6 +138,10 @@ fun MenuScreen(
     val appliedDiscounts by viewModel.appliedDiscounts.collectAsStateWithLifecycle()
     val isLoadingDiscounts by viewModel.isLoadingDiscounts.collectAsStateWithLifecycle()
     val couponValidationState by viewModel.couponValidationState.collectAsStateWithLifecycle()
+    // 🔐 Permission gates from backend — keep ActionsTab in sync with what the API allows
+    val canApplyDiscount by viewModel.canApplyDiscount.collectAsStateWithLifecycle()
+    val canCompItems by viewModel.canCompItems.collectAsStateWithLifecycle()
+    val canVoidItems by viewModel.canVoidItems.collectAsStateWithLifecycle()
 
     // 💳 Payment preparation state (force sync before navigating to payment)
     val isPreparingPayment by viewModel.isPreparingPayment.collectAsStateWithLifecycle()
@@ -528,7 +532,10 @@ fun MenuScreen(
                                 },
                                 onCreatePayLaterOrder = { customerId ->
                                     viewModel.createPayLaterOrder(customerId)
-                                }
+                                },
+                                canApplyDiscount = canApplyDiscount,
+                                canCompItems = canCompItems,
+                                canVoidItems = canVoidItems,
                             )
                         }
 

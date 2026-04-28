@@ -1,12 +1,14 @@
 package com.jaac.avoqado_tpv
 
 import android.app.Application
+import android.os.Build
 import androidx.camera.camera2.Camera2Config
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.CameraXConfig
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import com.angelpay.angelpaysdk.AngelPaySDK
+import com.nexgo.oaf.apiv3.device.pinpad.P2PEUtils
 import com.blumonpay.pax.utils.AppManager
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -136,10 +138,43 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
         try {
             val env = if (BuildConfig.BLUMON_ENV == "PROD") "PROD" else "QA"
             AngelPaySDK.initialize(context = applicationContext, env = env)
+            applyAngelPayN62Compatibility()
             Timber.i("🔶 [AngelPay SDK] Initialized successfully (env=$env)")
         } catch (e: Throwable) {
             Timber.e(e, "❌ [AngelPay SDK] Failed to initialize")
         }
+    }
+
+    /**
+     * AngelPay bundles a Nexgo EMV stack that enables P2PE/SRED by default.
+     *
+     * On N62 firmware, the bundled stack calls `ddi_sys_get_sred_state()` during ICC
+     * processing, but that symbol is missing in the terminal framework. The result is
+     * a NoSuchMethodError before chip can continue, while contactless still works.
+     *
+     * We keep ICC enabled and only disable that incompatible P2PE probe for N62.
+     */
+    private fun applyAngelPayN62Compatibility() {
+        if (!isNexgoN62()) return
+
+        try {
+            if (P2PEUtils.isUseP2PE) {
+                Timber.w(
+                    "⚠️ [AngelPay SDK] Disabling Nexgo P2PE probe on N62 to avoid ICC crash path"
+                )
+            }
+            P2PEUtils.isUseP2PE = false
+            Timber.i("🔶 [AngelPay SDK] N62 ICC compatibility applied | isUseP2PE=${P2PEUtils.isUseP2PE}")
+        } catch (error: Throwable) {
+            Timber.e(error, "❌ [AngelPay SDK] Failed to apply N62 ICC compatibility")
+        }
+    }
+
+    private fun isNexgoN62(): Boolean {
+        val model = Build.MODEL.orEmpty()
+        val manufacturer = Build.MANUFACTURER.orEmpty()
+        return manufacturer.contains("nexgo", ignoreCase = true) &&
+            model.contains("N62", ignoreCase = true)
     }
 
     /**

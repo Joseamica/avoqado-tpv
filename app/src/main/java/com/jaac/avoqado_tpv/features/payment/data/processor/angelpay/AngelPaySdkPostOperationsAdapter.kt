@@ -76,7 +76,7 @@ class AngelPaySdkPostOperationsAdapter @Inject constructor() : PaymentPostOperat
             authCode = transaction.authorizationCode,
             entryMode = transaction.entryMode,
             cardBin = transaction.cardBin,
-            transactionDate = transaction.creationDate,
+            transactionDate = resolveTransactionDate(transaction),
             isManual = isManual,
             latitude = latitude,
             longitude = longitude,
@@ -107,7 +107,7 @@ class AngelPaySdkPostOperationsAdapter @Inject constructor() : PaymentPostOperat
             authCode = transaction.authorizationCode,
             entryMode = transaction.entryMode,
             cardBin = transaction.cardBin,
-            transactionDate = transaction.creationDate,
+            transactionDate = resolveTransactionDate(transaction),
             isManual = isManual,
             latitude = latitude,
             longitude = longitude,
@@ -242,5 +242,13 @@ class AngelPaySdkPostOperationsAdapter @Inject constructor() : PaymentPostOperat
 
     private fun formatMoney(amount: Double): String {
         return "$" + String.format(Locale.US, "%.2f", amount)
+    }
+
+    private fun resolveTransactionDate(transaction: UnifiedTransaction): String {
+        val plainDate = transaction.date?.trim().orEmpty()
+        if (plainDate.isNotBlank()) return plainDate
+
+        val creation = transaction.creationDate.trim()
+        return if (creation.length >= 10) creation.take(10) else creation
     }
 }

@@ -241,9 +241,12 @@ fun PaymentsScreen(
 
         // Payment Detail Bottom Sheet (for refund initiation)
         if (showPaymentDetailSheet && selectedPaymentForDetail != null) {
+            val refundAvailability = viewModel.getRefundAvailability(selectedPaymentForDetail!!)
             PaymentDetailBottomSheet(
                 payment = selectedPaymentForDetail!!,
                 canProcessRefund = canProcessRefund,
+                canRefundOnCurrentDevice = refundAvailability.canRefund,
+                nonRefundableReasonOverride = refundAvailability.reason,
                 onDismiss = { viewModel.dismissPaymentDetail() },
                 onRefundClick = { payment ->
                     viewModel.initiateRefund(payment)

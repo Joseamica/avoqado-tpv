@@ -15,6 +15,40 @@
 
 ---
 
+## [1.12.0] - 2026-04-28
+
+### **Added**
+
+- **Blumon TPV — meses sin intereses**: La pantalla de pago con tarjeta en variants `sandboxDebug` y `productionDebug` ahora muestra promociones MSI cuando el terminal config incluye `providerConfig.promotions.msi`. El usuario puede elegir pago directo (`msi = null`) o una opción MSI; la opción seleccionada se envía a `SaleIccParams`/`SaleCtlsParams`. No aplica para AngelPay/Nexgo.
+- **[Nexgo] Pago crypto B4Bit habilitado**: Implementado el flujo completo de pagos crypto en `AngelPayPaymentViewModel` (Nexgo N86). Antes el botón "Cripto" estaba hardcoded como `showCryptoOption = false` porque el ViewModel no soportaba crypto. Cambios:
+  - `AngelPayPaymentState.kt`: agregados estados `GeneratingCryptoQR` (loading mientras backend crea la orden B4Bit) y `AwaitingCryptoPayment` (mostrando QR, esperando webhook vía Socket.IO)
+  - `AngelPayPaymentViewModel.kt`: agregadas dependencias `ApiService` + `SocketManager`, field `currentCryptoRequestId`, suscripción a `SocketEvent.CryptoPaymentConfirmed`/`Failed`, y funciones `processCryptoPayment`, `cancelCryptoPayment`, `handleCryptoTimeout`, `handleCryptoPaymentConfirmed`, `handleCryptoPaymentFailed` — porteadas del `PaymentViewModel` (PAX/Blumon) ajustando los tipos de estado a `AngelPayPaymentState`
+  - `AngelPayPaymentScreen.kt`: pasa `showCryptoOption = true` y `onStartCryptoPayment = { viewModel.processCryptoPayment(...) }` al `MerchantSelectionContent`. Renderiza los nuevos states reusando `CryptoPaymentLoadingScreen` y `CryptoPaymentQrScreen` que viven en `main/` (compartidos con PAX). Crypto es hardware-agnostic — solo necesita backend + QR — así que funciona idéntico en Nexgo
+
+### **Changed**
+
+- **Acciones de orden gateadas por permisos del backend**: Los botones "Descuentos", "Cortesía" y "Void Items" del tab Acciones ahora se ven disabled cuando el staff no tiene el permiso correspondiente, con leyenda inline "Sin permisos para descuentos / cortesía / anular". Antes se mostraban activos y al presionar el backend rechazaba con 403, dejando al cajero sin entender por qué. `MenuViewModel` ahora inyecta `PermissionsRepository` y expone `canApplyDiscount`/`canCompItems`/`canVoidItems` (`StateFlow<Boolean>`) leyendo `orders:discount`, `orders:comp`, `orders:void` — los mismos strings que `tpv.routes.ts` valida con `checkPermission(...)`. El `ShortcutAction` recibió un nuevo campo `disabledReason: String?` que el `ShortcutActionCard` renderiza debajo del título cuando aplica.
+
+### **Fixed**
+
+- **Descuento manual fallaba en silencio**: `MenuViewModel.applyManualDiscount` solo loggeaba con `Timber.e(...)` cuando el backend rechazaba (403/400/etc). El cajero veía el dialog cerrarse sin feedback, sin entender que la operación había fallado. Ahora emite `MenuUiEvent.ShowSnackbar` tanto en éxito ("Descuento aplicado") como en error ("Error al aplicar descuento: ${error.message}"). El mismo patrón ya existía en `applyDiscount` legacy — solo faltaba propagarse al método nuevo.
+
+### **Tooling**
+
+- **Slash command `/check-permissions-sync`**: Auditoría reusable que escanea los 3 repos (`avoqado-server`, `avoqado-tpv`, `avoqado-web-dashboard`) y reporta tres categorías:
+  1. 🔴 Permisos que el backend exige pero ninguna UI gateaa (causa 403 silenciosos)
+  2. 🟡 Permisos que la UI chequea pero el backend no enforce (over-gating, posible refactor stale)
+  3. 🟢 Mismatches de naming entre repos (ej: `orders:discount` vs `tpv-orders:discount`)
+  Bonus: detecta `onFailure { Timber.e(...) }` sin emisión a UI events — los "errores invisibles" que motivaron este audit. Vive en `.claude/commands/check-permissions-sync.md`. Ejecutar antes de cada release y después de refactors que toquen `permissions.ts`.
+
+- **Cripto — mínimo $20 MXN con feedback visual**: En `MerchantSelectionContent`, el botón "Cripto" ahora se ve deshabilitado (mismo look que merchant switching loading) cuando el monto total es menor a $20 MXN. El botón **sigue siendo tappable** — al tocarlo se abre un `AlertDialog` explicando que el mínimo para B4Bit son $20 MXN. Si el monto es ≥ $20, el botón se comporta normal y lanza el flujo de pago crypto. Mantiene el server validándolo también (`initiateCryptoPayment` en `avoqado-server`) como red de seguridad
+
+### **Fixed**
+
+- **[Nexgo] Reintentar pago no funcionaba con un solo merchant**: Al fallar un cobro con AngelPay, el botón "Reintentar" regresaba al usuario a la pantalla de selección de merchant pero con el botón de Tarjeta deshabilitado. Root cause: `AngelPayPaymentViewModel.resetPayment()` limpiaba `_currentMerchant.value = null`, y el auto-select en `init{}` solo dispara cuando la lista de merchants emite un valor nuevo (no pasa en retry). En tiendas con un solo merchant, el selector está oculto (`merchants.size <= 1`), así que el usuario quedaba trabado sin forma de re-seleccionar. Fix: `resetPayment()` ya no limpia `_currentMerchant` — la selección del merchant es ortogonal al intento de pago, no debería tumbarse al reintentar
+
+---
+
 ## [1.11.1] - 2026-04-23
 
 ### **Changed**

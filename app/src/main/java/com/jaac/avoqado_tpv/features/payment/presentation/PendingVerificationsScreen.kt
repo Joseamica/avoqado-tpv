@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.payment.presentation
 
+import android.widget.Toast
 import com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -49,6 +50,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -116,8 +118,15 @@ fun PendingVerificationsScreen(
     val verifications by viewModel.pendingVerifications.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val uploadingId by viewModel.uploadingId.collectAsStateWithLifecycle()
+    val error by viewModel.error.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
+    LaunchedEffect(error) {
+        error?.let { message ->
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+            viewModel.dismissError()
+        }
+    }
 
     // Camera state
     var showCamera by rememberSaveable { mutableStateOf(false) }

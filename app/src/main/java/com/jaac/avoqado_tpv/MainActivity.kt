@@ -158,7 +158,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        installSplashScreen()
+        val splashScreen = installSplashScreen()
+        splashScreen.setKeepOnScreenCondition { permissionGranted.value == null }
         super.onCreate(savedInstanceState)
 
         // Edge-to-edge: content draws behind system bars (status bar, nav bar)
@@ -272,28 +273,23 @@ class MainActivity : ComponentActivity() {
         val armSequence = ForegroundRecoveryGate.tryConsumeArm() ?: return
         if (isChangingConfigurations || isFinishing || isDestroyed) return
 
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+        val launchIntent = Intent(this, MainActivity::class.java).apply {
             addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
             )
-        } ?: return
+        }
 
         Timber.w("🛡️ [ForegroundRecovery] onPause while armed - scheduling guarded relaunch | seq=$armSequence")
         val mainHandler = Handler(Looper.getMainLooper())
         mainHandler.postDelayed({
             if (ForegroundRecoveryGate.isCurrentArm(armSequence) && !AppUpdateReceiver.isActivityResumed) {
                 startActivity(launchIntent)
-                Timber.w("🛡️ [ForegroundRecovery] Relaunch attempt #1 | seq=$armSequence")
+                ForegroundRecoveryGate.disarm(reason = "relaunch_triggered")
+                Timber.w("🛡️ [ForegroundRecovery] Relaunch triggered | seq=$armSequence")
             }
         }, 350L)
-        mainHandler.postDelayed({
-            if (ForegroundRecoveryGate.isCurrentArm(armSequence) && !AppUpdateReceiver.isActivityResumed) {
-                startActivity(launchIntent)
-                Timber.w("🛡️ [ForegroundRecovery] Relaunch attempt #2 (fallback) | seq=$armSequence")
-            }
-        }, 900L)
     }
 
     /**

@@ -10,6 +10,7 @@ import com.jaac.avoqado_tpv.features.payment.data.dto.SendReceiptResponse
 import com.jaac.avoqado_tpv.features.payment.data.dto.SendWhatsAppReceiptRequest
 import retrofit2.Response
 import retrofit2.http.Body
+import retrofit2.http.Header
 import retrofit2.http.POST
 import retrofit2.http.Path
 
@@ -17,7 +18,7 @@ import retrofit2.http.Path
  * Retrofit service interface para payment endpoints del backend.
  *
  * **Base URL:** https://api.avoqado.io/api/v1/ (producción)
- *              https://humane-immortal-pika.ngrok-free.app/api/v1/ (desarrollo)
+ *              https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/ (desarrollo)
  *
  * **Autenticación:** Todas las requests requieren Bearer token en header.
  * ```
@@ -226,6 +227,7 @@ interface PaymentApiService {
     suspend fun recordRefund(
         @Path("venueId") venueId: String,
         @Body request: RefundRequest,
+        @Header("Idempotency-Key") idempotencyKey: String? = null,
     ): Response<RefundResponse>
 
     /**

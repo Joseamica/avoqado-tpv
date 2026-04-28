@@ -43,6 +43,8 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.util.ForegroundRecoveryGate
 import com.jaac.avoqado_tpv.features.payment.presentation.MerchantSelectionContent
+import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentLoadingScreen
+import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentQrScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.ReviewScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.TipScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.components.PaymentApprovedScreen
@@ -352,10 +354,27 @@ fun AngelPayPaymentScreen(
                         onSelectMerchant = { viewModel.selectMerchant(it) },
                         onStartPayment = { viewModel.startCardPayment() },
                         onStartCashPayment = { viewModel.startCashPayment() },
+                        onStartCryptoPayment = { viewModel.processCryptoPayment(currentState.totalAmount) },
                         onNavigateBack = null, // Back handled by Scaffold top bar
                         showCashOption = true,
-                        showCryptoOption = false,
+                        showCryptoOption = true,
                         hideAccountSelector = merchants.size <= 1,
+                    )
+                }
+
+                // 🪙 CRYPTO: Generating QR (loading from backend)
+                is AngelPayPaymentState.GeneratingCryptoQR -> {
+                    CryptoPaymentLoadingScreen(totalAmount = currentState.totalAmount)
+                }
+
+                // 🪙 CRYPTO: Awaiting customer payment (showing QR)
+                is AngelPayPaymentState.AwaitingCryptoPayment -> {
+                    CryptoPaymentQrScreen(
+                        paymentUrl = currentState.paymentUrl,
+                        totalAmount = currentState.totalAmount,
+                        expiresInSeconds = currentState.expiresInSeconds,
+                        onCancel = { viewModel.cancelCryptoPayment() },
+                        onTimeout = { viewModel.handleCryptoTimeout() },
                     )
                 }
 

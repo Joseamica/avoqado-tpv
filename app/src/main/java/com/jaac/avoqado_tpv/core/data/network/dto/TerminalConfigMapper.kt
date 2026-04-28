@@ -51,8 +51,37 @@ fun MerchantAccountDto.toDomain(): MerchantAccount {
         description = null,  // Backend doesn't return description in this endpoint
         environment = env,
         isActive = true,  // Backend only returns active merchants in config endpoint
-        processorType = processor
+        processorType = processor,
+        availableMsiMonths = extractMsiMonths(providerConfig)
     )
+}
+
+private fun extractMsiMonths(providerConfig: Map<String, Any>?): List<Int> {
+    if (providerConfig == null) return emptyList()
+
+    val promotions = providerConfig["promotions"]
+        ?: (providerConfig["dataResponse"] as? Map<*, *>)?.get("promotions")
+
+    val rawMsi = (promotions as? Map<*, *>)?.get("msi") ?: providerConfig["msi"]
+
+    return when (rawMsi) {
+        is Iterable<*> -> rawMsi.mapNotNull { it.toMsiMonthOrNull() }
+        else -> listOfNotNull(rawMsi.toMsiMonthOrNull())
+    }
+        .filter { it > 0 }
+        .distinct()
+        .sorted()
+}
+
+private fun Any?.toMsiMonthOrNull(): Int? {
+    return when (this) {
+        is Int -> this
+        is Long -> toInt()
+        is Double -> toInt().takeIf { toDouble() == this }
+        is Float -> toInt().takeIf { toFloat() == this }
+        is String -> toIntOrNull()
+        else -> null
+    }
 }
 
 /**

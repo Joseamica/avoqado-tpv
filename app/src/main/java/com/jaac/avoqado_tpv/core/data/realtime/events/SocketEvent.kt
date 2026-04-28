@@ -197,6 +197,7 @@ sealed interface SocketEvent {
         val rating: Int?,
         val skipReview: Boolean,
         val orderId: String?,
+        val processedByStaffId: String?,
         val senderDeviceName: String?,
         val venueId: String,
         val timestamp: String

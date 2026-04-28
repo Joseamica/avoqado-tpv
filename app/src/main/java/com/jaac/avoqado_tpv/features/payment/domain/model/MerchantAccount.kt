@@ -39,6 +39,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
  * @property description Optional description for clarification
  * @property environment SANDBOX or PRODUCTION
  * @property isActive Whether account is currently selectable
+ * @property availableMsiMonths MSI options enabled for this merchant, if any
  */
 data class MerchantAccount(
     val id: String,  // Local ID (e.g., "merchant_sandbox_a") - kept for backwards compatibility
@@ -49,7 +50,8 @@ data class MerchantAccount(
     val description: String? = null,
     val environment: MerchantEnvironment = MerchantEnvironment.SANDBOX,
     val isActive: Boolean = true,
-    val processorType: ProcessorType = ProcessorType.BLUMON
+    val processorType: ProcessorType = ProcessorType.BLUMON,
+    val availableMsiMonths: List<Int> = emptyList()
 ) {
     /**
      * Get formatted display text for UI

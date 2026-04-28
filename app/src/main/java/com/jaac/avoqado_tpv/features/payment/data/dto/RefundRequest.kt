@@ -81,6 +81,10 @@ data class RefundRequest(
     @SerializedName("entryMode")
     val entryMode: String?,
 
+    // 🛡️ Idempotency key for refund attempt deduplication (2026-04-22)
+    @SerializedName("idempotencyKey")
+    val idempotencyKey: String? = null,
+
     // Metadata
     @SerializedName("isPartialRefund")
     val isPartialRefund: Boolean = false,

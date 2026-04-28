@@ -333,7 +333,12 @@ class PaymentViewModel @Inject constructor(
     val showReceiptScreen: Boolean
         get() = tpvSettingsRepository.getCurrentSettings().showReceiptScreen
     val canPrintReceipt: Boolean
-        get() = printerManager.isPrinterAvailable()
+        get() = runCatching {
+            BuildConfig.ENABLE_PAX_SDK && printerManager.isPrinterAvailable()
+        }.getOrElse { error ->
+            Timber.w(error, "🖨️ [PaymentViewModel] Printer capability check failed; disabling print action")
+            false
+        }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // EMV TAG EXTRACTION USE CASES
@@ -576,11 +581,18 @@ class PaymentViewModel @Inject constructor(
 
                 when (state) {
                     is PaymentState.Success -> {
+                        val receipt = state.receipt
+                        if (receipt?.paymentId.isNullOrBlank()) {
+                            Timber.i("📡 [Socket-Payment] Success reached, waiting for backend receipt/paymentId before emitting result")
+                            return@collect
+                        }
+
                         Timber.i("📡 [Socket-Payment] Emitting SUCCESS result for requestId=$requestId")
                         socketManager.emitTerminalPaymentResult(
                             requestId = requestId,
                             status = "success",
-                            transactionId = state.receipt?.paymentId,
+                            paymentId = receipt.paymentId,
+                            transactionId = receipt.paymentId,
                             cardDetails = state.cardDetails?.let { card ->
                                 mapOf(
                                     "lastFour" to card.maskedPan.takeLast(4),
@@ -588,8 +600,8 @@ class PaymentViewModel @Inject constructor(
                                 )
                             },
                             errorMessage = null,
-                            receiptUrl = state.receipt?.receiptUrl,
-                            receiptAccessKey = state.receipt?.accessKey
+                            receiptUrl = receipt.receiptUrl,
+                            receiptAccessKey = receipt.accessKey
                         )
                         // Clear to prevent duplicate emissions
                         _socketRequestId = null
@@ -905,6 +917,8 @@ class PaymentViewModel @Inject constructor(
         splitContextOverride: SplitContext? = null,
         kioskModeOverride: Boolean? = null,
         kioskStaffIdOverride: String? = null,
+        socketProcessedByStaffIdOverride: String? = null,
+        socketProcessedByStaffIdClear: Boolean = false,
         refundContextOverride: PaymentContext.RefundPayment? = null,
         refundContextClear: Boolean = false,
         verificationContextOverride: VerificationContext? = null,
@@ -913,9 +927,14 @@ class PaymentViewModel @Inject constructor(
         track2Clear: Boolean = false,
         emvIssuerCountryOverride: String? = null,
         emvIssuerCountryClear: Boolean = false,
+        selectedMsiMonthsOverride: Int? = null,
+        selectedMsiMonthsClear: Boolean = false,
         // 🛡️ Idempotency key (2026-04-08)
         paymentAttemptIdOverride: String? = null,
-        paymentAttemptIdClear: Boolean = false
+        paymentAttemptIdClear: Boolean = false,
+        // 🛡️ Refund idempotency key (2026-04-22)
+        refundAttemptIdOverride: String? = null,
+        refundAttemptIdClear: Boolean = false
     ) {
         val settings = tpvSettingsRepository.getCurrentSettings()
         val amountValue = amountOverride ?: getAmountForFlow()
@@ -930,6 +949,11 @@ class PaymentViewModel @Inject constructor(
             kioskModeOverride == false -> null
             kioskStaffIdOverride != null -> kioskStaffIdOverride
             else -> sessionSnapshot.kioskStaffId
+        }
+        val effectiveSocketProcessedByStaffId = when {
+            socketProcessedByStaffIdClear -> null
+            socketProcessedByStaffIdOverride != null -> socketProcessedByStaffIdOverride
+            else -> sessionSnapshot.socketProcessedByStaffId
         }
         val effectiveRefundContext = when {
             refundContextClear -> null
@@ -951,11 +975,22 @@ class PaymentViewModel @Inject constructor(
             emvIssuerCountryOverride != null -> emvIssuerCountryOverride
             else -> sessionSnapshot.emvIssuerCountry
         }
+        val effectiveSelectedMsiMonths = when {
+            selectedMsiMonthsClear -> null
+            selectedMsiMonthsOverride != null -> selectedMsiMonthsOverride
+            else -> sessionSnapshot.selectedMsiMonths
+        }
         // 🛡️ Idempotency key: preserve existing unless explicitly cleared or overridden
         val effectivePaymentAttemptId = when {
             paymentAttemptIdClear -> null
             paymentAttemptIdOverride != null -> paymentAttemptIdOverride
             else -> sessionSnapshot.paymentAttemptId
+        }
+        // 🛡️ Refund idempotency key: preserve existing unless explicitly cleared or overridden
+        val effectiveRefundAttemptId = when {
+            refundAttemptIdClear -> null
+            refundAttemptIdOverride != null -> refundAttemptIdOverride
+            else -> sessionSnapshot.refundAttemptId
         }
 
         val features = mutableSetOf<PaymentFeature>()
@@ -988,10 +1023,13 @@ class PaymentViewModel @Inject constructor(
             merchantLocalId = _currentMerchant.value?.id,
             isKioskPayment = effectiveKioskMode,
             kioskStaffId = effectiveKioskStaffId,
+            socketProcessedByStaffId = effectiveSocketProcessedByStaffId,
             skipLocalOrderValidation = effectiveOrderContext?.skipLocalOrderValidation == true,
             track2 = effectiveTrack2,
             emvIssuerCountry = effectiveEmvIssuerCountry,
-            paymentAttemptId = effectivePaymentAttemptId
+            selectedMsiMonths = effectiveSelectedMsiMonths,
+            paymentAttemptId = effectivePaymentAttemptId,
+            refundAttemptId = effectiveRefundAttemptId
         )
 
         _showProofOfSale.value = PaymentFeature.PROOF_OF_SALE in features
@@ -1021,6 +1059,24 @@ class PaymentViewModel @Inject constructor(
             paymentAttemptIdOverride = generated
         )
         Timber.i("🛡️ [Idempotency] Generated new paymentAttemptId=$generated")
+        return generated
+    }
+
+    /**
+     * 🛡️ Get or generate refund idempotency key for the current logical refund attempt.
+     */
+    private fun ensureRefundAttemptId(): String {
+        val existing = sessionSnapshot.refundAttemptId
+        if (existing != null) {
+            Timber.d("🛡️ [Refund Idempotency] Reusing existing refundAttemptId=$existing")
+            return existing
+        }
+        val generated = java.util.UUID.randomUUID().toString()
+        updateSessionSnapshot(
+            reason = "ensureRefundAttemptId",
+            refundAttemptIdOverride = generated
+        )
+        Timber.i("🛡️ [Refund Idempotency] Generated new refundAttemptId=$generated")
         return generated
     }
 
@@ -1145,6 +1201,14 @@ class PaymentViewModel @Inject constructor(
         }
     }
 
+    fun setSocketProcessedByStaffId(staffId: String?) {
+        updateSessionSnapshot(
+            reason = "setSocketProcessedByStaffId",
+            socketProcessedByStaffIdOverride = staffId?.takeIf { it.isNotBlank() },
+            socketProcessedByStaffIdClear = staffId.isNullOrBlank()
+        )
+    }
+
     fun setKioskPaymentMode(isKiosk: Boolean, staffId: String? = null) {
         Timber.i("🥝 [KIOSK] Payment mode set: isKiosk=$isKiosk, staffId=$staffId")
         if (isKiosk) {
@@ -1155,6 +1219,20 @@ class PaymentViewModel @Inject constructor(
             kioskModeOverride = isKiosk,
             kioskStaffIdOverride = staffId
         )
+    }
+
+    private fun resolveAttributionStaffId(): String {
+        sessionSnapshot.socketProcessedByStaffId?.takeIf { it.isNotBlank() }?.let {
+            Timber.i("📡 [Socket] Using processedByStaffId override for attribution: $it")
+            return it
+        }
+
+        if (sessionSnapshot.isKioskPayment && !sessionSnapshot.kioskStaffId.isNullOrBlank()) {
+            Timber.i("🥝 [KIOSK] Using kiosk staff ID for payment attribution: ${sessionSnapshot.kioskStaffId}")
+            return sessionSnapshot.kioskStaffId!!
+        }
+
+        return currentStaffId
     }
 
     /**
@@ -2007,6 +2085,10 @@ class PaymentViewModel @Inject constructor(
      * This prevents error -11 (FailureSecondGenerate) for cards that don't need ARPC.
      */
     fun startPayment(amount: String) {
+        startPayment(amount, sessionSnapshot.selectedMsiMonths)
+    }
+
+    fun startPayment(amount: String, selectedMsiMonths: Int?) {
         // 🚦 GUARD: Prevent multiple concurrent payment flows (Square/Toast pattern)
         // Critical for slow network: User clicking "Tarjeta" multiple times during API delay
         // Without this guard, each click launches a new payment flow → chaos
@@ -2031,7 +2113,13 @@ class PaymentViewModel @Inject constructor(
 
         Timber.d("🚦 [Payment] Payment flow started - guard locked")
 
-        updateSessionSnapshot(reason = "startPayment", amountOverride = amount)
+        updateSessionSnapshot(
+            reason = "startPayment",
+            amountOverride = amount,
+            selectedMsiMonthsOverride = selectedMsiMonths,
+            selectedMsiMonthsClear = selectedMsiMonths == null
+        )
+        Timber.i("💳 [MSI] Starting card payment with msi=${selectedMsiMonths ?: "DIRECT"}")
 
         // Reset track2 and international detection state for new payment
         updateSessionSnapshot(
@@ -2682,7 +2770,9 @@ class PaymentViewModel @Inject constructor(
             Timber.i("   Serial: ${currentMerchantAccount.serialNumber}")
 
             val saleType = if (isContactless) "SaleCtls (CONTACTLESS)" else "SaleIcc (CHIP)"
+            val selectedMsiMonths = sessionSnapshot.selectedMsiMonths
             Timber.i("🌐 [$saleType] Sending online authorization to Momentum...")
+            Timber.i("💳 [MSI] Sending $saleType with msi=${selectedMsiMonths ?: "DIRECT"}")
             Timber.d("   Amount: $amount")
             Timber.d("   Track2: ${track2.take(16)}...")
             Timber.d("   Cardholder: $cardHolderName")
@@ -2710,7 +2800,7 @@ class PaymentViewModel @Inject constructor(
                     authenticationCard = AuthenticationCard.SIGNATURE,
                     emvTagList = emvTagList,
                     cipherType = cipherType,
-                    msi = null
+                    msi = selectedMsiMonths
                 )
                 val ctlsResult = saleCtlsUseCase.run(ctlsParams)
                 if (ctlsResult.isLeft) {
@@ -2731,7 +2821,7 @@ class PaymentViewModel @Inject constructor(
                     authenticationCard = AuthenticationCard.SIGNATURE,
                     emvTagList = emvTagList,
                     cipherType = cipherType,
-                    msi = null
+                    msi = selectedMsiMonths
                 )
                 val iccResult = saleIccUseCase.run(iccParams)
                 if (iccResult.isLeft) {
@@ -4023,7 +4113,10 @@ class PaymentViewModel @Inject constructor(
                 // - If kiosk session exists → commission/tip goes to SESSION user
                 // - If no kiosk session → commission/tip goes to PIN-confirming staff
                 // PIN is always required to confirm cash receipt, but attribution is separate
-                val effectiveStaffId = if (sessionSnapshot.isKioskPayment && !sessionSnapshot.kioskStaffId.isNullOrBlank()) {
+                val effectiveStaffId = if (!sessionSnapshot.socketProcessedByStaffId.isNullOrBlank()) {
+                    Timber.i("📡 [SOCKET CASH] Using socket staff for attribution: ${sessionSnapshot.socketProcessedByStaffId}")
+                    sessionSnapshot.socketProcessedByStaffId!!
+                } else if (sessionSnapshot.isKioskPayment && !sessionSnapshot.kioskStaffId.isNullOrBlank()) {
                     Timber.i("🥝 [KIOSK CASH] Using SESSION staff for attribution: ${sessionSnapshot.kioskStaffId}")
                     Timber.i("   👤 Confirmed by: ${confirmedByStaffId ?: "unknown"} (for audit only)")
                     sessionSnapshot.kioskStaffId!!  // Session user gets commission/tip
@@ -4192,8 +4285,13 @@ class PaymentViewModel @Inject constructor(
         viewModelScope.launch {
             stopDetectCardUseCase.runInfallible(StopDetectCardParams())
             _isPaymentInProgress.value = false  // 🚦 Release guard
-            // 🛡️ Clear idempotency key so the next attempt generates a fresh one
-            updateSessionSnapshot(reason = "cancelPayment", paymentAttemptIdClear = true)
+            // 🛡️ Clear idempotency keys so the next attempt generates fresh ones
+            updateSessionSnapshot(
+                reason = "cancelPayment",
+                selectedMsiMonthsClear = true,
+                paymentAttemptIdClear = true,
+                refundAttemptIdClear = true
+            )
             _state.value = PaymentState.Cancelled
             Timber.d("🚫 Payment cancelled by user")
         }
@@ -4236,12 +4334,15 @@ class PaymentViewModel @Inject constructor(
             ratingOverride = null,
             kioskModeOverride = false,
             kioskStaffIdOverride = null,
+            socketProcessedByStaffIdClear = true,
             refundContextClear = true,
             verificationContextClear = true,
             track2Clear = true,
             emvIssuerCountryClear = true,
-            // 🛡️ Clear idempotency key so the next attempt generates a fresh one
-            paymentAttemptIdClear = true
+            selectedMsiMonthsClear = true,
+            // 🛡️ Clear idempotency keys so the next attempt generates fresh ones
+            paymentAttemptIdClear = true,
+            refundAttemptIdClear = true
         )
         Timber.d("🔄 Payment state reset (cleared payment-level context)")
     }
@@ -4271,7 +4372,8 @@ class PaymentViewModel @Inject constructor(
             splitType = split?.type?.value,
             equalPartsPartySize = split?.equalPartsPartySize,
             equalPartsPayedFor = split?.equalPartsPayedFor,
-            paidProductIds = split?.paidProductIds
+            paidProductIds = split?.paidProductIds,
+            selectedMsiMonths = session.selectedMsiMonths
         )
         Timber.d("📸 [Context Snapshot] amount=${context.amount} | tip=${context.tipAmount} | rating=${context.rating} | merchant_cuid=${context.merchantAccountId ?: "NULL"} | local_id=${context.merchantLocalId}")
         Timber.d("📸 [Context Snapshot] orderId=${context.orderId} | orderNumber=${context.orderNumber} | splitType=${context.splitType}")
@@ -4363,11 +4465,13 @@ class PaymentViewModel @Inject constructor(
         val venueId = if (!currentVenueId.isNullOrBlank()) currentVenueId else base.venueId
         val staffId = if (!currentStaffId.isNullOrBlank()) currentStaffId else base.staffId
         val shiftId = currentShiftId ?: base.shiftId
+        val refundAttemptId = session.refundAttemptId ?: ensureRefundAttemptId()
 
         return base.copy(
             venueId = venueId,
             staffId = staffId,
-            shiftId = shiftId
+            shiftId = shiftId,
+            idempotencyKey = refundAttemptId,
         )
     }
 
@@ -4489,7 +4593,9 @@ class PaymentViewModel @Inject constructor(
             tipOverride = context.tipAmount,
             ratingOverride = context.rating,
             orderContextOverride = orderContextOverride,
-            splitContextOverride = splitContextOverride
+            splitContextOverride = splitContextOverride,
+            selectedMsiMonthsOverride = context.selectedMsiMonths,
+            selectedMsiMonthsClear = context.selectedMsiMonths == null
         )
 
         // ✅ Go directly to payment processing (skip amount/tip/rating steps)
@@ -4553,7 +4659,9 @@ class PaymentViewModel @Inject constructor(
             orderContextOverride = orderContextOverride,
             splitContextOverride = splitContextOverride,
             track2Clear = true,
-            emvIssuerCountryClear = true
+            emvIssuerCountryClear = true,
+            selectedMsiMonthsOverride = context.selectedMsiMonths,
+            selectedMsiMonthsClear = context.selectedMsiMonths == null
         )
 
         _state.value = PaymentState.SelectingMerchant(
@@ -4951,14 +5059,7 @@ class PaymentViewModel @Inject constructor(
 
                 val blumonSerial = _currentMerchant.value?.serialNumber ?: "" // ✅ CRITICAL FIX: Use VIRTUAL serial (e.g., "2841548417"), not physical terminal serial
 
-                // 🥝 KIOSK: Use kiosk staff ID if available (for sales attribution/commissions)
-                // Otherwise use auth context staff ID
-                val effectiveStaffId = if (sessionSnapshot.isKioskPayment && !sessionSnapshot.kioskStaffId.isNullOrBlank()) {
-                    Timber.i("🥝 [KIOSK] Using kiosk staff ID for payment attribution: ${sessionSnapshot.kioskStaffId}")
-                    sessionSnapshot.kioskStaffId!!
-                } else {
-                    currentStaffId
-                }
+                val effectiveStaffId = resolveAttributionStaffId()
 
                 val orderIdForFlow = getOrderIdForFlow()
                 val context = if (orderIdForFlow != null) {
@@ -6791,8 +6892,10 @@ class PaymentViewModel @Inject constructor(
             amountOverride = context.amount.toPlainString(),
             tipOverride = context.tip.toPlainString(),
             ratingOverride = null,
-            refundContextOverride = refundContext
+            refundContextOverride = refundContext,
+            refundAttemptIdClear = true
         )
+        ensureRefundAttemptId()
 
         Timber.i("═══════════════════════════════════════════════════════════")
         Timber.i("💸 [REFUND] Starting refund transaction")
@@ -7377,7 +7480,8 @@ class PaymentViewModel @Inject constructor(
                 // Clear refund context after refund completes
                 updateSessionSnapshot(
                     reason = "refund-reset",
-                    refundContextClear = true
+                    refundContextClear = true,
+                    refundAttemptIdClear = true
                 )
 
             } catch (e: Exception) {
@@ -7385,7 +7489,8 @@ class PaymentViewModel @Inject constructor(
                 // Reset state even on error
                 updateSessionSnapshot(
                     reason = "refund-reset",
-                    refundContextClear = true
+                    refundContextClear = true,
+                    refundAttemptIdClear = true
                 )
             }
         }

@@ -239,7 +239,15 @@ class HomeViewModel @Inject constructor(
         // ═══════════════════════════════════════════════════════════════════
         fetchAttendanceState()                // immediate — needed for button gating
         listenForConnectionRestored()       // delay(1_000)
-        initializeBlumonSDK()               // delay(2_000) — blocks UI until ready
+        if (BuildConfig.ENABLE_PAX_SDK) {
+            initializeBlumonSDK()           // delay(2_000) — blocks UI until ready (PAX only)
+        } else {
+            // Nexgo/AngelPay builds do not have Pax native libs.
+            _isBlumonInitializing.value = false
+            _isBlumonReady.value = true
+            _blumonInitError.value = null
+            Timber.i("🔶 [HomeViewModel] Skipping Blumon init on non-PAX build")
+        }
         fetchSalesGoal()                    // delay(2_500)
         warmUpProductCache()                // delay(3_000)
         checkForUpdates()                   // delay(4_000)
@@ -803,6 +811,13 @@ class HomeViewModel @Inject constructor(
      * Called from UI when user taps "Reintentar" after init failure
      */
     fun retryBlumonInit() {
+        if (!BuildConfig.ENABLE_PAX_SDK) {
+            _isBlumonInitializing.value = false
+            _isBlumonReady.value = true
+            _blumonInitError.value = null
+            Timber.i("🔶 [HomeViewModel] Ignoring Blumon retry on non-PAX build")
+            return
+        }
         Timber.i("🔧 [Blumon] Retrying SDK initialization...")
         initializeBlumonSDK()
     }
@@ -1000,6 +1015,7 @@ class HomeViewModel @Inject constructor(
                             rating = event.rating,
                             skipReview = event.skipReview,
                             orderId = event.orderId,
+                            processedByStaffId = event.processedByStaffId,
                             source = com.jaac.avoqado_tpv.core.bluetooth.PaymentSource.SOCKET,
                             socketRequestId = event.requestId
                         )

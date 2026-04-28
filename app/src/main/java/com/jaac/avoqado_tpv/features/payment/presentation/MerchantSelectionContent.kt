@@ -60,15 +60,29 @@ fun MerchantSelectionContent(
     merchantSwitchMessage: String? = null,
     onSelectMerchant: (MerchantAccount) -> Unit,
     onStartPayment: () -> Unit,
+    onStartPaymentWithMsi: (Int?) -> Unit = { onStartPayment() },
     onStartCashPayment: () -> Unit,
     onStartCryptoPayment: () -> Unit = {},  // 🪙 Crypto payment callback (B4Bit)
     onNavigateBack: (() -> Unit)? = null,
     showCashOption: Boolean = true,  // 🥝 Show/hide cash button
     showCryptoOption: Boolean = false,  // 🪙 Show/hide crypto button (B4Bit)
+    enableMsiPromotions: Boolean = false,
     hideAccountSelector: Boolean = false,  // 🥝 KIOSK: Hide merchant list when default is pre-configured
 ) {
     // 💵 State for cash payment confirmation dialog
     var showCashConfirmationDialog by remember { mutableStateOf(false) }
+    var showPromotionDialog by remember { mutableStateOf(false) }
+    var showMsiDialog by remember { mutableStateOf(false) }
+    val availableMsiMonths = if (enableMsiPromotions) {
+        currentMerchant?.availableMsiMonths.orEmpty()
+    } else {
+        emptyList()
+    }
+    // 🪙 B4Bit crypto minimum amount is $20 MXN — reject below and show explanatory dialog
+    var showCryptoMinAmountDialog by remember { mutableStateOf(false) }
+    val cryptoMeetsMinAmount = remember(totalAmount) {
+        (totalAmount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO) >= java.math.BigDecimal("20")
+    }
 
     Box(modifier = modifier.fillMaxSize()) {
         ResponsiveScaffold(
@@ -271,7 +285,13 @@ fun MerchantSelectionContent(
                                     if (cardEnabled) enabledMethodBackground
                                     else disabledMethodBackground
                                 )
-                                .clickable(enabled = cardEnabled) { onStartPayment() },
+                                .clickable(enabled = cardEnabled) {
+                                    if (availableMsiMonths.isEmpty()) {
+                                        onStartPaymentWithMsi(null)
+                                    } else {
+                                        showPromotionDialog = true
+                                    }
+                                },
                             contentAlignment = Alignment.Center
                         ) {
                             val cardTextColor = if (cardEnabled) MaterialTheme.colorScheme.onSurfaceVariant
@@ -344,6 +364,9 @@ fun MerchantSelectionContent(
                         // 🪙 Only show crypto button if showCryptoOption is true
                         // B4Bit crypto payment integration
                         if (showCryptoOption) {
+                            // Disabled look when below min amount OR switching merchant — but stays
+                            // tappable below min so we can surface the explanatory dialog.
+                            val cryptoLooksEnabled = !merchantSwitchingLoading && cryptoMeetsMinAmount
                             // Crypto payment button
                             Box(
                                 modifier = Modifier
@@ -351,15 +374,19 @@ fun MerchantSelectionContent(
                                     .fillMaxHeight()
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(
-                                        if (!merchantSwitchingLoading) enabledMethodBackground
+                                        if (cryptoLooksEnabled) enabledMethodBackground
                                         else disabledMethodBackground
                                     )
                                     .clickable(enabled = !merchantSwitchingLoading) {
-                                        onStartCryptoPayment()
+                                        if (cryptoMeetsMinAmount) {
+                                            onStartCryptoPayment()
+                                        } else {
+                                            showCryptoMinAmountDialog = true
+                                        }
                                     },
                                 contentAlignment = Alignment.Center
                             ) {
-                                val cryptoTextColor = if (!merchantSwitchingLoading) MaterialTheme.colorScheme.onSurfaceVariant
+                                val cryptoTextColor = if (cryptoLooksEnabled) MaterialTheme.colorScheme.onSurfaceVariant
                                 else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -441,6 +468,136 @@ fun MerchantSelectionContent(
                 }
             )
         }
+
+        if (showPromotionDialog) {
+            AlertDialog(
+                onDismissRequest = { showPromotionDialog = false },
+                title = {
+                    Text(
+                        text = "Seleccione su promocion",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        PromotionOptionRow(
+                            label = "Pago directo",
+                            onClick = {
+                                showPromotionDialog = false
+                                onStartPaymentWithMsi(null)
+                            }
+                        )
+                        PromotionOptionRow(
+                            label = "Meses sin intereses",
+                            onClick = {
+                                showPromotionDialog = false
+                                showMsiDialog = true
+                            }
+                        )
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { showPromotionDialog = false }) {
+                        Text("Cancelar")
+                    }
+                }
+            )
+        }
+
+        if (showMsiDialog) {
+            AlertDialog(
+                onDismissRequest = { showMsiDialog = false },
+                title = {
+                    Text(
+                        text = "Meses sin intereses",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        availableMsiMonths.forEach { months ->
+                            PromotionOptionRow(
+                                label = "$months MSI",
+                                onClick = {
+                                    showMsiDialog = false
+                                    onStartPaymentWithMsi(months)
+                                }
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showMsiDialog = false
+                            showPromotionDialog = true
+                        }
+                    ) {
+                        Text("Regresar")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showMsiDialog = false }) {
+                        Text("Cancelar")
+                    }
+                }
+            )
+        }
+
+        // 🪙 B4Bit crypto minimum amount dialog ($20 MXN)
+        if (showCryptoMinAmountDialog) {
+            AlertDialog(
+                onDismissRequest = { showCryptoMinAmountDialog = false },
+                title = {
+                    Text(
+                        text = "Monto insuficiente",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                text = {
+                    Text(
+                        text = "El monto mínimo para pagar con cripto es $20.00 MXN. Ingresa un monto mayor o usa otro método de pago.",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                },
+                confirmButton = {
+                    Button(onClick = { showCryptoMinAmountDialog = false }) {
+                        Text("Entendido")
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun PromotionOptionRow(
+    label: String,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                shape = RoundedCornerShape(10.dp)
+            )
+            .clickable { onClick() }
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = FontWeight.Medium
+        )
     }
 }
 

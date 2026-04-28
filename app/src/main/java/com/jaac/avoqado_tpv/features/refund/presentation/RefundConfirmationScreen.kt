@@ -72,6 +72,7 @@ fun RefundConfirmationScreen(
     merchantAccountId: String,
     blumonSerialNumber: String,
     refundedAmount: BigDecimal = BigDecimal.ZERO,
+    isProcessing: Boolean = false,
     onNavigateBack: () -> Unit,
     onConfirmRefund: (
         amount: BigDecimal,
@@ -465,25 +466,40 @@ fun RefundConfirmationScreen(
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.error
                     ),
-                    enabled = isValidAmount
+                    enabled = isValidAmount && !isProcessing
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Warning,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Procesar Reembolso ${currencyFormatter.format(refundAmount)}",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold
-                    )
+                    if (isProcessing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onError
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Procesando...",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Procesar Reembolso ${currencyFormatter.format(refundAmount)}",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
 
                 // Cancel button
                 OutlinedButton(
                     onClick = onNavigateBack,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isProcessing
                 ) {
                     Text("Cancelar")
                 }

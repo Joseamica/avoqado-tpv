@@ -27,9 +27,11 @@ data class PaymentSession(
     val merchantLocalId: String? = null,
     val isKioskPayment: Boolean = false,
     val kioskStaffId: String? = null,
+    val socketProcessedByStaffId: String? = null,
     val skipLocalOrderValidation: Boolean = false,
     val track2: String = "",
     val emvIssuerCountry: String = "",
+    val selectedMsiMonths: Int? = null,
     /**
      * 🛡️ IDEMPOTENCY KEY (2026-04-08) — Stripe/Square/Toast pattern.
      *
@@ -45,7 +47,15 @@ data class PaymentSession(
      *
      * Null means: no payment attempt is currently in progress.
      */
-    val paymentAttemptId: String? = null
+    val paymentAttemptId: String? = null,
+    /**
+     * 🛡️ Refund idempotency key (2026-04-22).
+     *
+     * UUID v4 generated once per logical refund attempt and reused on retries of the
+     * same refund context. This is propagated to backend request header/body so
+     * duplicate retries cannot create duplicated refund records.
+     */
+    val refundAttemptId: String? = null
 ) {
     companion object {
         fun empty(): PaymentSession = PaymentSession(

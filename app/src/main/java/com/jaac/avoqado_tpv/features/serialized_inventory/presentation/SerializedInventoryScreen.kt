@@ -46,6 +46,7 @@ import com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.Inventory
 import timber.log.Timber
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.CategoryWithStock
 import com.jaac.avoqado_tpv.features.serialized_sale.presentation.CreateCategoryDialog
+import com.google.zxing.BarcodeFormat
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
@@ -127,6 +128,12 @@ fun SerializedInventoryScreen(
             when {
                 uiState.isScanning -> {
                     // Barcode scanner overlay
+                    // requireMultiFrameConsensus: ZXing must decode the same value in 2
+                    //   consecutive frames within 700ms before firing. Defends against
+                    //   misreads on dirty/smudged stickers (the 8952...18BF vs 8952...183F
+                    //   case from production). Transparent to the user — adds ~100-300ms.
+                    // formats=CODE_128: SIM stickers are exclusively Code-128. Excluding
+                    //   EAN/UPC/QR removes false-positive decodes on partial reads.
                     BarcodeScannerScreen(
                         onBarcodeScanned = { barcode, _ ->
                             viewModel.onBarcodeScanned(barcode) { result ->
@@ -134,12 +141,15 @@ fun SerializedInventoryScreen(
                                     is InventoryScanResult.Added -> "✓ Agregado: $barcode"
                                     is InventoryScanResult.AlreadyScanned -> "Ya escaneado: $barcode"
                                     is InventoryScanResult.Duplicate -> "⚠ Ya registrado: ${result.serialNumber}"
+                                    is InventoryScanResult.NeedsConfirmation -> "⚠ Verifica el ICCID en el sticker"
                                     is InventoryScanResult.Error -> "⚠ Error de conexión, reintenta"
                                 }
                             }
                             // Don't close scanner - allow continuous scanning
                         },
                         onClose = { viewModel.stopScanning() },
+                        requireMultiFrameConsensus = true,
+                        formats = listOf(BarcodeFormat.CODE_128),
                         modifier = Modifier.fillMaxSize()
                     )
 
@@ -239,6 +249,67 @@ fun SerializedInventoryScreen(
                 )
             },
             categoryLabel = labels?.category ?: "Categoría"
+        )
+    }
+
+    // Luhn confirmation dialog — appears when an ICCID is structurally valid but
+    // failed the ISO/IEC 7812 check digit. Empirically ~0.1% of legit carrier SIMs
+    // fail Luhn (verified against 1,021 ALTAN SIMs) so we don't hard-reject; instead
+    // we ask the promotor to physically verify the sticker matches the decoded value.
+    // Critical for catching ZXing single-digit misreads (the most common failure).
+    val pendingIccid = uiState.pendingLuhnConfirmation
+    if (pendingIccid != null) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissLuhnWarning() },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.tertiary
+                )
+            },
+            title = { Text("Verifica el ICCID") },
+            text = {
+                Column {
+                    Text(
+                        "Compara el código en el sticker físico del SIM con el siguiente:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = pendingIccid,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant,
+                                RoundedCornerShape(8.dp)
+                            )
+                            .padding(12.dp)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        "Solo agrégalo si coincide carácter por carácter. Si hay alguna diferencia, escanea de nuevo.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.confirmLuhnWarning(pendingIccid) { /* result handled in ViewModel */ }
+                    }
+                ) {
+                    Text("Sí, coincide")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissLuhnWarning() }) {
+                    Text("Escanear de nuevo")
+                }
+            }
         )
     }
 }
@@ -344,6 +415,8 @@ private fun InventoryFormContent(
     // State for physical scanner input
     var physicalScannerInput by remember { mutableStateOf("") }
     var scanFeedback by remember { mutableStateOf<String?>(null) }
+    // Flash helper text in error color when typing/paste introduces non-alphanumeric chars
+    var invalidCharFlash by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -387,6 +460,14 @@ private fun InventoryFormContent(
         if (scanFeedback != null) {
             kotlinx.coroutines.delay(2000)
             scanFeedback = null
+        }
+    }
+
+    // Clear invalid-char flash after 2 seconds
+    LaunchedEffect(invalidCharFlash) {
+        if (invalidCharFlash) {
+            kotlinx.coroutines.delay(2000)
+            invalidCharFlash = false
         }
     }
 
@@ -434,7 +515,15 @@ private fun InventoryFormContent(
         // 📱 Physical scanner input field (compact for PAX A910S)
         OutlinedTextField(
             value = physicalScannerInput,
-            onValueChange = { physicalScannerInput = it.filter { c -> c.isLetterOrDigit() } },
+            onValueChange = { newValue ->
+                val filtered = newValue.filter { c -> c.isLetterOrDigit() }
+                if (filtered.length != newValue.length) {
+                    // User typed/pasted a symbol (or scanner injected one) — flash helper
+                    invalidCharFlash = true
+                    Timber.d("📦 Filtered ${newValue.length - filtered.length} invalid char(s) from input")
+                }
+                physicalScannerInput = filtered
+            },
             shape = RoundedCornerShape(50),
             modifier = Modifier
                 .fillMaxWidth()
@@ -480,6 +569,7 @@ private fun InventoryFormContent(
                                             is InventoryScanResult.Added -> "✓ $barcode"
                                             is InventoryScanResult.AlreadyScanned -> "⚠ Ya escaneado"
                                             is InventoryScanResult.Duplicate -> "⚠ Ya registrado: ${result.serialNumber}"
+                                            is InventoryScanResult.NeedsConfirmation -> "⚠ Verifica sticker"
                                             is InventoryScanResult.Error -> "⚠ Error, reintenta"
                                         }
                                     }
@@ -523,7 +613,7 @@ private fun InventoryFormContent(
                 }
             },
             keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Text,
+                keyboardType = KeyboardType.Ascii,
                 imeAction = ImeAction.Done
             ),
             keyboardActions = KeyboardActions(
@@ -537,6 +627,7 @@ private fun InventoryFormContent(
                                 is InventoryScanResult.Added -> "✓ $barcode"
                                 is InventoryScanResult.AlreadyScanned -> "⚠ Ya escaneado"
                                 is InventoryScanResult.Duplicate -> "⚠ Ya registrado: ${result.serialNumber}"
+                                is InventoryScanResult.NeedsConfirmation -> "⚠ Verifica sticker"
                                 is InventoryScanResult.Error -> "⚠ Error, reintenta"
                             }
                             Timber.d("📦 Scan result: $scanFeedback")
@@ -557,6 +648,22 @@ private fun InventoryFormContent(
             ),
             singleLine = true,
             textStyle = MaterialTheme.typography.bodySmall
+        )
+
+        // Helper text: alphanumeric requirement — always visible, flashes red when filter strips chars
+        Text(
+            text = if (invalidCharFlash) {
+                "⚠ Símbolo eliminado — solo letras y números"
+            } else {
+                "Solo letras y números"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = if (invalidCharFlash) {
+                MaterialTheme.colorScheme.error
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.padding(start = 4.dp, top = 2.dp)
         )
 
         // Inline error from ViewModel

@@ -15,6 +15,28 @@
 
 ---
 
+## [1.13.2] - 2026-04-29
+
+### **Added**
+
+- **3 capas independientes de defensa contra misreads de ICCID en alta de SIM**: Incidente real 28-abr (verificado en logcat + Postgres `av-db-25`): mismo sticker físico escaneado dos veces, ZXing devolvió strings distintos (`8952140063631660183F` real, `895214006363166018BF` misread con `B` en pos 19 — ambos alfanuméricos válidos, pasaron el filtro `^[A-Za-z0-9]+$` shippeado horas antes). Backend insertó las 2 filas como SIMs separadas porque el unique constraint `(orgId, serialNumber)` no detecta strings distintos. La SIM fantasma quedó en inventario sin existir físicamente. La nueva defensa apila 3 capas que fallan por razones independientes:
+  - **Capa 1 — Format guard estricto MX-locked** (`SerializedInventoryViewModel.MX_ICCID_REGEX = ^8952\d{15,16}F?$`): valida estructura ICCID per ITU-T E.118 + GSM Phase 1 (MII `89` + país `52` MX + 15-16 dígitos + opcional `F` padding BCD). Verificado empíricamente contra 1,021 SIMs reales del inventario ALTAN: **100% match**, cero false-rejects. Bloquea misreads con letras a mitad de string (el caso `...18BF`), prefijos no-mexicanos (`8957...` Brasil), y caracteres especiales por scanner sucio. Hard-reject con error inline en español.
+  - **Capa 2 — Luhn checksum (ISO/IEC 7812)** sobre los 19 dígitos canónicos (sin la `F` padding). NO hard-reject: empíricamente 1 de 1,021 SIMs ALTAN legítimas (0.10%) falla Luhn, así que rechazarlas duro perdería inventario real. En su lugar, surface como `InventoryScanResult.NeedsConfirmation` que dispara un `AlertDialog` mostrando el ICCID grande con el mensaje "Compara el código en el sticker físico" y botones "Sí, coincide" / "Escanear de nuevo". Caza single-digit ZXing misreads (la falla más común) sin perder SIMs legítimas.
+  - **Capa 3 — Multi-frame consensus en la cámara** (`BarcodeScannerScreen.requireMultiFrameConsensus`): ZXing decodifica 5-10 frames/seg cuando un código está en vista. Antes de disparar `onBarcodeScanned`, requiere que 2 frames consecutivos dentro de 700ms decodifiquen exactamente el mismo string. Misreads son aleatorios → mismo error 2 veces seguidas es ~0%. **Transparente al usuario** (~100-300ms de latencia adicional, imperceptible). El parámetro es opt-in con default `false` para no afectar payment/menu/sale scanners que dependen del comportamiento single-frame actual.
+  - **Capa 4 — `formats = [Code-128]` solo para alta de SIM**: `BarcodeScannerScreen` ahora acepta lista de formats opcional. SerializedInventoryScreen pasa `[Code-128]` (los stickers SIM son exclusivamente Code-128), removiendo decoders EAN/UPC/QR que pueden disparar false-positives sobre lecturas parciales. Otros screens (payment, menu, sale) mantienen el set amplio por default.
+- **Canonicalización de ICCID** (`SerializedInventoryViewModel.canonicalizeIccid`): trim + uppercase antes de validar, dedup-check, y persistir. Algunos hardware scanners anexan CR/LF/whitespace; ICCIDs deben comparar case-insensitive. Storage usa la forma canónica.
+- **Tests para los 3 capas**: 14 tests en `SerializedInventoryViewModelTest` cubren format guard (rechaza misread real, comilla, prefijo no-MX, demasiado corto), Luhn (NeedsConfirmation surface, confirm proceeds, dismiss clears, stale ignore), canonicalización (trim CR/LF, uppercase F), y la regex + Luhn validados contra ICCIDs reales del Excel.
+
+### **Changed**
+
+- **UX del input de ICCID en alta de inventario serializado**: El filtro silencioso en `onValueChange` que limpiaba símbolos al teclear/pegar (introducido en v1.11.1) era invisible para el usuario — pegar `"8952..."` hacía que las comillas desaparecieran sin explicación. Ahora se muestra un helper text permanente "Solo letras y números" debajo del campo, y cuando el filtro detecta y elimina algún caracter el helper cambia 2s a `⚠ Símbolo eliminado — solo letras y números` en color de error con borde de feedback. Sin toasts ni modales para no interrumpir el escaneo rápido por scanner físico. Adicionalmente `KeyboardType.Text` → `KeyboardType.Ascii` para reducir auto-correct/smart-quotes en captura manual.
+
+### **Fixed**
+
+- **`SerializedItem` huérfano `895214006363166018BF` en `av-db-25`**: SIM fantasma creada por el misread del 28-abr. Borrada manualmente vía `psql` (sin custody events ni FKs colaterales — DELETE seguro).
+
+---
+
 ## [1.13.1] - 2026-04-28
 
 ### **Fixed**

@@ -173,30 +173,85 @@ class SerializedInventoryViewModel @Inject constructor(
      * @param onResult Callback with scan result (added, duplicate, or already scanned)
      */
     fun onBarcodeScanned(serialNumber: String, onResult: (InventoryScanResult) -> Unit) {
-        // Validate minimum length
-        if (serialNumber.trim().length < 20) {
-            _uiState.update { it.copy(error = "El código debe tener al menos 20 dígitos") }
-            onResult(InventoryScanResult.Error(serialNumber, "Código muy corto"))
+        val canonical = canonicalizeIccid(serialNumber)
+
+        // Layer 1: Strict Mexican ICCID format guard (^8952\d{15,16}F?$).
+        // Verified against 1,021 real ALTAN SIMs (100% match). Locks to MX (8952 prefix
+        // = MII 89 + country MX 52) but does NOT lock to a specific operator sub-code,
+        // since the ITU registry is incomplete (e.g., ALTAN's 8952 14 isn't listed but
+        // is in active use). Funnel for both camera (ZXing raw text) and manual typing.
+        if (!MX_ICCID_REGEX.matches(canonical)) {
+            Timber.w("📦 ICCID rejected (format): raw='$serialNumber' canonical='$canonical' len=${canonical.length}")
+            _uiState.update {
+                it.copy(error = "Código inválido. Verifica que el sticker empiece con 8952 (México) y que el escaneo no tenga letras raras a la mitad.")
+            }
+            onResult(InventoryScanResult.Error(serialNumber, "Formato inválido"))
             return
         }
 
+        // Layer 2: Luhn checksum on the digit body (last digit IS the check digit per
+        // ISO/IEC 7812). NOT a hard reject — empirically 1 in ~1,000 valid SIMs from
+        // carriers fail Luhn (verified: 1020/1021 ALTAN SIMs pass). Instead, surface
+        // as a "needs confirmation" warning so the promotor visually verifies the
+        // physical sticker before it lands in the batch. This catches single-digit
+        // ZXing misreads (the most common failure mode) without losing legit SIMs.
+        val digitsForLuhn = canonical.removeSuffix("F")
+        if (!isLuhnValid(digitsForLuhn)) {
+            Timber.w("📦 ICCID Luhn warning: $canonical")
+            _uiState.update {
+                it.copy(
+                    pendingLuhnConfirmation = canonical,
+                    error = null
+                )
+            }
+            onResult(InventoryScanResult.NeedsConfirmation(canonical))
+            return
+        }
+
+        proceedToBatchValidation(canonical, onResult)
+    }
+
+    /**
+     * Confirm a previously-scanned ICCID that failed Luhn but was visually verified
+     * by the promotor against the physical sticker. Proceeds with normal duplicate
+     * check + backend validation as if Luhn had passed.
+     */
+    fun confirmLuhnWarning(iccid: String, onResult: (InventoryScanResult) -> Unit) {
+        if (_uiState.value.pendingLuhnConfirmation != iccid) {
+            Timber.w("📦 confirmLuhnWarning called with stale iccid=$iccid (current=${_uiState.value.pendingLuhnConfirmation})")
+            return
+        }
+        Timber.d("📦 ICCID Luhn-warning confirmed by user: $iccid")
+        _uiState.update { it.copy(pendingLuhnConfirmation = null) }
+        proceedToBatchValidation(iccid, onResult)
+    }
+
+    /**
+     * Dismiss a Luhn warning without adding to batch (user wants to rescan).
+     */
+    fun dismissLuhnWarning() {
+        _uiState.update { it.copy(pendingLuhnConfirmation = null) }
+    }
+
+    private fun proceedToBatchValidation(canonical: String, onResult: (InventoryScanResult) -> Unit) {
         // Check if already in current batch (fast-path, no network)
-        if (_uiState.value.scannedSerialNumbers.contains(serialNumber)) {
-            Timber.d("Barcode already scanned in batch: $serialNumber")
-            onResult(InventoryScanResult.AlreadyScanned(serialNumber))
+        if (_uiState.value.scannedSerialNumbers.contains(canonical)) {
+            Timber.d("Barcode already scanned in batch: $canonical")
+            onResult(InventoryScanResult.AlreadyScanned(canonical))
             return
         }
 
         // Skip if this serial number is already being validated (prevents double-tap)
-        if (!_validatingSerials.add(serialNumber)) {
-            Timber.d("Barcode already being validated: $serialNumber")
-            onResult(InventoryScanResult.AlreadyScanned(serialNumber))
+        if (!_validatingSerials.add(canonical)) {
+            Timber.d("Barcode already being validated: $canonical")
+            onResult(InventoryScanResult.AlreadyScanned(canonical))
             return
         }
 
         // VALIDATE AGAINST DATABASE before adding
         _uiState.update { it.copy(isValidating = true) }
 
+        val serialNumber = canonical
         viewModelScope.launch {
             try {
                 serializedSaleRepository.scanItem(serialNumber)
@@ -366,6 +421,55 @@ class SerializedInventoryViewModel @Inject constructor(
                 categories = it.categories,
                 selectedCategory = it.selectedCategory
             )
+        }
+    }
+
+    companion object {
+        /**
+         * Mexican ICCID format per ITU-T E.118 + GSM Phase 1:
+         * - `89` MII (Telecom industry)
+         * - `52` country code (MX)
+         * - 15-16 more digits (operator + account)
+         * - optional trailing `F` (BCD padding when ICCID is 19 digits and SIM stores 20 nibbles)
+         *
+         * Total length 19, 20, or 21 chars (21 only if 20-digit ICCID padded with extra F,
+         * theoretically impossible per spec but tolerated). Locks to MX prefix to reject
+         * accidental scans of non-Mexican SIMs and most ZXing misreads (which inject
+         * letters mid-string or non-F chars at end).
+         *
+         * Verified against 1,021 real ALTAN SIMs from production inventory: 100% match.
+         */
+        @JvmField
+        val MX_ICCID_REGEX = Regex("^8952\\d{15,16}F?$")
+
+        /**
+         * Canonicalize a raw scanner string for validation, dedup, and storage:
+         * - trim whitespace (some scanners append CR/LF)
+         * - uppercase (so `f` and `F` collide)
+         *
+         * Does NOT strip the trailing F — that's a structural part of the canonical
+         * form, only stripped when computing Luhn (see [isLuhnValid] callsite).
+         */
+        fun canonicalizeIccid(raw: String): String = raw.trim().uppercase()
+
+        /**
+         * Luhn mod-10 checksum per ISO/IEC 7812.
+         * The last digit of the input IS the check digit (included in the calculation).
+         * Returns true if the running sum is divisible by 10.
+         *
+         * For ICCIDs: strip trailing `F` padding before passing the digit body here.
+         */
+        fun isLuhnValid(digits: String): Boolean {
+            if (digits.isEmpty() || !digits.all { it.isDigit() }) return false
+            var sum = 0
+            for ((i, c) in digits.reversed().withIndex()) {
+                val d = c.digitToInt()
+                sum += if (i % 2 == 1) {
+                    val doubled = d * 2
+                    if (doubled > 9) doubled - 9 else doubled
+                } else d
+            }
+            return sum % 10 == 0
         }
     }
 }

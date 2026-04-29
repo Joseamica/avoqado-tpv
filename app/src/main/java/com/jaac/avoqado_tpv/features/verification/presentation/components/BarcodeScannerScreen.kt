@@ -70,7 +70,27 @@ import timber.log.Timber
 fun BarcodeScannerScreen(
     onBarcodeScanned: (barcode: String, format: String) -> Unit,
     onClose: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /**
+     * If true, requires the same decoded value in 2 consecutive frames within
+     * [consensusWindowMs] before firing [onBarcodeScanned]. Defends against ZXing
+     * misreads on damaged/dirty barcodes (e.g., a smudged digit decoded as `3` in
+     * one frame and `B` in the next). Misreads are random — same wrong decode
+     * twice in a row is statistically near-zero. Transparent to the user since
+     * ZXing decodes multiple frames per second when a barcode is in view.
+     *
+     * Use ONLY for high-stakes scans where misreads cause material problems
+     * (e.g., SIM ICCID registration). Adds ~100-300ms typical latency.
+     */
+    requireMultiFrameConsensus: Boolean = false,
+    consensusWindowMs: Long = 700L,
+    /**
+     * Restrict ZXing to specific barcode formats. `null` (default) uses the
+     * broad set covering EAN/UPC/Code-128/QR for general product scanning.
+     * Pass a narrow list (e.g., `[CODE_128]`) for screens scanning a single
+     * known format to reduce false-positive decodes.
+     */
+    formats: List<BarcodeFormat>? = null,
 ) {
     val context = LocalContext.current
 
@@ -79,6 +99,9 @@ fun BarcodeScannerScreen(
     var flashEnabled by remember { mutableStateOf(false) }
     var lastScannedBarcode by remember { mutableStateOf<String?>(null) }
     var lastScanTimeMs by remember { mutableLongStateOf(0L) }
+    // Multi-frame consensus state — used only when requireMultiFrameConsensus is true
+    var pendingDecode by remember { mutableStateOf<String?>(null) }
+    var pendingDecodeTimestamp by remember { mutableLongStateOf(0L) }
     var barcodeView by remember { mutableStateOf<DecoratedBarcodeView?>(null) }
     // Note: Camera is started internally by ZXingBarcodeScanner via ViewTreeObserver
 
@@ -151,19 +174,52 @@ fun BarcodeScannerScreen(
                     // ⚠️ DON'T start camera here - let LaunchedEffect handle timing
                 },
                 onBarcodeDetected = { barcode, format ->
-                    // Time-based debounce: same barcode allowed again after 2s cooldown
-                    // This prevents decodeContinuous rapid-fire while allowing re-scans
                     val now = System.currentTimeMillis()
+
+                    // 2s cooldown applies AFTER a successful confirmation, regardless of mode.
+                    // Prevents decodeContinuous rapid-fire while allowing re-scans of same item.
                     val isSameBarcode = barcode == lastScannedBarcode
                     val withinCooldown = (now - lastScanTimeMs) < 2000L
+                    if (isSameBarcode && withinCooldown) {
+                        return@ZXingBarcodeScanner
+                    }
 
-                    if (!isSameBarcode || !withinCooldown) {
+                    if (requireMultiFrameConsensus) {
+                        // Multi-frame consensus: require same decoded value in 2 consecutive
+                        // frames within consensusWindowMs. ZXing typically delivers 5-10
+                        // decodes/sec when a barcode is in view, so the second matching frame
+                        // arrives in ~100-300ms — imperceptible UX.
+                        when {
+                            pendingDecode == null || pendingDecode != barcode -> {
+                                // First sighting (or different from previous candidate) — wait for confirmation
+                                pendingDecode = barcode
+                                pendingDecodeTimestamp = now
+                                Timber.d("📷 [BarcodeScannerScreen] First frame, awaiting consensus: $barcode")
+                            }
+                            (now - pendingDecodeTimestamp) <= consensusWindowMs -> {
+                                // Second matching frame within window → confirmed
+                                Timber.d("✅ [BarcodeScannerScreen] Multi-frame consensus confirmed: $barcode (Δ${now - pendingDecodeTimestamp}ms, format: $format)")
+                                lastScannedBarcode = barcode
+                                lastScanTimeMs = now
+                                pendingDecode = null
+                                pendingDecodeTimestamp = 0L
+                                onBarcodeScanned(barcode, format)
+                            }
+                            else -> {
+                                // Second matching frame but consensus window expired — restart timer
+                                pendingDecodeTimestamp = now
+                                Timber.d("📷 [BarcodeScannerScreen] Consensus window expired, restarting: $barcode")
+                            }
+                        }
+                    } else {
+                        // Single-frame mode (default): accept first decode after cooldown
                         lastScannedBarcode = barcode
                         lastScanTimeMs = now
                         Timber.d("✅ [BarcodeScannerScreen] Barcode scanned: $barcode (format: $format)")
                         onBarcodeScanned(barcode, format)
                     }
                 },
+                formats = formats,
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -204,13 +260,14 @@ fun BarcodeScannerScreen(
 private fun ZXingBarcodeScanner(
     onBarcodeViewReady: (DecoratedBarcodeView) -> Unit,
     onBarcodeDetected: (barcode: String, format: String) -> Unit,
+    formats: List<BarcodeFormat>? = null,
     modifier: Modifier = Modifier
 ) {
-    // Supported barcode formats — reduced to minimize false positives.
+    // Default formats — reduced to minimize false positives.
     // Removed CODE_39, CODABAR, ITF (high false-positive rates per ZXing maintainers),
     // CODE_93, DATA_MATRIX, PDF_417, AZTEC (unused in our product barcodes).
     // Kept UPC-A/UPC-E for backward compat with existing product barcodes.
-    val formats = listOf(
+    val effectiveFormats = formats ?: listOf(
         BarcodeFormat.EAN_13,
         BarcodeFormat.EAN_8,
         BarcodeFormat.UPC_A,
@@ -244,9 +301,9 @@ private fun ZXingBarcodeScanner(
                 // ALSO_INVERTED removed: unnecessary for our barcodes, adds false positives
                 val hints = mapOf(
                     DecodeHintType.TRY_HARDER to true,
-                    DecodeHintType.POSSIBLE_FORMATS to formats,
+                    DecodeHintType.POSSIBLE_FORMATS to effectiveFormats,
                 )
-                barcodeView.decoderFactory = DefaultDecoderFactory(formats, hints, null, 0)
+                barcodeView.decoderFactory = DefaultDecoderFactory(effectiveFormats, hints, null, 0)
 
                 // Set continuous decoding
                 decodeContinuous(object : BarcodeCallback {

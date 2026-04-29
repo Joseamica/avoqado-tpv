@@ -14,7 +14,14 @@ data class SerializedInventoryUiState(
     val scannedSerialNumbers: List<String> = emptyList(),
     val error: String? = null,
     val successMessage: String? = null,
-    val registrationResult: RegistrationResult? = null
+    val registrationResult: RegistrationResult? = null,
+    /**
+     * ICCID that passed the format guard but failed the Luhn checksum.
+     * 0.1% of legit SIMs from carriers fail Luhn (verified empirically against 1,021
+     * ALTAN SIMs), so we don't hard-reject — instead we ask the user to physically
+     * verify the sticker matches what was decoded before adding to the batch.
+     */
+    val pendingLuhnConfirmation: String? = null
 ) {
     val canRegister: Boolean
         get() = selectedCategory != null && scannedSerialNumbers.isNotEmpty() && !isLoading && !isValidating
@@ -59,6 +66,11 @@ sealed class InventoryScanResult {
     data class Added(val serialNumber: String) : InventoryScanResult()
     data class Duplicate(val serialNumber: String) : InventoryScanResult()
     data class AlreadyScanned(val serialNumber: String) : InventoryScanResult()
+    /**
+     * ICCID is structurally valid but failed Luhn checksum.
+     * User must visually verify the sticker matches before adding to batch.
+     */
+    data class NeedsConfirmation(val serialNumber: String) : InventoryScanResult()
     /** Network/server error — NOT a duplicate, user should retry */
     data class Error(val serialNumber: String, val message: String) : InventoryScanResult()
 }

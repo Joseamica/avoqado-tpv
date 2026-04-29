@@ -15,6 +15,14 @@
 
 ---
 
+## [1.13.1] - 2026-04-28
+
+### **Fixed**
+
+- **Cobro vía socket cancelado contaminaba el siguiente cobro manual**: Cuando una request `terminal:payment_request` desde dashboard/iOS llegaba al TPV y luego se cancelaba (vía `terminal:payment_cancel`), el handler de cancel en `AppNavigation.kt:298-310` solo navegaba de vuelta a Home — **pero no limpiaba** los args `paymentSource`, `socketRequestId`, `skipReview`, `externalTipCents`, `initialAmount`, etc. del `savedStateHandle` de Home. Resultado: si el cajero tocaba "Cobro Rápido" inmediatamente después del cancel, el `PaymentScreen` leía esos args viejos y procesaba el cobro como si fuera socket — saltándose la pantalla de propina (`skipReview=true`) y aplicando el monto/propina del request cancelado. Reproducido en producción 28-abr-2026: socket pidió $50+$5, iOS canceló a los 6s, cajero hizo Cobro Rápido manual de $5, pero el TPV cobró $5+$5 (100% propina) usando los valores residuales. Fix: el handler de cancel ahora llama a `clearPaymentArgs(homeHandle)` antes de navegar; además `clearPaymentArgs` ahora también remueve `initialAmount` y `skipReview` que faltaban.
+
+---
+
 ## [1.13.0] - 2026-04-28
 
 ### **Added**

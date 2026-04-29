@@ -300,6 +300,16 @@ fun AppNavigation(
             val currentRoute = navController.currentBackStackEntry?.destination?.route
             if (currentRoute == NavRoute.Payment.route || currentRoute == NavRoute.AngelPayPayment.route) {
                 Timber.i("🚫 [Cancel] Cancelling payment (requestId=$requestId) - navigating to Home")
+                // 🧹 CRITICAL: Clear stale payment args from Home's handle BEFORE navigating.
+                // Without this, the next manual Fast Payment inherits paymentSource=SOCKET,
+                // skipReview=true, externalTipCents=N, etc. → the TPV silently uses socket
+                // values for a manual cobro (skips tip selection, applies stale amount/tip).
+                // Repro: socket request → cancel from iOS → cashier taps "Cobro Rápido" →
+                // tip screen is skipped using the cancelled request's values.
+                navController.previousBackStackEntry?.savedStateHandle?.let { homeHandle ->
+                    clearPaymentArgs(homeHandle)
+                    Timber.d("🧹 [Cancel] Cleared payment args from Home savedStateHandle")
+                }
                 navController.navigate(NavRoute.Home.route) {
                     popUpTo(NavRoute.Home.route) { inclusive = false }
                     launchSingleTop = true
@@ -3106,6 +3116,12 @@ private fun clearPaymentArgs(handle: SavedStateHandle) {
     handle.remove<String>("paymentSource")
     handle.remove<String>("socketRequestId")
     handle.remove<String>("socketProcessedByStaffId")
+
+    // 🧹 Critical: also clear inputs read by Payment screen on next manual nav.
+    // Without these, a cancelled socket request leaves $50 amount + skipReview=true
+    // pegado in Home savedStateHandle → next "Cobro Rápido" inherits stale values.
+    handle.remove<String>("initialAmount")
+    handle.remove<Boolean>("skipReview")
 }
 
 private fun formatAmountFromCents(amountCents: Long): String {

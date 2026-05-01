@@ -266,60 +266,135 @@ private fun SaleRow(sale: SaleItem) {
     val giftColor = MaterialTheme.avoqadoColors.statusWarning
     val successColor = MaterialTheme.avoqadoColors.statusSuccess
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // Left: serial + category
-        Column(
-            modifier = Modifier.weight(1f)
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Left: serial + category
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = sale.serialNumber,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = sale.categoryName,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            // Right: amount or "Regalo"
+            if (sale.isGift) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CardGiftcard,
+                        contentDescription = "Regalo",
+                        modifier = Modifier.size(16.dp),
+                        tint = giftColor
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Regalo",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = giftColor
+                    )
+                }
+            } else {
+                Text(
+                    text = CurrencyFormatter.format(sale.price),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = successColor
+                )
+            }
+        }
+
+        // Back-office documentation review status (PlayTelecom / Walmart)
+        if (sale.verificationStatus != VerificationReviewStatus.NONE) {
+            Spacer(modifier = Modifier.height(4.dp))
+            VerificationStatusBadge(
+                status = sale.verificationStatus,
+                rejectionReasons = sale.rejectionReasons,
+                reviewNotes = sale.reviewNotes,
+            )
+        }
+    }
+}
+
+@Composable
+private fun VerificationStatusBadge(
+    status: VerificationReviewStatus,
+    rejectionReasons: List<RejectionReason>,
+    reviewNotes: String?,
+) {
+    val (label, bg, fg) = when (status) {
+        VerificationReviewStatus.PENDING -> Triple(
+            "En revisión",
+            MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.15f),
+            MaterialTheme.avoqadoColors.statusWarning,
+        )
+        VerificationReviewStatus.COMPLETED -> Triple(
+            "Venta correcta",
+            MaterialTheme.avoqadoColors.statusSuccess.copy(alpha = 0.15f),
+            MaterialTheme.avoqadoColors.statusSuccess,
+        )
+        VerificationReviewStatus.FAILED -> Triple(
+            "Revisar documentación",
+            MaterialTheme.avoqadoColors.statusError.copy(alpha = 0.15f),
+            MaterialTheme.avoqadoColors.statusError,
+        )
+        VerificationReviewStatus.NONE -> return
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .background(bg, RoundedCornerShape(4.dp))
+                .padding(horizontal = 8.dp, vertical = 2.dp)
         ) {
             Text(
-                text = sale.serialNumber,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = sale.categoryName,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = fg,
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.sp,
             )
         }
 
-        Spacer(modifier = Modifier.width(8.dp))
-
-        // Right: amount or "Regalo"
-        if (sale.isGift) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.End
-            ) {
-                Icon(
-                    imageVector = Icons.Default.CardGiftcard,
-                    contentDescription = "Regalo",
-                    modifier = Modifier.size(16.dp),
-                    tint = giftColor
-                )
-                Spacer(modifier = Modifier.width(4.dp))
+        if (status == VerificationReviewStatus.FAILED) {
+            if (rejectionReasons.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(2.dp))
+                rejectionReasons.forEach { reason ->
+                    Text(
+                        text = "• ${reason.label}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.avoqadoColors.statusError,
+                        fontSize = 11.sp,
+                    )
+                }
+            }
+            if (!reviewNotes.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "Regalo",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                    color = giftColor
+                    text = reviewNotes,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
                 )
             }
-        } else {
-            Text(
-                text = CurrencyFormatter.format(sale.price),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = successColor
-            )
         }
     }
 }

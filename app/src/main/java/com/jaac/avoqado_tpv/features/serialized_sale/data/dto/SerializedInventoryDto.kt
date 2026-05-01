@@ -189,10 +189,17 @@ data class MySalesData(
 data class MySaleItem(
     val id: String,
     val orderNumber: String,
-    val serialNumber: String,
-    val categoryName: String,
+    val serialNumber: String?,
+    val categoryName: String?,
     val price: Double,
     val date: String,
     val paymentStatus: String,
-    val isGift: Boolean
+    val isGift: Boolean,
+    // Back-office documentation review (PlayTelecom / Walmart) — nullable for backwards compat
+    val verificationId: String? = null,
+    val verificationStatus: String? = null,        // "PENDING" | "COMPLETED" | "FAILED" | null (no verification)
+    val reviewedAt: String? = null,                 // ISO timestamp set when back-office acted
+    val reviewNotes: String? = null,                // Free-text feedback to promoter
+    val rejectionReasons: List<String>? = null,     // ["REVIEW_PORTABILIDAD", ...] when FAILED
+    val hasPhotos: Boolean = false                  // True when proof-of-sale photos were uploaded
 )

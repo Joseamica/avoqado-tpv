@@ -11,7 +11,20 @@
 
 ### **Changed**
 
+- **[Nexgo] AngelPay SDK actualizado a `1.0.3`**: reemplazado el AAR `angelpaySDK-v1.0.0-fat-release.aar` por `angelpaySDK-v1.0.3-fat-release.aar` y actualizadas las dependencias `compileOnly`/`nexgoImplementation` para que `nexgoDebug` y `nexgoRelease` compilen contra la nueva versión del SDK.
+- **[Nexgo] Workaround N62/P2PE desactivado**: removido el guard que forzaba `P2PEUtils.isUseP2PE = false` después de inicializar AngelPay. Esto permite validar si el SDK AngelPay `1.0.3` ya corrige internamente el crash de pagos con chip en Nexgo N62.
+- **[Nexgo] Autenticación SDK migrada a `authenticateSimple()`**: `AngelPaySdkGateway` dejó de llamar el método deprecated `authenticate(...)`. Si el SDK solicita selección de comercio, el TPV selecciona el merchant cuya afiliación coincide con las credenciales configuradas antes de lanzar el pago.
+
 ### **Fixed**
+
+---
+
+## [1.13.3] - 2026-04-30
+
+### **Added**
+
+- **[PAX] Estado de revisión back-office en "Mis Ventas" (PlayTelecom / Walmart)**: Nuevo flujo administrativo que cierra el loop entre el promotor y back-office para validar la documentación de cada venta de SIM (vinculación + portabilidad). Cada fila de `MySalesScreen` ahora muestra un badge de color cuando existe verificación: amarillo "En revisión" (PENDING), verde "Venta correcta" (COMPLETED) o rojo "Revisar documentación" (FAILED). En las ventas marcadas para revisar se listan los motivos seleccionados ("Revisar portabilidad", "Revisar número duplicado de vinculación", "Otro") y, debajo, las observaciones libres del back-office. Los promotores ven el cambio en tiempo real porque el ViewModel se suscribe al evento Socket.IO `sale-verification.reviewed` emitido por el backend cuando un dashboard usuario aprueba o rechaza la documentación, y dispara un refetch del mes actual sin recargar la pantalla. El DTO `MySaleItem` se extendió con `verificationStatus`, `reviewedAt`, `reviewNotes`, `rejectionReasons` y `hasPhotos`, todos nullables para compatibilidad con backends viejos que aún no devuelven esos campos. La pantalla `MySalesScreen` no toca `PaymentViewModel` ni el flujo de venta; solo pasiva la lectura del estado. Verificado E2E live en PAX A910S (serial 2841548417) contra backend de producción local: PATCH desde dashboard → DB row PENDING→FAILED/COMPLETED → socket event `sale-verification.reviewed` recibido en <1s → MySalesViewModel auto-refetch → badge re-render en <3s sin tocar el dispositivo. 5/5 destructive tests también pasan en backend live (409 doble-review, 403 cross-venue, 400 reject sin reason/notes, 404 not-found, 400 decision inválido).
+- **Tests `MySalesViewModelReviewTest`** (7 tests, todos verdes): cubren mapeo de strings de estado a enum (`PENDING/PROCESSING/COMPLETED/FAILED/null`), parseo defensivo de `RejectionReason` (descarta valores futuros desconocidos sin crashear), refetch al recibir el socket event, ignorar eventos no relacionados (SimCustody), y backwards-compat con backends que devuelven `verificationStatus = null`.
 
 ---
 

@@ -644,6 +644,27 @@ sealed interface SocketEvent {
     ) : SocketEvent
 
     // ========================================
+    // Sale Verification Review (PlayTelecom / Walmart documentation flow)
+    // ========================================
+
+    /**
+     * Backend: 'sale-verification.reviewed' — Back-office (dashboard) approved or rejected
+     * the photo documentation for a sale. Emitted to the promoter (staffId) so their TPV
+     * refreshes "Mis Ventas" in real time and shows the green/red badge.
+     *
+     * @param status One of "COMPLETED" (approved) or "FAILED" (rejected)
+     */
+    data class SaleVerificationReviewed(
+        val saleVerificationId: String,
+        val paymentId: String?,
+        val status: String,
+        val reviewedAt: String?,
+        val reviewNotes: String?,
+        val rejectionReasons: List<String>?,
+        val reviewedBy: String?
+    ) : SocketEvent
+
+    // ========================================
     // Error Events
     // ========================================
 

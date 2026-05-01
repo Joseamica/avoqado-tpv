@@ -3,10 +3,13 @@ package com.jaac.avoqado_tpv.features.serialized_sale.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
+import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import java.math.BigDecimal
@@ -36,12 +39,39 @@ data class SaleItem(
     val price: BigDecimal,
     val date: String,
     val paymentStatus: String,
-    val isGift: Boolean
+    val isGift: Boolean,
+    // Back-office documentation review (PlayTelecom / Walmart). Null when no verification exists
+    // or when client is talking to a legacy backend that doesn't return these fields.
+    val verificationStatus: VerificationReviewStatus = VerificationReviewStatus.NONE,
+    val reviewedAt: String? = null,
+    val reviewNotes: String? = null,
+    val rejectionReasons: List<RejectionReason> = emptyList()
 )
+
+/** Back-office review status for the photo documentation attached to a sale. */
+enum class VerificationReviewStatus {
+    NONE,       // No verification record exists (or legacy backend)
+    PENDING,    // Photos uploaded, waiting for back-office to act
+    COMPLETED,  // Back-office approved → "Venta correcta"
+    FAILED      // Back-office rejected → "Revisar documentación"
+}
+
+/** Rejection reasons echoed from backend; matches enum SaleVerificationRejectionReason. */
+enum class RejectionReason(val raw: String, val label: String) {
+    REVIEW_PORTABILIDAD("REVIEW_PORTABILIDAD", "Revisar portabilidad"),
+    REVIEW_DUPLICATE_VINCULACION("REVIEW_DUPLICATE_VINCULACION", "Revisar número duplicado de vinculación"),
+    OTHER("OTHER", "Otro motivo");
+
+    companion object {
+        fun parseList(values: List<String>?): List<RejectionReason> =
+            values?.mapNotNull { v -> values().firstOrNull { it.raw == v } } ?: emptyList()
+    }
+}
 
 @HiltViewModel
 class MySalesViewModel @Inject constructor(
-    private val apiService: ApiService
+    private val apiService: ApiService,
+    private val socketManager: SocketManager
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MySalesUiState())
@@ -52,6 +82,24 @@ class MySalesViewModel @Inject constructor(
 
     init {
         loadSales()
+        observeSocketEvents()
+    }
+
+    /**
+     * Subscribe to back-office review events. When a verification is approved/rejected
+     * from the dashboard, refetch the current month's sales so the badge updates in real time.
+     */
+    private fun observeSocketEvents() {
+        viewModelScope.launch {
+            socketManager.events
+                .onEach { event ->
+                    if (event is SocketEvent.SaleVerificationReviewed) {
+                        Timber.d("📨 sale-verification.reviewed received status=${event.status} — refreshing My Sales")
+                        refreshCurrentMonth()
+                    }
+                }
+                .collect {}
+        }
     }
 
     fun loadSales(month: String? = null) {
@@ -69,12 +117,16 @@ class MySalesViewModel @Inject constructor(
                         SaleItem(
                             id = sale.id,
                             orderNumber = sale.orderNumber,
-                            serialNumber = sale.serialNumber,
-                            categoryName = sale.categoryName,
+                            serialNumber = sale.serialNumber.orEmpty(),
+                            categoryName = sale.categoryName.orEmpty(),
                             price = BigDecimal.valueOf(sale.price),
                             date = sale.date,
                             paymentStatus = sale.paymentStatus,
-                            isGift = sale.isGift
+                            isGift = sale.isGift,
+                            verificationStatus = parseVerificationStatus(sale.verificationStatus),
+                            reviewedAt = sale.reviewedAt,
+                            reviewNotes = sale.reviewNotes,
+                            rejectionReasons = RejectionReason.parseList(sale.rejectionReasons)
                         )
                     }
 
@@ -130,5 +182,27 @@ class MySalesViewModel @Inject constructor(
         val current = YearMonth.parse(currentMonth)
         val target = current.plusMonths(delta.toLong())
         loadSales(target.format(monthFormat))
+    }
+
+    /**
+     * Refresh the current month's sales — called when a socket event signals
+     * that a back-office review has changed the verification status.
+     */
+    fun refreshCurrentMonth() {
+        val currentMonth = _uiState.value.month
+        if (currentMonth.isEmpty()) {
+            loadSales()
+        } else {
+            loadSales(currentMonth)
+        }
+    }
+
+    companion object {
+        internal fun parseVerificationStatus(raw: String?): VerificationReviewStatus = when (raw) {
+            "PENDING", "PROCESSING" -> VerificationReviewStatus.PENDING
+            "COMPLETED" -> VerificationReviewStatus.COMPLETED
+            "FAILED" -> VerificationReviewStatus.FAILED
+            else -> VerificationReviewStatus.NONE
+        }
     }
 }

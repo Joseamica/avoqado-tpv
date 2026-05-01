@@ -428,6 +428,12 @@ class SocketManager @Inject constructor(
         on("sim-custody.recollected-from-promoter", onSimCustodyRecollectedFromPromoter)
 
         // ========================================
+        // Sale Verification Review (PlayTelecom / Walmart documentation flow)
+        // ========================================
+
+        on("sale-verification.reviewed", onSaleVerificationReviewed)
+
+        // ========================================
         // Error Events
         // ========================================
 
@@ -1471,6 +1477,37 @@ class SocketManager @Inject constructor(
             )
         } catch (e: Exception) {
             Timber.e(e, "❌ Error parsing sim-custody.recollected-from-promoter")
+        }
+    }
+
+    // ========================================
+    // Event Handlers - Sale Verification Review
+    // ========================================
+
+    private val onSaleVerificationReviewed = Emitter.Listener { args ->
+        try {
+            val data = args.getOrNull(0) as? JSONObject ?: return@Listener
+            val reasonsArray = data.optJSONArray("rejectionReasons")
+            val reasons: List<String>? = if (reasonsArray != null) {
+                buildList<String> {
+                    for (i in 0 until reasonsArray.length()) add(reasonsArray.optString(i))
+                }
+            } else null
+
+            _events.tryEmit(
+                SocketEvent.SaleVerificationReviewed(
+                    saleVerificationId = data.optString("saleVerificationId", ""),
+                    paymentId = data.optString("paymentId").takeIf { it.isNotEmpty() },
+                    status = data.optString("status", ""),
+                    reviewedAt = data.optString("reviewedAt").takeIf { it.isNotEmpty() },
+                    reviewNotes = data.optString("reviewNotes").takeIf { it.isNotEmpty() },
+                    rejectionReasons = reasons,
+                    reviewedBy = data.optString("reviewedBy").takeIf { it.isNotEmpty() }
+                )
+            )
+            Timber.d("📨 sale-verification.reviewed status=${data.optString("status")} id=${data.optString("saleVerificationId")}")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error parsing sale-verification.reviewed")
         }
     }
 

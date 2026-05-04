@@ -676,6 +676,12 @@ fun PaymentScreen(
                         while (true) {
                             kotlinx.coroutines.delay(1_000)
                             elapsedSeconds++
+                            if (elapsedSeconds == 45) {
+                                viewModel.reportProcessingTimeoutIfNeeded(
+                                    message = currentState.message,
+                                    elapsedSeconds = elapsedSeconds
+                                )
+                            }
                         }
                     }
                     PaymentLoadingContent(

@@ -1,0 +1,1214 @@
+--------- beginning of main
+05-04 15:09:33.035 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:09:33.057 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:09:33.076 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:09:33.079 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:09:33.079 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:09:33.079 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:09:33.079 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:09:33.080 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:09:33.080 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:09:33.080 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:09:33.080 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:09:33.080 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":4,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":175,"total":192,"used":17},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":262,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:09:33.056Z","version":"1.13.2-sandbox"}
+05-04 15:09:33.080 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:09:33.294 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (213ms)
+05-04 15:09:33.294 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:09:33.294 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:09:33.294 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:09:33.294 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:09:33.294 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:09:33.294 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:09:33.294 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:09:33 GMT
+05-04 15:09:33.294 D/OkHttp  ( 2585): etag: W/"9e-POaXiVk9P7zjihYp9zoWME5gQ7E"
+05-04 15:09:33.294 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:09:33.294 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:09:33.294 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:09:33.294 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:09:33.294 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:09:33.294 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:09:33.294 D/OkHttp  ( 2585): x-correlation-id: e081dbfe-c886-444b-94dc-b4da3c2842d9
+05-04 15:09:33.294 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:09:33.294 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:09:33.294 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:09:33.295 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:09:33.295 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:09:33.295 D/OkHttp  ( 2585): content-length: 158
+05-04 15:09:33.296 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:09:33.777Z","configVersion":"1-1771261223532"}
+05-04 15:09:33.296 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:09:33.300 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:09:33 GMT
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): etag: W/"9e-POaXiVk9P7zjihYp9zoWME5gQ7E"
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): x-correlation-id: e081dbfe-c886-444b-94dc-b4da3c2842d9
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:09:33.301 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:09:33.302 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:09:33.302 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:09:33.302 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:09:33.303 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:09:33.777Z
+05-04 15:09:33.303 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:09:33.303 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:09:33.304 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=247ms)
+05-04 15:09:33.304 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=247ms
+05-04 15:09:33.306 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:10:03.335 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:10:03.354 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:10:03.373 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:10:03.377 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:10:03.378 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:10:03.378 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:10:03.378 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:10:03.378 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:10:03.378 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:10:03.378 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:10:03.378 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:10:03.378 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":4,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":179,"total":192,"used":13},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":293,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:10:03.352Z","version":"1.13.2-sandbox"}
+05-04 15:10:03.379 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:10:03.710 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (330ms)
+05-04 15:10:03.710 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:10:03.710 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:10:03.710 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:10:03.710 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:10:03.710 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:10:03.710 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:10:03.710 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:10:04 GMT
+05-04 15:10:03.710 D/OkHttp  ( 2585): etag: W/"9e-42/XtIMBFyzoeynpBkJL4IcKOzc"
+05-04 15:10:03.710 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:10:03.710 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:10:03.710 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:10:03.710 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:10:03.710 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:10:03.710 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:10:03.710 D/OkHttp  ( 2585): x-correlation-id: d1454dc5-1502-40d1-8827-310a77d145f7
+05-04 15:10:03.710 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:10:03.711 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:10:03.711 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:10:03.711 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:10:03.711 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:10:03.711 D/OkHttp  ( 2585): content-length: 158
+05-04 15:10:03.713 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:10:04.102Z","configVersion":"1-1771261223532"}
+05-04 15:10:03.713 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:10:03.717 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:10:03.717 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:10:04 GMT
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): etag: W/"9e-42/XtIMBFyzoeynpBkJL4IcKOzc"
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): x-correlation-id: d1454dc5-1502-40d1-8827-310a77d145f7
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:10:03.718 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:10:03.719 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:10:03.719 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:10:03.719 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:10:03.719 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:10:04.102Z
+05-04 15:10:03.720 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:10:03.720 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:10:03.721 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=367ms)
+05-04 15:10:03.721 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=367ms
+05-04 15:10:03.722 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:10:29.752 D/ConnectivityObserver$observe$1$callback( 2585): 🌐 [Connectivity] Network capabilities changed - CONNECTED
+05-04 15:10:29.755 D/ConnectivityObserver$observe$1$callback( 2585): 🌐 [Connectivity] Network capabilities changed - CONNECTED
+05-04 15:10:29.759 D/ConnectivityObserver$observe$1$callback( 2585): 🌐 [Connectivity] Network capabilities changed - CONNECTED
+05-04 15:10:29.766 D/ConnectivityObserver$observe$1$callback( 2585): 🌐 [Connectivity] Network capabilities changed - CONNECTED
+05-04 15:10:29.768 D/ConnectivityObserver$observe$1$callback( 2585): 🌐 [Connectivity] Network capabilities changed - CONNECTED
+05-04 15:10:29.770 D/ConnectivityObserver$observe$1$callback( 2585): 🌐 [Connectivity] Network capabilities changed - CONNECTED
+05-04 15:10:33.754 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:10:33.775 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:10:33.795 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:10:33.799 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:10:33.799 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:10:33.799 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:10:33.799 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:10:33.799 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:10:33.799 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:10:33.800 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:10:33.800 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:10:33.800 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":4,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":178,"total":192,"used":14},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":323,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:10:33.774Z","version":"1.13.2-sandbox"}
+05-04 15:10:33.800 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:10:34.006 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (205ms)
+05-04 15:10:34.006 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:10:34.006 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:10:34.006 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:10:34.006 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:10:34.006 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:10:34.006 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:10:34.006 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:10:34 GMT
+05-04 15:10:34.006 D/OkHttp  ( 2585): etag: W/"9e-axCcx2SXO7VVzZ96qaqW7In+l94"
+05-04 15:10:34.006 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:10:34.006 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:10:34.006 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:10:34.006 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:10:34.006 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:10:34.006 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:10:34.006 D/OkHttp  ( 2585): x-correlation-id: 2e0dd761-766c-4a2c-8f56-99f18b5ee69e
+05-04 15:10:34.006 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:10:34.006 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:10:34.006 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:10:34.006 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:10:34.007 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:10:34.007 D/OkHttp  ( 2585): content-length: 158
+05-04 15:10:34.008 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:10:34.491Z","configVersion":"1-1771261223532"}
+05-04 15:10:34.008 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:10:34.012 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:10:34.013 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:10:34 GMT
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): etag: W/"9e-axCcx2SXO7VVzZ96qaqW7In+l94"
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): x-correlation-id: 2e0dd761-766c-4a2c-8f56-99f18b5ee69e
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:10:34.014 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:10:34.015 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:10:34.016 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:10:34.017 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:10:34.018 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:10:34.491Z
+05-04 15:10:34.018 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:10:34.019 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:10:34.020 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=246ms)
+05-04 15:10:34.021 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=246ms
+05-04 15:10:34.023 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:11:04.053 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:11:04.076 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:11:04.095 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:11:04.099 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:11:04.099 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:11:04.100 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:11:04.100 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:11:04.100 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:11:04.100 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:11:04.100 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:11:04.100 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:11:04.100 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":5,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":177,"total":192,"used":15},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":353,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:11:04.074Z","version":"1.13.2-sandbox"}
+05-04 15:11:04.100 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:11:04.944 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (843ms)
+05-04 15:11:04.944 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:11:04.944 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:11:04.944 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:11:04.944 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:11:04.944 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:11:04.944 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:11:04.944 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:11:04 GMT
+05-04 15:11:04.944 D/OkHttp  ( 2585): etag: W/"9e-txwPgQcMELvnZwpJEXD5RP38438"
+05-04 15:11:04.944 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:11:04.944 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:11:04.944 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:11:04.944 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:11:04.944 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:11:04.944 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:11:04.944 D/OkHttp  ( 2585): x-correlation-id: 6458e3c1-db24-40c3-85ce-18b3fffa4398
+05-04 15:11:04.945 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:11:04.945 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:11:04.945 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:11:04.945 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:11:04.945 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:11:04.945 D/OkHttp  ( 2585): content-length: 158
+05-04 15:11:04.948 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:11:04.842Z","configVersion":"1-1771261223532"}
+05-04 15:11:04.948 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:11:04.952 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:11:04.952 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:11:04 GMT
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): etag: W/"9e-txwPgQcMELvnZwpJEXD5RP38438"
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): x-correlation-id: 6458e3c1-db24-40c3-85ce-18b3fffa4398
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:11:04.953 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:11:04.954 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:11:04.954 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:11:04.954 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:11:04.955 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:11:04.842Z
+05-04 15:11:04.955 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:11:04.955 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:11:04.956 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=881ms)
+05-04 15:11:04.956 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=881ms
+05-04 15:11:04.957 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:11:34.985 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:11:35.003 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:11:35.021 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:11:35.025 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:11:35.025 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:11:35.025 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:11:35.026 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:11:35.026 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:11:35.026 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:11:35.026 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:11:35.026 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:11:35.027 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":5,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":176,"total":192,"used":16},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":384,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:11:35.002Z","version":"1.13.2-sandbox"}
+05-04 15:11:35.027 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:11:35.231 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (204ms)
+05-04 15:11:35.231 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:11:35.231 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:11:35.231 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:11:35.231 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:11:35.232 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:11:35.232 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:11:35.232 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:11:35 GMT
+05-04 15:11:35.232 D/OkHttp  ( 2585): etag: W/"9e-bxGAs1VplaZ7V456yFTc8ryP0ws"
+05-04 15:11:35.232 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:11:35.232 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:11:35.232 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:11:35.232 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:11:35.232 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:11:35.232 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:11:35.232 D/OkHttp  ( 2585): x-correlation-id: fbcd4f1d-1371-49d1-bd47-32affd74603b
+05-04 15:11:35.232 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:11:35.232 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:11:35.232 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:11:35.232 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:11:35.232 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:11:35.232 D/OkHttp  ( 2585): content-length: 158
+05-04 15:11:35.234 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:11:35.718Z","configVersion":"1-1771261223532"}
+05-04 15:11:35.234 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:11:35.237 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:11:35 GMT
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): etag: W/"9e-bxGAs1VplaZ7V456yFTc8ryP0ws"
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): x-correlation-id: fbcd4f1d-1371-49d1-bd47-32affd74603b
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:11:35.238 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:11:35.239 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:11:35.239 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:11:35.239 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:11:35.240 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:11:35.718Z
+05-04 15:11:35.240 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:11:35.240 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:11:35.241 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=237ms)
+05-04 15:11:35.241 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=237ms
+05-04 15:11:35.242 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:12:05.271 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:12:05.290 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:12:05.307 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:12:05.310 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:12:05.310 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:12:05.310 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:12:05.310 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:12:05.310 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:12:05.310 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:12:05.310 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:12:05.310 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:12:05.311 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":5,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":175,"total":192,"used":17},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":415,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:12:05.288Z","version":"1.13.2-sandbox"}
+05-04 15:12:05.311 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:12:05.512 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (201ms)
+05-04 15:12:05.512 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:12:05.512 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:12:05.512 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:12:05.512 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:12:05.512 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:12:05.512 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:12:05.513 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:12:06 GMT
+05-04 15:12:05.513 D/OkHttp  ( 2585): etag: W/"9e-CbcvXEQ6NSdWAYqc86CjF6xf21M"
+05-04 15:12:05.513 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:12:05.513 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:12:05.513 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:12:05.513 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:12:05.513 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:12:05.513 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:12:05.513 D/OkHttp  ( 2585): x-correlation-id: cf8af47e-c69a-4416-89ce-2d4d389645e0
+05-04 15:12:05.513 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:12:05.513 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:12:05.513 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:12:05.513 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:12:05.513 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:12:05.513 D/OkHttp  ( 2585): content-length: 158
+05-04 15:12:05.516 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:12:06.000Z","configVersion":"1-1771261223532"}
+05-04 15:12:05.516 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:12:05.519 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:12:06 GMT
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): etag: W/"9e-CbcvXEQ6NSdWAYqc86CjF6xf21M"
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): x-correlation-id: cf8af47e-c69a-4416-89ce-2d4d389645e0
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:12:05.520 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:12:05.521 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:12:05.521 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:12:05.522 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:12:05.522 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:12:06.000Z
+05-04 15:12:05.522 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:12:05.523 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:12:05.523 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=234ms)
+05-04 15:12:05.524 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=234ms
+05-04 15:12:05.525 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:12:35.553 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:12:35.574 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:12:35.597 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:12:35.601 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:12:35.601 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:12:35.601 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:12:35.602 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:12:35.602 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:12:35.602 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:12:35.602 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:12:35.602 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:12:35.602 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":5,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":179,"total":192,"used":13},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":445,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:12:35.572Z","version":"1.13.2-sandbox"}
+05-04 15:12:35.603 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:12:35.811 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (207ms)
+05-04 15:12:35.811 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:12:35.811 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:12:35.811 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:12:35.811 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:12:35.811 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:12:35.811 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:12:35.811 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:12:36 GMT
+05-04 15:12:35.812 D/OkHttp  ( 2585): etag: W/"9e-JNqPvXpfhjCxpP5rIb5Me+BKUbM"
+05-04 15:12:35.812 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:12:35.812 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:12:35.812 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:12:35.812 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:12:35.812 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:12:35.812 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:12:35.812 D/OkHttp  ( 2585): x-correlation-id: ad975f41-d824-473d-a64c-62d82af16a13
+05-04 15:12:35.812 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:12:35.812 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:12:35.812 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:12:35.812 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:12:35.812 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:12:35.812 D/OkHttp  ( 2585): content-length: 158
+05-04 15:12:35.814 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:12:36.298Z","configVersion":"1-1771261223532"}
+05-04 15:12:35.814 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:12:35.818 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:12:35.819 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:12:36 GMT
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): etag: W/"9e-JNqPvXpfhjCxpP5rIb5Me+BKUbM"
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): x-correlation-id: ad975f41-d824-473d-a64c-62d82af16a13
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:12:35.820 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:12:35.822 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:12:35.822 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:12:35.823 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:12:35.824 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:12:36.298Z
+05-04 15:12:35.824 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:12:35.825 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:12:35.826 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=252ms)
+05-04 15:12:35.827 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=252ms
+05-04 15:12:35.828 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:13:00.909 D/IMGGralloc( 2585): Gralloc Free  w:720, h:1280, f:0x101, usage:0xb00, ui64Stamp:1776 line = 2529
+05-04 15:13:00.911 D/IMGGralloc( 2585): Gralloc Free  w:720, h:1280, f:0x101, usage:0xb00, ui64Stamp:1764 line = 2529
+05-04 15:13:00.913 D/IMGGralloc( 2585): Gralloc Free  w:720, h:1280, f:0x101, usage:0xb00, ui64Stamp:1772 line = 2529
+05-04 15:13:00.938 E/Dialog  ( 2585): remove dialog view = DecorView@9b99628[MainActivity]
+05-04 15:13:05.856 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:13:05.874 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:13:05.891 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:13:05.894 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:13:05.894 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:13:05.894 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:13:05.895 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:13:05.895 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:13:05.895 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:13:05.895 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:13:05.895 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:13:05.895 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":6,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":178,"total":192,"used":14},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":475,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:13:05.873Z","version":"1.13.2-sandbox"}
+05-04 15:13:05.896 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:13:06.122 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (225ms)
+05-04 15:13:06.122 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:13:06.122 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:13:06.122 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:13:06.122 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:13:06.122 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:13:06.122 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:13:06.122 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:13:06 GMT
+05-04 15:13:06.122 D/OkHttp  ( 2585): etag: W/"9e-KQrOpeJkxc+ML2lqy4M/PDCEd9w"
+05-04 15:13:06.122 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:13:06.122 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:13:06.122 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:13:06.122 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:13:06.123 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:13:06.123 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:13:06.123 D/OkHttp  ( 2585): x-correlation-id: 13c8b04f-9160-4d9e-89dc-3813e8d7def1
+05-04 15:13:06.123 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:13:06.123 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:13:06.123 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:13:06.123 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:13:06.123 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:13:06.123 D/OkHttp  ( 2585): content-length: 158
+05-04 15:13:06.126 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:13:06.609Z","configVersion":"1-1771261223532"}
+05-04 15:13:06.127 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:13:06.131 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:13:06 GMT
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): etag: W/"9e-KQrOpeJkxc+ML2lqy4M/PDCEd9w"
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): x-correlation-id: 13c8b04f-9160-4d9e-89dc-3813e8d7def1
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:13:06.132 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:13:06.133 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:13:06.133 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:13:06.133 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:13:06.134 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:13:06.609Z
+05-04 15:13:06.134 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:13:06.134 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:13:06.135 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=261ms)
+05-04 15:13:06.135 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=261ms
+05-04 15:13:06.136 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:13:36.164 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:13:36.183 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:13:36.200 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:13:36.204 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:13:36.204 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:13:36.204 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:13:36.204 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:13:36.204 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:13:36.204 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:13:36.204 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:13:36.204 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:13:36.205 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":6,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":177,"total":192,"used":15},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":506,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:13:36.181Z","version":"1.13.2-sandbox"}
+05-04 15:13:36.205 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:13:36.397 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (191ms)
+05-04 15:13:36.397 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:13:36.397 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:13:36.397 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:13:36.397 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:13:36.397 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:13:36.397 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:13:36.397 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:13:36 GMT
+05-04 15:13:36.397 D/OkHttp  ( 2585): etag: W/"9e-b3anVyHu/xqmrMaDh8+ieXrBk8Y"
+05-04 15:13:36.397 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:13:36.397 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:13:36.397 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:13:36.397 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:13:36.397 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:13:36.397 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:13:36.397 D/OkHttp  ( 2585): x-correlation-id: ea0c53a0-9b1e-49e9-80da-90172884fafe
+05-04 15:13:36.397 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:13:36.397 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:13:36.397 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:13:36.398 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:13:36.398 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:13:36.398 D/OkHttp  ( 2585): content-length: 158
+05-04 15:13:36.401 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:13:36.885Z","configVersion":"1-1771261223532"}
+05-04 15:13:36.402 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:13:36.406 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:13:36.407 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:13:36 GMT
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): etag: W/"9e-b3anVyHu/xqmrMaDh8+ieXrBk8Y"
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): x-correlation-id: ea0c53a0-9b1e-49e9-80da-90172884fafe
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:13:36.408 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:13:36.409 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:13:36.409 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:13:36.885Z
+05-04 15:13:36.409 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:13:36.409 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:13:36.410 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=227ms)
+05-04 15:13:36.410 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=227ms
+05-04 15:13:36.411 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:13:40.829 D/AppNavigationKt$AppNavigation( 2585): [PERF] NAV: Welcome → PaymentScreen START (nexgo=false)
+05-04 15:13:40.954 D/AppNavigationKt$AppNavigation( 2585): 💳 [Payment] Pay-later context: wasPayLaterOrder=false, count=0, isKiosk=false, source=null
+05-04 15:13:41.175 D/PaymentViewModel( 2585): 🎬 [PaymentViewModel] Initialized
+05-04 15:13:41.182 D/PaymentViewModel$loadTpvSettings( 2585): 📸 [TPV Settings] Loaded | showVerificationScreen=false | requirePhoto=true | requireBarcode=false
+05-04 15:13:41.359 D/PaymentScreenKt$PaymentScreen( 2585): [PERF] PaymentScreen COMPOSED at 511255ms
+05-04 15:13:41.373 D/PaymentViewModel( 2585): 🧾 [PaymentSession] Updated (setFlowOrigin) | mode=FAST | origin=FAST | features=TIP_COLLECTION
+05-04 15:13:41.374 I/PaymentViewModel( 2585): 🥝 [KIOSK] Payment mode set: isKiosk=false, staffId=null
+05-04 15:13:41.375 D/PaymentViewModel( 2585): 🧾 [PaymentSession] Updated (setKioskPaymentMode) | mode=FAST | origin=FAST | features=TIP_COLLECTION
+05-04 15:13:41.376 D/PaymentViewModel( 2585): 📱 [Portabilidad] isPortabilidad=false (photos=1)
+05-04 15:13:41.377 D/PaymentViewModel( 2585): 🧾 [PaymentSession] Updated (setIsPortabilidad) | mode=FAST | origin=FAST | features=TIP_COLLECTION
+05-04 15:13:41.377 D/PaymentViewModel( 2585): 📱 [Serialized] serialNumber=null, categoryName=null
+05-04 15:13:41.379 D/PaymentViewModel( 2585): 🧾 [PaymentSession] Updated (setSocketProcessedByStaffId) | mode=FAST | origin=FAST | features=TIP_COLLECTION
+05-04 15:13:41.381 D/PaymentViewModel( 2585): 💰 [Payment Flow] Amount entered: $1.00
+05-04 15:13:41.382 D/PaymentViewModel( 2585): 🧾 [PaymentSession] Updated (setOrderContext-fast) | mode=FAST | origin=FAST | features=TIP_COLLECTION
+05-04 15:13:41.383 D/PaymentViewModel( 2585): 📦 [Payment Flow] Fast payment mode (no order)
+05-04 15:13:41.384 D/PaymentViewModel( 2585): 🧾 [PaymentSession] Updated (submitAmount) | mode=FAST | origin=FAST | features=TIP_COLLECTION
+05-04 15:13:41.384 D/PaymentViewModel( 2585): 🏪 [Merchants] Starting merchant flow observation...
+05-04 15:13:41.387 I/PaymentViewModel$ensureMerchantsLoaded( 2585): 🏪 [Merchants] Updated: 1 accounts
+05-04 15:13:41.388 D/PaymentViewModel$ensureMerchantsLoaded( 2585):    📦 2841548417 (2841548417, posId: 388, env: SANDBOX)
+05-04 15:13:41.389 D/PaymentViewModel$ensureMerchantsLoaded( 2585): 🏪 [Merchants] Current account: Default
+05-04 15:13:41.389 D/PaymentViewModel$ensureMerchantsLoaded( 2585): ✅ [Merchants] Initial load complete - deferred signaled
+05-04 15:13:41.390 D/PaymentViewModel( 2585): ⚙️ [Payment Flow] showReview=false, showTip=true, showPreVerification=false
+05-04 15:13:41.394 D/PaymentViewModel( 2585): ➡️ [Payment Flow] Moving to tip screen
+05-04 15:13:41.669 D/AppNavigationKt$AppNavigation( 2585): 💳 [Payment] Pay-later context: wasPayLaterOrder=false, count=0, isKiosk=false, source=null
+05-04 15:13:41.778 D/AppNavigationKt$AppNavigation( 2585): 💳 [Payment] Pay-later context: wasPayLaterOrder=false, count=0, isKiosk=false, source=null
+05-04 15:13:52.632 D/PaymentViewModel( 2585): ⏭️  [Payment Flow] Tip skipped
+05-04 15:13:52.633 D/PaymentViewModel( 2585): 🧾 [PaymentSession] Updated (skipTip) | mode=FAST | origin=FAST | features=TIP_COLLECTION
+05-04 15:13:52.634 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Input: subtotal='1.00', tipAmount='0.00'
+05-04 15:13:52.635 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Parsed: subtotalDecimal=1.00, tipDecimal=0.00
+05-04 15:13:52.636 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Result: 1.00
+05-04 15:13:52.640 D/PaymentViewModel( 2585): 🏪 [Merchants] Already observing, skipping...
+05-04 15:13:52.641 D/PaymentViewModel$proceedToMerchantSelection( 2585): 🏪 [Payment Flow] Only 1 merchant (2841548417) → Pre-selecting
+05-04 15:13:58.124 E/Dialog  ( 2585): show dialog view = DecorView@a1a65ce[MainActivity]
+05-04 15:13:58.249 D/IMGGralloc( 2585): Gralloc Register  w:768, h:705, f:0x101, usage:0x900, ui64Stamp:1868, sSize:2211840, line = 2379
+05-04 15:13:58.252 D/IMGGralloc( 2585): Gralloc Register  w:768, h:705, f:0x101, usage:0x900, ui64Stamp:1872, sSize:2211840, line = 2379
+05-04 15:13:58.254 D/IMGGralloc( 2585): Gralloc Register  w:768, h:705, f:0x101, usage:0x900, ui64Stamp:1876, sSize:2211840, line = 2379
+05-04 15:13:58.271 D/IMGGralloc( 2585): Gralloc Free  w:768, h:705, f:0x101, usage:0x900, ui64Stamp:1876 line = 2529
+05-04 15:13:58.273 D/IMGGralloc( 2585): Gralloc Register  w:768, h:705, f:0x101, usage:0xb00, ui64Stamp:1878, sSize:2211840, line = 2379
+05-04 15:14:06.446 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:14:06.464 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:14:06.483 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:14:06.488 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:14:06.488 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:14:06.489 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:14:06.489 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:14:06.489 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:14:06.489 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:14:06.489 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:14:06.490 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:14:06.491 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":6,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":178,"total":192,"used":14},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":536,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:14:06.463Z","version":"1.13.2-sandbox"}
+05-04 15:14:06.491 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:14:06.695 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (203ms)
+05-04 15:14:06.696 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:14:06.696 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:14:06.696 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:14:06.697 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:14:06.697 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:14:06.697 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:14:06.697 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:14:07 GMT
+05-04 15:14:06.697 D/OkHttp  ( 2585): etag: W/"9e-xmEWyPfoxtYd8m8nFBbBcepCDVA"
+05-04 15:14:06.697 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:14:06.698 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:14:06.698 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:14:06.698 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:14:06.698 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:14:06.698 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:14:06.699 D/OkHttp  ( 2585): x-correlation-id: 9f575d95-ea6e-4551-af0c-6bd5673b7ca8
+05-04 15:14:06.699 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:14:06.699 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:14:06.699 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:14:06.699 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:14:06.699 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:14:06.700 D/OkHttp  ( 2585): content-length: 158
+05-04 15:14:06.701 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:14:07.183Z","configVersion":"1-1771261223532"}
+05-04 15:14:06.702 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:14:06.707 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:14:06.707 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:14:07 GMT
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): etag: W/"9e-xmEWyPfoxtYd8m8nFBbBcepCDVA"
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): x-correlation-id: 9f575d95-ea6e-4551-af0c-6bd5673b7ca8
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:14:06.708 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:14:06.709 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:14:06.709 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:14:06.709 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:14:07.183Z
+05-04 15:14:06.709 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:14:06.710 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:14:06.710 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=247ms)
+05-04 15:14:06.711 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=247ms
+05-04 15:14:06.712 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:14:13.294 D/IMGGralloc( 2585): Gralloc Free  w:768, h:705, f:0x101, usage:0x900, ui64Stamp:1872 line = 2529
+05-04 15:14:13.294 D/IMGGralloc( 2585): Gralloc Free  w:768, h:705, f:0x101, usage:0x900, ui64Stamp:1868 line = 2529
+05-04 15:14:13.297 D/IMGGralloc( 2585): Gralloc Free  w:768, h:705, f:0x101, usage:0xb00, ui64Stamp:1878 line = 2529
+05-04 15:14:13.318 E/Dialog  ( 2585): remove dialog view = DecorView@a1a65ce[MainActivity]
+05-04 15:14:18.720 E/Dialog  ( 2585): show dialog view = DecorView@c917b4e[MainActivity]
+05-04 15:14:18.899 D/IMGGralloc( 2585): Gralloc Register  w:768, h:670, f:0x101, usage:0x900, ui64Stamp:1893, sSize:2064384, line = 2379
+05-04 15:14:18.902 D/IMGGralloc( 2585): Gralloc Register  w:768, h:670, f:0x101, usage:0x900, ui64Stamp:1895, sSize:2064384, line = 2379
+05-04 15:14:18.904 D/IMGGralloc( 2585): Gralloc Register  w:768, h:670, f:0x101, usage:0x900, ui64Stamp:1897, sSize:2064384, line = 2379
+05-04 15:14:18.932 D/IMGGralloc( 2585): Gralloc Free  w:768, h:670, f:0x101, usage:0x900, ui64Stamp:1897 line = 2529
+05-04 15:14:18.935 D/IMGGralloc( 2585): Gralloc Register  w:768, h:670, f:0x101, usage:0xb00, ui64Stamp:1899, sSize:2064384, line = 2379
+05-04 15:14:33.085 D/PaymentViewModel( 2585): 🧾 [PaymentSession] Updated (ensurePaymentAttemptId) | mode=FAST | origin=FAST | features=TIP_COLLECTION
+05-04 15:14:33.086 I/PaymentViewModel( 2585): 🛡️ [Idempotency] Generated new paymentAttemptId=a8cb6052-76b0-47a9-8e10-7e3e7f5858b8
+05-04 15:14:33.089 D/PaymentViewModel( 2585): 🚦 [Payment] Payment flow started - guard locked
+05-04 15:14:33.090 D/PaymentViewModel( 2585): 🧾 [PaymentSession] Updated (startPayment) | mode=FAST | origin=FAST | features=TIP_COLLECTION
+05-04 15:14:33.091 I/PaymentViewModel( 2585): 💳 [MSI] Starting card payment with msi=DIRECT
+05-04 15:14:33.097 D/PaymentViewModel( 2585): 📟 [PIN Dialog] Starting collectors...
+05-04 15:14:33.100 D/PaymentViewModel$collectPinDialogFlows( 2585): 📟 [PIN Dialog] State changed: EventPinDialogState(show=false, dismiss=false)
+05-04 15:14:33.102 D/PaymentViewModel$collectPinDialogFlows( 2585): ⌨️  [PIN Keyboard] State: 
+05-04 15:14:33.105 E/PaymentViewModel$collectPinDialogFlows( 2585): ❌ [PIN Result] PIN incorrect or error: null
+05-04 15:14:33.107 D/PaymentViewModel$collectPinDialogFlows( 2585): 🔢 [PIN Attempts] Remaining: PinAttempts(pinAttempts=0, isOffline=false)
+05-04 15:14:33.110 D/PaymentViewModel$collectPinDialogFlows( 2585): 📱 [App Selection] Available apps: 0
+05-04 15:14:33.112 D/PaymentViewModel$collectPinDialogFlows( 2585): ✅ [Card Reading] Confirmed: false
+05-04 15:14:33.114 D/PaymentViewModel( 2585): 🎯 [BlumonPayment] Starting ONLINE chip payment flow: $1.00
+05-04 15:14:33.115 D/PaymentViewModel( 2585):    💰 Amount: $1.00 → 100 centavos
+05-04 15:14:33.116 D/PaymentViewModel( 2585):    🏪 Venue: cmko8m8vp00049kcxd3xk21za | Staff: cmlid60em00069kbvvie81zit | Tip: $0.00
+05-04 15:14:33.119 D/InitializationManager( 2585): ✅ [InitializationManager] Already initialized (fast path)
+05-04 15:14:33.120 D/ShiftRepository( 2585): 🔍 Fetching current shift for venue: cmko8m8vp00049kcxd3xk21za
+05-04 15:14:33.127 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/shift
+05-04 15:14:33.130 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/shift
+05-04 15:14:33.130 D/OkHttp  ( 2585): --> GET https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/shift
+05-04 15:14:33.130 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:14:33.130 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:14:33.130 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:14:33.130 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:14:33.130 D/OkHttp  ( 2585): --> END GET
+05-04 15:14:33.178 D/IMGGralloc( 2585): Gralloc Free  w:768, h:670, f:0x101, usage:0x900, ui64Stamp:1895 line = 2529
+05-04 15:14:33.179 D/IMGGralloc( 2585): Gralloc Free  w:768, h:670, f:0x101, usage:0x900, ui64Stamp:1893 line = 2529
+05-04 15:14:33.182 D/IMGGralloc( 2585): Gralloc Free  w:768, h:670, f:0x101, usage:0xb00, ui64Stamp:1899 line = 2529
+05-04 15:14:33.200 E/Dialog  ( 2585): remove dialog view = DecorView@c917b4e[MainActivity]
+05-04 15:14:33.636 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/shift (505ms)
+05-04 15:14:33.636 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:14:33.636 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:14:33.636 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:14:33.636 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:14:33.636 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:14:33.637 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:14:33.637 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:14:33 GMT
+05-04 15:14:33.637 D/OkHttp  ( 2585): etag: W/"2d4-gFvDIr2ClJh5P3YMttAOJ3bERqM"
+05-04 15:14:33.637 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:14:33.637 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:14:33.637 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:14:33.637 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:14:33.637 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:14:33.637 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:14:33.637 D/OkHttp  ( 2585): x-correlation-id: 976a2bfe-285c-4dc0-8872-77bd1901b895
+05-04 15:14:33.637 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:14:33.637 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:14:33.637 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:14:33.637 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:14:33.637 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:14:33.637 D/OkHttp  ( 2585): content-length: 724
+05-04 15:14:33.640 D/OkHttp  ( 2585): {"shift":{"id":"cmmy0hdvo00339k844mxjt6bm","venueId":"cmko8m8vp00049kcxd3xk21za","staffId":"cmklbaqg9001t9kku6aqyoxhw","startTime":"2026-03-19T21:58:02.627Z","endTime":null,"startingCash":"500","endingCash":null,"cashDifference":null,"cashDeclared":null,"cardDeclared":null,"vouchersDeclared":null,"otherDeclared":null,"totalSales":"5878.28","totalTips":"652.98","totalOrders":0,"totalCashPayments":"1496.9","totalCardPayments":"4381.38","totalVoucherPayments":"0","totalOtherPayments":"0","totalProductsSold":0,"inventoryConsumed":null,"reportData":null,"status":"OPEN","notes":null,"originSystem":"AVOQADO","posRawData":null,"externalId":null,"createdAt":"2026-03-19T21:58:02.628Z","updatedAt":"2026-05-01T19:29:10.559Z"}}
+05-04 15:14:33.640 D/OkHttp  ( 2585): <-- END HTTP (724-byte body)
+05-04 15:14:33.648 D/ShiftRepository( 2585): ✅ Found active shift: cmmy0hdvo00339k844mxjt6bm, Staff: Unknown
+05-04 15:14:33.654 I/PaymentViewModel$startPayment( 2585): ℹ️ [Payment] Shift system disabled - bypassing shift check
+05-04 15:14:33.672 D/PaymentViewModel$continuePaymentFlow( 2585): ⚡ [Local-First] Fast payment mode - no order sync needed
+05-04 15:14:33.674 D/PaymentViewModel$continuePaymentFlow( 2585): ✅ [Merchant Switch] Already on correct merchant: 2841548417 (no switch needed)
+05-04 15:14:33.675 I/PaymentViewModel$continuePaymentFlow( 2585): [PHASE 1] PreTrans - Configuring EMV kernel...
+05-04 15:14:33.677 D/PaymentViewModel$continuePaymentFlow( 2585): 💰 [PreTrans] Amount: 100 cents | Tip: 0 cents (from tip=0.00)
+05-04 15:14:33.939 W/ado_tpv.sandbo( 2585): Accessing hidden method Lcom/paxdroid/os/IPaxDeviceManager;->allowAccessContactsBtPairing(Z)V (blocked, linking, denied)
+05-04 15:14:33.939 W/ado_tpv.sandbo( 2585): Accessing hidden method Lcom/paxdroid/os/IPaxDeviceManager;->allowBtOpenAirplane(Z)V (blocked, linking, denied)
+05-04 15:14:33.942 W/ado_tpv.sandbo( 2585): Accessing hidden method Lcom/paxdroid/os/IPaxDeviceManager;->disableGlobalEmergency(Z)V (blocked, linking, denied)
+05-04 15:14:33.942 W/ado_tpv.sandbo( 2585): Accessing hidden method Lcom/paxdroid/os/IPaxDeviceManager;->disableGlobalScreenshot(Z)V (blocked, linking, denied)
+05-04 15:14:33.959 W/ado_tpv.sandbo( 2585): Accessing hidden method Lcom/paxdroid/os/IPaxDeviceManager;->getTetheringIp(I)Ljava/lang/String; (blocked, linking, denied)
+05-04 15:14:33.960 W/ado_tpv.sandbo( 2585): Accessing hidden method Lcom/paxdroid/os/IPaxDeviceManager;->isUsbHostDisabled()Z (blocked, linking, denied)
+05-04 15:14:33.971 W/ado_tpv.sandbo( 2585): Accessing hidden method Lcom/paxdroid/os/IPaxDeviceManager;->setEthernetTetherEnable(Z)V (blocked, linking, denied)
+05-04 15:14:33.972 W/ado_tpv.sandbo( 2585): Accessing hidden method Lcom/paxdroid/os/IPaxDeviceManager;->setLoadRecentTasks(Z)V (blocked, linking, denied)
+05-04 15:14:33.975 W/ado_tpv.sandbo( 2585): Accessing hidden method Lcom/paxdroid/os/IPaxDeviceManager;->setSmartSavingModeWhenCharging(Z)Z (blocked, linking, denied)
+05-04 15:14:33.976 W/ado_tpv.sandbo( 2585): Accessing hidden method Lcom/paxdroid/os/IPaxDeviceManager;->setTetheringIp(ILjava/lang/String;)V (blocked, linking, denied)
+05-04 15:14:33.977 W/ado_tpv.sandbo( 2585): Accessing hidden method Lcom/paxdroid/os/IPaxDeviceManager;->setUsbHostDisable(Z)V (blocked, linking, denied)
+05-04 15:14:33.977 W/ado_tpv.sandbo( 2585): Accessing hidden method Lcom/paxdroid/os/IPaxDeviceManager;->showCarrierName(Z)V (blocked, linking, denied)
+05-04 15:14:33.977 W/ado_tpv.sandbo( 2585): Accessing hidden method Lcom/paxdroid/os/IPaxDeviceManager;->showCustomizedPoweroffUi(Z)V (blocked, linking, denied)
+05-04 15:14:33.979 W/ado_tpv.sandbo( 2585): Accessing hidden method Lcom/paxdroid/os/IPaxDeviceManager;->updateBootAnimation(Ljava/lang/String;)I (blocked, linking, denied)
+05-04 15:14:33.980 W/ado_tpv.sandbo( 2585): Accessing hidden method Lcom/paxdroid/os/IPaxDeviceManager;->updateBootLogo(Ljava/lang/String;)I (blocked, linking, denied)
+05-04 15:14:33.999 I/System.out( 2585): RpcClient open rpc
+05-04 15:14:34.010 I/System.out( 2585): RpcClient open rpc success!
+05-04 15:14:34.409 I/AppDataUtils( 2585): Terminal SN : 2841548417
+05-04 15:14:34.423 W/EmvProcess( 2585): capkList:60
+05-04 15:14:34.423 W/EmvProcess( 2585): revokeList:11
+05-04 15:14:34.465 W/EmvProcess( 2585): addAID aidList:27
+05-04 15:14:34.519 E/ClssProcess( 2585): Clss_SetMCVersion_Entry ret = 0
+05-04 15:14:34.527 D/PaymentViewModel$continuePaymentFlow( 2585): ✅ [PHASE 1] PreTrans completed
+05-04 15:14:34.527 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Input: subtotal='1.00', tipAmount='0.00'
+05-04 15:14:34.528 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Parsed: subtotalDecimal=1.00, tipDecimal=0.00
+05-04 15:14:34.528 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Result: 1.00
+05-04 15:14:34.529 I/PaymentViewModel$continuePaymentFlow( 2585): [PHASE 2] StartDetectCard - Waiting for card tap...
+--------- beginning of system
+05-04 15:14:34.534 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:14:34.537 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:14:34.542 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:14:34.544 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:14:34.547 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:14:34.550 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:14:34.554 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:14:34.575 E/PAXCARD ( 2585): The UID 10238 has get all permissions 31 success, so cache!
+05-04 15:14:34.583 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:14:34.585 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:14:34.594 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:14:34.596 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:14:34.609 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:14:34.610 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:14:34.613 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:14:36.741 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:14:36.761 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:14:36.774 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:14:36.779 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:14:36.780 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:14:36.781 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:14:36.781 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:14:36.781 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:14:36.782 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:14:36.782 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:14:36.782 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:14:36.784 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":7,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":175,"total":192,"used":17},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":566,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:14:36.760Z","version":"1.13.2-sandbox"}
+05-04 15:14:36.785 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:14:37.003 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (217ms)
+05-04 15:14:37.003 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:14:37.003 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:14:37.004 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:14:37.004 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:14:37.004 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:14:37.004 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:14:37.005 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:14:37 GMT
+05-04 15:14:37.005 D/OkHttp  ( 2585): etag: W/"9e-u5R4PtgieMhM+nBi3VtuOqp1QSA"
+05-04 15:14:37.005 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:14:37.005 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:14:37.005 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:14:37.006 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:14:37.006 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:14:37.006 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:14:37.006 D/OkHttp  ( 2585): x-correlation-id: 63180560-fc11-484a-b015-c046f1c5771a
+05-04 15:14:37.006 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:14:37.006 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:14:37.007 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:14:37.007 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:14:37.007 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:14:37.007 D/OkHttp  ( 2585): content-length: 158
+05-04 15:14:37.009 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:14:37.492Z","configVersion":"1-1771261223532"}
+05-04 15:14:37.009 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:14:37.014 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:14:37 GMT
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): etag: W/"9e-u5R4PtgieMhM+nBi3VtuOqp1QSA"
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): x-correlation-id: 63180560-fc11-484a-b015-c046f1c5771a
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:14:37.015 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:14:37.016 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:14:37.016 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:14:37.016 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:14:37.017 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:14:37.492Z
+05-04 15:14:37.017 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:14:37.017 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:14:37.018 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=257ms)
+05-04 15:14:37.018 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=257ms
+05-04 15:14:37.019 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:14:59.975 I/ado_tpv.sandbo( 2585): JIT allocated 66KB for compiled code of void com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreenKt$PaymentScreen$16.invoke(androidx.compose.foundation.layout.PaddingValues, androidx.compose.runtime.Composer, int)
+05-04 15:14:59.975 I/ado_tpv.sandbo( 2585): JIT allocated 61KB for stack maps of void com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreenKt$PaymentScreen$16.invoke(androidx.compose.foundation.layout.PaddingValues, androidx.compose.runtime.Composer, int)
+05-04 15:14:59.977 I/ado_tpv.sandbo( 2585): Compiler allocated 8219KB to compile void com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreenKt$PaymentScreen$16.invoke(androidx.compose.foundation.layout.PaddingValues, androidx.compose.runtime.Composer, int)
+05-04 15:15:04.651 E/PaymentViewModel$continuePaymentFlow( 2585): ❌ [PHASE 2] Detect card failed: TimeoutFailure
+05-04 15:15:04.656 D/PaymentViewModel( 2585): 📸 [Context Snapshot] amount=1.00 | tip=0.00 | rating=null | merchant_cuid=cmkmxzy2r000n9kl00kwq7pv7 | local_id=cmkmxzy2r000n9kl00kwq7pv7
+05-04 15:15:04.657 D/PaymentViewModel( 2585): 📸 [Context Snapshot] orderId=null | orderNumber=null | splitType=null
+05-04 15:15:04.658 D/PaymentViewModel( 2585): 📸 [Context Snapshot] isValid=true | isOrderPayment=false
+05-04 15:15:07.047 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:15:07.066 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:15:07.081 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:15:07.088 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:15:07.089 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:15:07.090 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:15:07.090 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:15:07.090 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:15:07.091 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:15:07.091 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:15:07.091 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:15:07.094 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":7,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":177,"total":192,"used":15},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":596,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:15:07.065Z","version":"1.13.2-sandbox"}
+05-04 15:15:07.094 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:15:07.337 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (242ms)
+05-04 15:15:07.337 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:15:07.337 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:15:07.337 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:15:07.337 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:15:07.337 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:15:07.337 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:15:07.337 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:15:07 GMT
+05-04 15:15:07.338 D/OkHttp  ( 2585): etag: W/"9e-Q344gHjVcWlGQTniLrClo2+1ZpU"
+05-04 15:15:07.338 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:15:07.338 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:15:07.338 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:15:07.338 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:15:07.338 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:15:07.338 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:15:07.338 D/OkHttp  ( 2585): x-correlation-id: 9a3af0b7-8325-49d4-ad07-ae1f06f5165f
+05-04 15:15:07.338 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:15:07.338 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:15:07.338 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:15:07.338 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:15:07.338 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:15:07.338 D/OkHttp  ( 2585): content-length: 158
+05-04 15:15:07.340 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:15:07.820Z","configVersion":"1-1771261223532"}
+05-04 15:15:07.340 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:15:07.344 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:15:07 GMT
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): etag: W/"9e-Q344gHjVcWlGQTniLrClo2+1ZpU"
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): x-correlation-id: 9a3af0b7-8325-49d4-ad07-ae1f06f5165f
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:15:07.345 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:15:07.346 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:15:07.346 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:15:07.346 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:15:07.347 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:15:07.820Z
+05-04 15:15:07.347 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:15:07.347 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:15:07.348 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=281ms)
+05-04 15:15:07.348 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=281ms
+05-04 15:15:07.349 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:15:34.912 I/PaymentViewModel( 2585): 🔄 [Smart Retry] Called with context: RetryContext(amount=1.00, tipAmount=0.00, rating=null, merchantAccountId=cmkmxzy2r000n9kl00kwq7pv7, merchantLocalId=cmkmxzy2r000n9kl00kwq7pv7, flowOrigin=FAST, orderId=null, orderNumber=null, splitType=null, equalPartsPartySize=null, equalPartsPayedFor=null, paidProductIds=null, selectedMsiMonths=null)
+05-04 15:15:34.914 D/PaymentViewModel( 2585): 🔄 [Smart Retry] Order context restored: orderId=null | orderNumber=null | splitType=null
+05-04 15:15:34.915 D/PaymentViewModel( 2585): 🔄 [Smart Retry] Merchant restored: 2841548417 (id=cmkmxzy2r000n9kl00kwq7pv7, cuid=cmkmxzy2r000n9kl00kwq7pv7)
+05-04 15:15:34.916 I/PaymentViewModel( 2585): 🔄 [Smart Retry] Restored context | amount=1.00 | tip=0.00 | rating=null | merchant=2841548417 | orderId=null
+05-04 15:15:34.917 D/PaymentViewModel( 2585): 🧾 [PaymentSession] Updated (retryPayment) | mode=FAST | origin=FAST | features=TIP_COLLECTION
+05-04 15:15:34.918 D/PaymentViewModel( 2585): 🛡️ [Idempotency] Reusing existing paymentAttemptId=a8cb6052-76b0-47a9-8e10-7e3e7f5858b8
+05-04 15:15:34.920 D/PaymentViewModel( 2585): 🚦 [Payment] Payment flow started - guard locked
+05-04 15:15:34.922 D/PaymentViewModel( 2585): 🧾 [PaymentSession] Updated (startPayment) | mode=FAST | origin=FAST | features=TIP_COLLECTION
+05-04 15:15:34.923 I/PaymentViewModel( 2585): 💳 [MSI] Starting card payment with msi=DIRECT
+05-04 15:15:34.928 D/PaymentViewModel( 2585): 📟 [PIN Dialog] Collectors already running, skipping...
+05-04 15:15:34.928 D/PaymentViewModel( 2585): 🎯 [BlumonPayment] Starting ONLINE chip payment flow: $1.00
+05-04 15:15:34.930 D/PaymentViewModel( 2585):    💰 Amount: $1.00 → 100 centavos
+05-04 15:15:34.930 D/PaymentViewModel( 2585):    🏪 Venue: cmko8m8vp00049kcxd3xk21za | Staff: cmlid60em00069kbvvie81zit | Tip: $0.00
+05-04 15:15:34.932 D/InitializationManager( 2585): ✅ [InitializationManager] Already initialized (fast path)
+05-04 15:15:34.933 D/ShiftRepository( 2585): 🔍 Fetching current shift for venue: cmko8m8vp00049kcxd3xk21za
+05-04 15:15:34.941 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/shift
+05-04 15:15:34.946 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/shift
+05-04 15:15:34.946 D/OkHttp  ( 2585): --> GET https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/shift
+05-04 15:15:34.947 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:15:34.947 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:15:34.947 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:15:34.948 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:15:34.948 D/OkHttp  ( 2585): --> END GET
+05-04 15:15:35.487 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/shift (538ms)
+05-04 15:15:35.487 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:15:35.487 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:15:35.487 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:15:35.488 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:15:35.488 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:15:35.488 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:15:35.488 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:15:35 GMT
+05-04 15:15:35.488 D/OkHttp  ( 2585): etag: W/"2d4-gFvDIr2ClJh5P3YMttAOJ3bERqM"
+05-04 15:15:35.488 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:15:35.488 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:15:35.488 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:15:35.488 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:15:35.488 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:15:35.488 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:15:35.488 D/OkHttp  ( 2585): x-correlation-id: 9dad90f5-abce-4e39-847b-73eec0b7daf5
+05-04 15:15:35.488 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:15:35.488 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:15:35.488 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:15:35.488 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:15:35.488 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:15:35.488 D/OkHttp  ( 2585): content-length: 724
+05-04 15:15:35.492 D/OkHttp  ( 2585): {"shift":{"id":"cmmy0hdvo00339k844mxjt6bm","venueId":"cmko8m8vp00049kcxd3xk21za","staffId":"cmklbaqg9001t9kku6aqyoxhw","startTime":"2026-03-19T21:58:02.627Z","endTime":null,"startingCash":"500","endingCash":null,"cashDifference":null,"cashDeclared":null,"cardDeclared":null,"vouchersDeclared":null,"otherDeclared":null,"totalSales":"5878.28","totalTips":"652.98","totalOrders":0,"totalCashPayments":"1496.9","totalCardPayments":"4381.38","totalVoucherPayments":"0","totalOtherPayments":"0","totalProductsSold":0,"inventoryConsumed":null,"reportData":null,"status":"OPEN","notes":null,"originSystem":"AVOQADO","posRawData":null,"externalId":null,"createdAt":"2026-03-19T21:58:02.628Z","updatedAt":"2026-05-01T19:29:10.559Z"}}
+05-04 15:15:35.492 D/OkHttp  ( 2585): <-- END HTTP (724-byte body)
+05-04 15:15:35.498 D/ShiftRepository( 2585): ✅ Found active shift: cmmy0hdvo00339k844mxjt6bm, Staff: Unknown
+05-04 15:15:35.502 I/PaymentViewModel$startPayment( 2585): ℹ️ [Payment] Shift system disabled - bypassing shift check
+05-04 15:15:35.508 D/PaymentViewModel$continuePaymentFlow( 2585): ⚡ [Local-First] Fast payment mode - no order sync needed
+05-04 15:15:35.509 D/PaymentViewModel$continuePaymentFlow( 2585): ✅ [Merchant Switch] Already on correct merchant: 2841548417 (no switch needed)
+05-04 15:15:35.511 I/PaymentViewModel$continuePaymentFlow( 2585): [PHASE 1] PreTrans - Configuring EMV kernel...
+05-04 15:15:35.513 D/PaymentViewModel$continuePaymentFlow( 2585): 💰 [PreTrans] Amount: 100 cents | Tip: 0 cents (from tip=0.00)
+05-04 15:15:35.757 I/ado_tpv.sandbo( 2585): JIT allocated 51KB for compiled code of java.util.ArrayList com.blumonpay.pax.shared_tools.manager.dataEmvAids.EmvAidParser$Companion.parse(java.io.InputStream, com.blumonpay.pax.shared_tools.manager.CountryConstants)
+05-04 15:15:36.063 I/AppDataUtils( 2585): Terminal SN : 2841548417
+05-04 15:15:36.070 W/EmvProcess( 2585): capkList:60
+05-04 15:15:36.070 W/EmvProcess( 2585): revokeList:11
+05-04 15:15:36.072 W/EmvProcess( 2585): addAID aidList:27
+05-04 15:15:36.079 E/ClssProcess( 2585): Clss_SetMCVersion_Entry ret = 0
+05-04 15:15:36.081 D/PaymentViewModel$continuePaymentFlow( 2585): ✅ [PHASE 1] PreTrans completed
+05-04 15:15:36.081 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Input: subtotal='1.00', tipAmount='0.00'
+05-04 15:15:36.082 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Parsed: subtotalDecimal=1.00, tipDecimal=0.00
+05-04 15:15:36.082 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Result: 1.00
+05-04 15:15:36.083 I/PaymentViewModel$continuePaymentFlow( 2585): [PHASE 2] StartDetectCard - Waiting for card tap...
+05-04 15:15:36.086 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:15:36.089 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:15:36.093 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:15:36.096 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:15:36.102 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:15:36.105 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:15:36.112 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:15:36.114 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:15:36.117 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:15:36.120 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:15:36.122 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:15:37.376 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:15:37.393 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:15:37.407 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:15:37.412 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:15:37.413 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:15:37.414 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:15:37.414 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:15:37.414 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:15:37.414 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:15:37.415 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:15:37.415 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:15:37.415 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":7,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":175,"total":192,"used":17},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":627,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:15:37.392Z","version":"1.13.2-sandbox"}
+05-04 15:15:37.416 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:15:37.593 I/ado_tpv.sandbo( 2585): Background concurrent copying GC freed 131836(5388KB) AllocSpace objects, 16(524KB) LOS objects, 49% free, 11MB/23MB, paused 169us total 199.551ms
+05-04 15:15:37.671 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (254ms)
+05-04 15:15:37.671 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:15:37.671 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:15:37.672 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:15:37.672 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:15:37.672 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:15:37.672 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:15:37.673 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:15:38 GMT
+05-04 15:15:37.673 D/OkHttp  ( 2585): etag: W/"9e-XctLWhVv1Zkf5ffKE+3sRpXPoF4"
+05-04 15:15:37.673 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:15:37.673 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:15:37.673 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:15:37.674 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:15:37.674 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:15:37.674 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:15:37.674 D/OkHttp  ( 2585): x-correlation-id: 4a1ee474-62ac-4239-8a06-dc849c127d35
+05-04 15:15:37.674 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:15:37.675 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:15:37.675 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:15:37.675 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:15:37.675 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:15:37.675 D/OkHttp  ( 2585): content-length: 158
+05-04 15:15:37.677 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:15:38.157Z","configVersion":"1-1771261223532"}
+05-04 15:15:37.678 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:15:37.683 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:15:37.683 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:15:38 GMT
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): etag: W/"9e-XctLWhVv1Zkf5ffKE+3sRpXPoF4"
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): x-correlation-id: 4a1ee474-62ac-4239-8a06-dc849c127d35
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:15:37.684 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:15:37.685 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:15:37.685 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:15:37.685 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:15:38.157Z
+05-04 15:15:37.685 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:15:37.686 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:15:37.686 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=294ms)
+05-04 15:15:37.687 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=294ms
+05-04 15:15:37.688 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:16:06.173 E/PaymentViewModel$continuePaymentFlow( 2585): ❌ [PHASE 2] Detect card failed: TimeoutFailure
+05-04 15:16:06.176 D/PaymentViewModel( 2585): 📸 [Context Snapshot] amount=1.00 | tip=0.00 | rating=null | merchant_cuid=cmkmxzy2r000n9kl00kwq7pv7 | local_id=cmkmxzy2r000n9kl00kwq7pv7
+05-04 15:16:06.177 D/PaymentViewModel( 2585): 📸 [Context Snapshot] orderId=null | orderNumber=null | splitType=null
+05-04 15:16:06.178 D/PaymentViewModel( 2585): 📸 [Context Snapshot] isValid=true | isOrderPayment=false
+05-04 15:16:07.715 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:16:07.733 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:16:07.747 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:16:07.754 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:16:07.755 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:16:07.756 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:16:07.756 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:16:07.757 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:16:07.757 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:16:07.758 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:16:07.758 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:16:07.759 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":7,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":179,"total":192,"used":13},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":657,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:16:07.732Z","version":"1.13.2-sandbox"}
+05-04 15:16:07.759 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:16:07.959 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (199ms)
+05-04 15:16:07.959 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:16:07.959 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:16:07.959 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:16:07.960 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:16:07.960 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:16:07.960 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:16:07.960 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:16:08 GMT
+05-04 15:16:07.960 D/OkHttp  ( 2585): etag: W/"9e-LqvFs7R7gIyTMQ1uGDU5lgiFtcY"
+05-04 15:16:07.960 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:16:07.960 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:16:07.960 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:16:07.960 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:16:07.960 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:16:07.960 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:16:07.960 D/OkHttp  ( 2585): x-correlation-id: e1d61357-a521-4cff-acf3-a693df065924
+05-04 15:16:07.960 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:16:07.960 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:16:07.960 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:16:07.960 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:16:07.960 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:16:07.960 D/OkHttp  ( 2585): content-length: 158
+05-04 15:16:07.962 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:16:08.345Z","configVersion":"1-1771261223532"}
+05-04 15:16:07.962 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:16:07.966 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:16:07.967 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:16:08 GMT
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): etag: W/"9e-LqvFs7R7gIyTMQ1uGDU5lgiFtcY"
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): x-correlation-id: e1d61357-a521-4cff-acf3-a693df065924
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:16:07.968 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:16:07.969 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:16:08.345Z
+05-04 15:16:07.969 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:16:07.969 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:16:07.969 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=237ms)
+05-04 15:16:07.970 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=237ms
+05-04 15:16:07.971 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true

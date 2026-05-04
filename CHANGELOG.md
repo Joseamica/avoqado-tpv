@@ -11,11 +11,23 @@
 
 ### **Changed**
 
-- **[Nexgo] AngelPay SDK actualizado a `1.0.3`**: reemplazado el AAR `angelpaySDK-v1.0.0-fat-release.aar` por `angelpaySDK-v1.0.3-fat-release.aar` y actualizadas las dependencias `compileOnly`/`nexgoImplementation` para que `nexgoDebug` y `nexgoRelease` compilen contra la nueva versión del SDK.
-- **[Nexgo] Workaround N62/P2PE desactivado**: removido el guard que forzaba `P2PEUtils.isUseP2PE = false` después de inicializar AngelPay. Esto permite validar si el SDK AngelPay `1.0.3` ya corrige internamente el crash de pagos con chip en Nexgo N62.
-- **[Nexgo] Autenticación SDK migrada a `authenticateSimple()`**: `AngelPaySdkGateway` dejó de llamar el método deprecated `authenticate(...)`. Si el SDK solicita selección de comercio, el TPV selecciona el merchant cuya afiliación coincide con las credenciales configuradas antes de lanzar el pago.
+### **Fixed**
+
+---
+
+## [1.13.4] - 2026-05-04
+
+### **Changed**
+
+- **[Nexgo] AngelPay SDK actualizado a `1.0.4`**: reemplazado el AAR `angelpaySDK-v1.0.0-fat-release.aar` por `angelpaySDK-v1.0.4-fat-release.aar` (AngelPay liberó esta versión el 04-may-2026 con la nota: "se corrigió un issue que sucedía en tarjetas Multi-Aplicación específicas en la selección de Débito o Crédito"). Resuelve el `SDK error -8020` observado al insertar chip ICC en N62 con `Sdk_EmvHandler2Impl resultFliter in -311 out -8020`. Actualizadas las dependencias `compileOnly`/`nexgoImplementation` para que `nexgoDebug` y `nexgoRelease` compilen contra la nueva versión.
+- **[Nexgo] Autenticación SDK migrada a `authenticateSimple()` + `selectMerchant()`**: `AngelPaySdkGateway` dejó de llamar el método deprecated `authenticate(...)` (4 args email/password/affiliation/commerceToken). Ahora invoca `authenticateSimple(email, password)` y, cuando el SDK responde `AuthenticateSimpleResult.MerchantSelectionRequired`, selecciona el merchant cuyo `afiliationNumber` coincide con `BuildConfig.ANGELPAY_QA_AFFILIATION`. Patrón validado contra el manual oficial, el `classes.jar` decompilado del AAR y la app de ejemplo `RestauranteAngelPay/LoginScreen.kt`.
 
 ### **Fixed**
+
+- **[PAX/Blumon] Cobro con chip podía quedarse indefinidamente en "Procesando chip..."**: Cuando una tarjeta ICC expone múltiples aplicaciones EMV, el SDK Blumon emite `getSelectAppStateFlow()` y bloquea `StartEmvTransUseCase` hasta recibir `SetSelectAppCodeUseCase`. El TPV solo observaba el flow y nunca respondía, dejando el cobro colgado sin ANR/Crashlytics. Ahora `PaymentViewModel` en `sandbox/` y `production/` auto-selecciona el primer candidato (`SetSelectAppCodeParams(0)`) para continuar el EMV, consistente con el dialog interno del SDK.
+- **[PAX/Blumon] Defensa contra estado viejo del lector después de idle/sleep**: Antes de cada nuevo cobro con tarjeta y reembolso, `PaymentViewModel` ahora ejecuta `StopDetectCardUseCase` como preflight no bloqueante antes de `PreTrans`. Si la TPV quedó con un polling/lectura anterior vivo después de estar prendida con pantalla apagada, este paso limpia el estado del lector sin reiniciar la app. Si `StopDetectCard` falla porque no había polling activo, el flujo continúa y deja breadcrumb en Crashlytics.
+- **[PAX/Blumon] Observabilidad Crashlytics para hangs EMV**: Agregadas custom keys `payment_emv_*` y breadcrumbs alrededor de `StartEmvTrans` y selección de aplicación EMV. Si la UI llega a 45s en `Procesando chip...` / `Procesando reembolso con chip...`, el TPV registra un non-fatal `PaymentEmvStallException` con contexto de flow, intento, stage EMV y elapsed seconds. Esto no cambia el flujo de cobro; solo deja evidencia en Crashlytics si vuelve a ocurrir un hang sin crash.
+- **[Nexgo N62] Workaround P2PE/SRED para defensa en profundidad**: El AAR AngelPay invoca `com.xinguodu.ddiinterface.Ddi.ddi_sys_get_sred_state()` desde `P2PEUtils.isP2PEMode` (línea 120), pero ese símbolo no existe en el firmware del N62. El SDK atrapa internamente el `NoSuchMethodError` y registra `isP2PE = -1`. `AvoqadoTPVApplication.applyAngelPayN62Compatibility()` ahora detecta `Build.MANUFACTURER=nexgo` + `Build.MODEL=N62` y fuerza `P2PEUtils.isUseP2PE = false` justo después del SDK init para evitar el ruido en logs. Contactless en N62 funciona OK con o sin este workaround. Pendiente revalidar chip con SDK 1.0.4 contra terminal físico AVQD-N620W100220.
 
 ---
 

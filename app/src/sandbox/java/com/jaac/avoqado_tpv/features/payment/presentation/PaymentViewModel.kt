@@ -23,6 +23,8 @@ import com.blumonpay.pax.shared.trans_process.domain.use_case.get_tag_value.GetT
 import com.blumonpay.pax.shared.trans_process.domain.use_case.get_tag_value.GetTagValueUseCase
 import com.blumonpay.pax.shared.trans_process.domain.use_case.pre_trans.PreTransParams
 import com.blumonpay.pax.shared.trans_process.domain.use_case.pre_trans.PreTransUseCase
+import com.blumonpay.pax.shared.trans_process.domain.use_case.set_select_app_code.SetSelectAppCodeParams
+import com.blumonpay.pax.shared.trans_process.domain.use_case.set_select_app_code.SetSelectAppCodeUseCase
 import com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransParams
 import com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransUseCase
 import com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransFailure
@@ -135,6 +137,8 @@ class PaymentViewModel @Inject constructor(
     private val completeEmvTransUseCase: CompleteEmvTransUseCase,
     // ⭐ ContinueConfirmCardUseCase - CRITICAL: Required to respond to SDK card reading confirmation
     private val continueConfirmCardUseCase: ContinueConfirmCardUseCase,
+    // ⭐ SetSelectAppCodeUseCase - Required when chip card exposes multiple EMV applications
+    private val setSelectAppCodeUseCase: SetSelectAppCodeUseCase,
     // ⭐ SaleIccUseCase provided automatically by lib-services Hilt modules (for CHIP payments)
     private val saleIccUseCase: SaleIccUseCase,
     // ⭐ SaleCtlsUseCase for CONTACTLESS payments (sets entryMode = CONTACTLESS in Blumon API)
@@ -326,6 +330,7 @@ class PaymentViewModel @Inject constructor(
     // ⚡ Performance optimization flags (1GB RAM devices)
     private var pinDialogFlowsStarted = false  // Track if PIN dialog collectors are running
     private var merchantsLoaded = false  // Track if merchants have been loaded
+    private var lastChipProcessingStallReportKey: String? = null
 
     // 🥝 KIOSK MODE: Deferred cash payment recording (McDonald's/Cinépolis pattern)
     // When true, cash payments go to AwaitingCashConfirmation state instead of recording immediately
@@ -531,9 +536,49 @@ class PaymentViewModel @Inject constructor(
         // 5️⃣ App Selection - When card has multiple applications
         viewModelScope.launch {
             transProcessRepository.getSelectAppStateFlow().collect { candidateList ->
-                Timber.d("📱 [App Selection] Available apps: ${candidateList?.size ?: 0}")
-                // SDK automatically selects the best matching app
-                // We just need to collect this flow for the SDK to proceed
+                val appCount = candidateList?.size ?: 0
+                Timber.d("📱 [App Selection] Available apps: $appCount")
+
+                if (!candidateList.isNullOrEmpty()) {
+                    val selectedAppIndex = 0
+                    com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentEmvContext(
+                        stage = "APP_SELECTION_REQUESTED",
+                        flowOrigin = _flowOrigin.value.name,
+                        message = "SDK requested EMV app selection",
+                        appCount = appCount,
+                        selectedAppIndex = selectedAppIndex,
+                    )
+                    com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.logPaymentBreadcrumb(
+                        "EMV app selection requested: count=$appCount selected=$selectedAppIndex flow=${_flowOrigin.value.name}"
+                    )
+                    Timber.i("📱 [App Selection] Auto-selecting app index $selectedAppIndex of $appCount to continue EMV")
+                    viewModelScope.launch(Dispatchers.IO) {
+                        try {
+                            val params = SetSelectAppCodeParams(selectedAppIndex)
+                            setSelectAppCodeUseCase.runInfallible(params)
+                            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentEmvContext(
+                                stage = "APP_SELECTION_RESPONDED",
+                                flowOrigin = _flowOrigin.value.name,
+                                message = "SetSelectAppCode response sent",
+                                appCount = appCount,
+                                selectedAppIndex = selectedAppIndex,
+                            )
+                            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.logPaymentBreadcrumb(
+                                "EMV app selection response sent: selected=$selectedAppIndex"
+                            )
+                            Timber.i("✅ [App Selection] Response sent to SDK - transaction can proceed")
+                        } catch (e: Exception) {
+                            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentEmvContext(
+                                stage = "APP_SELECTION_RESPONSE_FAILED",
+                                flowOrigin = _flowOrigin.value.name,
+                                message = e.message,
+                                appCount = appCount,
+                                selectedAppIndex = selectedAppIndex,
+                            )
+                            Timber.e(e, "❌ Failed to send SetSelectAppCode response")
+                        }
+                    }
+                }
             }
         }
 
@@ -558,6 +603,27 @@ class PaymentViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    fun reportProcessingTimeoutIfNeeded(message: String, elapsedSeconds: Int) {
+        if (elapsedSeconds < 45 || !message.contains("chip", ignoreCase = true)) return
+
+        val attemptId = sessionSnapshot.refundAttemptId
+            ?: sessionSnapshot.paymentAttemptId
+            ?: "no_attempt"
+        val reportKey = "$attemptId|${_flowOrigin.value.name}|$message"
+        if (lastChipProcessingStallReportKey == reportKey) return
+
+        lastChipProcessingStallReportKey = reportKey
+        com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.recordPaymentEmvStall(
+            flowOrigin = _flowOrigin.value.name,
+            message = message,
+            elapsedSeconds = elapsedSeconds,
+        )
+        Timber.w(
+            "⚠️ [Payment Stall] Chip processing stuck for ${elapsedSeconds}s " +
+                "message='$message' flow=${_flowOrigin.value.name} attemptId=$attemptId"
+        )
     }
 
     /**
@@ -2124,6 +2190,8 @@ class PaymentViewModel @Inject constructor(
             return
         }
 
+        lastChipProcessingStallReportKey = null
+
         // 🔒 Lock payment immediately (BEFORE any async work)
         // This prevents race conditions where multiple clicks sneak through
         _isPaymentInProgress.value = true
@@ -2428,6 +2496,8 @@ class PaymentViewModel @Inject constructor(
                     Timber.d("✅ [Merchant Switch] Already on correct merchant: ${selectedMerchant.displayName} (no switch needed)")
                 }
 
+                stopCardPollingBeforeEmv("sale")
+
                 // ═══════════════════════════════════════════════════════════════════════════
                 // PASO 1: PreTrans (configure EMV kernel)
                 // ═══════════════════════════════════════════════════════════════════════════
@@ -2512,12 +2582,25 @@ class PaymentViewModel @Inject constructor(
 
                 // PASO 3: StartEmvTrans (process chip locally)
                 _state.value = PaymentState.Processing("Procesando chip...")
+                com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentEmvContext(
+                    stage = "START_EMV_TRANS",
+                    flowOrigin = _flowOrigin.value.name,
+                    message = "Procesando chip...",
+                )
+                com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.logPaymentBreadcrumb(
+                    "StartEmvTrans sale started"
+                )
                 Timber.i("[PHASE 3] StartEmvTrans - Processing EMV chip...")
                 val emvParams = StartEmvTransParams()
                 val emvResult = startEmvTransUseCase.run(emvParams)
 
                 if (emvResult.isLeft) {
                     val error = emvResult.leftValue()
+                    com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentEmvContext(
+                        stage = "START_EMV_TRANS_FAILED",
+                        flowOrigin = _flowOrigin.value.name,
+                        message = error.toString(),
+                    )
                     Timber.e("❌ [PHASE 3] EMV failed: $error")
                     // Convert SDK error class to user-friendly message
                     val friendlyMessage = when (error) {
@@ -2538,6 +2621,11 @@ class PaymentViewModel @Inject constructor(
                 }
 
                 val emvResponse = emvResult.rightValue()
+                com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentEmvContext(
+                    stage = "START_EMV_TRANS_OK",
+                    flowOrigin = _flowOrigin.value.name,
+                    message = "EMV processed successfully",
+                )
                 Timber.d("✅ [PHASE 3] EMV processed successfully")
 
                 // ═══════════════════════════════════════════════════════════════════════════
@@ -2765,6 +2853,22 @@ class PaymentViewModel @Inject constructor(
         }
     }
 
+    private suspend fun stopCardPollingBeforeEmv(reason: String) {
+        runCatching {
+            stopDetectCardUseCase.runInfallible(StopDetectCardParams())
+        }.onSuccess {
+            Timber.d("🧹 [EMV Preflight] StopDetectCard completed before $reason")
+            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.logPaymentBreadcrumb(
+                "EMV preflight StopDetectCard completed before $reason"
+            )
+        }.onFailure { error ->
+            Timber.w(error, "⚠️ [EMV Preflight] StopDetectCard failed before $reason; continuing")
+            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.logPaymentBreadcrumb(
+                "EMV preflight StopDetectCard failed before $reason: ${error.message}"
+            )
+        }
+    }
+
     /**
      * 💸 Start refund transaction (devolución) with multi-merchant support.
      *
@@ -2787,6 +2891,7 @@ class PaymentViewModel @Inject constructor(
      * @param context RefundPayment context with original payment info + refund amount
      */
     fun startRefund(context: PaymentContext.RefundPayment) {
+        lastChipProcessingStallReportKey = null
         _flowOrigin.value = PaymentFlowOrigin.REFUND
 
         // 🏢 CRITICAL FIX (2025-12-15): Use PAYMENT'S venueId, not auth context!
@@ -2920,6 +3025,8 @@ class PaymentViewModel @Inject constructor(
                     return@launch
                 }
 
+                stopCardPollingBeforeEmv("refund")
+
                 // ═══════════════════════════════════════════════════════════════════════════
                 // STEP 3: PreTrans with TransType.REFUND
                 // ═══════════════════════════════════════════════════════════════════════════
@@ -3000,6 +3107,14 @@ class PaymentViewModel @Inject constructor(
         try {
             // STEP 1: Start EMV transaction
             _state.value = PaymentState.Processing("Procesando reembolso con chip...")
+            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentEmvContext(
+                stage = "START_EMV_TRANS_REFUND",
+                flowOrigin = _flowOrigin.value.name,
+                message = "Procesando reembolso con chip...",
+            )
+            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.logPaymentBreadcrumb(
+                "StartEmvTrans refund started"
+            )
             Timber.i("[REFUND PHASE 3] StartEmvTrans...")
 
             val emvParams = StartEmvTransParams()
@@ -3007,6 +3122,11 @@ class PaymentViewModel @Inject constructor(
 
             if (emvResult.isLeft) {
                 val error = emvResult.leftValue()
+                com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentEmvContext(
+                    stage = "START_EMV_TRANS_REFUND_FAILED",
+                    flowOrigin = _flowOrigin.value.name,
+                    message = error.toString(),
+                )
                 Timber.e("❌ [REFUND PHASE 3] EMV failed: $error")
                 // Convert SDK error class to user-friendly message
                 val friendlyMessage = when (error) {
@@ -3023,6 +3143,11 @@ class PaymentViewModel @Inject constructor(
                 return
             }
 
+            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentEmvContext(
+                stage = "START_EMV_TRANS_REFUND_OK",
+                flowOrigin = _flowOrigin.value.name,
+                message = "Refund EMV processed successfully",
+            )
             Timber.d("✅ [REFUND PHASE 3] EMV processed")
 
             // STEP 2: Extract EMV tags (same as sale)

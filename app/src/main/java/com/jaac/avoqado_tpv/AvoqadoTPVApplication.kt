@@ -158,13 +158,16 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
     }
 
     /**
-     * AngelPay bundles a Nexgo EMV stack that enables P2PE/SRED by default.
+     * AngelPay SDK 1.0.3 still bundles a Nexgo EMV stack that probes P2PE/SRED
+     * by default. On N62 firmware the bundled stack calls `ddi_sys_get_sred_state()`,
+     * a symbol that is missing from the terminal framework. The probe throws
+     * `NoSuchMethodError`, the SDK catches it and sets `isP2PE = -1`, and the
+     * EMV chip flow then aborts with `SDK error -8020` after `emvProcessFlow1`.
      *
-     * On N62 firmware, the bundled stack calls `ddi_sys_get_sred_state()` during ICC
-     * processing, but that symbol is missing in the terminal framework. The result is
-     * a NoSuchMethodError before chip can continue, while contactless still works.
-     *
-     * We keep ICC enabled and only disable that incompatible P2PE probe for N62.
+     * Confirmed against AVQD-N620W100220 with SDK 1.0.3 + chip card on 2026-04-30.
+     * Workaround: force `P2PEUtils.isUseP2PE = false` so the bundled stack skips
+     * the SRED probe entirely. ICC processing continues normally; contactless and
+     * magstripe were never affected.
      */
     private fun applyAngelPayN62Compatibility() {
         if (!isNexgoN62()) return
@@ -172,7 +175,7 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
         try {
             if (P2PEUtils.isUseP2PE) {
                 Timber.w(
-                    "⚠️ [AngelPay SDK] Disabling Nexgo P2PE probe on N62 to avoid ICC crash path"
+                    "⚠️ [AngelPay SDK] Disabling Nexgo P2PE probe on N62 to avoid ICC -8020 error"
                 )
             }
             P2PEUtils.isUseP2PE = false

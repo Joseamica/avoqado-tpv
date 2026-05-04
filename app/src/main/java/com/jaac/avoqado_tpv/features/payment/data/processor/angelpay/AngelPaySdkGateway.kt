@@ -2,6 +2,8 @@ package com.jaac.avoqado_tpv.features.payment.data.processor.angelpay
 
 import android.content.Context
 import com.angelpay.angelpaysdk.AngelPaySDK
+import com.angelpay.angelpaysdk.models.AuthenticateSimpleResult
+import com.angelpay.angelpaysdk.models.MerchantOption
 import com.angelpay.angelpaysdk.models.PaymentRequest
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -26,11 +28,38 @@ class AngelPaySdkGateway @Inject constructor() {
 
     suspend fun ensureAuthenticated(credentials: AngelPayCredentials): Result<Unit> {
         if (AngelPaySDK.isAuthenticated()) return Result.success(Unit)
-        return AngelPaySDK.authenticate(
+
+        return AngelPaySDK.authenticateSimple(
             email = credentials.email,
             password = credentials.password,
-            affiliation = credentials.affiliation,
-            merchantToken = credentials.commerceToken,
+        ).fold(
+            onSuccess = { authResult ->
+                when (authResult) {
+                    is AuthenticateSimpleResult.Success -> Result.success(Unit)
+                    is AuthenticateSimpleResult.MerchantSelectionRequired -> {
+                        selectConfiguredMerchant(authResult, credentials)
+                    }
+                }
+            },
+            onFailure = { error -> Result.failure(error) },
+        )
+    }
+
+    private suspend fun selectConfiguredMerchant(
+        authResult: AuthenticateSimpleResult.MerchantSelectionRequired,
+        credentials: AngelPayCredentials,
+    ): Result<Unit> {
+        val merchant = authResult.merchants.findByAffiliation(credentials.affiliation)
+            ?: authResult.merchants.singleOrNull()
+            ?: return Result.failure(
+                IllegalStateException(
+                    "AngelPay requiere seleccionar comercio, pero no se encontro afiliacion ${credentials.affiliation}"
+                )
+            )
+
+        return AngelPaySDK.selectMerchant(
+            merchantId = merchant.id,
+            temporaryToken = authResult.temporaryToken,
         )
     }
 
@@ -95,4 +124,15 @@ class AngelPaySdkGateway @Inject constructor() {
             .movePointRight(2)
             .toLong()
     }
+
+    private fun List<MerchantOption>.findByAffiliation(affiliation: String): MerchantOption? {
+        val expected = affiliation.onlyDigits()
+        if (expected.isBlank()) return null
+
+        return firstOrNull { merchant ->
+            merchant.afiliationNumber.onlyDigits() == expected
+        }
+    }
+
+    private fun String.onlyDigits(): String = filter { it.isDigit() }
 }

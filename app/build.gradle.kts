@@ -16,8 +16,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv"
         minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
         targetSdk = 34
-        versionCode = 58
-        versionName = "1.13.3"
+        versionCode = 59
+        versionName = "1.13.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -322,8 +322,8 @@ dependencies {
     // AngelPay fat AAR:
     // - compileOnly for all flavors (types available at compile time in main/)
     // - packaged only in nexgo to avoid duplicate transitive classes in non-nexgo flavors
-    compileOnly(files("libs/angelpaySDK-v1.0.0-fat-release.aar"))
-    "nexgoImplementation"(files("libs/angelpaySDK-v1.0.0-fat-release.aar"))
+    compileOnly(files("libs/angelpaySDK-v1.0.4-fat-release.aar"))
+    "nexgoImplementation"(files("libs/angelpaySDK-v1.0.4-fat-release.aar"))
 
     // AndroidX Core
     implementation(libs.androidx.core.ktx)

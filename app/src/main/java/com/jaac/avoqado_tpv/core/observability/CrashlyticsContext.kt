@@ -111,4 +111,52 @@ object CrashlyticsContext {
             }
         }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to set payment context") }
     }
+
+    fun setPaymentEmvContext(
+        stage: String,
+        flowOrigin: String?,
+        message: String?,
+        appCount: Int? = null,
+        selectedAppIndex: Int? = null,
+        elapsedSeconds: Int? = null,
+    ) {
+        runCatching {
+            FirebaseCrashlytics.getInstance().apply {
+                setCustomKey("payment_emv_stage", stage)
+                setCustomKey("payment_emv_flow_origin", flowOrigin.orEmpty())
+                setCustomKey("payment_emv_message", message.orEmpty())
+                setCustomKey("payment_emv_app_count", appCount ?: -1)
+                setCustomKey("payment_emv_selected_app_index", selectedAppIndex ?: -1)
+                setCustomKey("payment_emv_elapsed_seconds", elapsedSeconds ?: -1)
+            }
+        }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to set EMV context") }
+    }
+
+    fun logPaymentBreadcrumb(message: String) {
+        runCatching {
+            FirebaseCrashlytics.getInstance().log("[Payment] $message")
+        }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to write payment breadcrumb") }
+    }
+
+    fun recordPaymentEmvStall(
+        flowOrigin: String?,
+        message: String,
+        elapsedSeconds: Int,
+    ) {
+        runCatching {
+            val crashlytics = FirebaseCrashlytics.getInstance()
+            setPaymentEmvContext(
+                stage = "PROCESSING_CHIP_STALL",
+                flowOrigin = flowOrigin,
+                message = message,
+                elapsedSeconds = elapsedSeconds,
+            )
+            crashlytics.log("[Payment/EMV] Processing state stuck for ${elapsedSeconds}s: $message")
+            crashlytics.recordException(
+                PaymentEmvStallException("Payment EMV chip processing stuck for ${elapsedSeconds}s")
+            )
+        }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to record EMV stall") }
+    }
+
+    private class PaymentEmvStallException(message: String) : Exception(message)
 }

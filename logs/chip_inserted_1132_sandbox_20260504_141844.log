@@ -1,0 +1,1032 @@
+--------- beginning of main
+05-04 15:18:39.412 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:18:39.430 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:18:39.449 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:18:39.454 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:18:39.455 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:18:39.455 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:18:39.455 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:18:39.456 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:18:39.456 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:18:39.456 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:18:39.456 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:18:39.457 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":9,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":178,"total":192,"used":14},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":809,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:18:39.429Z","version":"1.13.2-sandbox"}
+05-04 15:18:39.457 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:18:39.645 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (187ms)
+05-04 15:18:39.646 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:18:39.646 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:18:39.646 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:18:39.647 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:18:39.647 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:18:39.647 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:18:39.647 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:18:40 GMT
+05-04 15:18:39.647 D/OkHttp  ( 2585): etag: W/"9e-W6jlA5CI457DqPmEX/urj+qBjrE"
+05-04 15:18:39.647 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:18:39.647 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:18:39.648 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:18:39.648 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:18:39.648 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:18:39.648 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:18:39.648 D/OkHttp  ( 2585): x-correlation-id: 128bba46-fa0a-4eb4-b90a-b53d9805cffb
+05-04 15:18:39.648 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:18:39.649 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:18:39.649 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:18:39.649 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:18:39.649 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:18:39.649 D/OkHttp  ( 2585): content-length: 158
+05-04 15:18:39.651 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:18:40.027Z","configVersion":"1-1771261223532"}
+05-04 15:18:39.651 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:18:39.656 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:18:40 GMT
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): etag: W/"9e-W6jlA5CI457DqPmEX/urj+qBjrE"
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): x-correlation-id: 128bba46-fa0a-4eb4-b90a-b53d9805cffb
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:18:39.657 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:18:39.658 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:18:39.658 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:18:39.658 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:18:39.658 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:18:40.027Z
+05-04 15:18:39.659 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:18:39.659 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:18:39.659 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=230ms)
+05-04 15:18:39.660 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=230ms
+05-04 15:18:39.661 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:18:53.708 E/Dialog  ( 2585): show dialog view = DecorView@9e14aed[MainActivity]
+05-04 15:18:53.802 D/IMGGralloc( 2585): Gralloc Register  w:768, h:670, f:0x101, usage:0x900, ui64Stamp:1967, sSize:2064384, line = 2379
+05-04 15:18:53.805 D/IMGGralloc( 2585): Gralloc Register  w:768, h:670, f:0x101, usage:0x900, ui64Stamp:1971, sSize:2064384, line = 2379
+05-04 15:18:53.809 D/IMGGralloc( 2585): Gralloc Register  w:768, h:670, f:0x101, usage:0x900, ui64Stamp:1975, sSize:2064384, line = 2379
+05-04 15:18:53.832 D/IMGGralloc( 2585): Gralloc Free  w:768, h:670, f:0x101, usage:0x900, ui64Stamp:1975 line = 2529
+05-04 15:18:53.836 D/IMGGralloc( 2585): Gralloc Register  w:768, h:670, f:0x101, usage:0xb00, ui64Stamp:1979, sSize:2064384, line = 2379
+05-04 15:18:53.933 I/ado_tpv.sandbo( 2585): JIT allocated 55KB for compiled code of void com.jaac.avoqado_tpv.features.payment.presentation.MerchantSelectionContentKt$MerchantSelectionContent$3$1.invoke(androidx.compose.foundation.layout.ColumnScope, androidx.compose.runtime.Composer, int)
+05-04 15:18:53.933 I/ado_tpv.sandbo( 2585): JIT allocated 54KB for stack maps of void com.jaac.avoqado_tpv.features.payment.presentation.MerchantSelectionContentKt$MerchantSelectionContent$3$1.invoke(androidx.compose.foundation.layout.ColumnScope, androidx.compose.runtime.Composer, int)
+05-04 15:18:53.935 I/ado_tpv.sandbo( 2585): Compiler allocated 7217KB to compile void com.jaac.avoqado_tpv.features.payment.presentation.MerchantSelectionContentKt$MerchantSelectionContent$3$1.invoke(androidx.compose.foundation.layout.ColumnScope, androidx.compose.runtime.Composer, int)
+05-04 15:19:09.698 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:19:09.715 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:19:09.731 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:19:09.737 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:19:09.738 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:19:09.738 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:19:09.739 D/OkHttp  ( 2585): Content-Length: 447
+05-04 15:19:09.740 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:19:09.740 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:19:09.740 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:19:09.741 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:19:09.741 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":9,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":177,"total":192,"used":15},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":839,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:19:09.714Z","version":"1.13.2-sandbox"}
+05-04 15:19:09.742 D/OkHttp  ( 2585): --> END POST (447-byte body)
+05-04 15:19:10.023 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (281ms)
+05-04 15:19:10.024 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:19:10.024 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:19:10.024 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:19:10.024 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:19:10.025 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:19:10.025 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:19:10.025 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:19:10 GMT
+05-04 15:19:10.025 D/OkHttp  ( 2585): etag: W/"9e-UJhohSic4sE7NdopH2sxulV32X8"
+05-04 15:19:10.025 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:19:10.026 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:19:10.026 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:19:10.026 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:19:10.026 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:19:10.026 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:19:10.027 D/OkHttp  ( 2585): x-correlation-id: 83de20d7-46f7-4cd5-891e-c0d405a2ad38
+05-04 15:19:10.027 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:19:10.027 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:19:10.027 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:19:10.027 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:19:10.028 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:19:10.028 D/OkHttp  ( 2585): content-length: 158
+05-04 15:19:10.030 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:19:10.400Z","configVersion":"1-1771261223532"}
+05-04 15:19:10.030 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:19:10.034 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:19:10 GMT
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): etag: W/"9e-UJhohSic4sE7NdopH2sxulV32X8"
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): x-correlation-id: 83de20d7-46f7-4cd5-891e-c0d405a2ad38
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:19:10.035 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:19:10.036 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:19:10.036 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:19:10.036 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:19:10.036 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:19:10.400Z
+05-04 15:19:10.037 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:19:10.037 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:19:10.037 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=323ms)
+05-04 15:19:10.038 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=323ms
+05-04 15:19:10.039 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:19:40.072 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:19:40.093 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:19:40.110 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:19:40.114 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:19:40.114 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:19:40.114 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:19:40.115 D/OkHttp  ( 2585): Content-Length: 448
+05-04 15:19:40.115 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:19:40.115 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:19:40.115 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:19:40.115 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:19:40.115 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":10,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":177,"total":192,"used":15},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":869,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:19:40.092Z","version":"1.13.2-sandbox"}
+05-04 15:19:40.116 D/OkHttp  ( 2585): --> END POST (448-byte body)
+05-04 15:19:40.632 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (515ms)
+05-04 15:19:40.632 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:19:40.633 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:19:40.633 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:19:40.633 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:19:40.633 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:19:40.633 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:19:40.634 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:19:40 GMT
+05-04 15:19:40.634 D/OkHttp  ( 2585): etag: W/"9e-ydW5UMWAM0WQPn9BAp6xC5nSM+k"
+05-04 15:19:40.634 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:19:40.635 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:19:40.635 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:19:40.635 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:19:40.635 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:19:40.635 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:19:40.635 D/OkHttp  ( 2585): x-correlation-id: 5930d4fe-4464-4e1f-96cf-47b3f0717345
+05-04 15:19:40.636 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:19:40.636 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:19:40.636 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:19:40.636 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:19:40.636 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:19:40.636 D/OkHttp  ( 2585): content-length: 158
+05-04 15:19:40.639 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:19:40.917Z","configVersion":"1-1771261223532"}
+05-04 15:19:40.639 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:19:40.644 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:19:40.644 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:19:40 GMT
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): etag: W/"9e-ydW5UMWAM0WQPn9BAp6xC5nSM+k"
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): x-correlation-id: 5930d4fe-4464-4e1f-96cf-47b3f0717345
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:19:40.645 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:19:40.646 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:19:40.646 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:19:40.647 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:19:40.647 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:19:40.917Z
+05-04 15:19:40.647 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:19:40.648 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:19:40.648 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=556ms)
+05-04 15:19:40.649 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=556ms
+05-04 15:19:40.650 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:19:49.570 D/PaymentViewModel( 2585): 🛡️ [Idempotency] Reusing existing paymentAttemptId=a8cb6052-76b0-47a9-8e10-7e3e7f5858b8
+05-04 15:19:49.572 D/PaymentViewModel( 2585): 🚦 [Payment] Payment flow started - guard locked
+05-04 15:19:49.574 D/PaymentViewModel( 2585): 🧾 [PaymentSession] Updated (startPayment) | mode=FAST | origin=FAST | features=TIP_COLLECTION
+05-04 15:19:49.575 I/PaymentViewModel( 2585): 💳 [MSI] Starting card payment with msi=DIRECT
+05-04 15:19:49.580 D/PaymentViewModel( 2585): 📟 [PIN Dialog] Collectors already running, skipping...
+05-04 15:19:49.581 D/PaymentViewModel( 2585): 🎯 [BlumonPayment] Starting ONLINE chip payment flow: $1.00
+05-04 15:19:49.582 D/PaymentViewModel( 2585):    💰 Amount: $1.00 → 100 centavos
+05-04 15:19:49.583 D/PaymentViewModel( 2585):    🏪 Venue: cmko8m8vp00049kcxd3xk21za | Staff: cmlid60em00069kbvvie81zit | Tip: $0.00
+05-04 15:19:49.584 D/InitializationManager( 2585): ✅ [InitializationManager] Already initialized (fast path)
+05-04 15:19:49.585 D/ShiftRepository( 2585): 🔍 Fetching current shift for venue: cmko8m8vp00049kcxd3xk21za
+05-04 15:19:49.593 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/shift
+05-04 15:19:49.599 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/shift
+05-04 15:19:49.600 D/OkHttp  ( 2585): --> GET https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/shift
+05-04 15:19:49.601 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:19:49.601 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:19:49.601 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:19:49.602 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:19:49.602 D/OkHttp  ( 2585): --> END GET
+05-04 15:19:49.635 D/IMGGralloc( 2585): Gralloc Free  w:768, h:670, f:0x101, usage:0x900, ui64Stamp:1971 line = 2529
+05-04 15:19:49.635 D/IMGGralloc( 2585): Gralloc Free  w:768, h:670, f:0x101, usage:0x900, ui64Stamp:1967 line = 2529
+05-04 15:19:49.638 D/IMGGralloc( 2585): Gralloc Free  w:768, h:670, f:0x101, usage:0xb00, ui64Stamp:1979 line = 2529
+05-04 15:19:49.656 E/Dialog  ( 2585): remove dialog view = DecorView@9e14aed[MainActivity]
+05-04 15:19:50.157 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/shift (555ms)
+05-04 15:19:50.158 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:19:50.158 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:19:50.158 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:19:50.158 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:19:50.158 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:19:50.158 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:19:50.158 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:19:50 GMT
+05-04 15:19:50.158 D/OkHttp  ( 2585): etag: W/"2d4-gFvDIr2ClJh5P3YMttAOJ3bERqM"
+05-04 15:19:50.158 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:19:50.158 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:19:50.158 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:19:50.158 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:19:50.158 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:19:50.158 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:19:50.158 D/OkHttp  ( 2585): x-correlation-id: a64d80d5-ae09-4124-96c5-2441db077612
+05-04 15:19:50.158 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:19:50.158 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:19:50.158 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:19:50.158 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:19:50.158 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:19:50.159 D/OkHttp  ( 2585): content-length: 724
+05-04 15:19:50.160 D/OkHttp  ( 2585): {"shift":{"id":"cmmy0hdvo00339k844mxjt6bm","venueId":"cmko8m8vp00049kcxd3xk21za","staffId":"cmklbaqg9001t9kku6aqyoxhw","startTime":"2026-03-19T21:58:02.627Z","endTime":null,"startingCash":"500","endingCash":null,"cashDifference":null,"cashDeclared":null,"cardDeclared":null,"vouchersDeclared":null,"otherDeclared":null,"totalSales":"5878.28","totalTips":"652.98","totalOrders":0,"totalCashPayments":"1496.9","totalCardPayments":"4381.38","totalVoucherPayments":"0","totalOtherPayments":"0","totalProductsSold":0,"inventoryConsumed":null,"reportData":null,"status":"OPEN","notes":null,"originSystem":"AVOQADO","posRawData":null,"externalId":null,"createdAt":"2026-03-19T21:58:02.628Z","updatedAt":"2026-05-01T19:29:10.559Z"}}
+05-04 15:19:50.160 D/OkHttp  ( 2585): <-- END HTTP (724-byte body)
+05-04 15:19:50.169 D/ShiftRepository( 2585): ✅ Found active shift: cmmy0hdvo00339k844mxjt6bm, Staff: Unknown
+05-04 15:19:50.174 I/PaymentViewModel$startPayment( 2585): ℹ️ [Payment] Shift system disabled - bypassing shift check
+05-04 15:19:50.178 D/PaymentViewModel$continuePaymentFlow( 2585): ⚡ [Local-First] Fast payment mode - no order sync needed
+05-04 15:19:50.180 D/PaymentViewModel$continuePaymentFlow( 2585): ✅ [Merchant Switch] Already on correct merchant: 2841548417 (no switch needed)
+05-04 15:19:50.182 I/PaymentViewModel$continuePaymentFlow( 2585): [PHASE 1] PreTrans - Configuring EMV kernel...
+05-04 15:19:50.184 D/PaymentViewModel$continuePaymentFlow( 2585): 💰 [PreTrans] Amount: 100 cents | Tip: 0 cents (from tip=0.00)
+05-04 15:19:50.367 I/AppDataUtils( 2585): Terminal SN : 2841548417
+05-04 15:19:50.374 W/EmvProcess( 2585): capkList:60
+05-04 15:19:50.374 W/EmvProcess( 2585): revokeList:11
+05-04 15:19:50.376 W/EmvProcess( 2585): addAID aidList:27
+05-04 15:19:50.383 E/ClssProcess( 2585): Clss_SetMCVersion_Entry ret = 0
+05-04 15:19:50.384 D/PaymentViewModel$continuePaymentFlow( 2585): ✅ [PHASE 1] PreTrans completed
+05-04 15:19:50.385 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Input: subtotal='1.00', tipAmount='0.00'
+05-04 15:19:50.386 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Parsed: subtotalDecimal=1.00, tipDecimal=0.00
+05-04 15:19:50.386 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Result: 1.00
+05-04 15:19:50.387 I/PaymentViewModel$continuePaymentFlow( 2585): [PHASE 2] StartDetectCard - Waiting for card tap...
+--------- beginning of system
+05-04 15:19:50.390 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.393 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.395 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.397 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.404 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.407 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.414 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.416 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.419 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.422 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.424 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.458 I/PaymentViewModel$continuePaymentFlow( 2585): ✅ [PHASE 2] Card detected - Type: ICC (ReaderType: ICC)
+05-04 15:19:50.459 I/PaymentViewModel$continuePaymentFlow( 2585): 🔄 [ROUTING] Chip/Mag card detected → Continuing with chip payment flow
+05-04 15:19:50.460 I/PaymentViewModel$continuePaymentFlow( 2585): [PHASE 3] StartEmvTrans - Processing EMV chip...
+05-04 15:19:50.465 I/EmvProcess( 2585): startTransProcess
+05-04 15:19:50.474 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.476 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.478 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.480 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.483 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:19:50.539 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:50.539 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = 315041592E5359532E4444463031
+05-04 15:19:50.539 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 14
+05-04 15:19:50.539 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:50.676 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:50.676 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:50.676 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:50.676 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:50.677 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:50.677 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000041010
+05-04 15:19:50.677 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:50.677 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:50.804 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 6F468407A0000000041010A53B500A4D6173746572636172648701015F2D066573656E70749F1101019F120A4D617374657263617264BF0C0F9F4D020B0A9F6E07048400003030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:50.804 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 72
+05-04 15:19:50.804 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = -112
+05-04 15:19:50.804 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = 0
+05-04 15:19:50.804 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:50.805 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000041010D05601
+05-04 15:19:50.805 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 10
+05-04 15:19:50.805 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:50.844 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:50.844 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:50.844 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:50.844 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:50.844 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:50.845 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000041010C123456789
+05-04 15:19:50.845 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 12
+05-04 15:19:50.845 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:50.881 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:50.881 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:50.881 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:50.881 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:50.882 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:50.882 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000043060
+05-04 15:19:50.882 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:50.882 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:50.915 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:50.916 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:50.916 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:50.916 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:50.916 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:50.916 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000043060D05602
+05-04 15:19:50.916 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 10
+05-04 15:19:50.916 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:50.953 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:50.954 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:50.954 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:50.954 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:50.955 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:50.955 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000042203C123456789
+05-04 15:19:50.956 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 12
+05-04 15:19:50.956 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:50.992 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:50.993 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:50.993 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:50.993 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:50.994 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:50.994 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000043060C123456789
+05-04 15:19:50.994 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 12
+05-04 15:19:50.995 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.038 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.039 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.039 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.039 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.041 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.041 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000042203
+05-04 15:19:51.041 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.042 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.072 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.072 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.072 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.073 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.073 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.074 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000042203D84002
+05-04 15:19:51.074 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 10
+05-04 15:19:51.074 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.108 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.109 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.109 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.109 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.110 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.110 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000046000
+05-04 15:19:51.111 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.111 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.149 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.150 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.151 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.151 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.152 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.152 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000046000C123456789
+05-04 15:19:51.153 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 12
+05-04 15:19:51.153 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.189 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.189 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.190 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.190 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.192 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.192 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000046010
+05-04 15:19:51.193 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.193 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.225 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.225 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.225 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.226 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.227 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.227 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000031010
+05-04 15:19:51.227 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.228 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.258 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.258 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.258 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.259 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.259 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.260 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000032010
+05-04 15:19:51.260 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.260 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.291 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.291 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.292 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.292 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.293 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.293 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000033010
+05-04 15:19:51.293 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.293 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.323 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.324 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.324 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.324 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.325 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.325 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A00000002501
+05-04 15:19:51.325 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 6
+05-04 15:19:51.326 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.355 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.355 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.356 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.356 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.357 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.357 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000031020
+05-04 15:19:51.357 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.357 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.400 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.401 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.401 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.402 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.404 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.405 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000044010
+05-04 15:19:51.405 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.406 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.437 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.438 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.438 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.439 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.440 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.440 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000042010
+05-04 15:19:51.441 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.441 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.472 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.472 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.472 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.473 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.473 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.474 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000651010
+05-04 15:19:51.474 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.474 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.504 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.505 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.505 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.506 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.507 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.507 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000001523010
+05-04 15:19:51.507 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.508 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.538 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.539 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.539 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.540 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.541 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.541 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000003241010
+05-04 15:19:51.542 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.542 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.573 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.574 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.574 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.574 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.575 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.576 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000001524010
+05-04 15:19:51.576 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.576 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.609 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.609 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.609 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.610 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.611 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.611 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A000000333010101
+05-04 15:19:51.611 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 8
+05-04 15:19:51.611 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.655 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.655 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.656 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.656 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.657 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.658 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A000000333010102
+05-04 15:19:51.658 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 8
+05-04 15:19:51.659 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.692 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.693 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.693 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.693 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.695 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.695 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A000000333010103
+05-04 15:19:51.695 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 8
+05-04 15:19:51.696 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.729 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.729 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.730 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.730 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.732 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.732 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A000000333010106
+05-04 15:19:51.732 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 8
+05-04 15:19:51.733 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.769 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.769 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.769 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.770 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.771 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.771 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A000000333010108
+05-04 15:19:51.771 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 8
+05-04 15:19:51.772 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.805 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.806 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.806 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.807 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.808 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.809 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000005241010
+05-04 15:19:51.809 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.809 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.840 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.840 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.841 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.841 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.842 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.843 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000006581010
+05-04 15:19:51.843 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.843 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.887 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.887 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.888 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.889 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.889 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.890 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000006582010
+05-04 15:19:51.890 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:51.890 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.924 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.925 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.925 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.925 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.927 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.927 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A000000727
+05-04 15:19:51.927 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 5
+05-04 15:19:51.927 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.956 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.957 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.957 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.958 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.958 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.959 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A00000038410
+05-04 15:19:51.959 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 6
+05-04 15:19:51.959 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:51.989 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:51.989 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:51.989 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:51.990 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:51.991 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:51.991 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A00000038420
+05-04 15:19:51.991 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 6
+05-04 15:19:51.992 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:52.020 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:52.021 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:52.021 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:52.021 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:52.023 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:52.023 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000007241010
+05-04 15:19:52.023 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:52.024 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:52.054 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:52.054 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:52.055 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:52.055 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:52.056 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:52.056 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000007242010
+05-04 15:19:52.057 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:52.057 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:52.088 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:52.089 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 0
+05-04 15:19:52.090 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = 106
+05-04 15:19:52.090 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = -126
+05-04 15:19:52.102 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00A40400
+05-04 15:19:52.103 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = A0000000041010
+05-04 15:19:52.104 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 7
+05-04 15:19:52.104 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:52.240 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 6F468407A0000000041010A53B500A4D6173746572636172648701015F2D066573656E70749F1101019F120A4D617374657263617264BF0C0F9F4D020B0A9F6E07048400003030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:52.240 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 72
+05-04 15:19:52.240 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = -112
+05-04 15:19:52.241 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = 0
+05-04 15:19:52.257 D/EmvProcess( 2585): emvSetParam EMVGetTLVData ret =0byteArray.length = 7
+05-04 15:19:52.258 D/EmvProcess( 2585): emvSetParam EMVGetTLVData ret =A0000000041010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:52.259 D/EmvProcess( 2585): emvSetParam aid =A0000000041010
+05-04 15:19:52.261 D/EmvProcess( 2585): resetParam emvParam.capability =E0B8C8
+05-04 15:19:52.261 D/EmvProcess( 2585): resetParam emvParam.exCapability =F000F0F001
+05-04 15:19:52.272 D/EmvProcess( 2585): resetParam EMVGetMCKParam ret=0
+05-04 15:19:52.273 I/EmvProcess( 2585): emvUnknowTLVData, tag: ffff9f37 data:4
+05-04 15:19:52.273 I/EmvProcess( 2585): emvUnknowTLVData, tag: 9a data:3
+05-04 15:19:52.278 I/EmvProcess( 2585): emvUnknowTLVData, tag: ffff9f21 data:3
+05-04 15:19:52.278 I/EmvProcess( 2585): emvUnknowTLVData, tag: ffff9f1e data:8
+05-04 15:19:52.279 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 80A80000
+05-04 15:19:52.279 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = 8300
+05-04 15:19:52.279 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 2
+05-04 15:19:52.279 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:52.370 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 770E820239009408180102012002040000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:52.370 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 16
+05-04 15:19:52.370 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = -112
+05-04 15:19:52.370 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = 0
+05-04 15:19:52.371 I/EmvProcess( 2585): startTransProcess, EMVAppSelect ret:0
+05-04 15:19:52.378 I/EmvProcess( 2585): emvInputAmount
+05-04 15:19:52.379 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00B2011C
+05-04 15:19:52.379 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = 
+05-04 15:19:52.379 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 0
+05-04 15:19:52.379 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:52.604 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 7081929F420204845F25032402015F24032701315A0851291210003871825F3401009F0702FF008C279F02069F03069F1A0295055F2A029A039C019F37049F35019F45029F4C089F34039F21039F7C148D0C910A8A0295059F37049F4C088E1400000000000000004201440341031E0342031F039F0D05BC509488009F0E0500002800009F0F05BC709498005F280204849F4A0182000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:52.604 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 149
+05-04 15:19:52.604 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = -112
+05-04 15:19:52.604 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = 0
+05-04 15:19:52.605 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00B2021C
+05-04 15:19:52.605 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = 
+05-04 15:19:52.605 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 0
+05-04 15:19:52.605 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:52.722 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 70429F080200025F201A20202020202020202020202020202020202020202020202020209F49039F370457135129121000387182D27012211394831200000F5F30020221000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:52.723 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 68
+05-04 15:19:52.723 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = -112
+05-04 15:19:52.723 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = 0
+05-04 15:19:52.724 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00B20224
+05-04 15:19:52.724 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = 
+05-04 15:19:52.724 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 0
+05-04 15:19:52.724 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:52.764 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 70078F01069F3201030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:52.765 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 9
+05-04 15:19:52.767 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = -112
+05-04 15:19:52.767 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = 0
+05-04 15:19:52.768 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00B20324
+05-04 15:19:52.768 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = 
+05-04 15:19:52.768 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 0
+05-04 15:19:52.768 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:53.131 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 7081FB9081F87EC840EF56CD75F454F7E83F37E9C7F7707C13F0D9AD3BAFE9893B91391DFFE0164B7B0DB7A1CD3EC6A7A75306825146D6EE0BC008BD8B57197DA70FCDF7880D1188B11D072A2E123885E54ED2831EEA744FAAB744876D28042A69F341D853FC0B8140D648CF8047121D3B8F0CCA6092E8879DBDE28D8ED067D1EEF1345F5F5BD7C375055AF769391690F647D642205AFBC8E73A7599CA24FCAF98F69A9C158FE9BDA94AD53A19D0D33F96CABFA4A53F733B7280B4DAE648D16D7575893A88B066170CC8E11FDC068AB88FEBB56A2361A516E96E252B1D64E37D2F878D63253A5E719A23D161A673123C4E56806C67F0EEEF801130F20B89000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:53.132 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 254
+05-04 15:19:53.132 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = -112
+05-04 15:19:53.132 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = 0
+05-04 15:19:53.132 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00B20424
+05-04 15:19:53.132 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = 
+05-04 15:19:53.132 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 0
+05-04 15:19:53.132 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:53.407 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 7081B89F4701039F4681B0A49B8AA80FA3F9146DB7644AF0035EF7802BD49F1B6C2B09C207931BCD6431E9CD9B2399460831024090517EF007B08F5695FA7E16367C14F12E803B39DAE652B393EBC6D290EDC4F0A336B2860285B7253F48FB76D27A0A949BC391B0BE39B2AFD2A3260780A6016D7D8CD44C10F0853417A5238404B93CFA6133B9FAFD8DAD0BB9C1AC6F1E09D1DB003EAED8FB5D79E30E2C7F6D66890D8C320363694F7A8318D3B28BC5A0460255F48F1A6613263800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:53.407 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 187
+05-04 15:19:53.408 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = -112
+05-04 15:19:53.408 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = 0
+05-04 15:19:53.409 I/EmvProcess( 2585): startTransProcess, EMVReadAppData ret:0
+05-04 15:19:53.411 D/PaymentViewModel$collectPinDialogFlows( 2585): ✅ [Card Reading] Confirmed: true
+05-04 15:19:53.413 I/PaymentViewModel$collectPinDialogFlows( 2585): 🔄 [Card Reading] Responding with ContinueConfirmCard...
+05-04 15:19:53.418 I/PaymentViewModel$collectPinDialogFlows( 2585): ✅ [Card Reading] Response sent to SDK - transaction can proceed
+05-04 15:19:53.418 D/EmvProcess( 2585): addCapk, dataList 1 :A0000000041010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:53.418 D/EmvProcess( 2585): addCapk, RID :A000000004
+05-04 15:19:53.419 D/EmvProcess( 2585): addCapk, dataList 2 :06000000041010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:53.420 D/EmvProcess( 2585): addCapk  KeyID :6
+05-04 15:19:53.439 I/EmvProcess( 2585): startTransProcess, addCapk ret:0
+05-04 15:19:53.451 I/EmvProcess( 2585): startTransProcess, EMVCardAuth ret:0
+05-04 15:19:53.457 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 80CA9F17
+05-04 15:19:53.457 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = 
+05-04 15:19:53.457 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 0
+05-04 15:19:53.457 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:53.507 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 9F17010900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:53.507 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 4
+05-04 15:19:53.507 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = -112
+05-04 15:19:53.507 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = 0
+05-04 15:19:53.510 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 00840000
+05-04 15:19:53.510 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = 
+05-04 15:19:53.511 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 0
+05-04 15:19:53.511 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:19:53.573 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = F91D72589D73FF01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:19:53.574 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 8
+05-04 15:19:53.574 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = -112
+05-04 15:19:53.574 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = 0
+05-04 15:19:53.574 I/EmvProcess( 2585): emvGetHolderPwd pin is not null, tryFlag0 remainCnt:9
+05-04 15:19:53.576 D/PaymentViewModel$collectPinDialogFlows( 2585): 🔢 [PIN Attempts] Remaining: PinAttempts(pinAttempts=9, isOffline=true)
+05-04 15:19:53.605 W/EmvProcess( 2585): emvGetHolderPwd,result:0
+05-04 15:19:53.606 I/PaymentViewModel$collectPinDialogFlows( 2585): ✅ [PIN Result] PIN correct - Continuing transaction
+05-04 15:19:53.608 D/PaymentViewModel$collectPinDialogFlows( 2585): 📟 [PIN Dialog] State changed: EventPinDialogState(show=true, dismiss=false)
+05-04 15:19:53.609 I/DeviceImplNeptune( 2585): pedVerifyCipherPin:0
+05-04 15:20:01.418 D/PaymentViewModel$collectPinDialogFlows( 2585): ⌨️  [PIN Keyboard] State: *
+05-04 15:20:02.821 D/PaymentViewModel$collectPinDialogFlows( 2585): ⌨️  [PIN Keyboard] State: **
+05-04 15:20:03.019 D/PaymentViewModel$collectPinDialogFlows( 2585): ⌨️  [PIN Keyboard] State: ***
+05-04 15:20:03.321 D/PaymentViewModel$collectPinDialogFlows( 2585): ⌨️  [PIN Keyboard] State: ****
+05-04 15:20:03.938 D/PaymentViewModel$collectPinDialogFlows( 2585): 📟 [PIN Dialog] State changed: EventPinDialogState(show=false, dismiss=true)
+05-04 15:20:04.577 I/EmvProcess( 2585): EMV library verify PIN and passes, prompt PIN OK
+05-04 15:20:04.578 I/EmvProcess( 2585): emvUnknowTLVData, tag: ffffff01 data:6
+05-04 15:20:04.578 D/DeviceImplNeptune( 2585): iccIsoCommandDevice cmd = 80AE9000
+05-04 15:20:04.578 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataIn = 00000000010000000000000004840000008000048426050400846845FA22000000000000000000004403020415190000000000000000000000000000000000000000
+05-04 15:20:04.578 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lc = 66
+05-04 15:20:04.578 D/DeviceImplNeptune( 2585): iccIsoCommandDevice le = 256
+05-04 15:20:04.990 D/DeviceImplNeptune( 2585): iccIsoCommandDevice dataOut = 7781A29F2701809F360204FB9F4B818093FDD68D8688D17BB43C9463535C4ECB683F36F82943A4720E15BF99BDA8AB5A865D86F6970FE2EDACBB636EE2BB3FB7324B0B623668D6D7F76295A3D6D299B9A0FA01C8326CD3F58B8A3DBBE6A780F7DBC1B2940860AA1487F0AFB08B270E8BB77C57D9BF753E56372335DAEAB1CCC27BE836CA3AF9A8C4047F60B9512B919C9F10120110A74009020000000000000000000000FF0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:20:04.990 D/DeviceImplNeptune( 2585): iccIsoCommandDevice lenOut = 165
+05-04 15:20:04.990 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw1 = -112
+05-04 15:20:04.991 D/DeviceImplNeptune( 2585): iccIsoCommandDevice sw2 = 0
+05-04 15:20:04.994 I/EmvProcess( 2585): startTransProcess, EMVStartTrans ret:0, acType:2
+05-04 15:20:04.996 I/EmvProcess( 2585): saveProcessData  cvmType:44030200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+05-04 15:20:04.996 I/EmvProcess( 2585): getCvm result:CVM_OFFLINE_PIN
+05-04 15:20:04.998 D/PaymentViewModel$collectPinDialogFlows( 2585): 📟 [PIN Dialog] State changed: EventPinDialogState(show=false, dismiss=false)
+05-04 15:20:04.998 D/PaymentViewModel$continuePaymentFlow( 2585): ✅ [PHASE 3] EMV processed successfully
+05-04 15:20:04.999 D/PaymentViewModel$collectPinDialogFlows( 2585): ⌨️  [PIN Keyboard] State: 
+05-04 15:20:05.000 I/PaymentViewModel$continuePaymentFlow( 2585): ═══════════════════════════════════════════════════════════
+05-04 15:20:05.001 I/PaymentViewModel$continuePaymentFlow( 2585): [PHASE 3.5] GetEmvTagList - Extracting COMPLETE EMV data from chip...
+05-04 15:20:05.002 I/PaymentViewModel$continuePaymentFlow( 2585): ═══════════════════════════════════════════════════════════
+05-04 15:20:05.002 E/PaymentViewModel$collectPinDialogFlows( 2585): ❌ [PIN Result] PIN incorrect or error: null
+05-04 15:20:05.004 D/PaymentViewModel$collectPinDialogFlows( 2585): 🔢 [PIN Attempts] Remaining: PinAttempts(pinAttempts=0, isOffline=false)
+05-04 15:20:05.004 D/PaymentViewModel$continuePaymentFlow( 2585):    Requesting 22 EMV tags from kernel...
+05-04 15:20:05.005 D/PaymentViewModel$collectPinDialogFlows( 2585): ✅ [Card Reading] Confirmed: false
+05-04 15:20:05.054 I/PaymentViewModel$continuePaymentFlow( 2585): ✅ [PHASE 3.5] Complete EMV tag extraction SUCCESS!
+05-04 15:20:05.055 I/PaymentViewModel$continuePaymentFlow( 2585):    Total TLV length: 312 characters
+05-04 15:20:05.055 I/PaymentViewModel$continuePaymentFlow( 2585):    First 150 chars: 9F2702809F2616A5AEFC737A95537B9F3708846845FA9F360404FB9C0200820439009F3306E0B8C89F34064403029A062605045F2A034849F02120000000001009F03120000000000009F3...
+05-04 15:20:05.056 I/PaymentViewModel$continuePaymentFlow( 2585):    Last 100 chars: ...000000410109F090400029F1A03484951000000080009F1E16343135343834313750204D6173746572636172645F28040484
+05-04 15:20:05.056 I/PaymentViewModel$continuePaymentFlow( 2585): ═══════════════════════════════════════════════════════════
+05-04 15:20:05.057 D/PaymentViewModel$continuePaymentFlow( 2585):    Extracting Track2 (tag 0x57) using GetTagValueUseCase...
+05-04 15:20:05.058 D/PaymentViewModel( 2585): 🧾 [PaymentSession] Updated (track2-extracted-chip) | mode=FAST | origin=FAST | features=TIP_COLLECTION
+05-04 15:20:05.059 I/PaymentViewModel$continuePaymentFlow( 2585):    ✅ Track2 extracted: 5129121000387182... (length: 38)
+05-04 15:20:05.060 D/PaymentViewModel( 2585): 🧾 [PaymentSession] Updated (emv-issuer-country-chip) | mode=FAST | origin=FAST | features=TIP_COLLECTION
+05-04 15:20:05.060 I/PaymentViewModel$continuePaymentFlow( 2585): 🌍 [EMV 5F28] Issuer Country Code (CHIP): 0484
+05-04 15:20:05.061 I/PaymentViewModel$continuePaymentFlow( 2585): [PHASE 4] SaleIcc - Sending to Momentum for ONLINE authorization...
+05-04 15:20:05.062 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Input: subtotal='1.00', tipAmount='0.00'
+05-04 15:20:05.062 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Parsed: subtotalDecimal=1.00, tipDecimal=0.00
+05-04 15:20:05.063 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Result: 1.00
+05-04 15:20:05.064 I/PaymentViewModel( 2585): ✅ [Payment] Using posId from current merchant: 388
+05-04 15:20:05.065 I/PaymentViewModel( 2585):    Merchant: 2841548417
+05-04 15:20:05.065 I/PaymentViewModel( 2585):    Serial: 2841548417
+05-04 15:20:05.065 I/PaymentViewModel( 2585): 🌐 [SaleIcc (CHIP)] Sending online authorization to Momentum...
+05-04 15:20:05.065 I/PaymentViewModel( 2585): 💳 [MSI] Sending SaleIcc (CHIP) with msi=DIRECT
+05-04 15:20:05.066 D/PaymentViewModel( 2585):    Amount: 1.00
+05-04 15:20:05.066 D/PaymentViewModel( 2585):    Track2: 5129121000387182...
+05-04 15:20:05.066 D/PaymentViewModel( 2585):    Cardholder: CARDHOLDER
+05-04 15:20:05.067 D/PaymentViewModel( 2585):    EMV Tags: 9F2702809F2616A5AEFC737A95537B9F3708846845FA9F3604...
+05-04 15:20:05.068 I/PaymentViewModel( 2585): 💳 Using SaleIccUseCase (entryMode=CHIP)
+05-04 15:20:05.076 E/SALE_ICC( 2585): PAN: 5129121000387182
+05-04 15:20:05.076 E/SALE_ICC( 2585): Bin: 512912
+05-04 15:20:05.076 E/SALE_ICC( 2585): Last4: 7182
+05-04 15:20:05.104 I/System.out( 2585): getInformation: TransactionData(ksn=00000099911367000001, counter=1, track1=null, track2=5129121000387182D27012211394831200000FFFFFFFFFFF, tk=04344C0A604CF3629FDD0BB990143AB6, key=A3CEA7CED5016E890FA654E7A7F84300)
+05-04 15:20:05.105 I/System.out( 2585): SET IN CHIPER DATA -> decrypt3DESIPEK 
+05-04 15:20:05.105 I/System.out( 2585): TK: 04344C0A604CF3629FDD0BB990143AB6
+05-04 15:20:05.105 I/System.out( 2585): KEY: A3CEA7CED5016E890FA654E7A7F84300
+05-04 15:20:05.120 I/System.out( 2585): IPEK: 0C58C2B70F4BFFA8E6F28A1D3201300F
+05-04 15:20:05.121 I/System.out( 2585): SET IN CHIPER DATA -> getPEK 
+05-04 15:20:05.121 I/System.out( 2585): KSN: [B@a50261a
+05-04 15:20:05.121 I/System.out( 2585): IPEK: [B@1d8554b
+05-04 15:20:05.133 I/System.out( 2585): encryptDES 
+05-04 15:20:05.133 I/System.out( 2585): data: E66B1B0E5501300E
+05-04 15:20:05.133 I/System.out( 2585): data2: [-26, 107, 27, 14, 85, 1, 48, 14]
+05-04 15:20:05.133 I/System.out( 2585): key: 0C58C2B70F4BFFA8
+05-04 15:20:05.133 I/System.out( 2585): key2: [12, 88, -62, -73, 15, 75, -1, -88]
+05-04 15:20:05.148 I/System.out( 2585): encryptDES 
+05-04 15:20:05.148 I/System.out( 2585): data: 26ABDBCE5501300E
+05-04 15:20:05.148 I/System.out( 2585): data2: [38, -85, -37, -50, 85, 1, 48, 14]
+05-04 15:20:05.148 I/System.out( 2585): key: CC9802770F4BFFA8
+05-04 15:20:05.148 I/System.out( 2585): key2: [-52, -104, 2, 119, 15, 75, -1, -88]
+05-04 15:20:05.163 I/System.out( 2585): PEK: 2FBF9DE24FB171526D1C7EC40477D6D1
+05-04 15:20:05.163 I/System.out( 2585): SET IN CHIPER DATA -> getVariantKey 
+05-04 15:20:05.163 I/System.out( 2585): PEK: [B@61b5b28
+05-04 15:20:05.176 I/System.out( 2585): KEY TMP: 2FBF9DE24F4E71526D1C7EC40488D6D1
+05-04 15:20:05.198 I/System.out( 2585): encrypt 
+05-04 15:20:05.199 I/System.out( 2585): data: 2FBF9DE24F4E71526D1C7EC40488D6D1
+05-04 15:20:05.199 I/System.out( 2585): data2: [47, -65, -99, -30, 79, 78, 113, 82, 109, 28, 126, -60, 4, -120, -42, -47]
+05-04 15:20:05.199 I/System.out( 2585): key: 2FBF9DE24F4E71526D1C7EC40488D6D1
+05-04 15:20:05.199 I/System.out( 2585): key2: [47, -65, -99, -30, 79, 78, 113, 82, 109, 28, 126, -60, 4, -120, -42, -47]
+05-04 15:20:05.199 I/System.out( 2585): algorithm: DESede
+05-04 15:20:05.199 I/System.out( 2585): mode: DESede/ECB/NoPadding
+05-04 15:20:05.213 I/System.out( 2585): doFinal 
+05-04 15:20:05.213 I/System.out( 2585): data: 2FBF9DE24F4E71526D1C7EC40488D6D1
+05-04 15:20:05.213 I/System.out( 2585): data2: [47, -65, -99, -30, 79, 78, 113, 82, 109, 28, 126, -60, 4, -120, -42, -47]
+05-04 15:20:05.226 I/System.out( 2585): VKEY: 3E4C806C9960B5CDF41A952A7DCC30E2
+05-04 15:20:05.226 I/System.out( 2585): SET IN CHIPER DATA -> encrypt3DES 2 
+05-04 15:20:05.227 I/System.out( 2585): KEY: [B@85c3041
+05-04 15:20:05.227 I/System.out( 2585): DATA: [B@93a89e6
+05-04 15:20:05.256 I/System.out( 2585): encrypt 
+05-04 15:20:05.256 I/System.out( 2585): data: 5129121000387182D27012211394831200000FFFFFFFFFFF
+05-04 15:20:05.256 I/System.out( 2585): data2: [81, 41, 18, 16, 0, 56, 113, -126, -46, 112, 18, 33, 19, -108, -125, 18, 0, 0, 15, -1, -1, -1, -1, -1]
+05-04 15:20:05.256 I/System.out( 2585): key: 3E4C806C9960B5CDF41A952A7DCC30E2
+05-04 15:20:05.256 I/System.out( 2585): key2: [62, 76, -128, 108, -103, 96, -75, -51, -12, 26, -107, 42, 125, -52, 48, -30]
+05-04 15:20:05.256 I/System.out( 2585): algorithm: DESede
+05-04 15:20:05.256 I/System.out( 2585): mode: DESede/ECB/NoPadding
+05-04 15:20:05.274 I/System.out( 2585): doFinal 
+05-04 15:20:05.274 I/System.out( 2585): data: 5129121000387182D27012211394831200000FFFFFFFFFFF
+05-04 15:20:05.274 I/System.out( 2585): data2: [81, 41, 18, 16, 0, 56, 113, -126, -46, 112, 18, 33, 19, -108, -125, 18, 0, 0, 15, -1, -1, -1, -1, -1]
+05-04 15:20:05.373 I/okhttp.OkHttpClient( 2585): --> POST https://sandbox-core.blumonpay.net/retail/present/charge
+05-04 15:20:05.374 I/okhttp.OkHttpClient( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:20:05.374 I/okhttp.OkHttpClient( 2585): Content-Length: 838
+05-04 15:20:05.375 I/okhttp.OkHttpClient( 2585): {"amount":1.0,"authentication":"signature","currency":"484","dukptData":{"failedCounter":0,"realCounter":1,"serialKey":"00000099911367000001"},"entryMode":"chip","idMembership":"","posId":388,"presentCardData":{"bin":"512912","cardholderName":"CARDHOLDER","data":"5129121000387182","emvTags":"9F2702809F2616A5AEFC737A95537B9F3708846845FA9F360404FB9C0200820439009F3306E0B8C89F34064403029A062605045F2A034849F02120000000001009F03120000000000009F3502225F3402009F10360110A74009020000000000000000000000FF8414A00000000410109F090400029F1A03484951000000080009F1E16343135343834313750204D6173746572636172645F28040484","encryptedData":"5C82E9D524FA26E1580085F3E1BF1AF44C6F317DD3CBB43CBBB2D2F2A3B9E0BC","last4":"7182","track2":"5CF5B13C9554D01F23F7EA1DD1E57C94B354241B52548E49","track2Crc32":"B1A28921","track2Length":37},"reference":"20260504152005"}
+05-04 15:20:05.375 I/okhttp.OkHttpClient( 2585): --> END POST (838-byte body)
+05-04 15:20:05.755 D/TLS     ( 2585): Handshake completed
+05-04 15:20:05.755 D/TLS     ( 2585): TLS Version: TLS_1_2
+05-04 15:20:05.756 D/TLS     ( 2585): Cipher Suite: TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+05-04 15:20:05.796 D/TLS     ( 2585): Certificate #0:
+05-04 15:20:05.797 D/TLS     ( 2585):   Subject: CN=*.blumonpay.net
+05-04 15:20:05.798 D/TLS     ( 2585):   Issuer : CN=Amazon RSA 2048 M04, O=Amazon, C=US
+05-04 15:20:05.798 D/TLS     ( 2585): Certificate #1:
+05-04 15:20:05.799 D/TLS     ( 2585):   Subject: CN=Amazon RSA 2048 M04, O=Amazon, C=US
+05-04 15:20:05.800 D/TLS     ( 2585):   Issuer : CN=Amazon Root CA 1, O=Amazon, C=US
+05-04 15:20:05.800 D/TLS     ( 2585): Certificate #2:
+05-04 15:20:05.801 D/TLS     ( 2585):   Subject: CN=Amazon Root CA 1, O=Amazon, C=US
+05-04 15:20:05.802 D/TLS     ( 2585):   Issuer : CN=Amazon Root CA 1, O=Amazon, C=US
+05-04 15:20:09.617 I/okhttp.OkHttpClient( 2585): <-- 200 OK https://sandbox-core.blumonpay.net/retail/present/charge (4241ms)
+05-04 15:20:09.617 I/okhttp.OkHttpClient( 2585): expires: Thu, 01 Jan 1970 00:00:00 GMT
+05-04 15:20:09.617 I/okhttp.OkHttpClient( 2585): cache-control: no-cache, no-store, must-revalidate
+05-04 15:20:09.617 I/okhttp.OkHttpClient( 2585): set-cookie: HttpOnly;Secure;SameSite=None
+05-04 15:20:09.618 I/okhttp.OkHttpClient( 2585): x-xss-protection: 1; mode=block
+05-04 15:20:09.618 I/okhttp.OkHttpClient( 2585): pragma: no-cache
+05-04 15:20:09.618 I/okhttp.OkHttpClient( 2585): x-frame-options: DENY
+05-04 15:20:09.618 I/okhttp.OkHttpClient( 2585): referrer-policy: same-origin
+05-04 15:20:09.618 I/okhttp.OkHttpClient( 2585): content-security-policy: upgrade-insecure-requests
+05-04 15:20:09.618 I/okhttp.OkHttpClient( 2585): date: Mon, 04 May 2026 20:20:10 GMT
+05-04 15:20:09.618 I/okhttp.OkHttpClient( 2585): x-content-type-options: nosniff
+05-04 15:20:09.619 I/okhttp.OkHttpClient( 2585): strict-transport-security: max-age=63072000; includeSubDomains
+05-04 15:20:09.619 I/okhttp.OkHttpClient( 2585): permissions-policy: geolocation=self
+05-04 15:20:09.619 I/okhttp.OkHttpClient( 2585): content-type: application/json
+05-04 15:20:09.619 I/okhttp.OkHttpClient( 2585): access-control-allow-methods: POST, GET, OPTIONS
+05-04 15:20:09.619 I/okhttp.OkHttpClient( 2585): x-envoy-upstream-service-time: 3549
+05-04 15:20:09.619 I/okhttp.OkHttpClient( 2585): server: istio-envoy
+05-04 15:20:09.619 I/okhttp.OkHttpClient( 2585): transfer-encoding: chunked
+05-04 15:20:09.621 I/okhttp.OkHttpClient( 2585): {"status":true,"requestId":"4c3ef923-6737-430d-b082-887ec3da3b08","id":"78345","date":"2026-05-04","time":"14:20:07","dataResponse":{"authorization":"442DLN","arpc":"4C4612E7AA0B7999","renewKey":false,"description":"APROBADA","membership":"9109196","binInformation":{"bin":"512912","bank":"GENERAL","product":"CACAO MASTERCAR","type":"CREDITO","brand":"MASTERCARD"},"reference":"319452117368","batch":"20260504152005","simulation":true}}
+05-04 15:20:09.622 I/okhttp.OkHttpClient( 2585): <-- END HTTP (437-byte body)
+05-04 15:20:09.640 I/PaymentViewModel( 2585): ✅ [SaleIcc (CHIP)] Success!
+05-04 15:20:09.641 I/PaymentViewModel( 2585):    Operation: 78345
+05-04 15:20:09.641 I/PaymentViewModel( 2585):    Auth: 442DLN
+05-04 15:20:09.642 I/PaymentViewModel( 2585):    Reference: 319452117368
+05-04 15:20:09.642 D/PaymentViewModel( 2585): ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+05-04 15:20:09.642 D/PaymentViewModel( 2585): 📋 [BLUMON RESPONSE] Full SaleIccResponse structure:
+05-04 15:20:09.643 D/PaymentViewModel( 2585): ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+05-04 15:20:09.643 D/PaymentViewModel( 2585): 🔹 operation: 78345
+05-04 15:20:09.643 D/PaymentViewModel( 2585): 🔹 saleData.authorization: 442DLN
+05-04 15:20:09.643 D/PaymentViewModel( 2585): 🔹 saleData.reference: 319452117368
+05-04 15:20:09.644 D/PaymentViewModel( 2585): 🔹 saleData.emvResponseCode: null
+05-04 15:20:09.644 D/PaymentViewModel( 2585): 🔹 saleData.arpc: 4C4612E7AA0B7999
+05-04 15:20:09.644 D/PaymentViewModel( 2585): 🔹 saleData.script: null
+05-04 15:20:09.645 D/PaymentViewModel( 2585): 🔍 SaleData class: SaleData
+05-04 15:20:09.645 D/PaymentViewModel( 2585): 🔍 SaleData fields:
+05-04 15:20:09.645 D/PaymentViewModel( 2585):    • arpc: 4C4612E7AA0B7999 (String)
+05-04 15:20:09.646 D/PaymentViewModel( 2585):    • authorization: 442DLN (String)
+05-04 15:20:09.647 D/PaymentViewModel( 2585):    • batch: 20260504152005 (String)
+05-04 15:20:09.647 D/PaymentViewModel( 2585):    • binInformation: BinInformation(bank=GENERAL, bin=512912, brand=MASTERCARD, product=CACAO MASTERCAR, type=CREDITO) (BinInformation)
+05-04 15:20:09.648 D/PaymentViewModel( 2585):    • description: APROBADA (String)
+05-04 15:20:09.648 D/PaymentViewModel( 2585):    • membership: 9109196 (String)
+05-04 15:20:09.649 D/PaymentViewModel( 2585):    • reference: 319452117368 (String)
+05-04 15:20:09.649 D/PaymentViewModel( 2585):    • renewKey: false (Boolean)
+05-04 15:20:09.649 D/PaymentViewModel( 2585):    • simulation: true (Boolean)
+05-04 15:20:09.650 D/PaymentViewModel( 2585): ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+05-04 15:20:09.651 I/PaymentViewModel$continuePaymentFlow( 2585): ✅ [PHASE 4] Online authorization SUCCESS!
+05-04 15:20:09.652 I/PaymentViewModel$continuePaymentFlow( 2585):    Auth Code: 442DLN
+05-04 15:20:09.652 I/PaymentViewModel$continuePaymentFlow( 2585):    Reference: 319452117368
+05-04 15:20:09.652 I/PaymentViewModel$continuePaymentFlow( 2585):    Operation: 78345
+05-04 15:20:09.653 I/PaymentViewModel$continuePaymentFlow( 2585):    EMV Code: null
+05-04 15:20:09.653 I/PaymentViewModel$continuePaymentFlow( 2585):    ARPC: 4C4612E7AA0B7999...
+05-04 15:20:09.653 D/PaymentViewModel$continuePaymentFlow( 2585): [PHASE 4.5] Extracting AIP (tag 0x82) to check ARPC requirement...
+05-04 15:20:09.654 I/PaymentViewModel$continuePaymentFlow( 2585): [PHASE 4.5] AIP Checking - ARPC required: false (AIP: 3900)
+05-04 15:20:09.655 I/PaymentViewModel$continuePaymentFlow( 2585): ✅ [PHASE 5] Skipping CompleteEmvTrans (card does not require ARPC)
+05-04 15:20:09.655 I/PaymentViewModel$continuePaymentFlow( 2585): 🎉 PAYMENT APPROVED WITH ONLINE AUTHORIZATION!
+05-04 15:20:09.657 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Input: subtotal='1.00', tipAmount='0.00'
+05-04 15:20:09.658 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Parsed: subtotalDecimal=1.00, tipDecimal=0.00
+05-04 15:20:09.658 D/PaymentViewModel( 2585): 🧮 [calculateTotal] Result: 1.00
+05-04 15:20:09.721 D/PaymentViewModel$handlePaymentSuccess( 2585): 💾 [Backend Recording] Starting payment record | auth=442DLN | ref=319452117368
+05-04 15:20:09.725 D/PaymentViewModel( 2585): 🔍 [BinInformation] Available fields: [bank, bin, brand, product, type]
+05-04 15:20:09.726 D/PaymentViewModel( 2585): 🔍 [BinInformation] Field 'bank' = GENERAL (type: String)
+05-04 15:20:09.726 D/PaymentViewModel( 2585): 🔍 [BinInformation] Field 'bin' = 512912 (type: String)
+05-04 15:20:09.726 D/PaymentViewModel( 2585): 🔍 [BinInformation] Field 'brand' = MASTERCARD (type: String)
+05-04 15:20:09.727 D/PaymentViewModel( 2585): 🔍 [BinInformation] Field 'product' = CACAO MASTERCAR (type: String)
+05-04 15:20:09.727 D/PaymentViewModel( 2585): 🔍 [BinInformation] Field 'type' = CREDITO (type: String)
+05-04 15:20:09.727 D/PaymentViewModel( 2585): 🎯 [BinInformation] Extracted real card brand: MASTERCARD → MASTERCARD
+05-04 15:20:09.728 D/PaymentViewModel( 2585): 🎯 [BinInformation] Extracted BIN: 512912
+05-04 15:20:09.728 D/PaymentViewModel( 2585): 🎯 [BinInformation] Extracted bank: GENERAL
+05-04 15:20:09.728 D/PaymentViewModel( 2585): 🎯 [BinInformation] Extracted card type: CREDITO
+05-04 15:20:09.731 I/PaymentViewModel( 2585): 🌍 [International] Level 2 (EMV 5F28): code='0484' (normalized: 0484) → DOMESTIC
+05-04 15:20:09.733 D/PaymentViewModel$handlePaymentSuccess( 2585): 💾 [Backend Recording] Card details: brand=MASTERCARD | masked=512912******000F | entry=CHIP
+05-04 15:20:09.739 D/PaymentViewModel$handlePaymentSuccess( 2585): 💾 [Backend Recording] Context: venue=cmko8m8vp00049kcxd3xk21za, staff=cmlid60em00069kbvvie81zit, shift=null, amount=1.00, tip=0.00, rating=null, merchantId=cmkmxzy2r000n9kl00kwq7pv7, blumonSerial=2841548417
+05-04 15:20:09.739 I/PaymentViewModel$handlePaymentSuccess( 2585): ═══════════════════════════════════════════════════════════
+05-04 15:20:09.740 I/PaymentViewModel$handlePaymentSuccess( 2585): 🔍 DEBUG TRACE - ViewModel → Recorder handoff
+05-04 15:20:09.740 I/PaymentViewModel$handlePaymentSuccess( 2585):    blumonOperationNumber param received: 78345
+05-04 15:20:09.741 I/PaymentViewModel$handlePaymentSuccess( 2585):    context type: FastPayment
+05-04 15:20:09.741 I/PaymentViewModel$handlePaymentSuccess( 2585):    context.blumonOperationNumber: 78345
+05-04 15:20:09.742 I/PaymentViewModel$handlePaymentSuccess( 2585): ═══════════════════════════════════════════════════════════
+05-04 15:20:09.743 D/RecordPaymentUseCase( 2585): 📍 Using FastPaymentRecorder for fast payment
+05-04 15:20:09.743 D/RecordPaymentUseCase( 2585): 📡 Recording payment (attempt 1/5)
+05-04 15:20:09.748 D/FastPaymentRecorder$recordPayment( 2585): 🚀 Recording fast payment | venue=cmko8m8vp00049kcxd3xk21za | amount=1.00 | tip=0.00 | card=MASTERCARD | entry=CHIP | processor=FastPayment
+05-04 15:20:09.749 I/FastPaymentRecorder$recordPayment( 2585): ═══════════════════════════════════════════════════════════
+05-04 15:20:09.749 I/FastPaymentRecorder$recordPayment( 2585): 🔍 DEBUG TRACE - blumonOperationNumber
+05-04 15:20:09.750 I/FastPaymentRecorder$recordPayment( 2585):    STEP 1 - In PaymentContext:
+05-04 15:20:09.750 I/FastPaymentRecorder$recordPayment( 2585):       context.blumonOperationNumber = 78345
+05-04 15:20:09.751 I/FastPaymentRecorder$recordPayment( 2585):       context.blumonOperationNumber type = java.lang.Integer
+05-04 15:20:09.751 I/FastPaymentRecorder$recordPayment( 2585): ═══════════════════════════════════════════════════════════
+05-04 15:20:09.754 I/FastPaymentRecorder$recordPayment( 2585): ═══════════════════════════════════════════════════════════
+05-04 15:20:09.754 I/FastPaymentRecorder$recordPayment( 2585): 🔍 DEBUG TRACE - After building FastPaymentRequest
+05-04 15:20:09.755 I/FastPaymentRecorder$recordPayment( 2585):    STEP 2 - In FastPaymentRequest DTO:
+05-04 15:20:09.755 I/FastPaymentRecorder$recordPayment( 2585):       request.blumonOperationNumber = 78345
+05-04 15:20:09.756 I/FastPaymentRecorder$recordPayment( 2585):       request.blumonOperationNumber type = java.lang.Integer
+05-04 15:20:09.756 I/FastPaymentRecorder$recordPayment( 2585): ═══════════════════════════════════════════════════════════
+05-04 15:20:09.765 I/FastPaymentRecorder$recordPayment( 2585): ═══════════════════════════════════════════════════════════
+05-04 15:20:09.766 I/FastPaymentRecorder$recordPayment( 2585): 🔍 DEBUG TRACE - Gson Serialization Result
+05-04 15:20:09.766 I/FastPaymentRecorder$recordPayment( 2585):    STEP 3 - JSON body to be sent:
+05-04 15:20:09.767 I/FastPaymentRecorder$recordPayment( 2585):       {"amount":100,"authorizationNumber":"442DLN","blumonOperationNumber":78345,"blumonSerialNumber":"2841548417","cardBrand":"MASTERCARD","currency":"MXN","deviceSerialNumber":"AVQD-2841548417","entryMode":"CHIP","idempotencyKey":"a8cb6052-76b0-47a9-8e10-7e3e7f5858b8","isInternational":false,"maskedPan":"512912******000F","merchantAccountId":"cmkmxzy2r000n9kl00kwq7pv7","method":"CREDIT_CARD","referenceNumber":"319452117368","source":"AVOQADO_TPV","splitType":"FULLPAYMENT","staffId":"cmlid60em00069kbvvie81zit","status":"COMPLETED","tip":0,"venueId":"cmko8m8vp00049kcxd3xk21za"}
+05-04 15:20:09.767 I/FastPaymentRecorder$recordPayment( 2585):    Contains 'blumonOperationNumber'? true
+05-04 15:20:09.767 I/FastPaymentRecorder$recordPayment( 2585): ═══════════════════════════════════════════════════════════
+05-04 15:20:09.793 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/fast
+05-04 15:20:09.797 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/fast
+05-04 15:20:09.798 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/fast
+05-04 15:20:09.799 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:20:09.799 D/OkHttp  ( 2585): Content-Length: 578
+05-04 15:20:09.799 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:20:09.800 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:20:09.800 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:20:09.800 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:20:09.801 D/OkHttp  ( 2585): {"amount":100,"authorizationNumber":"442DLN","blumonOperationNumber":78345,"blumonSerialNumber":"2841548417","cardBrand":"MASTERCARD","currency":"MXN","deviceSerialNumber":"AVQD-2841548417","entryMode":"CHIP","idempotencyKey":"a8cb6052-76b0-47a9-8e10-7e3e7f5858b8","isInternational":false,"maskedPan":"512912******000F","merchantAccountId":"cmkmxzy2r000n9kl00kwq7pv7","method":"CREDIT_CARD","referenceNumber":"319452117368","source":"AVOQADO_TPV","splitType":"FULLPAYMENT","staffId":"cmlid60em00069kbvvie81zit","status":"COMPLETED","tip":0,"venueId":"cmko8m8vp00049kcxd3xk21za"}
+05-04 15:20:09.801 D/OkHttp  ( 2585): --> END POST (578-byte body)
+05-04 15:20:10.536 D/OkHttp  ( 2585): <-- 201 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/venues/cmko8m8vp00049kcxd3xk21za/fast (734ms)
+05-04 15:20:10.536 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:20:10.537 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:20:10.537 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:20:10.537 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:20:10.537 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:20:10.538 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:20:10.538 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:20:10 GMT
+05-04 15:20:10.538 D/OkHttp  ( 2585): etag: W/"809-G0GudxIe8TwEgnRfNBy36dUyIgI"
+05-04 15:20:10.538 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:20:10.538 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:20:10.539 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:20:10.539 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:20:10.539 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:20:10.539 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:20:10.539 D/OkHttp  ( 2585): x-correlation-id: db2d74c5-c9a9-4617-841d-8b235eb27347
+05-04 15:20:10.539 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:20:10.539 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:20:10.540 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:20:10.540 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:20:10.540 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:20:10.542 D/OkHttp  ( 2585): {"success":true,"data":{"id":"cmorn8pj400039kaw3af5ojeg","venueId":"cmko8m8vp00049kcxd3xk21za","orderId":"cmorn8pib00019kawgm2atb8b","shiftId":null,"processedById":"cmlid60em00069kbvvie81zit","merchantAccountId":"cmkmxzy2r000n9kl00kwq7pv7","terminalId":"cmko8ot7v000t9kxakaah5qrn","amount":"1","tipAmount":"0","method":"CREDIT_CARD","source":"TPV","status":"COMPLETED","splitType":"FULLPAYMENT","type":"FAST","processor":"TBD","processorId":null,"processorData":{"currency":"MXN","cardBrand":"MASTERCARD","isInternational":false,"referenceNumber":"319452117368","blumonSerialNumber":"2841548417","authorizationNumber":"442DLN","blumonOperationNumber":78345},"authorizationNumber":"442DLN","referenceNumber":"319452117368","idempotencyKey":"a8cb6052-76b0-47a9-8e10-7e3e7f5858b8","externalSource":null,"cardBrand":"MASTERCARD","maskedPan":"512912******000F","entryMode":"CHIP","feePercentage":"0","feeAmount":"0","netAmount":"1","externalId":null,"originSystem":"AVOQADO","posRawData":{"source":"TPV","staffId":"cmlid60em00069kbvvie81zit","splitType":"FULLPAYMENT","paymentType":"FAST"},"syncStatus":"PENDING","syncedAt":null,"createdAt":"2026-05-04T20:20:10.432Z","updatedAt":"2026-05-04T20:20:10.432Z","processedBy":{"id":"cmlid60em00069kbvvie81zit","email":"tpv-playtelecom-centro-1770834545793-kvvf8d@internal.avoqado.io","password":null,"googleId":null,"firstName":"hchg","lastName":"bhjbhj","phone":null,"employeeCode":null,"photoUrl":null,"active":true,"emailVerified":false,"emailVerificationCode":null,"emailVerificationExpires":null,"originSystem":"AVOQADO","posRawData":null,"createdAt":"2026-02-11T18:29:05.806Z","updatedAt":"2026-05-01T19:58:52.227Z","lastLoginAt":"2026-05-01T19:58:52.225Z","failedLoginAttempts":0,"lockedUntil":null,"resetToken":null,"resetTokenExpiry":null,"resetTokenUsedAt":null,"lastPasswordReset":null},"digitalReceipt":{"id":"cmorn8pq0000c9kawov0xn9uw","accessKey":"cmorn8pq0000d9kaw4h91peha","receiptUrl":"http://localhost:5173/receipts/public/cmorn8pq0000d9kaw4h91peha"}},"message":"Fast payment recorded successfully"}
+05-04 15:20:10.543 D/OkHttp  ( 2585): <-- END HTTP (2057-byte body)
+05-04 15:20:10.545 I/PaymentViewModel$collectSocketEvents( 2585): ✅ [Socket] Payment completed: cmorn8pj400039kaw3af5ojeg - Amount: 0.01 USD
+05-04 15:20:10.553 I/FastPaymentRecorder$recordPayment( 2585): ✅ Fast payment recorded | paymentId=cmorn8pj400039kaw3af5ojeg | receiptUrl=http://localhost:5173/receipts/public/cmorn8pq0000d9kaw4h91peha
+05-04 15:20:10.557 I/PaymentViewModel$handlePaymentSuccess( 2585): ✅ [Backend Recording] Payment recorded successfully | paymentId=cmorn8pj400039kaw3af5ojeg
+05-04 15:20:10.558 I/PaymentViewModel$handlePaymentSuccess( 2585): 📄 [Backend Recording] Receipt URL: http://localhost:5173/receipts/public/cmorn8pq0000d9kaw4h91peha
+05-04 15:20:10.559 D/PaymentViewModel( 2585): 📦 [Order Data] Skipping load - Fast payment (no order)
+05-04 15:20:10.560 D/PaymentViewModel$handlePaymentSuccess( 2585): 🎫 [Receipt] Updated Success state with receipt | URL=http://localhost:5173/receipts/public/cmorn8pq0000d9kaw4h91peha
+05-04 15:20:10.560 D/PaymentViewModel$handlePaymentSuccess( 2585): 🎫 [Receipt] Card: MASTERCARD 512912******000F | Entry: CHIP
+05-04 15:20:10.560 D/PaymentViewModel$handlePaymentSuccess( 2585): 🐛 [DEBUG] Confirmed state update | receipt is NOT NULL
+05-04 15:20:10.682 D/ConnectionViewModel( 2585): 🌐 [Connection] Heartbeat: checking backend connectivity...
+05-04 15:20:10.700 D/HeartbeatRepository( 2585): 📡 Sending heartbeat for terminal AVQD-2841548417
+05-04 15:20:10.714 D/AuthInterceptor( 2585): 🔐 [Auth] Added Authorization + Version headers to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:20:10.719 D/TenantInterceptor( 2585): Added X-Venue-Id: cmko8m8vp00049kcxd3xk21za to https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:20:10.720 D/OkHttp  ( 2585): --> POST https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat
+05-04 15:20:10.720 D/OkHttp  ( 2585): Content-Type: application/json; charset=UTF-8
+05-04 15:20:10.721 D/OkHttp  ( 2585): Content-Length: 448
+05-04 15:20:10.721 D/OkHttp  ( 2585): X-App-Version-Code: 57
+05-04 15:20:10.721 D/OkHttp  ( 2585): X-App-Version-Name: 1.13.2-sandbox
+05-04 15:20:10.722 D/OkHttp  ( 2585): Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbWxpZDYwZW0wMDA2OWtidnZpZTgxeml0Iiwib3JnSWQiOiJjbWtvOG04dmwwMDAwOWtjeHNsdnB6MXloIiwidmVudWVJZCI6ImNta284bTh2cDAwMDQ5a2N4ZDN4azIxemEiLCJyb2xlIjoiV0FJVEVSIiwidGVybWluYWxTZXJpYWxOdW1iZXIiOiJBVlFELTI4NDE1NDg0MTciLCJpYXQiOjE3Nzc5MjUxNjIsImV4cCI6MTc3NzkyODc2MiwiYXVkIjoiYXZvcWFkby1jbGllbnRzIiwiaXNzIjoiYXZvcWFkby1hcGkifQ.7lIL5_LVXRlADHGTMFAZFuplENnWqnshDb3D5huePJ8
+05-04 15:20:10.722 D/OkHttp  ( 2585): X-Venue-Id: cmko8m8vp00049kcxd3xk21za
+05-04 15:20:10.723 D/OkHttp  ( 2585): {"status":"ACTIVE","systemInfo":{"batteryCharging":true,"batteryLevel":10,"deviceModel":"A910S","manufacturer":"PAX","memory":{"free":179,"total":192,"used":13},"networkConnected":true,"networkMetered":false,"networkType":"WIFI","osVersion":"Android 12","platform":"Android","signalStrength":4,"storageAvailableGB":8.35,"uptime":900,"versionCode":57},"terminalId":"AVQD-2841548417","timestamp":"2026-05-04T20:20:10.699Z","version":"1.13.2-sandbox"}
+05-04 15:20:10.723 D/OkHttp  ( 2585): --> END POST (448-byte body)
+05-04 15:20:10.959 D/OkHttp  ( 2585): <-- 200 https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat (235ms)
+05-04 15:20:10.959 D/OkHttp  ( 2585): access-control-allow-credentials: true
+05-04 15:20:10.959 D/OkHttp  ( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:20:10.959 D/OkHttp  ( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:20:10.959 D/OkHttp  ( 2585): content-type: application/json; charset=utf-8
+05-04 15:20:10.959 D/OkHttp  ( 2585): cross-origin-opener-policy: same-origin
+05-04 15:20:10.959 D/OkHttp  ( 2585): cross-origin-resource-policy: same-origin
+05-04 15:20:10.960 D/OkHttp  ( 2585): date: Mon, 04 May 2026 20:20:11 GMT
+05-04 15:20:10.960 D/OkHttp  ( 2585): etag: W/"9e-yQq1CpfxrkhYhH1sE0Jj/4IQhHw"
+05-04 15:20:10.960 D/OkHttp  ( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:20:10.960 D/OkHttp  ( 2585): origin-agent-cluster: ?1
+05-04 15:20:10.960 D/OkHttp  ( 2585): referrer-policy: no-referrer
+05-04 15:20:10.960 D/OkHttp  ( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:20:10.960 D/OkHttp  ( 2585): vary: Origin, Accept-Encoding
+05-04 15:20:10.960 D/OkHttp  ( 2585): x-content-type-options: nosniff
+05-04 15:20:10.960 D/OkHttp  ( 2585): x-correlation-id: 2f360ecc-492b-4c4a-a80c-c7cf9e1b89bc
+05-04 15:20:10.960 D/OkHttp  ( 2585): x-dns-prefetch-control: off
+05-04 15:20:10.960 D/OkHttp  ( 2585): x-download-options: noopen
+05-04 15:20:10.960 D/OkHttp  ( 2585): x-frame-options: SAMEORIGIN
+05-04 15:20:10.960 D/OkHttp  ( 2585): x-permitted-cross-domain-policies: none
+05-04 15:20:10.960 D/OkHttp  ( 2585): x-xss-protection: 0
+05-04 15:20:10.960 D/OkHttp  ( 2585): content-length: 158
+05-04 15:20:10.962 D/OkHttp  ( 2585): {"success":true,"message":"Heartbeat processed successfully","serverStatus":"ACTIVE","timestamp":"2026-05-04T20:20:11.333Z","configVersion":"1-1771261223532"}
+05-04 15:20:10.962 D/OkHttp  ( 2585): <-- END HTTP (158-byte body)
+05-04 15:20:10.969 D/HeartbeatRepository( 2585): ✅ Heartbeat accepted. Server status: ACTIVE
+05-04 15:20:10.969 D/HeartbeatRepository( 2585): 📥 Raw response info: Response{protocol=h2, code=200, message=, url=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/tpv/heartbeat}
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): 📥 Response headers: access-control-allow-credentials: true
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): access-control-expose-headers: X-Client-Id,X-Total-Labels
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): content-security-policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): content-type: application/json; charset=utf-8
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): cross-origin-opener-policy: same-origin
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): cross-origin-resource-policy: same-origin
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): date: Mon, 04 May 2026 20:20:11 GMT
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): etag: W/"9e-yQq1CpfxrkhYhH1sE0Jj/4IQhHw"
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): ngrok-agent-ips: 187.189.198.158
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): origin-agent-cluster: ?1
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): referrer-policy: no-referrer
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): strict-transport-security: max-age=31536000; includeSubDomains
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): vary: Origin, Accept-Encoding
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): x-content-type-options: nosniff
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): x-correlation-id: 2f360ecc-492b-4c4a-a80c-c7cf9e1b89bc
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): x-dns-prefetch-control: off
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): x-download-options: noopen
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): x-frame-options: SAMEORIGIN
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): x-permitted-cross-domain-policies: none
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): x-xss-protection: 0
+05-04 15:20:10.970 D/HeartbeatRepository( 2585): content-length: 158
+05-04 15:20:10.971 D/HeartbeatRepository( 2585): 📥 Heartbeat response - success: true
+05-04 15:20:10.971 D/HeartbeatRepository( 2585): 📥 Heartbeat response - message: Heartbeat processed successfully
+05-04 15:20:10.971 D/HeartbeatRepository( 2585): 📥 Heartbeat response - serverStatus: ACTIVE
+05-04 15:20:10.972 D/HeartbeatRepository( 2585): 📥 Heartbeat response - timestamp: 2026-05-04T20:20:11.333Z
+05-04 15:20:10.972 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands: null
+05-04 15:20:10.972 D/HeartbeatRepository( 2585): 📥 Heartbeat response - pendingCommands size: 0
+05-04 15:20:10.972 I/ConnectionViewModel( 2585): ✅ [Connection] Heartbeat OK (latency=272ms)
+05-04 15:20:10.973 I/ConnectionStateManager( 2585): 🔄 [ConnectionState] Updated: internet=true, server=true, latency=272ms
+05-04 15:20:10.973 D/DeviceHealthViewModel$observeConnectionState( 2585): 🌐 [DeviceHealth] Connection state changed: internet=true, server=true
+05-04 15:20:11.657 D/PaymentScreenKt$PaymentScreen( 2585): 🎉 [Approved] Animation complete, showing success content
+05-04 15:20:11.666 D/PrinterManager( 2585): ✅ IDAL instance obtained successfully
+05-04 15:20:11.676 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:20:11.680 E/ActivityThread( 2585): Failed to find provider info for com.pax.neptune.filestorage
+05-04 15:20:11.721 D/PrinterManager( 2585): ✅ Printer initialized successfully
+05-04 15:20:11.788 D/PaymentScreenKt$PaymentSuccessContent( 2585): 💳 [PaymentSuccess] Button: Nuevo Pago | wasPayLater=false | count=0 | orderId=null
+05-04 15:20:12.352 D/QrCodeGeneratorKt$rememberQrBitmapPainter( 2585): ✅ QR code generated successfully (280x280)
+05-04 15:20:12.363 D/PaymentScreenKt$PaymentSuccessContent( 2585): 💳 [PaymentSuccess] Button: Nuevo Pago | wasPayLater=false | count=0 | orderId=null

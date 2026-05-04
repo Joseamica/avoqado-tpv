@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.payment.presentation
 
 import androidx.lifecycle.viewModelScope
 import com.blumonpay.pax.shared.trans_process.domain.TransProcessRepository
+import com.blumonpay.pax.shared.trans_process.domain.use_case.set_select_app_code.SetSelectAppCodeUseCase
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.domain.models.Result as AppResult
@@ -29,6 +30,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.use_case.GetMerchantsUseCase
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
+import com.paxsz.module.emv.process.contact.CandidateAID
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -87,10 +89,12 @@ class PaymentViewModelTest {
     private lateinit var mockRecordRefundUseCase: RecordRefundUseCase
     private lateinit var mockConnectionStateManager: ConnectionStateManager
     private lateinit var mockCriticalNetworkOperationManager: CriticalNetworkOperationManager
+    private lateinit var mockSetSelectAppCodeUseCase: SetSelectAppCodeUseCase
 
     // Flows needed by init block collectors
     private val socketEventsFlow = MutableSharedFlow<SocketEvent>()
     private val modulesFlow = MutableStateFlow<List<VenueModule>>(emptyList())
+    private lateinit var selectAppStateFlow: MutableStateFlow<MutableList<CandidateAID>?>
 
     // Test data
     private val testVenueId = "venue-test-001"
@@ -151,6 +155,7 @@ class PaymentViewModelTest {
 
         // Configure TransProcessRepository with required flows
         // Note: All flow return types must match SDK types exactly
+        selectAppStateFlow = MutableStateFlow(null)
         mockTransProcessRepository = mockk(relaxed = true) {
             every { getEventPinDialogStateFlow() } returns MutableStateFlow(mockk(relaxed = true) {
                 every { show } returns false
@@ -159,7 +164,7 @@ class PaymentViewModelTest {
             every { getKeyboardPinStateFlow() } returns MutableStateFlow("")
             every { getPinResultFlow() } returns MutableStateFlow(null)
             // getPinAttemptsFlow returns Flow<PinAttempts> (SDK type) - use relaxed mock
-            every { getSelectAppStateFlow() } returns MutableStateFlow(null)
+            every { getSelectAppStateFlow() } returns selectAppStateFlow
             every { confirmCardReadingFlow() } returns MutableStateFlow(false)
         }
 
@@ -230,6 +235,7 @@ class PaymentViewModelTest {
         }
 
         mockCriticalNetworkOperationManager = mockk(relaxed = true)
+        mockSetSelectAppCodeUseCase = mockk(relaxed = true)
     }
 
     @After
@@ -256,6 +262,7 @@ class PaymentViewModelTest {
             getEmvTagUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.get_emv_tags.GetEmvTagUseCase>(relaxed = true),
             completeEmvTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.complete_emv_trans.CompleteEmvTransUseCase>(relaxed = true),
             continueConfirmCardUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.continue_confirm_card.ContinueConfirmCardUseCase>(relaxed = true),
+            setSelectAppCodeUseCase = mockSetSelectAppCodeUseCase,
             saleIccUseCase = mockk<com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccUseCase>(relaxed = true),
             saleCtlsUseCase = mockk<com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_ctls.SaleCtlsUseCase>(relaxed = true),
             cancelIccUseCase = mockk<com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.cancel_icc.CancelIccUseCase>(relaxed = true),
@@ -527,6 +534,20 @@ class PaymentViewModelTest {
         assertThat(viewModel.isPaymentInProgress.value).isFalse()
 
         coVerify(exactly = 0) { mockInitializationManager.awaitInitialization() }
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `chip app selection responds to SDK with first candidate`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.startPayment("100.00")
+
+        selectAppStateFlow.value = mutableListOf(mockk(relaxed = true))
+
+        coVerify(timeout = 1000) {
+            mockSetSelectAppCodeUseCase.runInfallible(match { it.selectAppCode == 0 })
+        }
+
         viewModel.viewModelScope.cancel()
     }
 

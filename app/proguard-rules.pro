@@ -315,3 +315,23 @@
 # 3. Check that class names are obfuscated (a.b.c.A)
 # 4. Verify no API URLs or serial numbers are visible
 # 5. Confirm Timber logs are removed
+
+# AngelPay SDK (1.0.4) bundles Sentry but its consumer-proguard.txt only
+# covers angelpaysdk + nexgo packages, not Sentry. Without keep rules R8
+# strips Sentry classes that the SDK initializes at payment time, causing
+# the dialog "Failed to initialize Sentry's SDK" mid-cobro. -dontwarn
+# silences references to optional integrations that aren't on our classpath.
+-keep class io.sentry.** { *; }
+-keepclassmembers class io.sentry.** { *; }
+-dontwarn io.sentry.android.fragment.FragmentLifecycleIntegration
+-dontwarn io.sentry.android.replay.R$id
+-dontwarn io.sentry.android.timber.SentryTimberIntegration
+-dontwarn io.sentry.compose.gestures.ComposeGestureTargetLocator
+-dontwarn io.sentry.compose.viewhierarchy.ComposeViewHierarchyExporter
+-dontwarn io.sentry.ndk.DebugImage
+-dontwarn io.sentry.ndk.INativeScope
+-dontwarn io.sentry.ndk.NativeModuleListLoader
+-dontwarn io.sentry.ndk.NativeScope
+-dontwarn io.sentry.ndk.NdkHandlerStrategy
+-dontwarn io.sentry.ndk.NdkOptions
+-dontwarn io.sentry.ndk.SentryNdk

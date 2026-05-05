@@ -265,14 +265,28 @@ class TimeclockViewModel @Inject constructor(
         val staffName = currentStaffName ?: return
 
         viewModelScope.launch {
+            // Field report 2026-05-05: stale cache caused promoters to skip the
+            // photo flow on shifts that ran longer than the app's foreground
+            // session. Refresh from backend before reading so a freshly-toggled
+            // requireClockOutPhoto/requireDepositPhoto in the dashboard gets
+            // honored on the very next clock-out (not after the next login).
+            // Falls back to cached value on network error (offline-first).
+            val serial = secureStorage.getSerialNumber()
+            if (!serial.isNullOrBlank()) {
+                tpvSettingsRepository.refreshFromTerminalConfig(serial)
+            }
             val settings = tpvSettingsRepository.getCurrentSettings()
 
             Timber.d("⏱️ [CLOCK-OUT] TpvSettings check:")
             Timber.d("   - requireDepositPhoto: ${settings.requireDepositPhoto}")
+            Timber.d("   - requireClockOutPhoto: ${settings.requireClockOutPhoto}")
 
-            // Build photo queue for clock-out:
-            // 1. Deposit voucher (if configured)
-            // 2. Checkout selfie (always, after deposit — only if deposit was taken)
+            // Build photo queue for clock-out — both flags are independent
+            // (field report 2026-05-05: previously only requireDepositPhoto
+            // triggered the queue, so requireClockOutPhoto was silently
+            // ignored even when the venue config had it enabled):
+            //   1. Deposit voucher    — when requireDepositPhoto = true
+            //   2. Clock-out selfie   — when requireClockOutPhoto = true
             isClockOutFlow = true
             photoQueue.clear()
             pendingDepositPhotoUrl = null
@@ -280,6 +294,8 @@ class TimeclockViewModel @Inject constructor(
 
             if (settings.requireDepositPhoto) {
                 photoQueue.add(PhotoType.DEPOSIT_VOUCHER)
+            }
+            if (settings.requireClockOutPhoto) {
                 photoQueue.add(PhotoType.CLOCK_OUT_SELFIE)
             }
 

@@ -15,6 +15,23 @@
 
 ---
 
+## [1.13.5] - 2026-05-05
+
+### **Added**
+
+- **[Build] Nuevo flavor `nexgoProd`**: build productivo Nexgo (Avoqado backend prod + AngelPay prod) coexiste en el mismo terminal con `nexgo` (sandbox) gracias a launcher icon distinto — `nexgo` reusa `src/sandbox/res` (badge "a"), `nexgoProd` solo `src/main/res` (icono limpio). Reusa `src/sandbox/java` para evitar pull de `lib_services-PROD.aar` (Blumon) al classpath Nexgo. ⚠️ TODOs documentados en `build.gradle.kts`: registrar `com.jaac.avoqado_tpv.nexgo` en Firebase y reemplazar credenciales QA por prod cuando AngelPay las entregue. No afecta `productionRelease` (PAX).
+
+### **Changed**
+
+- **[Timeclock] `requireClockOutPhoto` ahora se respeta en el flow de salida**: `TimeclockViewModel.clockOut()` solo gateaba la cámara con `requireDepositPhoto`, así que el flag `requireClockOutPhoto` definido en el modelo + DTO + SecureStorage + pantalla de Settings nunca llegaba a producir foto al cerrar turno. Ahora ambos flags son independientes — `requireDepositPhoto = true` agrega `DEPOSIT_VOUCHER` a la cola, `requireClockOutPhoto = true` agrega `CLOCK_OUT_SELFIE`. Diagnóstico (field report 2026-05-05): 357 clockouts en producción de PlayTelecom durante los últimos 30 días llegaron al backend sin foto y sin `skipReason`, evidenciando el bypass.
+- **[Timeclock] `clockOut()` refresca settings desde backend antes de leer el cache**: `tpvSettingsRepository.refreshFromTerminalConfig(serial)` corre al inicio del flow de salida. Antes, el cache se hidrataba solo en startup de la app (`MainActivity:570`) y al login (`AuthRepository:126`), así que un OWNER que prendía `requireClockOutPhoto`/`requireDepositPhoto` en el dashboard a media tarde no afectaba al promotor que llevaba la app abierta desde la mañana. La llamada conserva el patrón offline-first (fallback al valor cacheado si la red falla).
+
+### **Fixed**
+
+- **[Nexgo/AngelPay] R8 strippeaba clases Sentry causando fallo "Failed to initialize Sentry's SDK" mid-cobro**: AngelPay SDK 1.0.4 bundle Sentry interno pero su `consumer-proguard.txt` solo cubre `angelpaysdk` + `nexgo`, no `io.sentry`. Sin keep rules, R8 elimina clases que el SDK referencia en runtime. Agregadas reglas `-keep class io.sentry.** { *; }` + 12 `-dontwarn` para integraciones opcionales (fragment, replay, timber, compose, ndk) que no están en el classpath. No afecta `productionRelease` (PAX): AngelPay AAR es `compileOnly` para non-nexgo flavors y no se empaqueta — los keep rules son no-ops en builds PAX (no hay clases Sentry que mantener).
+
+---
+
 ## [1.13.4] - 2026-05-04
 
 ### **Changed**

@@ -16,8 +16,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv"
         minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
         targetSdk = 34
-        versionCode = 59
-        versionName = "1.13.4"
+        versionCode = 60
+        versionName = "1.13.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -145,7 +145,9 @@ android {
             // Reuse sandbox-specific PaymentViewModel/BlumonInitializer (not used, but required for compilation)
             matchingFallbacks += listOf("sandbox")
             // Uses sandbox package ID (.sandbox) — registered in Firebase.
-            // When Nexgo goes to production, register .nexgo in Firebase and change this.
+            // Backend Avoqado + AngelPay QA. Visualmente lleva el badge "a"
+            // de sandbox (sourceSet incluye src/sandbox/res) para diferenciar
+            // de la build productiva real (`nexgoProd`).
             applicationIdSuffix = ".sandbox"
             versionNameSuffix = "-nexgo"
 
@@ -181,6 +183,57 @@ android {
                 abiFilters.add("arm64-v8a")
             }
         }
+
+        create("nexgoProd") {
+            dimension = "environment"
+            // Productive Nexgo build (Avoqado backend prod + AngelPay prod).
+            // Reuses the production package id `com.jaac.avoqado_tpv` (no
+            // suffix) because `.nexgo` is not yet registered in Firebase
+            // (see google-services.json). Coexists with `nexgo` (.sandbox)
+            // on the same Nexgo terminal — different package ids. Will not
+            // coexist with `productionRelease` PAX builds (same package),
+            // but PAX and Nexgo are different hardware so that's fine.
+            // ⚠️ TODO: register `com.jaac.avoqado_tpv.nexgo` in Firebase
+            // and switch `applicationIdSuffix = ".nexgo"`.
+            versionNameSuffix = "-nexgo-prod"
+
+            // Firebase Storage environment prefix (prod)
+            buildConfigField("String", "STORAGE_ENV_PREFIX", "\"prod\"")
+
+            // Avoqado backend + Blumon endpoints (prod) — Blumon URLs are
+            // unused on Nexgo (no PAX SDK init) but kept consistent with
+            // the production flavor for clarity.
+            buildConfigField("String", "BLUMON_ENV", "\"PROD\"")
+            buildConfigField("String", "TOKEN_SERVER_URL", "\"https://tokener.blumonpay.net\"")
+            buildConfigField("String", "CORE_SERVER_URL", "\"https://core.blumonpay.net\"")
+
+            // Nexgo N86 terminal defaults
+            buildConfigField("String", "DEFAULT_TERMINAL_SERIAL", "\"NEXGO-N86\"")
+            buildConfigField("String", "DEFAULT_TERMINAL_BRAND", "\"NEXGO\"")
+            buildConfigField("String", "DEFAULT_TERMINAL_MODEL", "\"N86\"")
+
+            // No Blumon SDK on Nexgo — payments via AngelPay SDK
+            buildConfigField("boolean", "ENABLE_PAX_SDK", "false")
+            buildConfigField("boolean", "ENABLE_BLUMON_INIT", "false")
+            buildConfigField("boolean", "ANGELPAY_SDK_ENABLED", "true")
+            buildConfigField("boolean", "ANGELPAY_SDK_FALLBACK_ENABLED", "false")
+
+            // ⚠️ TODO: Replace with PROD AngelPay credentials when AngelPay
+            // (Norman / Carlos) provide them. Today still using QA so the
+            // build compiles. Don't ship this APK to live merchants until
+            // these are real prod creds.
+            buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"contacto@avoqado.io\"")
+            buildConfigField("String", "ANGELPAY_QA_PASSWORD", "\"123456\"")
+            buildConfigField("String", "ANGELPAY_QA_AFFILIATION", "\"9814275\"")
+            buildConfigField("String", "ANGELPAY_QA_COMMERCE_TOKEN", "\"1773083056540lIE\"")
+
+            // Nexgo N86 is arm32 / arm64 (Android 9, API 28)
+            ndk {
+                abiFilters.clear()
+                abiFilters.add("armeabi-v7a")
+                abiFilters.add("arm64-v8a")
+            }
+        }
     }
 
     sourceSets {
@@ -192,8 +245,21 @@ android {
         getByName("nexgo") {
             // Reuse sandbox-specific implementation files (PaymentViewModel, BlumonInitializer).
             // These compile but are not invoked on Nexgo — AngelPay flow is in main/.
+            // Reusing res too so the launcher icon shows the sandbox "a" badge —
+            // visually distinguishes this from `nexgoProd`.
             java.srcDirs("src/sandbox/java")
             res.srcDirs("src/sandbox/res")
+        }
+        getByName("nexgoProd") {
+            // Reuse sandbox-specific implementation files (PaymentViewModel,
+            // BlumonInitializer) — compile only, never invoked on Nexgo.
+            // Picking sandbox/java (not production/java) avoids pulling
+            // lib_services-PROD.aar into the Nexgo classpath since it lives
+            // under productionImplementation only.
+            // Does NOT include sandbox/res, so the launcher icon comes from
+            // src/main/res (clean, no badge) — that's how you tell `nexgoProd`
+            // apart from `nexgo` on the device.
+            java.srcDirs("src/sandbox/java")
         }
     }
 
@@ -313,6 +379,11 @@ dependencies {
     "nexgoImplementation"(files("libs/blumon_sdk-debug.aar"))
     "nexgoImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
 
+    // ⭐ NEXGO PROD FLAVOR: same SDK API surface as nexgo (so Hilt can resolve
+    // TokenServer / *UseCase types). Native libs never run on Nexgo.
+    "nexgoProdImplementation"(files("libs/blumon_sdk-debug.aar"))
+    "nexgoProdImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
+
     // ⭐ PRODUCTION FLAVOR: Blumon SDK AAR files (Production environment)
     "productionImplementation"(files("libs/blumon_sdk-prod.aar"))
     "productionImplementation"(files("libs/lib_services-1.2.0.0-PROD.aar"))
@@ -321,9 +392,10 @@ dependencies {
     implementation(files("libs/nativetouchevent-release.aar"))  // Native touch event library (moved from sdk module)
     // AngelPay fat AAR:
     // - compileOnly for all flavors (types available at compile time in main/)
-    // - packaged only in nexgo to avoid duplicate transitive classes in non-nexgo flavors
+    // - packaged only in nexgo / nexgoProd to avoid duplicate transitive classes
     compileOnly(files("libs/angelpaySDK-v1.0.4-fat-release.aar"))
     "nexgoImplementation"(files("libs/angelpaySDK-v1.0.4-fat-release.aar"))
+    "nexgoProdImplementation"(files("libs/angelpaySDK-v1.0.4-fat-release.aar"))
 
     // AndroidX Core
     implementation(libs.androidx.core.ktx)
@@ -384,9 +456,14 @@ dependencies {
         exclude(group = "com.squareup.okhttp3", module = "okhttp")
         exclude(group = "com.squareup.okio", module = "okio-jvm")
     }
+    "nexgoProdImplementation"("com.squareup.okhttp3:logging-interceptor:4.12.0") {
+        exclude(group = "com.squareup.okhttp3", module = "okhttp")
+        exclude(group = "com.squareup.okio", module = "okio-jvm")
+    }
     // AngelPay SDK serializers are generated against kotlinx.serialization 1.8+ APIs.
     // Keep Nexgo aligned to avoid AbstractMethodError in GeneratedSerializer.
     "nexgoImplementation"("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+    "nexgoProdImplementation"("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
 
     // Socket.IO (Real-time communication)
     // Version 2.1.1 is latest stable compatible with Socket.IO Server 4.x

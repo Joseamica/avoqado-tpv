@@ -15,6 +15,14 @@
 
 ---
 
+## [1.13.6] - 2026-05-06
+
+### **Fixed**
+
+- **[PAX/Blumon] Reembolsos fallaban con `TIEMPO EXCEDIDO PARA REALIZAR CANCELACIÓN` (TX_024) incluso ejecutados segundos después del cobro original**: El TPV llamaba directo `CancelIccUseCase` sin el preflight `ValidateCancelUseCase` que el SDK Blumon expone. Reproducido el 06-may-2026 en el terminal de testing AVQD-2841548417 (PAX A910S, sandbox): cobro 78384 a las 15:20:03, refund a las 15:20:32, Blumon respondió HTTP 409 / TX_024 — 28 segundos de "tiempo excedido" no tiene lógica como time window real. Inspección del bytecode de `lib_services-1.2.0.0-PROD.aar` confirmó que (a) `CancelIccUseCase` NO invoca `ValidateCancelUseCase` internamente, y (b) `CancelApiRequest.reference` se autogenera con `SimpleDateFormat("yyyyMMddHHmmss")` (no es la `referenceNumber` original). El SDK provee `ValidateCancelUseCase` (`com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.validate_cancel`) cuya respuesta `ValidateCancelData` incluye `operationValidated`, `processorSecurity` y `encryptedData` — campos que registran intent server-side y que `CancelIcc` necesita para autorizar correctamente. `performRefundAuthorization` en `sandbox/` y `production/` ahora ejecuta `validateCancelUseCase.run(ValidateCancelParams(operation = originalOperationNumber.toString()))` ANTES de `cancelIccUseCase.run(...)`. Si `validateCancel` falla, el flujo aborta antes del chip read inútil con mensajes específicos por tipo de error (NetworkConnectionFailure → "Sin conexión", MomentumFailure → "Esta transacción no puede ser cancelada — posiblemente ya fue reembolsada"). Aplica a chip + contactless + magstripe (todos pasan por `performRefundAuthorization`). Breadcrumbs Crashlytics en cada step para diagnóstico futuro.
+
+---
+
 ## [1.13.5] - 2026-05-05
 
 ### **Added**

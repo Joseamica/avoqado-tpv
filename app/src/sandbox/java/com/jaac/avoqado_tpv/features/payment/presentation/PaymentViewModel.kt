@@ -49,6 +49,8 @@ import com.example.clean_lib_services.shared.core.domain.use_case.sale_package.s
 import com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.cancel_icc.CancelIccParams
 import com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.cancel_icc.CancelIccResponse
 import com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.cancel_icc.CancelIccUseCase
+import com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.validate_cancel.ValidateCancelParams
+import com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.validate_cancel.ValidateCancelUseCase
 import com.example.clean_lib_services.shared.core.domain.entity.cancel_data.AuthenticationCardCancel
 import com.example.clean_lib_services.shared.core.domain.entity.cancel_data.CipherTypeCancel
 import com.example.clean_lib_services.shared.initializer.domain.use_case.initializer.InitializerParams
@@ -150,6 +152,12 @@ class PaymentViewModel @Inject constructor(
     // - CancelIcc accepts operationID parameter for canceling COMPLETED transactions
     // - operationID = the original payment's referenceNumber from Blumon
     private val cancelIccUseCase: CancelIccUseCase,
+    // 💸 ValidateCancelUseCase — REQUIRED preflight before CancelIcc.
+    // Without this call, Blumon backend rejects /retail/present/cancel/{operationID}
+    // with TX_024 "TIEMPO EXCEDIDO PARA REALIZAR CANCELACIÓN" even on transactions
+    // performed seconds ago. Validate registers the cancel intent server-side and
+    // populates SDK state that CancelIcc needs to authorize.
+    private val validateCancelUseCase: ValidateCancelUseCase,
     // 🔐 TransProcessRepository for PIN StateFlows (auto-injected by SDK's Hilt module)
     private val transProcessRepository: TransProcessRepository,
     // 🔧 InitializerUseCase from SDK - Complete initialization with DUKPT download
@@ -3715,6 +3723,46 @@ class PaymentViewModel @Inject constructor(
             Timber.i("✅ [Refund] Using posId from current merchant: $posIdToUse")
             Timber.i("   Merchant: ${currentMerchantAccount.displayName}")
             Timber.i("   Serial: ${currentMerchantAccount.serialNumber}")
+
+            // ═══════════════════════════════════════════════════════════════════════════
+            // PASO 0: ValidateCancel preflight (Blumon SDK contract)
+            // ═══════════════════════════════════════════════════════════════════════════
+            // Blumon backend rejects /retail/present/cancel/{operationID} with TX_024
+            // ("TIEMPO EXCEDIDO PARA REALIZAR CANCELACIÓN") when no prior validate
+            // request was made. Confirmed by inspecting closed-source SDK bytecode +
+            // reproducing the failure on a transaction completed 28 seconds earlier
+            // (sandbox + production, chip + contactless). The error message is misleading
+            // — the actual cause is the missing validate handshake, not a real time window.
+            Timber.i("🔍 [ValidateCancel] Preflight for operation: $originalOperationNumber")
+            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.logPaymentBreadcrumb(
+                "ValidateCancel preflight starting for op=$originalOperationNumber"
+            )
+            val validateResult = validateCancelUseCase.run(
+                ValidateCancelParams(operation = originalOperationNumber.toString())
+            )
+            if (validateResult.isLeft) {
+                val validateFailure = validateResult.leftValue()
+                Timber.e("❌ [ValidateCancel] Preflight failed: $validateFailure")
+                com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.logPaymentBreadcrumb(
+                    "ValidateCancel failed: $validateFailure"
+                )
+                val failureString = validateFailure.toString()
+                val userMessage = when {
+                    failureString.contains("NetworkConnection", ignoreCase = true) ->
+                        "Sin conexión a internet.\n\nVerifique su conexión e intente nuevamente."
+                    failureString.contains("Momentum", ignoreCase = true) ->
+                        "Esta transacción no puede ser cancelada.\n\n" +
+                            "Posiblemente ya fue reembolsada o está fuera del periodo permitido por el procesador."
+                    else ->
+                        "No se pudo validar la cancelación.\n\nIntente nuevamente o contacte a soporte."
+                }
+                return RefundAuthorizationResult(response = null, userFriendlyError = userMessage)
+            }
+            val validateData = validateResult.rightValue().validateCancelData
+            Timber.i("✅ [ValidateCancel] OK — operationValidated=${validateData.operationValidated}, bin=${validateData.bin}")
+            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.logPaymentBreadcrumb(
+                "ValidateCancel OK operationValidated=${validateData.operationValidated}"
+            )
 
             Timber.i("🌐 [CancelIcc] Sending REFUND authorization to Momentum...")
             Timber.d("   Amount: $amount")

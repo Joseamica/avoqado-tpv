@@ -89,7 +89,7 @@ class FastPaymentRecorder @Inject constructor(
                     buildAngelPayFastPaymentRequest(context, cardDetails, authorizationNumber, referenceNumber)
                 }
                 else -> error("Unexpected context type: ${context::class.simpleName}")
-            }
+            }.normalizedCashMerchantAccount()
 
             // 🔍 DEBUG: Verify the DTO has the value
             Timber.i("═══════════════════════════════════════════════════════════")
@@ -97,6 +97,8 @@ class FastPaymentRecorder @Inject constructor(
             Timber.i("   STEP 2 - In FastPaymentRequest DTO:")
             Timber.i("      request.blumonOperationNumber = ${request.blumonOperationNumber}")
             Timber.i("      request.blumonOperationNumber type = ${request.blumonOperationNumber?.javaClass?.name ?: "null"}")
+            Timber.i("      request.method = ${request.method}")
+            Timber.i("      request.hasMerchantAccountId = ${!request.merchantAccountId.isNullOrBlank()}")
             Timber.i("═══════════════════════════════════════════════════════════")
 
             // 🔍 DEBUG: Manually serialize to JSON to see exactly what Gson produces
@@ -188,10 +190,14 @@ class FastPaymentRecorder @Inject constructor(
                 }
 
                 else -> {
-                    Timber.e("❌ Unknown error (${response.code()}) - ${response.message()}")
+                    val errorMessage = parseBackendErrorMessage(
+                        rawBody = response.errorBody()?.string(),
+                        fallback = response.message()
+                    )
+                    Timber.e("❌ Unknown error (${response.code()}) - $errorMessage")
                     Result.failure(
                         Exception(
-                            "Error desconocido (${response.code()}): ${response.message()}"
+                            "Error desconocido (${response.code()}): $errorMessage"
                         )
                     )
                 }
@@ -318,5 +324,36 @@ class FastPaymentRecorder @Inject constructor(
             deviceSerialNumber = context.deviceSerialNumber,
             idempotencyKey = context.idempotencyKey, // 🛡️ Idempotency key (2026-04-08)
         )
+    }
+
+    private fun FastPaymentRequest.normalizedCashMerchantAccount(): FastPaymentRequest {
+        if (method != "CASH" || merchantAccountId.isNullOrBlank()) {
+            return this
+        }
+
+        Timber.w(
+            "⚠️ [FastPaymentRecorder] Dropping merchantAccountId for CASH payment before backend recording | " +
+                    "merchant=${merchantAccountId.take(8)}..."
+        )
+        return copy(merchantAccountId = null)
+    }
+
+    private fun parseBackendErrorMessage(rawBody: String?, fallback: String): String {
+        val trimmedBody = rawBody?.trim().orEmpty()
+        if (trimmedBody.isBlank()) {
+            return fallback.ifBlank { "Sin detalle del servidor" }
+        }
+
+        val parsedMessage = runCatching {
+            val json = com.google.gson.JsonParser.parseString(trimmedBody)
+            if (!json.isJsonObject) return@runCatching null
+
+            val obj = json.asJsonObject
+            obj.get("message")?.takeUnless { it.isJsonNull }?.asString
+                ?: obj.get("error")?.takeUnless { it.isJsonNull }?.asString
+                ?: obj.get("code")?.takeUnless { it.isJsonNull }?.asString
+        }.getOrNull()
+
+        return parsedMessage?.takeIf { it.isNotBlank() } ?: trimmedBody.take(300)
     }
 }

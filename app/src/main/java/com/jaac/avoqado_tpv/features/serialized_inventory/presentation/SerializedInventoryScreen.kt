@@ -43,6 +43,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.InventoryScanResult
+import com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.RegistrationResult
 import timber.log.Timber
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.CategoryWithStock
 import com.jaac.avoqado_tpv.features.serialized_sale.presentation.CreateCategoryDialog
@@ -1107,7 +1108,7 @@ private fun ScannedItemRow(
 
 @Composable
 private fun RegistrationResultCard(
-    result: com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.RegistrationResult,
+    result: RegistrationResult,
     itemLabelPlural: String
 ) {
     // ✅ FIX: Use appropriate colors based on result type
@@ -1165,7 +1166,7 @@ private fun RegistrationResultCard(
             // ✅ FIX: Improve message clarity
             if (result.created > 0) {
                 Text(
-                    text = "✅ ${result.created} $itemLabelPlural registrados exitosamente",
+                    text = "✅ ${registrationResultMessage(result, itemLabelPlural)}",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -1198,6 +1199,24 @@ private fun RegistrationResultCard(
             }
         }
     }
+}
+
+fun registrationResultMessage(
+    result: RegistrationResult,
+    itemLabelPlural: String = "SIMs"
+): String {
+    val mainPart = if (result.assignedToYou > 0 && result.assignedToYou == result.created) {
+        "${result.created} $itemLabelPlural registrados a tu nombre"
+    } else {
+        "${result.created} $itemLabelPlural registrados"
+    }
+    val duplicateCount = result.duplicates.size
+    val duplicatePart = when (duplicateCount) {
+        0 -> ""
+        1 -> " · 1 duplicado"
+        else -> " · $duplicateCount duplicados"
+    }
+    return mainPart + duplicatePart
 }
 
 /**

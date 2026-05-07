@@ -158,5 +158,198 @@ object CrashlyticsContext {
         }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to record EMV stall") }
     }
 
+    // ── Network / Connection observability (added 2026-05-06) ─────────
+    //
+    // Added in response to repeat reports at Doña Simona where multiple loading states
+    // ("Verificando sesión...", "Procesando chip...", "Sin conexión al servidor", etc.)
+    // got stuck for 30+ seconds after the device woke from Doze/sleep. Root cause was
+    // stale HTTP/2 connections in OkHttp's pool — we had no observability for it.
+    //
+    // These helpers cover three distinct visibility gaps:
+    //   1) Pool eviction events (how many zombie conns were purged on resume)
+    //   2) Auth refresh duration (how long was the user blocked on "Verificando sesión...")
+    //   3) Backend reachability transitions (when did `hasServer` flip false→true→false)
+    //
+    // Every call is wrapped in runCatching to keep observability from breaking the app.
+
+    /**
+     * Tag the in-flight loading screen.
+     *
+     * Call from any ViewModel right BEFORE entering a long-running suspend block
+     * that the user can see (e.g. fetching merchants, refreshing settings, posting
+     * a payment). Pair with [clearLoadingState] in finally / on success.
+     *
+     * Future crashes/non-fatals during the load will carry these keys, so triage
+     * can see "user was blocked on `merchant_fetch` for 18s when X happened".
+     */
+    fun setLoadingState(
+        screen: String,
+        stage: String,
+        startedAtMs: Long = System.currentTimeMillis(),
+    ) {
+        runCatching {
+            FirebaseCrashlytics.getInstance().apply {
+                setCustomKey("loading_active", true)
+                setCustomKey("loading_screen", screen)
+                setCustomKey("loading_stage", stage)
+                setCustomKey("loading_started_at_ms", startedAtMs)
+            }
+        }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to set loading state") }
+    }
+
+    fun clearLoadingState() {
+        runCatching {
+            FirebaseCrashlytics.getInstance().apply {
+                setCustomKey("loading_active", false)
+                setCustomKey("loading_screen", "")
+                setCustomKey("loading_stage", "")
+            }
+        }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to clear loading state") }
+    }
+
+    /**
+     * Record a non-fatal when a loading state runs longer than expected.
+     *
+     * Use as the "tripwire" pattern: every screen/feature decides what's "too long"
+     * for its user-visible operation, calls this once, and we get aggregate metrics
+     * in Firebase Console grouped by `screen` and `stage`.
+     *
+     * Example call sites: TokenAuthenticator (>5s on refresh), MerchantRepository
+     * (>5s on getMerchants), HeartbeatRepository (>8s on heartbeat).
+     */
+    fun recordLoadingStateStall(
+        screen: String,
+        stage: String,
+        elapsedMs: Long,
+        cause: Throwable? = null,
+    ) {
+        runCatching {
+            val crashlytics = FirebaseCrashlytics.getInstance()
+            crashlytics.setCustomKey("loading_screen", screen)
+            crashlytics.setCustomKey("loading_stage", stage)
+            crashlytics.setCustomKey("loading_elapsed_ms", elapsedMs)
+            crashlytics.log("[Loading/Stall] $screen.$stage stuck for ${elapsedMs}ms${if (cause != null) " — ${cause.javaClass.simpleName}: ${cause.message}" else ""}")
+            crashlytics.recordException(
+                LoadingStateStallException(
+                    "[$screen.$stage] stuck for ${elapsedMs}ms",
+                    cause,
+                )
+            )
+        }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to record loading stall") }
+    }
+
+    /**
+     * Record the OkHttp connection pool state.
+     *
+     * Called from MainActivity onResume after evicting stale connections, and from
+     * heartbeat probes when they detect a slow response. Lets us correlate "we
+     * evicted N stale conns at 13:15:42" with "next probe succeeded at 13:15:43".
+     */
+    fun setNetworkPoolContext(
+        idleConnections: Int,
+        totalConnections: Int,
+        evictedAt: Long? = null,
+    ) {
+        runCatching {
+            FirebaseCrashlytics.getInstance().apply {
+                setCustomKey("network_pool_idle", idleConnections)
+                setCustomKey("network_pool_total", totalConnections)
+                if (evictedAt != null) setCustomKey("network_pool_last_evicted_at_ms", evictedAt)
+            }
+        }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to set network pool context") }
+    }
+
+    fun logNetworkBreadcrumb(message: String) {
+        runCatching {
+            FirebaseCrashlytics.getInstance().log("[Network] $message")
+        }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to write network breadcrumb") }
+    }
+
+    /**
+     * Record a non-fatal when the connection banner first turns on.
+     *
+     * Fires the first time `hasServer` flips to false in a session (or after at
+     * least N seconds of being healthy). Includes how long since the last
+     * successful heartbeat and the failure cause if known. Single-shot per
+     * incident — does NOT fire repeatedly while the banner stays up.
+     */
+    fun recordBackendUnreachable(
+        gapSinceLastSuccessMs: Long,
+        cause: Throwable? = null,
+        source: String = "heartbeat",
+    ) {
+        runCatching {
+            val crashlytics = FirebaseCrashlytics.getInstance()
+            crashlytics.setCustomKey("network_unreachable_source", source)
+            crashlytics.setCustomKey("network_unreachable_gap_ms", gapSinceLastSuccessMs)
+            crashlytics.log("[Network/Banner] hasServer=false (source=$source, gap=${gapSinceLastSuccessMs}ms)")
+            crashlytics.recordException(
+                BackendUnreachableException(
+                    "Backend unreachable from $source after ${gapSinceLastSuccessMs}ms",
+                    cause,
+                )
+            )
+        }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to record backend unreachable") }
+    }
+
+    /**
+     * Record auth-refresh timing — the "Verificando sesión..." overlay duration.
+     *
+     * Called from TokenAuthenticator on both success and failure paths.
+     */
+    fun recordAuthRefresh(
+        elapsedMs: Long,
+        outcome: String, // "success" / "fail" / "timeout"
+        cause: Throwable? = null,
+    ) {
+        runCatching {
+            val crashlytics = FirebaseCrashlytics.getInstance()
+            crashlytics.setCustomKey("auth_refresh_outcome", outcome)
+            crashlytics.setCustomKey("auth_refresh_elapsed_ms", elapsedMs)
+            crashlytics.log("[Auth] refresh $outcome in ${elapsedMs}ms${if (cause != null) " — ${cause.javaClass.simpleName}: ${cause.message}" else ""}")
+            // Only record non-fatal when the user actually saw a stuck overlay
+            if (outcome == "timeout" || (outcome == "fail" && elapsedMs > 5_000)) {
+                crashlytics.recordException(
+                    AuthRefreshSlowException(
+                        "Auth refresh $outcome after ${elapsedMs}ms",
+                        cause,
+                    )
+                )
+            }
+        }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to record auth refresh") }
+    }
+
+    /**
+     * Record a non-fatal when Socket.IO can't authenticate after multiple retries.
+     *
+     * Specifically targets the "Token has expired" loop documented in production
+     * (Crashlytics issue de5c4a0a, 550 events spanning v1.13.1-1.13.5). Includes
+     * retry count, last error message, and whether an HTTP refresh succeeded —
+     * lets us tell apart "refresh worked but socket still rejected" (server bug)
+     * from "refresh itself failed" (client/network bug).
+     */
+    fun recordSocketAuthFailure(
+        retryCount: Int,
+        lastError: String,
+        refreshOutcome: String, // "skipped" / "success_same_token" / "success_new_token" / "timeout" / "fail_401" / "fail_other"
+    ) {
+        runCatching {
+            val crashlytics = FirebaseCrashlytics.getInstance()
+            crashlytics.setCustomKey("socket_auth_retry_count", retryCount)
+            crashlytics.setCustomKey("socket_auth_last_error", lastError.take(200))
+            crashlytics.setCustomKey("socket_auth_refresh_outcome", refreshOutcome)
+            crashlytics.log("[Socket/Auth] retry=$retryCount refresh=$refreshOutcome — $lastError")
+            crashlytics.recordException(
+                SocketAuthFailureException(
+                    "Socket auth failed (retry=$retryCount, refresh=$refreshOutcome): $lastError"
+                )
+            )
+        }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to record socket auth failure") }
+    }
+
     private class PaymentEmvStallException(message: String) : Exception(message)
+    private class LoadingStateStallException(message: String, cause: Throwable?) : Exception(message, cause)
+    private class BackendUnreachableException(message: String, cause: Throwable?) : Exception(message, cause)
+    private class AuthRefreshSlowException(message: String, cause: Throwable?) : Exception(message, cause)
+    private class SocketAuthFailureException(message: String) : Exception(message)
 }

@@ -2,6 +2,9 @@ package com.jaac.avoqado_tpv.core.di
 
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
+import com.jaac.avoqado_tpv.core.session.SessionManager
+import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
+import dagger.Lazy
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -55,7 +58,15 @@ object SocketModule {
      */
     @Provides
     @Singleton
-    fun provideSocketManager(secureStorage: SecureStorage): SocketManager {
-        return SocketManager(secureStorage)
+    fun provideSocketManager(
+        secureStorage: SecureStorage,
+        authRepositoryLazy: Lazy<AuthRepository>,
+        sessionManager: SessionManager,
+    ): SocketManager {
+        return SocketManager(
+            secureStorage = secureStorage,
+            authRepositoryLazy = authRepositoryLazy,
+            sessionManager = sessionManager,
+        )
     }
 }

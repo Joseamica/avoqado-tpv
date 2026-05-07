@@ -6,6 +6,7 @@ import com.jaac.avoqado_tpv.core.data.network.dto.PendingCommandDto
 import com.jaac.avoqado_tpv.core.data.network.dto.toTpvCommand
 import com.jaac.avoqado_tpv.core.data.repository.HeartbeatRepository
 import com.jaac.avoqado_tpv.core.domain.models.Result
+import com.jaac.avoqado_tpv.core.observability.CrashlyticsContext
 import com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
@@ -99,11 +100,56 @@ class ConnectionViewModel @Inject constructor(
     private var lastAutoWifiDisableAtMs: Long? = null
     private var failoverTransitionInProgress = false
 
+    // 🛡️ Banner hysteresis state — see SERVER_DOWN_FAILURE_THRESHOLD
+    private var consecutiveServerProbeFailures = 0
+    private var lastSuccessfulProbeAt: Long = System.currentTimeMillis()
+    private var lastUnreachableNonFatalAt: Long = 0L
+
+    /**
+     * Last terminal connection state (Connected or DisconnectedServerDown) we've
+     * confirmed via probe results. Used to revert the UI when a single below-
+     * threshold failure happens while the user is on a transient state like
+     * Reconnecting or Checking — without this, the spinner would be stuck until
+     * the next monitoring loop iteration (5-30s away).
+     */
+    private var lastConfirmedConnectionState: ConnectionState = ConnectionState.Connected
+
+    /**
+     * Coroutine that re-probes ~2s after a below-threshold failure, so we reach
+     * the SERVER_DOWN_FAILURE_THRESHOLD quickly when a real outage starts —
+     * instead of waiting the next 5-30s monitoring backoff. Critical for
+     * forceCheck (user tapped Reintentar): without this, the user would stare
+     * at a Reconnecting spinner that never resolves until the loop catches up.
+     */
+    private var fastReprobeJob: Job? = null
+
     companion object {
         /** Grace period before declaring offline — absorbs transient network flickers */
         const val OFFLINE_GRACE_MS = 3_000L
         /** Stabilization delay after WiFi Available (DNS/DHCP setup time) */
         const val ONLINE_STABILIZATION_MS = 2_000L
+
+        /**
+         * 🛡️ Hysteresis on the server-down banner.
+         *
+         * The banner ("Sin conexión al servidor / Reintentando conexión...") must
+         * persist long enough that the user actually sees it but short enough that
+         * a transient HTTP/2 stream stall (the kind that pingInterval will evict
+         * within 15s) doesn't paint a false alarm.
+         *
+         * Require N consecutive failures before declaring `hasServer=false`. With
+         * the 30s monitoring loop + 8s probe timeout, 2 consecutive failures means
+         * "the backend has been unreachable for at least ~38s", which is real.
+         */
+        const val SERVER_DOWN_FAILURE_THRESHOLD = 2
+
+        /**
+         * Minimum gap between successive `recordBackendUnreachable` non-fatals so
+         * one extended outage doesn't spam Crashlytics. We get one event per real
+         * incident; the gap_ms key on each event tells the story of how long the
+         * banner stayed up.
+         */
+        const val UNREACHABLE_NONFATAL_COOLDOWN_MS = 5 * 60 * 1000L
     }
 
     // Anti-stale guard: monotonic counter to prevent race conditions between
@@ -338,6 +384,7 @@ class ConnectionViewModel @Inject constructor(
                 is Result.Success -> {
                     Timber.i("✅ [Connection] Probe OK (latency=${latencyMs}ms)")
                     cancelOfflineTransition()
+                    markServerProbeSucceeded()
                     connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = latencyMs)
                     handleReconnectionSuccess(version)
 
@@ -352,28 +399,19 @@ class ConnectionViewModel @Inject constructor(
                 }
                 is Result.Error -> {
                     Timber.w("⚠️ [Connection] Probe: backend unreachable: ${result.exception?.message}")
-                    cancelOfflineTransition() // Internet confirmed — cancel pending NoInternet
-                    if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
-                    connectionStateManager.updateState(hasInternet = true, hasServer = false)
-                    reconnectionAttempts++
+                    markServerProbeFailed(source = "probe", cause = result.exception)
                 }
             }
         } catch (e: TimeoutCancellationException) {
             if (!isLatest(version)) return
             Timber.w("⚠️ [Connection] Probe timed out (8s)")
-            cancelOfflineTransition() // Timeout means internet works, server doesn't
-            if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
-            connectionStateManager.updateState(hasInternet = true, hasServer = false)
-            reconnectionAttempts++
+            markServerProbeFailed(source = "probe_timeout", cause = e)
         } catch (e: CancellationException) {
             throw e  // Coroutine cancelled — rethrow, don't set error state
         } catch (e: Exception) {
             if (!isLatest(version)) return
             Timber.e(e, "❌ [Connection] Probe failed")
-            cancelOfflineTransition()
-            if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
-            connectionStateManager.updateState(hasInternet = true, hasServer = false)
-            reconnectionAttempts++
+            markServerProbeFailed(source = "probe_exception", cause = e)
         }
     }
 
@@ -421,6 +459,7 @@ class ConnectionViewModel @Inject constructor(
                     // UI state — gated by version
                     if (isLatest(version)) {
                         cancelOfflineTransition()
+                        markServerProbeSucceeded()
                         connectionStateManager.updateState(hasInternet = true, hasServer = true, latencyMs = latencyMs)
                         handleReconnectionSuccess(version)
                     }
@@ -435,10 +474,7 @@ class ConnectionViewModel @Inject constructor(
                 is Result.Error -> {
                     Timber.w("⚠️ [Connection] Heartbeat: backend unreachable: ${result.exception?.message}")
                     if (isLatest(version)) {
-                        cancelOfflineTransition() // Internet confirmed — cancel pending NoInternet
-                        if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
-                        connectionStateManager.updateState(hasInternet = true, hasServer = false)
-                        reconnectionAttempts++
+                        markServerProbeFailed(source = "heartbeat", cause = result.exception)
                     }
                 }
             }
@@ -447,11 +483,124 @@ class ConnectionViewModel @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ [Connection] Heartbeat failed")
             if (isLatest(version)) {
-                cancelOfflineTransition()
-                if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
-                connectionStateManager.updateState(hasInternet = true, hasServer = false)
-                reconnectionAttempts++
+                markServerProbeFailed(source = "heartbeat_exception", cause = e)
             }
+        }
+    }
+
+    /**
+     * Mark a server probe as failed.
+     *
+     * 🛡️ Centralizes the "we couldn't reach the backend" handling for both
+     * [probeConnectivity] and [performFullHeartbeat]. Implements the hysteresis
+     * rule (SERVER_DOWN_FAILURE_THRESHOLD) so a single transient stall doesn't
+     * flicker the banner, plus single-shot Crashlytics non-fatal so each real
+     * incident gets exactly one event in the dashboard.
+     *
+     * @param source Logging tag — "probe", "probe_timeout", "probe_exception",
+     *               "heartbeat", "heartbeat_exception". Becomes a Crashlytics key.
+     * @param cause Exception that triggered the failure (if any). Attached to the
+     *              non-fatal so we can see the actual stack (e.g. Http2Stream timeout).
+     */
+    private fun markServerProbeFailed(source: String, cause: Throwable? = null) {
+        consecutiveServerProbeFailures++
+        val gap = System.currentTimeMillis() - lastSuccessfulProbeAt
+
+        Timber.w(
+            "⚠️ [Connection] Server probe failed ($source) — streak=$consecutiveServerProbeFailures, gap=${gap}ms"
+        )
+        CrashlyticsContext.logNetworkBreadcrumb(
+            "probe failed: source=$source streak=$consecutiveServerProbeFailures gap=${gap}ms"
+        )
+
+        // Below threshold → keep showing Connected/banner, give the network a
+        // chance to recover before painting the red banner. This filters out
+        // single-failure noise from HTTP/2 stale streams that pingInterval will
+        // evict within 15s.
+        if (consecutiveServerProbeFailures < SERVER_DOWN_FAILURE_THRESHOLD) {
+            // 🛡️ If the UI is currently on a transient state (Reconnecting from
+            // forceCheck / post-disconnect probe, or Checking from app init), it
+            // would otherwise stay stuck on the spinner until the next monitoring
+            // loop iteration (5-30s). Revert to the last confirmed terminal state
+            // so the user sees a definitive UI.
+            if (_state.value is ConnectionState.Reconnecting ||
+                _state.value is ConnectionState.Checking
+            ) {
+                _state.value = lastConfirmedConnectionState
+            }
+            // Schedule a fast follow-up probe so we hit SERVER_DOWN_FAILURE_THRESHOLD
+            // within ~2s instead of waiting the regular 5-30s monitoring backoff.
+            // Critical for forceCheck UX: without this, "Reintentar" gives no
+            // definitive feedback for up to 30s after a single failed probe.
+            scheduleFastReprobe(reason = source)
+            return
+        }
+
+        // At/over threshold → declare server-down (banner shows)
+        fastReprobeJob?.cancel()
+        fastReprobeJob = null
+        cancelOfflineTransition() // Internet confirmed — cancel pending NoInternet
+        if (!isDismissed) _state.value = ConnectionState.DisconnectedServerDown
+        lastConfirmedConnectionState = ConnectionState.DisconnectedServerDown
+        connectionStateManager.updateState(hasInternet = true, hasServer = false)
+        reconnectionAttempts++
+
+        // Single-shot non-fatal per incident (cooldown UNREACHABLE_NONFATAL_COOLDOWN_MS)
+        // First time: lastUnreachableNonFatalAt == 0 → fires immediately
+        // Repeat firings only after cooldown to avoid spam during a long outage
+        val now = System.currentTimeMillis()
+        if (now - lastUnreachableNonFatalAt > UNREACHABLE_NONFATAL_COOLDOWN_MS) {
+            CrashlyticsContext.recordBackendUnreachable(
+                gapSinceLastSuccessMs = gap,
+                cause = cause,
+                source = source,
+            )
+            lastUnreachableNonFatalAt = now
+        }
+    }
+
+    /**
+     * Mark a server probe as successful — resets hysteresis state.
+     */
+    private fun markServerProbeSucceeded() {
+        // Cancel any pending fast re-probe — we're already healthy, no need to retry
+        fastReprobeJob?.cancel()
+        fastReprobeJob = null
+
+        if (consecutiveServerProbeFailures > 0) {
+            CrashlyticsContext.logNetworkBreadcrumb(
+                "probe recovered after $consecutiveServerProbeFailures failures"
+            )
+        }
+        consecutiveServerProbeFailures = 0
+        lastSuccessfulProbeAt = System.currentTimeMillis()
+        lastConfirmedConnectionState = ConnectionState.Connected
+        // Allow a fresh non-fatal next time we go down
+        lastUnreachableNonFatalAt = 0L
+    }
+
+    /**
+     * Schedule a follow-up probe ~2s after a below-threshold failure.
+     *
+     * Without this, a user tapping "Reintentar" while seeing the offline banner
+     * would have to wait 5-30s for the next monitoring loop iteration to confirm
+     * whether the network is actually still down. With it, the second
+     * confirmation arrives within ~2s and the banner stabilizes (either back to
+     * Connected if recovered, or to DisconnectedServerDown if truly down).
+     */
+    private fun scheduleFastReprobe(reason: String) {
+        // Idempotent — multiple failures in quick succession share one re-probe
+        if (fastReprobeJob?.isActive == true) return
+        fastReprobeJob = viewModelScope.launch {
+            delay(2_000)
+            // Bail out if state was resolved by another path during the wait
+            if (consecutiveServerProbeFailures == 0) return@launch
+            if (_state.value is ConnectionState.DisconnectedServerDown) return@launch
+
+            Timber.d("⏱️ [Connection] Fast re-probe (reason=$reason) — confirming below-threshold failure")
+            CrashlyticsContext.logNetworkBreadcrumb("fast re-probe firing (reason=$reason)")
+            val version = nextVersion()
+            probeConnectivity(version)
         }
     }
 
@@ -793,6 +942,8 @@ class ConnectionViewModel @Inject constructor(
         reconnectedBannerJob = null
         offlineTransitionJob?.cancel()
         offlineTransitionJob = null
+        fastReprobeJob?.cancel()
+        fastReprobeJob = null
     }
 }
 

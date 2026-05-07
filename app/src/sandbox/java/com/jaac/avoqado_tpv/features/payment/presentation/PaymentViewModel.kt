@@ -2808,13 +2808,24 @@ class PaymentViewModel @Inject constructor(
                 if (arpcRequired) {
                     // PASO 5: CompleteEmvTrans with REAL ARPC from Momentum
                     Timber.i("[PHASE 5] CompleteEmvTrans - Card requires ARPC, updating chip...")
+                    // ⭐ CRITICAL FIX (2026-05-06): Bytecode of Blumon SDK TransProcessRepositoryImpl.completeEmvTrans
+                    // shows literal Intrinsics.areEqual checks: "3030" → APPROVE, "3035" → DENIAL, anything else → DENIAL.
+                    // Blumon sandbox returns approved sales (status:true, APROBADA) without emvResponseCode field
+                    // (saleData.emvResponseCode = null). Production returns "3030" explicitly.
+                    // Defaulting null to "00" caused the SDK to treat approved sandbox sales as DENIAL,
+                    // triggering FailureSecondGenerate (-11) — kernel AMEX K4 strict, kernel MC K2 permissive.
+                    // We default to "3030" because (a) PHASE 4 already validated authResult.response was non-null
+                    // and APROBADA (we'd return earlier on failure), and (b) production passes "3030" through this
+                    // same path (the ?: branch only fires when null, which is the sandbox case).
+                    val emvCodeForKernel = saleData.emvResponseCode ?: "3030"
                     val completeParams = CompleteEmvTransParams(
-                        emvResponseCode = saleData.emvResponseCode ?: "00",
+                        emvResponseCode = emvCodeForKernel,
                         authorization = saleData.authorization ?: "",
                         arpc = saleData.arpc ?: "",
                         script7172 = saleData.script ?: "",
-                        arpcResponseCode = "00"  // Sandbox requires this parameter
+                        arpcResponseCode = emvCodeForKernel  // Mirror — sandbox SDK builds authData from this
                     )
+                    Timber.d("[PHASE 5] emvResponseCode=$emvCodeForKernel (raw=${saleData.emvResponseCode}) arpc=${saleData.arpc?.take(16)}")
 
                     val completeResult = completeEmvTransUseCase.run(completeParams)
 

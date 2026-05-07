@@ -2798,12 +2798,21 @@ class PaymentViewModel @Inject constructor(
                 if (arpcRequired) {
                     // PASO 5: CompleteEmvTrans with REAL ARPC from Momentum
                     Timber.i("[PHASE 5] CompleteEmvTrans - Card requires ARPC, updating chip...")
+                    // ⭐ CRITICAL FIX (2026-05-06): Bytecode of Blumon SDK TransProcessRepositoryImpl.completeEmvTrans
+                    // shows literal Intrinsics.areEqual checks: "3030" → APPROVE, "3035" → DENIAL, anything else → DENIAL.
+                    // When the response is approved (status:true, APROBADA) but emvResponseCode is missing, defaulting
+                    // to "00" caused the SDK to mark the transaction as DENIAL → kernel rejected ARPC verification on
+                    // strict kernels (AMEX K4) → FailureSecondGenerate (-11). MC kernel K2 was permissive enough to
+                    // tolerate it which masked the bug. Production normally returns "3030" explicitly so the ?: branch
+                    // doesn't fire on the happy path; this default only matters when the field is missing.
+                    val emvCodeForKernel = saleData.emvResponseCode ?: "3030"
                     val completeParams = CompleteEmvTransParams(
-                        emvResponseCode = saleData.emvResponseCode ?: "00",
+                        emvResponseCode = emvCodeForKernel,
                         authorization = saleData.authorization ?: "",
                         arpc = saleData.arpc ?: "",
                         script7172 = saleData.script ?: ""
                     )
+                    Timber.d("[PHASE 5] emvResponseCode=$emvCodeForKernel (raw=${saleData.emvResponseCode}) arpc=${saleData.arpc?.take(16)}")
 
                     val completeResult = completeEmvTransUseCase.run(completeParams)
 

@@ -196,12 +196,55 @@ class ConnectionViewModelTest {
     }
 
     @Test
-    fun `state becomes DisconnectedServerDown when heartbeat fails`() = runTest(testDispatcher) {
+    fun `single heartbeat failure does NOT show DisconnectedServerDown (hysteresis)`() = runTest(testDispatcher) {
+        // First call fails, second call succeeds → hysteresis recovers without painting banner
+        coEvery { heartbeatRepository.sendHeartbeat(any()) } returnsMany listOf(
+            Result.Error(ApiException.NetworkError(RuntimeException("First failure"))),
+            Result.Success(fakeHeartbeatResponse)
+        )
+
+        val viewModel = createViewModel()
+
+        // After init heartbeat failure (count=1, below threshold=2), state must NOT be DisconnectedServerDown.
+        // Hysteresis filters single failures (HTTP/2 stale streams that pingInterval evicts in <=15s).
+        assertThat(viewModel.state.value).isNotEqualTo(ConnectionState.DisconnectedServerDown)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `state becomes DisconnectedServerDown after TWO consecutive heartbeat failures`() = runTest(testDispatcher) {
+        coEvery { heartbeatRepository.sendHeartbeat(any()) } returns Result.Error(
+            ApiException.NetworkError(RuntimeException("Server down"))
+        )
+
+        val viewModel = createViewModel()
+
+        // First failure: init heartbeat → schedules fast re-probe (~2s) instead of painting banner.
+        // Second failure: triggered by fast re-probe → reaches SERVER_DOWN_FAILURE_THRESHOLD=2 → banner shows.
+        advanceTimeBy(2_500)
+        runCurrent()
+
+        assertThat(viewModel.state.value).isEqualTo(ConnectionState.DisconnectedServerDown)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `forceCheck failure does NOT leave UI stuck on Reconnecting (single-failure hysteresis)`() = runTest(testDispatcher) {
         coEvery { heartbeatRepository.sendHeartbeat(any()) } returns Result.Error(
             ApiException.NetworkError(RuntimeException("Server down"))
         )
         val viewModel = createViewModel()
-        assertThat(viewModel.state.value).isEqualTo(ConnectionState.DisconnectedServerDown)
+        // Init heartbeat fails → state may go through Reconnecting/Checking briefly.
+        runCurrent()
+
+        // Tap Reintentar manually — state goes to Reconnecting, probe fires, fails (single failure below threshold).
+        // Without the fix this would leave state stuck on Reconnecting until the next monitoring cycle.
+        // With the fix, state reverts to lastConfirmedConnectionState (Connected at startup default).
+        viewModel.forceCheck()
+        runCurrent()
+
+        // State must NOT be Reconnecting (the bug we're guarding against — stuck spinner).
+        assertThat(viewModel.state.value).isNotEqualTo(ConnectionState.Reconnecting)
         viewModel.viewModelScope.cancel()
     }
 

@@ -1,10 +1,13 @@
 package com.jaac.avoqado_tpv.core.data.network.interceptors
 
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
+import com.jaac.avoqado_tpv.core.observability.CrashlyticsContext
 import com.jaac.avoqado_tpv.core.session.SessionManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import dagger.Lazy
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import okhttp3.Authenticator
 import okhttp3.Request
 import okhttp3.Response
@@ -62,6 +65,26 @@ class TokenAuthenticator @Inject constructor(
     @Volatile
     private var isRefreshing = false
 
+    companion object {
+        /**
+         * Hard cap on the refresh-token request. The "Verificando sesión..." overlay
+         * is visible to the user while we wait, so this is the absolute worst-case
+         * UX delay. OkHttp's callTimeout (25s) is the upstream cap; we tighten here
+         * because the overlay is BLOCKING — user can't print receipt, send email,
+         * share via WhatsApp until we resolve. 8s strikes the balance: long enough
+         * for a slow-but-recovering network, short enough that the user doesn't
+         * abandon the device.
+         */
+        private const val REFRESH_TIMEOUT_MS = 8_000L
+
+        /**
+         * Threshold above which a refresh duration is considered "slow" and gets
+         * a Crashlytics non-fatal even on success. Lets us detect degradation
+         * before it becomes a hang.
+         */
+        private const val REFRESH_SLOW_THRESHOLD_MS = 3_000L
+    }
+
     /**
      * Endpoints that should NOT trigger token refresh on 401.
      * These endpoints use credentials (PIN, activation code) - NOT tokens.
@@ -109,9 +132,13 @@ class TokenAuthenticator @Inject constructor(
         }
 
         Timber.w("⚠️ [Auth] Received 401 Unauthorized - Token expired, attempting refresh...")
+        CrashlyticsContext.logNetworkBreadcrumb(
+            "Auth 401 on ${response.request.url.encodedPath} — starting token refresh"
+        )
 
         // 📺 Show loading overlay immediately so user knows something is happening
         sessionManager.notifySessionVerifying()
+        val overlayShownAt = System.currentTimeMillis()
 
         // Prevent multiple simultaneous refreshes (thread-safe)
         synchronized(refreshLock) {
@@ -124,6 +151,10 @@ class TokenAuthenticator @Inject constructor(
             if (currentToken != null && currentToken != requestToken) {
                 Timber.d("✅ [Auth] Token already refreshed by another thread, retrying request")
                 sessionManager.resetSessionExpiringState()  // Hide loading overlay
+                CrashlyticsContext.recordAuthRefresh(
+                    elapsedMs = System.currentTimeMillis() - overlayShownAt,
+                    outcome = "success_other_thread",
+                )
                 return buildRequestWithNewToken(response.request, currentToken)
             }
 
@@ -131,40 +162,67 @@ class TokenAuthenticator @Inject constructor(
             if (isRefreshing) {
                 Timber.d("⏳ [Auth] Refresh already in progress, waiting...")
                 val startTime = System.currentTimeMillis()
-                while (isRefreshing && (System.currentTimeMillis() - startTime) < 5000) {
+                while (isRefreshing && (System.currentTimeMillis() - startTime) < REFRESH_TIMEOUT_MS) {
                     Thread.sleep(100)
                 }
+
+                val waitElapsed = System.currentTimeMillis() - startTime
 
                 // Check if refresh succeeded
                 val refreshedToken = secureStorage.getToken()
                 if (refreshedToken != null && refreshedToken != requestToken) {
-                    Timber.d("✅ [Auth] Refresh completed, retrying request")
+                    Timber.d("✅ [Auth] Refresh completed, retrying request (waited ${waitElapsed}ms)")
                     sessionManager.resetSessionExpiringState()  // Hide loading overlay
+                    CrashlyticsContext.recordAuthRefresh(
+                        elapsedMs = waitElapsed,
+                        outcome = "success_waited",
+                    )
                     return buildRequestWithNewToken(response.request, refreshedToken)
                 } else {
-                    Timber.w("❌ [Auth] Refresh failed or timed out")
-                    // Keep isSessionExpiring = true - will be reset after Login navigation
+                    Timber.w("❌ [Auth] Refresh failed or timed out (waited ${waitElapsed}ms)")
+                    // 🛡️ Always reset overlay so the UI doesn't get stuck on
+                    // "Verificando sesión..." even when the primary thread fails.
+                    // If session truly expired, the primary thread already called
+                    // notifySessionExpired() → AppNavigation will navigate to Login.
+                    sessionManager.resetSessionExpiringState()
+                    CrashlyticsContext.recordAuthRefresh(
+                        elapsedMs = waitElapsed,
+                        outcome = "timeout",
+                    )
                     return null // Give up
                 }
             }
 
             // Mark refresh as in progress
             isRefreshing = true
+            val refreshStartedAt = System.currentTimeMillis()
 
             try {
-                // Attempt to refresh token (blocking call)
+                // 🛡️ Attempt to refresh token with hard timeout. Without withTimeout,
+                // a stuck HTTP/2 stream could keep the user on "Verificando sesión..."
+                // for 25-30s (OkHttp callTimeout). We bound it to REFRESH_TIMEOUT_MS so
+                // the user's UI unblocks fast and the next request can retry on a fresh
+                // connection (pingInterval will have evicted the stale one by then).
                 val refreshResult = runBlocking {
-                    authRepository.refreshAccessToken()
+                    withTimeout(REFRESH_TIMEOUT_MS) {
+                        authRepository.refreshAccessToken()
+                    }
                 }
+                val refreshElapsed = System.currentTimeMillis() - refreshStartedAt
 
                 if (refreshResult is com.jaac.avoqado_tpv.core.domain.models.Result.Success) {
-                    Timber.i("✅ [Auth] Token refreshed successfully, retrying original request")
+                    Timber.i("✅ [Auth] Token refreshed successfully in ${refreshElapsed}ms, retrying original request")
 
-                    // ✅ Hide loading overlay - refresh succeeded, no need to show "verifying" anymore
+                    // ✅ Hide loading overlay - refresh succeeded
                     sessionManager.resetSessionExpiringState()
 
                     // 🔄 Notify observers (Socket.IO) to reconnect with fresh token
                     sessionManager.notifyTokenRefreshed()
+
+                    CrashlyticsContext.recordAuthRefresh(
+                        elapsedMs = refreshElapsed,
+                        outcome = if (refreshElapsed > REFRESH_SLOW_THRESHOLD_MS) "success_slow" else "success",
+                    )
 
                     // Get new token and retry
                     val newToken = secureStorage.getToken()
@@ -175,7 +233,7 @@ class TokenAuthenticator @Inject constructor(
                         return null
                     }
                 } else {
-                    Timber.e("❌ [Auth] Token refresh failed: $refreshResult")
+                    Timber.e("❌ [Auth] Token refresh failed in ${refreshElapsed}ms: $refreshResult")
 
                     // Refresh failed (refresh token expired) → Force logout
                     secureStorage.clearSession()
@@ -184,14 +242,41 @@ class TokenAuthenticator @Inject constructor(
                     // Notify UI that session has expired → triggers navigation to Login
                     sessionManager.notifySessionExpired()
 
+                    CrashlyticsContext.recordAuthRefresh(
+                        elapsedMs = refreshElapsed,
+                        outcome = "fail",
+                    )
+
                     return null // Give up (return null = OkHttp stops retrying)
                 }
+            } catch (e: TimeoutCancellationException) {
+                val elapsed = System.currentTimeMillis() - refreshStartedAt
+                Timber.w("⏱️ [Auth] Token refresh timed out after ${elapsed}ms — clearing overlay and giving up")
+                // 🛡️ TIMEOUT path — most common cause is HTTP/2 stale stream after Doze.
+                // We do NOT call notifySessionExpired() here (the token may still be valid;
+                // the network just hung). Just clear overlay so user can retry the action.
+                // The next request will trigger another refresh attempt with a fresh
+                // connection (pingInterval evicted the stale one).
+                sessionManager.resetSessionExpiringState()
+                CrashlyticsContext.recordAuthRefresh(
+                    elapsedMs = elapsed,
+                    outcome = "timeout",
+                    cause = e,
+                )
+                return null
             } catch (e: Exception) {
-                Timber.e(e, "❌ [Auth] Exception during token refresh")
+                val elapsed = System.currentTimeMillis() - refreshStartedAt
+                Timber.e(e, "❌ [Auth] Exception during token refresh after ${elapsed}ms")
                 secureStorage.clearSession()
 
                 // Notify UI that session has expired → triggers navigation to Login
                 sessionManager.notifySessionExpired()
+
+                CrashlyticsContext.recordAuthRefresh(
+                    elapsedMs = elapsed,
+                    outcome = "fail",
+                    cause = e,
+                )
 
                 return null
             } finally {

@@ -120,12 +120,26 @@ object NetworkModule {
             // Authenticator (handles 401 responses with token refresh)
             .authenticator(tokenAuthenticator)       // ✅ Refresh token on 401
 
-            // Timeouts
+            // Per-request timeouts
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
 
-            // Retry on connection failure
+            // 🛡️ HTTP/2 keep-alive — kills stale connections after Doze/wake within 15s.
+            // Without this, the OS or NAT can silently kill an idle TCP connection while OkHttp
+            // keeps it in the pool. Next request reuses the zombie connection and hangs until
+            // readTimeout (30s). This was the root cause of "Sin conexión al servidor",
+            // "Verificando sesión...", "Procesando chip..." stalls reported at Doña Simona
+            // and other PAX terminals after long idle periods. See OkHttp docs:
+            // https://square.github.io/okhttp/3.x/okhttp/okhttp3/OkHttpClient.Builder.html#pingInterval-long-java.util.concurrent.TimeUnit-
+            .pingInterval(15, TimeUnit.SECONDS)
+
+            // 🛡️ Total call budget — even if connect/read/write each cap at 30s, callTimeout
+            // bounds the entire call (DNS + TCP + TLS + headers + body + retry). This caps the
+            // worst-case "loading state" duration at 25s instead of 30s+ on bad networks.
+            .callTimeout(25, TimeUnit.SECONDS)
+
+            // Retry on connection failure (helps when pingInterval evicts a dead conn mid-call)
             .retryOnConnectionFailure(true)
 
             // Certificate pinning (PRODUCTION ONLY)
@@ -157,6 +171,9 @@ object NetworkModule {
             .connectTimeout(5, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
             .writeTimeout(10, TimeUnit.SECONDS)
+            // 🛡️ Total call budget for payment recording — fail-fast so offline queue activates
+            // sooner if backend is unreachable. Inherits pingInterval(15s) from the parent client.
+            .callTimeout(12, TimeUnit.SECONDS)
             .build()
     }
 

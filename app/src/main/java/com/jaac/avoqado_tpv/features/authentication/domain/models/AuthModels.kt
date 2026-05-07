@@ -32,7 +32,7 @@ data class AuthResponse(
     // Auth tokens
     val accessToken: String,
     val refreshToken: String,
-    val expiresIn: Int,           // seconds (24 hours = 86400)
+    val expiresIn: Int,           // seconds (TPV backend currently returns 30 days)
     val tokenType: String,         // "Bearer"
 
     // Auth context

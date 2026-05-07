@@ -34,6 +34,8 @@ class SocketManagerTest {
     // Mock Socket.IO objects
     private lateinit var mockSocket: Socket
     private lateinit var mockSecureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage
+    private lateinit var mockAuthRepositoryLazy: dagger.Lazy<com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository>
+    private lateinit var mockSessionManager: com.jaac.avoqado_tpv.core.session.SessionManager
     private lateinit var socketManager: SocketManager
 
     // Captured listeners for simulating server events
@@ -49,6 +51,8 @@ class SocketManagerTest {
         // Mock Socket.IO Socket
         mockSocket = mockk(relaxed = true)
         mockSecureStorage = mockk(relaxed = true)
+        mockAuthRepositoryLazy = mockk(relaxed = true)
+        mockSessionManager = mockk(relaxed = true)
 
         // Capture all event listeners when socket.on() is called
         every { mockSocket.on(any(), any()) } answers {
@@ -69,7 +73,11 @@ class SocketManagerTest {
         every { IO.socket(any<URI>(), any<IO.Options>()) } returns mockSocket
 
         // Create SocketManager and call connect() to register all event listeners
-        socketManager = SocketManager(mockSecureStorage)
+        socketManager = SocketManager(
+            secureStorage = mockSecureStorage,
+            authRepositoryLazy = mockAuthRepositoryLazy,
+            sessionManager = mockSessionManager,
+        )
         socketManager.connect("https://test.socket.io", "test-token")
     }
 

@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.serialized_sale.domain.repository
 
+import com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.RegistrationResult
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.CategoryWithStock
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.QuickSellResult
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult
@@ -82,10 +83,10 @@ interface SerializedSaleRepository {
      *
      * @param categoryId The category to register items under
      * @param serialNumbers List of serial numbers to register
-     * @return Result with pair of (created count, duplicate serial numbers)
+     * @return Result with registration outcome
      */
     suspend fun registerBatch(
         categoryId: String,
         serialNumbers: List<String>
-    ): Result<Pair<Int, List<String>>>
+    ): Result<RegistrationResult>
 }

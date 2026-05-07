@@ -102,6 +102,19 @@ class MainActivity : ComponentActivity() {
     lateinit var bluetoothPaymentService: com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService
 
     /**
+     * Injected so we can evict stale HTTP/2 connections when the activity comes
+     * back to foreground. After a long idle/Doze period, the OS or NAT silently
+     * kills TCP connections; OkHttp's connection pool keeps them around, and the
+     * next request reuses a zombie that hangs until callTimeout (25s). Evicting
+     * on resume forces fresh connections — this is the same root-cause fix as
+     * the pingInterval(15s) added in NetworkModule, plus a belt-and-suspenders
+     * guarantee at the moment the user is most likely to interact (just woke
+     * the device).
+     */
+    @Inject
+    lateinit var okHttpClient: okhttp3.OkHttpClient
+
+    /**
      * State to track permission status
      * - null: Checking permission
      * - true: Permission granted, app can proceed
@@ -261,6 +274,51 @@ class MainActivity : ComponentActivity() {
         AppUpdateReceiver.isActivityResumed = true
         ForegroundRecoveryGate.disarm(reason = "activity_resumed")
         applyTutorialImmersiveNavigation()
+        evictStaleConnectionsOnResume()
+    }
+
+    /**
+     * Force OkHttp to drop all pooled connections when the activity resumes.
+     *
+     * **Why**: After Doze, app-standby, screen-off, or ON/OFF button press, the
+     * device's TCP connections may have been silently killed by the OS or carrier
+     * NAT. OkHttp's HTTP/2 connection pool doesn't know — it'll happily reuse a
+     * zombie connection on the next request, which then hangs for callTimeout
+     * (25s) before retrying. This produces the user-visible symptoms reported
+     * across the fleet (and especially at Doña Simona): "Verificando sesión..."
+     * stuck, "Sin conexión al servidor" banner, "Procesando chip..." hangs.
+     *
+     * **What we do**: At the most reliable wake-up signal we have (Activity
+     * onResume), we evict the entire pool. The next outbound request will open
+     * a fresh TCP+TLS connection. Cost is one extra handshake (~150ms on 4G),
+     * which is invisible compared to a 25s hang.
+     *
+     * Wrapped in try/catch because evictAll has been seen to throw on some
+     * misbehaving Android versions and we never want observability code to
+     * crash the activity.
+     */
+    private fun evictStaleConnectionsOnResume() {
+        try {
+            val pool = okHttpClient.connectionPool
+            val totalBefore = pool.connectionCount()
+            val idleBefore = pool.idleConnectionCount()
+            pool.evictAll()
+            val now = System.currentTimeMillis()
+            Timber.i(
+                "🛡️ [Network] onResume — evicted OkHttp pool: idle=$idleBefore total=$totalBefore"
+            )
+            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext
+                .logNetworkBreadcrumb("onResume evictAll: idle=$idleBefore total=$totalBefore")
+            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext
+                .setNetworkPoolContext(
+                    idleConnections = pool.idleConnectionCount(),
+                    totalConnections = pool.connectionCount(),
+                    evictedAt = now,
+                )
+        } catch (t: Throwable) {
+            // Defensive: never let observability/eviction code break the activity
+            Timber.w(t, "⚠️ [Network] Failed to evict OkHttp pool on resume")
+        }
     }
 
     override fun onPause() {

@@ -365,10 +365,8 @@ class SerializedInventoryViewModel @Inject constructor(
                 categoryId = categoryId,
                 serialNumbers = state.scannedSerialNumbers
             )
-                .onSuccess { (created, duplicates) ->
-                    Timber.d("Batch registration success: $created created, ${duplicates.size} duplicates")
-
-                    val result = RegistrationResult(created, duplicates)
+                .onSuccess { result ->
+                    Timber.d("Batch registration success: ${result.created} created, ${result.duplicates.size} duplicates, ${result.assignedToYou} assignedToYou")
 
                     // ✅ FIX: Don't show Snackbar when we have registrationResult
                     // The RegistrationResultCard banner provides better feedback

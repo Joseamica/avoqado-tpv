@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.serialized_sale.data.repository
 
 import android.util.Log
 import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.RegistrationResult
 import com.jaac.avoqado_tpv.features.serialized_sale.data.dto.ItemCategoryDto
 import com.jaac.avoqado_tpv.features.serialized_sale.data.dto.QuickSellRequestDto
 import com.jaac.avoqado_tpv.features.serialized_sale.data.dto.ScanRequestDto
@@ -221,7 +222,7 @@ class SerializedSaleRepositoryImpl @Inject constructor(
     override suspend fun registerBatch(
         categoryId: String,
         serialNumbers: List<String>
-    ): Result<Pair<Int, List<String>>> {
+    ): Result<RegistrationResult> {
         return try {
             Log.d(TAG, "Register batch: ${serialNumbers.size} items to category $categoryId")
 
@@ -235,8 +236,12 @@ class SerializedSaleRepositoryImpl @Inject constructor(
             if (response.isSuccessful) {
                 val body = response.body()
                 if (body?.success == true && body.data != null) {
-                    val result = Pair(body.data.created, body.data.duplicates)
-                    Log.d(TAG, "Register batch success: ${result.first} created, ${result.second.size} duplicates")
+                    val result = RegistrationResult(
+                        created = body.data.created,
+                        duplicates = body.data.duplicates,
+                        assignedToYou = body.data.assignedToYou ?: 0
+                    )
+                    Log.d(TAG, "Register batch success: ${result.created} created, ${result.duplicates.size} duplicates, ${result.assignedToYou} assignedToYou")
                     Result.success(result)
                 } else {
                     Result.failure(Exception("Registration failed"))

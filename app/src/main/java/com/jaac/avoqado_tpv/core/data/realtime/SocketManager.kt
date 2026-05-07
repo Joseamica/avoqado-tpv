@@ -1,21 +1,37 @@
 package com.jaac.avoqado_tpv.core.data.realtime
 
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
+import com.jaac.avoqado_tpv.core.domain.models.ApiException
+import com.jaac.avoqado_tpv.core.domain.models.Result
+import com.jaac.avoqado_tpv.core.observability.CrashlyticsContext
+import com.jaac.avoqado_tpv.core.session.SessionManager
+import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
+import dagger.Lazy
 import io.socket.client.IO
 import io.socket.client.Socket
 import io.socket.emitter.Emitter
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import timber.log.Timber
 import java.net.URI
 import java.net.URISyntaxException
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.random.Random
 
 /**
  * SocketManager - Centralized Socket.IO client management
@@ -49,7 +65,19 @@ import javax.inject.Singleton
  */
 @Singleton
 class SocketManager @Inject constructor(
-    private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage
+    private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+    /**
+     * Lazy<AuthRepository> to break the Hilt dependency cycle:
+     *   AuthRepository → ApiService → OkHttpClient → TokenAuthenticator → AuthRepository
+     * SocketManager doesn't sit in that cycle, but AuthRepository.refreshAccessToken()
+     * uses ApiService which uses the same OkHttpClient — Lazy<> defers resolution.
+     */
+    private val authRepositoryLazy: Lazy<AuthRepository>,
+    /**
+     * Used to emit SessionEvent.Expired when the refresh-token itself is rejected
+     * (HTTP 401/403 on /auth/refresh) — only path that should NOT keep retrying.
+     */
+    private val sessionManager: SessionManager,
 ) {
 
     // ========================================
@@ -62,13 +90,55 @@ class SocketManager @Inject constructor(
 
     private var currentTerminalId: String? = null
 
-    /** Tracks consecutive auth failures to prevent infinite reconnect loops */
+    /**
+     * Tracks consecutive socket auth failures. Drives the exponential backoff
+     * for reconnect attempts. Reset to 0 on successful connection (see [onConnect]).
+     *
+     * Unlike the previous design, there is NO maximum — the socket NEVER permanently
+     * gives up. The previous "MAX_AUTH_RETRIES = 3 → quit until app restart" left
+     * Doña Simona-style terminals dead for hours after a transient JWT expiry,
+     * confirmed in `TerminalHealth` via 18-76 minute heartbeat gaps.
+     */
     @Volatile private var authRetryCount = 0
-    private val MAX_AUTH_RETRIES = 3
 
-    /** Handler + Runnable for delayed auth reconnect (cancellable) */
-    private val reconnectHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    @Volatile private var pendingReconnectRunnable: Runnable? = null
+    /**
+     * Guards against multiple simultaneous HTTP refresh attempts when several
+     * connect_error events fire in quick succession (Socket.IO emits one per
+     * websocket and per polling fallback). Without this guard we'd burn 5+
+     * concurrent /auth/refresh calls per outage, last-write-wins on the saved token.
+     */
+    private val refreshInProgress = AtomicBoolean(false)
+
+    /**
+     * Coroutine scope for socket-side auth refresh + reconnect orchestration.
+     * Replaces the previous android.os.Handler approach so we can use
+     * suspend functions (withTimeout, delay) and rely on structured cancellation.
+     * SupervisorJob so a single failed refresh doesn't tear down sibling jobs.
+     */
+    private val socketScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    /** Currently scheduled refresh+reconnect coroutine. Cancellable on disconnect/connect. */
+    @Volatile private var pendingReconnectJob: Job? = null
+
+    /**
+     * Rate-limit Crashlytics non-fatals — one event per outage incident, not per
+     * retry attempt. Reset on successful connection so the next true outage
+     * is reported again.
+     */
+    @Volatile private var lastSocketAuthNonFatalAt: Long = 0L
+
+    companion object {
+        /** Base delay for exponential backoff (1st retry waits ~2s before reconnect) */
+        private const val SOCKET_AUTH_BACKOFF_BASE_MS = 2_000L
+        /** Cap on exponential backoff so we keep trying every 5 min during long outages */
+        private const val SOCKET_AUTH_BACKOFF_MAX_MS = 300_000L
+        /** HTTP refresh hard cap so a hung TCP can't block reconnect forever */
+        private const val SOCKET_REFRESH_TIMEOUT_MS = 8_000L
+        /** Min retries before we start emitting Crashlytics non-fatals */
+        private const val SOCKET_AUTH_NONFATAL_MIN_RETRIES = 3
+        /** Cooldown between non-fatals during one extended outage */
+        private const val SOCKET_AUTH_NONFATAL_COOLDOWN_MS = 5 * 60_000L
+    }
 
     /**
      * Shared Flow for all Socket.IO events
@@ -188,11 +258,42 @@ class SocketManager @Inject constructor(
 
     /** Cancel any scheduled auth reconnect */
     private fun cancelPendingReconnect() {
-        pendingReconnectRunnable?.let {
-            reconnectHandler.removeCallbacks(it)
+        pendingReconnectJob?.let {
+            it.cancel()
             Timber.d("🔄 [Socket.IO] Cancelled pending auth reconnect")
         }
-        pendingReconnectRunnable = null
+        pendingReconnectJob = null
+    }
+
+    /**
+     * Calculates exponential backoff with jitter for the auth retry path.
+     * Sequence (no jitter): 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 300s (cap), 300s, ...
+     * With ±25% jitter to avoid thundering-herd when many terminals reconnect
+     * after the same outage (a real risk in Doña Simona-style multi-TPV venues).
+     */
+    private fun calculateAuthBackoffMs(attempt: Int): Long {
+        val exp = (SOCKET_AUTH_BACKOFF_BASE_MS shl minOf(attempt - 1, 8))
+            .coerceIn(SOCKET_AUTH_BACKOFF_BASE_MS, SOCKET_AUTH_BACKOFF_MAX_MS)
+        val jitterRange = (exp * 0.25).toLong()
+        val jitter = if (jitterRange > 0) Random.nextLong(-jitterRange, jitterRange + 1) else 0L
+        return (exp + jitter).coerceAtLeast(SOCKET_AUTH_BACKOFF_BASE_MS)
+    }
+
+    private fun maybeRecordSocketAuthFailure(
+        originalError: String,
+        refreshOutcome: String,
+    ) {
+        if (authRetryCount < SOCKET_AUTH_NONFATAL_MIN_RETRIES) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastSocketAuthNonFatalAt <= SOCKET_AUTH_NONFATAL_COOLDOWN_MS) return
+
+        CrashlyticsContext.recordSocketAuthFailure(
+            retryCount = authRetryCount,
+            lastError = originalError,
+            refreshOutcome = refreshOutcome,
+        )
+        lastSocketAuthNonFatalAt = now
     }
 
     /**
@@ -447,9 +548,17 @@ class SocketManager @Inject constructor(
 
     private val onConnect = Emitter.Listener {
         Timber.d("✅ Socket.IO connected: ${socket?.id()}")
-        authRetryCount = 0 // Reset on successful connection
+        // 🛡️ Reset ALL backoff/retry state on successful connection. Without this,
+        // a previous outage's retry count would persist into the next outage and
+        // cause unnecessarily long initial backoffs.
+        authRetryCount = 0
+        lastSocketAuthNonFatalAt = 0L
+        // 🛡️ Cancel any pending refresh job — if onConnect fired we don't need it
+        cancelPendingReconnect()
+        refreshInProgress.set(false)
         _isConnected.tryEmit(true)
         _events.tryEmit(SocketEvent.Connected)
+        CrashlyticsContext.logNetworkBreadcrumb("socket connected (id=${socket?.id()})")
     }
 
     private val onDisconnect = Emitter.Listener { args ->
@@ -462,30 +571,140 @@ class SocketManager @Inject constructor(
     private val onConnectError = Emitter.Listener { args ->
         val error = args.getOrNull(0)
         val errorMsg = error?.toString() ?: ""
-        Timber.e("❌ Socket.IO connect error: $errorMsg")
         _isConnected.tryEmit(false)
         _events.tryEmit(SocketEvent.ConnectionError("Connection error: $errorMsg"))
 
-        // Detect auth-related errors and reconnect with fresh token from SecureStorage.
-        // Socket.IO auto-reconnect reuses the same (expired) token, so we must intervene.
+        // 🛡️ Detect auth errors via the same string patterns Socket.IO server uses.
+        // Server emits these from middleware (see avoqado-server/src/communication/sockets/auth.middleware.ts)
         val isAuthError = errorMsg.contains("token", ignoreCase = true) ||
             errorMsg.contains("expired", ignoreCase = true) ||
             errorMsg.contains("authentication", ignoreCase = true) ||
             errorMsg.contains("unauthorized", ignoreCase = true)
 
-        if (isAuthError && authRetryCount < MAX_AUTH_RETRIES) {
-            authRetryCount++
-            Timber.w("🔄 [Socket.IO] Auth error detected (attempt $authRetryCount/$MAX_AUTH_RETRIES), reconnecting with fresh token...")
-            // Stop Socket.IO's built-in auto-reconnect (it would use the stale token)
-            socket?.off()
-            socket?.disconnect()
-            // Delay gives TokenAuthenticator time to refresh the JWT via HTTP interceptor.
-            // Store the Runnable so connect()/disconnect() can cancel it if called during the delay.
-            val runnable = Runnable { reconnectWithFreshToken() }
-            pendingReconnectRunnable = runnable
-            reconnectHandler.postDelayed(runnable, authRetryCount * 2000L) // 2s, 4s, 6s backoff
-        } else if (isAuthError) {
-            Timber.e("❌ [Socket.IO] Max auth retries reached ($MAX_AUTH_RETRIES). Giving up until next app restart or manual reconnect.")
+        if (!isAuthError) {
+            Timber.e("❌ Socket.IO connect error: $errorMsg")
+            return@Listener
+        }
+
+        // 🛡️ Race guard: when polling+websocket transports both fail, Socket.IO
+        // can fire connect_error twice in <100ms. AtomicBoolean ensures only ONE
+        // refresh + reconnect attempt is launched per outage.
+        if (!refreshInProgress.compareAndSet(false, true)) {
+            Timber.d("🔄 [Socket.IO] Refresh+reconnect already in progress, ignoring duplicate connect_error")
+            return@Listener
+        }
+
+        authRetryCount++
+        Timber.w("🔄 [Socket.IO] Auth error #$authRetryCount detected: $errorMsg")
+        CrashlyticsContext.logNetworkBreadcrumb(
+            "socket auth_error #$authRetryCount: ${errorMsg.take(160)}"
+        )
+
+        // Stop Socket.IO's built-in auto-reconnect (it would use the stale token).
+        // We control the reconnect explicitly below after a successful HTTP refresh.
+        socket?.off()
+        socket?.disconnect()
+
+        cancelPendingReconnect()
+        pendingReconnectJob = socketScope.launch {
+            try {
+                handleSocketAuthRefresh(errorMsg)
+            } finally {
+                refreshInProgress.set(false)
+            }
+        }
+    }
+
+    /**
+     * Socket auth refresh + reconnect orchestrator.
+     *
+     * Flow:
+     *   1. Snapshot current token to detect "refresh returned same token" (no-op refresh).
+     *   2. Trigger explicit HTTP `authRepository.refreshAccessToken()` with 8s timeout.
+     *   3. Decide outcome:
+     *      - 401/403 from /auth/refresh → refresh token itself dead → emit
+     *        SessionEvent.Expired and STOP retrying. User must re-login.
+     *      - Same token/network/timeout → backoff, then retry HTTP refresh.
+     *      - Success with new token → reconnect socket after jittered backoff.
+     *   4. [reconnectWithFreshToken] only runs once SecureStorage holds a token
+     *      different from the JWT the server already rejected. Server auto-joins
+     *      venue room on auth.
+     *
+     * No "give up forever" path — see SOCKET_AUTH_BACKOFF_MAX_MS = 5min cap.
+     * The only stop condition is permanent auth failure (refresh token rejected).
+     */
+    private suspend fun handleSocketAuthRefresh(originalError: String) {
+        val tokenBefore = secureStorage.getToken()
+        var refreshOutcome = "skipped"
+        var sessionEnded = false
+
+        try {
+            while (true) {
+                val refreshResult: Result<*> = try {
+                    withTimeout(SOCKET_REFRESH_TIMEOUT_MS) {
+                        authRepositoryLazy.get().refreshAccessToken()
+                    }
+                } catch (e: TimeoutCancellationException) {
+                    refreshOutcome = "timeout"
+                    Timber.w("⏱️ [Socket.IO] Refresh timed out after ${SOCKET_REFRESH_TIMEOUT_MS}ms")
+                    CrashlyticsContext.logNetworkBreadcrumb("socket refresh: timeout")
+                    Result.Error(ApiException.NetworkError(e))
+                } catch (e: Exception) {
+                    refreshOutcome = "exception"
+                    Timber.w(e, "⚠️ [Socket.IO] Refresh threw")
+                    Result.Error(ApiException.NetworkError(e))
+                }
+
+                val tokenAfter = secureStorage.getToken()
+
+                when {
+                    refreshResult is Result.Success<*> && tokenAfter != null && tokenAfter != tokenBefore -> {
+                        refreshOutcome = "success_new_token"
+                        Timber.i("✅ [Socket.IO] Refresh succeeded with NEW token")
+                        CrashlyticsContext.logNetworkBreadcrumb("socket refresh: new token")
+                        break
+                    }
+                    refreshResult is Result.Success<*> -> {
+                        refreshOutcome = "success_same_token"
+                        Timber.w("⚠️ [Socket.IO] Refresh succeeded but token unchanged — retrying refresh after backoff")
+                        CrashlyticsContext.logNetworkBreadcrumb("socket refresh: same token, retrying refresh")
+                    }
+                    refreshResult is Result.Error -> {
+                        val ex = refreshResult.exception
+                        if (ex is ApiException.HttpError && (ex.code == 401 || ex.code == 403)) {
+                            // 🛡️ Refresh token itself dead — STOP retrying, force re-login
+                            refreshOutcome = "fail_${ex.code}"
+                            Timber.e("🚪 [Socket.IO] Refresh rejected (HTTP ${ex.code}) — emitting SessionExpired, NOT retrying socket")
+                            CrashlyticsContext.logNetworkBreadcrumb("socket refresh: rejected ${ex.code} — session expired")
+                            sessionEnded = true
+                            sessionManager.notifySessionExpired()
+                            return
+                        }
+                        if (refreshOutcome == "skipped") refreshOutcome = "fail_other"
+                        Timber.w("⚠️ [Socket.IO] Refresh failed (${ex?.javaClass?.simpleName}) — retrying refresh after backoff")
+                    }
+                }
+
+                val retryBackoff = calculateAuthBackoffMs(authRetryCount)
+                Timber.d("⏱️ [Socket.IO] Backing off ${retryBackoff}ms before next HTTP refresh (attempt $authRetryCount)")
+                maybeRecordSocketAuthFailure(originalError, refreshOutcome)
+                delay(retryBackoff)
+                authRetryCount++
+            }
+
+            val reconnectBackoff = calculateAuthBackoffMs(authRetryCount)
+            Timber.d("⏱️ [Socket.IO] Backing off ${reconnectBackoff}ms before reconnect (attempt $authRetryCount)")
+            delay(reconnectBackoff)
+
+            // Only reconnect after SecureStorage contains a JWT different from
+            // the one Socket.IO already rejected.
+            reconnectWithFreshToken()
+        } finally {
+            // Rate-limited Crashlytics non-fatal — only after threshold retries
+            // AND only once per cooldown window per outage.
+            if (!sessionEnded && authRetryCount >= SOCKET_AUTH_NONFATAL_MIN_RETRIES) {
+                maybeRecordSocketAuthFailure(originalError, refreshOutcome)
+            }
         }
     }
 

@@ -83,6 +83,10 @@ class SecureStorage @Inject constructor(
         private const val KEY_BLUMON_USERNAME = "blumon_username"
         private const val KEY_BLUMON_PASSWORD = "blumon_password"
         private const val KEY_BLUMON_LAST_INIT_TIMESTAMP = "blumon_last_init_timestamp"
+        private const val KEY_BLUMON_LAST_INIT_POS_ID = "blumon_last_init_pos_id"
+        private const val KEY_BLUMON_LAST_INIT_SERIAL = "blumon_last_init_serial"
+        private const val KEY_BLUMON_LAST_INIT_ENVIRONMENT = "blumon_last_init_environment"
+        private const val KEY_BLUMON_LAST_INIT_CACHE_VERSION = "blumon_last_init_cache_version"
 
         // Settings keys
         private const val KEY_LAST_SYNC_TIMESTAMP = "last_sync_timestamp"
@@ -1100,6 +1104,37 @@ class SecureStorage @Inject constructor(
         } else {
             null
         }
+    }
+
+    fun saveLastBlumonInitPosId(posId: String) {
+        encryptedPrefs.edit().putString(KEY_BLUMON_LAST_INIT_POS_ID, posId).apply()
+        Timber.d("💾 Blumon last init posId saved: $posId")
+    }
+
+    fun getLastBlumonInitPosId(): String? {
+        return encryptedPrefs.getString(KEY_BLUMON_LAST_INIT_POS_ID, null)
+    }
+
+    fun saveLastBlumonInitContext(posId: String, serial: String, environment: String, cacheVersion: Int) {
+        encryptedPrefs.edit()
+            .putString(KEY_BLUMON_LAST_INIT_POS_ID, posId)
+            .putString(KEY_BLUMON_LAST_INIT_SERIAL, serial)
+            .putString(KEY_BLUMON_LAST_INIT_ENVIRONMENT, environment)
+            .putInt(KEY_BLUMON_LAST_INIT_CACHE_VERSION, cacheVersion)
+            .apply()
+        Timber.d("💾 Blumon init context saved: posId=$posId serial=$serial env=$environment version=$cacheVersion")
+    }
+
+    fun getLastBlumonInitSerial(): String? {
+        return encryptedPrefs.getString(KEY_BLUMON_LAST_INIT_SERIAL, null)
+    }
+
+    fun getLastBlumonInitEnvironment(): String? {
+        return encryptedPrefs.getString(KEY_BLUMON_LAST_INIT_ENVIRONMENT, null)
+    }
+
+    fun getLastBlumonInitCacheVersion(): Int {
+        return encryptedPrefs.getInt(KEY_BLUMON_LAST_INIT_CACHE_VERSION, 0)
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

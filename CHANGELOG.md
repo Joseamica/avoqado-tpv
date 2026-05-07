@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+---
+
+## [1.14.0] - 2026-05-07
+
+### **Changed**
+
+- **[Docs][Blumon TPV] Regla de verificacion en portal para rechazos SDK** (`CLAUDE.md`, `AGENTS.md`): al investigar fallas Blumon TPV, despues de Crashlytics/logcat ahora queda documentado validar la transaccion directamente en el portal Blumon TPV produccion/sandbox mediante Playwright o automatizacion de navegador con credenciales seguras de sesion o variables de entorno. Si el rechazo aparece en portal, se clasifica como procesador/emisor/Blumon TPV salvo evidencia contraria en logs TPV; si no aparece, se trata como alta probabilidad de bug de integracion TPV/app. La regla prohibe guardar credenciales, JWTs, PANs o screenshots sensibles en el repo.
+- **[Blumon][PAX UX] Navegación a pago bloqueada hasta que el SDK termine init** (`AppNavigation.kt`, `WelcomeScreen.kt`, `KioskMenuScreen.kt`, `KioskCartScreen.kt`, `KioskViewModel.kt`): nuevo helper `awaitPaxPaymentReady(...)` envuelve cada path que abre PaymentScreen (Cobro Rápido, Órdenes, Pagos/Reembolsos, BLE, Socket, Kiosk) con un guard que espera `InitializationManager.awaitInitialization()`, muestra Toast "Preparando sistema de pagos…" y aborta con error accionable si el init falla en lugar de dejar al cajero entrar a un PaymentScreen sin SDK listo. El helper es no-op para builds Nexgo (`!ENABLE_PAX_SDK`). Pareja exacta del cambio en `InitializationManager`: ahora que `awaitInitialization()` falla cerrado, la UI debe respetar ese contrato. WelcomeScreen y KioskMenuScreen extienden el overlay "Preparando sistema de pagos" para activarse cuando `isBlumonReady=false`, no sólo durante `isBlumonInitializing`. El botón "Pagar" del KioskCartScreen ahora bloquea con snackbar si el SDK no está listo, y un nuevo overlay full-screen sobre el carrito muestra el estado del init con botón Reintentar. `KioskViewModel.initializeBlumonSDK()` extrae `paymentInitErrorMessage(error)` reutilizable y deja de ignorar fallos de `multiMerchantSDKManager.switchMerchant(...)`: si el switch al merchant default falla, el kiosko queda bloqueado con copy en español en vez de continuar y reventar al cobrar.
+
 ## [1.13.7] - 2026-05-06
 
 ### **Added**
@@ -46,6 +55,8 @@
   - `recordPayment falls back to raw body when JSON is malformed` — defensivo contra respuestas no-JSON del proxy/CDN o de un middleware mal configurado.
 
 ### **Fixed**
+
+- **[Blumon][Startup] Init completo una vez por arranque de app con merchant del backend** (`InitializationManager.kt` sandbox + production, `SecureStorage.kt`): validación en PAX real mostró que el cache persistido de Blumon no es suficiente después de matar/abrir la app: el primer cobro tras full init aprobó, pero el siguiente arranque reutilizando cache versionada (`posId + serial + BLUMON_ENV + cacheVersion`) volvió a responder `NA_002 NO AUTORIZADO`. Por eso `InitializationManager` ya no usa el contexto cacheado para saltarse `InitializerUseCase` cuando `HomeViewModel` ya conoce el `defaultMerchantPosId`; en ese caso corre el init completo una vez por proceso y conserva el fast path sólo dentro del mismo arranque. `awaitInitialization()` también falla cerrado si no tiene init activo ni merchant context, para no permitir que un pago arranque desde cache de disco después de un fallo de init. La metadata versionada queda para diagnóstico/mismatch, pero no autoriza pagos basados sólo en cache de disco. Los cambios explícitos de merchant siguen usando `forceReinitialize(merchantPosId)`.
 
 - **[Socket.IO] El socket podía quedarse muerto hasta reinicio de app cuando JWT expiraba** (`SocketManager.kt`): root cause confirmado vía DB de producción — terminal AVQD-2840744151 (Doña Simona) en v1.13.5 mostraba gaps de **18-76 minutos** en `tpv:heartbeat` (vs 5min clockwork en v1.13.4) y comandos `RESTART` quedaban en `status=SENT` sin ACK. Crashlytics top issue `de5c4a0a` ("Token has expired", 550 events, lastSeen 1.13.5) confirma el patrón. **Dos bugs encadenados**:
   1. **`reconnectWithFreshToken()` leía el mismo token expirado de SecureStorage** si `TokenAuthenticator` no había refrescado vía HTTP (el socket es su propio path de auth, independiente del HTTP 401 que dispara TokenAuthenticator). Resultado: el socket reintentaba con el JWT expirado, el servidor lo rechazaba, infinito hasta agotar retries.

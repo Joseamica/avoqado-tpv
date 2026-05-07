@@ -90,6 +90,7 @@ fun KioskCartScreen(
 ) {
     val cartItems by viewModel.cartItems.collectAsStateWithLifecycle()
     val cartTotal by viewModel.cartTotal.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
     // Secret exit gesture state (emergency fallback)
@@ -313,6 +314,15 @@ fun KioskCartScreen(
                         Button(
                             onClick = {
                                 if (isCreatingOrder) return@Button // Prevent double-click
+                                if (!state.isBlumonReady) {
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(
+                                            message = state.blumonInitError ?: "Sistema de pagos preparándose. Espera un momento.",
+                                            withDismissAction = true
+                                        )
+                                    }
+                                    return@Button
+                                }
                                 Timber.i("🥝 [KIOSK-CART] Pay Now clicked - showing customer dialog (items: ${cartItems.size}, total: $cartTotal)")
 
                                 if (cartItems.isEmpty()) {
@@ -333,7 +343,7 @@ fun KioskCartScreen(
                                 Timber.i("🥝 [KIOSK-CART] Showing customer dialog before order creation")
                                 showCustomerDialog = true
                             },
-                            enabled = !isCreatingOrder,
+                            enabled = !isCreatingOrder && state.isBlumonReady,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(48.dp),
@@ -543,6 +553,73 @@ fun KioskCartScreen(
                 viewModel.clearCustomerState()
             }
         )
+    }
+
+    if (state.isBlumonInitializing || state.blumonInitError != null || !state.isBlumonReady) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.7f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) { /* Block cart while SDK is not ready */ },
+            contentAlignment = Alignment.Center
+        ) {
+            Card(
+                modifier = Modifier
+                    .padding(32.dp)
+                    .width(300.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(24.dp)
+                        .fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    if (state.isBlumonInitializing || state.blumonInitError == null) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(48.dp),
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Preparando sistema de pagos...",
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = "Por favor espere",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                    } else if (state.blumonInitError != null) {
+                        Text(
+                            text = "Error de Inicialización",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = state.blumonInitError!!,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Button(
+                            onClick = { viewModel.retryBlumonInit() },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Reintentar")
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

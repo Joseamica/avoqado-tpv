@@ -25,7 +25,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Manages Blumon SDK initialization with 24-hour caching policy
+ * Manages Blumon SDK initialization.
  *
  * **Problem Solved:**
  * Previously, InitializerUseCase + InsertInitUseCase were called on EVERY payment,
@@ -35,9 +35,9 @@ import javax.inject.Singleton
  * "Es recomendable realizar el init solo una vez cada 24 horas o cada que lances la aplicación"
  *
  * **How It Works:**
- * 1. Checks last initialization timestamp from SecureStorage
- * 2. If never initialized OR > 24 hours passed → Execute full init sequence
- * 3. If < 24 hours → Skip init (reuse existing SDK configuration)
+ * 1. Runs full init once per app process when backend merchant context is known
+ * 2. Keeps an in-process fast path so payments do not reinitialize Blumon repeatedly
+ * 3. Uses the 24-hour timestamp only for non-payment callers without merchant context
  *
  * **Init Sequence:**
  * - InitializerUseCase: OAuth + DUKPT key download from Blumon backend
@@ -61,6 +61,7 @@ class InitializationManager @Inject constructor(
     companion object {
         private const val TWENTY_FOUR_HOURS_MS = 86_400_000L  // 24 hours in milliseconds
         private const val SDK_DATABASE_NAME = "pax-database"  // Blumon SDK Room database
+        private const val BLUMON_INIT_CACHE_VERSION = 2
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -89,12 +90,14 @@ class InitializationManager @Inject constructor(
     /**
      * Ensure Blumon SDK is initialized
      *
-     * Executes init sequence only if:
+     * Executes init sequence when:
      * - First time (no timestamp exists)
      * - 24+ hours since last init
+     * - Backend merchant context is available on app launch
      *
-     * Otherwise skips full init (reuses existing configuration) BUT still ensures
-     * the correct posId is in the database to handle app restarts after merchant switches.
+     * The merchant-context branch intentionally does not trust persisted SDK cache after
+     * process death. Real PAX validation showed that skipping InitializerUseCase after
+     * restart can still send the correct posId and then receive NA_002 from Momentum.
      *
      * **Thread-safe:** Uses mutex to prevent concurrent initialization attempts.
      * If called while init is in progress, awaits the ongoing init instead.
@@ -114,7 +117,10 @@ class InitializationManager @Inject constructor(
             return Result.success(Unit)
         }
 
-        // Fast path: already initialized
+        // Fast path: already initialized inside this app process. Do not use the
+        // persisted SDK cache as proof that Blumon's in-memory auth/DUKPT state
+        // survived process death; real devices can return NA_002 after a restart
+        // when InitializerUseCase is skipped.
         if (_isInitialized.value) {
             Timber.d("✅ [InitializationManager] Already initialized (fast path)")
             return Result.success(Unit)
@@ -138,13 +144,22 @@ class InitializationManager @Inject constructor(
 
             val lastInit = secureStorage.getLastBlumonInitTimestamp()
             val now = System.currentTimeMillis()
+            val timestampRequiresInit = shouldInitialize(lastInit, now)
+            val hasMerchantContext = defaultMerchantPosId != null
 
-            if (shouldInitialize(lastInit, now)) {
+            if (timestampRequiresInit || hasMerchantContext) {
                 // Create deferred so other callers can await
                 val deferred = CompletableDeferred<Result<Unit>>()
                 initializationDeferred = deferred
 
-                Timber.i("🔧 [InitializationManager] Running Blumon SDK initialization...")
+                val reason = when {
+                    timestampRequiresInit -> "timestamp missing/expired"
+                    hasMerchantContext -> "app launch with merchant context"
+                    else -> "requested"
+                }
+
+                Timber.i("🔧 [InitializationManager] Running Blumon SDK initialization ($reason)...")
+                _isInitialized.value = false
                 val result = runWithCriticalNetworkGuard {
                     executeInitialization(now, merchantPosId = defaultMerchantPosId)
                 }
@@ -159,27 +174,10 @@ class InitializationManager @Inject constructor(
             } else {
                 val hoursSinceInit = ((now - (lastInit ?: 0)) / (1000 * 60 * 60)).toInt()
 
-                // CRITICAL FIX: When defaultMerchantPosId is provided, always do full re-init
-                // Reason: Room's in-memory cache is loaded on app start with stale posId.
-                // Clearing SQLite directly doesn't clear Room's cache, so GetInitDataUseCase
-                // returns stale data. Only full re-init properly resets Room's state.
-                if (defaultMerchantPosId != null) {
-                    Timber.i("🔄 [InitializationManager] App restart detected - forcing full re-init to fix posId")
-                    Timber.d("   Reason: Room cache may have stale posId from previous merchant switch")
-
-                    // Force full initialization with the correct posId
-                    val result = runWithCriticalNetworkGuard {
-                        executeInitialization(now, merchantPosId = defaultMerchantPosId)
-                    }
-
-                    if (result.isSuccess) {
-                        _isInitialized.value = true
-                    }
-
-                    return@withLock result
-                }
-
-                // No defaultMerchantPosId = normal skip (no merchant switch history to worry about)
+                // No merchant context: keep the 24-hour cache for non-payment callers.
+                // Startup with backend merchant context always runs the full sequence once
+                // per app process because cached SDK data alone is not enough to prevent
+                // NA_002 on real PAX devices after process restart.
                 Timber.d("✅ [InitializationManager] SDK already initialized ($hoursSinceInit hours ago) - skipping full init")
                 _isInitialized.value = true  // Mark as initialized (cached)
                 Result.success(Unit)
@@ -193,13 +191,38 @@ class InitializationManager @Inject constructor(
      * Use this when you need to ensure SDK is ready before proceeding.
      * - If already initialized: returns immediately
      * - If init in progress: awaits completion
-     * - If not started: starts initialization and awaits
+     * - If not started: runs a full merchant-context init when the last known
+     *   merchant posId exists; otherwise fails closed so payment navigation is blocked
      *
      * @return Result.success(Unit) when SDK is ready
      * @return Result.failure if initialization fails
      */
     suspend fun awaitInitialization(): Result<Unit> {
-        return ensureInitialized()
+        if (_isInitialized.value) {
+            return Result.success(Unit)
+        }
+
+        initializationDeferred?.let { deferred ->
+            if (!deferred.isCompleted) {
+                Timber.d("⏳ [InitializationManager] Awaiting ongoing initialization...")
+                return deferred.await()
+            }
+        }
+
+        val lastMerchantPosId = secureStorage.getLastBlumonInitPosId()
+        if (lastMerchantPosId != null) {
+            Timber.w(
+                "⚠️ [InitializationManager] awaitInitialization called before app-launch init completed; " +
+                        "running full init with last merchant posId=$lastMerchantPosId"
+            )
+            return ensureInitialized(defaultMerchantPosId = lastMerchantPosId)
+        }
+
+        val error = IllegalStateException(
+            "Blumon SDK initialization has not completed with backend merchant context"
+        )
+        Timber.e(error, "❌ [InitializationManager] Cannot initialize safely without merchant context")
+        return Result.failure(error)
     }
 
     /**
@@ -364,7 +387,15 @@ class InitializationManager @Inject constructor(
 
             // STEP 4: Save timestamp
             secureStorage.saveLastBlumonInitTimestamp(timestamp)
-            Timber.i("✅ [InitializationManager] Initialization complete - valid for 24 hours")
+            merchantPosId?.let {
+                secureStorage.saveLastBlumonInitContext(
+                    posId = it,
+                    serial = TerminalConfig.serialNumber,
+                    environment = com.jaac.avoqado_tpv.BuildConfig.BLUMON_ENV,
+                    cacheVersion = BLUMON_INIT_CACHE_VERSION
+                )
+            }
+            Timber.i("✅ [InitializationManager] Initialization complete")
 
             Result.success(Unit)
 

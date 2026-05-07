@@ -27,6 +27,7 @@ Specialized agent roles for the Avoqado TPV Android POS app. Each agent loads di
 - Clear ALL state in `resetPayment()`
 - Read `avoqado-server/docs/blumon-tpv/BLUMON_MULTI_MERCHANT_ANALYSIS.md` before Blumon work
 - **ALWAYS query Firebase Crashlytics MCP FIRST** when investigating payment bugs — before asking for screenshots. Use `crashlytics_get_report(appId="1:219752736783:android:d09cd5eb6162e7ee52db7a", report="topIssues")` to start. Check FATAL + NON_FATAL events.
+- For Blumon TPV SDK failures, after Crashlytics/logcat, verify the transaction in the Blumon TPV portal with Playwright/browser automation when credentials are available. Production: `https://element.blumonpay.net/transacciones`. Sandbox: `https://sandbox-atom.blumonpay.net/transacciones`. Use secure/session credentials only (for example `BLUMON_PORTAL_USER` / `BLUMON_PORTAL_PASSWORD`); never store portal credentials, JWTs, PANs, or sensitive screenshots in the repo. If the rejection appears in the portal, treat it as processor/issuer/Blumon TPV-side unless TPV logs contradict it; if it does not appear, treat it as high probability TPV/app integration bug.
 
 ## DevOps / Release Engineer
 

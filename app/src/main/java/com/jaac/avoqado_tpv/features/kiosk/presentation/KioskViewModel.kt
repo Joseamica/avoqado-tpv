@@ -170,8 +170,16 @@ class KioskViewModel @Inject constructor(
                 val merchants = getMerchantsUseCase().firstOrNull()
                 if (merchants.isNullOrEmpty()) {
                     Timber.w("🥝 [KIOSK-VM] No merchants found - SDK init will use default serial")
-                    // Still initialize basic SDK
                     initializationManager.ensureInitialized(defaultMerchantPosId = null)
+                        .onFailure { error ->
+                            Timber.e(error, "🥝 [KIOSK-VM] ❌ Basic SDK initialization failed without merchants")
+                            _state.update { it.copy(
+                                isBlumonInitializing = false,
+                                isBlumonReady = false,
+                                blumonInitError = paymentInitErrorMessage(error)
+                            ) }
+                            return@launch
+                        }
                     _state.update { it.copy(isBlumonInitializing = false, isBlumonReady = true, blumonInitError = null) }
                     return@launch
                 }
@@ -199,21 +207,10 @@ class KioskViewModel @Inject constructor(
                 initializationManager.ensureInitialized(defaultMerchantPosId = targetMerchant.posId)
                     .onFailure { error ->
                         Timber.e(error, "🥝 [KIOSK-VM] ❌ Basic SDK initialization failed")
-                        val isNetworkError = error is java.net.UnknownHostException ||
-                            error.cause is java.net.UnknownHostException ||
-                            error is java.net.ConnectException ||
-                            error.cause is java.net.ConnectException ||
-                            error is java.net.SocketTimeoutException ||
-                            error.cause is java.net.SocketTimeoutException ||
-                            error.message?.contains("NetworkConnectionFailure", ignoreCase = true) == true ||
-                            error.message?.contains("UnknownHostException", ignoreCase = true) == true
                         _state.update { it.copy(
                             isBlumonInitializing = false,
                             isBlumonReady = false,
-                            blumonInitError = if (isNetworkError)
-                                "Sin conexión a internet. Verifica tu conexión WiFi e intenta de nuevo."
-                            else
-                                "Error al inicializar sistema de pagos. Intente reiniciar."
+                            blumonInitError = paymentInitErrorMessage(error)
                         ) }
                         return@launch
                     }
@@ -227,8 +224,15 @@ class KioskViewModel @Inject constructor(
                     val switchResult = multiMerchantSDKManager.switchMerchant(targetMerchant)
 
                     if (switchResult.isFailure) {
-                        Timber.w(switchResult.exceptionOrNull(), "🥝 [KIOSK-VM] ⚠️ Merchant switch failed - payment flow will retry")
-                        // Don't fail completely - payment flow can retry
+                        val error = switchResult.exceptionOrNull()
+                            ?: IllegalStateException("Merchant switch failed")
+                        Timber.e(error, "🥝 [KIOSK-VM] ❌ Merchant switch failed - blocking kiosk payment")
+                        _state.update { it.copy(
+                            isBlumonInitializing = false,
+                            isBlumonReady = false,
+                            blumonInitError = paymentInitErrorMessage(error)
+                        ) }
+                        return@launch
                     } else {
                         Timber.i("🥝 [KIOSK-VM] ✅ SDK switched to: ${targetMerchant.displayName}")
                     }
@@ -256,6 +260,23 @@ class KioskViewModel @Inject constructor(
     fun retryBlumonInit() {
         Timber.i("🥝 [KIOSK-VM] Retrying Blumon SDK initialization...")
         initializeBlumonSDK()
+    }
+
+    private fun paymentInitErrorMessage(error: Throwable): String {
+        val isNetworkError = error is java.net.UnknownHostException ||
+            error.cause is java.net.UnknownHostException ||
+            error is java.net.ConnectException ||
+            error.cause is java.net.ConnectException ||
+            error is java.net.SocketTimeoutException ||
+            error.cause is java.net.SocketTimeoutException ||
+            error.message?.contains("NetworkConnectionFailure", ignoreCase = true) == true ||
+            error.message?.contains("UnknownHostException", ignoreCase = true) == true
+
+        return if (isNetworkError) {
+            "Sin conexión a internet. Verifica tu conexión WiFi e intenta de nuevo."
+        } else {
+            "Error al inicializar sistema de pagos. Intente reiniciar."
+        }
     }
 
     /**

@@ -518,7 +518,7 @@ fun KioskMenuScreen(
 
     // 🔧 Blumon SDK Initialization Overlay
     // Shows loader while SDK initializes, blocks user from proceeding to payment
-    if (state.isBlumonInitializing || state.blumonInitError != null) {
+    if (state.isBlumonInitializing || state.blumonInitError != null || !state.isBlumonReady) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -544,7 +544,7 @@ fun KioskMenuScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    if (state.isBlumonInitializing) {
+                    if (state.isBlumonInitializing || state.blumonInitError == null) {
                         // Loading state
                         CircularProgressIndicator(
                             modifier = Modifier.size(48.dp),

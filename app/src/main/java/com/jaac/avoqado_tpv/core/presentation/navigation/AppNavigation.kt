@@ -71,6 +71,7 @@ import com.jaac.avoqado_tpv.features.activation.presentation.ActivationScreen
 import com.jaac.avoqado_tpv.features.authentication.presentation.LoginScreen
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationState
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationViewModel
+import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
 import com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreen
 import com.jaac.avoqado_tpv.features.ordering.domain.TableRepository
 import com.jaac.avoqado_tpv.features.ordering.presentation.FloorPlanCanvasScreen
@@ -207,6 +208,8 @@ fun AppNavigation(
     val isKioskMode by kioskModeManager.isKioskMode.collectAsStateWithLifecycle()
     val postOperationsAdapterFactory = remember { kioskEntryPoint.postOperationsAdapterFactory() }
     val modulesRepository = remember { kioskEntryPoint.modulesRepository() }
+    val initializationManager = remember { kioskEntryPoint.initializationManager() }
+    val isBlumonSdkInitialized by initializationManager.isInitialized.collectAsStateWithLifecycle()
     val bluetoothPaymentService = remember { kioskEntryPoint.bluetoothPaymentService() }
     val socketManager = remember { kioskEntryPoint.socketManager() }
 
@@ -259,6 +262,17 @@ fun AppNavigation(
             val handle = navController.currentBackStackEntry?.savedStateHandle
             if (handle == null) {
                 Timber.e("❌ [BLE] No backstack entry available - cannot start payment")
+                return@collect
+            }
+
+            if (!awaitPaxPaymentReady(context, initializationManager, "BLE/SOCKET payment")) {
+                if (request.source == com.jaac.avoqado_tpv.core.bluetooth.PaymentSource.SOCKET && request.socketRequestId != null) {
+                    socketManager.emitTerminalPaymentResult(
+                        requestId = request.socketRequestId!!,
+                        status = "failed",
+                        errorMessage = "Sistema de pagos no inicializado en el terminal"
+                    )
+                }
                 return@collect
             }
 
@@ -486,6 +500,20 @@ fun AppNavigation(
     // 🥝 KIOSK PAYMENT SCREEN - Render PaymentScreen directly
     // This bypasses the staff NavHost to avoid race with SplashScreen
     if (isKioskMode && isKioskPaymentInProgress) {
+        if (BuildConfig.ENABLE_PAX_SDK && !isBlumonSdkInitialized) {
+            LaunchedEffect(kioskPaymentOrderId) {
+                val ready = awaitPaxPaymentReady(context, initializationManager, "Kiosk payment")
+                if (!ready) {
+                    kioskPaymentOrderId = null
+                    kioskPaymentAmount = null
+                    kioskPaymentOrderNumber = null
+                    kioskPaymentStaffId = null
+                }
+            }
+            AvoqadoLoadingOverlay(message = "Preparando sistema de pagos...")
+            return
+        }
+
         // Amount is already in pesos (DB stores pesos)
         val amountPesos = remember(kioskPaymentAmount) {
             java.math.BigDecimal(kioskPaymentAmount!!)
@@ -839,25 +867,39 @@ fun AppNavigation(
             WelcomeScreen(
                 onRefreshConnection = { connectionViewModel.forceCheck() },
                 onStartPaymentWithAmount = { amount ->
-                    Timber.d("[PERF] NAV: Welcome → PaymentScreen START (nexgo=${isAppToAppPayment()})")
-                    navController.currentBackStackEntry?.savedStateHandle?.set("initialAmount", amount)
-                    navController.navigate(getPaymentRoute())
+                    homeCoroutineScope.launch {
+                        if (!awaitPaxPaymentReady(homeContext, initializationManager, "Welcome fast payment")) {
+                            return@launch
+                        }
+                        Timber.d("[PERF] NAV: Welcome → PaymentScreen START (nexgo=${isAppToAppPayment()})")
+                        navController.currentBackStackEntry?.savedStateHandle?.set("initialAmount", amount)
+                        navController.navigate(getPaymentRoute())
+                    }
                 },
                 onNavigateToShifts = {
                     Timber.d("[PERF] NAV: Welcome → Shifts START")
                     navController.navigate(NavRoute.Shifts.route)
                 },
                 onNavigateToOrdering = {
-                    Timber.d("[PERF] NAV: Welcome → Ordering START")
-                    navController.navigate(NavRoute.OrderingWelcome.route)
+                    homeCoroutineScope.launch {
+                        if (!awaitPaxPaymentReady(homeContext, initializationManager, "Welcome ordering")) {
+                            return@launch
+                        }
+                        Timber.d("[PERF] NAV: Welcome → Ordering START")
+                        navController.navigate(NavRoute.OrderingWelcome.route)
+                    }
                 },
                 onNavigateToReports = {
                     // Navigate to Reports screen
                     navController.navigate(NavRoute.Reports.route)
                 },
                 onNavigateToPayments = {
-                    // ⭐ Navigate to Payments screen
-                    navController.navigate(NavRoute.Payments.route)
+                    homeCoroutineScope.launch {
+                        if (!awaitPaxPaymentReady(homeContext, initializationManager, "Welcome payments/refunds")) {
+                            return@launch
+                        }
+                        navController.navigate(NavRoute.Payments.route)
+                    }
                 },
                 onNavigateToSupport = {
                     // Navigate to Support screen
@@ -881,8 +923,9 @@ fun AppNavigation(
                         isInitializingSdk = true
                         Timber.d("🔧 [Vender] Awaiting Blumon SDK initialization...")
 
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            initializationManager.awaitInitialization()
+                        if (!awaitPaxPaymentReady(homeContext, initializationManager, "Serialized sale entry")) {
+                            isInitializingSdk = false
+                            return@launch
                         }
 
                         Timber.d("✅ [Vender] SDK ready - navigating to SerializedSale")
@@ -973,14 +1016,19 @@ fun AppNavigation(
 
         // Fast Payment Entry Screen - Dedicated screen for amount input
         composable(NavRoute.FastPaymentEntry.route) {
+            val fastPaymentScope = rememberCoroutineScope()
             FastPaymentEntryScreen(
                 onNavigateBack = {
                     navController.safePopBackStack()
                 },
                 onAmountSubmit = { amount ->
-                    // Navigate to PaymentScreen with amount
-                    navController.currentBackStackEntry?.savedStateHandle?.set("initialAmount", amount)
-                    navController.navigate(getPaymentRoute())
+                    fastPaymentScope.launch {
+                        if (!awaitPaxPaymentReady(context, initializationManager, "Fast payment entry")) {
+                            return@launch
+                        }
+                        navController.currentBackStackEntry?.savedStateHandle?.set("initialAmount", amount)
+                        navController.navigate(getPaymentRoute())
+                    }
                 }
             )
         }
@@ -1038,6 +1086,7 @@ fun AppNavigation(
             arguments = listOf(navArgument("orderId") { type = NavType.StringType })
         ) { backStackEntry ->
             val orderId = backStackEntry.arguments?.getString("orderId") ?: ""
+            val menuPaymentScope = rememberCoroutineScope()
 
             MenuScreen(
                 orderId = orderId,
@@ -1045,36 +1094,46 @@ fun AppNavigation(
                     navController.safePopBackStack()
                 },
                 onProcessPayment = { order ->
-                    // ✅ FIX: Pass remainingBalance instead of total for split payments
-                    // If order is fresh: remainingBalance = total (correct)
-                    // If order has partial payment: remainingBalance = total - paidAmount (correct)
-                    val isPayLaterOrder = order.orderCustomers.isNotEmpty()
-                    navController.currentBackStackEntry?.savedStateHandle?.apply {
-                        set("initialAmount", order.remainingBalance.toString())
-                        set("orderId", order.id)
-                        set("orderNumber", order.orderNumber)
-                        set("tableId", order.tableId)  // 🆕 Pass tableId for post-payment clearing
-                        set("splitType", SplitType.FULLPAYMENT.value)
-                        // 💳 PAY-LATER CONTEXT: Detect if order has customers
-                        set("wasPayLaterOrder", isPayLaterOrder)
+                    menuPaymentScope.launch {
+                        if (!awaitPaxPaymentReady(context, initializationManager, "Order payment")) {
+                            return@launch
+                        }
+                        // ✅ FIX: Pass remainingBalance instead of total for split payments
+                        // If order is fresh: remainingBalance = total (correct)
+                        // If order has partial payment: remainingBalance = total - paidAmount (correct)
+                        val isPayLaterOrder = order.orderCustomers.isNotEmpty()
+                        navController.currentBackStackEntry?.savedStateHandle?.apply {
+                            set("initialAmount", order.remainingBalance.toString())
+                            set("orderId", order.id)
+                            set("orderNumber", order.orderNumber)
+                            set("tableId", order.tableId)  // 🆕 Pass tableId for post-payment clearing
+                            set("splitType", SplitType.FULLPAYMENT.value)
+                            // 💳 PAY-LATER CONTEXT: Detect if order has customers
+                            set("wasPayLaterOrder", isPayLaterOrder)
+                        }
+                        navController.navigate(getPaymentRoute())
+                        Timber.d("💳 Navigating to payment: ${order.orderNumber} - Remaining: $${order.remainingBalance} (Total: $${order.total}) | wasPayLater=$isPayLaterOrder | nexgo=${isAppToAppPayment()}")
                     }
-                    navController.navigate(getPaymentRoute())
-                    Timber.d("💳 Navigating to payment: ${order.orderNumber} - Remaining: $${order.remainingBalance} (Total: $${order.total}) | wasPayLater=$isPayLaterOrder | nexgo=${isAppToAppPayment()}")
                 },
                 onProcessPaymentWithAmount = { order, customAmount, splitType ->
-                    // Custom amount payment with split type (CUSTOMAMOUNT)
-                    val isPayLaterOrder = order.orderCustomers.isNotEmpty()
-                    navController.currentBackStackEntry?.savedStateHandle?.apply {
-                        set("initialAmount", customAmount.toString())
-                        set("orderId", order.id)
-                        set("orderNumber", order.orderNumber)
-                        set("tableId", order.tableId)
-                        set("splitType", splitType.value)
-                        // 💳 PAY-LATER CONTEXT: Detect if order has customers
-                        set("wasPayLaterOrder", isPayLaterOrder)
+                    menuPaymentScope.launch {
+                        if (!awaitPaxPaymentReady(context, initializationManager, "Order custom payment")) {
+                            return@launch
+                        }
+                        // Custom amount payment with split type (CUSTOMAMOUNT)
+                        val isPayLaterOrder = order.orderCustomers.isNotEmpty()
+                        navController.currentBackStackEntry?.savedStateHandle?.apply {
+                            set("initialAmount", customAmount.toString())
+                            set("orderId", order.id)
+                            set("orderNumber", order.orderNumber)
+                            set("tableId", order.tableId)
+                            set("splitType", splitType.value)
+                            // 💳 PAY-LATER CONTEXT: Detect if order has customers
+                            set("wasPayLaterOrder", isPayLaterOrder)
+                        }
+                        navController.navigate(getPaymentRoute())
+                        Timber.d("💳 Navigating to custom amount payment: $customAmount with splitType=${splitType.value} | wasPayLater=$isPayLaterOrder | nexgo=${isAppToAppPayment()}")
                     }
-                    navController.navigate(getPaymentRoute())
-                    Timber.d("💳 Navigating to custom amount payment: $customAmount with splitType=${splitType.value} | wasPayLater=$isPayLaterOrder | nexgo=${isAppToAppPayment()}")
                 },
                 onNavigateToSplitByProduct = { splitOrderId, hasCustomers ->
                     // 💳 Pass wasPayLaterOrder through savedStateHandle for split screen to forward
@@ -1144,6 +1203,23 @@ fun AppNavigation(
                         popUpTo(NavRoute.Home.route) { inclusive = false }
                     }
                 }
+            }
+
+            if (BuildConfig.ENABLE_PAX_SDK && !isBlumonSdkInitialized) {
+                LaunchedEffect(Unit) {
+                    val ready = awaitPaxPaymentReady(context, initializationManager, "Payment route")
+                    if (!ready) {
+                        val popped = navController.safePopBackStack()
+                        if (!popped) {
+                            navController.navigate(NavRoute.Home.route) {
+                                popUpTo(NavRoute.Home.route) { inclusive = false }
+                                launchSingleTop = true
+                            }
+                        }
+                    }
+                }
+                AvoqadoLoadingOverlay(message = "Preparando sistema de pagos...")
+                return@composable
             }
 
             // Get initial amount from previous screen (if coming from Home with amount)
@@ -1404,6 +1480,10 @@ fun AppNavigation(
             // Navigate to payment when test payment is triggered
             LaunchedEffect(pendingTestPayment) {
                 if (pendingTestPayment) {
+                    if (!awaitPaxPaymentReady(context, initializationManager, "SuperAdmin test payment")) {
+                        pendingTestPayment = false
+                        return@LaunchedEffect
+                    }
                     // 🧪 Navigate with test amount ($10.00) and skipReview flag
                     navController.currentBackStackEntry?.savedStateHandle?.apply {
                         set("initialAmount", "10.00")
@@ -1612,32 +1692,38 @@ fun AppNavigation(
                         return@RefundConfirmationScreen
                     }
 
-                    navController.currentBackStackEntry?.savedStateHandle?.apply {
-                        // Refund mode flag
-                        set("isRefundMode", true)
+                    refundScope.launch {
+                        if (!awaitPaxPaymentReady(context, initializationManager, "Refund payment")) {
+                            return@launch
+                        }
 
-                        // Refund-specific data
-                        set("refundAmount", refundAmount.toString())
-                        set("refundReason", refundReason.name)
-                        set("originalPaymentId", paymentId)
-                        set("originalOrderId", orderId)
-                        set("originalTotalAmount", originalAmount.toString())
-                        set("originalTipAmount", originalTipAmount.toString())
-                        // Explicit tip-split override (null = backend default proportional)
-                        set("tipRefundCents", tipRefundCents)
+                        navController.currentBackStackEntry?.savedStateHandle?.apply {
+                            // Refund mode flag
+                            set("isRefundMode", true)
 
-                        // Merchant data (CRITICAL for multi-merchant refunds)
-                        set("merchantAccountId", merchantAccountId)
-                        set("blumonSerialNumber", blumonSerialNumber)
-                        // 🎫 CRITICAL: Blumon operation number for CancelIcc refunds (from webhook)
-                        set("blumonOperationNumber", blumonOperationNumber)
-                        // 🏢 CRITICAL: Payment's venueId for refund API call (NOT auth context's venue!)
-                        // The refund MUST be recorded to the same venue as the original payment
-                        set("paymentVenueId", paymentVenueId)
+                            // Refund-specific data
+                            set("refundAmount", refundAmount.toString())
+                            set("refundReason", refundReason.name)
+                            set("originalPaymentId", paymentId)
+                            set("originalOrderId", orderId)
+                            set("originalTotalAmount", originalAmount.toString())
+                            set("originalTipAmount", originalTipAmount.toString())
+                            // Explicit tip-split override (null = backend default proportional)
+                            set("tipRefundCents", tipRefundCents)
+
+                            // Merchant data (CRITICAL for multi-merchant refunds)
+                            set("merchantAccountId", merchantAccountId)
+                            set("blumonSerialNumber", blumonSerialNumber)
+                            // 🎫 CRITICAL: Blumon operation number for CancelIcc refunds (from webhook)
+                            set("blumonOperationNumber", blumonOperationNumber)
+                            // 🏢 CRITICAL: Payment's venueId for refund API call (NOT auth context's venue!)
+                            // The refund MUST be recorded to the same venue as the original payment
+                            set("paymentVenueId", paymentVenueId)
+                        }
+
+                        // Navigate to PaymentScreen (will detect refund mode and call startRefund)
+                        navController.navigate(NavRoute.Payment.route)
                     }
-
-                    // Navigate to PaymentScreen (will detect refund mode and call startRefund)
-                    navController.navigate(NavRoute.Payment.route)
                 }
             )
         }
@@ -1730,26 +1816,32 @@ fun AppNavigation(
             arguments = listOf(navArgument("orderId") { type = NavType.StringType })
         ) { backStackEntry ->
             val orderId = backStackEntry.arguments?.getString("orderId") ?: ""
+            val splitByProductScope = rememberCoroutineScope()
 
             SplitByProductScreen(
                 onNavigateBack = {
                     navController.safePopBackStack()
                 },
                 onProceedToPayment = { amount, productIds ->
-                    // 💳 Read wasPayLaterOrder from previous screen and forward to Payment
-                    val wasPayLaterOrder = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("wasPayLaterOrder") ?: false
+                    splitByProductScope.launch {
+                        if (!awaitPaxPaymentReady(context, initializationManager, "Split by product payment")) {
+                            return@launch
+                        }
+                        // 💳 Read wasPayLaterOrder from previous screen and forward to Payment
+                        val wasPayLaterOrder = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("wasPayLaterOrder") ?: false
 
-                    // Navigate to PaymentScreen with PERPRODUCT split params
-                    navController.currentBackStackEntry?.savedStateHandle?.apply {
-                        set("initialAmount", amount.toString())
-                        set("orderId", orderId)
-                        set("splitType", SplitType.PERPRODUCT.value)
-                        set("paidProductIds", productIds)
-                        // 💳 Forward pay-later context
-                        set("wasPayLaterOrder", wasPayLaterOrder)
+                        // Navigate to PaymentScreen with PERPRODUCT split params
+                        navController.currentBackStackEntry?.savedStateHandle?.apply {
+                            set("initialAmount", amount.toString())
+                            set("orderId", orderId)
+                            set("splitType", SplitType.PERPRODUCT.value)
+                            set("paidProductIds", productIds)
+                            // 💳 Forward pay-later context
+                            set("wasPayLaterOrder", wasPayLaterOrder)
+                        }
+                        navController.navigate(NavRoute.Payment.route)
+                        Timber.d("💳 Split PERPRODUCT: ${productIds.size} products, amount=$amount | wasPayLater=$wasPayLaterOrder")
                     }
-                    navController.navigate(NavRoute.Payment.route)
-                    Timber.d("💳 Split PERPRODUCT: ${productIds.size} products, amount=$amount | wasPayLater=$wasPayLaterOrder")
                 }
             )
         }
@@ -1760,27 +1852,33 @@ fun AppNavigation(
             arguments = listOf(navArgument("orderId") { type = NavType.StringType })
         ) { backStackEntry ->
             val orderId = backStackEntry.arguments?.getString("orderId") ?: ""
+            val splitByPersonScope = rememberCoroutineScope()
 
             SplitByPersonScreen(
                 onNavigateBack = {
                     navController.safePopBackStack()
                 },
                 onProceedToPayment = { amount, partySize, payingFor ->
-                    // 💳 Read wasPayLaterOrder from previous screen and forward to Payment
-                    val wasPayLaterOrder = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("wasPayLaterOrder") ?: false
+                    splitByPersonScope.launch {
+                        if (!awaitPaxPaymentReady(context, initializationManager, "Split by person payment")) {
+                            return@launch
+                        }
+                        // 💳 Read wasPayLaterOrder from previous screen and forward to Payment
+                        val wasPayLaterOrder = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("wasPayLaterOrder") ?: false
 
-                    // Navigate to PaymentScreen with EQUALPARTS split params
-                    navController.currentBackStackEntry?.savedStateHandle?.apply {
-                        set("initialAmount", amount.toString())
-                        set("orderId", orderId)
-                        set("splitType", SplitType.EQUALPARTS.value)
-                        set("equalPartsPartySize", partySize)
-                        set("equalPartsPayedFor", payingFor)
-                        // 💳 Forward pay-later context
-                        set("wasPayLaterOrder", wasPayLaterOrder)
+                        // Navigate to PaymentScreen with EQUALPARTS split params
+                        navController.currentBackStackEntry?.savedStateHandle?.apply {
+                            set("initialAmount", amount.toString())
+                            set("orderId", orderId)
+                            set("splitType", SplitType.EQUALPARTS.value)
+                            set("equalPartsPartySize", partySize)
+                            set("equalPartsPayedFor", payingFor)
+                            // 💳 Forward pay-later context
+                            set("wasPayLaterOrder", wasPayLaterOrder)
+                        }
+                        navController.navigate(NavRoute.Payment.route)
+                        Timber.d("💳 Split EQUALPARTS: $payingFor/$partySize parts, amount=$amount | wasPayLater=$wasPayLaterOrder")
                     }
-                    navController.navigate(NavRoute.Payment.route)
-                    Timber.d("💳 Split EQUALPARTS: $payingFor/$partySize parts, amount=$amount | wasPayLater=$wasPayLaterOrder")
                 }
             )
         }
@@ -1873,6 +1971,7 @@ fun AppNavigation(
         // 📱 Serialized Sale Screen - Quick sell flow for serialized items (SIMs, etc.)
         composable(NavRoute.SerializedSale.route) { backStackEntry ->
             val shouldReset = backStackEntry.savedStateHandle.get<Boolean>("resetSerializedSale") == true
+            val serializedPaymentScope = rememberCoroutineScope()
             if (shouldReset) {
                 backStackEntry.savedStateHandle.remove<Boolean>("resetSerializedSale")
             }
@@ -1881,22 +1980,27 @@ fun AppNavigation(
                     navController.safePopBackStack()
                 },
                 onNavigateToPayment = { orderId, orderNumber, orderTotal, isPortabilidad, serialNumber, categoryName ->
-                    // Navigate to PaymentScreen with order details
-                    // ⚠️ SERIALIZED SALE: Order was created by backend quick-sell API
-                    // and doesn't exist locally. Pass skipLocalOrderValidation flag
-                    // so PaymentViewModel skips the local order lookup.
-                    navController.currentBackStackEntry?.savedStateHandle?.apply {
-                        set("initialAmount", orderTotal.toString())
-                        set("orderId", orderId)
-                        set("orderNumber", orderNumber)  // 🆕 Pass order number for receipt FOLIO
-                        set("skipReview", true)  // Skip tip/review for serialized sales
-                        set("skipLocalOrderValidation", true)  // 🆕 Order exists only on backend
-                        set("isPortabilidad", isPortabilidad)  // Portabilidad: 1 vs 2 proof-of-sale photos
-                        set("serialNumber", serialNumber)  // 📱 ICCID/serial for receipt
-                        set("categoryName", categoryName)  // 📱 Category name for receipt
+                    serializedPaymentScope.launch {
+                        if (!awaitPaxPaymentReady(context, initializationManager, "Serialized sale payment")) {
+                            return@launch
+                        }
+                        // Navigate to PaymentScreen with order details
+                        // ⚠️ SERIALIZED SALE: Order was created by backend quick-sell API
+                        // and doesn't exist locally. Pass skipLocalOrderValidation flag
+                        // so PaymentViewModel skips the local order lookup.
+                        navController.currentBackStackEntry?.savedStateHandle?.apply {
+                            set("initialAmount", orderTotal.toString())
+                            set("orderId", orderId)
+                            set("orderNumber", orderNumber)  // 🆕 Pass order number for receipt FOLIO
+                            set("skipReview", true)  // Skip tip/review for serialized sales
+                            set("skipLocalOrderValidation", true)  // 🆕 Order exists only on backend
+                            set("isPortabilidad", isPortabilidad)  // Portabilidad: 1 vs 2 proof-of-sale photos
+                            set("serialNumber", serialNumber)  // 📱 ICCID/serial for receipt
+                            set("categoryName", categoryName)  // 📱 Category name for receipt
+                        }
+                        navController.navigate(getPaymentRoute())
+                        Timber.d("💳 Serialized sale: Navigating to payment for order $orderId (#$orderNumber), amount $orderTotal, serial=$serialNumber, category=$categoryName (skipLocalValidation=true, isPortabilidad=$isPortabilidad, nexgo=${isAppToAppPayment()})")
                     }
-                    navController.navigate(getPaymentRoute())
-                    Timber.d("💳 Serialized sale: Navigating to payment for order $orderId (#$orderNumber), amount $orderTotal, serial=$serialNumber, category=$categoryName (skipLocalValidation=true, isPortabilidad=$isPortabilidad, nexgo=${isAppToAppPayment()})")
                 },
                 resetOnEnter = shouldReset,
                 onNavigateToMisSims = {
@@ -3129,6 +3233,48 @@ private fun formatAmountFromCents(amountCents: Long): String {
         .movePointLeft(2)
         .setScale(2, RoundingMode.HALF_UP)
         .toPlainString()
+}
+
+private suspend fun awaitPaxPaymentReady(
+    context: Context,
+    initializationManager: InitializationManager,
+    source: String,
+    showPreparingToast: Boolean = true
+): Boolean {
+    if (!BuildConfig.ENABLE_PAX_SDK) {
+        return true
+    }
+
+    if (initializationManager.isInitialized.value) {
+        return true
+    }
+
+    if (showPreparingToast) {
+        Toast.makeText(
+            context,
+            "Preparando sistema de pagos. Espera un momento.",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    val result = withContext(Dispatchers.IO) {
+        initializationManager.awaitInitialization()
+    }
+
+    if (result.isSuccess && initializationManager.isInitialized.value) {
+        return true
+    }
+
+    Timber.e(
+        result.exceptionOrNull(),
+        "❌ [$source] Blumon SDK not ready; blocking payment navigation"
+    )
+    Toast.makeText(
+        context,
+        "Sistema de pagos no inicializado. Toca Reintentar o reinicia la terminal.",
+        Toast.LENGTH_LONG
+    ).show()
+    return false
 }
 
 /**

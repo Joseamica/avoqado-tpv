@@ -43,6 +43,16 @@ crashlytics_list_events(appId, filter={issueId:"<hex>"})    # Events for issue
 
 **Proactive rule**: When investigating ANY payment bug, query Crashlytics FIRST before asking the user for screenshots. Check both FATAL and NON_FATAL events filtered by the relevant time window.
 
+## Blumon TPV Portal Verification
+
+When Blumon TPV SDK behavior is suspect, check Crashlytics first, then verify the processor result directly in the Blumon TPV portal with Playwright/browser automation when credentials are available.
+
+- Production: `https://element.blumonpay.net/transacciones`
+- Sandbox: `https://sandbox-atom.blumonpay.net/transacciones`
+- Use credentials only from secure/session context, such as `BLUMON_PORTAL_USER` and `BLUMON_PORTAL_PASSWORD`. Never commit portal credentials, JWTs, PANs, or screenshots/logs containing sensitive card data.
+- If a decline appears in the Blumon TPV portal with matching amount/card/reference/time, classify it as processor/issuer/Blumon TPV-side unless TPV logs contradict that.
+- If the SDK reports a decline but no matching transaction appears in the Blumon TPV portal, treat it as high probability TPV/app integration bug and inspect SDK initialization, merchant `posId`, serial, entry mode, EMV tags, idempotency, and backend recording.
+
 ## Commands
 
 ```bash

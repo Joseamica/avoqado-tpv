@@ -72,6 +72,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.domain.events.VenueStatusEvent
 import com.jaac.avoqado_tpv.core.presentation.components.ActionButton
 import com.jaac.avoqado_tpv.core.presentation.components.StaticActionButtonGrid
@@ -194,6 +195,7 @@ fun WelcomeScreen(
     // BLUMON SDK INITIALIZATION STATE
     // ═══════════════════════════════════════════════════════════════════════════
     val isBlumonInitializing by viewModel.isBlumonInitializing.collectAsStateWithLifecycle()
+    val isBlumonReady by viewModel.isBlumonReady.collectAsStateWithLifecycle()
     val blumonInitError by viewModel.blumonInitError.collectAsStateWithLifecycle()
     val blumonInitElapsedSeconds by viewModel.blumonInitElapsedSeconds.collectAsStateWithLifecycle()
 
@@ -324,7 +326,11 @@ fun WelcomeScreen(
     // Shows loader while SDK initializes, blocks user from proceeding to payment
     // Progressive warnings: 0-15s normal, 15-30s slow hint, 30s+ warning + cancel
     // ═══════════════════════════════════════════════════════════════════════════
-    if (isBlumonInitializing || blumonInitError != null) {
+    val shouldBlockForBlumon = isBlumonInitializing ||
+        blumonInitError != null ||
+        (BuildConfig.ENABLE_PAX_SDK && !isBlumonReady)
+
+    if (shouldBlockForBlumon) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -350,7 +356,7 @@ fun WelcomeScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    if (isBlumonInitializing) {
+                    if (isBlumonInitializing || blumonInitError == null) {
                         // Loading state with progressive warnings
                         CircularProgressIndicator(
                             modifier = Modifier.size(48.dp),

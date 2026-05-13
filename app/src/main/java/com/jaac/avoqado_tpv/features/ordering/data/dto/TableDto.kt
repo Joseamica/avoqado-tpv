@@ -59,6 +59,9 @@ data class OrderItemDetailDto(
     @SerializedName("orderId") val orderId: String,
     @SerializedName("productId") val productId: String? = null,  // ✅ NULLABLE: Backend may return null for deleted/orphaned items
     @SerializedName("product") val product: ProductInfoDto? = null,  // ✅ NULLABLE: Backend may return null for deleted products
+    @SerializedName("productName") val productName: String? = null,
+    @SerializedName("productSku") val productSku: String? = null,
+    @SerializedName("categoryName") val categoryName: String? = null,
     @SerializedName("quantity") val quantity: Int,
     @SerializedName("unitPrice") val unitPrice: Double,
     @SerializedName("total") val totalPrice: Double,  // ✅ Backend uses "total" not "totalPrice"
@@ -151,6 +154,41 @@ data class CreateOrderRequest(
     @SerializedName("orderType") val orderType: String = "TAKEOUT",  // "DINE_IN" or "TAKEOUT"
     @SerializedName("source") val source: String = "TPV",  // "TPV", "KIOSK", "QR", "WEB", etc.
     @SerializedName("externalId") val externalId: String? = null  // ✅ Idempotency key (client order ID)
+)
+
+// Single-call order creation used only by the new TPV Cobrar flow.
+//
+// All monetary fields are pesos as decimals, matching the rest of the
+// /tpv API (e.g. $25.45 is serialized as 25.45, NOT as 2545). The
+// CheckoutViewModel converts its internal integer-cents math to pesos at
+// this boundary. Backend validates subtotal/discount/total with ±$0.01
+// tolerance.
+data class TpvCreateOrderWithItemsRequest(
+    @SerializedName("items") val items: List<TpvCreateOrderWithItemsItemDto>,
+    @SerializedName("staffId") val staffId: String,
+    @SerializedName("orderType") val orderType: String = "TAKEOUT",
+    @SerializedName("source") val source: String = "TPV",
+    @SerializedName("tableId") val tableId: String? = null,
+    @SerializedName("customerId") val customerId: String? = null,
+    @SerializedName("discount") val discount: Double = 0.0,
+    @SerializedName("orderDiscountId") val orderDiscountId: String? = null,
+    @SerializedName("taxAmount") val taxAmount: Double = 0.0,
+    @SerializedName("tip") val tip: Double = 0.0,
+    @SerializedName("subtotal") val subtotal: Double,
+    @SerializedName("total") val total: Double,
+    @SerializedName("note") val note: String? = null,
+)
+
+data class TpvCreateOrderWithItemsItemDto(
+    @SerializedName("productId") val productId: String? = null,
+    @SerializedName("name") val name: String? = null,
+    @SerializedName("quantity") val quantity: Int,
+    @SerializedName("unitPrice") val unitPrice: Double? = null,
+    @SerializedName("modifierIds") val modifierIds: List<String> = emptyList(),
+    @SerializedName("notes") val notes: String? = null,
+    @SerializedName("isCortesia") val isCortesia: Boolean = false,
+    @SerializedName("cortesiaReason") val cortesiaReason: String? = null,
+    @SerializedName("itemDiscountId") val itemDiscountId: String? = null,
 )
 
 /**

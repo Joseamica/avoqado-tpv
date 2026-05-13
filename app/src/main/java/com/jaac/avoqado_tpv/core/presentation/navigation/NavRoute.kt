@@ -50,6 +50,14 @@ sealed class NavRoute(val route: String) {
     data object FastPaymentEntry : NavRoute("fast_payment_entry")
 
     /**
+     * Checkout screen - Unified cart inspired by avoqado-android.
+     * 4 tabs: Teclado, Shortcuts, Todos los productos, Configurar.
+     * Additive rollout — runs in parallel with FastPaymentEntry and OrderingWelcome
+     * during validation. Old screens get removed in a separate ola (Phase 8).
+     */
+    data object Checkout : NavRoute("checkout")
+
+    /**
      * Shifts screen - Shift management (open/close shifts)
      */
     data object Shifts : NavRoute("shifts")

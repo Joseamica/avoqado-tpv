@@ -91,6 +91,10 @@ data class TpvSettingsDto(
     @SerializedName("showOrderManagement")
     val showOrderManagement: Boolean?,
 
+    // Unified Checkout — additive rollout, default ON when backend doesn't send it
+    @SerializedName("showCheckout")
+    val showCheckout: Boolean? = null,
+
     @SerializedName("showReports")
     val showReports: Boolean?,
 
@@ -166,6 +170,7 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     // Home screen buttons default to enabled
     showQuickPayment = showQuickPayment ?: true,
     showOrderManagement = showOrderManagement ?: true,
+    showCheckout = showCheckout ?: true,
     showReports = showReports ?: true,
     showPayments = showPayments ?: true,
     showSupport = showSupport ?: true,
@@ -204,6 +209,7 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     kioskDefaultMerchantId = kioskDefaultMerchantId,
     showQuickPayment = showQuickPayment,
     showOrderManagement = showOrderManagement,
+    showCheckout = showCheckout,
     showReports = showReports,
     showPayments = showPayments,
     showSupport = showSupport,

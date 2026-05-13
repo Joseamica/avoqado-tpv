@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CreditCard
+import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Schedule
@@ -132,6 +133,7 @@ fun WelcomeScreen(
     onStartPaymentWithAmount: (String) -> Unit = {},  // ✅ Keep modal for first-time flow
     onNavigateToShifts: () -> Unit = {},
     onNavigateToOrdering: () -> Unit = {},
+    onNavigateToCheckout: () -> Unit = {},  // 🆕 Unified Checkout (Cobrar) — additive rollout
     onNavigateToReports: () -> Unit = {},
     onNavigateToPayments: () -> Unit = {},  // ⭐ NEW: Navigate to Payments screen
     onNavigateToSupport: () -> Unit = {},  // ⭐ NEW: Navigate to Support screen
@@ -291,6 +293,7 @@ fun WelcomeScreen(
         onStartPaymentWithAmount = onStartPaymentWithAmount,  // ✅ Modal flow for first-time
         onNavigateToShifts = onNavigateToShifts,
         onNavigateToOrdering = onNavigateToOrdering,
+        onNavigateToCheckout = onNavigateToCheckout,  // 🆕 Pass Checkout navigation
         onNavigateToReports = onNavigateToReports,
         onNavigateToPayments = onNavigateToPayments,  // ⭐ NEW: Pass payments navigation
         onNavigateToSupport = onNavigateToSupport,  // ⭐ NEW: Pass support navigation
@@ -515,6 +518,7 @@ private fun WelcomeScreenContent(
     onStartPaymentWithAmount: (String) -> Unit,  // ✅ Modal flow (first-time)
     onNavigateToShifts: () -> Unit,
     onNavigateToOrdering: () -> Unit,
+    onNavigateToCheckout: () -> Unit = {},  // 🆕 Unified Checkout (Cobrar)
     onNavigateToReports: () -> Unit,
     onNavigateToPayments: () -> Unit,  // ⭐ NEW: Navigate to Payments screen
     onNavigateToSupport: () -> Unit,  // ⭐ NEW: Navigate to Support screen
@@ -791,6 +795,27 @@ private fun WelcomeScreenContent(
                     enabled = ordersEnabled,
                     badge = ordersBadge,
                     onClick = onNavigateToOrdering
+                )
+            )
+        }
+
+        // 🆕 "Cobrar" — unified Checkout (Phase 2 of refactor/home/tpv).
+        // Runs in parallel with "Pago rápido" + "Órdenes" during validation.
+        // Once validated in production, those two get removed in a separate ola.
+        if (tpvSettings.showCheckout) {
+            val checkoutEnabled = canOperate && canWork
+            val checkoutBadge = when {
+                !canWork -> "Registra tu entrada"
+                !canOperate -> "Abre el turno primero"
+                else -> null
+            }
+            allButtons.add(
+                ActionButton(
+                    icon = Icons.Default.PointOfSale,
+                    label = "Cobrar",
+                    enabled = checkoutEnabled,
+                    badge = checkoutBadge,
+                    onClick = onNavigateToCheckout
                 )
             )
         }

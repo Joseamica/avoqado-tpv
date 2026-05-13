@@ -145,11 +145,18 @@ data class OrderDiscountDto(
     @SerializedName("reason")
     val reason: String?,
 
+    // ✅ NULLABLE: backend's new createOrderWithItems endpoint returns
+    // OrderDiscount rows with `appliedById` (FK to Staff), and the JSON
+    // response leaves the legacy `appliedBy` string slot empty. Older
+    // endpoints sometimes populate it with a name. Treat both as optional.
     @SerializedName("appliedBy")
-    val appliedBy: String,
+    val appliedBy: String? = null,
+
+    @SerializedName("appliedById")
+    val appliedById: String? = null,
 
     @SerializedName("appliedAt")
-    val appliedAt: String
+    val appliedAt: String? = null,
 )
 
 // ==========================================

@@ -60,8 +60,8 @@ fun OrderItemDetailDto.toOrderItem(): OrderItem {
         id = id,
         orderId = orderId,
         productId = productId ?: "",  // ✅ Handle nullable productId
-        productName = product?.name ?: "Producto eliminado",  // ✅ Handle nullable product
-        productSku = product?.sku ?: "",  // ✅ Handle nullable product
+        productName = product?.name ?: productName ?: "(producto sin nombre)",
+        productSku = product?.sku ?: productSku.orEmpty(),
         quantity = quantity,
         unitPrice = BigDecimal(unitPrice.toString()),
         totalPrice = BigDecimal(totalPrice.toString()),

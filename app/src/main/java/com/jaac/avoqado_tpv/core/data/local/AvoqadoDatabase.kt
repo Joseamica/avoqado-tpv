@@ -104,9 +104,10 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
         TableEntity::class,
         FloorElementEntity::class,
         CachedShiftEntity::class,
-        VerificationQueueEntity::class
+        VerificationQueueEntity::class,
+        com.jaac.avoqado_tpv.core.data.local.entities.MosaicShortcutEntity::class // ⭐ v21
     ],
-    version = 20, // ⭐ Version 20: Stable ordering for draft_order_items
+    version = 21, // ⭐ Version 21: Mosaic shortcuts for unified Checkout
     exportSchema = false // Set to true when adding migrations for production
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -219,6 +220,16 @@ abstract class AvoqadoDatabase : RoomDatabase() {
      * - Cleanup: Delete synced records after confirmation
      */
     abstract fun verificationQueueDao(): VerificationQueueDao
+
+    /**
+     * DAO for checkout shortcut tiles (Mosaic/Shortcuts tab).
+     *
+     * **Use Cases:**
+     * - Persist per-venue shortcuts the operator configures in Checkout
+     * - Observe shortcut list reactively so the Shortcuts grid stays in sync
+     *   with the Configurar tab when the operator edits assignments
+     */
+    abstract fun mosaicShortcutDao(): com.jaac.avoqado_tpv.core.data.local.dao.MosaicShortcutDao
 
     companion object {
         const val DATABASE_NAME = "avoqado_database"
@@ -1340,6 +1351,41 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                         "UPDATE draft_order_items SET line_position = created_at WHERE line_position = 0"
                     )
                 }
+            }
+        }
+
+        /**
+         * Migration from version 20 to version 21: Add `mosaic_shortcut` table.
+         *
+         * **Unified Checkout — Mosaic Shortcuts (2026-05-08)**
+         * Adds a new venue-scoped table to back the "Shortcuts" and "Configurar"
+         * tabs of the new unified Checkout screen. Operators assign products to
+         * positional slots; the table is small (typically <50 rows per venue).
+         *
+         * **Idempotent:** uses `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`.
+         * Safe to re-run if a partial migration left the schema half-applied.
+         */
+        val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `mosaic_shortcut` (
+                        `id` TEXT NOT NULL PRIMARY KEY,
+                        `venue_id` TEXT NOT NULL,
+                        `product_id` TEXT NOT NULL,
+                        `position` INTEGER NOT NULL,
+                        `label` TEXT NOT NULL,
+                        `color_hex` TEXT,
+                        `updated_at` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_mosaic_shortcut_venue_id` ON `mosaic_shortcut` (`venue_id`)"
+                )
+                database.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_mosaic_shortcut_venue_id_position` ON `mosaic_shortcut` (`venue_id`, `position`)"
+                )
             }
         }
     }

@@ -81,6 +81,8 @@ data class TpvSettings(
     // Home screen button visibility (controlled from dashboard)
     val showQuickPayment: Boolean = true,
     val showOrderManagement: Boolean = true,
+    // Unified Checkout (additive rollout — runs in parallel with Pago Rápido + Órdenes)
+    val showCheckout: Boolean = true,
     val showReports: Boolean = true,
     val showPayments: Boolean = true,
     val showSupport: Boolean = true,

@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.ordering.domain
 
+import java.math.BigDecimal
+
 /**
  * Repository interface for Order operations
  *
@@ -92,6 +94,16 @@ interface OrderRepository {
         skipCaching: Boolean = false,
         source: String = "TPV",
         externalId: String? = null
+    ): Result<Order>
+
+    /**
+     * Create a complete order in one backend transaction for the new TPV
+     * Cobrar flow. This is additive and must not replace legacy order flows
+     * unless product explicitly asks for that migration.
+     */
+    suspend fun createOrderWithItems(
+        venueId: String,
+        request: TpvCreateOrderWithItemsRequest
     ): Result<Order>
 
     /**
@@ -516,3 +528,31 @@ data class AddOrderItemRequest(
         require(productId.isNotBlank()) { "Product ID cannot be blank" }
     }
 }
+
+data class TpvCreateOrderWithItemsRequest(
+    val items: List<TpvCreateOrderWithItemsItem>,
+    val staffId: String,
+    val orderType: OrderType = OrderType.TAKEOUT,
+    val source: String = "TPV",
+    val tableId: String? = null,
+    val customerId: String? = null,
+    val discount: BigDecimal = BigDecimal.ZERO,
+    val orderDiscountId: String? = null,
+    val taxAmount: BigDecimal = BigDecimal.ZERO,
+    val tip: BigDecimal = BigDecimal.ZERO,
+    val subtotal: BigDecimal,
+    val total: BigDecimal,
+    val note: String? = null,
+)
+
+data class TpvCreateOrderWithItemsItem(
+    val productId: String? = null,
+    val name: String? = null,
+    val quantity: Int,
+    val unitPrice: BigDecimal? = null,
+    val modifierIds: List<String> = emptyList(),
+    val notes: String? = null,
+    val isCortesia: Boolean = false,
+    val cortesiaReason: String? = null,
+    val itemDiscountId: String? = null,
+)

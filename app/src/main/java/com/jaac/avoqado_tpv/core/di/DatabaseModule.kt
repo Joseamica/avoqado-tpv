@@ -97,7 +97,8 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_16_17,  // 🔴 CRITICAL: Fix pending_payments missing columns (v1.1.x → v1.3.0 production crash)
                 AvoqadoDatabase.MIGRATION_17_18,  // 🪑 Floor plan cache (tables + floor elements)
                 AvoqadoDatabase.MIGRATION_18_19,  // 🛠️ Schema hash fix (idempotent)
-                AvoqadoDatabase.MIGRATION_19_20   // 🧾 Stable ordering (line_position)
+                AvoqadoDatabase.MIGRATION_19_20,  // 🧾 Stable ordering (line_position)
+                AvoqadoDatabase.MIGRATION_20_21   // 🛒 Mosaic shortcuts for unified Checkout
             )
 
             // ⚠️ DEVELOPMENT ONLY: Destructive migration (data loss on schema change)
@@ -143,6 +144,19 @@ object DatabaseModule {
         database: AvoqadoDatabase
     ): PendingPaymentDao {
         return database.pendingPaymentDao()
+    }
+
+    /**
+     * Provides MosaicShortcutDao for unified Checkout shortcut tiles.
+     *
+     * **Injected Into:**
+     * - MosaicRepositoryImpl (features/checkout/data)
+     */
+    @Provides
+    fun provideMosaicShortcutDao(
+        database: AvoqadoDatabase
+    ): com.jaac.avoqado_tpv.core.data.local.dao.MosaicShortcutDao {
+        return database.mosaicShortcutDao()
     }
 
     /**

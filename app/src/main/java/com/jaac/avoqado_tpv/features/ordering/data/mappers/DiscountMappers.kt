@@ -93,8 +93,12 @@ fun OrderDiscountDto.toOrderDiscount(): OrderDiscount {
         value = BigDecimal.valueOf(value),
         amount = BigDecimal.valueOf(amount),
         reason = reason,
-        appliedBy = appliedBy,
-        appliedAt = parseInstant(appliedAt) ?: Instant.now()
+        // Backend may return `appliedBy` (legacy string) OR `appliedById` (FK).
+        // For new flows (createOrderWithItems cortesía rows), only `appliedById`
+        // is present; older endpoints sometimes send a resolved name in
+        // `appliedBy`. Fall back through both and finally empty.
+        appliedBy = appliedBy ?: appliedById ?: "",
+        appliedAt = appliedAt?.let { parseInstant(it) } ?: Instant.now()
     )
 }
 

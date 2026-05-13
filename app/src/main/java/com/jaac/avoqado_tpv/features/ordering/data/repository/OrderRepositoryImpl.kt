@@ -7,6 +7,8 @@ import com.jaac.avoqado_tpv.features.ordering.data.dto.ApplyDiscountRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.CompItemsRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.CreateAndAddCustomerRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.CreateOrderRequest
+import com.jaac.avoqado_tpv.features.ordering.data.dto.TpvCreateOrderWithItemsItemDto
+import com.jaac.avoqado_tpv.features.ordering.data.dto.TpvCreateOrderWithItemsRequest as TpvCreateOrderWithItemsRequestDto
 import com.jaac.avoqado_tpv.features.ordering.data.dto.UpdateGuestRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.VoidItemsRequest
 import com.jaac.avoqado_tpv.features.ordering.data.mappers.toOrder
@@ -20,6 +22,7 @@ import com.jaac.avoqado_tpv.features.ordering.domain.OrderCustomer
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
+import com.jaac.avoqado_tpv.features.ordering.domain.TpvCreateOrderWithItemsRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -253,6 +256,92 @@ class OrderRepositoryImpl @Inject constructor(
             }
         } catch (e: Exception) {
             Timber.e(e, "Exception in createOrder")
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun createOrderWithItems(
+        venueId: String,
+        request: TpvCreateOrderWithItemsRequest
+    ): Result<Order> {
+        return try {
+            val dto = TpvCreateOrderWithItemsRequestDto(
+                items = request.items.map { item ->
+                    TpvCreateOrderWithItemsItemDto(
+                        productId = item.productId,
+                        name = item.name,
+                        quantity = item.quantity,
+                        unitPrice = item.unitPrice?.toDouble(),
+                        modifierIds = item.modifierIds,
+                        notes = item.notes,
+                        isCortesia = item.isCortesia,
+                        cortesiaReason = item.cortesiaReason,
+                        itemDiscountId = item.itemDiscountId,
+                    )
+                },
+                staffId = request.staffId,
+                orderType = when (request.orderType) {
+                    OrderType.DINE_IN -> "DINE_IN"
+                    OrderType.TAKEOUT -> "TAKEOUT"
+                    OrderType.DELIVERY -> "DELIVERY"
+                    OrderType.PICKUP -> "PICKUP"
+                },
+                source = request.source,
+                tableId = request.tableId,
+                customerId = request.customerId,
+                discount = request.discount.toDouble(),
+                orderDiscountId = request.orderDiscountId,
+                taxAmount = request.taxAmount.toDouble(),
+                tip = request.tip.toDouble(),
+                subtotal = request.subtotal.toDouble(),
+                total = request.total.toDouble(),
+                note = request.note,
+            )
+
+            val response = apiService.createOrderWithItems(venueId, dto)
+            if (response.isSuccessful) {
+                val body = response.body()
+                if (body != null && body.success) {
+                    val order = body.data.toOrder()
+                    Timber.i("✅ [Checkout] Created order with items | id=${order.id} | total=${order.total}")
+                    withContext(Dispatchers.IO) {
+                        try {
+                            Timber.d("💾 [Cache] Caching checkout order to local DB | id=${order.id} | items=${order.items.size}")
+
+                            val draftOrderEntity = order.toEntity(
+                                syncStatus = com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderEntity.SYNC_STATUS_SYNCED,
+                                isServerCreated = true
+                            )
+                            val draftItemEntities = order.items.toEntities(
+                                syncStatus = com.jaac.avoqado_tpv.core.data.local.entities.DraftOrderItemEntity.SYNC_STATUS_SYNCED,
+                                isServerCreated = true
+                            )
+
+                            draftOrderDao.insert(draftOrderEntity)
+                            draftItemEntities.forEach { item ->
+                                draftOrderItemDao.insert(item)
+                            }
+                        } catch (cacheError: Exception) {
+                            Timber.e(cacheError, "❌ [Cache] Failed to cache checkout order: ${order.id}")
+                        }
+                    }
+                    Result.success(order)
+                } else {
+                    Result.failure(Exception("Invalid response from server"))
+                }
+            } else {
+                val errorMessage = when (response.code()) {
+                    400 -> "No se pudo crear la orden. Verifica descuentos, cortesías o totales."
+                    401 -> "No autorizado. Por favor inicia sesión nuevamente."
+                    403 -> "No tienes permiso para crear órdenes."
+                    404 -> "Producto, descuento o staff no encontrado."
+                    else -> "Error al crear orden: ${response.code()}"
+                }
+                Timber.e("❌ [Checkout] createOrderWithItems failed: $errorMessage")
+                Result.failure(Exception(errorMessage))
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Checkout] Exception in createOrderWithItems")
             Result.failure(e)
         }
     }

@@ -62,6 +62,7 @@ import androidx.navigation.compose.rememberNavController
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.screens.FastPaymentEntryScreen
 import com.jaac.avoqado_tpv.core.presentation.screens.WelcomeScreen
+import com.jaac.avoqado_tpv.features.checkout.presentation.CheckoutScreen
 import com.jaac.avoqado_tpv.core.session.SessionEvent
 import com.jaac.avoqado_tpv.core.session.SessionManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
@@ -889,6 +890,12 @@ fun AppNavigation(
                         navController.navigate(NavRoute.OrderingWelcome.route)
                     }
                 },
+                onNavigateToCheckout = {
+                    // Phase 2: open Checkout without awaiting PAX init. The PAX
+                    // gate moves to the Cobrar → PaymentScreen transition in Phase 5.
+                    Timber.d("[PERF] NAV: Welcome → Checkout START")
+                    navController.navigate(NavRoute.Checkout.route)
+                },
                 onNavigateToReports = {
                     // Navigate to Reports screen
                     navController.navigate(NavRoute.Reports.route)
@@ -1030,6 +1037,51 @@ fun AppNavigation(
                         navController.navigate(getPaymentRoute())
                     }
                 }
+            )
+        }
+
+        // Unified Checkout — Phase 5: routes "Cobrar" to PaymentScreen for both
+        // the FAST flow (only custom amounts → just amount in savedStateHandle)
+        // and the ORDER flow (catalog products → backend Order created, then
+        // amount + orderId + orderNumber forwarded to Payment).
+        composable(NavRoute.Checkout.route) {
+            val checkoutScope = rememberCoroutineScope()
+            CheckoutScreen(
+                onNavigateBack = { navController.safePopBackStack() },
+                onNavigateToPayment = { payload ->
+                    checkoutScope.launch {
+                        if (!awaitPaxPaymentReady(context, initializationManager, "Checkout payment")) {
+                            return@launch
+                        }
+                        navController.currentBackStackEntry?.savedStateHandle?.apply {
+                            set("initialAmount", payload.amountPesosString)
+                            // Tag the source so the Payment success screen knows
+                            // to route "Nueva Orden" / "Nuevo Pago" back to the
+                            // unified Cart instead of the legacy FastPaymentEntry
+                            // or MenuScreen.
+                            set("entryPoint", "checkout")
+                            when (payload) {
+                                is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Order -> {
+                                    set("orderId", payload.orderId)
+                                    set("orderNumber", payload.orderNumber)
+                                    set("wasPayLaterOrder", payload.wasPayLaterOrder)
+                                }
+                                is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.Fast -> {
+                                    // Nothing extra — FAST flow uses just initialAmount,
+                                    // matching the existing FastPaymentEntry behavior.
+                                }
+                                is com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload.CompletedFreeCart -> {
+                                    // Unreachable: CheckoutScreen short-circuits this payload
+                                    // (free cart already closed on the backend; UI shows a
+                                    // snackbar and stays on Checkout instead of navigating).
+                                    // Branch kept exhaustive for the compiler.
+                                }
+                            }
+                        }
+                        Timber.d("💳 Checkout → Payment: origin=${payload.origin} amount=${payload.amountPesosString}")
+                        navController.navigate(getPaymentRoute())
+                    }
+                },
             )
         }
 
@@ -1236,6 +1288,11 @@ fun AppNavigation(
             val orderId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderId")
             val orderNumber = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderNumber")
             val tableId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("tableId")
+            // 🛒 Source identifier — when "checkout", post-success "Nueva Orden"
+            // / "Nuevo Pago" route back to the unified Cart instead of the
+            // legacy MenuScreen / FastPaymentEntry.
+            val entryPoint = navController.previousBackStackEntry?.savedStateHandle?.get<String>("entryPoint")
+            val cameFromCheckout = entryPoint == "checkout"
             // 📱 SERIALIZED SALE: Skip local order validation (order exists only on backend)
             val skipLocalOrderValidation = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("skipLocalOrderValidation") ?: false
             // 📱 PORTABILIDAD: Controls 1 vs 2 proof-of-sale photos
@@ -1379,14 +1436,24 @@ fun AppNavigation(
                     navController.navigate(NavRoute.Shifts.route)
                 },
                 onNavigateToNewOrder = {
-                    // 🔄 Toast/Square Pattern: Navigate FORWARD to fresh MenuScreen instance
-                    // This creates a new order with fresh ViewModel (no state reuse/patching)
-                    navController.navigate(NavRoute.Menu.createRoute("CREATE_QUICK_ORDER")) {
-                        // Pop back to OrderingWelcome but don't include it
-                        // Stack: OrderingWelcome → MenuScreen (NEW)
-                        popUpTo(NavRoute.OrderingWelcome.route) { inclusive = false }
+                    if (cameFromCheckout) {
+                        // 🛒 Came from unified Cart → return there with a fresh
+                        // CheckoutViewModel (popping past Home creates a new
+                        // backstack entry, so the cart starts empty).
+                        navController.navigate(NavRoute.Checkout.route) {
+                            popUpTo(NavRoute.Home.route) { inclusive = false }
+                        }
+                        Timber.d("🛒 [Navigation] Nueva Orden: returning to unified Checkout")
+                    } else {
+                        // 🔄 Toast/Square Pattern: Navigate FORWARD to fresh MenuScreen instance
+                        // This creates a new order with fresh ViewModel (no state reuse/patching)
+                        navController.navigate(NavRoute.Menu.createRoute("CREATE_QUICK_ORDER")) {
+                            // Pop back to OrderingWelcome but don't include it
+                            // Stack: OrderingWelcome → MenuScreen (NEW)
+                            popUpTo(NavRoute.OrderingWelcome.route) { inclusive = false }
+                        }
+                        Timber.d("🔄 [Navigation] Toast/Square pattern: Navigated to NEW quick order")
                     }
-                    Timber.d("🔄 [Navigation] Toast/Square pattern: Navigated to NEW quick order")
                 },
                 onNavigateToSerializedSale = {
                     // 📱 Serialized sale: return to scanner flow, avoid quick order menu
@@ -1410,12 +1477,21 @@ fun AppNavigation(
                     Timber.d("📱 [Navigation] Serialized sale: Returned to scanner flow")
                 },
                 onNavigateToNewFastPayment = {
-                    // 🔄 Navigate to FastPaymentEntryScreen for new fast payment
-                    navController.navigate(NavRoute.FastPaymentEntry.route) {
-                        // Pop back to Home but don't include it (keep Home in backstack)
-                        popUpTo(NavRoute.Home.route) { inclusive = false }
+                    if (cameFromCheckout) {
+                        // 🛒 Came from unified Cart → return there with a fresh
+                        // CheckoutViewModel.
+                        navController.navigate(NavRoute.Checkout.route) {
+                            popUpTo(NavRoute.Home.route) { inclusive = false }
+                        }
+                        Timber.d("🛒 [Navigation] Nuevo Pago: returning to unified Checkout")
+                    } else {
+                        // 🔄 Navigate to FastPaymentEntryScreen for new fast payment
+                        navController.navigate(NavRoute.FastPaymentEntry.route) {
+                            // Pop back to Home but don't include it (keep Home in backstack)
+                            popUpTo(NavRoute.Home.route) { inclusive = false }
+                        }
+                        Timber.d("🔄 [Navigation] Fast payment: Navigated to FastPaymentEntryScreen")
                     }
-                    Timber.d("🔄 [Navigation] Fast payment: Navigated to FastPaymentEntryScreen")
                 },
                 onClearTableAndReturnToFloorPlan = { clearedTableId ->
                     // 🪑 Square Pattern: Clear table and return to floor plan

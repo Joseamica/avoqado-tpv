@@ -45,6 +45,26 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
     lateinit var secureStorage: SecureStorage
 
     override fun onCreate() {
+        // ⚠️ CRITICAL: Initialize Blumon's AppManager.dal BEFORE super.onCreate().
+        // super.onCreate() triggers Hilt's hiltInternalInject() which eagerly
+        // resolves the Singleton graph. Some of those singletons (e.g.
+        // NeptunePollingRepositoryImpl) read AppManager.dal in their
+        // constructor; if it's still uninitialized at that point, the whole
+        // app crashes at startup with UninitializedPropertyAccessException.
+        //
+        // Calling AppManager.init() here is idempotent (calls into BlumonPay
+        // SDK that's safe to invoke multiple times) and only takes effect on
+        // PAX builds. On non-PAX flavors (Nexgo, emulator), the SDK throws
+        // UnsatisfiedLinkError which we swallow — the Hilt graph for those
+        // flavors doesn't need NeptunePollingRepositoryImpl anyway.
+        if (BuildConfig.ENABLE_PAX_SDK) {
+            try {
+                com.blumonpay.pax.utils.AppManager.init(this)
+            } catch (e: Throwable) {
+                android.util.Log.w("AvoqadoTPVApp", "AppManager.init() failed at app create (non-PAX device?): ${e.message}")
+            }
+        }
+
         super.onCreate()
 
         // ✅ Initialize critical components only (startup optimization)

@@ -6,6 +6,7 @@ import com.jaac.avoqado_tpv.features.ordering.data.dto.ApplyDiscountRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.CompItemsRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.CreateOrderRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.OrderDto
+import com.jaac.avoqado_tpv.features.ordering.data.dto.TpvCreateOrderWithItemsRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.UpdateGuestRequest
 import com.jaac.avoqado_tpv.features.ordering.data.dto.VoidItemsRequest
 import retrofit2.Response
@@ -174,6 +175,12 @@ interface OrderApiService {
     suspend fun createOrder(
         @Path("venueId") venueId: String,
         @Body request: CreateOrderRequest
+    ): Response<ApiResponse<OrderDto>>
+
+    @POST("tpv/venues/{venueId}/orders/with-items")
+    suspend fun createOrderWithItems(
+        @Path("venueId") venueId: String,
+        @Body request: TpvCreateOrderWithItemsRequest
     ): Response<ApiResponse<OrderDto>>
 
     /**

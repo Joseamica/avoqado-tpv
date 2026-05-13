@@ -50,24 +50,34 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
     lateinit var sdkTokenRefreshScheduler: com.jaac.avoqado_tpv.features.payment.data.SdkTokenRefreshScheduler
 
     override fun onCreate() {
-        // ⚠️ CRITICAL: Initialize Blumon's AppManager.dal BEFORE super.onCreate().
-        // super.onCreate() triggers Hilt's hiltInternalInject() which eagerly
+        // ⚠️ CRITICAL: Prepare Blumon's `AppManager.dal` BEFORE super.onCreate().
+        // super.onCreate() triggers Hilt's `hiltInternalInject()` which eagerly
         // resolves the Singleton graph. Some of those singletons (e.g.
-        // NeptunePollingRepositoryImpl) read AppManager.dal in their
-        // constructor; if it's still uninitialized at that point, the whole
-        // app crashes at startup with UninitializedPropertyAccessException.
+        // `NeptunePollingRepositoryImpl`) read `AppManager.dal` in their
+        // constructor regardless of flavor — even Nexgo, because the Blumon
+        // AAR is on the Nexgo classpath (Java stubs only; native .so libs
+        // never invoked). If `dal` is still uninitialized at that point, the
+        // whole app crashes at startup with UninitializedPropertyAccessException.
         //
-        // Calling AppManager.init() here is idempotent (calls into BlumonPay
-        // SDK that's safe to invoke multiple times) and only takes effect on
-        // PAX builds. On non-PAX flavors (Nexgo, emulator), the SDK throws
-        // UnsatisfiedLinkError which we swallow — the Hilt graph for those
-        // flavors doesn't need NeptunePollingRepositoryImpl anyway.
+        // PAX flavors: call the real `AppManager.init(this)` which loads
+        // native libs and binds `dal` to the PAX SDK's IDAL. On Nexgo /
+        // emulator this throws UnsatisfiedLinkError before binding `dal`.
+        //
+        // Nexgo flavor: install a no-op `IDAL` proxy as `dal` so Blumon
+        // singletons can be eagerly resolved by Hilt without crashing. These
+        // singletons are never actually invoked on Nexgo (the payment flow
+        // routes through AngelPay via `BuildConfig.ENABLE_PAX_SDK=false`).
         if (BuildConfig.ENABLE_PAX_SDK) {
             try {
                 com.blumonpay.pax.utils.AppManager.init(this)
             } catch (e: Throwable) {
-                android.util.Log.w("AvoqadoTPVApp", "AppManager.init() failed at app create (non-PAX device?): ${e.message}")
+                android.util.Log.w(
+                    "AvoqadoTPVApp",
+                    "AppManager.init() failed at app create (non-PAX device?): ${e.message}",
+                )
             }
+        } else {
+            installBlumonStubForNonPax()
         }
 
         super.onCreate()
@@ -241,6 +251,67 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
         } catch (e: Throwable) {
             // Catches UnsatisfiedLinkError (Error, not Exception) on non-PAX devices
             Timber.e(e, "❌ Error initializing Blumon PAX SDK")
+        }
+    }
+
+    /**
+     * Installs a no-op `IDAL` proxy as `AppManager.dal` so Hilt can eagerly
+     * resolve Blumon singletons (NeptunePollingRepositoryImpl,
+     * StopDetectCardUseCase, etc.) on Nexgo/emulator without crashing.
+     *
+     * These singletons end up in the graph because they're reachable from
+     * the Application's @Inject deps and Hilt resolves them at app create
+     * time. Their constructors read `AppManager.dal` and `dal.getCardReaderHelper()`
+     * — both must return non-null. On Nexgo we never invoke any of their
+     * methods (the payment flow routes through AngelPay), so empty proxies
+     * are sufficient.
+     *
+     * Uses `java.lang.reflect.Proxy` so we don't have to take a hard
+     * compile-time dep on PAX SDK internals. If the IDAL interface isn't
+     * on the classpath (unlikely — the Blumon AAR is included in all
+     * flavors for Hilt class-resolution purposes), we swallow and let the
+     * original crash surface so we can debug.
+     */
+    private fun installBlumonStubForNonPax() {
+        try {
+            val classLoader = AvoqadoTPVApplication::class.java.classLoader
+                ?: return
+            val idalClass = Class.forName("com.pax.dal.IDAL", true, classLoader)
+            val cardReaderHelperClass = Class.forName("com.pax.dal.ICardReaderHelper", true, classLoader)
+
+            // No-op handler — returns null for any unknown method.
+            val noopHandler = java.lang.reflect.InvocationHandler { _, _, _ -> null }
+
+            val cardReaderStub = java.lang.reflect.Proxy.newProxyInstance(
+                classLoader,
+                arrayOf(cardReaderHelperClass),
+                noopHandler,
+            )
+
+            val idalStub = java.lang.reflect.Proxy.newProxyInstance(
+                classLoader,
+                arrayOf(idalClass),
+            ) { _, method, _ ->
+                // NeptunePollingRepositoryImpl.<init> reads
+                // `dal.getCardReaderHelper()` and Intrinsics.checkNotNull's
+                // the result. Return our stub so the null-check passes.
+                when (method.name) {
+                    "getCardReaderHelper" -> cardReaderStub
+                    else -> null
+                }
+            }
+
+            com.blumonpay.pax.utils.AppManager.dal = idalStub as com.pax.dal.IDAL
+            android.util.Log.i(
+                "AvoqadoTPVApp",
+                "Installed Blumon IDAL no-op stub for non-PAX flavor (${BuildConfig.FLAVOR})",
+            )
+        } catch (e: Throwable) {
+            android.util.Log.e(
+                "AvoqadoTPVApp",
+                "Failed to install Blumon stub for non-PAX flavor: ${e.message}",
+                e,
+            )
         }
     }
 

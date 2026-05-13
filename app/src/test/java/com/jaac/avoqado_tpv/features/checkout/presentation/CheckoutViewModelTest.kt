@@ -684,37 +684,52 @@ class CheckoutViewModelTest {
     }
 
     @Test
-    fun `createPayLaterOrder fails when cart has no product items`() = runTest {
+    fun `createPayLaterOrder succeeds with cart of custom amounts when customer is selected`() = runTest {
+        // Pay-later doesn't require catalog products specifically — any
+        // non-empty cart with a customer + non-zero total is valid. The
+        // operator might legitimately give credit on a "$50 service" custom
+        // line and need to record who owes it.
+        val fakeOrder = fakeOrder(id = "ord-pl", orderNumber = "T-PL", version = 1)
+        coEvery { orderRepository.createOrderWithItems(any(), any()) } returns Result.success(fakeOrder)
+
         val viewModel = createViewModel()
         viewModel.selectCustomer(fakeCustomer(id = "c-1"))
         viewModel.addCustomAmount("Servicio", amountCents = 5000)
 
         val result = viewModel.createPayLaterOrder()
 
-        assertTrue(result.isFailure)
-        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), any()) }
+        assertTrue(result.isSuccess)
+        assertEquals("ord-pl", result.getOrThrow().id)
+        coVerify(exactly = 1) { orderRepository.createOrderWithItems(any(), any()) }
 
         viewModel.viewModelScope.cancel()
     }
 
     @Test
-    fun `createPayLaterOrder always fails in Cobrar V1 — pay-later disabled`() = runTest {
-        // Pay-later is BLOCKED in v1 of the new Cobrar flow. The existing
-        // settleOrder backend path doesn't deduct inventory on dashboard
-        // settle, so we can't ship pay-later from here without surfacing
-        // historical drift. Legacy OrderingWelcome → MenuScreen pay-later
-        // path is unchanged.
+    fun `createPayLaterOrder creates an order via the with-items endpoint when customer is set`() = runTest {
+        // Pay-later in V1 reuses the new createOrderWithItems endpoint — the
+        // order stays PENDING because the customerId travels in the request
+        // but no Payment row is created. Dashboard "Cuentas por Cobrar"
+        // picks it up via `onlyPayLater`.
+        val fakeOrder = fakeOrder(id = "ord-99", orderNumber = "T-099", version = 1)
+        coEvery { orderRepository.createOrderWithItems(any(), any()) } returns Result.success(fakeOrder)
+
         val viewModel = createViewModel()
         viewModel.selectCustomer(fakeCustomer(id = "c-1", firstName = "Ana"))
         viewModel.addProduct(fakeProduct(id = "p-1"), quantity = 1)
 
         val result = viewModel.createPayLaterOrder()
 
-        assertTrue(result.isFailure)
-        assertTrue(result.exceptionOrNull() is UnsupportedOperationException)
-        coVerify(exactly = 0) { orderRepository.createOrderWithItems(any(), any()) }
+        assertTrue(result.isSuccess)
+        assertEquals("ord-99", result.getOrThrow().id)
+        coVerify(exactly = 1) {
+            orderRepository.createOrderWithItems(
+                any(),
+                match { req -> req.customerId == "c-1" && req.items.any { it.productId == "p-1" } },
+            )
+        }
+        // Legacy 2-call path must NOT be invoked anymore.
         coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), any()) }
-        coVerify(exactly = 0) { orderRepository.addCustomerToOrder(any(), any(), any()) }
 
         viewModel.viewModelScope.cancel()
     }

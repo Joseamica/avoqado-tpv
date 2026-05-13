@@ -2155,6 +2155,12 @@ fun AppNavigation(
             val initialAmount = navController.previousBackStackEntry?.savedStateHandle?.get<String>("initialAmount")
             val orderId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderId")
             val orderNumber = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderNumber")
+            // ENTRY POINT — matches Blumon PaymentScreen pattern. When Cobrar
+            // (unified Checkout) drove us here, the "Nuevo Cobro" success
+            // button must return to a fresh CheckoutScreen, not pop to the
+            // legacy FastPaymentEntry/MenuScreen.
+            val entryPoint = navController.previousBackStackEntry?.savedStateHandle?.get<String>("entryPoint")
+            val cameFromCheckout = entryPoint == "checkout"
 
             com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentScreen(
                 initialAmount = initialAmount,
@@ -2183,6 +2189,18 @@ fun AppNavigation(
                 onNavigateToShifts = {
                     navController.navigate(NavRoute.Shifts.route)
                 },
+                onStartNewPaymentOverride = if (cameFromCheckout) {
+                    {
+                        // 🛒 Return to unified Cobrar with a fresh CheckoutViewModel.
+                        // popUpTo(Home, inclusive=false) + navigate(Checkout) gives
+                        // us a brand new backstack entry → fresh VM → empty cart,
+                        // matching the Blumon PaymentScreen Cobrar path.
+                        navController.navigate(NavRoute.Checkout.route) {
+                            popUpTo(NavRoute.Home.route) { inclusive = false }
+                        }
+                        Timber.d("🛒 [AngelPay] Nuevo Cobro: returning to unified Checkout")
+                    }
+                } else null,
             )
         }
 

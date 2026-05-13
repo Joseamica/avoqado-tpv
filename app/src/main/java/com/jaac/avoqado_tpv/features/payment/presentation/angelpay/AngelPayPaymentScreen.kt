@@ -72,6 +72,15 @@ fun AngelPayPaymentScreen(
     onNavigateHome: () -> Unit,
     onNavigateToTransactions: () -> Unit = {},
     onNavigateToShifts: () -> Unit = {},
+    /**
+     * Optional override for the "Nuevo Cobro" success-screen button. When
+     * null (default), the button pops back to wherever brought us here
+     * (legacy Pago Rápido / Órdenes flow). When set, takes over to route
+     * the operator to the unified Cobrar Checkout — used by the Cobrar
+     * flow so the success screen returns to the new cart with a fresh
+     * `CheckoutViewModel` instead of the legacy entry points.
+     */
+    onStartNewPaymentOverride: (() -> Unit)? = null,
     viewModel: AngelPayPaymentViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -205,7 +214,15 @@ fun AngelPayPaymentScreen(
                         viewModel.resetPayment()
                         showSuccessContent = false
                         showApprovedAnimation = false
-                        onNavigateBack()
+                        // If the caller provided an override (Cobrar flow), use
+                        // it so we navigate to the unified Checkout with a
+                        // fresh ViewModel. Otherwise fall back to popping the
+                        // backstack (legacy behavior).
+                        if (onStartNewPaymentOverride != null) {
+                            onStartNewPaymentOverride()
+                        } else {
+                            onNavigateBack()
+                        }
                     },
                 )
             }

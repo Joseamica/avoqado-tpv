@@ -44,6 +44,11 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
     @Inject
     lateinit var secureStorage: SecureStorage
 
+    // Refreshes Blumon's 24h OAuth token before it expires server-side (per Edgardo, 2026-05-12).
+    // Started in onCreate when the PAX SDK is enabled. See SdkTokenRefreshScheduler kdoc.
+    @Inject
+    lateinit var sdkTokenRefreshScheduler: com.jaac.avoqado_tpv.features.payment.data.SdkTokenRefreshScheduler
+
     override fun onCreate() {
         // ⚠️ CRITICAL: Initialize Blumon's AppManager.dal BEFORE super.onCreate().
         // super.onCreate() triggers Hilt's hiltInternalInject() which eagerly
@@ -75,6 +80,13 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
             provisionAngelPayQACredentials()
         }
         initializeAngelPaySdkIfEnabled()
+
+        // ⏰ Start the Blumon OAuth token refresh scheduler (PAX builds only). No-op on Nexgo
+        // because the Blumon SDK is not initialized there. Safe to call before
+        // initializeNonCritical() — the scheduler only acts after the first successful init.
+        if (BuildConfig.ENABLE_PAX_SDK) {
+            sdkTokenRefreshScheduler.start(applicationScope)
+        }
 
         // ⚠️ Defer non-critical initialization to background
         applicationScope.launch {

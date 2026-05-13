@@ -407,6 +407,34 @@ class InitializationManager @Inject constructor(
     }
 
     /**
+     * Invalidate the in-memory init flag so the next caller of [awaitInitialization] or
+     * [ensureInitialized] will run the full init sequence.
+     *
+     * **Why it exists**: Blumon's OAuth token has a server-side TTL of 24h (confirmed by
+     * Edgardo / Blumon on 2026-05-12) with no automatic refresh inside the SDK
+     * (`GlobalResources.tokenAuth` is a static `String` that the integrating app must
+     * re-seed by re-running `InitializerUseCase`). Without invalidating the in-memory flag,
+     * a long-lived process keeps using a token that has expired server-side, and
+     * `SaleIccUseCase` starts failing with `MomentumFailure` ("invalid_token" body) until
+     * the TPV is rebooted.
+     *
+     * **Safety contract**: the caller MUST ensure no payment / merchant-switch / SDK-init
+     * operation is in progress before calling this. See [SdkTokenRefreshScheduler], which
+     * uses [CriticalNetworkOperationManager.isAnyCriticalOperationInProgress] as the guard.
+     *
+     * **What this does NOT do**: it does NOT call `InitializerUseCase` proactively. The
+     * next payment will pay the 2-3 second init cost (same loader `"Configurando sistema
+     * de pago…"` already shown on first cobro post-app-launch). This keeps the refresh
+     * lazy and avoids running the SDK init in the background when nobody is waiting.
+     */
+    fun invalidateForRefresh() {
+        if (_isInitialized.value) {
+            Timber.w("⚠️ [InitializationManager] In-memory flag invalidated by refresh scheduler (24h OAuth TTL)")
+            _isInitialized.value = false
+        }
+    }
+
+    /**
      * Force re-initialization (for testing, troubleshooting, or merchant switching)
      *
      * Clears timestamp and executes full init sequence.

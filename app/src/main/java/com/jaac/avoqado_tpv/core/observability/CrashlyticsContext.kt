@@ -158,6 +158,87 @@ object CrashlyticsContext {
         }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to record EMV stall") }
     }
 
+    /**
+     * Snapshot SDK-staleness signals at the moment a Blumon SaleIcc/SaleCtls failure happens.
+     *
+     * Why: investigating MomentumFailure recurring after long-lived processes (Doña Simona case,
+     * 2026-05-12). Blumon/Edgardo confirmed (2026-05-12) the OAuth token has a server-side TTL
+     * of 24h with no automatic refresh in the SDK — the integrating app is responsible for
+     * re-running `InitializerUseCase`. We need data from real prod failures to validate the
+     * hypothesis before changing the init flow.
+     *
+     * Pure observability — does not change any control flow. **MUST be called BEFORE the
+     * `Timber.e(...)` that triggers `recordException` in `CrashReportingTree`**, so the custom
+     * keys are attached to the non-fatal that gets reported.
+     *
+     * All signals consolidated into a single Crashlytics custom key `sdk_state_snapshot` to
+     * stay well within the 64-key Firebase limit (current count: ~53). Keys are space-separated
+     * `name=value` pairs for easy parsing on the dashboard.
+     *
+     * Fields captured:
+     *  - failure=<class>             SaleIccFailure subclass or EXCEPTION:<Throwable>
+     *  - initFlag=true|false         `_isInitialized.value` (in-memory)
+     *  - ageHours=<long>             Hours since last successful init, -1 if never initialized
+     *  - posIdInit=<string>          Last init's posId (from disk)
+     *  - posIdCurrent=<string>       Currently selected merchant's posId
+     *  - serialInit=<string>         Last init's serial (from disk)
+     *  - serialCurrent=<string>      TerminalConfig.serialNumber (runtime)
+     *  - merchantMismatch=true|false posIdInit ≠ posIdCurrent OR serialInit ≠ serialCurrent
+     *  - fallback=true|false         `MerchantRepository.isUsingFallback()`
+     *  - uptimeMin=<long>            SystemClock.elapsedRealtime / 60_000
+     *  - env=PROD|SAND               BuildConfig.BLUMON_ENV
+     */
+    fun recordSdkStalenessSnapshot(
+        failureClass: String,
+        initFlagInMemory: Boolean,
+        lastInitTimestampMs: Long?,
+        lastInitPosId: String?,
+        currentMerchantPosId: String?,
+        lastInitSerial: String?,
+        currentSerial: String?,
+        merchantIsFallback: Boolean,
+        processUptimeMs: Long,
+        blumonEnv: String,
+    ) {
+        runCatching {
+            val nowMs = System.currentTimeMillis()
+            val ageHours: Long = if (lastInitTimestampMs != null && lastInitTimestampMs > 0) {
+                (nowMs - lastInitTimestampMs) / 3_600_000L
+            } else {
+                -1L
+            }
+            val uptimeMinutes = processUptimeMs / 60_000L
+            val posIdInit = lastInitPosId.orEmpty()
+            val posIdCurrent = currentMerchantPosId.orEmpty()
+            val serialInit = lastInitSerial.orEmpty()
+            val serialCurrent = currentSerial.orEmpty()
+            // merchantMismatch fires when init ran with a different merchant than current.
+            // Catches the case where switchMerchant() no-op'd because the active merchant matched
+            // the cached one but the underlying SDK was initialized with a stale context.
+            val merchantMismatch =
+                (posIdInit.isNotEmpty() && posIdCurrent.isNotEmpty() && posIdInit != posIdCurrent) ||
+                    (serialInit.isNotEmpty() && serialCurrent.isNotEmpty() && serialInit != serialCurrent)
+
+            val snapshot = buildString {
+                append("failure=").append(failureClass).append(' ')
+                append("initFlag=").append(initFlagInMemory).append(' ')
+                append("ageHours=").append(ageHours).append(' ')
+                append("posIdInit=").append(posIdInit).append(' ')
+                append("posIdCurrent=").append(posIdCurrent).append(' ')
+                append("serialInit=").append(serialInit).append(' ')
+                append("serialCurrent=").append(serialCurrent).append(' ')
+                append("merchantMismatch=").append(merchantMismatch).append(' ')
+                append("fallback=").append(merchantIsFallback).append(' ')
+                append("uptimeMin=").append(uptimeMinutes).append(' ')
+                append("env=").append(blumonEnv)
+            }
+            FirebaseCrashlytics.getInstance().apply {
+                setCustomKey("sdk_state_snapshot", snapshot)
+                log("[SDK/Staleness] $snapshot")
+            }
+        }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to record SDK staleness snapshot") }
+    }
+
     // ── Network / Connection observability (added 2026-05-06) ─────────
     //
     // Added in response to repeat reports at Doña Simona where multiple loading states

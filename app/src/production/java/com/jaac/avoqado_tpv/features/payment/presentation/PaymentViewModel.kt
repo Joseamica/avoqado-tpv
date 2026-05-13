@@ -2983,6 +2983,25 @@ class PaymentViewModel @Inject constructor(
                 saleFailure != null -> {
                     // Handle failure - Translate SDK error to user-friendly message
                     val failure = saleFailure
+
+                    // 🔬 SDK STALENESS TELEMETRY (read-only, no control-flow change)
+                    // **MUST run BEFORE Timber.e** so the keys are attached to the non-fatal
+                    // that CrashReportingTree records from the Timber.e call below.
+                    runCatching {
+                        com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.recordSdkStalenessSnapshot(
+                            failureClass = failure.javaClass.simpleName,
+                            initFlagInMemory = initializationManager.isInitialized.value,
+                            lastInitTimestampMs = secureStorage.getLastBlumonInitTimestamp(),
+                            lastInitPosId = secureStorage.getLastBlumonInitPosId(),
+                            currentMerchantPosId = currentMerchantAccount?.posId,
+                            lastInitSerial = secureStorage.getLastBlumonInitSerial(),
+                            currentSerial = com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber,
+                            merchantIsFallback = runCatching { merchantRepository.isUsingFallback() }.getOrDefault(false),
+                            processUptimeMs = android.os.SystemClock.elapsedRealtime(),
+                            blumonEnv = com.jaac.avoqado_tpv.BuildConfig.BLUMON_ENV,
+                        )
+                    }
+
                     Timber.e("❌ [$saleType] Failed: $failure")
 
                     // Extract error message from SDK failure object
@@ -3133,7 +3152,25 @@ class PaymentViewModel @Inject constructor(
             }
 
         } catch (e: Exception) {
+            // 🔬 SDK STALENESS TELEMETRY — keys must be set BEFORE Timber.e fires recordException
+            runCatching {
+                val currentMerchantAccount = _currentMerchant.value
+                com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.recordSdkStalenessSnapshot(
+                    failureClass = "EXCEPTION:" + (e.javaClass.simpleName ?: "Unknown"),
+                    initFlagInMemory = initializationManager.isInitialized.value,
+                    lastInitTimestampMs = secureStorage.getLastBlumonInitTimestamp(),
+                    lastInitPosId = secureStorage.getLastBlumonInitPosId(),
+                    currentMerchantPosId = currentMerchantAccount?.posId,
+                    lastInitSerial = secureStorage.getLastBlumonInitSerial(),
+                    currentSerial = com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber,
+                    merchantIsFallback = runCatching { merchantRepository.isUsingFallback() }.getOrDefault(false),
+                    processUptimeMs = android.os.SystemClock.elapsedRealtime(),
+                    blumonEnv = com.jaac.avoqado_tpv.BuildConfig.BLUMON_ENV,
+                )
+            }
+
             Timber.e(e, "❌ [Sale] Exception in online authorization")
+
             AuthorizationResult(
                 response = null,
                 userFriendlyError = "Error inesperado procesando el pago.\n\nPor favor, intenta nuevamente."

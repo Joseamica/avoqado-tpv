@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-05-13
+
+### **🎉 Release Highlights**
+
+**Major release — unified "Cobrar" flow.** Single screen replaces the dual Pago Rápido + Órdenes split for new sales. Captures mixed carts (catalog products + custom amounts + modifiers + cortesía + descuentos + cupones) in one backend transaction. Pay-later integrates with the dashboard's "Cuentas por Cobrar". Works on PAX (Blumon SDK) and Nexgo (AngelPay SDK/app-to-app) with identical UX. Legacy Pago Rápido and Órdenes screens remain untouched for safe rollout — they'll be deprecated in a follow-up after a validation cycle in production.
+
+Key tech: new TPV-namespaced backend endpoint (`POST /api/v1/tpv/venues/:venueId/orders/with-items`), Schema A migration on `OrderItem`/`OrderDiscount` for structured cortesía/discount metadata (purely additive), Hilt graph-ordering fix in `AvoqadoTPVApplication.onCreate()` so Blumon's `AppManager.dal` is bound before eager singleton resolution on both PAX and Nexgo, Doña Simona OAuth 24h TTL fix (`SdkTokenRefreshScheduler`), receivables visibility via "Pagar después" tile.
+
 ### **Added**
 
 - **[Blumon SDK][Doña Simona fix] `SdkTokenRefreshScheduler` + `InitializationManager.invalidateForRefresh()`** (`features/payment/data/SdkTokenRefreshScheduler.kt` NUEVO, `InitializationManager.kt` sandbox + production, `AvoqadoTPVApplication.kt`): fix preventivo para el bug confirmado por Edgardo/Blumon (2026-05-12) — el token OAuth de Blumon tiene TTL de **24h server-side** sin refresh automático en el SDK, y el flag in-memory `_isInitialized.value` nunca se invalida mientras el proceso TPV esté vivo. Eso causa que después de ~24h sin reiniciar, todos los cobros con chip empiecen a fallar con `SaleIccFailure$MomentumFailure` (body `invalid_token`) hasta que el operador reinicie la TPV. Caso reproducido en Doña Simona (`AVQD-2840744151`, 12-may 19:36 UTC, payment_attempt_id `ac7782e0-fa82-4115-b3a4-06751f75a2ae`, monto $0.10).

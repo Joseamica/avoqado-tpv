@@ -20,7 +20,7 @@ This is reframed as **"upgrade 1.0.4 → 1.0.5 + finish runtime multimerchant"**
 
 v2 audit findings addressed:
 - Reuse `MerchantAccount.externalMerchantId` (already required + unique per provider) instead of adding a new `angelpayMerchantId` field
-- `credentialsEncrypted` stays required at schema level; AngelPay rows store `{}` placeholder (auth lives in `AngelPayUserAccount`)
+- `credentialsEncrypted` stays required on `MerchantAccount` at schema level; for AngelPay rows the service produces an `encryptCredentials({})` blob that has the standard `{ encrypted, iv }` shape (auth lives in `AngelPayUserAccount`, not here). On `AngelPayUserAccount.pinEncrypted` itself, the field is **nullable** — `null` is the canonical "no PIN provisioned yet" signal (PENDING_PIN status), not a placeholder JSON
 - Device-provider validation added in 4 spots, not just `createMerchantAccount`: assign/unassign, terminal update, config endpoint, dashboard
 - TPV `MerchantAccountDto` + domain model need extending for AngelPay mapping (don't exist yet)
 - Real credentials moved out of spec to vault references
@@ -192,10 +192,14 @@ Three drivers:
 model AngelPayUserAccount {
   id                String   @id @default(cuid())
   venueId           String   @unique
-  venue             Venue    @relation(fields: [venueId], references: [id])
+  venue             Venue    @relation(fields: [venueId], references: [id], onDelete: Restrict)
+  //                                                              ^^^^^^^^^^^^^^^^^^^^^^^
+  // Restrict (not Cascade) — accidentally deleting a venue must NOT silently
+  // drop the AngelPay credential trail. Operator must explicitly transition the
+  // account to DELETED status (§18.2) before deleting the venue.
 
   email             String
-  pinEncrypted      Json     // { encrypted: hex, iv: hex } AES-256-CBC
+  pinEncrypted      Json?    // nullable — present only when status is past PENDING_PIN. Shape: { encrypted: hex, iv: hex } produced by encryptCredentials() in src/services/superadmin/merchantAccount.service.ts
   environment       String   @default("QA")  // "QA" | "PROD"
 
   externalUserId    Int?     // AngelPay-side user ID (from getSessionInfo().userId)
@@ -204,9 +208,11 @@ model AngelPayUserAccount {
 
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
-  createdBy         String?  // staff user id
+  createdBy         String?  // staff user CUID (denormalized — no FK to preserve audit if user deleted)
 
-  @@index([venueId])
+  // No @@index([venueId]) — Prisma auto-creates a unique btree on @unique columns; an explicit
+  // @@index on the same column doubles write amplification with zero query benefit.
+  @@index([status])
 }
 ```
 
@@ -237,7 +243,7 @@ model MerchantAccount {
 
 **Service-level changes** (`merchantAccount.service.ts`):
 - Provider-aware `externalMerchantId` validation: ANGELPAY → numeric string regex; BLUMON → existing rules
-- AngelPay branch in create flow: `credentialsEncrypted = encryptCredentials({})` (encrypt an empty object so the field still has the standard `{ encrypted, iv }` shape), `placeholder: true` flag in metadata if helpful
+- AngelPay branch in `createMerchantAccount`: stores `credentialsEncrypted = encryptCredentials({})` on the `MerchantAccount` row (auth lives on `AngelPayUserAccount`, not the merchant). For `AngelPayUserAccount.pinEncrypted` itself: write `null` when no PIN yet (status=PENDING_PIN); write `encryptCredentials(pin)` once PIN arrives. **Never write `{}` to `pinEncrypted`** — that would trip `decryptCredentials()` which throws on missing `.encrypted` key and surface a misleading "Invalid encrypted data format" error
 
 **Encryption**: reuses existing `encryptString()` from `src/services/superadmin/merchantAccount.service.ts` (AES-256-CBC with random IV, key derived from `MERCHANT_ACCOUNT_ENCRYPTION_KEY` env var).
 
@@ -305,23 +311,33 @@ ANY ──logout()──→ UNAUTHENTICATED (manual only, never auto)
 
 ```prisma
 model AngelPayUserAccount {
-  id                String   @id @default(cuid())
-  venueId           String   @unique
-  venue             Venue    @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  id                String                 @id @default(cuid())
+  venueId           String                 @unique
+  venue             Venue                  @relation(fields: [venueId], references: [id], onDelete: Restrict)
+  //                                                                              ^^^^^^^^^^^^^^^^^^^^^^^
+  // Restrict (not Cascade) — accidentally deleting a venue must NOT silently drop the
+  // AngelPay credential trail or break the externalUserId mapping. Operator must explicitly
+  // transition the account to DELETED status (§18.2) first.
 
   email             String
-  pinEncrypted      Json     // { encrypted: hex, iv: hex } AES-256-CBC, same shape as credentialsEncrypted
-  environment       String   @default("QA")  // "QA" | "PROD"
+  pinEncrypted      Json?                  // nullable. null = no PIN provisioned yet (status=PENDING_PIN). When present, shape: { encrypted: hex, iv: hex } produced by encryptCredentials() in src/services/superadmin/merchantAccount.service.ts
+  environment       String                 @default("QA")  // "QA" | "PROD"
 
-  externalUserId    Int?     // AngelPay-side user ID (from getSessionInfo().userId after first auth)
+  status            AngelPayAccountStatus  @default(PENDING_PIN)
+  statusChangedAt   DateTime?
+  statusChangedBy   String?                // staff user CUID (denormalized — no FK to preserve audit if user is deleted)
+  statusReason      String?
+
+  externalUserId    Int?                   // AngelPay-side user ID (from getSessionInfo().userId after first auth)
   lastValidatedAt   DateTime?
   lastValidationErr String?
 
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  createdBy         String?  // staff user CUID
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  createdBy         String?                // staff user CUID (denormalized)
 
-  @@index([venueId])
+  // No @@index([venueId]) — redundant with the @unique constraint above (Postgres auto-creates a unique btree)
+  @@index([status])
 }
 
 model Venue {

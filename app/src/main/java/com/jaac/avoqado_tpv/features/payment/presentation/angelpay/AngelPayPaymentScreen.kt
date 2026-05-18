@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -88,6 +90,15 @@ fun AngelPayPaymentScreen(
     val currentMerchant by viewModel.currentMerchant.collectAsStateWithLifecycle()
     val isSendingReceipt by viewModel.isSendingReceipt.collectAsStateWithLifecycle()
     val sendReceiptMessage by viewModel.sendReceiptMessage.collectAsStateWithLifecycle()
+
+    // Task 34 — D2 / D6 banner + switcher state (spec §6.8, §18.1)
+    val authState by viewModel.authState.collectAsStateWithLifecycle()
+    val activeAngelPayMerchantId by viewModel.activeAngelPayMerchantId.collectAsStateWithLifecycle()
+    val cachedMerchants by viewModel.cachedMerchants.collectAsStateWithLifecycle(initialValue = emptyList())
+    val inFlightSwitch by viewModel.inFlightSwitch.collectAsStateWithLifecycle()
+    val activeMerchantName = cachedMerchants.firstOrNull { it.id == activeAngelPayMerchantId }?.name
+
+    var showSwitcher by remember { mutableStateOf(false) }
 
     // Toast for receipt send result
     val context = LocalContext.current
@@ -276,12 +287,42 @@ fun AngelPayPaymentScreen(
             }
         },
     ) { paddingValues ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues),
-            contentAlignment = Alignment.Center,
         ) {
+            // Task 34 — auth banner (always visible while screen is active so the
+            // cashier sees AngelPay readiness before initiating a charge).
+            AngelPayAuthBanner(
+                state = authState,
+                activeMerchantName = activeMerchantName,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+
+            // Task 34 — switcher chip (only when we have an active merchant the
+            // cashier can review/switch from). Tapping opens the modal sheet.
+            if (activeMerchantName != null) {
+                AssistChip(
+                    onClick = { showSwitcher = true },
+                    label = { Text(activeMerchantName) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.SwapHoriz,
+                            contentDescription = null,
+                        )
+                    },
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
             when (val currentState = state) {
                 is AngelPayPaymentState.Idle -> {
                     if (initialAmount == null) {
@@ -410,6 +451,25 @@ fun AngelPayPaymentScreen(
                     )
                 }
 
+                // Task 32 — D2 transient states. UI polish (banner / merchant
+                // pill flip) lives in Task 33; for now render the same loading
+                // skeleton as WaitingForResult so the screen stays responsive.
+                is AngelPayPaymentState.Switching -> {
+                    LoadingContent(
+                        message = "Cambiando de merchant…",
+                        subtitle = "No cierres esta pantalla",
+                        largeSpinner = true,
+                    )
+                }
+
+                is AngelPayPaymentState.Charging -> {
+                    LoadingContent(
+                        message = "Procesando cobro…",
+                        subtitle = "No cierres esta pantalla",
+                        largeSpinner = true,
+                    )
+                }
+
                 is AngelPayPaymentState.ProcessingCash -> {
                     LoadingContent(message = currentState.message)
                 }
@@ -444,7 +504,27 @@ fun AngelPayPaymentScreen(
                     CancelledContent(onNavigateBack = onNavigateBack)
                 }
             }
+            }
         }
+    }
+
+    // Task 34 — merchant switcher sheet (modal overlay; placed outside the
+    // Scaffold body so the sheet's window insets aren't clipped by the topBar
+    // padding).
+    if (showSwitcher) {
+        AngelPayMerchantSwitcherSheet(
+            merchants = cachedMerchants,
+            activeMerchantId = activeAngelPayMerchantId,
+            inFlightSwitchTargetId = inFlightSwitch,
+            // suspend lambda — fine to call non-suspend fun; the sheet collects
+            // updates from the repo's cached flow as `refreshMerchants()` writes through.
+            onRefresh = { viewModel.refreshMerchants() },
+            onPick = { merchantId ->
+                viewModel.selectMerchantByAngelPayId(merchantId)
+                showSwitcher = false
+            },
+            onDismiss = { showSwitcher = false },
+        )
     }
 }
 

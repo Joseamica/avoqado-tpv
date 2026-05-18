@@ -56,7 +56,10 @@ data class TerminalConfigData(
     val merchantAccounts: List<MerchantAccountDto>,
 
     @SerializedName("tpvSettings")
-    val tpvSettings: TpvSettingsDto?
+    val tpvSettings: TpvSettingsDto?,
+
+    @SerializedName("angelpayAuth")
+    val angelpayAuth: AngelPayAuthDto? = null  // present only when terminal.brand == "NEXGO" AND venue has ACTIVE AngelPayUserAccount
 )
 
 /**
@@ -173,5 +176,40 @@ data class MerchantAccountDto(
     val credentials: Map<String, Any>?,
 
     @SerializedName("providerConfig")
-    val providerConfig: Map<String, Any>?
+    val providerConfig: Map<String, Any>?,
+
+    // 🆕 Task 23 — additive fields wiring through backend Task 13 endpoint
+    @SerializedName("externalMerchantId")
+    val externalMerchantId: String? = null,  // numeric string for AngelPay; Blumon serial/posId equivalent
+
+    @SerializedName("isActive")
+    val isActive: Boolean = true,  // used by TPV to filter inactive merchants
+
+    @SerializedName("angelpayAffiliation")
+    val angelpayAffiliation: String? = null,
+
+    @SerializedName("angelpayMerchantName")
+    val angelpayMerchantName: String? = null
+)
+
+/**
+ * AngelPay authentication payload (Task 23)
+ *
+ * Present in the terminal config response only when:
+ * - terminal.brand == "NEXGO"
+ * - The venue has an ACTIVE AngelPayUserAccount
+ *
+ * **PIN handling (spec §4.5b):**
+ * The `pin` field is delivered in-memory only and MUST NOT be persisted on TPV.
+ *
+ * @param accountId   Avoqado AngelPayUserAccount CUID
+ * @param email       AngelPay portal login email
+ * @param pin         AngelPay PIN — in-memory only, never persisted
+ * @param environment "QA" or "PRODUCTION"
+ */
+data class AngelPayAuthDto(
+    @SerializedName("accountId")    val accountId: String,
+    @SerializedName("email")        val email: String,
+    @SerializedName("pin")          val pin: String,
+    @SerializedName("environment")  val environment: String
 )

@@ -13,6 +13,7 @@ import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
 import com.jaac.avoqado_tpv.core.data.local.dao.TableDao
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantCacheDao
 import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueDao
 import dagger.Module
 import dagger.Provides
@@ -98,7 +99,8 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_17_18,  // 🪑 Floor plan cache (tables + floor elements)
                 AvoqadoDatabase.MIGRATION_18_19,  // 🛠️ Schema hash fix (idempotent)
                 AvoqadoDatabase.MIGRATION_19_20,  // 🧾 Stable ordering (line_position)
-                AvoqadoDatabase.MIGRATION_20_21   // 🛒 Mosaic shortcuts for unified Checkout
+                AvoqadoDatabase.MIGRATION_20_21,  // 🛒 Mosaic shortcuts for unified Checkout
+                AvoqadoDatabase.MIGRATION_21_22   // 💳 AngelPay multi-merchant offline cache (SDK 1.0.5)
             )
 
             // ⚠️ DEVELOPMENT ONLY: Destructive migration (data loss on schema change)
@@ -305,5 +307,28 @@ object DatabaseModule {
         database: AvoqadoDatabase
     ): VerificationQueueDao {
         return database.verificationQueueDao()
+    }
+
+    /**
+     * Provides AngelPayMerchantCacheDao from database.
+     *
+     * **Injected Into:**
+     * - AngelPay merchant switcher (instant cold-start render from cache)
+     * - Periodic refresh job (D6 — spec §6.6 / §18.5) — replaces cache atomically
+     *   after `AngelPaySdkGateway.getUserMerchants()`
+     *
+     * **Pattern (SDK 1.0.5 Multi-Merchant):**
+     * - Cache-first: read on cold start, render instantly
+     * - Background refresh: pull fresh list from SDK, replaceAll()
+     * - Active-flag sync: markActive(id) after switchMerchant()
+     *
+     * @param database AvoqadoDatabase instance
+     * @return AngelPayMerchantCacheDao for AngelPay user merchant cache operations
+     */
+    @Provides
+    fun provideAngelPayMerchantCacheDao(
+        database: AvoqadoDatabase
+    ): AngelPayMerchantCacheDao {
+        return database.angelPayMerchantCacheDao()
     }
 }

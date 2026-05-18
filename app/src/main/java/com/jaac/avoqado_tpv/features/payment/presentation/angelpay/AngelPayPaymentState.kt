@@ -125,4 +125,28 @@ sealed class AngelPayPaymentState {
 
     /** User cancelled the payment in AngelPay app. */
     data object Cancelled : AngelPayPaymentState()
+
+    /**
+     * D2 (spec §18.1): a merchant switch is in flight. The payment-time guard in
+     * [AngelPayPaymentViewModel.startCardPayment] waits in this state until
+     * `AngelPayMerchantRepository.activeAngelPayMerchantId` reaches
+     * [targetMerchantId]. If the switch never settles within 8s the state moves
+     * to [Error] so the cashier can retry.
+     */
+    data class Switching(
+        val targetMerchantId: Int,
+        val previousMerchantId: Int?,
+    ) : AngelPayPaymentState()
+
+    /**
+     * D2 (spec §18.1): a payment is in flight. `PaymentStateHolder.isCharging()`
+     * is `true` while this state is active so
+     * `AngelPayMerchantRepository.switchActiveMerchant` rejects new switches
+     * with `SwitchBlockedDuringChargeError`. Always paired with a `finally`
+     * that flips `setCharging(false)` regardless of payment outcome.
+     */
+    data class Charging(
+        val merchantId: Int,
+        val startedAt: Long,
+    ) : AngelPayPaymentState()
 }

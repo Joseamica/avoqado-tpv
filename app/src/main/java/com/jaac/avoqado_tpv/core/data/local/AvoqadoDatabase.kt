@@ -26,6 +26,8 @@ import com.jaac.avoqado_tpv.core.data.local.entities.ProductCategoryEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.ProductEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.TableEntity
 import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantCacheDao
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantCacheEntity
 
 /**
  * Room database for Avoqado TPV local data persistence.
@@ -105,9 +107,10 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
         FloorElementEntity::class,
         CachedShiftEntity::class,
         VerificationQueueEntity::class,
-        com.jaac.avoqado_tpv.core.data.local.entities.MosaicShortcutEntity::class // ⭐ v21
+        com.jaac.avoqado_tpv.core.data.local.entities.MosaicShortcutEntity::class, // ⭐ v21
+        AngelPayMerchantCacheEntity::class // ⭐ v22: AngelPay SDK 1.0.5 multi-merchant cache
     ],
-    version = 21, // ⭐ Version 21: Mosaic shortcuts for unified Checkout
+    version = 22, // ⭐ Version 22: AngelPay multi-merchant offline cache (SDK 1.0.5)
     exportSchema = false // Set to true when adding migrations for production
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -230,6 +233,22 @@ abstract class AvoqadoDatabase : RoomDatabase() {
      *   with the Configurar tab when the operator edits assignments
      */
     abstract fun mosaicShortcutDao(): com.jaac.avoqado_tpv.core.data.local.dao.MosaicShortcutDao
+
+    /**
+     * DAO for cached AngelPay user merchants (SDK 1.0.5 multi-merchant).
+     *
+     * **Use Cases:**
+     * - Instant cold-start render of the merchant switcher (no network wait)
+     * - Periodic refresh job (D6 — spec §6.6 / §18.5) replaces the cache atomically
+     * - Active-flag sync after `AngelPaySdkGateway.switchMerchant()`
+     *
+     * **Persistence Policy:**
+     * - SAFE: merchantId, name, affiliationNumber, isActive — already exposed by
+     *   the authenticated SDK session
+     * - NEVER PERSISTED: PIN/credentials (spec §4.5b — in-memory only via
+     *   AngelPayCredentialResolver)
+     */
+    abstract fun angelPayMerchantCacheDao(): AngelPayMerchantCacheDao
 
     companion object {
         const val DATABASE_NAME = "avoqado_database"
@@ -1385,6 +1404,37 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                 )
                 database.execSQL(
                     "CREATE UNIQUE INDEX IF NOT EXISTS `index_mosaic_shortcut_venue_id_position` ON `mosaic_shortcut` (`venue_id`, `position`)"
+                )
+            }
+        }
+
+        /**
+         * Migration from version 21 to version 22: Add `angelpay_merchant_cache` table.
+         *
+         * **AngelPay SDK 1.0.5 Multi-Merchant Offline Cache (2026-05-18)**
+         * Mirrors SDK 1.0.5 `MerchantSummary` so the merchant switcher renders
+         * instantly on cold start before the periodic refresh job (D6 — spec
+         * §6.6 / §18.5) re-fetches the live list.
+         *
+         * **Idempotent:** `CREATE TABLE IF NOT EXISTS`. Safe to re-run if a
+         * partial migration left the schema half-applied. No data preserved
+         * (cache table — repopulated by the next refresh).
+         *
+         * **Privacy:** No PIN/credentials stored (spec §4.5b — in-memory only).
+         */
+        val MIGRATION_21_22 = object : Migration(21, 22) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `angelpay_merchant_cache` (
+                        `merchantId` INTEGER NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `affiliationNumber` TEXT NOT NULL,
+                        `isActive` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`merchantId`)
+                    )
+                    """.trimIndent()
                 )
             }
         }

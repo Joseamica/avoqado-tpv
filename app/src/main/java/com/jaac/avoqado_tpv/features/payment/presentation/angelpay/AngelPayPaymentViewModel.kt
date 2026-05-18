@@ -19,11 +19,15 @@ import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthReposito
 import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
 import com.jaac.avoqado_tpv.features.payment.data.dto.SendReceiptRequest
 import com.jaac.avoqado_tpv.features.payment.data.dto.SendWhatsAppReceiptRequest
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthState
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCredentials
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayIntentBuilder
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantRepository
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResult
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentFlowGate
 import com.jaac.avoqado_tpv.features.payment.domain.PrePaymentNextStep
@@ -40,11 +44,15 @@ import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import com.angelpay.angelpaysdk.models.MerchantSummary
 import timber.log.Timber
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -72,6 +80,9 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val intentBuilder: AngelPayIntentBuilder,
     private val sdkGateway: AngelPaySdkGateway,
+    private val angelPayAuthRepository: AngelPayAuthRepository,
+    private val angelPayMerchantRepository: AngelPayMerchantRepository,
+    private val paymentStateHolder: PaymentStateHolder,
     private val tpvSettingsRepository: TpvSettingsRepository,
     private val printerManager: PrinterManager,
     private val paymentApiService: PaymentApiService,
@@ -81,6 +92,19 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     private val _state = MutableStateFlow<AngelPayPaymentState>(AngelPayPaymentState.Idle)
     val state: StateFlow<AngelPayPaymentState> = _state.asStateFlow()
+
+    // ── Task 32 — exposed flows for Task 33 banner + switcher UI ─────
+    /** Live auth state machine (Authenticated / SelectingMerchant / ConfigMismatchBanner / AuthError / …). */
+    val authState: StateFlow<AngelPayAuthState> = angelPayAuthRepository.state
+
+    /** Active merchant ID per AngelPay SDK session — null when no merchant selected yet. */
+    val activeAngelPayMerchantId: StateFlow<Int?> = angelPayMerchantRepository.activeAngelPayMerchantId
+
+    /** Target ID of a merchant switch currently in flight, or null when idle. */
+    val inFlightSwitch: StateFlow<Int?> = angelPayMerchantRepository.inFlightSwitch
+
+    /** Reactive list of cached AngelPay merchants for the switcher sheet. */
+    val cachedMerchants: Flow<List<MerchantSummary>> = angelPayMerchantRepository.observeCachedMerchants()
 
     private val resultParser = AngelPayResultParser()
 
@@ -354,9 +378,103 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     // ── Merchant Selection ───────────────────────────────────────────
 
+    /**
+     * Task 32 (spec §6.7, §18.1): when the cashier picks a merchant from the
+     * shared `MerchantSelectionContent` composable we must:
+     *
+     *   1. Update [_currentMerchant] for instant visual feedback in the picker.
+     *   2. Branch on [AngelPayAuthRepository.state]:
+     *      - `SelectingMerchant` → first ever pick after auth → call
+     *        `completeMerchantSelection(merchantId, temporaryToken)` (finalizes
+     *        the SDK-level `MerchantSelectionRequired` flow + runs D5 config
+     *        validation).
+     *      - `Authenticated` or `ConfigMismatchBanner` (still cashier-operable)
+     *        → mid-shift switch → call
+     *        `AngelPayMerchantRepository.switchActiveMerchant(merchantId)`
+     *        (D2 mutex-guarded + rejects during charge + 8s watchdog).
+     *      - Any other state → cannot switch → emit [Error].
+     *   3. On failure: revert [_currentMerchant] to the previous selection so
+     *      the picker doesn't show stale confidence, and emit [Error].
+     *
+     * Non-AngelPay merchants (e.g., misconfigured `externalMerchantId`) trip
+     * [MerchantAccount.requireAngelpayMerchantId]; we surface that as a typed
+     * error rather than crashing the picker.
+     */
+    /**
+     * Task 34 — bridge from [AngelPayMerchantSwitcherSheet] (which yields a raw
+     * AngelPay merchant `Int` id) to the existing [selectMerchant] flow (which
+     * takes the Avoqado [MerchantAccount] domain). Resolves the corresponding
+     * AngelPay merchant from [_merchants]; no-op if none matches.
+     */
+    fun selectMerchantByAngelPayId(angelpayMerchantId: Int) {
+        val merchantAccount = _merchants.value.firstOrNull { account ->
+            account.processorType == ProcessorType.ANGELPAY &&
+                account.externalMerchantId?.toIntOrNull() == angelpayMerchantId
+        }
+        if (merchantAccount == null) {
+            Timber.w(
+                "🔶 [AngelPay] selectMerchantByAngelPayId($angelpayMerchantId): no matching MerchantAccount in _merchants (size=${_merchants.value.size})"
+            )
+            return
+        }
+        selectMerchant(merchantAccount)
+    }
+
+    /**
+     * Task 34 — manual D6 refresh trigger surfaced from the switcher sheet's
+     * empty-state retry button. Delegates to
+     * [AngelPayMerchantRepository.refreshBeforeSelector] inside a viewModelScope
+     * coroutine so the Compose layer never has to manage scopes for this.
+     */
+    fun refreshMerchants() {
+        viewModelScope.launch {
+            angelPayMerchantRepository.refreshBeforeSelector()
+        }
+    }
+
     fun selectMerchant(merchant: MerchantAccount) {
-        _currentMerchant.value = merchant
-        Timber.d("🔶 [AngelPay] Merchant selected: ${merchant.displayName}")
+        viewModelScope.launch {
+            val targetId = runCatching { merchant.requireAngelpayMerchantId() }.getOrElse { err ->
+                Timber.e(err, "🔶 [AngelPay] Merchant ${merchant.displayName} has invalid AngelPay id")
+                _state.value = AngelPayPaymentState.Error(
+                    message = "Merchant inválido para AngelPay: ${err.message}",
+                    canRetry = false,
+                )
+                return@launch
+            }
+
+            val previousMerchant = _currentMerchant.value
+            _currentMerchant.value = merchant
+            Timber.d("🔶 [AngelPay] Merchant selected: ${merchant.displayName} (angelpayId=$targetId)")
+
+            val authState = angelPayAuthRepository.state.value
+            val result: Result<Unit> = when (authState) {
+                is AngelPayAuthState.SelectingMerchant -> {
+                    Timber.i("🔶 [AngelPay] completeMerchantSelection(id=$targetId)")
+                    angelPayAuthRepository.completeMerchantSelection(targetId, authState.temporaryToken)
+                }
+                is AngelPayAuthState.Authenticated,
+                is AngelPayAuthState.ConfigMismatchBanner -> {
+                    Timber.i("🔶 [AngelPay] switchActiveMerchant(id=$targetId)")
+                    angelPayMerchantRepository.switchActiveMerchant(targetId)
+                }
+                else -> {
+                    Timber.w("🔶 [AngelPay] Cannot switch in auth state $authState")
+                    Result.failure(
+                        IllegalStateException("No se puede cambiar de merchant en estado $authState"),
+                    )
+                }
+            }
+
+            result.onFailure { err ->
+                Timber.e(err, "🔶 [AngelPay] Merchant selection failed; reverting to $previousMerchant")
+                _currentMerchant.value = previousMerchant
+                _state.value = AngelPayPaymentState.Error(
+                    message = "No se pudo cambiar de merchant: ${err.message ?: "error desconocido"}",
+                    canRetry = true,
+                )
+            }
+        }
     }
 
     // ── Card Payment (AngelPay SDK + App-to-App Fallback) ───────────
@@ -380,12 +498,91 @@ class AngelPayPaymentViewModel @Inject constructor(
                 attemptId = currentPaymentAttemptId,
             )
 
-            if (isSdkFlowEnabled()) {
-                startSdkCardPayment(credentials)
-            } else {
-                startAppToAppCardPayment(credentials)
+            // ── Task 32 — D2 payment-time guard (spec §18.1) ─────────────
+            // If the Avoqado-selected merchant differs from the SDK-side
+            // active merchant (e.g. switch still in flight), wait up to 8s
+            // for the merchant repository to settle on the target. Without
+            // this, an SDK call could route a charge to the previous merchant.
+            if (!waitForMerchantToSettle()) {
+                paymentStateHolder.setCharging(false)
+                return@launch
             }
+
+            // ── Task 32 — mark charging BEFORE SDK launch so any concurrent
+            // `switchActiveMerchant` call rejects with SwitchBlockedDuringChargeError.
+            val activeId = angelPayMerchantRepository.activeAngelPayMerchantId.value
+                ?: _currentMerchant.value?.let {
+                    runCatching { it.requireAngelpayMerchantId() }.getOrNull()
+                } ?: -1
+            paymentStateHolder.setCharging(true)
+            _state.value = AngelPayPaymentState.Charging(
+                merchantId = activeId,
+                startedAt = System.currentTimeMillis(),
+            )
+            Timber.d("🔶 [AngelPay] Charging gate set | activeMerchant=$activeId")
+
+            try {
+                if (isSdkFlowEnabled()) {
+                    startSdkCardPayment(credentials)
+                } else {
+                    startAppToAppCardPayment(credentials)
+                }
+            } catch (t: Throwable) {
+                paymentStateHolder.setCharging(false)
+                throw t
+            }
+            // NOTE: paymentStateHolder.setCharging(false) is cleared in the
+            // result handlers (onAngelPayResult / onAngelPaySdkResult / error
+            // emission inside startSdkCardPayment) via clearChargingOnTerminal().
         }
+    }
+
+    /**
+     * Task 32 (spec §18.1) — wait until `AngelPayMerchantRepository.activeAngelPayMerchantId`
+     * equals the cashier-selected merchant's AngelPay id. Returns false (and
+     * emits an [AngelPayPaymentState.Error]) if the switch never settles in 8s.
+     *
+     * Short-circuits to `true` when:
+     *   - There is no current AngelPay-targeted merchant (defensive — happens
+     *     in tests / odd routes where SDK isn't expected to run).
+     *   - The active merchant already matches the selected one.
+     */
+    private suspend fun waitForMerchantToSettle(): Boolean {
+        val merchant = _currentMerchant.value ?: return true
+        val targetId = runCatching { merchant.requireAngelpayMerchantId() }.getOrNull()
+            ?: return true
+        val currentActive = angelPayMerchantRepository.activeAngelPayMerchantId.value
+        if (currentActive == targetId) return true
+
+        Timber.i(
+            "🔶 [AngelPay] Payment-time guard: waiting for merchant switch | target=$targetId, active=$currentActive"
+        )
+        _state.value = AngelPayPaymentState.Switching(
+            targetMerchantId = targetId,
+            previousMerchantId = currentActive,
+        )
+
+        val settled = withTimeoutOrNull(8_000L) {
+            angelPayMerchantRepository.activeAngelPayMerchantId.first { it == targetId }
+            true
+        }
+
+        return if (settled == true) {
+            Timber.i("🔶 [AngelPay] Merchant switch settled (target=$targetId)")
+            true
+        } else {
+            Timber.e("❌ [AngelPay] Merchant switch did not settle in 8s | target=$targetId")
+            _state.value = AngelPayPaymentState.Error(
+                message = "Cambio de merchant no se completó. Reintenta.",
+                canRetry = true,
+            )
+            false
+        }
+    }
+
+    /** Task 32 — single source of truth for clearing the charging flag on any terminal state. */
+    private fun clearChargingOnTerminal() {
+        paymentStateHolder.setCharging(false)
     }
 
     private suspend fun startSdkCardPayment(credentials: AngelPayCredentials) {
@@ -403,13 +600,17 @@ class AngelPayPaymentViewModel @Inject constructor(
                 message = initError?.message ?: "AngelPay SDK no está inicializado",
                 canRetry = true,
             )
+            clearChargingOnTerminal()
             return
         }
 
         val staffName = secureStorage.getStaffName()
         val paymentAttemptId = ensurePaymentAttemptId()
 
-        val authResult = sdkGateway.ensureAuthenticated(credentials)
+        // Task 31 — delegate auth orchestration to AngelPayAuthRepository so the
+        // D4 resolver (backend-preferred + BuildConfig fallback), retry/backoff,
+        // state machine, and post-auth config validation all live in one place.
+        val authResult = angelPayAuthRepository.ensureAuthenticated()
         if (authResult.isFailure) {
             val error = authResult.exceptionOrNull()
             Timber.e(error, "❌ [AngelPay SDK] Authentication failed")
@@ -422,6 +623,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 message = error?.message ?: "No se pudo autenticar AngelPay SDK",
                 canRetry = true,
             )
+            clearChargingOnTerminal()
             return
         }
 
@@ -481,6 +683,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             message = validationError?.message ?: "No se pudo iniciar el cobro con AngelPay SDK",
             canRetry = true,
         )
+        clearChargingOnTerminal()
     }
 
     private fun launchSdkRequest(
@@ -635,6 +838,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                     _state.value = AngelPayPaymentState.Cancelled
                 }
             }
+            // Task 32 — clear D2 charging gate on any terminal outcome.
+            clearChargingOnTerminal()
         }
     }
 
@@ -658,6 +863,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                     canRetry = true,
                 )
             }
+            // Task 32 — clear D2 charging gate on any terminal outcome.
+            clearChargingOnTerminal()
         }
     }
 

@@ -50,9 +50,13 @@ fun MerchantAccountDto.toDomain(): MerchantAccount {
         displayName = displayName,
         description = null,  // Backend doesn't return description in this endpoint
         environment = env,
-        isActive = true,  // Backend only returns active merchants in config endpoint
+        isActive = isActive,  // Task 23/24: respect backend value (defaults to true if absent)
         processorType = processor,
-        availableMsiMonths = extractMsiMonths(providerConfig)
+        availableMsiMonths = extractMsiMonths(providerConfig),
+        // 🆕 Task 24 — additive AngelPay fields
+        externalMerchantId = externalMerchantId,
+        angelpayAffiliation = angelpayAffiliation,
+        angelpayMerchantName = angelpayMerchantName
     )
 }
 

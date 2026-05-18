@@ -71,11 +71,18 @@ android {
             buildConfigField("String", "DEFAULT_TERMINAL_BRAND", "\"PAX\"")
             buildConfigField("String", "DEFAULT_TERMINAL_MODEL", "\"A910S\"")
 
+            // Processor selector (Task 21 — spec §6.1). Resolver in Task 25 reads this.
+            buildConfigField("String", "SUPPORTED_PROCESSOR", "\"BLUMON\"")
+
             // AngelPay not used on PAX sandbox — empty placeholders
             buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"\"")
             buildConfigField("String", "ANGELPAY_QA_PASSWORD", "\"\"")
             buildConfigField("String", "ANGELPAY_QA_AFFILIATION", "\"\"")
             buildConfigField("String", "ANGELPAY_QA_COMMERCE_TOKEN", "\"\"")
+            // ANGELPAY_ENV — empty placeholder so shared `AngelPayCredentialResolver`
+            // in main/ compiles on PAX flavors. PAX flavors never read this value
+            // (resolver short-circuits when SUPPORTED_PROCESSOR != "ANGELPAY").
+            buildConfigField("String", "ANGELPAY_ENV", "\"\"")
         }
 
         create("production") {
@@ -94,11 +101,18 @@ android {
             buildConfigField("String", "DEFAULT_TERMINAL_BRAND", "\"PAX\"")
             buildConfigField("String", "DEFAULT_TERMINAL_MODEL", "\"A910S\"")
 
+            // Processor selector (Task 21 — spec §6.1). Resolver in Task 25 reads this.
+            buildConfigField("String", "SUPPORTED_PROCESSOR", "\"BLUMON\"")
+
             // AngelPay not used on PAX production — empty placeholders
             buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"\"")
             buildConfigField("String", "ANGELPAY_QA_PASSWORD", "\"\"")
             buildConfigField("String", "ANGELPAY_QA_AFFILIATION", "\"\"")
             buildConfigField("String", "ANGELPAY_QA_COMMERCE_TOKEN", "\"\"")
+            // ANGELPAY_ENV — empty placeholder so shared `AngelPayCredentialResolver`
+            // in main/ compiles on PAX flavors. PAX flavors never read this value
+            // (resolver short-circuits when SUPPORTED_PROCESSOR != "ANGELPAY").
+            buildConfigField("String", "ANGELPAY_ENV", "\"\"")
         }
 
         create("tutorialEmu") {
@@ -126,11 +140,20 @@ android {
             buildConfigField("boolean", "ANGELPAY_SDK_ENABLED", "false")
             buildConfigField("boolean", "ANGELPAY_SDK_FALLBACK_ENABLED", "true")
 
-            // AngelPay QA credentials (non-sensitive test environment)
-            buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"contacto@avoqado.io\"")
-            buildConfigField("String", "ANGELPAY_QA_PASSWORD", "\"123456\"")
-            buildConfigField("String", "ANGELPAY_QA_AFFILIATION", "\"9814275\"")
-            buildConfigField("String", "ANGELPAY_QA_COMMERCE_TOKEN", "\"1773083056540lIE\"")
+            // Processor selector (Task 21 — spec §6.1). Emulator/tutorial → BLUMON path
+            // (no real processor invoked, but resolver in Task 25 needs a value).
+            buildConfigField("String", "SUPPORTED_PROCESSOR", "\"BLUMON\"")
+
+            // AngelPay QA credentials — emptied in Task 21. Kept as empty placeholders
+            // because shared code in main/ references them at compile time. tutorialEmu
+            // is emulator/screenshots only — no real AngelPay traffic.
+            buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_PASSWORD", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_AFFILIATION", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_COMMERCE_TOKEN", "\"\"")
+            // ANGELPAY_ENV — empty placeholder so shared `AngelPayCredentialResolver`
+            // in main/ compiles on emulator/tutorial flavor (SUPPORTED_PROCESSOR=BLUMON).
+            buildConfigField("String", "ANGELPAY_ENV", "\"\"")
 
             // Allow installation on modern emulator ABIs.
             ndk {
@@ -170,11 +193,20 @@ android {
             buildConfigField("boolean", "ANGELPAY_SDK_ENABLED", "true")
             buildConfigField("boolean", "ANGELPAY_SDK_FALLBACK_ENABLED", "false")
 
-            // AngelPay QA credentials (non-sensitive test environment)
-            buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"contacto@avoqado.io\"")
-            buildConfigField("String", "ANGELPAY_QA_PASSWORD", "\"123456\"")
-            buildConfigField("String", "ANGELPAY_QA_AFFILIATION", "\"9814275\"")
-            buildConfigField("String", "ANGELPAY_QA_COMMERCE_TOKEN", "\"1773083056540lIE\"")
+            // Processor selector (Task 21 — spec §6.1). Resolver in Task 25 reads this.
+            buildConfigField("String", "SUPPORTED_PROCESSOR", "\"ANGELPAY\"")
+            // AngelPay environment selector (Task 21). Resolver uses QA endpoints + creds.
+            buildConfigField("String", "ANGELPAY_ENV", "\"QA\"")
+
+            // Transition fallback (D4 — spec §6.1) — empty defaults during the 30-day
+            // grace period to support dual-source resolver fallback in Task 25.
+            // Real creds now flow exclusively via backend `/tpv/terminals/:serial/config`
+            // → AngelPayAuthPayload (Task 13). Remove these field declarations entirely
+            // in v3 after the grace window closes.
+            buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_PASSWORD", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_AFFILIATION", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_COMMERCE_TOKEN", "\"\"")
 
             // Nexgo N86 is arm64-v8a (Android 9, API 28)
             ndk {
@@ -218,14 +250,21 @@ android {
             buildConfigField("boolean", "ANGELPAY_SDK_ENABLED", "true")
             buildConfigField("boolean", "ANGELPAY_SDK_FALLBACK_ENABLED", "false")
 
-            // ⚠️ TODO: Replace with PROD AngelPay credentials when AngelPay
-            // (Norman / Carlos) provide them. Today still using QA so the
-            // build compiles. Don't ship this APK to live merchants until
-            // these are real prod creds.
-            buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"contacto@avoqado.io\"")
-            buildConfigField("String", "ANGELPAY_QA_PASSWORD", "\"123456\"")
-            buildConfigField("String", "ANGELPAY_QA_AFFILIATION", "\"9814275\"")
-            buildConfigField("String", "ANGELPAY_QA_COMMERCE_TOKEN", "\"1773083056540lIE\"")
+            // Processor selector (Task 21 — spec §6.1). Resolver in Task 25 reads this.
+            buildConfigField("String", "SUPPORTED_PROCESSOR", "\"ANGELPAY\"")
+            // AngelPay environment selector (Task 21). Resolver uses PROD endpoints + creds.
+            buildConfigField("String", "ANGELPAY_ENV", "\"PROD\"")
+
+            // Transition fallback (D4 — spec §6.1) — empty defaults during the 30-day
+            // grace period. Real prod credentials now flow exclusively via backend
+            // `/tpv/terminals/:serial/config` → AngelPayAuthPayload (Task 13). The
+            // previously-hardcoded QA creds were removed in Task 21 to eliminate the
+            // "QA creds in PROD APK" footgun documented in spec §17 (R3). Remove these
+            // field declarations entirely in v3 after the grace window closes.
+            buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_PASSWORD", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_AFFILIATION", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_COMMERCE_TOKEN", "\"\"")
 
             // Nexgo N86 is arm32 / arm64 (Android 9, API 28)
             ndk {
@@ -360,6 +399,44 @@ configurations.configureEach {
     }
 }
 
+// Defense-in-depth (Task 21 — spec §17.5): variant-scoped jniLibs excludes for
+// Nexgo APKs. PAX SDK natives live under sdk/src/main/jniLibs/armeabi/, which
+// Nexgo's abiFilters (armeabi-v7a + arm64-v8a) already exclude by ABI mismatch;
+// these patterns are a belt-and-suspenders guard for any future PAX SDK updates
+// that might ship arm64-v8a variants of PAX-only libs.
+//
+// IMPORTANT: this MUST NOT apply to PAX flavors (sandbox/production) — those
+// builds NEED these natives at runtime for Blumon EMV. Variant-scoped via
+// `androidComponents.onVariants` so PAX builds are untouched.
+//
+// NOTE: as of Task 21, no `libcyber*.so` files exist in the project (plan's
+// placeholder pattern kept for safety). Actual PAX-only natives observed:
+// `libJNI_*`, `libF_*_PayDroid`, `libHDSD`, `libDeviceConfig`, `libDCL`.
+// Nexgo natives (`libnexgo_*`) are explicitly preserved (not in this list).
+// Task 38 will verify the final list against an actual Nexgo APK build.
+androidComponents {
+    onVariants(selector().withFlavor("environment" to "nexgo")) { variant ->
+        variant.packaging.jniLibs.excludes.addAll(
+            "**/libcyber*.so",
+            "**/libF_*_PayDroid.so",
+            "**/libJNI_*.so",
+            "**/libHDSD.so",
+            "**/libDeviceConfig.so",
+            "**/libDCL.so",
+        )
+    }
+    onVariants(selector().withFlavor("environment" to "nexgoProd")) { variant ->
+        variant.packaging.jniLibs.excludes.addAll(
+            "**/libcyber*.so",
+            "**/libF_*_PayDroid.so",
+            "**/libJNI_*.so",
+            "**/libHDSD.so",
+            "**/libDeviceConfig.so",
+            "**/libDCL.so",
+        )
+    }
+}
+
 dependencies {
     // BlumonPay SDK Modules (project dependencies - common to all flavors)
     implementation(project(":sdk"))  // PAX SDK (PosApi) + Neptune API
@@ -376,11 +453,20 @@ dependencies {
 
     // ⭐ NEXGO FLAVOR: reuse sandbox SDK API surface for Hilt compilation.
     // These AARs provide Java class stubs — native .so libs are NOT invoked on Nexgo.
+    //
+    // STUB ONLY (spec §17.5): Blumon AAR is packaged for Nexgo flavors to satisfy
+    // compile-time symbol resolution in shared code that references Blumon types.
+    // No Blumon entry-point may be invoked at runtime in Nexgo builds — enforce via
+    // BuildConfig.SUPPORTED_PROCESSOR == "BLUMON" guards. Same applies to nexgoProd
+    // below. PAX native .so live under sdk/src/main/jniLibs/armeabi/ which Nexgo
+    // ABIs (armeabi-v7a + arm64-v8a) already exclude by abiFilters mismatch; the
+    // packagingOptions block above adds defense-in-depth.
     "nexgoImplementation"(files("libs/blumon_sdk-debug.aar"))
     "nexgoImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
 
     // ⭐ NEXGO PROD FLAVOR: same SDK API surface as nexgo (so Hilt can resolve
-    // TokenServer / *UseCase types). Native libs never run on Nexgo.
+    // TokenServer / *UseCase types). Native libs never run on Nexgo. See
+    // STUB ONLY note above (spec §17.5).
     "nexgoProdImplementation"(files("libs/blumon_sdk-debug.aar"))
     "nexgoProdImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
 
@@ -396,6 +482,12 @@ dependencies {
     compileOnly(files("libs/angelpaySDK-v1.0.5-fat-release.aar"))
     "nexgoImplementation"(files("libs/angelpaySDK-v1.0.5-fat-release.aar"))
     "nexgoProdImplementation"(files("libs/angelpaySDK-v1.0.5-fat-release.aar"))
+    // AngelPay SDK types are referenced in unit tests (e.g., AngelPaySdkGatewayTest) for
+    // mocking — Result<List<MerchantSummary>> return types and `AngelPaySDK` object need
+    // the AAR on the test classpath at both compile time and runtime so MockK can mock
+    // the singleton via `mockkObject(AngelPaySDK)`. Production code still uses compileOnly
+    // for non-Nexgo flavors, so this affects unit tests only.
+    testImplementation(files("libs/angelpaySDK-v1.0.5-fat-release.aar"))
 
     // AndroidX Core
     implementation(libs.androidx.core.ktx)

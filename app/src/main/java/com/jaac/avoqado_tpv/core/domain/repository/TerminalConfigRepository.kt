@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.core.domain.repository
 
+import com.jaac.avoqado_tpv.core.data.network.dto.AngelPayAuthDto
+import com.jaac.avoqado_tpv.core.data.network.dto.TerminalConfigData
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 
 /**
@@ -35,6 +37,33 @@ interface TerminalConfigRepository {
      * @return Result with terminal info and merchant accounts, or error
      */
     suspend fun fetchConfig(serialNumber: String): Result<Pair<TerminalInfo, List<MerchantAccount>>>
+
+    /**
+     * Read the most recently cached `angelpayAuth` payload from the last
+     * successful `fetchConfig()` call.
+     *
+     * Used by `AngelPayCredentialResolver` (D4 dual-source — spec §6.5, §18.3)
+     * to retrieve backend-provided AngelPay credentials in-memory. The PIN inside
+     * `AngelPayAuthDto` is in-memory only and MUST NOT be persisted (§4.5b).
+     *
+     * @return cached AngelPay auth payload, or null if:
+     *   - no `fetchConfig()` has succeeded yet, OR
+     *   - the most recent response did not include `angelpayAuth`
+     *     (terminal.brand != "NEXGO" or venue has no ACTIVE AngelPayUserAccount).
+     */
+    fun getCachedAngelPayAuth(): AngelPayAuthDto?
+
+    /**
+     * Read the most recently cached full [TerminalConfigData] payload (Task 30 —
+     * spec §6.5, §18.4). Used by `AngelPayAuthRepository.runConfigValidation` to
+     * run the D5 intersection validator post-auth without having to re-fetch the
+     * config from backend.
+     *
+     * Same atomic-reference semantics as [getCachedAngelPayAuth] — null when no
+     * `fetchConfig()` has succeeded yet. PIN inside `angelpayAuth` is in-memory
+     * only and MUST NOT be persisted (§4.5b).
+     */
+    fun getCachedConfig(): TerminalConfigData?
 }
 
 /**

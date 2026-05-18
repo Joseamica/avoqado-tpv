@@ -393,9 +393,9 @@ dependencies {
     // AngelPay fat AAR:
     // - compileOnly for all flavors (types available at compile time in main/)
     // - packaged only in nexgo / nexgoProd to avoid duplicate transitive classes
-    compileOnly(files("libs/angelpaySDK-v1.0.4-fat-release.aar"))
-    "nexgoImplementation"(files("libs/angelpaySDK-v1.0.4-fat-release.aar"))
-    "nexgoProdImplementation"(files("libs/angelpaySDK-v1.0.4-fat-release.aar"))
+    compileOnly(files("libs/angelpaySDK-v1.0.5-fat-release.aar"))
+    "nexgoImplementation"(files("libs/angelpaySDK-v1.0.5-fat-release.aar"))
+    "nexgoProdImplementation"(files("libs/angelpaySDK-v1.0.5-fat-release.aar"))
 
     // AndroidX Core
     implementation(libs.androidx.core.ktx)

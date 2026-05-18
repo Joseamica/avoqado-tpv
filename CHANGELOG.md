@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### **Changed**
+
+- **AngelPay SDK**: upgraded embedded AAR from 1.0.4 to 1.0.5 (vendor release May 2026). Existing entry points (initialize, authenticateSimple, selectMerchant, createPaymentIntent, history/cancel/refund/print/ticket) remain wire-compatible after a minor adapter fix: `PaymentResult.respCode` was renamed to `PaymentResult.code` in 1.0.5 — `AngelPaySdkPostOperationsAdapter.kt` updated accordingly.
+
 ## [2.0.0] - 2026-05-13
 
 ### **🎉 Release Highlights**

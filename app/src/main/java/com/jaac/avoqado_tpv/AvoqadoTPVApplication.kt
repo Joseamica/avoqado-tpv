@@ -7,9 +7,9 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.CameraXConfig
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
-import com.angelpay.angelpaysdk.AngelPaySDK
 import com.nexgo.oaf.apiv3.device.pinpad.P2PEUtils
 import com.blumonpay.pax.utils.AppManager
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 import timber.log.Timber
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import javax.inject.Inject
+import javax.inject.Provider
 
 /**
  * Application class principal para Avoqado TPV
@@ -48,6 +49,15 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
     // Started in onCreate when the PAX SDK is enabled. See SdkTokenRefreshScheduler kdoc.
     @Inject
     lateinit var sdkTokenRefreshScheduler: com.jaac.avoqado_tpv.features.payment.data.SdkTokenRefreshScheduler
+
+    // D4 Pattern A (spec §6.4): lazy Provider<T> so the AngelPaySdkGateway is only resolved
+    // on flavors where `SUPPORTED_PROCESSOR == "ANGELPAY"`. PAX flavors (sandbox/production)
+    // never call `.get()`, so the underlying `AngelPaySDK` static class is never loaded by the
+    // VM on PAX startup — preventing a ClassNotFoundException risk if the AAR were ever
+    // excluded from the PAX classpath in the future. Today the AAR is on the classpath of all
+    // flavors for Hilt graph-resolution purposes; Pattern A is a forward-compatibility hardening.
+    @Inject
+    lateinit var angelPaySdkGatewayProvider: Provider<AngelPaySdkGateway>
 
     override fun onCreate() {
         // ⚠️ CRITICAL: Prepare Blumon's `AppManager.dal` BEFORE super.onCreate().
@@ -85,10 +95,6 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
         // ✅ Initialize critical components only (startup optimization)
         initializeTimber()
 
-        // 🔶 NEXGO: Provision AngelPay QA credentials for testing
-        if (!BuildConfig.ENABLE_PAX_SDK) {
-            provisionAngelPayQACredentials()
-        }
         initializeAngelPaySdkIfEnabled()
 
         // ⏰ Start the Blumon OAuth token refresh scheduler (PAX builds only). No-op on Nexgo
@@ -144,24 +150,6 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
      * (payment errors, Blumon failures, network issues, etc.) are automatically
      * captured in Crashlytics Console for production debugging.
      */
-    /**
-     * Provision AngelPay QA credentials for testing on Nexgo terminals.
-     * Only runs when ENABLE_PAX_SDK=false (nexgo and tutorialEmu flavors).
-     * Saves QA creds if not already present.
-     */
-    private fun provisionAngelPayQACredentials() {
-        val email = BuildConfig.ANGELPAY_QA_EMAIL
-        if (email.isBlank()) return // No QA creds configured for this flavor
-
-        secureStorage.saveAngelPayCredentials(
-            email = email,
-            password = BuildConfig.ANGELPAY_QA_PASSWORD,
-            affiliation = BuildConfig.ANGELPAY_QA_AFFILIATION,
-            commerceToken = BuildConfig.ANGELPAY_QA_COMMERCE_TOKEN,
-        )
-        Timber.i("🔶 [AngelPay] QA credentials provisioned from BuildConfig")
-    }
-
     private fun initializeTimber() {
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
@@ -184,16 +172,34 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
     }
 
     private fun initializeAngelPaySdkIfEnabled() {
+        // D4 Pattern A (spec §6.4): only resolve the Hilt Provider on AngelPay flavors.
+        // On PAX (sandbox/production) the `SUPPORTED_PROCESSOR == "BLUMON"` guard short-circuits
+        // here, so `.get()` is never called and the `AngelPaySdkGateway` class (along with the
+        // static `AngelPaySDK` it pulls in) is never class-loaded at Application.onCreate.
+        // This eliminates a startup-time ClassNotFoundException risk if a future build ever
+        // excludes the AngelPay AAR from the PAX classpath.
+        if (BuildConfig.SUPPORTED_PROCESSOR != "ANGELPAY") {
+            Timber.d("🔶 [AngelPay SDK] Skipped — SUPPORTED_PROCESSOR=${BuildConfig.SUPPORTED_PROCESSOR}")
+            return
+        }
         if (!BuildConfig.ANGELPAY_SDK_ENABLED) {
             Timber.d("🔶 [AngelPay SDK] Disabled by build flag")
             return
         }
 
         try {
+            // Mirror the legacy env mapping (BLUMON_ENV=PROD → PROD, else QA) so behavior is
+            // identical to the pre-refactor inline AngelPaySDK.initialize(...) call.
             val env = if (BuildConfig.BLUMON_ENV == "PROD") "PROD" else "QA"
-            AngelPaySDK.initialize(context = applicationContext, env = env)
-            applyAngelPayN62Compatibility()
-            Timber.i("🔶 [AngelPay SDK] Initialized successfully (env=$env)")
+            angelPaySdkGatewayProvider.get()
+                .ensureInitialized(context = applicationContext, env = env)
+                .onSuccess {
+                    applyAngelPayN62Compatibility()
+                    Timber.i("🔶 [AngelPay SDK] Initialized successfully (env=$env)")
+                }
+                .onFailure { error ->
+                    Timber.e(error, "❌ [AngelPay SDK] Failed to initialize")
+                }
         } catch (e: Throwable) {
             Timber.e(e, "❌ [AngelPay SDK] Failed to initialize")
         }

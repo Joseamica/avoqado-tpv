@@ -87,7 +87,7 @@ class AngelPaySdkPostOperationsAdapter @Inject constructor() : PaymentPostOperat
                 message = result.message ?: result.callResult?.message,
                 authorizationCode = result.authCode,
                 reference = result.reference,
-                errorCode = result.callResult?.code ?: result.respCode,
+                errorCode = result.callResult?.code ?: result.code,
             )
         }
     }
@@ -118,7 +118,7 @@ class AngelPaySdkPostOperationsAdapter @Inject constructor() : PaymentPostOperat
                 message = result.message ?: result.callResult?.message,
                 authorizationCode = result.authCode,
                 reference = result.reference,
-                errorCode = result.callResult?.code ?: result.respCode,
+                errorCode = result.callResult?.code ?: result.code,
             )
         }
     }

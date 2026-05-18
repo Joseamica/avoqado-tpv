@@ -2,12 +2,15 @@ package com.jaac.avoqado_tpv.core.data.repository
 
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.data.network.dto.AngelPayAuthDto
+import com.jaac.avoqado_tpv.core.data.network.dto.TerminalConfigData
 import com.jaac.avoqado_tpv.core.data.network.dto.toDomain
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalInfo
 import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import timber.log.Timber
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -29,6 +32,33 @@ class TerminalConfigRepositoryImpl @Inject constructor(
     private val apiService: ApiService,
     private val secureStorage: SecureStorage
 ) : TerminalConfigRepository {
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // §4.5b PIN HANDLING — IN-MEMORY ONLY (NO DISK PERSISTENCE)
+    // ──────────────────────────────────────────────────────────────────────────
+    // Both caches below use AtomicReference and live only in process memory.
+    // There is intentionally NO Room / SharedPreferences / EncryptedSharedPreferences
+    // / file path that persists `angelpayAuth.pin` to disk. Because the spec §4.5b
+    // rule ("PIN must never touch persistent storage") is automatically satisfied
+    // by virtue of zero persistence, no `sanitizeForDiskCache()` helper is needed
+    // here. If a future revision EVER adds a disk-cache path for TerminalConfigData,
+    // it MUST strip `angelpayAuth.pin` to "***" before writing (see
+    // RedactingLoggingInterceptor for the equivalent network-log redaction).
+    // ──────────────────────────────────────────────────────────────────────────
+
+    // In-memory cache for the most recent `angelpayAuth` payload (Task 25 — D4 dual-source).
+    // PIN is in-memory only and never persisted (§4.5b). AtomicReference so concurrent reads
+    // from the resolver are safe without synchronization.
+    private val cachedAngelPayAuth = AtomicReference<AngelPayAuthDto?>(null)
+
+    // Task 30 — cache the full TerminalConfigData so AngelPayAuthRepository can run the
+    // D5 intersection validator post-auth without re-fetching from backend. Same atomic
+    // semantics as cachedAngelPayAuth. PIN inside angelpayAuth is in-memory only (§4.5b).
+    private val cachedConfig = AtomicReference<TerminalConfigData?>(null)
+
+    override fun getCachedAngelPayAuth(): AngelPayAuthDto? = cachedAngelPayAuth.get()
+
+    override fun getCachedConfig(): TerminalConfigData? = cachedConfig.get()
 
     override suspend fun fetchConfig(serialNumber: String): Result<Pair<TerminalInfo, List<MerchantAccount>>> {
         return try {
@@ -73,6 +103,13 @@ class TerminalConfigRepositoryImpl @Inject constructor(
             val data = body.data
             val terminal = data.terminal
             val venue = terminal.venue
+
+            // Cache `angelpayAuth` for AngelPayCredentialResolver (Task 25 — spec §6.5).
+            // PIN is in-memory only — never persisted to SecureStorage or disk (§4.5b).
+            cachedAngelPayAuth.set(data.angelpayAuth)
+
+            // Cache the full config for AngelPayAuthRepository's post-auth D5 validation (Task 30).
+            cachedConfig.set(data)
 
             // Save venue timezone for date/time display throughout the app
             venue?.timezone?.let {

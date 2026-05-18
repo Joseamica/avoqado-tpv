@@ -51,8 +51,20 @@ data class MerchantAccount(
     val environment: MerchantEnvironment = MerchantEnvironment.SANDBOX,
     val isActive: Boolean = true,
     val processorType: ProcessorType = ProcessorType.BLUMON,
-    val availableMsiMonths: List<Int> = emptyList()
+    val availableMsiMonths: List<Int> = emptyList(),
+    // 🆕 Task 24 — additive AngelPay fields (purely additive; Blumon callers unaffected)
+    val externalMerchantId: String? = null,       // AngelPay: numeric string parseable to Int; Blumon: serial/posId equivalent
+    val angelpayAffiliation: String? = null,
+    val angelpayMerchantName: String? = null
 ) {
+    /**
+     * AngelPay merchant ID as Int — only call when processorType == ANGELPAY.
+     * Throws if externalMerchantId is null or non-numeric (malformed config).
+     */
+    fun requireAngelpayMerchantId(): Int =
+        externalMerchantId?.toIntOrNull()
+            ?: error("Malformed externalMerchantId for ANGELPAY merchant $merchantAccountId: '$externalMerchantId'")
+
     /**
      * Get formatted display text for UI
      *

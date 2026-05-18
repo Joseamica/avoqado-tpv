@@ -128,6 +128,7 @@ interface AppNavigationEntryPoint {
     fun paymentApiService(): com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
     fun postOperationsAdapterFactory(): PostOperationsAdapterFactory
     fun modulesRepository(): com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
+    fun terminalConfigRepository(): com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
     fun initializationManager(): com.jaac.avoqado_tpv.features.payment.data.InitializationManager
     fun updateRequestManager(): UpdateRequestManager
     fun bluetoothPaymentService(): com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService
@@ -209,6 +210,7 @@ fun AppNavigation(
     val isKioskMode by kioskModeManager.isKioskMode.collectAsStateWithLifecycle()
     val postOperationsAdapterFactory = remember { kioskEntryPoint.postOperationsAdapterFactory() }
     val modulesRepository = remember { kioskEntryPoint.modulesRepository() }
+    val terminalConfigRepository = remember { kioskEntryPoint.terminalConfigRepository() }
     val initializationManager = remember { kioskEntryPoint.initializationManager() }
     val isBlumonSdkInitialized by initializationManager.isInitialized.collectAsStateWithLifecycle()
     val bluetoothPaymentService = remember { kioskEntryPoint.bluetoothPaymentService() }
@@ -797,6 +799,22 @@ fun AppNavigation(
                         Timber.d("📦 Login: Fetching modules before navigating to Home")
                         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                             modulesRepository.fetchAndCache()
+                        }
+
+                        // 🔧 Refresh terminal config so the cached `angelpayAuth`
+                        // (only populated by the backend when the request is
+                        // authenticated with the user session JWT) is available
+                        // for AngelPayCredentialResolver. Pre-login fetch in
+                        // MainActivity runs without a user session and the
+                        // backend omits angelpayAuth — without this refresh,
+                        // the first payment attempt fails with "AngelPay
+                        // requiere autenticación" (cache stays null).
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            val serialNumber = deviceInfoManager.getSerialNumber()
+                            Timber.d("🔧 Login: Refreshing terminal config for serial: $serialNumber")
+                            terminalConfigRepository.fetchConfig(serialNumber)
+                                .onSuccess { Timber.i("✅ Login: Terminal config refreshed (angelpayAuth cache may be populated)") }
+                                .onFailure { Timber.w(it, "⚠️ Login: Terminal config refresh failed — AngelPay auth may not have credentials") }
                         }
 
                         // Navigate to home (must be on Main thread)

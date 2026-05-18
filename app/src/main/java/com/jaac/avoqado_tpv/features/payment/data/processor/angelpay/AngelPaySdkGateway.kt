@@ -4,7 +4,9 @@ import android.content.Context
 import com.angelpay.angelpaysdk.AngelPaySDK
 import com.angelpay.angelpaysdk.models.AuthenticateSimpleResult
 import com.angelpay.angelpaysdk.models.MerchantOption
+import com.angelpay.angelpaysdk.models.MerchantSummary
 import com.angelpay.angelpaysdk.models.PaymentRequest
+import com.angelpay.angelpaysdk.models.SessionInfo
 import java.math.BigDecimal
 import java.math.RoundingMode
 import javax.inject.Inject
@@ -26,6 +28,13 @@ class AngelPaySdkGateway @Inject constructor() {
         }
     }
 
+    @Deprecated(
+        message = "Use AngelPayAuthRepository.ensureAuthenticated() — handles credential resolution " +
+            "(D4 backend-preferred + BuildConfig fallback), retry/backoff, state machine, and post-auth " +
+            "config validation. This legacy entry point still exists for the app-to-app fallback path " +
+            "that has not yet migrated to backend-resolved credentials (see Task 34).",
+        level = DeprecationLevel.WARNING,
+    )
     suspend fun ensureAuthenticated(credentials: AngelPayCredentials): Result<Unit> {
         if (AngelPaySDK.isAuthenticated()) return Result.success(Unit)
 
@@ -45,6 +54,7 @@ class AngelPaySdkGateway @Inject constructor() {
         )
     }
 
+    @Suppress("DEPRECATION")
     private suspend fun selectConfiguredMerchant(
         authResult: AuthenticateSimpleResult.MerchantSelectionRequired,
         credentials: AngelPayCredentials,
@@ -135,4 +145,114 @@ class AngelPaySdkGateway @Inject constructor() {
     }
 
     private fun String.onlyDigits(): String = filter { it.isDigit() }
+
+    // --- Multi-merchant runtime switch (SDK 1.0.5 — spec §6.5, §18.1) ----------------------
+    //
+    // `getUserMerchants` and `switchMerchant` are the runtime primitives the dashboard
+    // exposes to the cashier so a logged-in user can swap active merchant without
+    // re-authenticating. They are *separate* from `selectMerchant` above (which handles
+    // the initial selection during `MerchantSelectionRequired` flow). The SDK internally
+    // fetches a fresh JWT during `switchMerchant`.
+    //
+    // We categorize SDK errors into typed exceptions (AuthExpired / Network / generic)
+    // so the AngelPayAuthRepository (Task 30) can drive the retry / re-auth state machine.
+
+    /** Returns the merchants the authenticated user can switch between (with `isActive` flag). */
+    suspend fun getUserMerchants(): Result<List<MerchantSummary>> {
+        return AngelPaySDK.getUserMerchants().fold(
+            onSuccess = { Result.success(it) },
+            onFailure = { Result.failure(mapSdkError(it)) },
+        )
+    }
+
+    /** Switches the active merchant without re-authenticating (SDK fetches new JWT internally). */
+    suspend fun switchMerchant(merchantId: Int): Result<Unit> {
+        return AngelPaySDK.switchMerchant(merchantId).fold(
+            onSuccess = { Result.success(Unit) },
+            onFailure = { Result.failure(mapSdkError(it)) },
+        )
+    }
+
+    /**
+     * Finalize the FIRST merchant selection after `AuthenticateSimpleResult.MerchantSelectionRequired`.
+     * Distinct from `switchMerchant`: this consumes the `temporaryToken` issued by
+     * `authenticateSimple` and establishes the initial active session.
+     *
+     * Wraps `AngelPaySDK.selectMerchant` with the same error categorization as
+     * `getUserMerchants`/`switchMerchant` so Task 30's AuthRepository can react uniformly.
+     */
+    suspend fun selectMerchant(merchantId: Int, temporaryToken: String): Result<Unit> {
+        return AngelPaySDK.selectMerchant(
+            merchantId = merchantId,
+            temporaryToken = temporaryToken,
+        ).fold(
+            onSuccess = { Result.success(Unit) },
+            onFailure = { Result.failure(mapSdkError(it)) },
+        )
+    }
+
+    // --- Low-level auth primitives (Task 30 — AngelPayAuthRepository state machine) ----------
+    //
+    // The repository drives `Authenticating → Authenticated | SelectingMerchant | AuthError`
+    // itself, so it needs the raw `AuthenticateSimpleResult` instead of the auto-selecting
+    // wrapper in [ensureAuthenticated]. Errors are categorized through [mapSdkError] so
+    // the auth state machine can react uniformly (AuthExpired / Network / generic).
+
+    /**
+     * Raw `authenticateSimple` passthrough — returns the SDK's discriminated result so the
+     * caller (Task 30's AuthRepository) can decide how to handle MerchantSelectionRequired.
+     */
+    suspend fun authenticateSimple(
+        email: String,
+        pin: String,
+    ): Result<AuthenticateSimpleResult> {
+        timber.log.Timber.tag("AngelPaySdkGateway").i("AngelPaySDK.authenticateSimple(email=$email) — calling SDK")
+        return AngelPaySDK.authenticateSimple(email = email, password = pin).fold(
+            onSuccess = {
+                timber.log.Timber.tag("AngelPaySdkGateway").i("SDK authenticateSimple → Success (type=${it::class.simpleName})")
+                Result.success(it)
+            },
+            onFailure = {
+                val mapped = mapSdkError(it)
+                timber.log.Timber.tag("AngelPaySdkGateway").e(it, "SDK authenticateSimple → FAILURE: ${it.message} (mapped to ${mapped::class.simpleName})")
+                Result.failure(mapped)
+            },
+        )
+    }
+
+    /** Returns the active SDK session info (post-authenticate), or null if not authenticated. */
+    fun getSessionInfo(): SessionInfo? = AngelPaySDK.getSessionInfo()
+
+    /** Forces SDK logout — clears the in-memory JWT + session. Idempotent. */
+    fun logout() {
+        AngelPaySDK.logout()
+    }
+
+    private fun mapSdkError(error: Throwable): Throwable {
+        val msg = error.message.orEmpty().lowercase()
+        return when {
+            msg.contains("auth") ||
+                msg.contains("401") ||
+                msg.contains("unauthorized") -> AngelPayAuthExpiredError(cause = error)
+            msg.contains("network") ||
+                msg.contains("timeout") ||
+                msg.contains("connection") -> AngelPayNetworkError(cause = error)
+            else -> error
+        }
+    }
 }
+
+/**
+ * AngelPay SDK reported the active session/JWT is no longer valid. Task 30's
+ * AuthRepository reacts by triggering a silent re-auth before surfacing failure
+ * to the cashier.
+ */
+class AngelPayAuthExpiredError(cause: Throwable? = null) :
+    RuntimeException("AngelPay auth expired or invalid", cause)
+
+/**
+ * AngelPay SDK reported a transport-level failure (timeout, connection drop). Task 30
+ * surfaces this as a transient error and lets the cashier retry without re-auth.
+ */
+class AngelPayNetworkError(cause: Throwable? = null) :
+    RuntimeException("AngelPay network error", cause)

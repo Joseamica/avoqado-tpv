@@ -699,11 +699,19 @@ class PaymentsViewModel @Inject constructor(
             ?.uppercase()
             ?.takeIf { it.isNotBlank() }
 
-        // In Nexgo builds, many legacy rows can include Blumon processorData fields.
-        // If processor label is missing, prefer ANGELPAY for same-device rows.
+        // In Nexgo builds, payments originally processed on PAX/Blumon terminals
+        // (mixed-hardware venues, or historical payments from before Nexgo deployment)
+        // MUST be classified as BLUMON so `getRefundAvailability` blocks refund
+        // attempts on the wrong hardware (Blumon refunds require CancelIcc against
+        // the PAX SDK, which doesn't run on Nexgo).
+        //
+        // The reliable Blumon-only signal is `blumonOperationNumber` — Blumon assigns
+        // those, AngelPay doesn't. `blumonSerialNumber` is NOT a reliable signal: it
+        // gets populated even on non-Blumon flows (legacy field reuse to record the
+        // device that processed the payment, regardless of processor).
         if (current == ProcessorType.ANGELPAY) {
-            if (paymentSerial != null && currentSerial.isNotBlank() && paymentSerial == currentSerial) {
-                return ProcessorType.ANGELPAY
+            if (payment.blumonOperationNumber != null) {
+                return ProcessorType.BLUMON
             }
             return ProcessorType.ANGELPAY
         }

@@ -417,6 +417,12 @@ configurations.configureEach {
 androidComponents {
     onVariants(selector().withFlavor("environment" to "nexgo")) { variant ->
         variant.packaging.jniLibs.excludes.addAll(
+            // Wildcard-strip armeabi tree — AAR-shipped natives (libIGLBarDecoder 3.9MB,
+            // libmetaprotect_sdk 195KB, libdecoder_jni 102KB, libimgprocessing 146KB,
+            // libserialport 17KB) bypass abiFilters because they come from transitive
+            // dependencies. Nexgo runs armeabi-v7a + arm64-v8a only, so armeabi is dead
+            // weight. Saves ~5.7MB on the APK (verified: 12 entries → 0 entries).
+            "lib/armeabi/**",
             "**/libcyber*.so",
             "**/libF_*_PayDroid.so",
             "**/libJNI_*.so",
@@ -427,6 +433,12 @@ androidComponents {
     }
     onVariants(selector().withFlavor("environment" to "nexgoProd")) { variant ->
         variant.packaging.jniLibs.excludes.addAll(
+            // Wildcard-strip armeabi tree — AAR-shipped natives (libIGLBarDecoder 3.9MB,
+            // libmetaprotect_sdk 195KB, libdecoder_jni 102KB, libimgprocessing 146KB,
+            // libserialport 17KB) bypass abiFilters because they come from transitive
+            // dependencies. Nexgo runs armeabi-v7a + arm64-v8a only, so armeabi is dead
+            // weight. Saves ~5.7MB on the APK (verified: 12 entries → 0 entries).
+            "lib/armeabi/**",
             "**/libcyber*.so",
             "**/libF_*_PayDroid.so",
             "**/libJNI_*.so",

@@ -78,6 +78,7 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val authRepository: AuthRepository,
     private val merchantRepository: MerchantRepository,
     private val secureStorage: SecureStorage,
+    private val terminalConfigRepository: com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository,
     private val intentBuilder: AngelPayIntentBuilder,
     private val sdkGateway: AngelPaySdkGateway,
     private val angelPayAuthRepository: AngelPayAuthRepository,
@@ -114,6 +115,25 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     private val _currentMerchant = MutableStateFlow<MerchantAccount?>(null)
     val currentMerchant: StateFlow<MerchantAccount?> = _currentMerchant.asStateFlow()
+
+    /**
+     * Multi-AngelPay accounts per venue (2026-05-19) — synchronous flag flipped
+     * to `true` at the VERY TOP of [selectMerchant] and reset in its `finally`.
+     * The screen `OR`s this with `inFlightSwitch` and `authState.Authenticating`
+     * to disable Tarjeta/Efectivo/Cripto immediately on the merchant tap.
+     *
+     * Why a third flag: `inFlightSwitch` only goes non-null INSIDE
+     * `AngelPayMerchantRepository.switchActiveMerchant`'s `withLock` body,
+     * which happens AFTER any `switchAccount` chain (which can itself take
+     * ~256ms even on the no-op path). During that gap the operator can tap
+     * Tarjeta → `startCardPayment` calls `setCharging(true)` → `selectMerchant`
+     * finally gets to `switchActiveMerchant` → trips `SwitchBlockedDuringCharge`
+     * → `_currentMerchant` reverted to null → `recordPayment` POST goes out
+     * without `merchantAccountId` → backend 400. Reproduced 2026-05-19 with
+     * a 256ms window between `Charging gate set` and `switchActiveMerchant`.
+     */
+    private val _selectionInProgress = MutableStateFlow(false)
+    val selectionInProgress: StateFlow<Boolean> = _selectionInProgress.asStateFlow()
 
     // TpvSettings for tip suggestions / default tip percentage
     val tipSuggestions: List<Int> get() = tpvSettingsRepository.getCurrentSettings().tipSuggestions
@@ -253,28 +273,51 @@ class AngelPayPaymentViewModel @Inject constructor(
                 return@launch
             }
 
-            val shiftResult = withContext(Dispatchers.IO) {
-                shiftRepository.getCurrentShift(venueId)
+            // Respect the venue's `enableShifts` setting — when shifts are
+            // disabled in dashboard, skip the open-shift requirement entirely.
+            // Without this guard the operator hit "Debes abrir un turno" even
+            // though turnos was OFF, and the only fix was opening a shift just
+            // to bypass the gate. Reproduced 2026-05-20 on `Avoqado Full`
+            // venue with enableShifts=false (visible in TerminalConfig logs).
+            val shiftsEnabled = tpvSettingsRepository.getCurrentSettings().enableShifts
+            val shift = if (shiftsEnabled) {
+                val shiftResult = withContext(Dispatchers.IO) {
+                    shiftRepository.getCurrentShift(venueId)
+                }
+                val resolved = shiftResult.getOrNull()
+                if (resolved == null) {
+                    _state.value = AngelPayPaymentState.Error(
+                        message = "Debes abrir un turno antes de cobrar",
+                        canRetry = false,
+                        showOpenShiftButton = true,
+                    )
+                    return@launch
+                }
+                resolved
+            } else {
+                null
             }
-            val shift = shiftResult.getOrNull()
 
-            if (shift == null) {
-                _state.value = AngelPayPaymentState.Error(
-                    message = "Debes abrir un turno antes de cobrar",
-                    canRetry = false,
-                    showOpenShiftButton = true,
-                )
-                return@launch
-            }
-
-            // 2. Validate AngelPay credentials
-            val credentials = secureStorage.getAngelPayCredentials()
-            if (credentials == null) {
-                _state.value = AngelPayPaymentState.Error(
-                    message = "No hay credenciales de AngelPay configuradas",
-                    canRetry = false,
-                )
-                return@launch
+            // 2. Validate AngelPay credentials.
+            //
+            // Per spec §4.5b, the AngelPay PIN MUST NOT be persisted to SecureStorage —
+            // it lives only in `TerminalConfigRepository.cachedAngelPayAuth` (in-memory,
+            // populated from the backend's `/tpv/terminals/:serial/config` response). The
+            // previous check against `secureStorage.getAngelPayCredentials()` always
+            // returned null and dead-ended the flow with "No hay credenciales de
+            // AngelPay configuradas" before `ensureAuthenticated()` ever ran.
+            //
+            // We do a soft check here for UX (instant error feedback) but the real
+            // self-heal happens in `AngelPayAuthRepository.ensureAuthenticated()` — if
+            // the cache is empty, it forces a fresh config fetch and retries the resolver.
+            // So this guard only fires when EVEN the self-heal can't get creds (no
+            // ACTIVE AngelPayUserAccount for the venue, or terminal not NEXGO).
+            val backendAuth = terminalConfigRepository.getCachedAngelPayAuth()
+            if (backendAuth == null) {
+                Timber.w("🔶 [AngelPay] cachedAngelPayAuth is null — ensureAuthenticated will attempt a self-heal refresh")
+                // Do NOT early-return — let ensureAuthenticated handle the missing-cache
+                // path. It logs the resolver path clearly and surfaces a proper AuthError
+                // state that the banner/screen renders.
             }
 
             // 3. Cache context
@@ -283,7 +326,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             pendingRating = null
             pendingOrderId = orderId
             pendingOrderNumber = orderNumber
-            cachedShiftId = shift.id
+            cachedShiftId = shift?.id
             cachedVenueId = venueId
             cachedStaffId = staffId
 
@@ -433,6 +476,12 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     fun selectMerchant(merchant: MerchantAccount) {
+        // Flip selectionInProgress SYNCHRONOUSLY (before the coroutine launches)
+        // so the screen disables Tarjeta/Efectivo/Cripto on the same frame as
+        // the merchant tap. Must be set OUTSIDE viewModelScope.launch — once
+        // the coroutine starts, we're already on a different scheduling tick
+        // and the operator can race a Tarjeta tap.
+        _selectionInProgress.value = true
         viewModelScope.launch {
             val targetId = runCatching { merchant.requireAngelpayMerchantId() }.getOrElse { err ->
                 Timber.e(err, "🔶 [AngelPay] Merchant ${merchant.displayName} has invalid AngelPay id")
@@ -440,12 +489,43 @@ class AngelPayPaymentViewModel @Inject constructor(
                     message = "Merchant inválido para AngelPay: ${err.message}",
                     canRetry = false,
                 )
+                _selectionInProgress.value = false
                 return@launch
             }
 
             val previousMerchant = _currentMerchant.value
             _currentMerchant.value = merchant
             Timber.d("🔶 [AngelPay] Merchant selected: ${merchant.displayName} (angelpayId=$targetId)")
+
+            try {
+
+            // Multi-AngelPay accounts per venue (2026-05-18): if this merchant is
+            // owned by a DIFFERENT AngelPayUserAccount than the SDK is currently
+            // authenticated as, swap SDK sessions FIRST so the SDK-level
+            // merchant selection / payment routes to the right account. No-op
+            // when the merchant's account matches the current one OR when the
+            // merchant has no `angelpayUserAccountId` (legacy / un-backfilled
+            // rows preserve the original single-account behavior).
+            val targetAccountId = merchant.angelpayUserAccountId
+            val currentAccountId = angelPayAuthRepository.getCurrentAngelPayAccountId()
+            if (targetAccountId != null && currentAccountId != null && targetAccountId != currentAccountId) {
+                Timber.tag("AngelPayAuth").i(
+                    "selectMerchant: switching AngelPay session $currentAccountId → $targetAccountId for merchant ${merchant.displayName}",
+                )
+                val switchResult = angelPayAuthRepository.switchAccount(targetAccountId)
+                if (switchResult.isFailure) {
+                    Timber.e(
+                        switchResult.exceptionOrNull(),
+                        "🔶 [AngelPay] switchAccount FAILED; reverting merchant pick",
+                    )
+                    _currentMerchant.value = previousMerchant
+                    _state.value = AngelPayPaymentState.Error(
+                        message = "No se pudo cambiar a la cuenta AngelPay del merchant: ${switchResult.exceptionOrNull()?.message ?: "error desconocido"}",
+                        canRetry = true,
+                    )
+                    return@launch
+                }
+            }
 
             val authState = angelPayAuthRepository.state.value
             val result: Result<Unit> = when (authState) {
@@ -474,6 +554,12 @@ class AngelPayPaymentViewModel @Inject constructor(
                     canRetry = true,
                 )
             }
+            } finally {
+                // Clear the synchronous gate on EVERY exit path (success,
+                // failure, account-switch-failure early return). Keeping it
+                // stuck `true` would permanently disable the payment buttons.
+                _selectionInProgress.value = false
+            }
         }
     }
 
@@ -481,10 +567,23 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     fun startCardPayment() {
         viewModelScope.launch {
-            val credentials = secureStorage.getAngelPayCredentials()
-            if (credentials == null) {
-                _state.value = AngelPayPaymentState.Error("No hay credenciales de AngelPay")
-                return@launch
+            // Per spec §4.5b, AngelPay PIN MUST NOT be persisted to SecureStorage —
+            // it lives only in `TerminalConfigRepository.cachedAngelPayAuth` (in-memory,
+            // populated from backend's `/tpv/terminals/:serial/config`). The previous
+            // check against `secureStorage.getAngelPayCredentials()` always returned
+            // null and dead-ended the flow with "No hay credenciales de AngelPay"
+            // AFTER the user had already passed rating/verification — the most
+            // frustrating possible failure point. By the time startCardPayment runs:
+            //   - HomeViewModel startup auth has already triggered ensureAuthenticated()
+            //   - SDK is authenticated (verified by the green "AngelPay: Avoqado" banner)
+            //   - SDK has session, knows the active merchant, ready to charge.
+            // We do a soft check against the correct in-memory source; if even THAT
+            // is null, the auth banner above has already surfaced AuthError state and
+            // the cashier knows what's up — but we don't block the charge attempt
+            // because the SDK itself manages auth.
+            val backendAuth = terminalConfigRepository.getCachedAngelPayAuth()
+            if (backendAuth == null) {
+                Timber.w("🔶 [AngelPay] startCardPayment — cachedAngelPayAuth null, but SDK manages session independently; proceeding")
             }
 
             // 🛡️ Tag in-flight payment so any error during the AngelPay flow carries
@@ -522,10 +621,23 @@ class AngelPayPaymentViewModel @Inject constructor(
             Timber.d("🔶 [AngelPay] Charging gate set | activeMerchant=$activeId")
 
             try {
+                // The `credentials` parameter on the start*Payment functions is
+                // vestigial — neither function actually reads from it (the SDK
+                // manages session internally + the app-to-app intent uses different
+                // wire fields). Synthesize a stub from the in-memory backend auth
+                // so the signature is satisfied without leaking real PIN to the
+                // signature contract. If/when those functions stop taking the param,
+                // delete this stub.
+                val stubCredentials = AngelPayCredentials(
+                    email = backendAuth?.email.orEmpty(),
+                    password = "", // never read — SDK has session, app-to-app uses commerceToken
+                    affiliation = backendAuth?.accountId.orEmpty(),
+                    commerceToken = "",
+                )
                 if (isSdkFlowEnabled()) {
-                    startSdkCardPayment(credentials)
+                    startSdkCardPayment(stubCredentials)
                 } else {
-                    startAppToAppCardPayment(credentials)
+                    startAppToAppCardPayment(stubCredentials)
                 }
             } catch (t: Throwable) {
                 paymentStateHolder.setCharging(false)
@@ -1224,15 +1336,19 @@ class AngelPayPaymentViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Validate shift is open (mirrors initPayment validation)
-                val shift = withContext(Dispatchers.IO) { shiftRepository.getCurrentShift(venueId) }.getOrNull()
-                if (shift == null) {
-                    _state.value = AngelPayPaymentState.Error(
-                        message = "Debes abrir un turno antes de cobrar",
-                        canRetry = false,
-                        showOpenShiftButton = true,
-                    )
-                    return@launch
+                // Validate shift is open (mirrors initPayment validation) —
+                // skipped when venue has shifts disabled.
+                val shiftsEnabled = tpvSettingsRepository.getCurrentSettings().enableShifts
+                if (shiftsEnabled) {
+                    val shift = withContext(Dispatchers.IO) { shiftRepository.getCurrentShift(venueId) }.getOrNull()
+                    if (shift == null) {
+                        _state.value = AngelPayPaymentState.Error(
+                            message = "Debes abrir un turno antes de cobrar",
+                            canRetry = false,
+                            showOpenShiftButton = true,
+                        )
+                        return@launch
+                    }
                 }
 
                 // Transition to GeneratingCryptoQR (loading)

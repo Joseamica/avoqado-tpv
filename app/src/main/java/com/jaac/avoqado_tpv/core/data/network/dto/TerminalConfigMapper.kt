@@ -56,7 +56,9 @@ fun MerchantAccountDto.toDomain(): MerchantAccount {
         // 🆕 Task 24 — additive AngelPay fields
         externalMerchantId = externalMerchantId,
         angelpayAffiliation = angelpayAffiliation,
-        angelpayMerchantName = angelpayMerchantName
+        angelpayMerchantName = angelpayMerchantName,
+        // 🆕 Multi-AngelPay accounts per venue (2026-05-18)
+        angelpayUserAccountId = angelpayUserAccountId,
     )
 }
 

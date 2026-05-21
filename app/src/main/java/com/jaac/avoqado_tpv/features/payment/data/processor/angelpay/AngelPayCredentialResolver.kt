@@ -48,6 +48,58 @@ class AngelPayCredentialResolver @Inject constructor(
     private val crashlytics: FirebaseCrashlytics,
     private val legacyCredsLoader: () -> LegacyAngelPayCreds? = ::defaultLegacyCredsLoader,
 ) {
+    /**
+     * Resolve creds for a SPECIFIC AngelPay account by its server-side ID.
+     *
+     * Multi-AngelPay accounts per venue (2026-05-18). Looks up in the cached
+     * `angelpayAccounts` list from terminal config and returns the matching
+     * entry's creds. Use this for multi-account flows where the operator
+     * switched merchants and we need to swap the SDK session.
+     *
+     * Falls back to legacy single-account `angelpayAuth` when the cached list
+     * is empty (e.g., backend didn't populate angelpayAccounts yet — old TPV /
+     * old backend) — only succeeds if the singular `angelpayAuth.accountId`
+     * matches the requested [accountId].
+     *
+     * @param accountId Avoqado `AngelPayUserAccount` CUID
+     * @return Success with creds (source="backend") or failure when no match.
+     */
+    suspend fun resolveByAccountId(accountId: String): Result<AngelPayCreds> {
+        Timber.tag(RESOLVER_LOG_TAG).i("resolveByAccountId($accountId) — searching cached angelpayAccounts list")
+        val accounts = terminalConfigRepository.getCachedAngelPayAccounts()
+        val match = accounts.firstOrNull { it.accountId == accountId }
+        if (match != null) {
+            Timber.tag(RESOLVER_LOG_TAG).i("✓ resolveByAccountId match in list: email=${match.email}, env=${match.environment}")
+            return Result.success(
+                AngelPayCreds(
+                    email = match.email,
+                    pin = match.pin,
+                    environment = match.environment,
+                    source = "backend",
+                    accountId = match.accountId,
+                ),
+            )
+        }
+        // Legacy fallback — old backend that only emits the singular `angelpayAuth`.
+        val singular = terminalConfigRepository.getCachedAngelPayAuth()
+        if (singular != null && singular.accountId == accountId) {
+            Timber.tag(RESOLVER_LOG_TAG).i("✓ resolveByAccountId match via legacy singular angelpayAuth: email=${singular.email}")
+            return Result.success(
+                AngelPayCreds(
+                    email = singular.email,
+                    pin = singular.pin,
+                    environment = singular.environment,
+                    source = "backend",
+                    accountId = singular.accountId,
+                ),
+            )
+        }
+        Timber.tag(RESOLVER_LOG_TAG).w("✗ resolveByAccountId($accountId) — not found in cached list (size=${accounts.size}) or legacy singular auth")
+        return Result.failure(
+            MissingAngelPayCredsError,
+        )
+    }
+
     fun resolve(): Result<AngelPayCreds> {
         Timber.tag(RESOLVER_LOG_TAG).i("resolve() — checking backend angelpayAuth in cached terminal config")
         val backendAuth = terminalConfigRepository.getCachedAngelPayAuth()

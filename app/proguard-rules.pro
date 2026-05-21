@@ -335,3 +335,67 @@
 -dontwarn io.sentry.ndk.NdkHandlerStrategy
 -dontwarn io.sentry.ndk.NdkOptions
 -dontwarn io.sentry.ndk.SentryNdk
+
+# AngelPay SDK bundles Ktor + AtomicFU for its HTTP client. Ktor's
+# DefaultPool / ChannelJob / AtomicFU classes use reflection on `volatile`
+# fields (e.g. `top` in DefaultPool) — R8 minify renames those fields and
+# AtomicFU's `<clinit>` throws NoSuchFieldException, leaving the AngelPay
+# auth flow hung in "Autenticando..." forever (no exception bubbles up
+# because the Ktor HTTP client thread silently dies). Confirmed via
+# Crashlytics 2026-05-20 on `2.1.0-nexgo-prod`:
+#   io.ktor.utils.io.pool.DefaultPool.<clinit>
+#   java.lang.NoSuchFieldException: No field top in class La/b/c/u10
+# Keep all Ktor + AtomicFU classes + their volatile field names.
+-keep class io.ktor.** { *; }
+-keepnames class io.ktor.** { *; }
+-keepclassmembers class io.ktor.** {
+    volatile <fields>;
+}
+-keep class kotlinx.atomicfu.** { *; }
+-keepclassmembers class kotlinx.atomicfu.** {
+    volatile <fields>;
+}
+-keepclassmembernames class kotlinx.coroutines.internal.** {
+    volatile <fields>;
+}
+-dontwarn io.ktor.**
+-dontwarn kotlinx.atomicfu.**
+
+# kotlinx.serialization runtime — REQUIRED for AngelPay SDK auth in release builds.
+# The SDK 1.0.5 serializes its HTTP request bodies (auth payloads, transaction
+# payloads, etc.) using @Serializable data classes. R8 strips the generated
+# $Companion + $$serializer classes by default because they appear unreferenced
+# (the runtime accesses them via reflection). Without these rules, every release
+# build silently sends empty/garbled JSON to AngelPay's backend → AngelPay
+# responds with generic "Error en la autenticación" because the credentials
+# field arrives empty. nexgoDebug works because debug builds skip R8.
+# Reproduced 2026-05-21 on AVQD-N860W173570 with v2.1.1-nexgo-prod (66):
+# auth always failed in release, always succeeded in debug.
+-keepattributes *Annotation*, InnerClasses
+-dontnote kotlinx.serialization.AnnotationsKt
+
+# kotlinx.serialization generic keep rules — preserve Companion + $$serializer
+# for every @Serializable class (consumer rules pattern from kotlinx-serialization).
+-keep,includedescriptorclasses class **$$serializer { *; }
+-keepclassmembers class ** {
+    *** Companion;
+}
+-keepclasseswithmembers class * {
+    kotlinx.serialization.KSerializer serializer(...);
+}
+
+# AngelPay SDK internal @Serializable models — official consumer-proguard.txt
+# only covers public `com.angelpay.angelpaysdk.models.**`, but the wire layer
+# lives under `internal.data.**` and is NOT covered. Without these keeps,
+# AuthRequest, CardInformation, ChargePlanTransaction, etc. get obfuscated
+# property names → AngelPay backend can't parse the JSON → auth fails.
+-keep class com.angelpay.angelpaysdk.internal.data.remote.** { *; }
+-keep class com.angelpay.angelpaysdk.internal.data.local.entity.** { *; }
+-keep class com.angelpay.angelpaysdk.internal.data.params.** { *; }
+-keep class com.angelpay.angelpaysdk.internal.data.dto.** { *; }
+-keepclassmembers class com.angelpay.angelpaysdk.internal.** {
+    *** Companion;
+    kotlinx.serialization.KSerializer serializer(...);
+}
+-keep class com.angelpay.angelpaysdk.internal.**$$serializer { *; }
+-dontwarn com.angelpay.angelpaysdk.internal.**

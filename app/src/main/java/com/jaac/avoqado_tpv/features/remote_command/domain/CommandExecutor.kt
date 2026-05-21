@@ -63,7 +63,11 @@ class CommandExecutor @Inject constructor(
     private val maintenanceManager: MaintenanceManager,
     private val secureStorage: SecureStorage,
     private val updateRequestManager: Provider<UpdateRequestManager>,
-    private val avoqadoUpdateRepository: AvoqadoUpdateRepository
+    private val avoqadoUpdateRepository: AvoqadoUpdateRepository,
+    // FETCH_ANGELPAY_MERCHANTS handler. Provider<T> deferral keeps PAX builds
+    // (where the AngelPay graph is never constructed at runtime) cheap — the
+    // .get() call inside the handler is gated by BuildConfig check.
+    private val angelPayAuthRepositoryProvider: Provider<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository>,
 ) {
     companion object {
         private const val TAG = "CommandExecutor"
@@ -135,6 +139,7 @@ class CommandExecutor @Inject constructor(
             TpvCommandType.UPDATE_CONFIG -> executeUpdateConfig(command.payload)
             TpvCommandType.REFRESH_MENU -> executeRefreshMenu()
             TpvCommandType.UPDATE_MERCHANT -> executeUpdateMerchant(command.payload)
+            TpvCommandType.FETCH_ANGELPAY_MERCHANTS -> executeFetchAngelPayMerchants(command.payload)
 
             // Automation Commands (handled server-side, but included for completeness)
             TpvCommandType.SCHEDULE,
@@ -1091,4 +1096,68 @@ class CommandExecutor @Inject constructor(
     // Note: Socket.IO ACK methods (emitResult, emitCommandAck, emitCommandStarted) removed
     // ACKs are now sent exclusively via HTTP by ConnectionViewModel.processPendingCommands()
     // This eliminates race conditions between Socket.IO and HTTP ACK paths
+
+    /**
+     * FETCH_ANGELPAY_MERCHANTS — dashboard asks TPV to re-authenticate the
+     * AngelPay SDK and report discovered merchants to backend.
+     *
+     * Payload (optional): { "angelpayUserAccountId": "<id>" } — when present
+     * the TPV switches to that specific account before authenticating, so the
+     * merchants reported correspond to THAT login. Without payload, uses the
+     * default account from cached terminal config.
+     *
+     * On PAX builds (BuildConfig.SUPPORTED_PROCESSOR != "ANGELPAY") this is a
+     * no-op — gated below to avoid Provider<AngelPayAuthRepository>.get()
+     * constructing the AngelPay graph (which would crash because the AAR isn't
+     * on the runtime classpath in PAX flavors).
+     */
+    private suspend fun executeFetchAngelPayMerchants(payload: Map<String, Any>?): CommandResult {
+        if (BuildConfig.SUPPORTED_PROCESSOR != "ANGELPAY") {
+            Timber.w("⚠️ [$TAG] FETCH_ANGELPAY_MERCHANTS rejected on non-AngelPay build (SUPPORTED_PROCESSOR=${BuildConfig.SUPPORTED_PROCESSOR})")
+            return CommandResult.rejected("This build does not support AngelPay (processor=${BuildConfig.SUPPORTED_PROCESSOR})")
+        }
+
+        Timber.i("🔶 [$TAG] Executing FETCH_ANGELPAY_MERCHANTS command")
+
+        val targetAccountId = payload?.get("angelpayUserAccountId") as? String
+
+        return try {
+            val authRepo = angelPayAuthRepositoryProvider.get()
+
+            // If a specific account was requested, switch the SDK to it first.
+            // Without it, ensureAuthenticated uses whatever account the resolver
+            // picks (typically the first one in cached config).
+            if (!targetAccountId.isNullOrBlank()) {
+                Timber.i("🔶 [$TAG] Switching AngelPay account before fetch: $targetAccountId")
+                val switchResult = authRepo.switchAccount(targetAccountId)
+                if (switchResult.isFailure) {
+                    val err = switchResult.exceptionOrNull()?.message ?: "switchAccount failed"
+                    Timber.w("⚠️ [$TAG] switchAccount($targetAccountId) failed: $err")
+                    return CommandResult.failed("No se pudo cambiar a cuenta AngelPay $targetAccountId: $err")
+                }
+            }
+
+            // ensureAuthenticated() handles the full flow internally:
+            // 1. Resolves creds (force config refresh on self-heal if cache empty)
+            // 2. SDK authenticateSimple (with retry backoff)
+            // 3. On Success: reports discovered merchants to backend
+            // 4. Refreshes terminal config so validator sees fresh intersection
+            // 5. Runs config validation
+            val authResult = authRepo.ensureAuthenticated()
+            if (authResult.isFailure) {
+                val err = authResult.exceptionOrNull()?.message ?: "auth failed"
+                Timber.e("❌ [$TAG] FETCH_ANGELPAY_MERCHANTS auth failed: $err")
+                return CommandResult.failed("AngelPay auth failed: $err")
+            }
+
+            Timber.i("✅ [$TAG] FETCH_ANGELPAY_MERCHANTS completed — backend should have received discovered merchants")
+            CommandResult.success(
+                message = "AngelPay merchants refreshed and reported to backend",
+                data = if (targetAccountId != null) mapOf("switchedToAccount" to targetAccountId) else null,
+            )
+        } catch (t: Throwable) {
+            Timber.e(t, "❌ [$TAG] FETCH_ANGELPAY_MERCHANTS threw unexpected exception")
+            CommandResult.failed("Unexpected error: ${t.message ?: t.javaClass.simpleName}")
+        }
+    }
 }

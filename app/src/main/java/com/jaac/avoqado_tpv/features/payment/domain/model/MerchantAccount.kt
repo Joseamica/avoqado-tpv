@@ -55,7 +55,20 @@ data class MerchantAccount(
     // 🆕 Task 24 — additive AngelPay fields (purely additive; Blumon callers unaffected)
     val externalMerchantId: String? = null,       // AngelPay: numeric string parseable to Int; Blumon: serial/posId equivalent
     val angelpayAffiliation: String? = null,
-    val angelpayMerchantName: String? = null
+    val angelpayMerchantName: String? = null,
+    /**
+     * Multi-AngelPay accounts per venue (2026-05-18). Identifies which
+     * AngelPayUserAccount on the backend "owns" this merchant — set by the
+     * discovery upgrade path in `upsertDiscoveredAngelPayMerchants`. The TPV
+     * uses it to call `AngelPayAuthRepository.switchAccount(accountId)`
+     * before charging if the selected merchant is owned by a different
+     * AngelPay login than the SDK currently has authenticated.
+     *
+     * Null for non-AngelPay providers and for legacy/un-backfilled rows
+     * (in which case the TPV does NOT switch and falls back to current
+     * behavior — see AngelPayPaymentViewModel.selectMerchant).
+     */
+    val angelpayUserAccountId: String? = null
 ) {
     /**
      * AngelPay merchant ID as Int — only call when processorType == ANGELPAY.

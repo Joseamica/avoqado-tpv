@@ -11,13 +11,19 @@ import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.CurrencyBitcoin
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -47,6 +53,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEnvironment
  * **Design:**
  * Simple merchant button grid with payment summary
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MerchantSelectionContent(
     modifier: Modifier = Modifier,
@@ -213,7 +220,18 @@ fun MerchantSelectionContent(
 
                         Spacer(modifier = Modifier.height(24.dp))
 
-                        // Merchant selector cards
+                        // Merchant selector — adaptive layout (2026-05-19).
+                        // On N62 (480x480 = 480x480dp at 160dpi) with 3+ merchants
+                        // the inline list pushed Tarjeta/Efectivo/Cripto below the
+                        // fold. Heuristic: collapse to a "Cambiar cuenta" button +
+                        // ModalBottomSheet picker when screen height is tight AND
+                        // there are too many merchants to fit inline. Threshold
+                        // tuned so PAX A910S (640dp) keeps the inline list.
+                        val screenHeightDp = LocalConfiguration.current.screenHeightDp
+                        val useCompactPicker =
+                            screenHeightDp < 700 && merchants.size > 2
+                        var showMerchantSheet by remember { mutableStateOf(false) }
+
                         Column(
                             modifier = Modifier.fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -225,14 +243,82 @@ fun MerchantSelectionContent(
                                 modifier = Modifier.padding(bottom = 4.dp)
                             )
 
-                            merchants.forEach { merchant ->
-                                val isSelected = merchant == currentMerchant
-                                MerchantCard(
-                                    merchant = merchant,
-                                    isSelected = isSelected,
+                            if (useCompactPicker) {
+                                // Compact: show ONLY the selected merchant as a
+                                // card + a "Cambiar" button that opens a bottom
+                                // sheet with the full radio-style list.
+                                currentMerchant?.let { selected ->
+                                    MerchantCard(
+                                        merchant = selected,
+                                        isSelected = true,
+                                        enabled = !merchantSwitchingLoading,
+                                        onClick = { showMerchantSheet = true },
+                                    )
+                                }
+                                OutlinedButton(
+                                    onClick = { showMerchantSheet = true },
                                     enabled = !merchantSwitchingLoading,
-                                    onClick = { onSelectMerchant(merchant) }
-                                )
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SwapHoriz,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Cambiar cuenta (${merchants.size})",
+                                        style = MaterialTheme.typography.labelLarge,
+                                    )
+                                }
+                            } else {
+                                // Inline: render all merchants as full cards.
+                                merchants.forEach { merchant ->
+                                    val isSelected = merchant == currentMerchant
+                                    MerchantCard(
+                                        merchant = merchant,
+                                        isSelected = isSelected,
+                                        enabled = !merchantSwitchingLoading,
+                                        onClick = { onSelectMerchant(merchant) }
+                                    )
+                                }
+                            }
+                        }
+
+                        if (useCompactPicker && showMerchantSheet) {
+                            val sheetState = rememberModalBottomSheetState(
+                                skipPartiallyExpanded = true,
+                            )
+                            ModalBottomSheet(
+                                onDismissRequest = { showMerchantSheet = false },
+                                sheetState = sheetState,
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Text(
+                                        text = "Selecciona la cuenta",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        modifier = Modifier.padding(bottom = 8.dp),
+                                    )
+                                    merchants.forEach { merchant ->
+                                        val isSelected = merchant == currentMerchant
+                                        MerchantCard(
+                                            merchant = merchant,
+                                            isSelected = isSelected,
+                                            enabled = !merchantSwitchingLoading,
+                                            onClick = {
+                                                onSelectMerchant(merchant)
+                                                showMerchantSheet = false
+                                            },
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                }
                             }
                         }
                     }

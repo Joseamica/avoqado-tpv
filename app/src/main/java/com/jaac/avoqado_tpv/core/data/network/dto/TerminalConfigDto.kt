@@ -59,7 +59,24 @@ data class TerminalConfigData(
     val tpvSettings: TpvSettingsDto?,
 
     @SerializedName("angelpayAuth")
-    val angelpayAuth: AngelPayAuthDto? = null  // present only when terminal.brand == "NEXGO" AND venue has ACTIVE AngelPayUserAccount
+    val angelpayAuth: AngelPayAuthDto? = null,  // present only when terminal.brand == "NEXGO" AND venue has ACTIVE AngelPayUserAccount (FIRST account, backward-compat)
+
+    /**
+     * Multi-AngelPay-accounts payload (2026-05-18). Always present (possibly
+     * empty []) when terminal.brand == "NEXGO"; null on non-NEXGO terminals.
+     *
+     * Backend (terminal.tpv.controller.ts) populates this list with EVERY
+     * ACTIVE AngelPayUserAccount for the venue. The TPV uses it to call
+     * `AngelPayAuthRepository.switchAccount(accountId)` when the cashier
+     * selects a merchant owned by a different AngelPay login than the one
+     * currently authenticated.
+     *
+     * The first entry (if any) matches the legacy single-account `angelpayAuth`
+     * field exactly, preserving back-compat with code paths that haven't been
+     * updated yet.
+     */
+    @SerializedName("angelpayAccounts")
+    val angelpayAccounts: List<AngelPayAuthDto>? = null
 )
 
 /**
@@ -189,7 +206,17 @@ data class MerchantAccountDto(
     val angelpayAffiliation: String? = null,
 
     @SerializedName("angelpayMerchantName")
-    val angelpayMerchantName: String? = null
+    val angelpayMerchantName: String? = null,
+
+    /**
+     * Multi-AngelPay accounts per venue (2026-05-18). Links this merchant
+     * back to the AngelPayUserAccount it was discovered under. Used by the
+     * cashier-side picker to call `AngelPayAuthRepository.switchAccount()`
+     * before charging. Null for non-AngelPay providers and for legacy
+     * AngelPay rows that pre-date the migration backfill.
+     */
+    @SerializedName("angelpayUserAccountId")
+    val angelpayUserAccountId: String? = null
 )
 
 /**

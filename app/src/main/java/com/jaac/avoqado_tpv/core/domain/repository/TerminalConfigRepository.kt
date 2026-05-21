@@ -64,6 +64,20 @@ interface TerminalConfigRepository {
      * only and MUST NOT be persisted (§4.5b).
      */
     fun getCachedConfig(): TerminalConfigData?
+
+    /**
+     * Read the most recent cached `angelpayAccounts` list from the last
+     * `fetchConfig()` response. Returns empty list if no fetch yet or the
+     * response had no angelpayAccounts payload (PAX flavors, non-NEXGO).
+     *
+     * Multi-AngelPay accounts per venue (2026-05-18). The list is the full set
+     * of AngelPayUserAccount rows on the backend for this venue — used by
+     * `AngelPayCredentialResolver.resolveByAccountId()` to switch between them
+     * when the cashier picks a merchant tied to a different login.
+     *
+     * PIN inside each entry is in-memory only and MUST NOT be persisted (§4.5b).
+     */
+    fun getCachedAngelPayAccounts(): List<AngelPayAuthDto>
 }
 
 /**

@@ -46,10 +46,15 @@ enum class TpvCommandType {
     FACTORY_RESET,
     EXPORT_LOGS,
 
-    // Configuration (3)
+    // Configuration (4)
     UPDATE_CONFIG,
     REFRESH_MENU,
     UPDATE_MERCHANT,
+
+    // AngelPay-specific: dashboard asks TPV to re-authenticate AngelPay SDK
+    // and report discovered merchants. Optional payload includes
+    // `angelpayUserAccountId` to switch to a specific account before auth.
+    FETCH_ANGELPAY_MERCHANTS,
 
     // Automation (3) - Server-side only, but included for completeness
     SCHEDULE,

@@ -125,6 +125,19 @@ class AngelPayMerchantRepository @Inject constructor(
             }
 
             val previousActive = _activeAngelPayMerchantId.value
+            // Multi-AngelPay accounts per venue (2026-05-19): idempotent
+            // short-circuit when the cashier picks the merchant that's already
+            // active in the SDK session. Without this, `sdkGateway.switchMerchant`
+            // throws `AuthenticationError("Error al cambiar de comercio")`
+            // because AngelPay 1.0.5 rejects a switch to the same merchant.
+            // Most common path: single-merchant account (the SDK auto-selects
+            // its only merchant on auth, then the cashier confirms the same one
+            // in MerchantSelectionContent and we'd otherwise re-fire the switch).
+            if (previousActive == merchantId) {
+                // Idempotent: SDK already on this merchant, no need to call it.
+                cacheDao.markActive(merchantId)
+                return@withLock Result.success(Unit)
+            }
             _inFlightSwitch.value = merchantId
 
             val deferred: Deferred<Result<Unit>> = async {

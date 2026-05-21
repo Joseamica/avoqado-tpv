@@ -307,8 +307,8 @@ class MenuViewModel @Inject constructor(
         // 🔐 Load permission flags — must match backend `checkPermission(...)` strings.
         viewModelScope.launch {
             _canApplyDiscount.value = permissionsRepository.hasPermission("discounts:apply")
-            _canCompItems.value = permissionsRepository.hasPermission("orders:comp")
-            _canVoidItems.value = permissionsRepository.hasPermission("orders:void")
+            _canCompItems.value = permissionsRepository.hasPermission("tpv-orders:comp")
+            _canVoidItems.value = permissionsRepository.hasPermission("tpv-orders:void")
             Timber.d(
                 "🔐 [Permissions] discount=${_canApplyDiscount.value} comp=${_canCompItems.value} void=${_canVoidItems.value}"
             )

@@ -58,8 +58,10 @@ enum class VerificationReviewStatus {
 
 /** Rejection reasons echoed from backend; matches enum SaleVerificationRejectionReason. */
 enum class RejectionReason(val raw: String, val label: String) {
-    REVIEW_PORTABILIDAD("REVIEW_PORTABILIDAD", "Revisar portabilidad"),
-    REVIEW_DUPLICATE_VINCULACION("REVIEW_DUPLICATE_VINCULACION", "Revisar número duplicado de vinculación"),
+    REVIEW_PORTABILIDAD("REVIEW_PORTABILIDAD", "Falta imagen de portabilidad"),
+    REVIEW_DUPLICATE_VINCULACION("REVIEW_DUPLICATE_VINCULACION", "# de vinculación duplicada"),
+    REVIEW_ILLEGIBLE_IMAGES("REVIEW_ILLEGIBLE_IMAGES", "Imágenes ilegibles"),
+    REVIEW_MISSING_LINKING_IMAGE("REVIEW_MISSING_LINKING_IMAGE", "Falta imagen de vinculación"),
     OTHER("OTHER", "Otro motivo");
 
     companion object {

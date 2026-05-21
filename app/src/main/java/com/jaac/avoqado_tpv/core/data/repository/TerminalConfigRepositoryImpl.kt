@@ -56,9 +56,18 @@ class TerminalConfigRepositoryImpl @Inject constructor(
     // semantics as cachedAngelPayAuth. PIN inside angelpayAuth is in-memory only (§4.5b).
     private val cachedConfig = AtomicReference<TerminalConfigData?>(null)
 
+    // Multi-AngelPay accounts per venue (2026-05-18). Mirrors `cachedAngelPayAuth` but
+    // holds the FULL list of AngelPayUserAccount rows assigned to this venue. Used by
+    // `AngelPayCredentialResolver.resolveByAccountId()` so the TPV can swap SDK sessions
+    // when the operator picks a merchant owned by a different AngelPay login. Same
+    // in-memory-only / never-persisted contract (§4.5b).
+    private val cachedAngelPayAccounts = AtomicReference<List<AngelPayAuthDto>>(emptyList())
+
     override fun getCachedAngelPayAuth(): AngelPayAuthDto? = cachedAngelPayAuth.get()
 
     override fun getCachedConfig(): TerminalConfigData? = cachedConfig.get()
+
+    override fun getCachedAngelPayAccounts(): List<AngelPayAuthDto> = cachedAngelPayAccounts.get()
 
     override suspend fun fetchConfig(serialNumber: String): Result<Pair<TerminalInfo, List<MerchantAccount>>> {
         return try {
@@ -110,6 +119,12 @@ class TerminalConfigRepositoryImpl @Inject constructor(
 
             // Cache the full config for AngelPayAuthRepository's post-auth D5 validation (Task 30).
             cachedConfig.set(data)
+
+            // Multi-AngelPay accounts per venue — cache the full list so the resolver can
+            // switch SDK sessions when the operator picks a merchant tied to a different
+            // AngelPay login. Falls back to empty list when backend doesn't populate it
+            // (old TPV / non-NEXGO / PAX flavors). PIN inside each entry is in-memory only.
+            cachedAngelPayAccounts.set(data.angelpayAccounts ?: emptyList())
 
             // Save venue timezone for date/time display throughout the app
             venue?.timezone?.let {

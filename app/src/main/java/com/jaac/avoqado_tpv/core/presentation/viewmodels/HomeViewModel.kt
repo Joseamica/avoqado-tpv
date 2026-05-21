@@ -30,6 +30,8 @@ import com.jaac.avoqado_tpv.core.data.local.mappers.toEntities
 import com.jaac.avoqado_tpv.core.data.local.mappers.toCategoryEntities
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
@@ -94,6 +96,12 @@ class HomeViewModel @Inject constructor(
     private val terminalConfigRepository: TerminalConfigRepository,
     private val merchantRepository: MerchantRepository,
     private val deviceInfoManager: DeviceInfoManager,
+    // 🔶 AngelPay startup auth — fires automatically when AngelPay flavor + creds
+    // available so discovery happens without waiting for the cashier to click
+    // Cobrar. Provider<T> defers construction so PAX flavors don't pay the SDK
+    // init cost at HomeViewModel creation time.
+    private val angelPaySdkGatewayProvider: javax.inject.Provider<AngelPaySdkGateway>,
+    private val angelPayAuthRepositoryProvider: javax.inject.Provider<AngelPayAuthRepository>,
     // 📡 Socket.IO Payment Bridge - Forward socket payment requests to BLE pipeline
     private val bluetoothPaymentService: com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService,
     private val printerManager: com.jaac.avoqado_tpv.core.printer.PrinterManager,
@@ -249,6 +257,15 @@ class HomeViewModel @Inject constructor(
             _isBlumonReady.value = true
             _blumonInitError.value = null
             Timber.i("🔶 [HomeViewModel] Skipping Blumon init on non-PAX build")
+            // Auto-trigger AngelPay auth on startup so discovery fires without
+            // waiting for the cashier to click Cobrar. Without this, the auth
+            // is lazy on first payment attempt → discovered merchants only
+            // appear in the dashboard AFTER the cashier triggers a charge,
+            // which forces a chicken-and-egg setup. Fire-and-forget on IO so
+            // it never blocks UI rendering. Provider<T> defers actual class
+            // construction so this is a no-op on PAX flavors (where AngelPay
+            // AAR isn't on the runtime classpath).
+            triggerAngelPayStartupAuthIfApplicable()
         }
         fetchSalesGoal()                    // delay(2_500)
         warmUpProductCache()                // delay(3_000)
@@ -1359,5 +1376,44 @@ class HomeViewModel @Inject constructor(
         authRepository.logout()
 
         Timber.d("✅ Logout complete")
+    }
+
+    /**
+     * Fire-and-forget AngelPay auth on Home load. Only runs when:
+     *   - BuildConfig.SUPPORTED_PROCESSOR == "ANGELPAY" (Nexgo flavors)
+     *   - SDK not already authenticated (idempotent — re-entry is a no-op)
+     *
+     * Self-healing inside `ensureAuthenticated` handles the case where the
+     * cached terminal config doesn't yet have `angelpayAuth` (forces a fresh
+     * fetch + retry). After auth succeeds, the Auth repo automatically reports
+     * discovered merchants to the backend; backend auto-creates + assigns
+     * them to VenuePaymentConfig slots — fully zero-touch onboarding.
+     *
+     * Provider<T> deferral means PAX flavors never instantiate the AngelPay
+     * graph at all (the get() call is guarded by the BuildConfig check).
+     */
+    private fun triggerAngelPayStartupAuthIfApplicable() {
+        if (BuildConfig.SUPPORTED_PROCESSOR != "ANGELPAY") {
+            Timber.d("🔶 [HomeViewModel] Not AngelPay flavor — skipping startup auth")
+            return
+        }
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                // ALWAYS call ensureAuthenticated() — do NOT short-circuit on
+                // gateway.isAuthenticated() here. The repository's
+                // ensureAuthenticated() has its own short-circuit that ALSO
+                // updates the state machine (_state.value = Authenticated) and
+                // runs the report/refresh/validate chain. Short-circuiting here
+                // leaves _state at its initial Unauthenticated value → the auth
+                // banner shows "requiere autenticación" even though SDK is fine.
+                Timber.i("🔶 [HomeViewModel] Auto-triggering AngelPay startup auth (zero-touch discovery)")
+                val authRepo = angelPayAuthRepositoryProvider.get()
+                authRepo.ensureAuthenticated()
+                    .onSuccess { Timber.i("🔶 [HomeViewModel] AngelPay startup auth success") }
+                    .onFailure { Timber.w(it, "🔶 [HomeViewModel] AngelPay startup auth failed — banner will surface state") }
+            } catch (e: Throwable) {
+                Timber.e(e, "🔶 [HomeViewModel] Startup auth threw — non-fatal, ignoring")
+            }
+        }
     }
 }

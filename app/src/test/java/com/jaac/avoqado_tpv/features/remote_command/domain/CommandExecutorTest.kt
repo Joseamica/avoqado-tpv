@@ -10,6 +10,7 @@ import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommand
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandPriority
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandType
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
 import com.jaac.avoqado_tpv.features.self_update.data.AvoqadoUpdateRepository
 import com.jaac.avoqado_tpv.features.self_update.domain.UpdateRequestManager
 import io.mockk.*
@@ -45,6 +46,7 @@ class CommandExecutorTest {
     private lateinit var mockPackageManager: PackageManager
     private lateinit var mockUpdateRequestManager: UpdateRequestManager
     private lateinit var mockAvoqadoUpdateRepository: AvoqadoUpdateRepository
+    private lateinit var mockAngelPayAuthRepository: AngelPayAuthRepository
 
     // System under test
     private lateinit var commandExecutor: CommandExecutor
@@ -62,6 +64,7 @@ class CommandExecutorTest {
         mockPackageManager = mockk(relaxed = true)
         mockUpdateRequestManager = mockk(relaxed = true)
         mockAvoqadoUpdateRepository = mockk(relaxed = true)
+        mockAngelPayAuthRepository = mockk(relaxed = true)
 
         // Setup secure storage to return test terminal ID
         every { mockSecureStorage.getSerialNumber() } returns testTerminalId
@@ -84,7 +87,8 @@ class CommandExecutorTest {
             maintenanceManager = mockMaintenanceManager,
             secureStorage = mockSecureStorage,
             updateRequestManager = Provider { mockUpdateRequestManager },
-            avoqadoUpdateRepository = mockAvoqadoUpdateRepository
+            avoqadoUpdateRepository = mockAvoqadoUpdateRepository,
+            angelPayAuthRepositoryProvider = Provider { mockAngelPayAuthRepository },
         )
     }
 

@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.payment.data.processor.angelpay
 import com.angelpay.angelpaysdk.models.AuthenticateSimpleResult
 import com.google.firebase.crashlytics.FirebaseCrashlytics
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
+import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -48,6 +49,7 @@ class AngelPayAuthRepository @Inject constructor(
     private val credentialResolver: AngelPayCredentialResolver,
     private val configValidator: AngelPayConfigValidator,
     private val terminalConfigRepository: TerminalConfigRepository,
+    private val deviceInfoManager: DeviceInfoManager,
     private val merchantRepository: AngelPayMerchantRepository,
     private val crashlytics: FirebaseCrashlytics,
     /**
@@ -65,6 +67,20 @@ class AngelPayAuthRepository @Inject constructor(
     val state: StateFlow<AngelPayAuthState> = _state.asStateFlow()
 
     /**
+     * Tracks which AngelPay user account (Avoqado `AngelPayUserAccount.id`) the
+     * SDK is currently authenticated as. Updated on every successful auth and
+     * after every `switchAccount`. `null` when the SDK has no live session.
+     *
+     * Multi-AngelPay accounts per venue (2026-05-18). The ViewModel reads this
+     * via [getCurrentAngelPayAccountId] to decide whether picking a merchant
+     * requires swapping AngelPay logins via [switchAccount].
+     */
+    private var currentAngelPayAccountId: String? = null
+
+    /** Snapshot of the AngelPay account ID currently authenticated, or null. */
+    fun getCurrentAngelPayAccountId(): String? = currentAngelPayAccountId
+
+    /**
      * Lazy + idempotent. Resolves creds, drives `authenticateSimple` with retries,
      * and either transitions to [AngelPayAuthState.Authenticated] (running config
      * validation as a side-effect) or to [AngelPayAuthState.SelectingMerchant]
@@ -74,30 +90,116 @@ class AngelPayAuthRepository @Inject constructor(
     suspend fun ensureAuthenticated(): Result<Unit> {
         Timber.tag(LOG_TAG).i("ensureAuthenticated() called")
         if (sdkGateway.isAuthenticated()) {
-            Timber.tag(LOG_TAG).i("SDK already authenticated — short-circuit to Authenticated state")
-            _state.value = AngelPayAuthState.Authenticated
-            runConfigValidation()
-            reportDiscoveredMerchantsIfPossible()
-            return Result.success(Unit)
+            // Probe SDK session health BEFORE trusting the cached auth flag.
+            // An "authenticated" session with 0 merchants is a stale/broken
+            // session — observed 2026-05-20 after app reinstall + venue
+            // recreation, where the SDK kept its token but lost its merchant
+            // list. Short-circuiting on a stale session would report 0
+            // merchants to the backend, leaving FETCH_ANGELPAY_MERCHANTS
+            // "succeed-but-empty" and the dashboard spinner stuck at 90s.
+            val cachedMerchants = runCatching { sdkGateway.getUserMerchants().getOrNull() }.getOrNull()
+            if (cachedMerchants.isNullOrEmpty()) {
+                Timber.tag(LOG_TAG).w("SDK reports authenticated but getUserMerchants() returned ${cachedMerchants?.size ?: "null"} merchants — session is stale, forcing logout + full re-auth")
+                runCatching { sdkGateway.logout() }
+                merchantRepository.clearActive()
+                // Fall through to the credential-resolve + authenticate path.
+            } else {
+                Timber.tag(LOG_TAG).i("SDK already authenticated with ${cachedMerchants.size} merchants — short-circuit to Authenticated state")
+                _state.value = AngelPayAuthState.Authenticated
+
+                // Multi-AngelPay accounts per venue — only populate if NOT already
+                // set. Trust the in-memory value, because after a `switchAccount`
+                // call the SDK is authed as a NON-primary account but the resolver
+                // still returns the venue's primary account creds (the cached
+                // `terminalConfig.angelpayAuth` field is "the primary account",
+                // not "which account is currently in the SDK session").
+                //
+                // Overwriting here on every ensureAuthenticated() call would
+                // corrupt `currentAngelPayAccountId` back to the primary right
+                // after a switchAccount — making `reportDiscoveredMerchantsIfPossible`
+                // attribute the switched-account's merchants to the WRONG accountId
+                // server-side, so placeholders for non-primary accounts never
+                // upgrade. (Reproduced 2026-05-19 with contacto@avoqado.io.)
+                if (currentAngelPayAccountId == null) {
+                    currentAngelPayAccountId = credentialResolver.resolve().getOrNull()?.accountId
+                }
+
+                Timber.tag(LOG_TAG).i("SDK session merchants (cached auth): ${cachedMerchants.size} total — " +
+                    cachedMerchants.joinToString { "${it.id}=${it.name}(afil=${it.affiliationNumber}, active=${it.isActive})" })
+                runCatching {
+                    val session = sdkGateway.getSessionInfo()
+                    if (session != null) {
+                        Timber.tag(LOG_TAG).i("SDK session info: userId=${session.userId}, merchantName=${session.merchantName}, affiliation=${session.affiliation}")
+                    }
+                }
+
+                // ⚠️ ORDER MATTERS: report FIRST so backend creates merchants +
+                // auto-assigns to slots, THEN refresh terminal config so the new
+                // merchants are in the cache, THEN validate against the fresh
+                // intersection. Doing validation first always fails on first auth
+                // because backend hasn't seen the SDK's merchant list yet.
+                reportDiscoveredMerchantsIfPossible()
+                refreshTerminalConfigQuietly()
+                runConfigValidation()
+                return Result.success(Unit)
+            }
         }
 
         Timber.tag(LOG_TAG).i("SDK not authenticated yet → resolving credentials")
-        val credsResult = credentialResolver.resolve()
+        var credsResult = credentialResolver.resolve()
+
+        // Self-heal: if the cache doesn't have backend creds, force a fresh fetch
+        // and retry once. The cache may be empty for legitimate reasons:
+        //   - The first config fetch (MainActivity startup) ran without a user session
+        //     and the backend gated angelpayAuth on auth, so the response was empty.
+        //   - AppNavigation post-login fetch was skipped because the user's session
+        //     was restored from SecureStorage (no fresh login event).
+        //   - The cache was invalidated and not refreshed yet.
+        // This makes auth resilient to fetch timing instead of relying on every caller
+        // to remember to refresh the config first.
+        if (credsResult.isFailure) {
+            Timber.tag(LOG_TAG).w("Resolver returned failure on first try — forcing terminal config refresh and retrying")
+            val serial = deviceInfoManager.getSerialNumber()
+            terminalConfigRepository.fetchConfig(serial)
+                .onSuccess { Timber.tag(LOG_TAG).i("Self-heal fetch succeeded — retrying resolver") }
+                .onFailure { Timber.tag(LOG_TAG).e(it, "Self-heal fetch FAILED — resolver will fail again") }
+            credsResult = credentialResolver.resolve()
+        }
+
         if (credsResult.isFailure) {
             val err = credsResult.exceptionOrNull()
                 ?: IllegalStateException("Missing AngelPay credentials")
-            Timber.tag(LOG_TAG).e(err, "Credential resolver FAILED → AuthError state. " +
-                "Most common cause: terminal config response did NOT include `angelpayAuth` " +
-                "(meaning backend thinks venue lacks ACTIVE AngelPayUserAccount) AND BuildConfig.ANGELPAY_QA_* are empty.")
+            Timber.tag(LOG_TAG).e(err, "Credential resolver FAILED after self-heal retry → AuthError state. " +
+                "Backend still didn't return angelpayAuth. Verify: " +
+                "(a) dashboard shows AngelPay account ACTIVE for this venue, " +
+                "(b) the venue this terminal belongs to matches the venue with the AngelPay account, " +
+                "(c) BuildConfig.ANGELPAY_QA_* are empty (expected post-Task-21).")
             _state.value = AngelPayAuthState.AuthError(err.message ?: "Missing AngelPay credentials")
             return Result.failure(err)
         }
         val creds = credsResult.getOrThrow()
-        Timber.tag(LOG_TAG).i("Credentials resolved (source=${creds.source}, accountId=${creds.accountId}, email=${creds.email}, env=${creds.environment}) → calling authenticateSimple")
+        return authenticateWithCreds(creds)
+    }
+
+    /**
+     * Core authenticate body extracted so both [ensureAuthenticated] and
+     * [switchAccount] can share the exact same `authenticateSimple` + 3-retry
+     * backoff + state-machine + post-auth report/refresh/validate sequence.
+     *
+     * Transitions [_state] and updates [currentAngelPayAccountId] on success.
+     * Surfaces [AngelPayAuthState.AuthError] + records to Crashlytics on
+     * failure — never throws.
+     */
+    private suspend fun authenticateWithCreds(creds: AngelPayCreds): Result<Unit> {
+        Timber.tag(LOG_TAG).i("authenticateWithCreds(source=${creds.source}, accountId=${creds.accountId}, email=${creds.email}, env=${creds.environment}) → calling authenticateSimple")
 
         _state.value = AngelPayAuthState.Authenticating
 
-        val authResult = retryWithBackoff(maxAttempts = 3) {
+        // 5 attempts with longer backoff (1s → 3s → 5s → 10s → 20s, ~39s total).
+        // AngelPay QA `initKeys` endpoint occasionally takes 15+ sec under load;
+        // the previous 3-attempt schedule (500ms+1s+2s = 3.5s) bailed before the
+        // server recovered. Reported: 2026-05-19 timeout on contacto@avoqado.io.
+        val authResult = retryWithBackoff(maxAttempts = 5) {
             sdkGateway.authenticateSimple(creds.email, creds.pin)
         }
 
@@ -107,18 +209,49 @@ class AngelPayAuthRepository @Inject constructor(
                     is AuthenticateSimpleResult.Success -> {
                         Timber.tag(LOG_TAG).i("authenticateSimple → Success (single-merchant flow). Transitioning to Authenticated.")
                         _state.value = AngelPayAuthState.Authenticated
+                        currentAngelPayAccountId = creds.accountId
                         reportValidation(creds.accountId, success = true)
-                        runConfigValidation()
+                        // ⚠️ ORDER MATTERS — see comment in `isAuthenticated`
+                        // short-circuit branch. Report first → refresh config →
+                        // then validate against fresh intersection.
                         reportDiscoveredMerchantsIfPossible()
+                        refreshTerminalConfigQuietly()
+                        runConfigValidation()
                         Result.success(Unit)
                     }
                     is AuthenticateSimpleResult.MerchantSelectionRequired -> {
                         Timber.tag(LOG_TAG).i("authenticateSimple → MerchantSelectionRequired with ${sdkResult.merchants.size} merchants: " +
                             sdkResult.merchants.joinToString { "${it.id}=${it.name}(${it.afiliationNumber})" })
+                        currentAngelPayAccountId = creds.accountId
                         _state.value = AngelPayAuthState.SelectingMerchant(
                             merchants = sdkResult.merchants,
                             temporaryToken = sdkResult.temporaryToken,
                         )
+                        // NOTE: `reportValidation(AUTHENTICATED)` deliberately NOT
+                        // called here. The SDK has a session but no merchant is
+                        // selected yet → `getSessionInfo()?.userId` returns null →
+                        // backend 400s with "externalUserId (number) required for
+                        // AUTHENTICATED state". The discovered-merchants report
+                        // below is the meaningful signal for the dashboard
+                        // pre-selection; the AUTHENTICATED state report fires in
+                        // `completeMerchantSelection` once a merchant is actually
+                        // selected and the SDK populates `getSessionInfo()`.
+                        // Reproduced 2026-05-20 — ventas@avoqado.io returns
+                        // MerchantSelectionRequired(2 merchants), backend 400 on
+                        // every FETCH_ANGELPAY_MERCHANTS.
+                        // Multi-AngelPay accounts per venue (2026-05-19): report
+                        // the merchants AngelPay returned even though the SDK is
+                        // still in "selecting merchant" state. The cashier-side
+                        // selection completes the SDK session, but the dashboard
+                        // operator needs visibility on what merchants this
+                        // account has access to RIGHT NOW (so they can approve /
+                        // assign to slots before the TPV cashier ever picks).
+                        // Previously the report only fired in the Success branch
+                        // → multi-merchant accounts left the backend blind. The
+                        // discovered list is in `sdkResult.merchants` so we
+                        // don't need to call `getUserMerchants()` separately.
+                        reportDiscoveredMerchantsFromList(creds.accountId, sdkResult.merchants)
+                        refreshTerminalConfigQuietly()
                         Result.success(Unit)
                     }
                 }
@@ -134,6 +267,88 @@ class AngelPayAuthRepository @Inject constructor(
     }
 
     /**
+     * Switch the SDK to a DIFFERENT AngelPay account (different email/PIN
+     * login). Multi-AngelPay accounts per venue (2026-05-18).
+     *
+     *  - Idempotent: no-op + Result.success when [accountId] equals the
+     *    [currentAngelPayAccountId].
+     *  - Resolves creds for the target [accountId] via
+     *    [AngelPayCredentialResolver.resolveByAccountId].
+     *  - Logs out the current SDK session, then re-authenticates via the
+     *    shared [authenticateWithCreds] helper (same 3-retry backoff +
+     *    state-machine + report/refresh/validate as [ensureAuthenticated]).
+     *  - Updates [_state] and [currentAngelPayAccountId] on success.
+     *  - Surfaces failure via [AngelPayAuthState.AuthError] AND returns
+     *    `Result.failure(err)` for the caller to render. Never crashes.
+     */
+    suspend fun switchAccount(accountId: String): Result<Unit> {
+        if (currentAngelPayAccountId == accountId) {
+            // Probe SDK session health before trusting the no-op. Same reasoning
+            // as `ensureAuthenticated`'s short-circuit: an "authenticated" session
+            // with 0 merchants is stale (observed 2026-05-20 after reinstall +
+            // venue recreation). A no-op here means FETCH_ANGELPAY_MERCHANTS
+            // reports 0 merchants and the dashboard spinner sits at 90s.
+            val cachedMerchants = runCatching { sdkGateway.getUserMerchants().getOrNull() }.getOrNull()
+            if (!cachedMerchants.isNullOrEmpty()) {
+                Timber.tag(LOG_TAG).i("switchAccount($accountId) — already on this account, SDK session has ${cachedMerchants.size} merchants, no-op")
+                return Result.success(Unit)
+            }
+            Timber.tag(LOG_TAG).w("switchAccount($accountId) — already on this account but SDK session has 0 merchants — forcing full re-auth")
+            currentAngelPayAccountId = null
+            runCatching { sdkGateway.logout() }
+            merchantRepository.clearActive()
+            // Fall through to the credential-resolve + authenticate path below.
+        }
+        Timber.tag(LOG_TAG).i("switchAccount: $currentAngelPayAccountId → $accountId")
+
+        // Self-heal: if the requested accountId isn't in the cached config's
+        // angelpayAccounts list, force a terminal-config refetch and retry
+        // ONCE. Symmetric to the self-heal in `ensureAuthenticated` (line 148+).
+        // Triggers in two real scenarios:
+        //   1. Operator adds an AngelPay account in dashboard AFTER the TPV's
+        //      last config fetch — cache is stale until next heartbeat refresh.
+        //      Without this, the FETCH_ANGELPAY_MERCHANTS command for the new
+        //      account fails with MissingAngelPayCredsError, the dashboard
+        //      spinner times out at 90s, and the operator thinks the system
+        //      is broken when really the cache just needs a poke.
+        //   2. Venue was re-created/migrated — accountIds in the new venue
+        //      don't match the TPV's pre-migration cache. Same self-heal path.
+        // Reproduced 2026-05-20 on venue `cmpe64yq2001f9k92m0lbhmf4` (post-
+        // venue-recreation) with accountId `cmpe6s63400119k3y9euvmf70`.
+        var credsResult = credentialResolver.resolveByAccountId(accountId)
+        if (credsResult.isFailure) {
+            Timber.tag(LOG_TAG).w("switchAccount: resolveByAccountId($accountId) miss on first try — refreshing terminal config and retrying")
+            runCatching {
+                val serial = deviceInfoManager.getSerialNumber()
+                terminalConfigRepository.fetchConfig(serial)
+                    .onSuccess { Timber.tag(LOG_TAG).i("Self-heal config refresh succeeded — retrying resolver") }
+                    .onFailure { Timber.tag(LOG_TAG).e(it, "Self-heal config refresh FAILED — resolver will fail again") }
+            }
+            credsResult = credentialResolver.resolveByAccountId(accountId)
+        }
+        if (credsResult.isFailure) {
+            val err = credsResult.exceptionOrNull()
+                ?: IllegalStateException("AngelPay account $accountId not found in cached config")
+            Timber.tag(LOG_TAG).e(err, "switchAccount: resolveByAccountId failed AFTER self-heal retry → AuthError. " +
+                "Backend did not return this accountId in the angelpayAccounts list. Verify: " +
+                "(a) the AngelPayUserAccount row exists and is ACTIVE, " +
+                "(b) it belongs to the SAME venue as this terminal, " +
+                "(c) the terminal config response includes the angelpayAccounts array.")
+            _state.value = AngelPayAuthState.AuthError(err.message ?: "Cuenta AngelPay no encontrada")
+            return Result.failure(err)
+        }
+        val creds = credsResult.getOrThrow()
+
+        // Logout BEFORE re-authenticating so the SDK doesn't reject the call as
+        // already-authenticated. `logout()` is idempotent + clears the in-memory
+        // JWT; the next `authenticateSimple` establishes a fresh session.
+        runCatching { sdkGateway.logout() }
+        merchantRepository.clearActive()
+
+        return authenticateWithCreds(creds)
+    }
+
+    /**
      * Finalize the initial merchant pick after [AngelPayAuthState.SelectingMerchant].
      * Delegates the SDK call + cache write to [AngelPayMerchantRepository], then runs
      * the post-auth config validation just like [ensureAuthenticated]'s success path.
@@ -145,8 +360,16 @@ class AngelPayAuthRepository @Inject constructor(
         val result = merchantRepository.completeInitialSelection(merchantId, temporaryToken)
         if (result.isSuccess) {
             _state.value = AngelPayAuthState.Authenticated
-            runConfigValidation()
+            // Now the SDK has a fully-authenticated session with externalUserId
+            // populated — fire the deferred validation report that we skipped
+            // in the MerchantSelectionRequired branch of authenticateWithCreds.
+            reportValidation(currentAngelPayAccountId, success = true)
+            // ⚠️ ORDER MATTERS — same reasoning as `ensureAuthenticated`'s
+            // Success branch: report first so backend creates+assigns merchants,
+            // refresh config so cache has them, then validate.
             reportDiscoveredMerchantsIfPossible()
+            refreshTerminalConfigQuietly()
+            runConfigValidation()
         } else {
             val err = result.exceptionOrNull()
             _state.value = AngelPayAuthState.AuthError(err?.message ?: "Merchant selection failed")
@@ -162,6 +385,7 @@ class AngelPayAuthRepository @Inject constructor(
     suspend fun handleAuthExpiry(): Result<Unit> {
         sdkGateway.logout()
         merchantRepository.clearActive()
+        currentAngelPayAccountId = null
         _state.value = AngelPayAuthState.Unauthenticated
         return ensureAuthenticated()
     }
@@ -170,6 +394,7 @@ class AngelPayAuthRepository @Inject constructor(
     fun logout() {
         sdkGateway.logout()
         merchantRepository.clearActive()
+        currentAngelPayAccountId = null
         _state.value = AngelPayAuthState.Unauthenticated
     }
 
@@ -187,7 +412,12 @@ class AngelPayAuthRepository @Inject constructor(
      */
     private suspend fun runConfigValidation() {
         val config = terminalConfigRepository.getCachedConfig() ?: return
-        when (val result = configValidator.validate(config)) {
+        // Multi-AngelPay accounts per venue (2026-05-19): pass the current
+        // SDK-session account ID so the validator scopes the intersection
+        // check to JUST this account's merchants (and not merchants from
+        // OTHER accounts in the same venue which would always look as
+        // "drift" because the current SDK session can't see them).
+        when (val result = configValidator.validate(config, currentAngelPayAccountId)) {
             is ValidationResult.AllClear -> { /* keep Authenticated */ }
             is ValidationResult.PartialOperable -> {
                 _state.value = AngelPayAuthState.ConfigMismatchBanner(
@@ -220,9 +450,57 @@ class AngelPayAuthRepository @Inject constructor(
      * to surface first) and is fully fire-and-forget: any failure is swallowed
      * inside `runCatching` so it cannot disturb the cashier-facing auth state.
      */
+    /**
+     * Multi-AngelPay accounts per venue (2026-05-19) — report merchants
+     * coming directly from `AuthenticateSimpleResult.MerchantSelectionRequired`.
+     * Distinct from [reportDiscoveredMerchantsIfPossible] which calls
+     * `getUserMerchants()` post-auth (only works AFTER a merchant is selected
+     * — chicken-and-egg in the multi-merchant case). This helper accepts the
+     * pre-selection merchant list AngelPay already sent us in the auth
+     * response, so the backend learns about them BEFORE the cashier picks.
+     */
+    private suspend fun reportDiscoveredMerchantsFromList(
+        accountId: String?,
+        merchants: List<com.angelpay.angelpaysdk.models.MerchantOption>,
+    ) {
+        if (accountId == null) return
+        runCatching {
+            val api = reportApi ?: return@runCatching
+            if (merchants.isEmpty()) return@runCatching
+            api.reportDiscoveredMerchants(
+                accountId = accountId,
+                // MerchantOption (pre-selection list) has no isActive field —
+                // pass `true` because AngelPay only returns merchants the user
+                // can currently transact through. The richer MerchantSummary
+                // (post-selection from getUserMerchants) DOES have isActive,
+                // and the post-selection report path uses it. Note the typo
+                // in `afiliationNumber` (single `f`) — that's AngelPay's
+                // field name, not ours.
+                merchants = merchants.map { m ->
+                    DiscoveredMerchantDto(
+                        angelpayId = m.id,
+                        name = m.name,
+                        affiliationNumber = m.afiliationNumber,
+                        isActive = true,
+                    )
+                },
+            )
+        }
+    }
+
     private suspend fun reportDiscoveredMerchantsIfPossible() {
         runCatching {
-            val accountId = terminalConfigRepository.getCachedConfig()?.angelpayAuth?.accountId
+            // Use the in-memory SDK-session accountId FIRST. After a
+            // `switchAccount(contacto@)` call, the SDK is authed as contacto@
+            // but `terminalConfig.angelpayAuth.accountId` is still the venue's
+            // PRIMARY (e.g. ventas@) — pairing primary's accountId with
+            // contacto@'s merchants tells the backend to upgrade ventas@'s
+            // placeholders instead of contacto@'s, so contacto@'s placeholder
+            // never gets upgraded. Fall back to the cached primary only on
+            // cold start (before any auth has happened). Reproduced on
+            // contacto@avoqado.io 2026-05-19.
+            val accountId = currentAngelPayAccountId
+                ?: terminalConfigRepository.getCachedConfig()?.angelpayAuth?.accountId
                 ?: return@runCatching
             val api = reportApi ?: return@runCatching
             val merchantsResult = merchantRepository.fetchAndCacheMerchants()
@@ -259,22 +537,57 @@ class AngelPayAuthRepository @Inject constructor(
     }
 
     /**
-     * Retry [block] up to [maxAttempts] times with exponential backoff
-     * (500ms, 1s, 2s gaps). Returns the last result — success short-circuits.
+     * Retry [block] up to [maxAttempts] times with custom backoff schedule
+     * (1s, 3s, 5s, 10s, 20s). Tuned for AngelPay QA `initKeys` endpoint which
+     * can timeout >15s under load. Returns the last result on completion;
+     * success short-circuits early.
+     *
+     * Logs each retry with attempt number + delay so admin can see the
+     * progression in adb logcat without grep gymnastics.
      */
     private suspend fun <T> retryWithBackoff(
         maxAttempts: Int,
         block: suspend () -> Result<T>,
     ): Result<T> {
+        val backoffMs = longArrayOf(1_000L, 3_000L, 5_000L, 10_000L, 20_000L)
         var lastResult: Result<T> = Result.failure(IllegalStateException("retry never invoked"))
         repeat(maxAttempts) { attempt ->
+            if (attempt > 0) {
+                Timber.tag(LOG_TAG).i("Retry attempt ${attempt + 1}/$maxAttempts (after ${backoffMs[(attempt - 1).coerceAtMost(backoffMs.size - 1)]}ms)")
+            }
             lastResult = block()
-            if (lastResult.isSuccess) return lastResult
+            if (lastResult.isSuccess) {
+                if (attempt > 0) Timber.tag(LOG_TAG).i("Retry succeeded on attempt ${attempt + 1}")
+                return lastResult
+            }
             if (attempt < maxAttempts - 1) {
-                delay(500L * (1L shl attempt))  // 500, 1000, 2000
+                val delayMs = backoffMs[attempt.coerceAtMost(backoffMs.size - 1)]
+                Timber.tag(LOG_TAG).w(lastResult.exceptionOrNull(), "Attempt ${attempt + 1} failed — sleeping ${delayMs}ms before retry")
+                delay(delayMs)
             }
         }
         return lastResult
+    }
+
+    /**
+     * Refresh the cached terminal config after we've reported discovered
+     * merchants to the backend so `runConfigValidation` sees the fresh
+     * intersection (otherwise the validator compares SDK merchants vs the
+     * stale cache and emits "no merchants compartidos" HardBlock the very
+     * first time auth runs — chicken-and-egg).
+     *
+     * Fire-and-forget semantics: if the refresh fails (network blip), the
+     * validator falls back to its cached config and may emit a transient
+     * mismatch banner. The next heartbeat refresh corrects it.
+     */
+    private suspend fun refreshTerminalConfigQuietly() {
+        runCatching {
+            val serial = deviceInfoManager.getSerialNumber()
+            Timber.tag(LOG_TAG).i("Refreshing terminal config post-report so validator sees fresh merchant intersection")
+            terminalConfigRepository.fetchConfig(serial)
+                .onSuccess { Timber.tag(LOG_TAG).i("Post-report config refresh OK") }
+                .onFailure { Timber.tag(LOG_TAG).w(it, "Post-report config refresh failed — validator may emit transient mismatch") }
+        }
     }
 }
 

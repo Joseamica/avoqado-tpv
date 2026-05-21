@@ -44,6 +44,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.util.ForegroundRecoveryGate
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthState
 import com.jaac.avoqado_tpv.features.payment.presentation.MerchantSelectionContent
 import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentLoadingScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentQrScreen
@@ -96,6 +97,7 @@ fun AngelPayPaymentScreen(
     val activeAngelPayMerchantId by viewModel.activeAngelPayMerchantId.collectAsStateWithLifecycle()
     val cachedMerchants by viewModel.cachedMerchants.collectAsStateWithLifecycle(initialValue = emptyList())
     val inFlightSwitch by viewModel.inFlightSwitch.collectAsStateWithLifecycle()
+    val selectionInProgress by viewModel.selectionInProgress.collectAsStateWithLifecycle()
     val activeMerchantName = cachedMerchants.firstOrNull { it.id == activeAngelPayMerchantId }?.name
 
     var showSwitcher by remember { mutableStateOf(false) }
@@ -304,7 +306,14 @@ fun AngelPayPaymentScreen(
 
             // Task 34 — switcher chip (only when we have an active merchant the
             // cashier can review/switch from). Tapping opens the modal sheet.
-            if (activeMerchantName != null) {
+            //
+            // Multi-AngelPay accounts per venue (2026-05-19): hide the chip when
+            // state is `SelectingMerchant` because `MerchantSelectionContent`
+            // already renders the full account picker below as radio buttons —
+            // the chip would be redundant + would steal vertical space on
+            // small screens (N62 720×720 cuts off the Tarjeta/Efectivo/Cripto
+            // action row at the bottom otherwise).
+            if (activeMerchantName != null && state !is AngelPayPaymentState.SelectingMerchant) {
                 AssistChip(
                     onClick = { showSwitcher = true },
                     label = { Text(activeMerchantName) },
@@ -408,7 +417,31 @@ fun AngelPayPaymentScreen(
                         rating = currentState.rating,
                         merchants = merchants,
                         currentMerchant = currentMerchant,
-                        merchantSwitchingLoading = false,
+                        // Multi-AngelPay accounts per venue (2026-05-19): block
+                        // Tarjeta/Efectivo/Cripto while a merchant switch is in
+                        // flight. Two distinct flight sources, both need to be
+                        // covered or `startCardPayment` can beat the in-flight
+                        // `selectMerchant` and trigger SwitchBlockedDuringCharge:
+                        //   1. `inFlightSwitch != null` — SDK `switchMerchant`
+                        //      is mid-call (the merchant-level switch, ≤ 8s)
+                        //   2. `authState is Authenticating` — `switchAccount`
+                        //      is mid-call (the account-level swap, can take
+                        //      30-60s under AngelPay QA timeouts with the
+                        //      5-attempt backoff). selectMerchant chains:
+                        //      switchAccount → switchActiveMerchant — if the
+                        //      operator taps Tarjeta during the first phase,
+                        //      `_currentMerchant` is reverted to null and the
+                        //      record-payment call goes out without a
+                        //      merchantAccountId → backend 400. Reproduced
+                        //      2026-05-19 with contacto@avoqado.io pick.
+                        // Three sources, all need to be `false` for the
+                        // payment buttons to be enabled. The third one
+                        // (`selectionInProgress`) closes the race window
+                        // BEFORE either of the other two fires — set
+                        // synchronously at the start of `selectMerchant`.
+                        merchantSwitchingLoading = selectionInProgress ||
+                            inFlightSwitch != null ||
+                            authState is AngelPayAuthState.Authenticating,
                         onSelectMerchant = { viewModel.selectMerchant(it) },
                         onStartPayment = { viewModel.startCardPayment() },
                         onStartCashPayment = { viewModel.startCashPayment() },

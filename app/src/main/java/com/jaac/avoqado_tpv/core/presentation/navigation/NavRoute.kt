@@ -306,6 +306,18 @@ sealed class NavRoute(val route: String) {
     data object MySales : NavRoute("my_sales")
 
     /**
+     * Sale Correction screen — re-upload rejected documentation for a sale.
+     *
+     * Reached from "Mis Ventas" when the promoter taps a sale flagged
+     * "Revisar documentación" (back-office rejected the proof-of-sale photos).
+     * Loads the existing SaleVerification by id, shows the rejection reasons,
+     * and lets the promoter re-take photos on the SAME sale (no duplicate).
+     */
+    data object SaleCorrection : NavRoute("sale_correction/{verificationId}") {
+        fun createRoute(verificationId: String): String = "sale_correction/$verificationId"
+    }
+
+    /**
      * Serialized Inventory Register screen - Batch registration of items
      * Select category → Scan multiple barcodes → Register batch
      *

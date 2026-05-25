@@ -361,6 +361,16 @@
 -dontwarn io.ktor.**
 -dontwarn kotlinx.atomicfu.**
 
+# AngelPay SDK 1.0.7 EMV processing — keep io.github.binaryfoo.* classes.
+# The SDK looks up `io.github.binaryfoo.decoders.CryptogramInformationDecoder`
+# (and likely other decoders) via `Class.forName(...)` at chip-payment time.
+# R8 marks these classes dead because no direct refs exist in our code → app
+# crashes mid-cobro with `ClassNotFoundException`. Confirmed 2026-05-21 on
+# Nexgo SPRD N86 with v2.2.0-nexgo-prod after auth succeeded.
+-keep class io.github.binaryfoo.** { *; }
+-keepclassmembers class io.github.binaryfoo.** { *; }
+-dontwarn io.github.binaryfoo.**
+
 # kotlinx.serialization runtime — REQUIRED for AngelPay SDK auth in release builds.
 # The SDK 1.0.5 serializes its HTTP request bodies (auth payloads, transaction
 # payloads, etc.) using @Serializable data classes. R8 strips the generated

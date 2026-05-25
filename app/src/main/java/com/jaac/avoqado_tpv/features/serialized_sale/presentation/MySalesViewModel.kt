@@ -45,7 +45,10 @@ data class SaleItem(
     val verificationStatus: VerificationReviewStatus = VerificationReviewStatus.NONE,
     val reviewedAt: String? = null,
     val reviewNotes: String? = null,
-    val rejectionReasons: List<RejectionReason> = emptyList()
+    val rejectionReasons: List<RejectionReason> = emptyList(),
+    // IDs needed by the sale-correction flow (tap a rejected sale → re-upload docs).
+    val verificationId: String? = null,
+    val paymentId: String? = null,
 )
 
 /** Back-office review status for the photo documentation attached to a sale. */
@@ -128,7 +131,9 @@ class MySalesViewModel @Inject constructor(
                             verificationStatus = parseVerificationStatus(sale.verificationStatus),
                             reviewedAt = sale.reviewedAt,
                             reviewNotes = sale.reviewNotes,
-                            rejectionReasons = RejectionReason.parseList(sale.rejectionReasons)
+                            rejectionReasons = RejectionReason.parseList(sale.rejectionReasons),
+                            verificationId = sale.verificationId,
+                            paymentId = sale.paymentId,
                         )
                     }
 

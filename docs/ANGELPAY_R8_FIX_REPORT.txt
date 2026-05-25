@@ -1,0 +1,206 @@
+================================================================
+Fix: AngelPay SDK + R8/ProGuard en builds release
+================================================================
+
+Fecha: 2026-05-22
+Reportado por: equipo Avoqado
+SDK afectado: AngelPay 1.0.5 (resuelto en 1.0.7 con ajustes propios)
+Dispositivos: Nexgo N86 (SPRD debug + producción TMS)
+
+----------------------------------------------------------------
+1. CONTEXTO
+----------------------------------------------------------------
+Stack:
+  - Android (minSdk 27, targetSdk 34)
+  - Kotlin + Jetpack Compose
+  - Hilt DI, KSP
+  - SDK AngelPay 1.0.5 -> 1.0.7
+
+Variantes afectadas:
+  - nexgoProd-release  (con R8 minify)  -> FALLABA
+  - nexgoDebug         (sin R8 minify)  -> funcionaba bien
+
+
+----------------------------------------------------------------
+2. SINTOMA ORIGINAL
+----------------------------------------------------------------
+APK release de produccion fallaba contra AngelPay PROD:
+
+  - "Autenticando..." infinito sin throw visible
+  - Despues: "Error en la autenticacion" generico desde backend AngelPay
+  - A veces crash en runtime con ClassNotFoundException durante el cobro
+
+El mismo APK release contra AngelPay QA funcionaba. La APK debug funcionaba
+tambien contra PROD. La unica variable que rompia era R8/minify.
+
+
+----------------------------------------------------------------
+3. DIAGNOSTICO
+----------------------------------------------------------------
+El SDK de AngelPay usa varias librerias internas (Ktor, kotlinx.serialization,
+emv-bertlv) accesadas por REFLEXION (Class.forName, $$serializer, volatile
+fields).
+
+El consumer-proguard.txt del AAR solo protege:
+  -keep class com.angelpay.angelpaysdk.AngelPaySDK { *; }
+  -keep class com.angelpay.angelpaysdk.AngelPayPaymentContract { *; }
+  -keep class com.angelpay.angelpaysdk.models.** { *; }
+  -keep class com.nexgo.** { *; }
+
+NO protege:
+  - io.ktor.**                                  (HTTP client interno)
+  - kotlinx.atomicfu.**                         (sincronizacion AtomicFU)
+  - io.github.binaryfoo.**                      (EMV TLV decoders)
+  - kotlinx.serialization $$serializer + Companion
+  - com.angelpay.angelpaysdk.internal.data.**   (DTOs wire-layer del SDK)
+
+Resultado: R8 marca esas clases como codigo muerto y las elimina/renombra.
+En runtime:
+  - Ktor lanza NoSuchFieldException("top") en DefaultPool.<clinit>
+    -> el HTTP client interno muere silenciosamente sin throw visible
+    -> auth queda colgada en "Autenticando..." indefinido
+  - kotlinx.serialization no encuentra serializers
+    -> request body se serializa con propiedades obfuscadas
+    -> backend AngelPay lo rechaza con "Error en la autenticacion" generico
+  - io.github.binaryfoo.decoders.CryptogramInformationDecoder
+    -> ClassNotFoundException al procesar chip EMV durante el cobro
+
+
+----------------------------------------------------------------
+4. PASOS DEL FIX
+----------------------------------------------------------------
+
+PASO 1: Actualizar SDK 1.0.5 -> 1.0.7
+--------------------------------------
+SDK 1.0.5 tenia bugs adicionales en auth contra PROD que AngelPay corrigio
+en 1.0.7. Copiar el AAR a app/libs/ y actualizar app/build.gradle.kts:
+
+    "nexgoImplementation"(files("libs/angelpaySDK-v1.0.7-fat-release.aar"))
+    "nexgoProdImplementation"(files("libs/angelpaySDK-v1.0.7-fat-release.aar"))
+    testImplementation(files("libs/angelpaySDK-v1.0.7-fat-release.aar"))
+
+
+PASO 2: Agregar keep rules en app/proguard-rules.pro
+----------------------------------------------------
+
+    # Ktor (HTTP client interno del SDK) - bug NoSuchFieldException: "top"
+    -keep class io.ktor.** { *; }
+    -keepnames class io.ktor.** { *; }
+    -keepclassmembers class io.ktor.** { volatile <fields>; }
+    -keep class kotlinx.atomicfu.** { *; }
+    -keepclassmembers class kotlinx.atomicfu.** { volatile <fields>; }
+    -keepclassmembernames class kotlinx.coroutines.internal.** { volatile <fields>; }
+    -dontwarn io.ktor.**
+    -dontwarn kotlinx.atomicfu.**
+
+    # EMV decoders bundleados dentro del AAR (accesados por Class.forName)
+    -keep class io.github.binaryfoo.** { *; }
+    -keepclassmembers class io.github.binaryfoo.** { *; }
+    -dontwarn io.github.binaryfoo.**
+
+    # kotlinx.serialization - para serializar bodies de requests HTTP
+    -keepattributes *Annotation*, InnerClasses
+    -dontnote kotlinx.serialization.AnnotationsKt
+    -keep,includedescriptorclasses class **$$serializer { *; }
+    -keepclassmembers class ** { *** Companion; }
+    -keepclasseswithmembers class * {
+        kotlinx.serialization.KSerializer serializer(...);
+    }
+
+    # Modelos internos del SDK AngelPay (wire layer / DTOs)
+    -keep class com.angelpay.angelpaysdk.internal.data.remote.** { *; }
+    -keep class com.angelpay.angelpaysdk.internal.data.local.entity.** { *; }
+    -keep class com.angelpay.angelpaysdk.internal.data.params.** { *; }
+    -keep class com.angelpay.angelpaysdk.internal.data.dto.** { *; }
+    -keepclassmembers class com.angelpay.angelpaysdk.internal.** {
+        *** Companion;
+        kotlinx.serialization.KSerializer serializer(...);
+    }
+    -keep class com.angelpay.angelpaysdk.internal.**$$serializer { *; }
+    -dontwarn com.angelpay.angelpaysdk.internal.**
+
+
+PASO 3 (solo si usan multi-cuenta AngelPay): Defer reportValidation
+-------------------------------------------------------------------
+Si usan `authenticateSimple()` y el resultado puede ser MerchantSelectionRequired,
+NO llamar a reportValidation(AUTHENTICATED) en ese branch. Todavia no hay
+externalUserId valido (viene del JWT post-merchant-selection) y backend de
+Avoqado rechaza con 400 "externalUserId (number) required for AUTHENTICATED state".
+
+Disparar reportValidation hasta el success path de completeMerchantSelection().
+
+
+PASO 4: Re-firmar con apksigner v2+ (NO jarsigner)
+---------------------------------------------------
+Para targetSdk 34+ es requerido APK Signature Scheme v2 o superior.
+
+    ~/Library/Android/sdk/build-tools/34.0.0/apksigner sign \
+        --ks <keystore.jks> \
+        --ks-pass pass:<password> \
+        --key-pass pass:<password> \
+        --out app-nexgoProd-release-signed.apk \
+        app-nexgoProd-release-unsigned.apk
+
+    ~/Library/Android/sdk/build-tools/34.0.0/apksigner verify --verbose \
+        app-nexgoProd-release-signed.apk
+    # Debe decir: "Verified using v2 scheme (APK Signature Scheme v2): true"
+
+
+----------------------------------------------------------------
+5. COMO VERIFICARLO
+----------------------------------------------------------------
+a) ./gradlew assembleNexgoProdRelease debe pasar sin errores.
+
+b) Instalar APK release en terminal:
+   adb install -r app-nexgoProd-release-signed.apk
+
+c) Hacer login + cobro debe completar sin ClassNotFoundException.
+
+d) Crashlytics NO debe reportar excepciones de:
+   - io.ktor.utils.io.pool.DefaultPool.<clinit>
+   - io.github.binaryfoo.decoders.CryptogramInformationDecoder
+
+e) Verificar que las clases criticas estan en el dex final:
+   unzip -p app.apk classes2.dex | \
+     ~/Library/Android/sdk/build-tools/34.0.0/dexdump -l plain - | \
+     grep -c "CryptogramInformationDecoder"
+   # Debe devolver > 0
+
+
+----------------------------------------------------------------
+6. REPORTE PARA ANGELPAY (lo que deberian arreglar de su lado)
+----------------------------------------------------------------
+Su consumer-proguard.txt esta incompleto. Cualquier cliente que use R8
+(virtualmente todos los APKs release modernos) va a sufrir estos mismos
+bugs. Deberian agregar a su proguard.txt (que se aplica automaticamente
+al consumir el AAR):
+
+    -keep class io.ktor.** { *; }
+    -keep class kotlinx.atomicfu.** { *; }
+    -keep class io.github.binaryfoo.** { *; }
+    -keep class com.angelpay.angelpaysdk.internal.** { *; }
+    -keep,includedescriptorclasses class **$$serializer { *; }
+    -keepclassmembers class ** { *** Companion; }
+    -dontwarn io.ktor.**
+    -dontwarn io.github.binaryfoo.**
+
+Asi ningun consumidor de su SDK tendria que descubrir estos fixes por
+trial-and-error.
+
+
+----------------------------------------------------------------
+7. EVOLUCION DE VERSIONES (referencia)
+----------------------------------------------------------------
+Version | SDK   | Cambio                                          | Resultado
+--------|-------|-------------------------------------------------|----------
+2.0.0   | 1.0.5 | Baseline                                        | KO (Ktor R8 bug)
+2.1.1   | 1.0.5 | + Ktor + AtomicFU keep rules                    | KO (serializers R8 bug)
+2.1.2   | 1.0.5 | + kotlinx.serialization keep rules              | KO (SDK 1.0.5 bug PROD)
+2.2.0   | 1.0.7 | Upgrade SDK                                     | Auth OK, crash mid-cobro
+2.2.1   | 1.0.7 | + intento con dep externa emv-bertlv 0.1.8      | KO (Duplicate class)
+2.2.2   | 1.0.7 | + keep rule io.github.binaryfoo.**              | OK end-to-end
+
+
+================================================================
+FIN
+================================================================

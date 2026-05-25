@@ -2118,6 +2118,21 @@ fun AppNavigation(
             MySalesScreen(
                 onNavigateBack = {
                     navController.safePopBackStack()
+                },
+                onNavigateToCorrection = { verificationId ->
+                    navController.navigate(NavRoute.SaleCorrection.createRoute(verificationId))
+                }
+            )
+        }
+
+        // 🛠️ Sale Correction Screen - Re-upload rejected documentation (Mis Ventas → Revisar)
+        composable(
+            route = NavRoute.SaleCorrection.route,
+            arguments = listOf(navArgument("verificationId") { type = NavType.StringType }),
+        ) {
+            com.jaac.avoqado_tpv.features.payment.presentation.SaleCorrectionScreen(
+                onNavigateBack = {
+                    navController.safePopBackStack()
                 }
             )
         }

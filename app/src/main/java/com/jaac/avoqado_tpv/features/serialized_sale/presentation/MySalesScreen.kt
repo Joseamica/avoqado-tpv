@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.serialized_sale.presentation
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -56,6 +57,7 @@ private const val PAX_A910S = "spec:width=720px,height=1280px,dpi=320"
 @Composable
 fun MySalesScreen(
     onNavigateBack: () -> Unit = {},
+    onNavigateToCorrection: (verificationId: String) -> Unit = {},
     viewModel: MySalesViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -65,7 +67,13 @@ fun MySalesScreen(
         onNavigateBack = onNavigateBack,
         onPreviousMonth = { viewModel.navigateMonth(-1) },
         onNextMonth = { viewModel.navigateMonth(1) },
-        onRetry = { viewModel.loadSales() }
+        onRetry = { viewModel.loadSales() },
+        onSaleClick = { sale ->
+            // Only rejected sales are actionable — tap navigates to the correction flow.
+            if (sale.verificationStatus == VerificationReviewStatus.FAILED && sale.verificationId != null) {
+                onNavigateToCorrection(sale.verificationId)
+            }
+        }
     )
 }
 
@@ -75,7 +83,8 @@ private fun MySalesScreenContent(
     onNavigateBack: () -> Unit = {},
     onPreviousMonth: () -> Unit = {},
     onNextMonth: () -> Unit = {},
-    onRetry: () -> Unit = {}
+    onRetry: () -> Unit = {},
+    onSaleClick: (SaleItem) -> Unit = {}
 ) {
     Scaffold(
         topBar = {
@@ -130,7 +139,7 @@ private fun MySalesScreenContent(
                     if (uiState.salesByDay.isEmpty()) {
                         EmptyState()
                     } else {
-                        SalesList(salesByDay = uiState.salesByDay)
+                        SalesList(salesByDay = uiState.salesByDay, onSaleClick = onSaleClick)
                     }
                 }
             }
@@ -228,7 +237,8 @@ private fun SummaryCard(
 
 @Composable
 private fun SalesList(
-    salesByDay: Map<String, List<SaleItem>>
+    salesByDay: Map<String, List<SaleItem>>,
+    onSaleClick: (SaleItem) -> Unit = {}
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -251,7 +261,7 @@ private fun SalesList(
                 items = sales,
                 key = { it.id }
             ) { sale ->
-                SaleRow(sale = sale)
+                SaleRow(sale = sale, onSaleClick = onSaleClick)
                 HorizontalDivider(
                     modifier = Modifier.padding(vertical = 2.dp),
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
@@ -262,11 +272,22 @@ private fun SalesList(
 }
 
 @Composable
-private fun SaleRow(sale: SaleItem) {
+private fun SaleRow(sale: SaleItem, onSaleClick: (SaleItem) -> Unit = {}) {
     val giftColor = MaterialTheme.avoqadoColors.statusWarning
     val successColor = MaterialTheme.avoqadoColors.statusSuccess
 
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+    // Rejected sales are tappable — promoter navigates to the correction flow.
+    val isCorrectable = sale.verificationStatus == VerificationReviewStatus.FAILED &&
+        sale.verificationId != null
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (isCorrectable) Modifier.clickable { onSaleClick(sale) } else Modifier
+            )
+            .padding(vertical = 6.dp)
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -330,6 +351,24 @@ private fun SaleRow(sale: SaleItem) {
                 rejectionReasons = sale.rejectionReasons,
                 reviewNotes = sale.reviewNotes,
             )
+            // Call-to-action so the promoter knows the rejected row is tappable.
+            if (isCorrectable) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "Toca para corregir",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
         }
     }
 }

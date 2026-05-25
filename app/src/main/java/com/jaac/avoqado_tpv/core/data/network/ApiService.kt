@@ -591,6 +591,19 @@ interface ApiService {
     @GET("tpv/verification/pending")
     suspend fun getPendingVerifications(): Response<PendingVerificationsResponse>
 
+    /**
+     * Get a single verification owned by the authenticated staff member.
+     *
+     * GET /tpv/verification/{verificationId}
+     *
+     * Used by the sale-correction flow — the promoter taps a rejected sale
+     * in "Mis Ventas" and re-uploads the documentation photos.
+     */
+    @GET("tpv/verification/{verificationId}")
+    suspend fun getVerificationDetail(
+        @Path("verificationId") verificationId: String
+    ): Response<VerificationDetailResponse>
+
     // ========== TPV Messages (Dashboard → Terminal) ==========
 
     /**
@@ -1736,6 +1749,28 @@ data class PendingVerificationDto(
     val isPortabilidad: Boolean,
     val photos: List<String>,
     val requiredPhotos: Int
+)
+
+// ========== Verification Detail DTOs (sale-correction flow) ==========
+
+data class VerificationDetailResponse(
+    val success: Boolean,
+    val data: VerificationDetailDto?
+)
+
+data class VerificationDetailDto(
+    val id: String,
+    val paymentId: String,
+    val amount: Double,
+    val orderNumber: String?,
+    val date: String, // ISO timestamp
+    val serialNumbers: List<String>,
+    val isPortabilidad: Boolean,
+    val photos: List<String>,
+    val requiredPhotos: Int,
+    val status: String,                          // PENDING | PROCESSING | COMPLETED | FAILED
+    val rejectionReasons: List<String>? = null,  // ["REVIEW_PORTABILIDAD", ...] when FAILED
+    val reviewNotes: String? = null              // Free-text feedback from back-office
 )
 
 // ========== Sales Goal DTOs ==========

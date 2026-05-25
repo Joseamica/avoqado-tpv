@@ -197,6 +197,7 @@ data class MySaleItem(
     val paymentStatus: String,
     val isGift: Boolean,
     // Back-office documentation review (PlayTelecom / Walmart) — nullable for backwards compat
+    val paymentId: String? = null,                  // Payment that owns the verification (sale-correction flow)
     val verificationId: String? = null,
     val verificationStatus: String? = null,        // "PENDING" | "COMPLETED" | "FAILED" | null (no verification)
     val reviewedAt: String? = null,                 // ISO timestamp set when back-office acted

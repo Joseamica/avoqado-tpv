@@ -299,9 +299,10 @@ fun PendingVerificationItem(
     item: PendingVerificationDto,
     isUploading: Boolean,
     isCameraActive: Boolean = false,
+    initiallyExpanded: Boolean = false,
     onTakePhoto: (label: String, replaceIndex: Int?) -> Unit
 ) {
-    var isExpanded by rememberSaveable { mutableStateOf(false) }
+    var isExpanded by rememberSaveable { mutableStateOf(initiallyExpanded) }
     var previewPhotoUrl by remember { mutableStateOf<String?>(null) }
 
     val nonEmptyPhotos = item.photos.count { it.isNotEmpty() }

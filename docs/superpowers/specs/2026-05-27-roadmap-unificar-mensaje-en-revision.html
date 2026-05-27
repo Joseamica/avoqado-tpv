@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Roadmap — Unificar mensaje al promotor: "En revisión por Administración"</title>
+<style>
+  :root {
+    --green: #0E9F6E;
+    --green-dark: #057A55;
+    --ink: #1A2B33;
+    --muted: #5B6B73;
+    --line: #E3E8EA;
+    --bg: #F6F8F9;
+    --card: #FFFFFF;
+    --pending: #F59E0B;     /* amarillo - en revisión */
+    --pending-bg: #FEF3C7;
+    --ok: #16A34A;          /* verde - venta correcta */
+    --ok-bg: #DCFCE7;
+    --fail: #DC2626;        /* rojo - revisar */
+    --fail-bg: #FEE2E2;
+    --info: #2563EB;        /* azul - informativo */
+    --info-bg: #EFF6FF;
+    --shadow: 0 1px 3px rgba(16,40,50,.08), 0 6px 24px rgba(16,40,50,.06);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 940px; margin: 0 auto; padding: 0 20px; }
+
+  /* HEADER */
+  header.hero {
+    background: linear-gradient(135deg, var(--green) 0%, var(--green-dark) 100%);
+    color: #fff;
+    padding: 48px 0 56px;
+  }
+  .hero .wrap { position: relative; }
+  .eyebrow {
+    text-transform: uppercase; letter-spacing: .12em; font-size: 12px;
+    font-weight: 700; opacity: .9; margin: 0 0 10px;
+  }
+  .hero h1 { font-size: clamp(26px, 4vw, 38px); line-height: 1.15; margin: 0 0 14px; font-weight: 800; }
+  .hero p.lead { font-size: 18px; max-width: 680px; margin: 0; opacity: .95; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 22px; }
+  .chip {
+    background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.28);
+    padding: 6px 12px; border-radius: 999px; font-size: 13px; font-weight: 600;
+  }
+  .chip.alta { background: #fff; color: var(--fail); border-color: #fff; }
+
+  /* SECTIONS */
+  main { padding: 40px 0 20px; }
+  section { margin: 0 0 38px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 28px; box-shadow: var(--shadow);
+  }
+  h2 {
+    font-size: 22px; margin: 0 0 6px; font-weight: 800; display: flex; align-items: center; gap: 10px;
+  }
+  h2 .num {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; border-radius: 9px; background: var(--green);
+    color: #fff; font-size: 15px; font-weight: 800; flex: none;
+  }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 15px; }
+  p { margin: 0 0 14px; }
+  strong { font-weight: 700; }
+
+  /* PILLS / STATUS */
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px;
+    border-radius: 999px; font-size: 13.5px; font-weight: 700; white-space: nowrap;
+  }
+  .pill.pending { background: var(--pending-bg); color: #92600A; }
+  .pill.ok { background: var(--ok-bg); color: #166534; }
+  .pill.fail { background: var(--fail-bg); color: #991B1B; }
+  .pill.info { background: var(--info-bg); color: #1D4ED8; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot.pending { background: var(--pending); }
+  .dot.ok { background: var(--ok); }
+  .dot.fail { background: var(--fail); }
+
+  /* PHONE / BANNER MOCKUPS */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 680px){ .compare { grid-template-columns: 1fr; } .flow { flex-direction: column; } .flow .arrow { transform: rotate(90deg); } }
+  .mock-label { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 10px; }
+  .mock-label.before { color: var(--fail); }
+  .mock-label.after { color: var(--ok); }
+  .phone {
+    background: #0B1418; border-radius: 26px; padding: 14px; box-shadow: var(--shadow);
+  }
+  .screen { background: #F2F5F6; border-radius: 14px; padding: 14px; }
+  .mini-header { font-size: 12px; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+
+  /* banner replica */
+  .banner {
+    display: flex; align-items: center; gap: 12px; padding: 14px;
+    border-radius: 12px; border: 1px solid transparent;
+  }
+  .banner .icon { font-size: 22px; flex: none; }
+  .banner .txt { flex: 1; min-width: 0; }
+  .banner .t1 { font-weight: 800; font-size: 15px; line-height: 1.2; }
+  .banner .t2 { font-size: 13px; opacity: .85; margin-top: 2px; }
+  .banner .chev { font-size: 18px; flex: none; opacity: .7; }
+  .banner.before { background: #FEF6DC; border-color: #F4D27A; color: #7A5B00; }
+  .banner.before .chev { color: #B07D00; }
+  .banner.after { background: var(--info-bg); border-color: #BFD6FE; color: #1E3A8A; }
+  .banner.after .chev { color: #2563EB; }
+
+  /* FLOW */
+  .flow { display: flex; align-items: stretch; gap: 10px; margin-top: 8px; }
+  .flow .node {
+    flex: 1; background: #fff; border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px; text-align: center; display: flex; flex-direction: column; gap: 8px; justify-content: center;
+  }
+  .flow .node .big { font-size: 22px; }
+  .flow .node .nt { font-weight: 700; font-size: 14px; }
+  .flow .node .nd { font-size: 12px; color: var(--muted); }
+  .flow .arrow { align-self: center; color: var(--muted); font-size: 22px; flex: none; }
+  .branch { display: flex; flex-direction: column; gap: 10px; flex: 1; }
+
+  /* TABLE */
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  th, td { text-align: left; padding: 13px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  td.before-cell { color: var(--muted); }
+  .arrow-inline { color: var(--green); font-weight: 800; }
+
+  /* lists */
+  ul.clean { list-style: none; padding: 0; margin: 0; }
+  ul.clean li { padding: 10px 0 10px 30px; position: relative; border-bottom: 1px dashed var(--line); }
+  ul.clean li:last-child { border-bottom: none; }
+  ul.clean li::before { content: "✓"; position: absolute; left: 0; top: 9px; color: var(--ok); font-weight: 800; }
+  ul.keep li::before { content: "🔒"; }
+
+  /* ROADMAP TIMELINE */
+  .timeline { position: relative; margin: 8px 0 0; padding-left: 8px; }
+  .phase { display: flex; gap: 16px; padding: 0 0 22px; position: relative; }
+  .phase:last-child { padding-bottom: 0; }
+  .phase .marker { flex: none; width: 36px; display: flex; flex-direction: column; align-items: center; }
+  .phase .circle {
+    width: 36px; height: 36px; border-radius: 50%; background: var(--green); color: #fff;
+    display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 15px; z-index: 1;
+  }
+  .phase .line { width: 2px; flex: 1; background: var(--line); margin-top: 2px; }
+  .phase:last-child .line { display: none; }
+  .phase .body { flex: 1; padding-bottom: 4px; }
+  .phase .body h3 { margin: 4px 0 4px; font-size: 16.5px; }
+  .phase .body .who { font-size: 12.5px; color: var(--muted); font-weight: 600; }
+  .phase .body p { font-size: 14.5px; margin: 6px 0 0; }
+  .tag {
+    display: inline-block; font-size: 11.5px; font-weight: 700; padding: 2px 9px; border-radius: 6px;
+    background: var(--bg); border: 1px solid var(--line); color: var(--muted); margin-left: 6px;
+  }
+  .tag.tpv { background: var(--green); color: #fff; border-color: var(--green); }
+  .tag.done { background: var(--ok-bg); color: #166534; border-color: #BBF7D0; }
+
+  /* CONFIRM */
+  .confirm-card { background: #fff; border: 2px solid var(--green); border-radius: 16px; padding: 28px; box-shadow: var(--shadow); }
+  .q { padding: 16px; border: 1px solid var(--line); border-radius: 12px; margin-bottom: 14px; background: #FBFDFC; }
+  .q:last-child { margin-bottom: 0; }
+  .q .ql { font-weight: 800; font-size: 15.5px; margin-bottom: 6px; display: flex; gap: 8px; align-items: baseline; }
+  .q .ql .qn { color: var(--green); }
+  .q .opts { font-size: 14px; color: var(--muted); }
+  .q .rec { display: inline-block; margin-top: 8px; font-size: 12.5px; font-weight: 700; color: var(--green-dark); background: var(--ok-bg); padding: 3px 10px; border-radius: 6px; }
+
+  .callout { background: var(--info-bg); border: 1px solid #BFD6FE; border-radius: 12px; padding: 16px 18px; color: #1E3A8A; font-size: 14.5px; }
+  .callout strong { color: #1E3A8A; }
+
+  footer { color: var(--muted); font-size: 13px; text-align: center; padding: 30px 0 50px; }
+  footer a { color: var(--green-dark); }
+  a.task-link { color: #fff; text-decoration: underline; opacity: .95; font-size: 14px; }
+
+  @media print {
+    body { background: #fff; }
+    .card, .confirm-card { box-shadow: none; }
+    header.hero { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Avoqado TPV · Bait × Play Telecom</p>
+    <h1>Unificar el mensaje al promotor:<br/>“En revisión por Administración”</h1>
+    <p class="lead">Hoy el promotor ve <strong>dos mensajes distintos</strong> para una misma situación, y eso lo confunde. Esta es la propuesta para dejar <strong>un solo mensaje claro</strong>. Por favor revísala y confírmame si así lo quieres.</p>
+    <div class="chips">
+      <span class="chip">📱 Plataforma: TPV</span>
+      <span class="chip alta">🔴 Prioridad: Alta</span>
+      <span class="chip">📅 27 may 2026</span>
+      <span class="chip"><a class="task-link" href="https://app.asana.com/1/12709793723059/project/1213523434401320/task/1215134691431318" target="_blank" rel="noopener">Ver tarea en Asana ↗</a></span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- RESUMEN -->
+  <section>
+    <div class="card">
+      <h2><span class="num">★</span> En una frase</h2>
+      <p style="font-size:17px; margin:0;">Después de una venta, el promotor verá <strong>siempre</strong> el mismo mensaje — <span class="pill info"><span class="dot pending" style="background:#2563EB"></span>En revisión por Administración</span> — sin importar si subió o no la foto. Será <strong>Administración quien revise y avise</strong> si algo falta. Se elimina la palabra “Verificación”, que hoy le hace creer al promotor que la tarea es suya.</p>
+    </div>
+  </section>
+
+  <!-- PROBLEMA -->
+  <section>
+    <div class="card">
+      <h2><span class="num">1</span> El problema de hoy</h2>
+      <p class="sub">La misma venta “esperando a Administración” se le muestra al promotor con <strong>dos textos diferentes</strong>, en dos pantallas distintas:</p>
+      <div class="compare">
+        <div>
+          <p class="mock-label before">En la pantalla de inicio</p>
+          <div class="phone"><div class="screen">
+            <p class="mini-header">Hola, Promotor · Inicio</p>
+            <div class="banner before">
+              <span class="icon">⚠️</span>
+              <span class="txt"><div class="t1">Pendientes Verificación</div><div class="t2">1 venta sin verificar</div></span>
+              <span class="chev">›</span>
+            </div>
+          </div></div>
+        </div>
+        <div>
+          <p class="mock-label before">En “Mis Ventas”</p>
+          <div class="phone"><div class="screen">
+            <p class="mini-header">Mis Ventas</p>
+            <div style="background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px;">
+              <div style="font-weight:700;font-size:14px;">SIM · $0.00</div>
+              <div style="font-size:12px;color:var(--muted);margin:2px 0 8px;">Hoy 11:44</div>
+              <span class="pill pending"><span class="dot pending"></span>En revisión</span>
+            </div>
+          </div></div>
+        </div>
+      </div>
+      <p style="margin-top:18px;">“<strong>Pendientes Verificación / sin verificar</strong>” suena a que <strong>el promotor</strong> tiene una tarea por hacer. Pero técnicamente esa venta solo está <strong>esperando que Administración la revise</strong> — exactamente lo mismo que dice “En revisión”. Son <strong>el mismo estado con dos nombres</strong>.</p>
+    </div>
+  </section>
+
+  <!-- SOLUCION -->
+  <section>
+    <div class="card">
+      <h2><span class="num">2</span> La solución: un solo mensaje</h2>
+      <p class="sub">El promotor solo necesita entender <strong>3 estados</strong>, en lenguaje claro:</p>
+      <div class="flow">
+        <div class="node">
+          <span class="big">🛒</span>
+          <span class="nt">Promotor vende</span>
+          <span class="nd">con foto o sin foto</span>
+        </div>
+        <span class="arrow">→</span>
+        <div class="node" style="border-color:#F4D27A;background:#FFFDF5;">
+          <span class="pill info" style="align-self:center;"><span class="dot" style="background:#2563EB"></span>En revisión por Administración</span>
+          <span class="nd">la venta espera el veredicto</span>
+        </div>
+        <span class="arrow">→</span>
+        <div class="branch">
+          <div class="node" style="border-color:#BBF7D0;background:#F6FEF9;">
+            <span class="pill ok" style="align-self:center;"><span class="dot ok"></span>Venta correcta</span>
+            <span class="nd">Administración aprobó ✅</span>
+          </div>
+          <div class="node" style="border-color:#FCA5A5;background:#FFF8F8;">
+            <span class="pill fail" style="align-self:center;"><span class="dot fail"></span>Revisar</span>
+            <span class="nd">faltó algo → el promotor corrige</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout" style="margin-top:22px;">
+        🔑 <strong>Lo importante:</strong> suba foto o no, la venta entra igual a <strong>“En revisión por Administración”</strong>. Si Administración detecta que falta la foto de línea o de portabilidad, la marca como <strong>“Revisar”</strong> con el motivo concreto, y el promotor recibe el aviso y la sube. <strong>Es Administración quien empuja, no el promotor quien adivina.</strong>
+      </div>
+
+      <p style="margin-top:22px;" class="mock-label after">Así se vería la pantalla de inicio (ya sin alarma)</p>
+      <div class="phone" style="max-width:430px;"><div class="screen">
+        <p class="mini-header">Hola, Promotor · Inicio</p>
+        <div class="banner after">
+          <span class="icon">🕓</span>
+          <span class="txt"><div class="t1">En revisión por Administración</div><div class="t2">1 venta en revisión</div></span>
+          <span class="chev">›</span>
+        </div>
+      </div></div>
+    </div>
+  </section>
+
+  <!-- QUE CAMBIA -->
+  <section>
+    <div class="card">
+      <h2><span class="num">3</span> Qué cambia exactamente</h2>
+      <p class="sub">Solo cambian <strong>textos y el tono</strong> de un aviso. No cambia ninguna funcionalidad.</p>
+      <table>
+        <thead><tr><th>Dónde</th><th>Hoy dice</th><th>Pasaría a decir</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Aviso en pantalla de inicio</td>
+            <td class="before-cell">“Pendientes Verificación” · “1 venta sin verificar” <em>(amarillo de alarma)</em></td>
+            <td><span class="arrow-inline">→</span> <strong>“En revisión por Administración”</strong> · “1 venta en revisión” <em>(informativo)</em></td>
+          </tr>
+          <tr>
+            <td>Título de la pantalla de detalle</td>
+            <td class="before-cell">“Pendientes Verificación”</td>
+            <td><span class="arrow-inline">→</span> <strong>“En revisión por Administración”</strong></td>
+          </tr>
+          <tr>
+            <td>Etiqueta en “Mis Ventas”</td>
+            <td class="before-cell">“En revisión”</td>
+            <td><span class="arrow-inline">→</span> <strong>“En revisión por Administración”</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- QUE NO CAMBIA -->
+  <section>
+    <div class="card">
+      <h2><span class="num">4</span> Qué <u>no</u> cambia (para tu tranquilidad)</h2>
+      <ul class="clean keep">
+        <li>El promotor <strong>sigue pudiendo subir fotos</strong> (en la venta o después). No se le quita ninguna capacidad.</li>
+        <li><strong>“Venta correcta”</strong> (aprobada) se queda igual — es la decisión final, no la espera.</li>
+        <li><strong>“Revisar”</strong> + el flujo de corrección se queda igual — es justo el canal por donde Administración dice “oye, falta esto”.</li>
+        <li>El <strong>dashboard de Administración y el backend no cambian</strong>: ya soportan revisar, aprobar y rechazar con motivos (“Falta imagen de vinculación”, “Falta imagen de portabilidad”…).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ROADMAP -->
+  <section>
+    <div class="card">
+      <h2><span class="num">5</span> Roadmap de ejecución</h2>
+      <p class="sub">Como es solo un cambio de textos en la app, es de bajo riesgo. El tiempo lo marca la firma del APK (PAX), no el desarrollo.</p>
+      <div class="timeline">
+        <div class="phase">
+          <div class="marker"><div class="circle">1</div><div class="line"></div></div>
+          <div class="body">
+            <h3>Confirmación de Isaac <span class="tag">este documento</span></h3>
+            <div class="who">👤 Isaac · 📅 Ahora</div>
+            <p>Apruebas la dirección y los textos exactos (ver las 4 preguntas de abajo).</p>
+          </div>
+        </div>
+        <div class="phase">
+          <div class="marker"><div class="circle">2</div><div class="line"></div></div>
+          <div class="body">
+            <h3>Cambio en la app TPV <span class="tag tpv">TPV</span></h3>
+            <div class="who">👤 Desarrollo · ⏱ ~medio día</div>
+            <p>Ajustar los 3 textos + bajar el tono del aviso (de alarma amarilla a informativo). Sin tocar lógica de pagos ni de inventario.</p>
+          </div>
+        </div>
+        <div class="phase">
+          <div class="marker"><div class="circle">3</div><div class="line"></div></div>
+          <div class="body">
+            <h3>Pruebas en terminal PAX <span class="tag tpv">TPV</span></h3>
+            <div class="who">👤 Desarrollo / QA · ⏱ ~medio día</div>
+            <p>Verificar los 3 estados en un dispositivo real: vender → “En revisión por Administración”; aprobar → “Venta correcta”; rechazar → “Revisar”.</p>
+          </div>
+        </div>
+        <div class="phase">
+          <div class="marker"><div class="circle">4</div><div class="line"></div></div>
+          <div class="body">
+            <h3>Release: firma + distribución <span class="tag tpv">TPV</span></h3>
+            <div class="who">👤 Desarrollo + PAX/Blumon · ⏱ 3–5 días</div>
+            <p>Generar el APK firmado y enviarlo a firma de PAX. Es el paso más lento del proceso (no depende del cambio en sí).</p>
+          </div>
+        </div>
+        <div class="phase">
+          <div class="marker"><div class="circle">5</div></div>
+          <div class="body">
+            <h3>En las terminales de los promotores <span class="tag done">listo</span></h3>
+            <div class="who">👤 Promotores · 📅 Tras la actualización</div>
+            <p>Los promotores ya ven un solo mensaje claro y dejan de confundirse.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CONFIRMAR -->
+  <section>
+    <h2 style="margin-left:4px;"><span class="num">✔</span> Lo que necesito que confirmes, Isaac</h2>
+    <div class="confirm-card">
+      <div class="q">
+        <div class="ql"><span class="qn">1.</span> ¿El texto exacto es <strong>“En revisión por Administración”</strong>?</div>
+        <div class="opts">Es el mensaje único que verá el promotor mientras la venta espera el veredicto.</div>
+        <span class="rec">✓ Propuesto</span>
+      </div>
+      <div class="q">
+        <div class="ql"><span class="qn">2.</span> El aviso en la pantalla de inicio: ¿lo <strong>re-enmarcamos</strong> a informativo o lo <strong>quitamos</strong>?</div>
+        <div class="opts"><strong>Re-enmarcar</strong> = el promotor ve “En revisión por Administración · X ventas” sin tono de alarma. &nbsp;·&nbsp; <strong>Quitar</strong> = solo lo ve dentro de “Mis Ventas”.</div>
+        <span class="rec">✓ Recomiendo: re-enmarcar (informativo)</span>
+      </div>
+      <div class="q">
+        <div class="ql"><span class="qn">3.</span> ¿Dejamos igual los estados finales <strong>“Venta correcta”</strong> y <strong>“Revisar”</strong>?</div>
+        <div class="opts">Son la <em>decisión</em> de Administración (no la espera). No parecen causar confusión hoy.</div>
+        <span class="rec">✓ Propuesto: dejarlos igual</span>
+      </div>
+      <div class="q">
+        <div class="ql"><span class="qn">4.</span> ¿Quieres un subtexto explicativo?</div>
+        <div class="opts">Ej.: <em>“Te avisaremos cuando haya una decisión.”</em> — opcional, ayuda a que el promotor entienda que no tiene que hacer nada.</div>
+        <span class="rec">Opcional</span>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Documento de confirmación · Avoqado TPV · Bait × Play Telecom · 27 may 2026<br/>
+    Una vez confirmado, se escribe la especificación técnica y se implementa.
+  </footer>
+
+</main>
+</body>
+</html>

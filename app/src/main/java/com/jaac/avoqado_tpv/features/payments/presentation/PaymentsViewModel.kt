@@ -8,6 +8,7 @@ import com.jaac.avoqado_tpv.core.domain.TerminalConfig
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
+import com.jaac.avoqado_tpv.features.payment.domain.processor.RefundLocation
 import com.jaac.avoqado_tpv.features.payments.domain.models.Payment
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentStatus
@@ -678,6 +679,15 @@ class PaymentsViewModel @Inject constructor(
         return if (BuildConfig.ENABLE_PAX_SDK) ProcessorType.BLUMON else ProcessorType.ANGELPAY
     }
 
+    /**
+     * Public wrapper over [inferPaymentProcessor] for the list/sheet
+     * processor badge. Returns null for cash and other cases where the
+     * "processor" concept doesn't apply — in those cases no badge is
+     * rendered (the existing Method/CardBrand badge already conveys
+     * what's needed).
+     */
+    fun getPaymentProcessor(payment: Payment): ProcessorType? = inferPaymentProcessor(payment)
+
     private fun inferPaymentProcessor(payment: Payment): ProcessorType? {
         if (payment.method != PaymentMethod.CARD) return null
 
@@ -719,6 +729,53 @@ class PaymentsViewModel @Inject constructor(
         // In PAX builds, keep Blumon fallback based on operation number.
         if (payment.blumonOperationNumber != null) return ProcessorType.BLUMON
         return current
+    }
+
+    /**
+     * Where this payment's refund would have to be processed, from the
+     * perspective of the TPV the user is currently looking at.
+     *
+     * Display contract on the payment list card (see [PaymentsScreen]):
+     * - [RefundLocation.Here] → silent (no badge — happy path, this TPV can refund)
+     * - [RefundLocation.OtherProcessor] → orange warning badge "↗ Reembolsa en PAX/Nexgo"
+     * - [RefundLocation.OtherDevice] → orange warning badge "↗ Otro dispositivo"
+     * - [RefundLocation.NotApplicable] → silent (cash, refund row, already
+     *   refunded, failed/pending — the card already conveys this via other
+     *   badges or has no refund affordance at all)
+     *
+     * Decoupled from [getRefundAvailability]: that one gates the actual
+     * refund button (and folds in permission checks). This one is purely
+     * about WHERE the refund lives, regardless of permission — useful for
+     * cashiers/waiters who need to know to escalate to an admin on the
+     * right device.
+     */
+    fun getRefundLocation(payment: Payment): RefundLocation {
+        // Inapplicable cases — the card already conveys these states via
+        // other badges (or refund simply doesn't apply).
+        if (payment.isRefund) return RefundLocation.NotApplicable
+        if (payment.isFullyRefunded) return RefundLocation.NotApplicable
+        if (payment.method == PaymentMethod.CASH) return RefundLocation.NotApplicable
+        if (payment.status != PaymentStatus.COMPLETED) return RefundLocation.NotApplicable
+
+        val currentProcessor = currentProcessorType()
+        val paymentProcessor = inferPaymentProcessor(payment)
+
+        // Different processor → operator must use the other terminal type.
+        if (paymentProcessor != null && paymentProcessor != currentProcessor) {
+            return RefundLocation.OtherProcessor(paymentProcessor)
+        }
+
+        // Same processor — check whether it's the same physical device.
+        val currentSerial = (secureStorage.getSerialNumber() ?: TerminalConfig.serialNumber).trim()
+        val paymentDeviceSerial = payment.deviceSerialNumber?.trim()
+        if (paymentDeviceSerial?.isNotBlank() == true &&
+            currentSerial.isNotBlank() &&
+            !paymentDeviceSerial.equals(currentSerial, ignoreCase = true)
+        ) {
+            return RefundLocation.OtherDevice(paymentDeviceSerial)
+        }
+
+        return RefundLocation.Here
     }
 
     // ══════════════════════════════════════════════════════════════════════

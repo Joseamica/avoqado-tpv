@@ -15,12 +15,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.Email
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Storefront
@@ -75,7 +76,13 @@ fun AngelPaySuccessContent(
     onSendReceiptWhatsApp: (String) -> Unit = {},
     isSendingReceipt: Boolean = false,
     onNavigateHome: () -> Unit,
-    onViewTransactions: () -> Unit = {},
+    /**
+     * Deep-link to the unified Pagos list, auto-opening the detail
+     * bottom sheet for the just-recorded payment. Receives the
+     * recorded paymentId. Button is hidden if the success state has no
+     * receipt yet (offline / pre-recording edge case).
+     */
+    onViewInPayments: (paymentId: String) -> Unit = {},
     onStartNewPayment: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -90,9 +97,84 @@ fun AngelPaySuccessContent(
     Column(
         modifier = modifier
             .fillMaxSize()
+            .statusBarsPadding()
             .padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        // ── Navigation header (Home | Nuevo Cobro | Transacciones) ───
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // Home button (left)
+            IconButton(
+                onClick = onNavigateHome,
+                modifier = Modifier
+                    .size(48.dp)
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outline,
+                        shape = RoundedCornerShape(12.dp),
+                    ),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Home,
+                    contentDescription = "Inicio",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+
+            // "Nuevo Cobro" button (center)
+            Button(
+                onClick = onStartNewPayment,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 12.dp)
+                    .height(48.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Storefront,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Nuevo Cobro", style = MaterialTheme.typography.labelLarge)
+            }
+
+            // "Ver en Pagos" button (right) — opens the unified Pagos list
+            // with this payment's detail bottom sheet auto-opened, so the
+            // operator can issue refunds or actions on the just-made
+            // payment without hunting through history. Hidden if the
+            // success state has no recorded paymentId yet (offline edge
+            // case before backend recording completes).
+            val paymentId = state.receipt?.paymentId
+            IconButton(
+                onClick = { paymentId?.let(onViewInPayments) },
+                enabled = paymentId != null,
+                modifier = Modifier
+                    .size(48.dp)
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outline,
+                        shape = RoundedCornerShape(12.dp),
+                    ),
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ReceiptLong,
+                    contentDescription = "Ver en Pagos",
+                    tint = if (paymentId != null) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                    },
+                )
+            }
+        }
+
         // ── QR Code Receipt ──────────────────────────────────────────
         if (showReceiptScreen && state.receipt?.receiptUrl != null) {
             Box(
@@ -361,69 +443,6 @@ fun AngelPaySuccessContent(
             }
 
             Spacer(modifier = Modifier.height(16.dp))
-        }
-
-        // ── Navigation buttons ───────────────────────────────────────
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // Home button (left)
-            IconButton(
-                onClick = onNavigateHome,
-                modifier = Modifier
-                    .size(48.dp)
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outline,
-                        shape = RoundedCornerShape(12.dp),
-                    ),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Home,
-                    contentDescription = "Inicio",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                )
-            }
-
-            // "Nuevo Cobro" button (center)
-            Button(
-                onClick = onStartNewPayment,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 12.dp)
-                    .height(48.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Storefront,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Nuevo Cobro", style = MaterialTheme.typography.labelLarge)
-            }
-
-            // Transactions button (right)
-            IconButton(
-                onClick = onViewTransactions,
-                modifier = Modifier
-                    .size(48.dp)
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outline,
-                        shape = RoundedCornerShape(12.dp),
-                    ),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.History,
-                    contentDescription = "Transacciones",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                )
-            }
         }
     }
 

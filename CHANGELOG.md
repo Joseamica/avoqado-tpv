@@ -7,6 +7,23 @@
 
 ## [Unreleased]
 
+### **Added**
+
+- **Badges per-processor en Pagos: procesador SIEMPRE visible + warning ámbar cuando el reembolso debe hacerse en otro TPV** (`PaymentsScreen.kt`, `PaymentDetailBottomSheet.kt`, `PaymentsViewModel.kt`, nuevo `features/payment/domain/processor/RefundLocation.kt`, nuevos tests en `PaymentsViewModelRefundAvailabilityTest.kt`). Antes el usuario tenía que tocar cada pago para enterarse de qué procesador lo cobró y si era refundable desde aquí. Ahora cada `PaymentCard` en "Pagos" muestra **dos** badges:
+    - **Badge gris `Nexgo·AngelPay` o `PAX·Blumon`** — siempre visible junto al CardBrand (VISA, etc.). Hace explícito qué terminal procesó cada pago, útil en venues mixtos PAX+Nexgo. Silencioso para pagos de efectivo (no tienen procesador).
+    - **Badge ámbar `↗ Reembolsa en X`** — solo aparece cuando el pago NO puede reembolsarse desde este TPV (otro procesador o otro device serial). Variantes: `Reembolsa en PAX·Blumon`, `Reembolsa en Nexgo·AngelPay`, `Reembolsa en otro TPV` (mismo procesador, distinto serial).
+    - Ambos badges aparecen también en el `PaymentDetailBottomSheet` (consistencia visual entre lista y detalle).
+    - **Lógica nueva en `PaymentsViewModel`**: `getRefundLocation(payment): RefundLocation` (sealed class `Here / OtherProcessor / OtherDevice / NotApplicable`) + `getPaymentProcessor(payment): ProcessorType?` (wrapper público sobre `inferPaymentProcessor` existente). Decoupled de `getRefundAvailability()` existente que gates el botón de refund: `getRefundLocation` responde "dónde se reembolsa", `getRefundAvailability` responde "puedo tocar el botón ahora".
+    - Casos NotApplicable (sin badge ámbar): cash, ya reembolsado, status FAILED/PENDING, fila que ES un refund.
+    - Comparte los composables `ProcessorBadge` y `RefundLocationBadge` entre PaymentsScreen y el bottom sheet. 5 tests nuevos cubren: BLUMON desde Nexgo, cash, ya reembolsado, otro device serial, mismo dispositivo. Validado en device real Nexgo N86 (AVQD-N860W175781) con 7 pagos AngelPay reales — todos muestran badge `Nexgo·AngelPay`, ninguno muestra warning (correcto: refundables localmente).
+- **Nueva sección "Reconciliación con el Procesador" en SuperAdmin** (`SuperAdminScreen.kt`, `AppNavigation.kt:1591`). Agrega 2 botones (Historial AngelPay/Nexgo y Historial Blumon/PAX) que abren `PaymentTransactionsScreen` con el `ProcessorType` correspondiente — herramienta de soporte para reconciliación cuando un pago no aparece en Pagos (e.g. webhook delivery falló). Antes la única entrada UI a esta pantalla era desde el botón History de la pantalla de éxito de AngelPay (que ahora hace otra cosa, ver Changed más abajo). Acceso queda detrás del TOTP maestro como el resto de SuperAdmin.
+
+### **Changed**
+
+- **AngelPay payment success: header arriba + botón "Ver en Pagos" reemplaza el History** (`AngelPaySuccessContent.kt`, `AngelPayPaymentScreen.kt`, `AppNavigation.kt:2217`, `NavRoute.kt:145`, `PaymentsScreen.kt`).
+    - **Header arriba**: La Row `Home | Nuevo Cobro | Ver-en-Pagos` que estaba al final del Column ahora va al inicio como header, justo debajo del status bar. Se agregó `statusBarsPadding()` al Column porque la app corre en edge-to-edge y sin el inset el header quedaba tapado por el system bar. Espaciado debajo del header: 12dp antes del QR. Los botones de recibo (Imprimir / Email / WhatsApp) siguen abajo, empujados por el `Spacer(weight = 1f)` existente.
+    - **Botón "Ver en Pagos" reemplaza History**: El botón con icono `Icons.Filled.History` (que llevaba a `PaymentTransactionsScreen.createRoute("ANGELPAY")` — consulta directa al SDK pensada para soporte) ahora es `Icons.AutoMirrored.Filled.ReceiptLong` y deep-linkea al unified "Pagos" abriendo automáticamente el bottom sheet del pago recién hecho. Esto unifica el flujo de refund: el usuario sale de la pantalla de éxito → directo al detalle del pago → si tiene permiso `payments:refund` ve el botón "Procesar Reembolso" (que ya existía para Blumon, ahora también disponible para AngelPay vía el mismo path). Implementación: nuevo param opcional `?autoOpenPaymentId={id}` en `NavRoute.Payments`; `PaymentsScreen` recibe `autoOpenPaymentId` y dispara `viewModel.showPaymentDetail(match)` en un `LaunchedEffect` cuando el pago aparece en la primera página cargada (guarded por `autoOpenedKey` para no re-abrir si el usuario cierra el sheet). El botón se deshabilita si `state.receipt?.paymentId` es null (edge case offline antes de que backend registre). Sin cambios al flujo transaccional — no se toca `AngelPayPaymentViewModel`, ni el adapter, ni el SDK. `popUpTo(Home, inclusive=false)` al navegar a Pagos para mantener el backstack limpio.
+
 ---
 
 ## [2.3.0] - 2026-05-25

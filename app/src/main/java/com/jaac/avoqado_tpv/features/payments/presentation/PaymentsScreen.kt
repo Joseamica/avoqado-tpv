@@ -23,6 +23,9 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
+import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
+import com.jaac.avoqado_tpv.features.payment.domain.processor.RefundLocation
 import com.jaac.avoqado_tpv.features.payments.domain.models.Payment
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentStatus
@@ -50,6 +53,14 @@ fun PaymentsScreen(
     viewModel: PaymentsViewModel = hiltViewModel(),
     refreshAfterRefund: Boolean = false,
     onRefundRefreshConsumed: () -> Unit = {},
+    /**
+     * Optional deep-link: if non-null, the screen will open the detail
+     * bottom sheet for this payment ID as soon as the list finishes
+     * loading. Used by the post-payment success screen so the operator
+     * lands directly on the just-made payment. One-shot — consumed on
+     * first match.
+     */
+    autoOpenPaymentId: String? = null,
     onBack: () -> Unit = {},
     onNavigateToRefund: (Payment) -> Unit = {}
 ) {
@@ -82,6 +93,25 @@ fun PaymentsScreen(
             viewModel.refresh()
             onRefundRefreshConsumed()
         }
+    }
+
+    // Deep-link: auto-open detail bottom sheet for a specific payment
+    // once the list loads (used by AngelPay success → "Ver en Pagos").
+    // Guarded by `autoOpenedKey` so we only fire ONCE per nav arg — if the
+    // user dismisses the sheet, it won't re-open on subsequent recomposes.
+    var autoOpenedKey by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(state, autoOpenPaymentId) {
+        val pid = autoOpenPaymentId ?: return@LaunchedEffect
+        if (autoOpenedKey == pid) return@LaunchedEffect
+        val currentState = state
+        val payments = when (currentState) {
+            is PaymentsState.Success -> currentState.payments
+            is PaymentsState.LoadingMore -> currentState.payments
+            else -> return@LaunchedEffect
+        }
+        val match = payments.firstOrNull { it.id == pid } ?: return@LaunchedEffect
+        autoOpenedKey = pid
+        viewModel.showPaymentDetail(match)
     }
 
     var showFilterDialog by remember { mutableStateOf(false) }
@@ -168,6 +198,8 @@ fun PaymentsScreen(
                     isRefreshing = isRefreshing,
                     isPrintMode = isPrintMode,
                     selectedPaymentIds = selectedPaymentsForPrint,
+                    refundLocationFor = viewModel::getRefundLocation,
+                    processorFor = viewModel::getPaymentProcessor,
                     onPaymentClick = { payment ->
                         if (isPrintMode) {
                             viewModel.togglePaymentSelection(payment)
@@ -194,6 +226,8 @@ fun PaymentsScreen(
                     isRefreshing = isRefreshing,
                     isPrintMode = isPrintMode,
                     selectedPaymentIds = selectedPaymentsForPrint,
+                    refundLocationFor = viewModel::getRefundLocation,
+                    processorFor = viewModel::getPaymentProcessor,
                     onPaymentClick = { payment ->
                         if (isPrintMode) {
                             viewModel.togglePaymentSelection(payment)
@@ -242,11 +276,15 @@ fun PaymentsScreen(
         // Payment Detail Bottom Sheet (for refund initiation)
         if (showPaymentDetailSheet && selectedPaymentForDetail != null) {
             val refundAvailability = viewModel.getRefundAvailability(selectedPaymentForDetail!!)
+            val refundLocation = viewModel.getRefundLocation(selectedPaymentForDetail!!)
+            val processor = viewModel.getPaymentProcessor(selectedPaymentForDetail!!)
             PaymentDetailBottomSheet(
                 payment = selectedPaymentForDetail!!,
                 canProcessRefund = canProcessRefund,
                 canRefundOnCurrentDevice = refundAvailability.canRefund,
                 nonRefundableReasonOverride = refundAvailability.reason,
+                refundLocation = refundLocation,
+                processor = processor,
                 onDismiss = { viewModel.dismissPaymentDetail() },
                 onRefundClick = { payment ->
                     viewModel.initiateRefund(payment)
@@ -274,6 +312,8 @@ private fun PaymentsContent(
     isRefreshing: Boolean = false,
     isPrintMode: Boolean = false,
     selectedPaymentIds: Set<String> = emptySet(),
+    refundLocationFor: (Payment) -> RefundLocation = { RefundLocation.NotApplicable },
+    processorFor: (Payment) -> ProcessorType? = { null },
     onPaymentClick: (Payment) -> Unit = {},
     onLoadMore: () -> Unit,
     onRefresh: () -> Unit
@@ -387,10 +427,21 @@ private fun PaymentsContent(
                             items = payments,
                             key = { payment -> payment.id }
                         ) { payment ->
+                            // Cache per-payment lookups so the row doesn't
+                            // recompute on every recomposition (both reads
+                            // hit SecureStorage internally).
+                            val refundLocation = remember(payment.id) {
+                                refundLocationFor(payment)
+                            }
+                            val processor = remember(payment.id) {
+                                processorFor(payment)
+                            }
                             PaymentCard(
                                 payment = payment,
                                 isPrintMode = isPrintMode,
                                 isSelected = payment.id in selectedPaymentIds,
+                                refundLocation = refundLocation,
+                                processor = processor,
                                 onClick = { onPaymentClick(payment) }
                             )
                         }
@@ -434,6 +485,8 @@ private fun PaymentCard(
     modifier: Modifier = Modifier,
     isPrintMode: Boolean = false,
     isSelected: Boolean = false,
+    refundLocation: RefundLocation = RefundLocation.NotApplicable,
+    processor: ProcessorType? = null,
     onClick: () -> Unit = {}
 ) {
     Card(
@@ -494,6 +547,8 @@ private fun PaymentCard(
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         val isRefunded = (payment.refundedAmount ?: BigDecimal.ZERO) > BigDecimal.ZERO
+                        // Processor origin badge (always visible when known)
+                        ProcessorBadge(processor = processor)
                         // Refund badge (if refund)
                         if (payment.isRefund) {
                             Surface(
@@ -552,6 +607,14 @@ private fun PaymentCard(
                         }
                     }
                 }
+
+                // ─── Refund-location warning (only when not refundable here) ──
+                // Sits between the amount/badges header row and the source
+                // row so the operator notices it before tapping the card.
+                // Silent for: Here (happy path), NotApplicable (cash, refund
+                // rows, already refunded, failed/pending — other badges
+                // already convey that state).
+                RefundLocationBadge(refundLocation)
 
                 Spacer(modifier = Modifier.height(4.dp))
 
@@ -622,6 +685,95 @@ private fun PaymentCard(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Processor origin badge.
+ *
+ * Always visible (when [processor] is non-null) to make it clear at a
+ * glance which terminal type processed each payment. Pairs with
+ * [RefundLocationBadge] which adds an additional warning only when the
+ * refund must happen on a different terminal.
+ *
+ * Renders nothing for null processor (cash, voucher, refund rows, etc.)
+ * — the existing Method/CardBrand badge already conveys that.
+ */
+@Composable
+internal fun ProcessorBadge(
+    processor: ProcessorType?,
+    modifier: Modifier = Modifier,
+) {
+    if (processor == null) return
+
+    val label = when (processor) {
+        ProcessorType.BLUMON -> "PAX·Blumon"
+        ProcessorType.ANGELPAY -> "Nexgo·AngelPay"
+    }
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * Refund-location warning badge.
+ *
+ * Renders an inline amber "Reembolsa en X" hint when [location] indicates
+ * the refund must happen elsewhere (different processor or different
+ * physical device). Silent for [RefundLocation.Here] and
+ * [RefundLocation.NotApplicable] — no badge, no spacing.
+ *
+ * Kept as a standalone composable so the same widget can be reused in
+ * [PaymentDetailBottomSheet] for consistency.
+ */
+@Composable
+internal fun RefundLocationBadge(
+    location: RefundLocation,
+    modifier: Modifier = Modifier,
+) {
+    val label = when (location) {
+        is RefundLocation.OtherProcessor -> when (location.processor) {
+            ProcessorType.BLUMON -> "Reembolsa en PAX·Blumon"
+            ProcessorType.ANGELPAY -> "Reembolsa en Nexgo·AngelPay"
+        }
+        is RefundLocation.OtherDevice -> "Reembolsa en otro TPV"
+        RefundLocation.Here, RefundLocation.NotApplicable -> return
+    }
+
+    Spacer(modifier = Modifier.height(6.dp))
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.18f),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = "↗",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.avoqadoColors.statusWarning,
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.avoqadoColors.statusWarning,
+            )
         }
     }
 }

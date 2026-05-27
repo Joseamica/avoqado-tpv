@@ -107,4 +107,15 @@ data class RefundRequest(
      */
     @SerializedName("tipRefundCents")
     val tipRefundCents: Int? = null,
+
+    /**
+     * Payment processor that handled the original transaction. Sent so the
+     * backend persists it on the refund row's `processor` field for
+     * downstream reconciliation. Backwards compatible: null = backend
+     * defaults to `'blumon'`, matching legacy behavior of pre-2.31 TPVs.
+     *
+     * Accepted values: `"blumon"` (PAX) | `"angelpay"` (Nexgo).
+     */
+    @SerializedName("processor")
+    val processor: String? = null,
 )

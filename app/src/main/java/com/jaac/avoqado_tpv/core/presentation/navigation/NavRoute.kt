@@ -142,7 +142,22 @@ sealed class NavRoute(val route: String) {
      * - Date range filter (7d, 30d, 90d, all time)
      * - Payment method filter (CASH, CARD, all)
      */
-    data object Payments : NavRoute("payments")
+    data object Payments : NavRoute("payments?autoOpenPaymentId={autoOpenPaymentId}") {
+        /**
+         * Build a Payments route URL. Pass [autoOpenPaymentId] to auto-open
+         * the detail bottom sheet for that payment as soon as the list
+         * finishes loading — used as a deep-link from the post-payment
+         * success screen so the operator lands directly on the just-made
+         * payment with refund options visible.
+         */
+        fun createRoute(autoOpenPaymentId: String? = null): String {
+            return if (autoOpenPaymentId.isNullOrBlank()) {
+                "payments"
+            } else {
+                "payments?autoOpenPaymentId=$autoOpenPaymentId"
+            }
+        }
+    }
 
     /**
      * Support screen - Help and support resources

@@ -133,6 +133,8 @@ interface AppNavigationEntryPoint {
     fun updateRequestManager(): UpdateRequestManager
     fun bluetoothPaymentService(): com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService
     fun socketManager(): com.jaac.avoqado_tpv.core.data.realtime.SocketManager
+    fun refundRecorder(): com.jaac.avoqado_tpv.features.payment.data.repository.RefundRecorder
+    fun authRepository(): com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 }
 
 /**
@@ -215,6 +217,8 @@ fun AppNavigation(
     val isBlumonSdkInitialized by initializationManager.isInitialized.collectAsStateWithLifecycle()
     val bluetoothPaymentService = remember { kioskEntryPoint.bluetoothPaymentService() }
     val socketManager = remember { kioskEntryPoint.socketManager() }
+    val refundRecorder = remember { kioskEntryPoint.refundRecorder() }
+    val authRepository = remember { kioskEntryPoint.authRepository() }
 
     // 📥 UPDATE REQUEST OBSERVATION (Remote update commands from dashboard)
     // When dashboard sends REQUEST_UPDATE command, show dialog to user
@@ -1595,7 +1599,15 @@ fun AppNavigation(
                 onTestPayment = {
                     // Trigger test payment of $10.00
                     pendingTestPayment = true
-                }
+                },
+                onOpenProcessorTransactions = { processor ->
+                    // Reconciliation tool — opens the SDK-level
+                    // transactions browser for the chosen processor.
+                    // Only reachable from SuperAdmin (TOTP-gated).
+                    navController.navigate(
+                        NavRoute.PaymentTransactions.createRoute(processor.name)
+                    )
+                },
             )
         }
 
@@ -1651,15 +1663,31 @@ fun AppNavigation(
         }
 
         // Payments Screen - Payment history with pagination and filters
-        composable(NavRoute.Payments.route) { backStackEntry ->
+        composable(
+            route = NavRoute.Payments.route,
+            arguments = listOf(
+                navArgument("autoOpenPaymentId") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                }
+            )
+        ) { backStackEntry ->
             // Auto-refresh after refund completion
             val refreshAfterRefund = backStackEntry.savedStateHandle
                 .get<Boolean>("refreshAfterRefund") == true
+            // Optional deep-link: open detail bottom sheet for this payment
+            // as soon as the list finishes loading (used from AngelPay
+            // success → "Ver en Pagos").
+            val autoOpenPaymentId = backStackEntry.arguments
+                ?.getString("autoOpenPaymentId")
+                ?.takeIf { it.isNotBlank() }
             com.jaac.avoqado_tpv.features.payments.presentation.PaymentsScreen(
                 refreshAfterRefund = refreshAfterRefund,
                 onRefundRefreshConsumed = {
                     backStackEntry.savedStateHandle.remove<Boolean>("refreshAfterRefund")
                 },
+                autoOpenPaymentId = autoOpenPaymentId,
                 onBack = {
                     navController.safePopBackStack()
                 },
@@ -1770,14 +1798,63 @@ fun AppNavigation(
                                 requestedReason = refundReason,
                                 appContext = context.applicationContext,
                             )
-                            isNexgoRefundProcessing = false
 
                             result.fold(
                                 onSuccess = { message ->
-                                    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
-                                    navController.safePopBackStack()
+                                    // SDK refund OK → now record in backend so Pagos
+                                    // shows it as "Reembolsado" and reports reflect it.
+                                    // Best-effort: failure here does NOT undo the SDK
+                                    // refund (customer already got the money back),
+                                    // we just toast a warning so the operator knows
+                                    // to follow up manually.
+                                    val backendResult = recordAngelPayRefundInBackend(
+                                        refundRecorder = refundRecorder,
+                                        authRepository = authRepository,
+                                        paymentId = paymentId,
+                                        orderId = orderId,
+                                        paymentVenueId = paymentVenueId,
+                                        merchantAccountId = merchantAccountId,
+                                        originalTotalAmount = originalAmount,
+                                        refundAmount = refundAmount,
+                                        refundReason = refundReason,
+                                        sdkReferenceNumber = referenceNumber,
+                                        tipRefundCents = tipRefundCents,
+                                        refundedAmount = refundedAmount,
+                                    )
+                                    isNexgoRefundProcessing = false
+
+                                    backendResult.fold(
+                                        onSuccess = {
+                                            Timber.i(
+                                                "✅ [AngelPay Refund] SDK + backend recorded successfully for payment=%s",
+                                                paymentId,
+                                            )
+                                            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                                            // Force Pagos to refresh so the "Reembolsado" badge shows up.
+                                            navController.previousBackStackEntry
+                                                ?.savedStateHandle
+                                                ?.set("refreshAfterRefund", true)
+                                            navController.safePopBackStack()
+                                        },
+                                        onFailure = { backendError ->
+                                            Timber.e(
+                                                backendError,
+                                                "⚠️ [AngelPay Refund] SDK refund OK but backend recording FAILED for payment=%s",
+                                                paymentId,
+                                            )
+                                            Toast.makeText(
+                                                context,
+                                                "$message\n⚠️ Backend no registró el reembolso — contacta soporte.",
+                                                Toast.LENGTH_LONG,
+                                            ).show()
+                                            // Still pop back — the SDK cancellation
+                                            // already returned money to the customer.
+                                            navController.safePopBackStack()
+                                        }
+                                    )
                                 },
                                 onFailure = { error ->
+                                    isNexgoRefundProcessing = false
                                     val errorMessage = error.message ?: "No se pudo procesar el reembolso AngelPay"
                                     Toast.makeText(context, errorMessage, Toast.LENGTH_LONG).show()
                                 }
@@ -2214,10 +2291,16 @@ fun AppNavigation(
                         }
                     }
                 },
-                onNavigateToTransactions = {
+                onViewInPayments = { paymentId ->
+                    // Deep-link: open Pagos with this payment's detail
+                    // bottom sheet auto-opened. Pops to Home first so the
+                    // backstack stays shallow (otherwise: Cobrar →
+                    // Success → Pagos → back-back-back to Cobrar).
                     navController.navigate(
-                        NavRoute.PaymentTransactions.createRoute("ANGELPAY")
-                    )
+                        NavRoute.Payments.createRoute(autoOpenPaymentId = paymentId)
+                    ) {
+                        popUpTo(NavRoute.Home.route) { inclusive = false }
+                    }
                 },
                 onNavigateToShifts = {
                     navController.navigate(NavRoute.Shifts.route)
@@ -2567,6 +2650,99 @@ private fun SessionExpiringOverlay() {
             }
         }
     }
+}
+
+/**
+ * Records an AngelPay refund in the Avoqado backend after the SDK
+ * cancellation/refund returned success. Mirrors what Blumon/PAX refunds
+ * do automatically via `RecordRefundUseCase` from `PaymentScreen` —
+ * AngelPay's refund flow lives outside `PaymentScreen` so we wire the
+ * backend POST here.
+ *
+ * **Important**: this is best-effort — if the backend call fails, the
+ * SDK refund is NOT rolled back (cardholder already got their money).
+ * The caller surfaces a warning toast so the operator can follow up.
+ *
+ * Sends `processor = "angelpay"` so the backend persists the refund row
+ * with `Payment.processor = "angelpay"` (not the legacy default
+ * `"blumon"`), keeping reports/reconciliation accurate.
+ *
+ * Bypasses [com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordRefundUseCase]
+ * because that use case enforces Blumon-only invariants
+ * (`originalOperationNumber > 0`, non-blank `blumonSerialNumber`) that
+ * don't apply to AngelPay. Goes straight to [RefundRecorder] which only
+ * validates `merchantAccountId`.
+ *
+ * **Audit-trail caveat**: we don't yet plumb the SDK refund's own
+ * `authorizationCode`/`reference` back out of [processAngelPayPostOperationDirect]
+ * (it currently returns only the user-facing String). As a placeholder we
+ * reuse the ORIGINAL payment's reference and stamp the auth as
+ * `"ANGELPAY_SDK"`. The refund still books correctly (Payment.amount,
+ * processorData.refundedAmount, isFullyRefunded). TODO: refactor that
+ * function to expose the SDK result so we get exact audit data.
+ */
+private suspend fun recordAngelPayRefundInBackend(
+    refundRecorder: com.jaac.avoqado_tpv.features.payment.data.repository.RefundRecorder,
+    authRepository: com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository,
+    paymentId: String,
+    orderId: String?,
+    paymentVenueId: String,
+    merchantAccountId: String,
+    originalTotalAmount: BigDecimal,
+    refundAmount: BigDecimal,
+    refundReason: RefundReason,
+    sdkReferenceNumber: String,
+    tipRefundCents: Int?,
+    refundedAmount: BigDecimal,
+): Result<Unit> {
+    val staffId = authRepository.getStaffId()
+        ?: return Result.failure(IllegalStateException("Sin sesión de staff para registrar refund"))
+
+    if (paymentVenueId.isBlank()) {
+        return Result.failure(IllegalStateException("paymentVenueId vacío — no se puede registrar el refund"))
+    }
+    if (merchantAccountId.isBlank()) {
+        return Result.failure(IllegalStateException("merchantAccountId vacío — no se puede registrar el refund"))
+    }
+
+    // Determine whether this refund covers the whole remaining balance or
+    // a portion of it (drives the backend's `isPartialRefund` flag).
+    val remainingRefundable = (originalTotalAmount - refundedAmount).coerceAtLeast(BigDecimal.ZERO)
+    val isPartial = refundAmount < remainingRefundable
+
+    val context = com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext.RefundPayment(
+        venueId = paymentVenueId,
+        staffId = staffId,
+        shiftId = null, // AngelPay flow does not currently use shifts (Blumon does).
+        amount = refundAmount,
+        tip = BigDecimal.ZERO, // Tip-split is conveyed via `tipRefundCents` below.
+        // Blumon-specific fields — backend tolerates blank for processor="angelpay".
+        blumonSerialNumber = "",
+        merchantAccountId = merchantAccountId,
+        originalPaymentId = paymentId,
+        originalOrderId = orderId,
+        originalTotalAmount = originalTotalAmount,
+        refundReason = refundReason,
+        isPartialRefund = isPartial,
+        originalOperationNumber = 0, // AngelPay does not use Blumon's CancelIcc opNumber.
+    )
+
+    // Stub card details — the refund row's audit fields populate from the
+    // ORIGINAL payment server-side; what we send here is just informational.
+    val cardDetails = com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails(
+        maskedPan = "",
+        cardBrand = com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand.UNKNOWN,
+        entryMode = com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode.OTHER,
+    )
+
+    return refundRecorder.recordRefund(
+        context = context,
+        cardDetails = cardDetails,
+        authorizationNumber = "ANGELPAY_SDK", // Placeholder until we expose SDK result.
+        referenceNumber = sdkReferenceNumber,  // Reuse original ref — sufficient for backend booking.
+        tipRefundCents = tipRefundCents,
+        processor = "angelpay",
+    ).map { } // Discard the RefundReceipt — caller only cares about success/failure.
 }
 
 private suspend fun processAngelPayPostOperationDirect(

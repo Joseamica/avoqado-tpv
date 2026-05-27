@@ -73,7 +73,13 @@ fun AngelPayPaymentScreen(
     orderNumber: String? = null,
     onNavigateBack: () -> Unit,
     onNavigateHome: () -> Unit,
-    onNavigateToTransactions: () -> Unit = {},
+    /**
+     * Deep-link to the unified Pagos list with the just-made payment's
+     * detail bottom sheet auto-opened. Triggered from the success screen's
+     * "Ver en Pagos" button. Receives the recorded paymentId from the
+     * success state's receipt (null-safe — button hides if no paymentId).
+     */
+    onViewInPayments: (paymentId: String) -> Unit = {},
     onNavigateToShifts: () -> Unit = {},
     /**
      * Optional override for the "Nuevo Cobro" success-screen button. When
@@ -222,7 +228,9 @@ fun AngelPayPaymentScreen(
                         viewModel.resetPayment()
                         onNavigateHome()
                     },
-                    onViewTransactions = onNavigateToTransactions,
+                    onViewInPayments = { paymentId ->
+                        onViewInPayments(paymentId)
+                    },
                     onStartNewPayment = {
                         viewModel.resetPayment()
                         showSuccessContent = false

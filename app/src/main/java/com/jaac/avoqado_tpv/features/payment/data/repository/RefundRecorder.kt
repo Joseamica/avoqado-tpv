@@ -81,6 +81,12 @@ class RefundRecorder @Inject constructor(
         authorizationNumber: String,
         referenceNumber: String,
         tipRefundCents: Int? = null,
+        /**
+         * Optional processor tag for backend persistence. Null = backend
+         * defaults to `'blumon'` (legacy behavior). Pass `"angelpay"` for
+         * Nexgo refunds so reports can separate them.
+         */
+        processor: String? = null,
     ): Result<RefundReceipt> = withContext(Dispatchers.IO) {
         try {
             // 1. Validate merchantAccountId is present (multi-merchant critical)
@@ -100,7 +106,14 @@ class RefundRecorder @Inject constructor(
             )
 
             // 2. Build request DTO
-            val request = buildRefundRequest(context, cardDetails, authorizationNumber, referenceNumber, tipRefundCents)
+            val request = buildRefundRequest(
+                context = context,
+                cardDetails = cardDetails,
+                authorizationNumber = authorizationNumber,
+                referenceNumber = referenceNumber,
+                tipRefundCents = tipRefundCents,
+                processor = processor,
+            )
             val idempotencyKey = context.idempotencyKey
 
             // 3. Call backend API
@@ -234,6 +247,7 @@ class RefundRecorder @Inject constructor(
         authorizationNumber: String,
         referenceNumber: String,
         tipRefundCents: Int? = null,
+        processor: String? = null,
     ): RefundRequest {
         return RefundRequest(
             // Venue and payment identification
@@ -273,6 +287,9 @@ class RefundRecorder @Inject constructor(
             // Optional tip-split override — null = backend default (proportional).
             // Does NOT change the Blumon charge; only affects internal booking.
             tipRefundCents = tipRefundCents,
+
+            // Optional processor tag (null = backend defaults to 'blumon')
+            processor = processor,
         )
     }
 }

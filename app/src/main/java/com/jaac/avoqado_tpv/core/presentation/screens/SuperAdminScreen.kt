@@ -31,6 +31,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
+import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.BluetoothCapabilityChecker
 import com.jaac.avoqado_tpv.core.util.WifiFailoverController
@@ -75,6 +76,14 @@ fun SuperAdminScreen(
     modifier: Modifier = Modifier,
     onNavigateBack: () -> Unit = {},
     onTestPayment: () -> Unit = {},
+    /**
+     * Opens [PaymentTransactionsScreen] (processor-side SDK lookup) for
+     * a given [ProcessorType]. Used by support staff for reconciliation
+     * when a payment is missing from our backend's Pagos list (e.g.,
+     * webhook delivery failed). The regular Pagos screen is the right
+     * place for normal refunds — this is a deeper escape hatch.
+     */
+    onOpenProcessorTransactions: (ProcessorType) -> Unit = {},
     viewModel: SuperAdminViewModel = hiltViewModel(),
     deviceHealthViewModel: DeviceHealthViewModel = hiltViewModel()
 ) {
@@ -149,7 +158,8 @@ fun SuperAdminScreen(
         onSimulateMemoryLow = { deviceHealthViewModel.simulateAlert(DeviceAlert.MemoryLow(50)) },
         onSimulateWeakWifi = { deviceHealthViewModel.simulateAlert(DeviceAlert.WeakWifi(1)) },
         onSimulateMultipleAlerts = { deviceHealthViewModel.simulateMultipleAlerts() },
-        onClearSimulatedAlerts = { deviceHealthViewModel.clearAllSimulatedAlerts() }
+        onClearSimulatedAlerts = { deviceHealthViewModel.clearAllSimulatedAlerts() },
+        onOpenProcessorTransactions = onOpenProcessorTransactions,
     )
 }
 
@@ -186,7 +196,8 @@ private fun SuperAdminScreenContent(
     onSimulateMemoryLow: () -> Unit = {},
     onSimulateWeakWifi: () -> Unit = {},
     onSimulateMultipleAlerts: () -> Unit = {},
-    onClearSimulatedAlerts: () -> Unit = {}
+    onClearSimulatedAlerts: () -> Unit = {},
+    onOpenProcessorTransactions: (ProcessorType) -> Unit = {},
 ) {
     Scaffold(
         topBar = {
@@ -300,6 +311,38 @@ private fun SuperAdminScreenContent(
                         onClick = onClearCache,
                         enabled = !state.isLoading,
                         destructive = true
+                    )
+                }
+
+                // ──────────────────────────────────────────────────────
+                // Processor Reconciliation Section
+                // ──────────────────────────────────────────────────────
+                // Direct lookup against the gateway's SDK (bypassing our
+                // backend) — for support when a payment is missing from
+                // the regular Pagos list (e.g., webhook delivery failed,
+                // backend recording crashed, etc). Powerful, hence
+                // hidden behind SuperAdmin (TOTP-gated).
+                item {
+                    SectionHeader(title = "Reconciliación con el Procesador")
+                }
+
+                item {
+                    TestButton(
+                        icon = Icons.Default.Receipt,
+                        title = "Historial AngelPay (Nexgo)",
+                        description = "Consulta directa al SDK — solo si un pago no aparece en Pagos",
+                        onClick = { onOpenProcessorTransactions(ProcessorType.ANGELPAY) },
+                        enabled = !state.isLoading
+                    )
+                }
+
+                item {
+                    TestButton(
+                        icon = Icons.Default.Receipt,
+                        title = "Historial Blumon (PAX)",
+                        description = "Consulta directa al SDK — solo si un pago no aparece en Pagos",
+                        onClick = { onOpenProcessorTransactions(ProcessorType.BLUMON) },
+                        enabled = !state.isLoading
                     )
                 }
 

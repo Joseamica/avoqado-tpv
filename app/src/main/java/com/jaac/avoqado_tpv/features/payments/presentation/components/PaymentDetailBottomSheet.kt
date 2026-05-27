@@ -21,7 +21,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
+import com.jaac.avoqado_tpv.features.payment.domain.processor.RefundLocation
 import com.jaac.avoqado_tpv.features.payments.domain.models.Payment
+import com.jaac.avoqado_tpv.features.payments.presentation.ProcessorBadge
+import com.jaac.avoqado_tpv.features.payments.presentation.RefundLocationBadge
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentMethod
 import com.jaac.avoqado_tpv.features.payments.domain.models.PaymentStatus
 import com.jaac.avoqado_tpv.features.payments.domain.models.StaffSummary
@@ -58,6 +62,8 @@ fun PaymentDetailBottomSheet(
     canProcessRefund: Boolean,
     canRefundOnCurrentDevice: Boolean = payment.isRefundable(),
     nonRefundableReasonOverride: String? = null,
+    refundLocation: RefundLocation = RefundLocation.NotApplicable,
+    processor: ProcessorType? = null,
     onDismiss: () -> Unit,
     onRefundClick: (Payment) -> Unit,
     onSendReceiptByEmail: ((Payment, String) -> Unit)? = null,  // payment, email
@@ -94,6 +100,23 @@ fun PaymentDetailBottomSheet(
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.align(Alignment.CenterHorizontally)
+            )
+
+            // Processor origin badge (always shown when known) + refund
+            // location warning (silent if refund can happen on this TPV).
+            // Mirrors the same badges shown on the payment list card so
+            // the operator sees consistent signals in both places.
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ProcessorBadge(processor = processor)
+            }
+            RefundLocationBadge(
+                location = refundLocation,
+                modifier = Modifier.align(Alignment.CenterHorizontally),
             )
 
             Spacer(modifier = Modifier.height(24.dp))

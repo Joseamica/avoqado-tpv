@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+---
+
+## [2.4.0] - 2026-05-27
+
 ### **Added**
 
 - **Badges per-processor en Pagos: procesador SIEMPRE visible + warning ámbar cuando el reembolso debe hacerse en otro TPV** (`PaymentsScreen.kt`, `PaymentDetailBottomSheet.kt`, `PaymentsViewModel.kt`, nuevo `features/payment/domain/processor/RefundLocation.kt`, nuevos tests en `PaymentsViewModelRefundAvailabilityTest.kt`). Antes el usuario tenía que tocar cada pago para enterarse de qué procesador lo cobró y si era refundable desde aquí. Ahora cada `PaymentCard` en "Pagos" muestra **dos** badges:

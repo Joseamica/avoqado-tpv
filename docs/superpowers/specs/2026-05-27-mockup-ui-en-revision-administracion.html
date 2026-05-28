@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vista previa TPV — "En revisión por Administración"</title>
+<style>
+  :root{
+    --green:#0E9F6E; --green-dark:#057A55;
+    --tpv-blue:#2F6DAB; --tpv-blue-d:#255A8E;
+    --ink:#1A2B33; --muted:#5B6B73; --line:#E3E8EA; --bg:#EEF1F2;
+    --pending:#F59E0B; --pending-bg:#FEF3C7;
+    --ok:#16A34A; --ok-bg:#DCFCE7;
+    --fail:#DC2626; --fail-bg:#FEE2E2;
+    --info:#3B82F6; --info-bg:#EAF2FE; --info-bd:#BDD6FB; --info-tx:#1E4FA3;
+    --shadow:0 1px 3px rgba(16,40,50,.08), 0 8px 30px rgba(16,40,50,.10);
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:var(--ink);background:var(--bg);line-height:1.5;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:980px;margin:0 auto;padding:0 20px;}
+
+  header.hero{background:linear-gradient(135deg,var(--green) 0%,var(--green-dark) 100%);color:#fff;padding:42px 0 48px;}
+  .eyebrow{text-transform:uppercase;letter-spacing:.12em;font-size:12px;font-weight:700;opacity:.9;margin:0 0 10px;}
+  .hero h1{font-size:clamp(24px,4vw,34px);line-height:1.15;margin:0 0 12px;font-weight:800;}
+  .hero p{font-size:17px;max-width:680px;margin:0;opacity:.95;}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:20px;}
+  .chip{background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.28);padding:6px 12px;border-radius:999px;font-size:13px;font-weight:600;}
+
+  main{padding:38px 0;}
+  section{margin:0 0 40px;}
+  h2{font-size:21px;margin:0 0 4px;font-weight:800;display:flex;align-items:center;gap:10px;}
+  h2 .num{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:9px;background:var(--green);color:#fff;font-size:15px;font-weight:800;flex:none;}
+  .sub{color:var(--muted);margin:0 0 22px;font-size:15px;}
+
+  .stage{display:flex;gap:26px;flex-wrap:wrap;justify-content:center;align-items:flex-start;}
+  .col{display:flex;flex-direction:column;align-items:center;gap:12px;}
+  .tag{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;padding:5px 14px;border-radius:999px;}
+  .tag.before{background:var(--fail-bg);color:#991B1B;}
+  .tag.after{background:var(--ok-bg);color:#166534;}
+
+  /* PHONE */
+  .phone{width:300px;background:#23292B;border-radius:30px;padding:10px;box-shadow:var(--shadow);}
+  .screen{background:#EFF2F3;border-radius:22px;overflow:hidden;}
+  .statusbar{display:flex;justify-content:space-between;align-items:center;padding:7px 16px 3px;font-size:12px;font-weight:700;color:#1A2B33;}
+  .statusbar .r{display:flex;gap:5px;align-items:center;font-size:11px;}
+  .bat{display:inline-block;width:20px;height:11px;border:1.5px solid #1A2B33;border-radius:3px;position:relative;}
+  .bat::after{content:"";position:absolute;right:-3px;top:3px;width:2px;height:5px;background:#1A2B33;border-radius:0 1px 1px 0;}
+  .bat::before{content:"";position:absolute;left:1.5px;top:1.5px;bottom:1.5px;width:65%;background:#1A2B33;border-radius:1px;}
+
+  .app{padding:14px 13px 18px;}
+  .app-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
+  .app-head .hi{font-size:17px;font-weight:800;color:#16323F;}
+  .app-head .gear{font-size:18px;opacity:.6;}
+
+  /* shift banner */
+  .shift{background:#E9F8F1;border:1px solid #BFE9D6;border-radius:13px;padding:11px 13px;margin-bottom:11px;}
+  .shift .top{display:flex;justify-content:space-between;align-items:center;}
+  .shift .lbl{display:flex;align-items:center;gap:7px;font-weight:800;color:#0E7A52;font-size:13px;}
+  .shift .lbl .led{width:8px;height:8px;border-radius:50%;background:#16A34A;box-shadow:0 0 0 3px rgba(22,163,74,.18);}
+  .shift .time{font-variant-numeric:tabular-nums;font-weight:800;color:#0E7A52;font-size:15px;}
+  .shift .bot{display:flex;justify-content:space-between;font-size:11.5px;color:#5B7A6D;margin-top:6px;}
+  .shift .bot a{color:#0E7A52;font-weight:700;text-decoration:none;}
+
+  /* verification banner */
+  .vbanner{display:flex;align-items:center;gap:11px;border-radius:13px;padding:12px 13px;margin-bottom:14px;border:1px solid transparent;}
+  .vbanner .circle{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:19px;flex:none;}
+  .vbanner .txt{flex:1;min-width:0;}
+  .vbanner .t1{font-weight:800;font-size:14px;line-height:1.2;}
+  .vbanner .t2{font-size:12px;opacity:.9;margin-top:2px;}
+  .vbanner .chev{font-size:20px;flex:none;}
+  .vbanner.before{background:rgba(245,158,11,.12);}
+  .vbanner.before .circle{background:rgba(245,158,11,.2);color:#B45309;}
+  .vbanner.before .t1{color:#1A2B33;} .vbanner.before .t2{color:#6B5320;} .vbanner.before .chev{color:#D97706;}
+  .vbanner.after{background:var(--info-bg);border-color:var(--info-bd);}
+  .vbanner.after .circle{background:rgba(59,130,246,.18);color:#2563EB;}
+  .vbanner.after .t1{color:#16323F;} .vbanner.after .t2{color:#3A5775;} .vbanner.after .chev{color:#2563EB;}
+
+  /* grid buttons */
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;}
+  .gbtn{background:linear-gradient(160deg,var(--tpv-blue),var(--tpv-blue-d));color:#fff;border-radius:13px;padding:15px 8px;display:flex;flex-direction:column;align-items:center;gap:7px;}
+  .gbtn .gi{font-size:23px;}
+  .gbtn .gt{font-size:12.5px;font-weight:700;}
+
+  /* topappbar */
+  .topbar{background:#fff;display:flex;align-items:center;gap:12px;padding:13px 14px;border-bottom:1px solid var(--line);}
+  .topbar .back{font-size:20px;color:#16323F;}
+  .topbar .ttl{font-size:15.5px;font-weight:800;color:#16323F;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+  /* sale cards */
+  .scard{background:#fff;border:1px solid var(--line);border-radius:13px;padding:13px;margin:10px 13px;}
+  .scard .row1{display:flex;justify-content:space-between;align-items:baseline;}
+  .scard .prod{font-weight:800;font-size:14px;color:#16323F;}
+  .scard .amt{font-weight:800;font-size:14px;color:#16323F;}
+  .scard .meta{font-size:11.5px;color:var(--muted);margin:2px 0 9px;}
+  .badge{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:7px;font-size:11px;font-weight:800;}
+  .badge .d{width:7px;height:7px;border-radius:50%;}
+  .badge.pending{background:var(--pending-bg);color:#92600A;} .badge.pending .d{background:var(--pending);}
+  .badge.ok{background:var(--ok-bg);color:#166534;} .badge.ok .d{background:var(--ok);}
+  .badge.fail{background:var(--fail-bg);color:#991B1B;} .badge.fail .d{background:var(--fail);}
+  .cta{margin-top:7px;font-size:11.5px;font-weight:800;color:var(--tpv-blue);}
+
+  /* photo slots */
+  .pslots{display:flex;gap:9px;margin-top:10px;}
+  .slot{flex:1;height:64px;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:11px;font-weight:700;}
+  .slot.filled{background:#E9F8F1;border:1px solid #BFE9D6;color:#0E7A52;}
+  .slot.empty{background:#F5F7F8;border:1.5px dashed #C4CDD1;color:#8A979D;}
+
+  .note{background:var(--info-bg);border:1px solid var(--info-bd);border-radius:12px;padding:15px 18px;color:var(--info-tx);font-size:14.5px;margin-top:6px;}
+
+  .legend{display:flex;gap:18px;flex-wrap:wrap;justify-content:center;margin-top:14px;font-size:13px;color:var(--muted);}
+  .legend span{display:inline-flex;align-items:center;gap:7px;}
+
+  /* approve */
+  .approve{background:#fff;border:2px solid var(--green);border-radius:16px;padding:26px;box-shadow:var(--shadow);}
+  .approve h2{margin-bottom:14px;}
+  .check{display:flex;gap:11px;padding:11px 0;border-bottom:1px dashed var(--line);font-size:15px;}
+  .check:last-of-type{border-bottom:none;}
+  .check .ic{color:var(--ok);font-weight:800;flex:none;}
+  .q{margin-top:16px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:12px;padding:15px 17px;font-size:14.5px;color:#7A5B00;}
+
+  footer{color:var(--muted);font-size:13px;text-align:center;padding:24px 0 50px;}
+  @media (max-width:680px){ .phone{width:280px;} }
+  @media print{ body{background:#fff;} .phone,.approve{box-shadow:none;} header.hero{-webkit-print-color-adjust:exact;print-color-adjust:exact;} }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Avoqado TPV · Bait × Play Telecom · Vista previa</p>
+    <h1>Así se verá en la terminal:<br/>“En revisión por Administración”</h1>
+    <p>Recreación de las pantallas reales de la TPV con el cambio aplicado. Es exactamente lo que verá el promotor. Confírmame si lo apruebo para implementarlo.</p>
+    <div class="chips">
+      <span class="chip">📱 PAX A910S</span>
+      <span class="chip">🎨 Mockup fiel</span>
+      <span class="chip">📅 27 may 2026</span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- 1. INICIO ANTES/DESPUÉS -->
+  <section>
+    <h2><span class="num">1</span> Pantalla de inicio — antes y después</h2>
+    <p class="sub">El cambio estrella: el aviso amarillo de “tarea pendiente” se convierte en un aviso azul informativo.</p>
+    <div class="stage">
+      <!-- ANTES -->
+      <div class="col">
+        <span class="tag before">✕ Antes (hoy)</span>
+        <div class="phone"><div class="screen">
+          <div class="statusbar"><span>11:44</span><span class="r">📶 🛜 <span class="bat"></span></span></div>
+          <div class="app">
+            <div class="app-head"><span class="hi">Hola, Promotor</span><span class="gear">⚙️</span></div>
+            <div class="shift">
+              <div class="top"><span class="lbl"><span class="led"></span>TRABAJANDO</span><span class="time">119:57:33</span></div>
+              <div class="bot"><span>Entrada: 11:47 AM</span><a href="#">Registrar Salida</a></div>
+            </div>
+            <div class="vbanner before">
+              <span class="circle">📷</span>
+              <span class="txt"><div class="t1">Pendientes Verificación</div><div class="t2">1 venta sin verificar</div></span>
+              <span class="chev">›</span>
+            </div>
+            <div class="grid">
+              <div class="gbtn"><span class="gi">🏷️</span><span class="gt">Vender</span></div>
+              <div class="gbtn"><span class="gi">➕</span><span class="gt">Alta de SIM</span></div>
+              <div class="gbtn"><span class="gi">📊</span><span class="gt">Mis Ventas</span></div>
+              <div class="gbtn"><span class="gi">📱</span><span class="gt">Mis SIMs</span></div>
+              <div class="gbtn"><span class="gi">✉️</span><span class="gt">Mensajes</span></div>
+              <div class="gbtn"><span class="gi">🎧</span><span class="gt">Soporte</span></div>
+            </div>
+          </div>
+        </div></div>
+      </div>
+      <!-- DESPUÉS -->
+      <div class="col">
+        <span class="tag after">✓ Después (propuesto)</span>
+        <div class="phone"><div class="screen">
+          <div class="statusbar"><span>11:44</span><span class="r">📶 🛜 <span class="bat"></span></span></div>
+          <div class="app">
+            <div class="app-head"><span class="hi">Hola, Promotor</span><span class="gear">⚙️</span></div>
+            <div class="shift">
+              <div class="top"><span class="lbl"><span class="led"></span>TRABAJANDO</span><span class="time">119:57:33</span></div>
+              <div class="bot"><span>Entrada: 11:47 AM</span><a href="#">Registrar Salida</a></div>
+            </div>
+            <div class="vbanner after">
+              <span class="circle">🕓</span>
+              <span class="txt"><div class="t1">En revisión por Administración</div><div class="t2">1 venta en revisión</div></span>
+              <span class="chev">›</span>
+            </div>
+            <div class="grid">
+              <div class="gbtn"><span class="gi">🏷️</span><span class="gt">Vender</span></div>
+              <div class="gbtn"><span class="gi">➕</span><span class="gt">Alta de SIM</span></div>
+              <div class="gbtn"><span class="gi">📊</span><span class="gt">Mis Ventas</span></div>
+              <div class="gbtn"><span class="gi">📱</span><span class="gt">Mis SIMs</span></div>
+              <div class="gbtn"><span class="gi">✉️</span><span class="gt">Mensajes</span></div>
+              <div class="gbtn"><span class="gi">🎧</span><span class="gt">Soporte</span></div>
+            </div>
+          </div>
+        </div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. DETALLE -->
+  <section>
+    <h2><span class="num">2</span> Al tocar el aviso — pantalla de detalle</h2>
+    <p class="sub">El título de la pantalla también dice “En revisión por Administración”. Aquí el promotor puede ver sus ventas en revisión y, si quiere, adjuntar fotos de respaldo.</p>
+    <div class="stage">
+      <div class="col">
+        <span class="tag after">✓ Después</span>
+        <div class="phone"><div class="screen">
+          <div class="statusbar"><span>11:45</span><span class="r">📶 🛜 <span class="bat"></span></span></div>
+          <div class="topbar"><span class="back">←</span><span class="ttl">En revisión por Administración</span></div>
+          <div style="padding:4px 0 14px;">
+            <div class="scard">
+              <div class="row1"><span class="prod">Venta de SIM</span><span class="amt">$200.00</span></div>
+              <div class="meta">Hoy 11:44 · Pedido #1234 · ICCID 8952 1404 …</div>
+              <div class="pslots">
+                <div class="slot filled">✓<span>Línea</span></div>
+                <div class="slot empty">📷<span>Portabilidad</span></div>
+              </div>
+            </div>
+            <div class="scard">
+              <div class="row1"><span class="prod">Venta de SIM</span><span class="amt">$150.00</span></div>
+              <div class="meta">Hoy 10:12 · Pedido #1231 · ICCID 8952 1390 …</div>
+              <div class="pslots">
+                <div class="slot filled">✓<span>Línea</span></div>
+              </div>
+            </div>
+          </div>
+        </div></div>
+      </div>
+      <div style="flex:1;min-width:240px;max-width:360px;align-self:center;">
+        <div class="note">📎 Esta pantalla <strong>no pierde ninguna función</strong>: el promotor sigue pudiendo subir fotos. Solo cambia el nombre, para que entienda que la venta ya está <strong>en manos de Administración</strong>.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. MIS VENTAS -->
+  <section>
+    <h2><span class="num">3</span> “Mis Ventas” — los 3 estados</h2>
+    <p class="sub">El promotor ve un ciclo claro: en revisión → y luego la decisión de Administración (correcta o a revisar).</p>
+    <div class="stage">
+      <div class="col">
+        <span class="tag after">✓ Después</span>
+        <div class="phone"><div class="screen">
+          <div class="statusbar"><span>11:46</span><span class="r">📶 🛜 <span class="bat"></span></span></div>
+          <div class="topbar"><span class="back">←</span><span class="ttl">Mis Ventas</span></div>
+          <div style="padding:4px 0 14px;">
+            <div class="scard">
+              <div class="row1"><span class="prod">Venta de SIM</span><span class="amt">$200.00</span></div>
+              <div class="meta">Hoy 11:44 · Pedido #1234</div>
+              <span class="badge pending"><span class="d"></span>En revisión por Administración</span>
+            </div>
+            <div class="scard">
+              <div class="row1"><span class="prod">Venta de SIM</span><span class="amt">$150.00</span></div>
+              <div class="meta">Hoy 09:30 · Pedido #1228</div>
+              <span class="badge ok"><span class="d"></span>Venta correcta</span>
+            </div>
+            <div class="scard">
+              <div class="row1"><span class="prod">Venta de SIM</span><span class="amt">$200.00</span></div>
+              <div class="meta">Ayer 18:05 · Pedido #1219</div>
+              <span class="badge fail"><span class="d"></span>Revisar documentación</span>
+              <div style="font-size:11px;color:var(--fail);margin-top:5px;">• Falta imagen de portabilidad</div>
+              <div class="cta">Toca para corregir ›</div>
+            </div>
+          </div>
+        </div></div>
+      </div>
+      <div style="flex:1;min-width:240px;max-width:360px;align-self:center;">
+        <div class="legend" style="justify-content:flex-start;flex-direction:column;gap:10px;align-items:flex-start;">
+          <span><span class="badge pending"><span class="d"></span>En revisión por Administración</span> &nbsp;= esperando veredicto</span>
+          <span><span class="badge ok"><span class="d"></span>Venta correcta</span> &nbsp;= aprobada ✅</span>
+          <span><span class="badge fail"><span class="d"></span>Revisar documentación</span> &nbsp;= corregir lo que pide Admin</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- APROBAR -->
+  <section>
+    <div class="approve">
+      <h2><span class="num">✔</span> Lo que se implementará — ¿lo apruebas, Isaac?</h2>
+      <div class="check"><span class="ic">✓</span><span>El texto único es <strong>“En revisión por Administración”</strong> (inicio, título de pantalla y “Mis Ventas”).</span></div>
+      <div class="check"><span class="ic">✓</span><span>El aviso de inicio pasa de <strong>amarillo de alarma → azul informativo</strong>, con ícono de reloj.</span></div>
+      <div class="check"><span class="ic">✓</span><span><strong>“Venta correcta”</strong> y <strong>“Revisar documentación”</strong> se quedan igual.</span></div>
+      <div class="check"><span class="ic">✓</span><span>No se pierde ninguna función; backend y dashboard no cambian.</span></div>
+
+      <div class="q">
+        <strong>👀 Un detalle a decidir:</strong> en la <strong>pantalla de inicio</strong> el aviso queda <strong>azul</strong> (informativo), pero en <strong>“Mis Ventas”</strong> la etiqueta queda <strong>amarilla</strong> (como hoy). ¿Lo dejamos así, o también pintamos de azul la etiqueta de “En revisión por Administración” en Mis Ventas para que sean idénticas?
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Vista previa · Avoqado TPV · Bait × Play Telecom · 27 may 2026<br/>
+    Mockup ilustrativo — los íconos y montos son de ejemplo.
+  </footer>
+
+</main>
+</body>
+</html>

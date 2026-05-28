@@ -198,7 +198,7 @@ fun PendingVerificationsScreen(
     Scaffold(
         topBar = {
             AvoqadoTopBar(
-                title = "Pendientes Verificacion",
+                title = "En revisión por Administración",
                 onNavigationClick = {
                     if (!isUploading) navController.popBackStack()
                 }

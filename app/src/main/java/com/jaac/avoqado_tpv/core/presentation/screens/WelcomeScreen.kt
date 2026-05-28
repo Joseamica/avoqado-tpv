@@ -30,7 +30,6 @@ import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.SimCard
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Block
-import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.Receipt
@@ -1243,7 +1242,7 @@ private fun PendingVerificationsCard(
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.12f)
+            containerColor = MaterialTheme.avoqadoColors.statusInfo.copy(alpha = 0.12f)
         )
     ) {
         Row(
@@ -1254,36 +1253,36 @@ private fun PendingVerificationsCard(
         ) {
             Surface(
                 shape = CircleShape,
-                color = MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.2f),
+                color = MaterialTheme.avoqadoColors.statusInfo.copy(alpha = 0.2f),
                 modifier = Modifier.size(40.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        imageVector = Icons.Default.CameraAlt,
+                        imageVector = Icons.Default.Schedule,
                         contentDescription = null,
                         modifier = Modifier.size(20.dp),
-                        tint = MaterialTheme.avoqadoColors.statusWarning
+                        tint = MaterialTheme.avoqadoColors.statusInfo
                     )
                 }
             }
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Pendientes Verificacion",
+                    text = "En revisión por Administración",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = "$count venta${if (count != 1) "s" else ""} sin verificar",
+                    text = "$count venta${if (count != 1) "s" else ""} en revisión",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                contentDescription = "Ver pendientes",
-                tint = MaterialTheme.avoqadoColors.statusWarning,
+                contentDescription = "Ver ventas en revisión",
+                tint = MaterialTheme.avoqadoColors.statusInfo,
                 modifier = Modifier.size(20.dp)
             )
         }

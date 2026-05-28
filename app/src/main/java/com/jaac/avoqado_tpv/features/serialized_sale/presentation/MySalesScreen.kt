@@ -381,7 +381,7 @@ private fun VerificationStatusBadge(
 ) {
     val (label, bg, fg) = when (status) {
         VerificationReviewStatus.PENDING -> Triple(
-            "En revisión",
+            "En revisión por Administración",
             MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.15f),
             MaterialTheme.avoqadoColors.statusWarning,
         )

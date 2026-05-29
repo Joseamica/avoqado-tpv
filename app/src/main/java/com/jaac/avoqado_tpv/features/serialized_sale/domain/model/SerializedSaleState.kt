@@ -149,8 +149,7 @@ data class SerializedSaleUiState(
     val canProceedToSell: Boolean
         get() = scanResult != null &&
                 (enteredPrice.isEmpty() || enteredPrice.toBigDecimalOrNull() != null) &&
-                (scanResult is ScanResult.Available ||
-                 (scanResult is ScanResult.NotRegistered && selectedCategory != null))
+                scanResult is ScanResult.Available
 
     val displayPrice: BigDecimal?
         get() = enteredPrice.toBigDecimalOrNull()

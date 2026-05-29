@@ -5,6 +5,7 @@ import com.jaac.avoqado_tpv.MainDispatcherRule
 import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.InventoryScanResult
+import com.jaac.avoqado_tpv.features.serialized_sale.domain.IccidValidator
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.repository.SerializedSaleRepository
 import io.mockk.coEvery
@@ -269,14 +270,14 @@ class SerializedInventoryViewModelTest {
     fun `Luhn passes for the real ICCID from production incident`() {
         // Body without F padding
         val body = "8952140063631660183"
-        assertThat(SerializedInventoryViewModel.isLuhnValid(body)).isTrue()
+        assertThat(IccidValidator.isLuhnValid(body)).isTrue()
     }
 
     @Test
     fun `Luhn fails for a single-digit-flip misread`() {
         // Same body but last digit changed 3 → 4
         val tampered = "8952140063631660184"
-        assertThat(SerializedInventoryViewModel.isLuhnValid(tampered)).isFalse()
+        assertThat(IccidValidator.isLuhnValid(tampered)).isFalse()
     }
 
     @Test
@@ -290,7 +291,7 @@ class SerializedInventoryViewModelTest {
             "8952140063631660183F", // production incident "real" reading
         )
         for (iccid in samples) {
-            assertThat(SerializedInventoryViewModel.MX_ICCID_REGEX.matches(iccid))
+            assertThat(IccidValidator.MX_ICCID_REGEX.matches(iccid))
                 .isTrue()
         }
     }

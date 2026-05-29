@@ -10,6 +10,7 @@ import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.SerializedSaleUiState
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.repository.SerializedSaleRepository
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
+import com.jaac.avoqado_tpv.features.serialized_sale.domain.IccidValidator
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -128,8 +129,10 @@ class SerializedSaleViewModel @Inject constructor(
             Timber.w("📦 [SerializedSale] Ignoring blank serial number")
             return
         }
-        if (serialNumber.trim().length < 20) {
-            _uiState.update { it.copy(error = "El código debe tener al menos 20 dígitos") }
+        if (!IccidValidator.isValidFormat(serialNumber)) {
+            _uiState.update {
+                it.copy(error = "Código inválido. Verifica que el sticker empiece con 8952 (México) y tenga 20 dígitos.")
+            }
             return
         }
 
@@ -179,26 +182,13 @@ class SerializedSaleViewModel @Inject constructor(
                 }
             }
             is ScanResult.NotRegistered -> {
-                Timber.d("📦 [SerializedSale] Item NOT_REGISTERED - Will show category selector")
-                // Check if categories are available
-                val categories = _uiState.value.categories
-                if (categories.isEmpty()) {
-                    Timber.w("📦 [SerializedSale] No categories available for registration")
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            scanResult = result,
-                            error = "No hay categorías configuradas. Contacta al administrador."
-                        )
-                    }
-                } else {
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            scanResult = result,
-                            enteredPrice = ""
-                        )
-                    }
+                Timber.d("📦 [SerializedSale] Item NOT_REGISTERED - blocked (requires alta + approval)")
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        scanResult = result,
+                        error = "Esta SIM no está dada de alta o no está aprobada para venta.",
+                    )
                 }
             }
             is ScanResult.AlreadySold -> {

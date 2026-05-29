@@ -59,8 +59,10 @@ data class TpvSettingsDto(
     val enableShifts: Boolean?,
 
     // Card payment server-decoupling kill-switch
+    // Default null so manual constructions (tests) don't need to specify it; Gson populates from JSON,
+    // and toDomain() coalesces null -> true (legacy/safe). Backend may omit it for old clients.
     @SerializedName("requireAvoqadoServerForCardPayment")
-    val requireAvoqadoServerForCardPayment: Boolean?,
+    val requireAvoqadoServerForCardPayment: Boolean? = null,
 
     // Attendance verification (clock-in/out with selfie + GPS)
     @SerializedName("requireClockInPhoto")

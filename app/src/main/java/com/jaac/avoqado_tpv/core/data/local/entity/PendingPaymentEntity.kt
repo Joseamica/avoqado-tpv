@@ -83,6 +83,12 @@ data class PendingPaymentEntity(
     @ColumnInfo(name = "authorization_number")
     val authorizationNumber: String?, // e.g., "502511"
 
+    // 🛡️ IDEMPOTENCY KEY (2026-05-29) — primary dedup key for queue retries
+    // Mirrors PaymentContext.idempotencyKey so PaymentSyncWorker sends the same UUID
+    // the online path would have used, enabling backend @@unique([venueId, idempotencyKey]) dedup.
+    @ColumnInfo(name = "idempotency_key")
+    val idempotencyKey: String? = null,
+
     // Metadata for retry logic
     @ColumnInfo(name = "created_at")
     val createdAt: Long, // Unix timestamp (when payment was processed, not when queued)

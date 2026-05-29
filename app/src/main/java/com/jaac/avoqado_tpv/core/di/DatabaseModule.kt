@@ -100,7 +100,8 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_18_19,  // 🛠️ Schema hash fix (idempotent)
                 AvoqadoDatabase.MIGRATION_19_20,  // 🧾 Stable ordering (line_position)
                 AvoqadoDatabase.MIGRATION_20_21,  // 🛒 Mosaic shortcuts for unified Checkout
-                AvoqadoDatabase.MIGRATION_21_22   // 💳 AngelPay multi-merchant offline cache (SDK 1.0.5)
+                AvoqadoDatabase.MIGRATION_21_22,  // 💳 AngelPay multi-merchant offline cache (SDK 1.0.5)
+                AvoqadoDatabase.MIGRATION_22_23   // 🛡️ Persist idempotencyKey through offline payment queue
             )
 
             // ⚠️ DEVELOPMENT ONLY: Destructive migration (data loss on schema change)

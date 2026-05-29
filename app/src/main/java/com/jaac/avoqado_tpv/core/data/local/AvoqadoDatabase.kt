@@ -110,7 +110,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
         com.jaac.avoqado_tpv.core.data.local.entities.MosaicShortcutEntity::class, // ⭐ v21
         AngelPayMerchantCacheEntity::class // ⭐ v22: AngelPay SDK 1.0.5 multi-merchant cache
     ],
-    version = 22, // ⭐ Version 22: AngelPay multi-merchant offline cache (SDK 1.0.5)
+    version = 23, // ⭐ Version 23: Persist idempotencyKey through offline payment queue (2026-05-29)
     exportSchema = false // Set to true when adding migrations for production
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -1436,6 +1436,28 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                     )
                     """.trimIndent()
                 )
+            }
+        }
+
+        /**
+         * Migration from version 22 to version 23: Add idempotency_key to pending_payments.
+         *
+         * **Offline Queue Idempotency Fix (2026-05-29)**
+         * - Adds idempotency_key column (nullable TEXT) to pending_payments table
+         * - Carries PaymentContext.idempotencyKey through the offline queue so
+         *   PaymentSyncWorker retries send the same UUID the online path would have used
+         * - Enables backend @@unique([venueId, idempotencyKey]) dedup for queue retries
+         *   (previously only referenceNumber was available as fallback)
+         * - Default value: NULL (backwards compatible — old records use referenceNumber dedup)
+         *
+         * **SQL:**
+         * ```sql
+         * ALTER TABLE pending_payments ADD COLUMN idempotency_key TEXT DEFAULT NULL;
+         * ```
+         */
+        val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE pending_payments ADD COLUMN idempotency_key TEXT DEFAULT NULL")
             }
         }
     }

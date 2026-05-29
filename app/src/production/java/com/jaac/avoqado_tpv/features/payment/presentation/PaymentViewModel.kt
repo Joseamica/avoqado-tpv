@@ -5439,6 +5439,7 @@ class PaymentViewModel @Inject constructor(
                         entryMode = cardDetails.entryMode.name,
                         isInternational = cardDetails.isInternational,
                         authorizationNumber = authorizationNumber,
+                        idempotencyKey = sessionSnapshot.paymentAttemptId, // 🛡️ Primary dedup key (2026-05-29)
                         createdAt = System.currentTimeMillis(),
                         retryCount = 0,
                         lastError = error.message,

@@ -53,6 +53,9 @@ data class QueuedPayment(
     // Blumon Authorization
     val authorizationNumber: String?,
 
+    // 🛡️ IDEMPOTENCY KEY (2026-05-29) — carried from PaymentContext for queue retries
+    val idempotencyKey: String? = null,
+
     // Retry Tracking
     val createdAt: Long, // Unix timestamp (when payment was originally processed)
     val retryCount: Int = 0,
@@ -87,7 +90,8 @@ data class QueuedPayment(
             rating = rating, // 🆕 Preserve user rating for retry
             merchantAccountId = normalizedMerchantAccountId, // Cash queue retries must keep merchant null
             blumonSerialNumber = blumonSerialNumber, // ⚠️ LEGACY: Fallback for old records
-            deviceSerialNumber = deviceSerialNumber // ⭐ Terminal attribution (2026-01-08)
+            deviceSerialNumber = deviceSerialNumber, // ⭐ Terminal attribution (2026-01-08)
+            idempotencyKey = idempotencyKey // 🛡️ Primary dedup key for queue retries (2026-05-29)
         )
     }
 

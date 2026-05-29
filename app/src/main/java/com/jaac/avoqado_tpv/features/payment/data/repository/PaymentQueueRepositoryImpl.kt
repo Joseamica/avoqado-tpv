@@ -167,6 +167,7 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             entryMode = entryMode,
             isInternational = isInternational,
             authorizationNumber = authorizationNumber,
+            idempotencyKey = idempotencyKey, // 🛡️ Primary dedup key for queue retries (2026-05-29)
             createdAt = createdAt,
             retryCount = retryCount,
             lastError = lastError,
@@ -199,6 +200,7 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             entryMode = entryMode,
             isInternational = isInternational,
             authorizationNumber = authorizationNumber,
+            idempotencyKey = idempotencyKey, // 🛡️ Primary dedup key for queue retries (2026-05-29)
             createdAt = createdAt,
             retryCount = retryCount,
             lastError = lastError,

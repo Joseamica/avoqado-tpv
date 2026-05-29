@@ -1181,6 +1181,22 @@ class PaymentViewModel @Inject constructor(
     private fun shouldSkipLocalValidation(): Boolean =
         sessionSnapshot.skipLocalOrderValidation
 
+    /**
+     * Card preflight gate. When the venue has requireAvoqadoServerForCardPayment=false AND this is a
+     * cobro/kiosko-directo (orderId == null), only require device internet — the charge is always
+     * online to Momentum and recording falls to the offline queue. Otherwise keep legacy behavior
+     * (require our backend reachable). Order/table payments are unaffected (separate order-sync gate).
+     */
+    private fun cardPreflightBlocked(): Boolean {
+        val settings = tpvSettingsRepository.getCurrentSettings()
+        val isCobro = getOrderIdForFlow() == null && !shouldSkipLocalValidation()
+        return if (!settings.requireAvoqadoServerForCardPayment && isCobro) {
+            !connectionStateManager.hasInternet()
+        } else {
+            !connectionStateManager.isFullyConnected()
+        }
+    }
+
     private fun getSplitContextForFlow(): SplitContext? =
         sessionSnapshot.splitContext
 
@@ -2249,7 +2265,8 @@ class PaymentViewModel @Inject constructor(
 
         // 🌐 PREFLIGHT CONNECTIVITY CHECK
         // Block card flow early when terminal is offline and offer cash fallback.
-        if (!connectionStateManager.isFullyConnected()) {
+        // cardPreflightBlocked() relaxes the gate to internet-only for cobros when the venue flag allows it.
+        if (cardPreflightBlocked()) {
             Timber.w("⚠️ [Payment] No connectivity - blocking card payment and offering cash fallback")
             _isPaymentInProgress.value = false  // 🚦 Release guard
             _state.value = PaymentState.Error(

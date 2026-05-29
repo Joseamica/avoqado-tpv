@@ -126,6 +126,12 @@ class ConnectionStateManager @Inject constructor() {
     }
 
     /**
+     * Check if device has internet connectivity (regardless of server reachability).
+     * Used by flag-gated preflight that only requires processor connectivity, not our backend.
+     */
+    fun hasInternet(): Boolean = _connectionState.value.hasInternet
+
+    /**
      * Reset to connected state (e.g., after successful reconnection)
      */
     fun resetToConnected() {

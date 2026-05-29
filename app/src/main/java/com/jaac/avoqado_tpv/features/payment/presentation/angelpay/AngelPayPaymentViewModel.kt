@@ -86,6 +86,7 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val paymentStateHolder: PaymentStateHolder,
     private val tpvSettingsRepository: TpvSettingsRepository,
     private val printerManager: PrinterManager,
+    private val angelPayTicketBuilder: com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayTicketBuilder,
     private val paymentApiService: PaymentApiService,
     private val apiService: ApiService,
     private val socketManager: SocketManager,
@@ -138,9 +139,42 @@ class AngelPayPaymentViewModel @Inject constructor(
     // TpvSettings for tip suggestions / default tip percentage
     val tipSuggestions: List<Int> get() = tpvSettingsRepository.getCurrentSettings().tipSuggestions
     val defaultTipPercentage: Int? get() = tpvSettingsRepository.getCurrentSettings().defaultTipPercentage
+    /**
+     * Whether the print button should be visible on the AngelPay success
+     * screen. Bifurcates by build flavor because PAX and Nexgo terminals
+     * use completely different printer APIs.
+     *
+     * **PAX (Blumon) flavor** — defer to [PrinterManager.isPrinterAvailable]
+     * which checks whether the PAX SDK's IPrinter handle initialized
+     * successfully.
+     *
+     * **Nexgo (AngelPay) flavor** — detect by hardware model returned by
+     * the AngelPay SDK device info. Nexgo's lineup has mixed printer
+     * support and there is no `hasPrinter()` API in SDK 1.0.8 (manual §2):
+     * - N86 → built-in thermal printer ✅
+     * - N62 → no printer ❌
+     *
+     * **Previous bug (fixed 2026-05-27)**: the gate read
+     * `BuildConfig.ENABLE_PAX_SDK && printerManager.isPrinterAvailable()`.
+     * Because every Nexgo build sets `ENABLE_PAX_SDK = false`, the short-
+     * circuit hid the print button on every Nexgo terminal — including
+     * N86 which physically has a thermal printer. The new check uses
+     * hardware capability instead of build flavor.
+     *
+     * When you add new Nexgo models with printers, append them to
+     * [NEXGO_MODELS_WITH_PRINTER] below.
+     */
     val canPrintReceipt: Boolean
         get() = runCatching {
-            BuildConfig.ENABLE_PAX_SDK && printerManager.isPrinterAvailable()
+            if (BuildConfig.ENABLE_PAX_SDK) {
+                printerManager.isPrinterAvailable()
+            } else {
+                val model = com.angelpay.angelpaysdk.AngelPaySDK.getDeviceInfo()
+                    ?.model
+                    ?.uppercase()
+                    .orEmpty()
+                NEXGO_MODELS_WITH_PRINTER.any { it in model }
+            }
         }.getOrElse { error ->
             Timber.w(error, "🔶 [AngelPay] Printer capability check failed; disabling print action")
             false
@@ -213,7 +247,61 @@ class AngelPayPaymentViewModel @Inject constructor(
                 if (angelPayMerchants.size == 1 && _currentMerchant.value == null) {
                     _currentMerchant.value = angelPayMerchants.first()
                 }
+                // Hydrate _currentMerchant from the persisted active merchant
+                // when there's more than one option. Without this hydration:
+                //   - The green banner ("AngelPay: <X>") reads from
+                //     `AngelPayMerchantRepository.activeAngelPayMerchantId`
+                //     which IS persisted across screen entries.
+                //   - But `_currentMerchant` lives only in this VM and stays
+                //     null on first composition with multi-merchant accounts
+                //     → the Tarjeta button reads `currentMerchant != null` →
+                //     stays disabled even though the SDK is already
+                //     authenticated to the merchant the banner shows.
+                //   - The operator's only workaround was tapping "Cambiar
+                //     cuenta" and re-selecting the SAME merchant just to
+                //     trigger `selectMerchant()` which populates
+                //     `_currentMerchant`.
+                if (_currentMerchant.value == null && angelPayMerchants.size > 1) {
+                    val activeId = angelPayMerchantRepository.activeAngelPayMerchantId.value
+                    if (activeId != null) {
+                        val matched = angelPayMerchants.firstOrNull { merchant ->
+                            merchant.externalMerchantId?.toIntOrNull() == activeId
+                        }
+                        if (matched != null) {
+                            _currentMerchant.value = matched
+                            Timber.d(
+                                "🔶 [AngelPay] Hydrated _currentMerchant from cached activeId=%s → %s",
+                                activeId,
+                                matched.displayName,
+                            )
+                        }
+                    }
+                }
                 Timber.d("🔶 [AngelPay] Merchants loaded: ${angelPayMerchants.size} AngelPay")
+            }
+        }
+
+        // Mirror late changes in `activeAngelPayMerchantId` into
+        // `_currentMerchant` so the Tarjeta button enables even when the
+        // SDK finishes its auth/cache refresh AFTER the merchants list
+        // already loaded (race with the collector above).
+        //
+        // Guard: only hydrate when `_currentMerchant` is null so an
+        // in-flight `selectMerchant()` flow (which sets `_currentMerchant`
+        // optimistically before the repo commits) is never clobbered.
+        viewModelScope.launch {
+            angelPayMerchantRepository.activeAngelPayMerchantId.collect { activeId ->
+                if (activeId == null) return@collect
+                if (_currentMerchant.value != null) return@collect
+                val matched = _merchants.value.firstOrNull { merchant ->
+                    merchant.externalMerchantId?.toIntOrNull() == activeId
+                } ?: return@collect
+                _currentMerchant.value = matched
+                Timber.d(
+                    "🔶 [AngelPay] Late-hydrated _currentMerchant from activeId=%s → %s",
+                    activeId,
+                    matched.displayName,
+                )
             }
         }
 
@@ -757,14 +845,19 @@ class AngelPayPaymentViewModel @Inject constructor(
         }
 
         val validationError = validation.exceptionOrNull()
-        val canUseQaTipFallback = BuildConfig.BLUMON_ENV != "PROD" &&
-                pendingTip > BigDecimal.ZERO &&
+        // Tip-unsupported fallback applies in ALL environments (incl. PROD): some
+        // AngelPay merchants (e.g. SALON AMAENA) reject tips with C208 "Propina no
+        // soportada". When that happens we re-issue the sale with the tip merged into
+        // the subtotal (tip=0 to the processor). Our backend still records the real
+        // subtotal/tip split. Self-gated: only fires when there's a tip AND the merchant
+        // rejected it, so merchants that DO support tips are unaffected.
+        val canUseTipFallback = pendingTip > BigDecimal.ZERO &&
                 validationError != null &&
                 sdkGateway.isTipUnsupportedError(validationError)
 
-        if (canUseQaTipFallback) {
+        if (canUseTipFallback) {
             Timber.w(
-                "⚠️ [AngelPay SDK] Tip not supported in QA, applying fallback (subtotal=total, tip=0) | error=${validationError?.message}"
+                "⚠️ [AngelPay SDK] Tip not supported by merchant, applying fallback (subtotal=total, tip=0) | error=${validationError?.message}"
             )
             val fallbackRequest = sdkGateway.buildQaTipFallbackRequest(
                 subtotal = pendingAmount,
@@ -1265,20 +1358,60 @@ class AngelPayPaymentViewModel @Inject constructor(
                 _sendReceiptMessage.value = "Esta terminal no tiene impresora"
                 return@launch
             }
+            val state = _state.value as? AngelPayPaymentState.Success
+            val authCode = state?.authCode.orEmpty()
+            val referenceNumber = state?.referenceNumber
+            val venueName = secureStorage.getVenueName()
+            val staffName = secureStorage.getStaffName()
             withContext(Dispatchers.IO) {
                 try {
-                    val venueName = secureStorage.getVenueName()
-                    val staffName = secureStorage.getStaffName()
-                    printerManager.printReceipt(
-                        receiptUrl = receipt.receiptUrl,
-                        amount = receipt.baseAmount.toPlainString(),
-                        authCode = (_state.value as? AngelPayPaymentState.Success)?.authCode ?: "",
-                        tipAmount = receipt.tipAmount.toPlainString(),
-                        referenceNumber = (_state.value as? AngelPayPaymentState.Success)?.referenceNumber,
-                        venueName = venueName,
-                        staffName = staffName,
-                        orderNumber = pendingOrderNumber,
-                    )
+                    if (BuildConfig.ENABLE_PAX_SDK) {
+                        // PAX/Blumon path — keeps existing PrinterManager
+                        // behavior so PAX flavors are byte-for-byte unchanged.
+                        printerManager.printReceipt(
+                            receiptUrl = receipt.receiptUrl,
+                            amount = receipt.baseAmount.toPlainString(),
+                            authCode = authCode,
+                            tipAmount = receipt.tipAmount.toPlainString(),
+                            referenceNumber = referenceNumber,
+                            venueName = venueName,
+                            staffName = staffName,
+                            orderNumber = pendingOrderNumber,
+                        )
+                    } else {
+                        // Nexgo path — print through the AngelPay SDK
+                        // (manual §12). Same ticket builder used elsewhere
+                        // (e.g. PaymentTransactionsScreen) so the receipt
+                        // layout stays consistent across entry points.
+                        //
+                        // Pulls the same fiscal + venue metadata that the
+                        // PAX printer uses (venue legal name, RFC,
+                        // address, timezone for date/time stamp, app
+                        // version), matching the look of the PAX receipt
+                        // within the constraints of the AngelPay SDK 1.0.8
+                        // print primitives (no QR/bitmap support yet —
+                        // receipt URL surfaces as text instead).
+                        val venueZone = com.jaac.avoqado_tpv.core.util.VenueTimeZone.get(secureStorage)
+                        val ticket = angelPayTicketBuilder.buildPaymentTicket(
+                            amount = receipt.baseAmount,
+                            tipAmount = receipt.tipAmount,
+                            authCode = authCode,
+                            referenceNumber = referenceNumber,
+                            venueName = venueName,
+                            venueLegalName = secureStorage.getVenueLegalName(),
+                            venueRfc = secureStorage.getVenueRfc(),
+                            venueAddress = secureStorage.getVenueAddress(),
+                            venueCity = secureStorage.getVenueCity(),
+                            venueState = secureStorage.getVenueState(),
+                            venueZipCode = secureStorage.getVenueZipCode(),
+                            venueTimeZone = java.util.TimeZone.getTimeZone(venueZone),
+                            staffName = staffName,
+                            orderNumber = pendingOrderNumber,
+                            receiptUrl = receipt.receiptUrl,
+                            appVersionName = BuildConfig.VERSION_NAME,
+                        )
+                        com.angelpay.angelpaysdk.AngelPaySDK.printTicket(ticket)
+                    }
                     Timber.i("🔶 [AngelPay] Receipt printed successfully")
                 } catch (e: Exception) {
                     Timber.e(e, "🔶 [AngelPay] Failed to print receipt")
@@ -1616,5 +1749,18 @@ class AngelPayPaymentViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    private companion object {
+        /**
+         * Nexgo terminal models that ship with a built-in thermal
+         * printer. Matched against the uppercased `model` returned by
+         * `AngelPaySDK.getDeviceInfo()` using substring containment so
+         * variant suffixes (e.g. "N86-XYZ") still match.
+         *
+         * Add new entries here when deploying additional Nexgo SKUs.
+         * Leave OUT models that ship without a printer (e.g. N62).
+         */
+        val NEXGO_MODELS_WITH_PRINTER = listOf("N86")
     }
 }

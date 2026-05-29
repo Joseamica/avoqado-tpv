@@ -336,6 +336,31 @@
 -dontwarn io.sentry.ndk.NdkOptions
 -dontwarn io.sentry.ndk.SentryNdk
 
+# ════════════════════════════════════════════════════════════════════════════
+#  ANGELPAY SDK — DEFENSIVE KEEP RULES (Ktor / kotlinx.serialization / binaryfoo)
+# ════════════════════════════════════════════════════════════════════════════
+# Status (2026-05-25): AngelPay SDK 1.0.8's official `consumer-proguard.txt`
+# now bundles equivalent keep rules INSIDE the AAR, so these manual rules
+# below are NO LONGER STRICTLY NECESSARY when consuming v1.0.8+. R8 already
+# inherits the right rules automatically from the AAR.
+#
+# However we KEEP them on purpose for defense-in-depth:
+#   1. Survives downgrades. If someone reverts the AAR to 1.0.5 or 1.0.7
+#      (which had a near-empty consumer-proguard.txt), the app still works.
+#   2. Survives upstream regressions. If AngelPay accidentally ships a future
+#      SDK with a broken consumer-proguard.txt, R8 still keeps the right
+#      classes via these rules.
+#   3. Operational history. The dated comments below explain WHY each rule
+#      exists (the exact bug each one prevents). Deleting them loses context
+#      that took multiple production crashes to discover.
+#
+# Duplicate `-keep` entries are idempotent — R8 takes the union. Zero APK
+# size cost (keep rules don't add bytes; they only prevent stripping).
+#
+# Safe to delete on a future cleanup pass if/when we're confident no one
+# will revert the SDK version. Until then, leave as-is.
+# ════════════════════════════════════════════════════════════════════════════
+
 # AngelPay SDK bundles Ktor + AtomicFU for its HTTP client. Ktor's
 # DefaultPool / ChannelJob / AtomicFU classes use reflection on `volatile`
 # fields (e.g. `top` in DefaultPool) — R8 minify renames those fields and
@@ -346,6 +371,7 @@
 #   io.ktor.utils.io.pool.DefaultPool.<clinit>
 #   java.lang.NoSuchFieldException: No field top in class La/b/c/u10
 # Keep all Ktor + AtomicFU classes + their volatile field names.
+# ⚠ Covered by AAR 1.0.8+ consumer-proguard.txt — kept defensively.
 -keep class io.ktor.** { *; }
 -keepnames class io.ktor.** { *; }
 -keepclassmembers class io.ktor.** {
@@ -367,6 +393,7 @@
 # R8 marks these classes dead because no direct refs exist in our code → app
 # crashes mid-cobro with `ClassNotFoundException`. Confirmed 2026-05-21 on
 # Nexgo SPRD N86 with v2.2.0-nexgo-prod after auth succeeded.
+# ⚠ Covered by AAR 1.0.8+ consumer-proguard.txt — kept defensively.
 -keep class io.github.binaryfoo.** { *; }
 -keepclassmembers class io.github.binaryfoo.** { *; }
 -dontwarn io.github.binaryfoo.**
@@ -381,6 +408,7 @@
 # field arrives empty. nexgoDebug works because debug builds skip R8.
 # Reproduced 2026-05-21 on AVQD-N860W173570 with v2.1.1-nexgo-prod (66):
 # auth always failed in release, always succeeded in debug.
+# ⚠ Covered by AAR 1.0.8+ consumer-proguard.txt — kept defensively.
 -keepattributes *Annotation*, InnerClasses
 -dontnote kotlinx.serialization.AnnotationsKt
 
@@ -394,11 +422,16 @@
     kotlinx.serialization.KSerializer serializer(...);
 }
 
-# AngelPay SDK internal @Serializable models — official consumer-proguard.txt
-# only covers public `com.angelpay.angelpaysdk.models.**`, but the wire layer
-# lives under `internal.data.**` and is NOT covered. Without these keeps,
-# AuthRequest, CardInformation, ChargePlanTransaction, etc. get obfuscated
-# property names → AngelPay backend can't parse the JSON → auth fails.
+# AngelPay SDK internal @Serializable models — historically the official
+# consumer-proguard.txt only covered public `com.angelpay.angelpaysdk.models.**`,
+# but the wire layer lives under `internal.data.**` and was NOT covered.
+# Without these keeps, AuthRequest, CardInformation, ChargePlanTransaction,
+# etc. get obfuscated property names → AngelPay backend can't parse the JSON
+# → auth fails.
+# ⚠ AAR 1.0.8+ improved consumer-proguard.txt to apply generic @Serializable
+#   keep rules that cover `internal.data.**` indirectly — kept defensively
+#   in case any future internal model is added without the @Serializable
+#   annotation but accessed via reflection.
 -keep class com.angelpay.angelpaysdk.internal.data.remote.** { *; }
 -keep class com.angelpay.angelpaysdk.internal.data.local.entity.** { *; }
 -keep class com.angelpay.angelpaysdk.internal.data.params.** { *; }

@@ -1,23 +1,18 @@
 package com.jaac.avoqado_tpv.features.payment.data.processor.angelpay
 
 import com.angelpay.angelpaysdk.AngelPaySDK
-import com.angelpay.angelpaysdk.models.PrintAlignmentRequest
-import com.angelpay.angelpaysdk.models.PrintFontSizeRequest
-import com.angelpay.angelpaysdk.models.PrintStyleRequest
-import com.angelpay.angelpaysdk.models.PrintTicketItemRequest
-import com.angelpay.angelpaysdk.models.PrintTicketItemType
-import com.angelpay.angelpaysdk.models.PrintTicketRequest
 import com.jaac.avoqado_tpv.features.payment.domain.processor.PaymentPostOperationsAdapter
 import com.jaac.avoqado_tpv.features.payment.domain.processor.PostOperationResult
 import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
 import com.jaac.avoqado_tpv.features.payment.domain.processor.TransactionHistoryQuery
 import com.jaac.avoqado_tpv.features.payment.domain.processor.UnifiedTransaction
-import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class AngelPaySdkPostOperationsAdapter @Inject constructor() : PaymentPostOperationsAdapter {
+class AngelPaySdkPostOperationsAdapter @Inject constructor(
+    private val ticketBuilder: AngelPayTicketBuilder,
+) : PaymentPostOperationsAdapter {
     override val processorType: ProcessorType = ProcessorType.ANGELPAY
 
     override suspend fun getTransactionHistory(query: TransactionHistoryQuery): Result<List<UnifiedTransaction>> {
@@ -166,57 +161,7 @@ class AngelPaySdkPostOperationsAdapter @Inject constructor() : PaymentPostOperat
 
     override fun printTicket(transaction: UnifiedTransaction): Result<Unit> {
         return try {
-            val centerBold = PrintStyleRequest(
-                alignment = PrintAlignmentRequest.CENTER,
-                isBold = true,
-                fontSize = PrintFontSizeRequest.LARGE,
-            )
-            val normal = PrintStyleRequest()
-
-            val ticket = PrintTicketRequest(
-                header = listOf(
-                    PrintTicketItemRequest(
-                        type = PrintTicketItemType.TEXT,
-                        text = "AVOQADO TPV",
-                        style = centerBold,
-                    ),
-                    PrintTicketItemRequest(type = PrintTicketItemType.DIVIDER),
-                ),
-                body = listOf(
-                    PrintTicketItemRequest(
-                        type = PrintTicketItemType.TWO_COLUMNS,
-                        left = "Referencia",
-                        right = transaction.reference,
-                        style = normal,
-                    ),
-                    PrintTicketItemRequest(
-                        type = PrintTicketItemType.TWO_COLUMNS,
-                        left = "Monto",
-                        right = formatMoney(transaction.amount),
-                    ),
-                    PrintTicketItemRequest(
-                        type = PrintTicketItemType.TWO_COLUMNS,
-                        left = "Autorización",
-                        right = transaction.authorizationCode.ifBlank { "-" },
-                    ),
-                    PrintTicketItemRequest(
-                        type = PrintTicketItemType.TWO_COLUMNS,
-                        left = "Estatus",
-                        right = transaction.status.ifBlank { "-" },
-                    ),
-                    PrintTicketItemRequest(
-                        type = PrintTicketItemType.TWO_COLUMNS,
-                        left = "Tarjeta",
-                        right = listOfNotNull(transaction.cardType, transaction.last4?.let { "****$it" })
-                            .joinToString(" ")
-                            .ifBlank { "-" },
-                    ),
-                    PrintTicketItemRequest(type = PrintTicketItemType.SPACER, lines = 3),
-                ),
-                footer = emptyList(),
-            )
-
-            AngelPaySDK.printTicket(ticket)
+            AngelPaySDK.printTicket(ticketBuilder.buildHistoryTicket(transaction))
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
@@ -238,10 +183,6 @@ class AngelPaySdkPostOperationsAdapter @Inject constructor() : PaymentPostOperat
     private fun parseDecimal(raw: String?): Double {
         val cleaned = raw.orEmpty().trim().replace(",", "")
         return cleaned.toDoubleOrNull() ?: 0.0
-    }
-
-    private fun formatMoney(amount: Double): String {
-        return "$" + String.format(Locale.US, "%.2f", amount)
     }
 
     private fun resolveTransactionDate(transaction: UnifiedTransaction): String {

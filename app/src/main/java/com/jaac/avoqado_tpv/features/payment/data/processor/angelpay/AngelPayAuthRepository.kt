@@ -121,7 +121,22 @@ class AngelPayAuthRepository @Inject constructor(
                 // server-side, so placeholders for non-primary accounts never
                 // upgrade. (Reproduced 2026-05-19 with contacto@avoqado.io.)
                 if (currentAngelPayAccountId == null) {
-                    currentAngelPayAccountId = credentialResolver.resolve().getOrNull()?.accountId
+                    // The SDK can hold a cached session for a NON-primary account
+                    // (e.g. after a prior switchAccount to "ventas"). The config's
+                    // primary (`angelpayAuth`) might be a DIFFERENT account
+                    // ("contacto"), so blindly resolving to the primary scopes the
+                    // validator to the WRONG account's merchants → empty intersection
+                    // → false "Sin merchants válidos" HardBlock until the cashier
+                    // switches manually. (Repro: venue with 2 AngelPay accounts where
+                    // primary != SDK-session account. Amaena prod is unaffected because
+                    // there primary == the SDK-session account.)
+                    //
+                    // Derive the active account from the SDK session's actual merchants
+                    // first; fall back to the resolver's primary only when no config
+                    // merchant matches the session (e.g. cold cache).
+                    currentAngelPayAccountId =
+                        resolveAccountIdFromSdkMerchantIds(cachedMerchants.map { it.id }.toSet())
+                            ?: credentialResolver.resolve().getOrNull()?.accountId
                 }
 
                 Timber.tag(LOG_TAG).i("SDK session merchants (cached auth): ${cachedMerchants.size} total — " +
@@ -410,6 +425,29 @@ class AngelPayAuthRepository @Inject constructor(
      * If no config is cached yet (cold start race), this is a no-op — the next
      * `fetchConfig()` heartbeat will surface drift later.
      */
+    /**
+     * Map the SDK session's merchant ids back to the owning AngelPayUserAccount
+     * id via the cached terminal config. The SDK reports merchant ids (e.g. 63);
+     * the config maps each `externalMerchantId` → `angelpayUserAccountId`. Returns
+     * the first ANGELPAY merchant whose external id is in the SDK session, or null
+     * when the cache is cold / no match (caller falls back to the config primary).
+     *
+     * This keeps `currentAngelPayAccountId` aligned with the account the SDK is
+     * ACTUALLY authenticated as, so the D5 intersection validator scopes to the
+     * right merchants on first (cached) auth instead of false-blocking.
+     */
+    private fun resolveAccountIdFromSdkMerchantIds(sdkMerchantIds: Set<Int>): String? {
+        if (sdkMerchantIds.isEmpty()) return null
+        val config = terminalConfigRepository.getCachedConfig() ?: return null
+        return config.merchantAccounts
+            .firstOrNull { ma ->
+                ma.providerCode == "ANGELPAY" &&
+                    ma.angelpayUserAccountId != null &&
+                    ma.externalMerchantId?.toIntOrNull() in sdkMerchantIds
+            }
+            ?.angelpayUserAccountId
+    }
+
     private suspend fun runConfigValidation() {
         val config = terminalConfigRepository.getCachedConfig() ?: return
         // Multi-AngelPay accounts per venue (2026-05-19): pass the current

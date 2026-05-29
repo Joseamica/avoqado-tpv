@@ -15,9 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -105,8 +103,6 @@ fun AngelPayPaymentScreen(
     val inFlightSwitch by viewModel.inFlightSwitch.collectAsStateWithLifecycle()
     val selectionInProgress by viewModel.selectionInProgress.collectAsStateWithLifecycle()
     val activeMerchantName = cachedMerchants.firstOrNull { it.id == activeAngelPayMerchantId }?.name
-
-    var showSwitcher by remember { mutableStateOf(false) }
 
     // Toast for receipt send result
     val context = LocalContext.current
@@ -302,38 +298,21 @@ fun AngelPayPaymentScreen(
                 .fillMaxSize()
                 .padding(paddingValues),
         ) {
-            // Task 34 — auth banner (always visible while screen is active so the
-            // cashier sees AngelPay readiness before initiating a charge).
-            AngelPayAuthBanner(
-                state = authState,
-                activeMerchantName = activeMerchantName,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-            )
-
-            // Task 34 — switcher chip (only when we have an active merchant the
-            // cashier can review/switch from). Tapping opens the modal sheet.
-            //
-            // Multi-AngelPay accounts per venue (2026-05-19): hide the chip when
-            // state is `SelectingMerchant` because `MerchantSelectionContent`
-            // already renders the full account picker below as radio buttons —
-            // the chip would be redundant + would steal vertical space on
-            // small screens (N62 720×720 cuts off the Tarjeta/Efectivo/Cripto
-            // action row at the bottom otherwise).
-            if (activeMerchantName != null && state !is AngelPayPaymentState.SelectingMerchant) {
-                AssistChip(
-                    onClick = { showSwitcher = true },
-                    label = { Text(activeMerchantName) },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Default.SwapHoriz,
-                            contentDescription = null,
-                        )
-                    },
-                    modifier = Modifier.padding(horizontal = 16.dp),
+            // Auth banner + merchant context show ONLY on the "Método de Pago"
+            // (SelectingMerchant) step. On the Rating/Tip steps they were
+            // confusing and redundant: the cashier picks/switches the merchant on
+            // the payment-method step via MerchantSelectionContent's full picker
+            // (account selector + per-merchant radios). The quick-switch chip was
+            // removed for the same reason — the picker is the canonical switcher,
+            // so a chip on Rating/Tip just added noise. (User feedback 2026-05-27.)
+            if (state is AngelPayPaymentState.SelectingMerchant) {
+                AngelPayAuthBanner(
+                    state = authState,
+                    activeMerchantName = activeMerchantName,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
                 )
-                Spacer(modifier = Modifier.height(8.dp))
             }
 
             Box(
@@ -549,24 +528,6 @@ fun AngelPayPaymentScreen(
         }
     }
 
-    // Task 34 — merchant switcher sheet (modal overlay; placed outside the
-    // Scaffold body so the sheet's window insets aren't clipped by the topBar
-    // padding).
-    if (showSwitcher) {
-        AngelPayMerchantSwitcherSheet(
-            merchants = cachedMerchants,
-            activeMerchantId = activeAngelPayMerchantId,
-            inFlightSwitchTargetId = inFlightSwitch,
-            // suspend lambda — fine to call non-suspend fun; the sheet collects
-            // updates from the repo's cached flow as `refreshMerchants()` writes through.
-            onRefresh = { viewModel.refreshMerchants() },
-            onPick = { merchantId ->
-                viewModel.selectMerchantByAngelPayId(merchantId)
-                showSwitcher = false
-            },
-            onDismiss = { showSwitcher = false },
-        )
-    }
 }
 
 // ── Shared composables ───────────────────────────────────────────────

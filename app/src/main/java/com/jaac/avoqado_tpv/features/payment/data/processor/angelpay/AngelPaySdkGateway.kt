@@ -97,6 +97,15 @@ class AngelPaySdkGateway @Inject constructor() {
             allowSwipe = true,
             allowChip = true,
             allowContactless = true,
+            // 🔑 integratorReference is the field AngelPay echoes back in the
+            // webhook AND the trigger that makes their backend fire the webhook
+            // at all (confirmed by AngelPay 2026-05-28: "mandar integrator_reference
+            // dispara el webhook siempre que haya endpoint registrado + terminal
+            // activa"). The SDK ignores our `reference` (it generates its own), so
+            // WITHOUT this the SDK logs `ref_int=null` and no webhook is ever sent.
+            // We use the same value as `reference` (the TPV's paymentAttemptId /
+            // idempotencyKey) so the webhook receiver can match it to the Payment row.
+            integratorReference = reference,
         )
     }
 
@@ -120,6 +129,9 @@ class AngelPaySdkGateway @Inject constructor() {
             allowSwipe = true,
             allowChip = true,
             allowContactless = true,
+            // See buildPaymentRequest — integratorReference triggers + is echoed
+            // in the AngelPay webhook. Must be set on the tip-fallback path too.
+            integratorReference = reference,
         )
     }
 

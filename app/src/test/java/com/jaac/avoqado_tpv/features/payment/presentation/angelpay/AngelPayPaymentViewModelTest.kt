@@ -72,6 +72,7 @@ class AngelPayPaymentViewModelTest {
     private lateinit var authRepository: AuthRepository
     private lateinit var merchantRepository: MerchantRepository
     private lateinit var secureStorage: SecureStorage
+    private lateinit var terminalConfigRepository: com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
     private lateinit var intentBuilder: AngelPayIntentBuilder
     private lateinit var sdkGateway: AngelPaySdkGateway
     private lateinit var angelPayAuthRepository: AngelPayAuthRepository
@@ -79,6 +80,7 @@ class AngelPayPaymentViewModelTest {
     private lateinit var paymentStateHolder: PaymentStateHolder
     private lateinit var tpvSettingsRepository: TpvSettingsRepository
     private lateinit var printerManager: PrinterManager
+    private lateinit var angelPayTicketBuilder: com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayTicketBuilder
     private lateinit var paymentApiService: PaymentApiService
     private lateinit var apiService: ApiService
     private lateinit var socketManager: SocketManager
@@ -121,6 +123,7 @@ class AngelPayPaymentViewModelTest {
         authRepository = mockk(relaxed = true)
         merchantRepository = mockk(relaxed = true)
         secureStorage = mockk(relaxed = true)
+        terminalConfigRepository = mockk(relaxed = true)
         intentBuilder = mockk(relaxed = true)
         sdkGateway = mockk(relaxed = true)
         angelPayAuthRepository = mockk(relaxed = true)
@@ -128,6 +131,7 @@ class AngelPayPaymentViewModelTest {
         paymentStateHolder = mockk(relaxed = true)
         tpvSettingsRepository = mockk(relaxed = true)
         printerManager = mockk(relaxed = true)
+        angelPayTicketBuilder = mockk(relaxed = true)
         paymentApiService = mockk(relaxed = true)
         apiService = mockk(relaxed = true)
         socketManager = mockk(relaxed = true)
@@ -155,6 +159,7 @@ class AngelPayPaymentViewModelTest {
         authRepository = authRepository,
         merchantRepository = merchantRepository,
         secureStorage = secureStorage,
+        terminalConfigRepository = terminalConfigRepository,
         intentBuilder = intentBuilder,
         sdkGateway = sdkGateway,
         angelPayAuthRepository = angelPayAuthRepository,
@@ -162,6 +167,7 @@ class AngelPayPaymentViewModelTest {
         paymentStateHolder = paymentStateHolder,
         tpvSettingsRepository = tpvSettingsRepository,
         printerManager = printerManager,
+        angelPayTicketBuilder = angelPayTicketBuilder,
         paymentApiService = paymentApiService,
         apiService = apiService,
         socketManager = socketManager,

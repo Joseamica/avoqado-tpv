@@ -44,6 +44,7 @@ class AngelPayAuthRepositoryTest {
     private lateinit var credentialResolver: AngelPayCredentialResolver
     private lateinit var configValidator: AngelPayConfigValidator
     private lateinit var terminalConfigRepository: TerminalConfigRepository
+    private lateinit var deviceInfoManager: com.jaac.avoqado_tpv.core.util.DeviceInfoManager
     private lateinit var merchantRepository: AngelPayMerchantRepository
     private lateinit var crashlytics: FirebaseCrashlytics
     private lateinit var repo: AngelPayAuthRepository
@@ -69,20 +70,24 @@ class AngelPayAuthRepositoryTest {
         credentialResolver = mockk()
         configValidator = mockk()
         terminalConfigRepository = mockk()
+        deviceInfoManager = mockk(relaxed = true)
         merchantRepository = mockk(relaxed = true)
         crashlytics = mockk(relaxed = true)
 
         // Sensible defaults — individual tests override.
         every { sdkGateway.isAuthenticated() } returns false
         every { sdkGateway.getSessionInfo() } returns null
+        coEvery { sdkGateway.getUserMerchants() } returns Result.success(emptyList())
         every { credentialResolver.resolve() } returns Result.success(backendCreds)
         every { terminalConfigRepository.getCachedConfig() } returns null
+        coEvery { terminalConfigRepository.fetchConfig(any()) } returns Result.failure(RuntimeException("test-stub"))
 
         repo = AngelPayAuthRepository(
             sdkGateway = sdkGateway,
             credentialResolver = credentialResolver,
             configValidator = configValidator,
             terminalConfigRepository = terminalConfigRepository,
+            deviceInfoManager = deviceInfoManager,
             merchantRepository = merchantRepository,
             crashlytics = crashlytics,
             reportApi = null,
@@ -112,15 +117,24 @@ class AngelPayAuthRepositoryTest {
     fun `ensureAuthenticated when SDK already authenticated emits Authenticated immediately`() =
         runTest(dispatcher) {
             every { sdkGateway.isAuthenticated() } returns true
+            // Return a non-empty merchant list so the stale-session guard does NOT
+            // force a re-auth. Production code: if getUserMerchants() is null/empty
+            // it treats the session as stale and falls through to authenticateSimple.
+            coEvery { sdkGateway.getUserMerchants() } returns Result.success(
+                listOf(mockk(relaxed = true) { every { id } returns 11 })
+            )
             every { terminalConfigRepository.getCachedConfig() } returns null
 
             val result = repo.ensureAuthenticated()
 
             assertTrue(result.isSuccess)
             assertEquals(AngelPayAuthState.Authenticated, repo.state.value)
-            // No re-auth, no creds resolution.
+            // No re-auth call — the SDK session was reused.
             coVerify(exactly = 0) { sdkGateway.authenticateSimple(any(), any()) }
-            verify(exactly = 0) { credentialResolver.resolve() }
+            // Note: credentialResolver.resolve() MAY be called once in the short-circuit
+            // path to populate currentAngelPayAccountId (fallback when SDK merchant IDs
+            // don't match any config entry). That's not a re-auth — just an account-ID
+            // lookup. What must NOT happen is authenticateSimple().
         }
 
     // ----------------------------------------------------------------------
@@ -133,13 +147,13 @@ class AngelPayAuthRepositoryTest {
                 Result.success(AuthenticateSimpleResult.Success)
             val config = configWithAngelPay()
             every { terminalConfigRepository.getCachedConfig() } returns config
-            coEvery { configValidator.validate(config) } returns ValidationResult.AllClear
+            coEvery { configValidator.validate(config, any()) } returns ValidationResult.AllClear
 
             val result = repo.ensureAuthenticated()
 
             assertTrue("expected success, got $result", result.isSuccess)
             assertEquals(AngelPayAuthState.Authenticated, repo.state.value)
-            coVerify(exactly = 1) { configValidator.validate(config) }
+            coVerify(exactly = 1) { configValidator.validate(config, any()) }
         }
 
     // ----------------------------------------------------------------------
@@ -181,8 +195,8 @@ class AngelPayAuthRepositoryTest {
             val state = repo.state.value
             assertTrue("expected AuthError, got $state", state is AngelPayAuthState.AuthError)
             assertEquals("PIN invalido", (state as AngelPayAuthState.AuthError).message)
-            // 3 attempts × authenticateSimple.
-            coVerify(exactly = 3) { sdkGateway.authenticateSimple(any(), any()) }
+            // 5 attempts × authenticateSimple (maxAttempts changed from 3 → 5, 2026-05-19).
+            coVerify(exactly = 5) { sdkGateway.authenticateSimple(any(), any()) }
             verify(atLeast = 1) { crashlytics.recordException(authErr) }
         }
 
@@ -199,14 +213,16 @@ class AngelPayAuthRepositoryTest {
             repo.ensureAuthenticated()
             val elapsed = currentTime - start
 
-            // 500 + 1000 = 1500ms minimum across the two gaps between 3 attempts.
-            // After the third attempt the repo gives up (no final delay).
+            // 1000 + 3000 + 5000 + 10000 = 19000ms across the four gaps between 5 attempts.
+            // Backoff schedule changed from 500/1000/2000 (3 attempts) to
+            // 1000/3000/5000/10000/20000 (5 attempts) on 2026-05-19 for AngelPay QA load.
+            // After the fifth attempt the repo gives up (no final delay).
             assertEquals(
-                "expected 1500ms of cumulative backoff (500 + 1000), got ${elapsed}ms",
-                1500L,
+                "expected 19000ms of cumulative backoff (1000+3000+5000+10000), got ${elapsed}ms",
+                19000L,
                 elapsed,
             )
-            coVerify(exactly = 3) { sdkGateway.authenticateSimple(any(), any()) }
+            coVerify(exactly = 5) { sdkGateway.authenticateSimple(any(), any()) }
         }
 
     // ----------------------------------------------------------------------
@@ -219,13 +235,13 @@ class AngelPayAuthRepositoryTest {
                 Result.success(Unit)
             val config = configWithAngelPay()
             every { terminalConfigRepository.getCachedConfig() } returns config
-            coEvery { configValidator.validate(config) } returns ValidationResult.AllClear
+            coEvery { configValidator.validate(config, any()) } returns ValidationResult.AllClear
 
             val result = repo.completeMerchantSelection(11, "temp-jwt-abc")
 
             assertTrue(result.isSuccess)
             assertEquals(AngelPayAuthState.Authenticated, repo.state.value)
-            coVerify(exactly = 1) { configValidator.validate(config) }
+            coVerify(exactly = 1) { configValidator.validate(config, any()) }
         }
 
     // ----------------------------------------------------------------------
@@ -274,7 +290,7 @@ class AngelPayAuthRepositoryTest {
                 Result.success(AuthenticateSimpleResult.Success)
             val config = configWithAngelPay()
             every { terminalConfigRepository.getCachedConfig() } returns config
-            coEvery { configValidator.validate(config) } returns ValidationResult.PartialOperable(
+            coEvery { configValidator.validate(config, any()) } returns ValidationResult.PartialOperable(
                 operableIds = setOf(11),
                 onlyInSdk = setOf(22),
                 onlyInAvoqado = setOf(33),
@@ -319,7 +335,7 @@ class AngelPayAuthRepositoryTest {
                 Result.success(AuthenticateSimpleResult.Success)
             val config = configWithAngelPay()
             every { terminalConfigRepository.getCachedConfig() } returns config
-            coEvery { configValidator.validate(config) } returns ValidationResult.HardBlock(
+            coEvery { configValidator.validate(config, any()) } returns ValidationResult.HardBlock(
                 message = "Sin merchants compartidos",
             )
 
@@ -352,6 +368,7 @@ class AngelPayAuthRepositoryTest {
             credentialResolver = credentialResolver,
             configValidator = configValidator,
             terminalConfigRepository = terminalConfigRepository,
+            deviceInfoManager = deviceInfoManager,
             merchantRepository = merchantRepository,
             crashlytics = crashlytics,
             reportApi = null,

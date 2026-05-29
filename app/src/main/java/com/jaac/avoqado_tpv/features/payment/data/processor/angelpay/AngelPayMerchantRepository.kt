@@ -138,6 +138,28 @@ class AngelPayMerchantRepository @Inject constructor(
                 cacheDao.markActive(merchantId)
                 return@withLock Result.success(Unit)
             }
+
+            // Single-merchant auth gap (2026-05-28): when the SDK auto-selects its
+            // ONLY merchant during `authenticateSimple` Success (single-merchant
+            // account, e.g. contacto@avoqado.io with merchant 61), it does so
+            // WITHOUT routing through this repo, so `_activeAngelPayMerchantId`
+            // stays null even though the SDK is already on that merchant. Picking
+            // that same merchant in the UI then fires `switchMerchant(id)` →
+            // AngelPay throws AuthenticationError("Error al cambiar de comercio")
+            // because you cannot switch to the merchant you're already on. Detect
+            // this by asking the SDK which merchant is currently active BEFORE
+            // blindly switching. Only runs when the repo has no tracked active
+            // merchant, so it never adds latency to a normal switch.
+            if (previousActive == null) {
+                val sdkMerchants = sdkGateway.getUserMerchants().getOrNull()
+                val sdkActiveId = sdkMerchants?.firstOrNull { it.isActive }?.id
+                    ?: sdkMerchants?.singleOrNull()?.id
+                if (sdkActiveId == merchantId) {
+                    _activeAngelPayMerchantId.value = merchantId
+                    cacheDao.markActive(merchantId)
+                    return@withLock Result.success(Unit)
+                }
+            }
             _inFlightSwitch.value = merchantId
 
             val deferred: Deferred<Result<Unit>> = async {

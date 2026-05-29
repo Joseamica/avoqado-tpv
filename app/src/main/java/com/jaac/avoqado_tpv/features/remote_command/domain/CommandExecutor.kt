@@ -1129,7 +1129,13 @@ class CommandExecutor @Inject constructor(
             // picks (typically the first one in cached config).
             if (!targetAccountId.isNullOrBlank()) {
                 Timber.i("🔶 [$TAG] Switching AngelPay account before fetch: $targetAccountId")
-                val switchResult = authRepo.switchAccount(targetAccountId)
+                // reportMerchants = true: this is the dashboard explicitly
+                // asking the TPV to refresh and publish the merchant list.
+                // ALL other call sites of switchAccount pass false (the
+                // default) so cashier-driven account switches never mutate
+                // the backend's MerchantAccount table — discovery is a
+                // dashboard-initiated action only (gated 2026-05-28).
+                val switchResult = authRepo.switchAccount(targetAccountId, reportMerchants = true)
                 if (switchResult.isFailure) {
                     val err = switchResult.exceptionOrNull()?.message ?: "switchAccount failed"
                     Timber.w("⚠️ [$TAG] switchAccount($targetAccountId) failed: $err")
@@ -1140,10 +1146,14 @@ class CommandExecutor @Inject constructor(
             // ensureAuthenticated() handles the full flow internally:
             // 1. Resolves creds (force config refresh on self-heal if cache empty)
             // 2. SDK authenticateSimple (with retry backoff)
-            // 3. On Success: reports discovered merchants to backend
+            // 3. On Success: reports discovered merchants to backend ONLY
+            //    when reportMerchants=true (gated 2026-05-28) — every other
+            //    caller (HomeViewModel pre-warm, AngelPayPaymentViewModel
+            //    pre-payment, cashier-driven flows) passes false default
+            //    so reboots/screen entries no longer mutate backend state.
             // 4. Refreshes terminal config so validator sees fresh intersection
             // 5. Runs config validation
-            val authResult = authRepo.ensureAuthenticated()
+            val authResult = authRepo.ensureAuthenticated(reportMerchants = true)
             if (authResult.isFailure) {
                 val err = authResult.exceptionOrNull()?.message ?: "auth failed"
                 Timber.e("❌ [$TAG] FETCH_ANGELPAY_MERCHANTS auth failed: $err")

@@ -87,7 +87,25 @@ class AngelPayAuthRepository @Inject constructor(
      * (waiting for the cashier to finish the initial pick via
      * [completeMerchantSelection]).
      */
-    suspend fun ensureAuthenticated(): Result<Unit> {
+    /**
+     * @param reportMerchants When `true`, fires
+     *   `POST /tpv/angelpay/report-discovered-merchants` to the backend
+     *   after a successful auth. Default `false` keeps the TPV silent on
+     *   spontaneous auth flows (reboot, screen entry, payment-start
+     *   pre-flight) so the backend's `MerchantAccount` table is NEVER
+     *   mutated as a side-effect of normal TPV operation.
+     *
+     *   The only path that should pass `true` is the explicit
+     *   `FETCH_ANGELPAY_MERCHANTS` command dispatched from the dashboard
+     *   ([com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor.executeFetchAngelPayMerchants]).
+     *   That keeps merchant discovery a deliberate, audit-able action
+     *   instead of an opaque side-effect — solves the "reboot recreates
+     *   merchants we just cleaned up" loop reported 2026-05-28.
+     *
+     *   [reportValidation] (auth ok/fail telemetry) is NOT gated by this
+     *   flag — it doesn't create merchant rows, just records observability.
+     */
+    suspend fun ensureAuthenticated(reportMerchants: Boolean = false): Result<Unit> {
         Timber.tag(LOG_TAG).i("ensureAuthenticated() called")
         if (sdkGateway.isAuthenticated()) {
             // Probe SDK session health BEFORE trusting the cached auth flag.
@@ -153,7 +171,9 @@ class AngelPayAuthRepository @Inject constructor(
                 // merchants are in the cache, THEN validate against the fresh
                 // intersection. Doing validation first always fails on first auth
                 // because backend hasn't seen the SDK's merchant list yet.
-                reportDiscoveredMerchantsIfPossible()
+                if (reportMerchants) {
+                    reportDiscoveredMerchantsIfPossible()
+                }
                 refreshTerminalConfigQuietly()
                 runConfigValidation()
                 return Result.success(Unit)
@@ -193,7 +213,7 @@ class AngelPayAuthRepository @Inject constructor(
             return Result.failure(err)
         }
         val creds = credsResult.getOrThrow()
-        return authenticateWithCreds(creds)
+        return authenticateWithCreds(creds, reportMerchants = reportMerchants)
     }
 
     /**
@@ -205,7 +225,10 @@ class AngelPayAuthRepository @Inject constructor(
      * Surfaces [AngelPayAuthState.AuthError] + records to Crashlytics on
      * failure — never throws.
      */
-    private suspend fun authenticateWithCreds(creds: AngelPayCreds): Result<Unit> {
+    private suspend fun authenticateWithCreds(
+        creds: AngelPayCreds,
+        reportMerchants: Boolean = false,
+    ): Result<Unit> {
         Timber.tag(LOG_TAG).i("authenticateWithCreds(source=${creds.source}, accountId=${creds.accountId}, email=${creds.email}, env=${creds.environment}) → calling authenticateSimple")
 
         _state.value = AngelPayAuthState.Authenticating
@@ -229,7 +252,9 @@ class AngelPayAuthRepository @Inject constructor(
                         // ⚠️ ORDER MATTERS — see comment in `isAuthenticated`
                         // short-circuit branch. Report first → refresh config →
                         // then validate against fresh intersection.
-                        reportDiscoveredMerchantsIfPossible()
+                        if (reportMerchants) {
+                            reportDiscoveredMerchantsIfPossible()
+                        }
                         refreshTerminalConfigQuietly()
                         runConfigValidation()
                         Result.success(Unit)
@@ -265,7 +290,9 @@ class AngelPayAuthRepository @Inject constructor(
                         // → multi-merchant accounts left the backend blind. The
                         // discovered list is in `sdkResult.merchants` so we
                         // don't need to call `getUserMerchants()` separately.
-                        reportDiscoveredMerchantsFromList(creds.accountId, sdkResult.merchants)
+                        if (reportMerchants) {
+                            reportDiscoveredMerchantsFromList(creds.accountId, sdkResult.merchants)
+                        }
                         refreshTerminalConfigQuietly()
                         Result.success(Unit)
                     }
@@ -296,7 +323,17 @@ class AngelPayAuthRepository @Inject constructor(
      *  - Surfaces failure via [AngelPayAuthState.AuthError] AND returns
      *    `Result.failure(err)` for the caller to render. Never crashes.
      */
-    suspend fun switchAccount(accountId: String): Result<Unit> {
+    /**
+     * @param reportMerchants See [ensureAuthenticated] — same semantics.
+     *   Default `false` so cashier-driven account switches in the merchant
+     *   selector (`AngelPayPaymentViewModel.selectMerchant`) stay silent
+     *   on the backend. Only the dashboard's `FETCH_ANGELPAY_MERCHANTS`
+     *   command should pass `true`.
+     */
+    suspend fun switchAccount(
+        accountId: String,
+        reportMerchants: Boolean = false,
+    ): Result<Unit> {
         if (currentAngelPayAccountId == accountId) {
             // Probe SDK session health before trusting the no-op. Same reasoning
             // as `ensureAuthenticated`'s short-circuit: an "authenticated" session
@@ -360,7 +397,7 @@ class AngelPayAuthRepository @Inject constructor(
         runCatching { sdkGateway.logout() }
         merchantRepository.clearActive()
 
-        return authenticateWithCreds(creds)
+        return authenticateWithCreds(creds, reportMerchants = reportMerchants)
     }
 
     /**
@@ -368,9 +405,19 @@ class AngelPayAuthRepository @Inject constructor(
      * Delegates the SDK call + cache write to [AngelPayMerchantRepository], then runs
      * the post-auth config validation just like [ensureAuthenticated]'s success path.
      */
+    /**
+     * @param reportMerchants See [ensureAuthenticated] — same semantics.
+     *   Default `false`: cashier-driven merchant picks never mutate the
+     *   backend's `MerchantAccount` table. Today this is *only* invoked
+     *   from the cashier UI ([com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentViewModel.selectMerchant]),
+     *   so default-false is correct. Param exists for future symmetry if
+     *   the dashboard ever dispatches a "complete merchant selection"
+     *   command.
+     */
     suspend fun completeMerchantSelection(
         merchantId: Int,
         temporaryToken: String,
+        reportMerchants: Boolean = false,
     ): Result<Unit> {
         val result = merchantRepository.completeInitialSelection(merchantId, temporaryToken)
         if (result.isSuccess) {
@@ -382,7 +429,9 @@ class AngelPayAuthRepository @Inject constructor(
             // ⚠️ ORDER MATTERS — same reasoning as `ensureAuthenticated`'s
             // Success branch: report first so backend creates+assigns merchants,
             // refresh config so cache has them, then validate.
-            reportDiscoveredMerchantsIfPossible()
+            if (reportMerchants) {
+                reportDiscoveredMerchantsIfPossible()
+            }
             refreshTerminalConfigQuietly()
             runConfigValidation()
         } else {

@@ -47,6 +47,11 @@ class AngelPayMerchantRepositoryTest {
         cacheDao = mockk(relaxed = true)
         paymentStateProvider = mockk()
         every { paymentStateProvider.isCharging() } returns false
+        // Default: SDK reports no merchants, so the single-merchant short-circuit
+        // in switchActiveMerchant (previousActive == null) falls through to the
+        // normal switchMerchant path. Tests that exercise the short-circuit
+        // override this with a non-empty active list.
+        coEvery { sdkGateway.getUserMerchants() } returns Result.success(emptyList())
         repo = AngelPayMerchantRepository(sdkGateway, cacheDao, paymentStateProvider)
     }
 
@@ -65,6 +70,35 @@ class AngelPayMerchantRepositoryTest {
         assertTrue(result.isSuccess)
         assertEquals(merchantA.id, repo.activeAngelPayMerchantId.value)
         coVerify { cacheDao.markActive(merchantA.id) }
+    }
+
+    @Test
+    fun `switchActiveMerchant short-circuits when SDK already on target via single-merchant auth`() = runTest(dispatcher) {
+        // Single-merchant account: SDK auto-selected merchantA during authenticateSimple
+        // Success, bypassing this repo, so _activeAngelPayMerchantId is null. The SDK
+        // reports merchantA as the active one. Picking merchantA must NOT call
+        // switchMerchant (AngelPay rejects switching to the merchant you're already on).
+        coEvery { sdkGateway.getUserMerchants() } returns Result.success(listOf(merchantA))
+
+        val result = repo.switchActiveMerchant(merchantA.id)
+
+        assertTrue(result.isSuccess)
+        assertEquals(merchantA.id, repo.activeAngelPayMerchantId.value)
+        coVerify { cacheDao.markActive(merchantA.id) }
+        coVerify(exactly = 0) { sdkGateway.switchMerchant(any()) }
+    }
+
+    @Test
+    fun `switchActiveMerchant still switches when SDK active differs from target`() = runTest(dispatcher) {
+        // SDK is on merchantA, but cashier picks merchantB → real switch required.
+        coEvery { sdkGateway.getUserMerchants() } returns Result.success(listOf(merchantA, merchantB))
+        coEvery { sdkGateway.switchMerchant(merchantB.id) } returns Result.success(Unit)
+
+        val result = repo.switchActiveMerchant(merchantB.id)
+
+        assertTrue(result.isSuccess)
+        assertEquals(merchantB.id, repo.activeAngelPayMerchantId.value)
+        coVerify(exactly = 1) { sdkGateway.switchMerchant(merchantB.id) }
     }
 
     @Test

@@ -67,6 +67,8 @@ class HomeViewModelTest {
     private lateinit var terminalConfigRepository: TerminalConfigRepository
     private lateinit var merchantRepository: MerchantRepository
     private lateinit var deviceInfoManager: DeviceInfoManager
+    private lateinit var angelPaySdkGatewayProvider: javax.inject.Provider<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway>
+    private lateinit var angelPayAuthRepositoryProvider: javax.inject.Provider<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository>
     private lateinit var bluetoothPaymentService: BluetoothPaymentService
     private lateinit var updateCheckManager: UpdateCheckManager
     private lateinit var sessionManager: SessionManager
@@ -106,6 +108,8 @@ class HomeViewModelTest {
         terminalConfigRepository = mockk(relaxed = true)
         merchantRepository = mockk(relaxed = true)
         deviceInfoManager = mockk(relaxed = true)
+        angelPaySdkGatewayProvider = mockk(relaxed = true)
+        angelPayAuthRepositoryProvider = mockk(relaxed = true)
         bluetoothPaymentService = mockk(relaxed = true)
         updateCheckManager = mockk(relaxed = true)
         sessionManager = mockk(relaxed = true)
@@ -158,6 +162,8 @@ class HomeViewModelTest {
             terminalConfigRepository = terminalConfigRepository,
             merchantRepository = merchantRepository,
             deviceInfoManager = deviceInfoManager,
+            angelPaySdkGatewayProvider = angelPaySdkGatewayProvider,
+            angelPayAuthRepositoryProvider = angelPayAuthRepositoryProvider,
             bluetoothPaymentService = bluetoothPaymentService,
             printerManager = printerManager,
             updateCheckManager = updateCheckManager,

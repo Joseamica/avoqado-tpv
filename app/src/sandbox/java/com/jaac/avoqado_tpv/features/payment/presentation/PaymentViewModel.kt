@@ -75,6 +75,9 @@ import com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
+// 🔄 Connection event for receipt-on-reconnect + offline-queue sync
+import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
+import com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler
 // 🔌 Socket.IO Events
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 // 👤 Customer Search (for email receipt dialog)
@@ -101,7 +104,9 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.pax.dal.entity.EReaderType
 import com.paxsz.module.emv.process.enums.TransResultEnum
+import android.content.Context
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -208,7 +213,11 @@ class PaymentViewModel @Inject constructor(
     // 🏪 MerchantRepository - Check fallback status and refresh merchants
     private val merchantRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository,
     // 🚦 CriticalNetworkOperationManager - Blocks network failover during active payments
-    private val criticalNetworkOperationManager: com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager
+    private val criticalNetworkOperationManager: com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager,
+    // 🔄 ConnectionEventManager - Broadcasts reconnection events (receipt-on-reconnect + queue sync)
+    private val connectionEventManager: ConnectionEventManager,
+    // 📱 Application context - for PaymentSyncScheduler.runNow() on reconnect
+    @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentState>(PaymentState.Idle)
@@ -340,6 +349,17 @@ class PaymentViewModel @Inject constructor(
     private var merchantsLoaded = false  // Track if merchants have been loaded
     private var lastChipProcessingStallReportKey: String? = null
 
+    // 🔄 Receipt-on-reconnect: stores inputs needed to re-call recordPaymentUseCase after connectivity restored
+    // Set in onFailure branch of handlePaymentSuccess; cleared on success, resetPayment, or new payment start
+    private data class PendingReceiptRetry(
+        val context: PaymentContext,
+        val cardDetails: CardDetails,
+        val authorizationNumber: String,
+        val referenceNumber: String,
+        val orderIdForFlow: String?
+    )
+    private var pendingReceiptRetry: PendingReceiptRetry? = null
+
     // 🥝 KIOSK MODE: Deferred cash payment recording (McDonald's/Cinépolis pattern)
     // When true, cash payments go to AwaitingCashConfirmation state instead of recording immediately
     // Staff must confirm they received cash before payment is recorded
@@ -430,6 +450,9 @@ class PaymentViewModel @Inject constructor(
 
         // 🚦 Keep global critical-operation guard synced with payment flow state
         observePaymentFlowCriticalGuard()
+
+        // 🔄 Receipt-on-reconnect + offline-queue sync on connection restored
+        listenToConnectionRestored()
     }
 
     /**
@@ -469,6 +492,104 @@ class PaymentViewModel @Inject constructor(
         viewModelScope.launch {
             _isPaymentInProgress.collect { inProgress ->
                 criticalNetworkOperationManager.setPaymentFlowInProgress(inProgress)
+            }
+        }
+    }
+
+    /**
+     * 🔄 Listen to Connection Restored Events (Toast/Square POS pattern)
+     *
+     * **Behavior (1) — Receipt-on-reconnect:**
+     * If the success screen is showing with receipt == null (backend recording failed while offline)
+     * and connectivity is restored, re-call recordPaymentUseCase with the same idempotency key.
+     * The backend deduplicates via (venueId, idempotencyKey) so this is always safe.
+     * On success, updates the live PaymentState.Success so the QR loads and WhatsApp/Email work.
+     *
+     * **Behavior (2) — Sync-on-reconnect:**
+     * Triggers an immediate offline-queue sync so queued payments record in seconds
+     * instead of waiting up to 15 minutes for the periodic WorkManager job.
+     */
+    private fun listenToConnectionRestored() {
+        viewModelScope.launch {
+            connectionEventManager.connectionRestoredEvents.collect { event ->
+                Timber.i("🔄 [PaymentViewModel] Connection restored after ${event.attemptsBeforeReconnection} attempts")
+
+                // Behavior (2): Trigger immediate offline-queue sync
+                PaymentSyncScheduler.runNow(appContext)
+                Timber.i("🔄 [PaymentViewModel] Immediate offline-queue sync requested")
+
+                // Behavior (1): Re-attempt backend recording if success screen shows blank QR
+                val retry = pendingReceiptRetry
+                val currentState = _state.value
+                if (retry != null && currentState is PaymentState.Success && currentState.receipt == null) {
+                    Timber.i("🔄 [PaymentViewModel] Re-attempting backend recording for pending receipt | ref=${retry.referenceNumber}")
+                    try {
+                        val result = recordPaymentUseCase(
+                            context = retry.context,
+                            cardDetails = retry.cardDetails,
+                            authorizationNumber = retry.authorizationNumber,
+                            referenceNumber = retry.referenceNumber,
+                        )
+                        result.onSuccess { receipt ->
+                            Timber.i("✅ [PaymentViewModel] Receipt recovered on reconnect | paymentId=${receipt.paymentId}")
+                            applyRecordedReceiptToSuccessState(
+                                receipt = receipt,
+                                cardDetails = retry.cardDetails,
+                                referenceNumber = retry.referenceNumber,
+                                orderIdForFlow = retry.orderIdForFlow
+                            )
+                            pendingReceiptRetry = null
+                        }.onFailure { error ->
+                            Timber.w("⚠️ [PaymentViewModel] Receipt retry failed on reconnect (will retry next reconnect): ${error.message}")
+                            // Leave pendingReceiptRetry intact — will retry on next reconnect event
+                            // The periodic queue worker is the backstop
+                        }
+                    } catch (e: Exception) {
+                        Timber.e(e, "❌ [PaymentViewModel] Unexpected error during receipt retry on reconnect")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 🎫 Apply a successfully recorded receipt to the current PaymentState.Success.
+     *
+     * Extracted from handlePaymentSuccess onSuccess branch to enable reuse from
+     * listenToConnectionRestored() (receipt-on-reconnect path). The happy-path behavior
+     * is byte-identical to the original inline code.
+     *
+     * @param receipt       PaymentReceipt returned by recordPaymentUseCase
+     * @param cardDetails   CardDetails used in the payment
+     * @param referenceNumber Blumon reference number
+     * @param orderIdForFlow Order ID if this was an order payment, null for fast payment
+     */
+    private suspend fun applyRecordedReceiptToSuccessState(
+        receipt: com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt,
+        cardDetails: CardDetails,
+        referenceNumber: String,
+        orderIdForFlow: String?
+    ) {
+        val currentState = _state.value
+        if (currentState is PaymentState.Success) {
+            val orderData = loadOrderData(orderIdForFlow)
+            _state.value = currentState.copy(
+                receipt = receipt,
+                cardDetails = cardDetails,
+                referenceNumber = referenceNumber,
+                orderId = orderIdForFlow,
+                orderNumber = getOrderNumberForFlow(),
+                orderItems = orderData?.items,
+                remainingBalance = orderData?.remainingBalance,
+                discountAmount = orderData?.discountAmount?.toPlainString()
+            )
+            Timber.d("🎫 [Receipt] Updated Success state with receipt | URL=${receipt.receiptUrl}")
+            Timber.d("🎫 [Receipt] Card: ${cardDetails.cardBrand} ${cardDetails.maskedPan} | Entry: ${cardDetails.entryMode}")
+
+            // 🐛 DEBUG: Verify the state was actually updated
+            val updatedState = _state.value
+            if (updatedState is PaymentState.Success) {
+                Timber.d("🐛 [DEBUG] Confirmed state update | receipt is ${if (updatedState.receipt != null) "NOT NULL" else "NULL"}")
             }
         }
     }
@@ -5137,6 +5258,9 @@ class PaymentViewModel @Inject constructor(
         _merchantSwitchingLoading.value = false
         _merchantSwitchMessage.value = null
 
+        // 🔄 Clear pending receipt retry so a stale reconnect handler can't fire for the next payment
+        pendingReceiptRetry = null
+
         updateSessionSnapshot(
             reason = "resetPayment",
             amountOverride = "0.00",
@@ -5912,33 +6036,28 @@ class PaymentViewModel @Inject constructor(
                         )
                     }
 
-                    // 📦 Load order data if this is an order payment (Pedido Rápido or Servicio de Mesa)
-                    val orderData = loadOrderData(orderIdForFlow)
-
-                    // 🆕 NEW: Update Success state with receipt + card details for QR code display and printing
-                    val currentState = _state.value
-                    if (currentState is PaymentState.Success) {
-                        _state.value = currentState.copy(
-                            receipt = receipt,
-                            cardDetails = cardDetails,  // 🎫 Include card info for professional receipts
-                            referenceNumber = referenceNumber,  // 🎫 Include reference for receipts
-                            orderId = orderIdForFlow,  // 🆕 Order ID (for loading order items in success screen)
-                            orderNumber = getOrderNumberForFlow(),  // 🆕 Order number (for display)
-                            orderItems = orderData?.items,  // 🆕 Order items (for displaying itemized receipt)
-                            remainingBalance = orderData?.remainingBalance,  // ⭐ NEW: Amount left to pay (for "Continuar pagando" button)
-                            discountAmount = orderData?.discountAmount?.toPlainString()  // 🆕 Discount for receipt printing
-                        )
-                        Timber.d("🎫 [Receipt] Updated Success state with receipt | URL=${receipt.receiptUrl}")
-                        Timber.d("🎫 [Receipt] Card: ${cardDetails.cardBrand} ${cardDetails.maskedPan} | Entry: ${cardDetails.entryMode}")
-
-                        // 🐛 DEBUG: Verify the state was actually updated
-                        val updatedState = _state.value
-                        if (updatedState is PaymentState.Success) {
-                            Timber.d("🐛 [DEBUG] Confirmed state update | receipt is ${if (updatedState.receipt != null) "NOT NULL" else "NULL"}")
-                        }
-                    }
+                    // 🎫 Update Success state with receipt + card details (QR, WhatsApp, Email, printing)
+                    applyRecordedReceiptToSuccessState(
+                        receipt = receipt,
+                        cardDetails = cardDetails,
+                        referenceNumber = referenceNumber,
+                        orderIdForFlow = orderIdForFlow
+                    )
+                    // 🔄 Clear any pending retry (recording succeeded on the happy path)
+                    pendingReceiptRetry = null
                 }.onFailure { error ->
                     Timber.e("❌ [Backend Recording] Failed to record payment: ${error.message}")
+
+                    // 🔄 Store retry context so listenToConnectionRestored() can re-attempt when connectivity returns
+                    // The backend deduplicates via (venueId, idempotencyKey) — re-calling with same key is always safe
+                    pendingReceiptRetry = PendingReceiptRetry(
+                        context = context,
+                        cardDetails = cardDetails,
+                        authorizationNumber = authorizationNumber,
+                        referenceNumber = referenceNumber,
+                        orderIdForFlow = orderIdForFlow
+                    )
+                    Timber.w("🔄 [PaymentViewModel] Stored pendingReceiptRetry for reconnect retry | ref=$referenceNumber")
 
                     // ⭐ Queue payment for offline sync
                     Timber.w("💾 [Offline Queue] Queueing payment for retry | ref=$referenceNumber")

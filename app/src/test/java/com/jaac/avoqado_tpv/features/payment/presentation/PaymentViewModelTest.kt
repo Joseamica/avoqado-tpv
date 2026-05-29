@@ -10,6 +10,7 @@ import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
 import com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager
+import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.ConnectionStateManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.modules.domain.model.VenueModule
@@ -31,6 +32,7 @@ import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import com.paxsz.module.emv.process.contact.CandidateAID
+import android.content.Context
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -90,9 +92,12 @@ class PaymentViewModelTest {
     private lateinit var mockConnectionStateManager: ConnectionStateManager
     private lateinit var mockCriticalNetworkOperationManager: CriticalNetworkOperationManager
     private lateinit var mockSetSelectAppCodeUseCase: SetSelectAppCodeUseCase
+    private lateinit var mockConnectionEventManager: ConnectionEventManager
+    private lateinit var mockAppContext: Context
 
     // Flows needed by init block collectors
     private val socketEventsFlow = MutableSharedFlow<SocketEvent>()
+    private val connectionRestoredFlow = MutableSharedFlow<com.jaac.avoqado_tpv.core.util.ConnectionRestoredEvent>()
     private val modulesFlow = MutableStateFlow<List<VenueModule>>(emptyList())
     private lateinit var selectAppStateFlow: MutableStateFlow<MutableList<CandidateAID>?>
 
@@ -236,11 +241,22 @@ class PaymentViewModelTest {
 
         mockCriticalNetworkOperationManager = mockk(relaxed = true)
         mockSetSelectAppCodeUseCase = mockk(relaxed = true)
+
+        // Configure ConnectionEventManager with a SharedFlow the tests can emit to
+        mockConnectionEventManager = mockk(relaxed = true) {
+            every { connectionRestoredEvents } returns connectionRestoredFlow
+        }
+
+        // Application context (needed by PaymentSyncScheduler.runNow — mocked at object level)
+        mockAppContext = mockk(relaxed = true)
+        mockkObject(com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler)
+        every { com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.runNow(any()) } just runs
     }
 
     @After
     fun tearDown() {
         unmockkObject(TerminalConfig)
+        unmockkObject(com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler)
         unmockkAll()
         Dispatchers.resetMain()
     }
@@ -292,7 +308,9 @@ class PaymentViewModelTest {
             modulesRepository = mockModulesRepository,
             connectionStateManager = mockConnectionStateManager,
             merchantRepository = mockk(relaxed = true),
-            criticalNetworkOperationManager = mockCriticalNetworkOperationManager
+            criticalNetworkOperationManager = mockCriticalNetworkOperationManager,
+            connectionEventManager = mockConnectionEventManager,
+            appContext = mockAppContext
         )
     }
 

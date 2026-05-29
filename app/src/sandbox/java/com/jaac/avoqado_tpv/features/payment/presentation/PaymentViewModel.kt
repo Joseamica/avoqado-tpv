@@ -1196,7 +1196,9 @@ class PaymentViewModel @Inject constructor(
      */
     private fun cardPreflightBlocked(): Boolean {
         val settings = tpvSettingsRepository.getCurrentSettings()
-        val isCobro = getOrderIdForFlow() == null && !shouldSkipLocalValidation()
+        val isCobro = getOrderIdForFlow() == null &&
+            !shouldSkipLocalValidation() &&
+            sessionSnapshot.mode != PaymentMode.REFUND
         return if (!settings.requireAvoqadoServerForCardPayment && isCobro) {
             !connectionStateManager.hasInternet()
         } else {

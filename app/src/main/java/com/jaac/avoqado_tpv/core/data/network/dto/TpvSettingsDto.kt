@@ -58,6 +58,10 @@ data class TpvSettingsDto(
     @SerializedName("enableShifts")
     val enableShifts: Boolean?,
 
+    // Card payment server-decoupling kill-switch
+    @SerializedName("requireAvoqadoServerForCardPayment")
+    val requireAvoqadoServerForCardPayment: Boolean?,
+
     // Attendance verification (clock-in/out with selfie + GPS)
     @SerializedName("requireClockInPhoto")
     val requireClockInPhoto: Boolean?,
@@ -155,6 +159,8 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     requireVerificationBarcode = requireVerificationBarcode ?: false,
     // Shift system defaults to enabled
     enableShifts = enableShifts ?: true,
+    // Card payment kill-switch: default true (legacy: require backend before charge)
+    requireAvoqadoServerForCardPayment = requireAvoqadoServerForCardPayment ?: true,
     // Attendance verification defaults to disabled
     requireClockInPhoto = requireClockInPhoto ?: false,
     requireClockOutPhoto = requireClockOutPhoto ?: false,
@@ -200,6 +206,7 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     requireVerificationPhoto = requireVerificationPhoto,
     requireVerificationBarcode = requireVerificationBarcode,
     enableShifts = enableShifts,
+    requireAvoqadoServerForCardPayment = requireAvoqadoServerForCardPayment,
     requireClockInPhoto = requireClockInPhoto,
     requireClockOutPhoto = requireClockOutPhoto,
     requireFacadePhoto = requireFacadePhoto,

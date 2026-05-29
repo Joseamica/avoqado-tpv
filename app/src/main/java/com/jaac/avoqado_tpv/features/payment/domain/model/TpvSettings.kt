@@ -66,6 +66,10 @@ data class TpvSettings(
     val requireVerificationBarcode: Boolean = false,
     // Venue-level shift system toggle (from VenueSettings)
     val enableShifts: Boolean = true,
+    // Card payment server-decoupling kill-switch (default true = legacy: require backend before charge).
+    // When false, the (always-online-to-Momentum) charge is allowed even if our backend heartbeat is down.
+    // Cached in SecureStorage so it survives the very backend outage it guards against.
+    val requireAvoqadoServerForCardPayment: Boolean = true,
     // Attendance verification (clock-in/out with selfie + GPS)
     val requireClockInPhoto: Boolean = false,
     val requireClockOutPhoto: Boolean = false,

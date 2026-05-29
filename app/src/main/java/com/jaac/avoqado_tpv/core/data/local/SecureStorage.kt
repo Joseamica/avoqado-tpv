@@ -112,6 +112,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_TPV_REQUIRE_VERIFICATION_PHOTO = "tpv_require_verification_photo"
         private const val KEY_TPV_REQUIRE_VERIFICATION_BARCODE = "tpv_require_verification_barcode"
         private const val KEY_ENABLE_SHIFTS = "enable_shifts"
+        private const val KEY_REQUIRE_SERVER_FOR_CARD = "require_server_for_card_payment"
         // Attendance verification (clock-in/out with selfie + GPS)
         private const val KEY_TPV_REQUIRE_CLOCK_IN_PHOTO = "tpv_require_clock_in_photo"
         private const val KEY_TPV_REQUIRE_CLOCK_OUT_PHOTO = "tpv_require_clock_out_photo"
@@ -1167,6 +1168,8 @@ class SecureStorage @Inject constructor(
             putBoolean(KEY_TPV_REQUIRE_VERIFICATION_BARCODE, settings.requireVerificationBarcode)
             // Shift system toggle
             putBoolean(KEY_ENABLE_SHIFTS, settings.enableShifts)
+            // Card payment server-decoupling kill-switch
+            putBoolean(KEY_REQUIRE_SERVER_FOR_CARD, settings.requireAvoqadoServerForCardPayment)
             // Attendance verification (clock-in/out with selfie + GPS)
             putBoolean(KEY_TPV_REQUIRE_CLOCK_IN_PHOTO, settings.requireClockInPhoto)
             putBoolean(KEY_TPV_REQUIRE_CLOCK_OUT_PHOTO, settings.requireClockOutPhoto)
@@ -1235,6 +1238,8 @@ class SecureStorage @Inject constructor(
             requireVerificationBarcode = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_VERIFICATION_BARCODE, false),
             // Shift system toggle (default: enabled)
             enableShifts = encryptedPrefs.getBoolean(KEY_ENABLE_SHIFTS, true),
+            // Card payment server-decoupling kill-switch (default: true = legacy behavior)
+            requireAvoqadoServerForCardPayment = encryptedPrefs.getBoolean(KEY_REQUIRE_SERVER_FOR_CARD, true),
             // Attendance verification (default: disabled)
             requireClockInPhoto = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_CLOCK_IN_PHOTO, false),
             requireClockOutPhoto = encryptedPrefs.getBoolean(KEY_TPV_REQUIRE_CLOCK_OUT_PHOTO, false),
@@ -1291,6 +1296,8 @@ class SecureStorage @Inject constructor(
             remove(KEY_TPV_REQUIRE_VERIFICATION_BARCODE)
             // Shift system toggle
             remove(KEY_ENABLE_SHIFTS)
+            // Card payment server-decoupling kill-switch
+            remove(KEY_REQUIRE_SERVER_FOR_CARD)
             // Attendance verification
             remove(KEY_TPV_REQUIRE_CLOCK_IN_PHOTO)
             remove(KEY_TPV_REQUIRE_CLOCK_OUT_PHOTO)

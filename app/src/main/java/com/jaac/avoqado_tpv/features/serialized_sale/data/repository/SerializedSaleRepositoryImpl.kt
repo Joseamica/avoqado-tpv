@@ -239,9 +239,12 @@ class SerializedSaleRepositoryImpl @Inject constructor(
                     val result = RegistrationResult(
                         created = body.data.created,
                         duplicates = body.data.duplicates,
-                        assignedToYou = body.data.assignedToYou ?: 0
+                        assignedToYou = body.data.assignedToYou ?: 0,
+                        mode = body.data.mode,
+                        submitted = body.data.submitted,
+                        requestId = body.data.requestId
                     )
-                    Log.d(TAG, "Register batch success: ${result.created} created, ${result.duplicates.size} duplicates, ${result.assignedToYou} assignedToYou")
+                    Log.d(TAG, "Register batch success: ${result.created} created, ${result.duplicates.size} duplicates, ${result.assignedToYou} assignedToYou, mode=${result.mode}, submitted=${result.submitted}")
                     Result.success(result)
                 } else {
                     Result.failure(Exception("Registration failed"))

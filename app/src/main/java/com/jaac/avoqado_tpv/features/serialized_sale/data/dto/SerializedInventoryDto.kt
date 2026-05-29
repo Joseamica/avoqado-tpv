@@ -139,7 +139,10 @@ data class RegisterBatchResponseDto(
 data class RegisterBatchResultDto(
     val created: Int,
     val duplicates: List<String>,
-    val assignedToYou: Int? = null
+    val assignedToYou: Int? = null,
+    val mode: String? = null,
+    val submitted: Int? = null,
+    val requestId: String? = null
 )
 
 // ========== Create Category DTOs ==========

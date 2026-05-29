@@ -303,9 +303,7 @@ fun SerializedSaleScreen(
                             // Dynamic step numbering based on current state
                             var nextStep = 1
                             val statusStep = nextStep++
-                            val categoryStep = if (scanResult is ScanResult.NotRegistered) nextStep++ else null
-                            val showPriceSection = scanResult is ScanResult.Available ||
-                                (scanResult is ScanResult.NotRegistered && uiState.selectedCategory != null)
+                            val showPriceSection = scanResult is ScanResult.Available
                             val priceStep = if (showPriceSection) nextStep++ else null
                             val portabilidadStep = if (uiState.showPortabilidadToggle && showPriceSection) nextStep++ else null
 
@@ -322,25 +320,13 @@ fun SerializedSaleScreen(
 
                             Spacer(modifier = Modifier.height(Spacing.Space3))
 
-                            // Step 2 (NotRegistered only): Category selector
-                            if (categoryStep != null) {
-                                StepRow(categoryStep) {
-                                    Text(
-                                        text = "Selecciona categoría",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Spacer(modifier = Modifier.height(Spacing.Space1))
-
-                                    CategorySelectorDropdown(
-                                        categories = uiState.categories,
-                                        selectedCategory = uiState.selectedCategory,
-                                        onCategorySelected = viewModel::onCategorySelected,
-                                        onCreateCategory = { showCreateCategoryDialog = true },
-                                        canCreateCategory = canCreateCategory,
-                                        modifier = Modifier.fillMaxWidth()
-                                    )
-                                }
+                            // NotRegistered: show blocked-state message instead of category selector
+                            if (scanResult is ScanResult.NotRegistered) {
+                                Text(
+                                    text = "Esta SIM no está dada de alta o no está aprobada para venta. " +
+                                        "Pídela de alta y espera la aprobación antes de venderla.",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
 
                                 Spacer(modifier = Modifier.height(Spacing.Space3))
                             }

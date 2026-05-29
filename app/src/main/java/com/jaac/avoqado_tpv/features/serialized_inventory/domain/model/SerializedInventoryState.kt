@@ -36,7 +36,10 @@ data class SerializedInventoryUiState(
 data class RegistrationResult(
     val created: Int,
     val duplicates: List<String>,
-    val assignedToYou: Int = 0
+    val assignedToYou: Int = 0,
+    val mode: String? = null,
+    val submitted: Int? = null,
+    val requestId: String? = null
 ) {
     val hasSuccess: Boolean get() = created > 0
     val hasDuplicates: Boolean get() = duplicates.isNotEmpty()

@@ -367,17 +367,28 @@ class SerializedInventoryViewModel @Inject constructor(
                 serialNumbers = state.scannedSerialNumbers
             )
                 .onSuccess { result ->
-                    Timber.d("Batch registration success: ${result.created} created, ${result.duplicates.size} duplicates, ${result.assignedToYou} assignedToYou")
-
-                    // ✅ FIX: Don't show Snackbar when we have registrationResult
-                    // The RegistrationResultCard banner provides better feedback
-                    _uiState.update {
-                        it.copy(
-                            isLoading = false,
-                            registrationResult = result,
-                            // Clear list after registration attempt
-                            scannedSerialNumbers = emptyList()
-                        )
+                    Timber.d("Batch registration success: created=${result.created}, mode=${result.mode}, submitted=${result.submitted}")
+                    if (result.mode == "approval") {
+                        val n = result.submitted ?: 0
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                successMessage = "Solicitud enviada. $n SIM(s) pendiente(s) de aprobación.",
+                                registrationResult = null,
+                                scannedSerialNumbers = emptyList()
+                            )
+                        }
+                    } else {
+                        // ✅ FIX: Don't show Snackbar when we have registrationResult
+                        // The RegistrationResultCard banner provides better feedback
+                        _uiState.update {
+                            it.copy(
+                                isLoading = false,
+                                registrationResult = result,
+                                // Clear list after registration attempt
+                                scannedSerialNumbers = emptyList()
+                            )
+                        }
                     }
 
                     // Reload categories to update stock counts

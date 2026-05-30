@@ -286,6 +286,34 @@ git add app/src/sandbox/java/com/jaac/avoqado_tpv/features/payment/presentation/
 git commit -m "feat(payment): flag-gated preflight — allow cobro when backend down (orderId==null only)"
 ```
 
+### Task B2b: Shift-check offline fallback (shifts-enabled venues)
+
+**Why:** The card preflight isn't the only backend gate before Blumon. For venues with shifts ENABLED, `PaymentViewModel` (~production:2298, sandbox equivalent) calls `shiftRepository.getCurrentShift(venueId)`, which hits the backend (`ApiService.getCurrentShift`) and returns `Result.Error(NetworkError)` on failure → `.getOrNull()` → `null` → the flow BLOCKS ("No hay turno activo"). So relaxing the preflight alone does NOT make shifts-enabled venues work offline. A local shift cache already exists (`CachedShiftDao.getCachedShift(venueId)`, used by WelcomeScreen for offline display) but is NOT wired into the payment shift check.
+
+**Files:**
+- Modify: `app/src/main/.../features/shift/data/repository/ShiftRepository.kt` (`getCurrentShift`)
+- Modify: `app/src/sandbox` + `app/src/production` `PaymentViewModel.kt` (shift validation block)
+- Use: `app/src/main/.../core/data/local/dao/CachedShiftDao.kt`
+
+- [x] **Step 1: Cache the open shift on every successful fetch**
+
+In `ShiftRepository.getCurrentShift`, on the `Result.Success(shift)` branch, write the shift to `CachedShiftDao.cacheShift(CachedShiftEntity.fromDomain(shift, venueId))` (per the documented pattern in `CachedShiftDao.kt`). Confirm this isn't already happening elsewhere to avoid double-writes.
+
+- [x] **Step 2: Offline fallback in the payment shift check (flag-gated)**
+
+In the payment shift-validation block (both variants), when `isShiftSystemEnabled()` is true AND the live `getCurrentShift` returned null/Error AND `!settings.requireAvoqadoServerForCardPayment` (relaxed mode) AND `getOrderIdForFlow() == null` (cobro), read `cachedShiftDao.getCachedShift(venueId)`. If a cached shift with status OPEN exists, use it (`currentShiftId = cached.id`) and proceed; otherwise block as today (show "Abrir Turno"). Do NOT change behavior when the flag is on its default (`true`).
+
+- [x] **Step 3: Test**
+
+Unit test: shifts enabled + `getCurrentShift` returns NetworkError + flag false + cached OPEN shift present → payment proceeds with `currentShiftId` = cached id. With flag true (default) → blocks as today. Run `./gradlew testSandboxDebugUnitTest --tests "*PaymentViewModelTest*" --tests "*ShiftViewModelTest*"`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add app/src/main/java/com/jaac/avoqado_tpv/features/shift/data/repository/ShiftRepository.kt app/src/sandbox app/src/production
+git commit -m "feat(payment): shift-check offline fallback to cached open shift (flag-gated, cobro only)"
+```
+
 ### Task B3: Option A — enqueue-on-approval + real idempotencyKey (Room migration)
 
 **Files:**
@@ -361,11 +389,11 @@ git commit -m "feat(payment): enqueue-on-approval + idempotencyKey in offline qu
 - Modify: `app/src/production` + `app/src/sandbox` `PaymentViewModel.kt` (SaleCtls MomentumFailure handler — the contactless online-auth failure branch)
 - Modify: `PaymentScreen.kt` if a new "insert card" prompt state is needed
 
-- [ ] **Step 1: Read the current contactless decline branch**
+- [x] **Step 1: Read the current contactless decline branch**
 
 Read the `performOnlineAuthorization(... isContactless = true)` failure handling and the `[CONTACTLESS ONLINE PHASE 2] Online authorization FAILED` path. Identify where `specificErrorDescription` / `codeResponse` is available.
 
-- [ ] **Step 2: Detect the switch-interface decline and branch to chip**
+- [x] **Step 2: Detect the switch-interface decline and branch to chip**
 
 In the contactless failure branch, before showing the generic hard decline, detect code `1A` / description containing `INSERTE TARJETA` (case-insensitive). When matched, instead of `PaymentState.Error(hard decline)`, set a recoverable state that prompts the cashier/customer to **insert the chip** and re-enters the chip flow (reuse the existing chip entry, e.g. `startPaymentWithResolvedInputs(... entryMode = CHIP)`), preserving amount/tip/context. Do NOT auto-retry contactless.
 
@@ -382,7 +410,7 @@ if (switchToChip) {
 }
 ```
 
-- [ ] **Step 3: Mirror in sandbox variant + compile**
+- [x] **Step 3: Mirror in sandbox variant + compile**
 
 Apply identically to the sandbox `PaymentViewModel.kt`. Run `./gradlew compileSandboxDebugKotlin compileProductionDebugKotlin`.
 

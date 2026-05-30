@@ -494,6 +494,78 @@ class PaymentViewModelTest {
         viewModel.viewModelScope.cancel()
     }
 
+    // B2b: shift-check offline fallback (shifts-enabled venues)
+
+    @Test
+    fun `offline cobro with relaxed flag falls back to cached open shift`() = runTest {
+        // Shifts enabled, but the live shift fetch fails because our backend is unreachable.
+        every { mockShiftRepository.isShiftSystemEnabled() } returns true
+        coEvery { mockShiftRepository.getCurrentShift(any()) } returns
+            AppResult.Error(com.jaac.avoqado_tpv.core.domain.models.ApiException.NetworkError(RuntimeException("offline")))
+        coEvery { mockShiftRepository.getCachedOpenShift(any()) } returns Shift(
+            id = testShiftId,
+            venueId = testVenueId,
+            staffId = testStaffId,
+            staffName = "Cached Staff",
+            startTime = "2026-05-30T10:00:00Z",
+            endTime = null,
+            status = ShiftStatus.OPEN,
+            startingCash = BigDecimal.ZERO,
+            endingCash = null,
+            totalSales = BigDecimal.ZERO,
+            totalTips = BigDecimal.ZERO,
+            totalOrders = 0,
+            totalCashPayments = BigDecimal.ZERO,
+            totalCardPayments = BigDecimal.ZERO,
+            totalVoucherPayments = BigDecimal.ZERO,
+            totalOtherPayments = BigDecimal.ZERO,
+            totalProductsSold = 0,
+            durationMinutes = null
+        )
+        // Venue opted into offline card payments; internet is up but our backend is unreachable.
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns
+            TpvSettings.DEFAULT.copy(requireAvoqadoServerForCardPayment = false)
+        every { mockConnectionStateManager.hasInternet() } returns true
+        every { mockConnectionStateManager.isFullyConnected() } returns false
+
+        val viewModel = createViewModel()
+        viewModel.startPayment("100.00")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // Fast path: the live getCurrentShift is SKIPPED (no ~30s hang) because the backend is
+        // already known-unreachable; the cached OPEN shift is used directly and the payment is
+        // NOT blocked on the shift check.
+        coVerify(exactly = 0) { mockShiftRepository.getCurrentShift(any()) }
+        coVerify { mockShiftRepository.getCachedOpenShift(any()) }
+        val state = viewModel.state.value
+        val blockedOnShift = state is PaymentState.Error && state.showOpenShiftButton
+        assertThat(blockedOnShift).isFalse()
+
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `shift fetch failure with default flag blocks and skips cache fallback`() = runTest {
+        // Default flag (require backend): a failed shift fetch must NOT consult the cache.
+        every { mockShiftRepository.isShiftSystemEnabled() } returns true
+        coEvery { mockShiftRepository.getCurrentShift(any()) } returns
+            AppResult.Error(com.jaac.avoqado_tpv.core.domain.models.ApiException.NetworkError(RuntimeException("offline")))
+        every { mockTpvSettingsRepository.getCurrentSettings() } returns TpvSettings.DEFAULT
+        // Fully connected so the preflight passes and we actually reach the shift check.
+        every { mockConnectionStateManager.isFullyConnected() } returns true
+
+        val viewModel = createViewModel()
+        viewModel.startPayment("100.00")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertThat(state).isInstanceOf(PaymentState.Error::class.java)
+        assertThat((state as PaymentState.Error).showOpenShiftButton).isTrue()
+        coVerify(exactly = 0) { mockShiftRepository.getCachedOpenShift(any()) }
+
+        viewModel.viewModelScope.cancel()
+    }
+
     @Test
     fun `startPayment ensures SDK initialization`() = runTest {
         val viewModel = createViewModel()

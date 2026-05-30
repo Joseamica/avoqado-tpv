@@ -59,7 +59,8 @@ import javax.inject.Singleton
 @Singleton
 class ShiftRepository @Inject constructor(
     private val apiService: ApiService,
-    private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage
+    private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
+    private val cachedShiftDao: com.jaac.avoqado_tpv.core.data.local.dao.CachedShiftDao
 ) {
 
     /**
@@ -220,8 +221,20 @@ class ShiftRepository @Inject constructor(
 
                 if (shift != null) {
                     Timber.d("✅ Found active shift: ${shift.id}, Staff: ${shift.staffName}")
+                    // Cache the open shift so the payment shift check (and WelcomeScreen) can fall
+                    // back to it when the backend is unreachable. runCatching so a cache write can
+                    // never break the live fetch path.
+                    runCatching {
+                        cachedShiftDao.cacheShift(
+                            com.jaac.avoqado_tpv.core.data.local.entities.CachedShiftEntity.fromDomain(shift, venueId)
+                        )
+                    }.onFailure { Timber.w(it, "⚠️ Failed to cache shift") }
                 } else {
                     Timber.d("ℹ️ No active shift found")
+                    // Backend authoritatively reports no open shift — drop any stale cache so the
+                    // offline fallback can't later resurrect a shift that was already closed.
+                    runCatching { cachedShiftDao.clearCache(venueId) }
+                        .onFailure { Timber.w(it, "⚠️ Failed to clear stale shift cache") }
                 }
 
                 Result.Success(shift)
@@ -232,6 +245,26 @@ class ShiftRepository @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ Network error fetching current shift")
             Result.Error(ApiException.NetworkError(e))
+        }
+    }
+
+    /**
+     * Last known OPEN shift from the local cache, or null. Reads cache only — never hits network.
+     *
+     * Offline fallback for the payment shift check: when [getCurrentShift] fails with a
+     * NetworkError and the venue has opted into offline card payments
+     * (requireAvoqadoServerForCardPayment=false), the payment flow uses this so a shifts-enabled
+     * venue can still charge while the backend is unreachable. Returns null when there's no cache
+     * or the cached shift is not OPEN. The cache is kept fresh by [getCurrentShift] on every
+     * successful fetch (open shift cached, no-shift clears it).
+     */
+    suspend fun getCachedOpenShift(venueId: String): Shift? {
+        val cached = cachedShiftDao.getCachedShift(venueId)
+        return if (cached != null && cached.isOpen()) {
+            Timber.d("📦 Using cached OPEN shift ${cached.id} (cached ${cached.minutesSinceCached()} min ago)")
+            cached.toDomainPartial()
+        } else {
+            null
         }
     }
 }

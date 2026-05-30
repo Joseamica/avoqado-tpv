@@ -1320,6 +1320,50 @@ class PaymentViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Resolves the current shift for the pre-charge shift check. Live backend fetch first.
+     * If the live fetch FAILS (NetworkError) AND the venue relaxed the preflight
+     * (requireAvoqadoServerForCardPayment=false), this is a cobro (orderId == null, not a refund),
+     * and our backend is unreachable, fall back to the last cached OPEN shift so shifts-enabled
+     * venues can still charge offline. On the flag's default (true), or when the backend
+     * authoritatively returns no open shift (Success(null)), this behaves exactly as the previous
+     * `getCurrentShift(...).getOrNull()`. Gating mirrors [cardPreflightBlocked].
+     */
+    private suspend fun resolveCurrentShiftForPayment(
+        venueId: String
+    ): com.jaac.avoqado_tpv.features.shift.domain.Shift? {
+        val settings = tpvSettingsRepository.getCurrentSettings()
+        val isCobro = getOrderIdForFlow() == null &&
+            !shouldSkipLocalValidation() &&
+            sessionSnapshot.mode != PaymentMode.REFUND
+        // Fast path: when we ALREADY know our backend is unreachable AND the venue opted into
+        // offline cobro, skip the live getCurrentShift — it would hang ~30s on the socket timeout
+        // (the cashier reads that delay as "the terminal is broken") before falling back anyway.
+        // Go straight to the cached OPEN shift. Only this exact offline-cobro case is short-circuited.
+        if (!settings.requireAvoqadoServerForCardPayment && isCobro &&
+            !connectionStateManager.isFullyConnected()
+        ) {
+            return shiftRepository.getCachedOpenShift(venueId)?.also {
+                Timber.w("⚠️ [Payment] Backend known-unreachable — offline shift fallback (skipped live fetch) to cached OPEN shift ${it.id}")
+            }
+        }
+        // Normal path: live fetch first, with fallback to the cache only on a network error.
+        return when (val result = shiftRepository.getCurrentShift(venueId)) {
+            is com.jaac.avoqado_tpv.core.domain.models.Result.Success -> result.data
+            is com.jaac.avoqado_tpv.core.domain.models.Result.Error -> {
+                if (settings.requireAvoqadoServerForCardPayment || !isCobro ||
+                    connectionStateManager.isFullyConnected()
+                ) {
+                    null // legacy behavior: a failed fetch is treated as "no shift" → block
+                } else {
+                    shiftRepository.getCachedOpenShift(venueId)?.also {
+                        Timber.w("⚠️ [Payment] Backend unreachable — offline shift fallback to cached OPEN shift ${it.id}")
+                    }
+                }
+            }
+        }
+    }
+
     private fun getSplitContextForFlow(): SplitContext? =
         sessionSnapshot.splitContext
 
@@ -2435,7 +2479,7 @@ class PaymentViewModel @Inject constructor(
                 return@launch
             }
 
-            val currentShift = shiftRepository.getCurrentShift(currentVenueId).getOrNull()
+            val currentShift = resolveCurrentShiftForPayment(currentVenueId)
 
             // ⭐ CRITICAL: Shift System Validation
             // - If enabled (default): Block payment if no shift is open
@@ -3026,7 +3070,10 @@ class PaymentViewModel @Inject constructor(
      */
     private data class AuthorizationResult(
         val response: SaleIccResponse?,
-        val userFriendlyError: String?
+        val userFriendlyError: String?,
+        // True when a contactless failure is actually the card asking to be inserted (chip),
+        // i.e. Momentum code "1A / INSERTE TARJETA" — prompt chip insertion, not a hard decline.
+        val requiresChipInsertion: Boolean = false
     )
 
     private suspend fun performOnlineAuthorization(
@@ -3241,7 +3288,22 @@ class PaymentViewModel @Inject constructor(
                         }
                     }
 
-                    AuthorizationResult(response = null, userFriendlyError = userMessage)
+                    // Rule #3 (card-present): a contactless "1A / INSERTE TARJETA" is NOT a real
+                    // decline — the card is asking to be inserted (chip), e.g. amount over the
+                    // contactless limit or issuer-forced chip. Signal the caller to prompt chip
+                    // insertion + retry instead of a hard decline. Match both the parsed
+                    // description and the raw Momentum codeResponse.
+                    val requiresChipInsertion = isContactless && (
+                        (specificErrorDescription?.contains("INSERTE TARJETA", ignoreCase = true) == true) ||
+                            errorString.contains("\"codeResponse\":\"1A\"", ignoreCase = true) ||
+                            errorString.contains("codeResponse=1A", ignoreCase = true)
+                    )
+
+                    AuthorizationResult(
+                        response = null,
+                        userFriendlyError = userMessage,
+                        requiresChipInsertion = requiresChipInsertion
+                    )
                 }
                 saleResponse != null -> {
                     // Handle success
@@ -3827,6 +3889,17 @@ class PaymentViewModel @Inject constructor(
             )
 
             if (authResult.response == null || authResult.userFriendlyError != null) {
+                // Rule #3: the contactless card asked to be inserted (1A / INSERTE TARJETA) — this
+                // is NOT a decline. Prompt chip insertion + retry (same recoverable Error+context
+                // path the user already knows) instead of dead-ending on "Pago rechazado".
+                if (authResult.requiresChipInsertion) {
+                    Timber.w("🔄 [CONTACTLESS] 1A INSERTE TARJETA — prompting chip insertion instead of hard decline")
+                    _state.value = PaymentState.Error(
+                        message = "Esta tarjeta requiere chip.\n\nInserta la tarjeta y presiona Reintentar.",
+                        context = createPaymentContext()  // retry re-runs DetectCard → detects chip
+                    )
+                    return
+                }
                 Timber.e("❌ [CONTACTLESS ONLINE PHASE 2] Online authorization FAILED: ${authResult.userFriendlyError}")
                 _state.value = PaymentState.Error(
                     message = authResult.userFriendlyError ?: "Error en autorización con banco",
@@ -3934,7 +4007,7 @@ class PaymentViewModel @Inject constructor(
 
                 // ⭐ CRITICAL: Validate shift is open before processing payment (Square/Toast pattern)
                 // Without an open shift, cash reconciliation is impossible
-                val currentShift = shiftRepository.getCurrentShift(currentVenueId!!).getOrNull()
+                val currentShift = resolveCurrentShiftForPayment(currentVenueId!!)
 
                 if (shiftRepository.isShiftSystemEnabled()) {
                     if (currentShift == null || currentShift.status != com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN) {
@@ -4232,7 +4305,7 @@ class PaymentViewModel @Inject constructor(
                 currentStaffId = staffId
 
                 // ⭐ CRITICAL: Validate shift is open before processing payment
-                val currentShift = shiftRepository.getCurrentShift(currentVenueId!!).getOrNull()
+                val currentShift = resolveCurrentShiftForPayment(currentVenueId!!)
 
                 if (shiftRepository.isShiftSystemEnabled()) {
                     if (currentShift == null || currentShift.status != com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN) {

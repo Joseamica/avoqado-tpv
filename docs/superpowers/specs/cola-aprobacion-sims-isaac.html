@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aprobación de SIMs — Propuesta PlayTelecom</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#141925; --panel2:#1b2230; --line:#262f40;
+    --txt:#e6ebf2; --muted:#8a93a6; --brand:#6366f1; --brand2:#818cf8;
+    --green:#22c55e; --amber:#f59e0b; --red:#ef4444; --blue:#3b82f6; --purple:#a855f7;
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg); color:var(--txt); line-height:1.6; padding:0 16px 80px}
+  .wrap{max-width:920px; margin:0 auto}
+  header{padding:48px 0 28px; border-bottom:1px solid var(--line); margin-bottom:36px}
+  .tag{display:inline-block; font-size:12px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--brand2); background:rgba(99,102,241,.12); padding:5px 12px; border-radius:999px; font-weight:600; margin-bottom:16px}
+  h1{font-size:34px; line-height:1.2; font-weight:800; letter-spacing:-.02em}
+  h1 .accent{color:var(--brand2)}
+  .sub{color:var(--muted); font-size:17px; margin-top:10px; max-width:660px}
+  h2{font-size:22px; font-weight:700; margin:44px 0 18px; letter-spacing:-.01em; display:flex; align-items:center; gap:10px}
+  h2 .n{display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px;
+    background:var(--brand); color:#fff; border-radius:9px; font-size:15px; font-weight:700; flex:none}
+  p{color:#c7cedb; margin:12px 0}
+  strong{color:#fff}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:24px; margin:16px 0}
+  .muted{color:var(--muted)}
+  .em{font-size:15px}
+
+  /* The big split */
+  .split{display:grid; grid-template-columns:1fr 1fr; gap:16px; margin:20px 0}
+  .bucket{border-radius:18px; padding:24px; border:1px solid var(--line)}
+  .bucket.good{background:linear-gradient(160deg,rgba(34,197,94,.10),rgba(34,197,94,.02)); border-color:rgba(34,197,94,.35)}
+  .bucket.queue{background:linear-gradient(160deg,rgba(245,158,11,.10),rgba(245,158,11,.02)); border-color:rgba(245,158,11,.35)}
+  .bucket .head{display:flex; align-items:center; gap:10px; font-weight:700; font-size:16px}
+  .bucket .ico{font-size:22px}
+  .bucket .big{font-size:46px; font-weight:800; letter-spacing:-.02em; margin:10px 0 2px}
+  .bucket.good .big{color:var(--green)} .bucket.queue .big{color:var(--amber)}
+  .bucket .cap{font-size:13.5px; color:var(--muted); margin-bottom:14px}
+  .bucket .row{display:flex; justify-content:space-between; font-size:13.5px; padding:7px 0; border-top:1px solid rgba(255,255,255,.06)}
+  .bucket .row .v{font-weight:700}
+  @media(max-width:560px){.split{grid-template-columns:1fr}}
+
+  /* rule banner */
+  .rule{display:flex; align-items:center; gap:14px; background:var(--panel2); border:1px solid var(--line);
+    border-left:4px solid var(--brand); border-radius:12px; padding:16px 20px; margin:18px 0; font-size:16px}
+  .rule .k{font-size:24px}
+
+  /* flow */
+  .flow{display:flex; flex-wrap:wrap; align-items:stretch; gap:0; margin:20px 0}
+  .step{flex:1; min-width:140px; background:var(--panel2); border:1px solid var(--line);
+    border-radius:14px; padding:18px 14px; position:relative; text-align:center}
+  .step .ico{font-size:25px; margin-bottom:7px}
+  .step .t{font-weight:700; font-size:14.5px}
+  .step .d{font-size:12px; color:var(--muted); margin-top:4px}
+  .arrow{display:flex; align-items:center; justify-content:center; color:var(--brand2); font-size:22px; padding:0 5px; flex:none}
+  .step.hl{border-color:var(--brand); box-shadow:0 0 0 1px var(--brand) inset; background:rgba(99,102,241,.08)}
+  .step .badge{position:absolute; top:-10px; left:50%; transform:translateX(-50%);
+    background:var(--brand); color:#fff; font-size:10px; font-weight:700; padding:3px 9px; border-radius:999px; white-space:nowrap}
+
+  /* mock */
+  .mock{background:#0f131c; border:1px solid var(--line); border-radius:16px; overflow:hidden; margin:18px 0}
+  .mock .bar{display:flex; align-items:center; gap:8px; padding:12px 16px; border-bottom:1px solid var(--line); background:var(--panel2)}
+  .dot{width:11px;height:11px;border-radius:50%} .dot.r{background:#ff5f57}.dot.y{background:#febc2e}.dot.g{background:#28c840}
+  .mock .barttl{margin-left:8px; font-size:13px; color:var(--muted)}
+  .tabs{display:flex; gap:20px; padding:12px 18px 0; border-bottom:1px solid var(--line); font-size:13.5px; overflow-x:auto}
+  .tabs .tb{color:var(--muted); padding-bottom:10px; white-space:nowrap}
+  .tabs .tb.on{color:#fff; border-bottom:2px solid var(--brand); font-weight:600}
+  table{width:100%; border-collapse:collapse; font-size:13px}
+  th{text-align:left; padding:11px 16px; color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.05em; border-bottom:1px solid var(--line)}
+  td{padding:12px 16px; border-bottom:1px solid #1a2130}
+  td code{font-family:ui-monospace,Menlo,monospace; font-size:12px; background:#1a2130; padding:2px 7px; border-radius:6px; color:#cdd5e3}
+  .pill{display:inline-block; font-size:11px; font-weight:600; padding:3px 9px; border-radius:999px}
+  .pill.alm{background:rgba(59,130,246,.15); color:#7eb0ff}
+  .pill.sup{background:rgba(168,85,247,.15); color:#c89bf5}
+  .pill.sell{background:rgba(245,158,11,.15); color:#ffce6e}
+  .btn{display:inline-block; background:var(--brand); color:#fff; font-size:12.5px; font-weight:600; padding:6px 14px; border-radius:8px; border:none}
+  .chk{width:15px;height:15px;border:1.5px solid #3a455c;border-radius:4px;display:inline-block;vertical-align:middle}
+  .toolbar{display:flex; align-items:center; gap:10px; padding:12px 16px; background:var(--panel2); border-bottom:1px solid var(--line); font-size:13px; flex-wrap:wrap}
+
+  .ok{border-left:3px solid var(--green); background:rgba(34,197,94,.07); padding:14px 18px; border-radius:0 12px 12px 0; margin:16px 0}
+  .warn{border-left:3px solid var(--amber); background:rgba(245,158,11,.08); padding:14px 18px; border-radius:0 12px 12px 0; margin:16px 0}
+  .ok .h{color:#5fe39b; font-weight:700; margin-bottom:3px; font-size:14px}
+  .warn .h{color:#ffce6e; font-weight:700; margin-bottom:3px; font-size:14px}
+
+  .q{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:22px; margin:16px 0}
+  .q .qt{font-weight:700; font-size:16px; margin-bottom:14px; display:flex; gap:10px; align-items:flex-start}
+  .q .qt .qn{background:var(--amber); color:#1a1205; width:26px;height:26px; border-radius:8px; display:inline-flex; align-items:center; justify-content:center; font-size:14px; font-weight:800; flex:none}
+  .opt{display:flex; gap:12px; padding:12px 14px; border:1px solid var(--line); border-radius:11px; margin:8px 0; background:var(--panel2)}
+  .opt .ob{width:18px;height:18px;border-radius:50%;border:2px solid #3a455c; flex:none; margin-top:2px}
+  .opt.rec{border-color:var(--green)}
+  .opt.rec .ob{border-color:var(--green); background:radial-gradient(circle, var(--green) 40%, transparent 45%)}
+  .opt .ott{font-weight:600; font-size:14.5px}
+  .opt .odd{font-size:13px; color:var(--muted); margin-top:2px}
+  .rectag{font-size:10.5px; font-weight:700; color:var(--green); border:1px solid var(--green); border-radius:999px; padding:1px 8px; margin-left:8px}
+  footer{margin-top:48px; padding-top:24px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; text-align:center}
+  @media(max-width:560px){ h1{font-size:26px} .arrow{transform:rotate(90deg)} .flow{flex-direction:column} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <span class="tag">PlayTelecom · Control de Stock</span>
+  <h1>Aprobación de <span class="accent">SIMs</span> antes de venderse</h1>
+  <p class="sub">Regla: <strong>solo lo que Isaac cargó en "Virtual" es confiable y se puede vender</strong>. Todo lo demás (sucursales físicas) pasa primero por la aprobación manual de Isaac.</p>
+</header>
+
+<!-- LA REGLA -->
+<h2><span class="n">1</span>La regla, en una línea</h2>
+<div class="rule">
+  <span class="k">🔑</span>
+  <div><strong>Si el SIM salió de "Virtual"</strong> → se confía, fluye normal. &nbsp;<strong>Si NO</strong> → entra a la cola de Isaac para aprobar uno por uno.</div>
+</div>
+
+<!-- EL SPLIT -->
+<h2><span class="n">2</span>Cómo queda partido el inventario</h2>
+<p>De los <strong>8,974 SIMs disponibles</strong> de PlayTelecom, así se dividen según su origen:</p>
+<div class="split">
+  <div class="bucket good">
+    <div class="head"><span class="ico">✅</span> Virtual — confiable</div>
+    <div class="big">1,113</div>
+    <div class="cap">Lo que Isaac cargó. No necesita aprobación.</div>
+    <div class="row"><span>Ya con promotor (vendiendo)</span><span class="v">335</span></div>
+    <div class="row"><span>En la cadena (almacén/supervisor)</span><span class="v">778</span></div>
+  </div>
+  <div class="bucket queue">
+    <div class="head"><span class="ico">🟠</span> No Virtual — a revisar</div>
+    <div class="big">7,861</div>
+    <div class="cap">Sucursales físicas. Va a la cola de aprobación de Isaac.</div>
+    <div class="row"><span>Vendiéndose hoy → se frenan</span><span class="v">1,501</span></div>
+    <div class="row"><span>Ya estaban bloqueados</span><span class="v">6,360</span></div>
+  </div>
+</div>
+
+<div class="ok">
+  <div class="h">✅ Lo de Virtual no se interrumpe</div>
+  Los 335 de Virtual que ya están con promotor <strong>siguen vendiéndose normal</strong>. Los otros 778 de Virtual fluyen por la cadena sin que Isaac tenga que aprobar nada.
+</div>
+
+<div class="warn">
+  <div class="h">⚠️ Lo importante que hay que tener claro</div>
+  De las sucursales físicas hay <strong>1,501 SIMs que se están vendiendo HOY</strong>. Al aplicar la regla, esos promotores (BAE, Sams, etc.) <strong>dejan de poder vender</strong> hasta que Isaac los apruebe uno por uno. Son ventas activas que se congelan el día que se active.
+</div>
+
+<!-- FLUJO -->
+<h2><span class="n">3</span>El flujo de aprobación</h2>
+<div class="flow">
+  <div class="step"><div class="ico">📋</div><div class="t">Cola</div><div class="d">Los 7,861 no-Virtual aparecen en lista</div></div>
+  <div class="arrow">→</div>
+  <div class="step hl"><span class="badge">ISAAC</span><div class="ico">✅</div><div class="t">Aprobar</div><div class="d">Revisa y aprueba</div></div>
+  <div class="arrow">→</div>
+  <div class="step"><div class="ico">🏬</div><div class="t">Almacén</div><div class="d">El SIM aprobado entra al almacén</div></div>
+  <div class="arrow">→</div>
+  <div class="step"><div class="ico">👔</div><div class="t">Supervisor</div><div class="d">Se asigna</div></div>
+  <div class="arrow">→</div>
+  <div class="step"><div class="ico">🧑‍💼</div><div class="t">Promotor</div><div class="d">Acepta → ya vende</div></div>
+</div>
+<p class="muted em">Los últimos pasos (almacén → supervisor → promotor) ya funcionan hoy. Lo nuevo es <strong>la cola de aprobación al inicio</strong>, solo para lo que NO viene de Virtual.</p>
+
+<!-- MOCKUP -->
+<h2><span class="n">4</span>Cómo se vería la pantalla</h2>
+<div class="mock">
+  <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="barttl">dashboard.avoqado.io · Control de Stock</span></div>
+  <div class="tabs">
+    <span class="tb">Resumen</span><span class="tb">Cargas</span><span class="tb">Detalle SIMs</span>
+    <span class="tb on">Solicitudes · 7,861</span>
+  </div>
+  <div class="toolbar">
+    <span class="chk"></span><span class="muted">Seleccionar todos</span>
+    <span style="flex:1"></span>
+    <span class="muted">Filtrar:</span>
+    <span class="pill alm">Sucursal ▾</span>
+    <span class="pill sup">Categoría ▾</span>
+    <button class="btn">Aprobar seleccionados</button>
+  </div>
+  <table>
+    <thead><tr><th></th><th>ICCID</th><th>Categoría</th><th>Sucursal origen</th><th>Estado</th><th></th></tr></thead>
+    <tbody>
+      <tr><td><span class="chk"></span></td><td><code>8952140000004736611</code></td><td>$100 de promotor</td><td>BAE Pozos</td><td><span class="pill sell">Vendiendo → se frena</span></td><td style="text-align:right"><button class="btn">Aprobar</button></td></tr>
+      <tr><td><span class="chk"></span></td><td><code>8952140000007781902</code></td><td>$50 recarga</td><td>BAE Fleming</td><td><span class="pill alm">En almacén</span></td><td style="text-align:right"><button class="btn">Aprobar</button></td></tr>
+      <tr><td><span class="chk"></span></td><td><code>8952140000003345128</code></td><td>$100 de promotor</td><td>Sams Campestre</td><td><span class="pill sup">Con supervisor</span></td><td style="text-align:right"><button class="btn">Aprobar</button></td></tr>
+      <tr><td><span class="chk"></span></td><td><code>8952140000009920047</code></td><td>$50 recarga</td><td>BAE Seminario</td><td><span class="pill alm">En almacén</span></td><td style="text-align:right"><button class="btn">Aprobar</button></td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="muted">Cada SIM tiene su botón <strong>Aprobar</strong> (uno por uno). Arriba: <strong>seleccionar varios</strong> y filtrar por sucursal/categoría — porque aprobar 7,861 de uno en uno tomaría días.</p>
+
+<!-- DECISIONES -->
+<h2><span class="n">5</span>Lo que necesitamos confirmar</h2>
+
+<div class="q">
+  <div class="qt"><span class="qn">1</span><div>Confirmado: ¿bloquear también las 1,501 que se venden hoy en sucursales físicas?</div></div>
+  <div class="opt rec"><span class="ob"></span><div><div class="ott">Sí — solo Virtual se vende <span class="rectag">LO QUE PEDISTE</span></div><div class="odd">Las 1,501 de físicas se frenan y entran a la cola. Quedan vendibles solo las 335 de Virtual. Total a aprobar: 7,861.</div></div></div>
+  <div class="opt"><span class="ob"></span><div><div class="ott">No frenar las que ya venden</div><div class="odd">Dejar las 1,836 con promotor vendiendo; solo lo sin asignar entra a la cola.</div></div></div>
+</div>
+
+<div class="q">
+  <div class="qt"><span class="qn">2</span><div>¿Aprobar uno por uno, o permitir también aprobar varios de golpe?</div></div>
+  <div class="opt rec"><span class="ob"></span><div><div class="ott">Uno por uno + opción de varios <span class="rectag">RECOMENDADO</span></div><div class="odd">El botón individual existe, pero también seleccionar varios o "aprobar todos los de una sucursal". Aprobar 7,861 a mano, uno por uno, tomaría muchos días.</div></div></div>
+  <div class="opt"><span class="ob"></span><div><div class="ott">Estrictamente uno por uno</div><div class="odd">Sin atajos. Máximo control, muy lento.</div></div></div>
+</div>
+
+<div class="q">
+  <div class="qt"><span class="qn">3</span><div>¿Isaac necesita botón "Rechazar", o solo "Aprobar" por ahora?</div></div>
+  <div class="opt rec"><span class="ob"></span><div><div class="ott">Solo Aprobar por ahora <span class="rectag">RECOMENDADO</span></div><div class="odd">Empezar simple. "Rechazar" con motivo se agrega después si hace falta.</div></div></div>
+  <div class="opt"><span class="ob"></span><div><div class="ott">Aprobar y Rechazar</div><div class="odd">Incluir rechazar con motivo desde el inicio.</div></div></div>
+</div>
+
+<footer>
+  Propuesta · Avoqado × PlayTelecom · Números reales de producción al 30 may 2026. El candado de venta ya está activo; esto define qué entra a la cola de aprobación.
+</footer>
+
+</div>
+</body>
+</html>

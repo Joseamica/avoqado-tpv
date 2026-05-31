@@ -17,6 +17,7 @@ import com.jaac.avoqado_tpv.core.data.local.mappers.toEntity
 import com.jaac.avoqado_tpv.core.data.local.mappers.toEntities
 import com.jaac.avoqado_tpv.features.ordering.domain.AddOrderItemRequest
 import com.jaac.avoqado_tpv.features.ordering.domain.ConflictException
+import com.jaac.avoqado_tpv.features.ordering.domain.PermanentSyncException
 import com.jaac.avoqado_tpv.features.ordering.domain.Order
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderCustomer
 import com.jaac.avoqado_tpv.features.ordering.domain.OrderRepository
@@ -452,16 +453,25 @@ class OrderRepositoryImpl @Inject constructor(
                     Timber.w("⚠️ Version conflict - order was modified by another terminal")
                     Result.failure(ConflictException(serverVersion = "unknown", message = "La orden fue modificada por otra terminal."))
                 } else {
-                    val errorMessage = when (response.code()) {
-                        400 -> "Solicitud inválida. Verifica los productos seleccionados."
+                    val code = response.code()
+                    val errorMessage = when (code) {
+                        400 -> "No se pudo agregar al pedido: ya está pagado/cerrado o los datos no son válidos."
                         401 -> "No autorizado. Por favor inicia sesión nuevamente."
                         403 -> "No tienes permiso para modificar esta orden."
                         404 -> "Orden no encontrada."
                         500 -> "Error del servidor. Por favor intenta nuevamente."
-                        else -> "Error al agregar items: ${response.code()}"
+                        else -> "Error al agregar items: $code"
                     }
-                    Timber.e("addItemsToOrder failed: $errorMessage (HTTP ${response.code()})")
-                    Result.failure(Exception(errorMessage))
+                    Timber.e("addItemsToOrder failed: $errorMessage (HTTP $code)")
+                    // Permanent client errors (paid/closed order, forbidden, not found,
+                    // unprocessable) can NEVER succeed on retry — surface them so the sync
+                    // coordinator drops the queued op instead of looping forever. 401 and
+                    // 5xx stay retryable (re-auth / transient server issues).
+                    if (code == 400 || code == 403 || code == 404 || code == 422) {
+                        Result.failure(PermanentSyncException(httpCode = code, message = errorMessage))
+                    } else {
+                        Result.failure(Exception(errorMessage))
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -502,16 +512,22 @@ class OrderRepositoryImpl @Inject constructor(
                     Timber.w("⚠️ Version conflict - order was modified by another terminal")
                     Result.failure(ConflictException(serverVersion = "unknown", message = "La orden fue modificada por otra terminal."))
                 } else {
-                    val errorMessage = when (response.code()) {
+                    val code = response.code()
+                    val errorMessage = when (code) {
                         400 -> "La orden ya está pagada y no puede modificarse."
                         401 -> "No autorizado. Por favor inicia sesión nuevamente."
                         403 -> "No tienes permiso para eliminar items."
                         404 -> "Orden o item no encontrado."
                         500 -> "Error del servidor. Por favor intenta nuevamente."
-                        else -> "Error al eliminar item: ${response.code()}"
+                        else -> "Error al eliminar item: $code"
                     }
-                    Timber.e("removeOrderItem failed: $errorMessage (HTTP ${response.code()})")
-                    Result.failure(Exception(errorMessage))
+                    Timber.e("removeOrderItem failed: $errorMessage (HTTP $code)")
+                    // Same as addItemsToOrder: a permanent 4xx will never succeed on retry.
+                    if (code == 400 || code == 403 || code == 404 || code == 422) {
+                        Result.failure(PermanentSyncException(httpCode = code, message = errorMessage))
+                    } else {
+                        Result.failure(Exception(errorMessage))
+                    }
                 }
             }
         } catch (e: Exception) {

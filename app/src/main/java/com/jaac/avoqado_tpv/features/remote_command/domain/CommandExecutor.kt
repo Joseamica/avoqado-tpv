@@ -553,8 +553,18 @@ class CommandExecutor @Inject constructor(
             return CommandResult.rejected("REQUEST_UPDATE not supported in emulator/tutorial flavor")
         }
 
+        // Optional target version from the dashboard "Actualizar" dropdown.
+        // Same lenient parsing as INSTALL_VERSION (Gson may deliver it as any
+        // Number subtype). Null → latest (legacy behavior, older dashboards).
+        val versionCode = when (val raw = command.payload?.get("versionCode")) {
+            is Int -> raw
+            is Number -> raw.toInt()
+            is String -> raw.toIntOrNull()
+            else -> null
+        }?.takeIf { it > 0 }
+
         return try {
-            when (val result = updateRequestManager.get().handleUpdateRequest(command.commandId)) {
+            when (val result = updateRequestManager.get().handleUpdateRequest(command.commandId, versionCode)) {
                 is UpdateRequestResult.DialogShown -> {
                     CommandResult.success(
                         message = "Update dialog shown: ${result.versionName}",

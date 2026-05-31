@@ -30,6 +30,14 @@ data class CartState(
      */
     val manualDiscountCents: Int = 0,
     val manualDiscountReason: String? = null,
+    /**
+     * Optional tag identifying who created the manual discount. Used by the
+     * referrals capture flow to mark its 10% reduction as
+     * `"REFERRAL_NEW_CUSTOMER"`. The backend doesn't read this — it's purely
+     * a TPV-side hint to prevent the operator from accidentally stacking a
+     * referral discount with a manual one and to enable analytics later.
+     */
+    val manualDiscountSource: String? = null,
     val orderNote: String? = null,
     val orderTaxPercent: Int? = null,
     val selectedStaffId: String = "",

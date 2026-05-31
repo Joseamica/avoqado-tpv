@@ -27,6 +27,11 @@ import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
 import com.jaac.avoqado_tpv.features.ordering.domain.TpvCreateOrderWithItemsItem
 import com.jaac.avoqado_tpv.features.ordering.domain.TpvCreateOrderWithItemsRequest
+import com.jaac.avoqado_tpv.features.referrals.domain.model.ValidationResult as ReferralValidationResult
+import com.jaac.avoqado_tpv.features.referrals.domain.repository.ReferralValidationException
+import com.jaac.avoqado_tpv.features.referrals.domain.usecase.CaptureReferralUseCase
+import com.jaac.avoqado_tpv.features.referrals.domain.usecase.ValidateReferralUseCase
+import com.jaac.avoqado_tpv.features.referrals.presentation.ReferralCaptureUiState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -59,6 +64,8 @@ class CheckoutViewModel @Inject constructor(
     private val mosaicRepository: MosaicRepository,
     private val activeCartState: ActiveCartState,
     private val secureStorage: SecureStorage,
+    private val validateReferralUseCase: ValidateReferralUseCase,
+    private val captureReferralUseCase: CaptureReferralUseCase,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(
@@ -83,6 +90,16 @@ class CheckoutViewModel @Inject constructor(
 
     private val _isSearchingCustomers = MutableStateFlow(false)
     val isSearchingCustomers: StateFlow<Boolean> = _isSearchingCustomers.asStateFlow()
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Referral capture (Plan 5A)
+    // ─────────────────────────────────────────────────────────────────────
+
+    private val _referralCode = MutableStateFlow("")
+    val referralCode: StateFlow<String> = _referralCode.asStateFlow()
+
+    private val _referralValidation = MutableStateFlow<ReferralCaptureUiState>(ReferralCaptureUiState.Idle)
+    val referralValidation: StateFlow<ReferralCaptureUiState> = _referralValidation.asStateFlow()
 
     private val _products = MutableStateFlow<List<Product>>(emptyList())
     val products: StateFlow<List<Product>> = _products.asStateFlow()
@@ -288,11 +305,21 @@ class CheckoutViewModel @Inject constructor(
      *   only — manual discounts skip that path).
      */
     fun applyManualOrderDiscount(amountCents: Int, reason: String?) {
+        applyManualOrderDiscountInternal(amountCents, reason, source = null)
+    }
+
+    /** Internal hook used by both the manual subview and the referral flow. */
+    private fun applyManualOrderDiscountInternal(
+        amountCents: Int,
+        reason: String?,
+        source: String?,
+    ) {
         require(amountCents >= 0) { "Manual discount must be non-negative" }
         _cartState.update { current ->
             current.copy(
                 manualDiscountCents = amountCents,
                 manualDiscountReason = reason?.trim()?.takeIf { it.isNotEmpty() },
+                manualDiscountSource = source,
                 // Manual + predefined are mutually exclusive — clear the
                 // predefined discount so subtotals stay consistent.
                 orderDiscount = null,
@@ -302,7 +329,13 @@ class CheckoutViewModel @Inject constructor(
 
     /** Clears any manual order discount currently applied. */
     fun clearManualOrderDiscount() {
-        _cartState.update { it.copy(manualDiscountCents = 0, manualDiscountReason = null) }
+        _cartState.update {
+            it.copy(
+                manualDiscountCents = 0,
+                manualDiscountReason = null,
+                manualDiscountSource = null,
+            )
+        }
     }
 
     /**
@@ -363,6 +396,12 @@ class CheckoutViewModel @Inject constructor(
 
     fun clearCart() {
         _cartState.value = CartState()
+        // Also reset the referral capture state — the cart is a per-order
+        // surface so anything tied to it (referral code, validation) must
+        // go too. We do this in two steps so the cart collector emits its
+        // empty state before the referral StateFlow flips.
+        _referralCode.value = ""
+        _referralValidation.value = ReferralCaptureUiState.Idle
         // ActiveCartState is updated by the collector in init.
     }
 
@@ -377,7 +416,163 @@ class CheckoutViewModel @Inject constructor(
     // ─────────────────────────────────────────────────────────────────────
 
     fun selectCustomer(customer: Customer?) {
+        val previous = _selectedCustomer.value
         _selectedCustomer.value = customer
+        // Switching customer invalidates any cached referral validation
+        // (the discount was computed for the previous customer's order).
+        if (previous?.id != customer?.id) {
+            clearReferral()
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Referral capture (Plan 5A)
+    // ─────────────────────────────────────────────────────────────────────
+
+    /** Constant tag for the manual discount when sourced from a referral. */
+    private val REFERRAL_DISCOUNT_SOURCE = "REFERRAL_NEW_CUSTOMER"
+
+    fun onReferralCodeChange(code: String) {
+        _referralCode.value = code
+        // Reset validation if the operator edits the code after a previous
+        // validation result. Forces them to re-validate.
+        if (_referralValidation.value !is ReferralCaptureUiState.Idle &&
+            _referralValidation.value !is ReferralCaptureUiState.Validating
+        ) {
+            _referralValidation.value = ReferralCaptureUiState.Idle
+        }
+    }
+
+    /**
+     * Validates the typed code against the backend. Requires a selected
+     * customer; without one, the UI shows a hint and never calls this.
+     *
+     * When the validation succeeds, the discount is applied to the cart
+     * immediately so the totals update in real time before the operator
+     * confirms the charge.
+     */
+    fun validateReferralCode() {
+        val venueId = secureStorage.getVenueId() ?: run {
+            Timber.w("🎁 validateReferralCode skipped: no venueId")
+            return
+        }
+        val customer = _selectedCustomer.value ?: run {
+            Timber.w("🎁 validateReferralCode skipped: no customer selected")
+            return
+        }
+        val code = _referralCode.value.trim()
+        if (code.isEmpty()) return
+
+        viewModelScope.launch {
+            _referralValidation.value = ReferralCaptureUiState.Validating
+            validateReferralUseCase(
+                venueId = venueId,
+                referralCode = code,
+                newCustomerId = customer.id,
+            ).fold(
+                onSuccess = { result ->
+                    when (result) {
+                        is ReferralValidationResult.Valid -> {
+                            _referralValidation.value = ReferralCaptureUiState.Valid(
+                                referrerName = result.referrerName,
+                                discountPercent = result.discountPercent,
+                            )
+                            applyReferralDiscount(result.discountPercent, result.referrerName)
+                        }
+                        is ReferralValidationResult.Invalid -> {
+                            _referralValidation.value = ReferralCaptureUiState.Invalid(result.reason)
+                            clearReferralDiscountOnly()
+                        }
+                    }
+                },
+                onFailure = { e ->
+                    Timber.e(e, "🎁 Referral validate request failed")
+                    _referralValidation.value = ReferralCaptureUiState.Invalid(
+                        ReferralValidationResult.Reason.UNKNOWN,
+                    )
+                    clearReferralDiscountOnly()
+                },
+            )
+        }
+    }
+
+    /** Resets referral state and any discount it applied. */
+    fun clearReferral() {
+        _referralCode.value = ""
+        _referralValidation.value = ReferralCaptureUiState.Idle
+        clearReferralDiscountOnly()
+    }
+
+    /** Clears the cart discount only if it originated from a referral. */
+    private fun clearReferralDiscountOnly() {
+        _cartState.update { current ->
+            if (current.manualDiscountSource == REFERRAL_DISCOUNT_SOURCE) {
+                current.copy(
+                    manualDiscountCents = 0,
+                    manualDiscountReason = null,
+                    manualDiscountSource = null,
+                )
+            } else {
+                current
+            }
+        }
+    }
+
+    /**
+     * Applies the referral percent discount as a manual order-level discount
+     * tagged with [REFERRAL_DISCOUNT_SOURCE]. Computed against the current
+     * gross subtotal (matching what `ManualDiscountSubView` does for PERCENT
+     * mode).
+     */
+    private fun applyReferralDiscount(discountPercent: Int, referrerName: String) {
+        val pct = discountPercent.coerceIn(0, 100)
+        if (pct == 0) return
+        val subtotal = _cartState.value.subtotalCents
+        if (subtotal <= 0) return
+        val amount = (subtotal * pct / 100).coerceAtMost(subtotal)
+        applyManualOrderDiscountInternal(
+            amountCents = amount,
+            reason = "Referido por $referrerName ($pct%)",
+            source = REFERRAL_DISCOUNT_SOURCE,
+        )
+    }
+
+    /**
+     * Persists the PENDING Referral row right before the payment is
+     * initiated. Idempotent: no-op when the validation state isn't Valid.
+     *
+     * Returns true on success (or no-op), false if the backend rejected
+     * persistence. The caller can decide whether to block payment on a
+     * failed capture; the recommendation is NOT to block (record locally
+     * and let the user finish the charge), since the discount was already
+     * applied to the cart.
+     */
+    suspend fun captureReferralOnPayment(orderId: String? = null): Boolean {
+        val state = _referralValidation.value
+        if (state !is ReferralCaptureUiState.Valid) return true
+        val venueId = secureStorage.getVenueId() ?: return false
+        val customer = _selectedCustomer.value ?: return false
+        val staffVenueId = secureStorage.getStaffId() ?: return false
+        val code = _referralCode.value.trim()
+        if (code.isEmpty()) return false
+
+        val result = captureReferralUseCase(
+            venueId = venueId,
+            referralCode = code,
+            newCustomerId = customer.id,
+            capturedByStaffVenueId = staffVenueId,
+            intendedOrderId = orderId,
+        )
+        result.onFailure { e ->
+            // If the validation reason changed between validate + capture,
+            // surface it in the UI so the next attempt sees the new reason.
+            (e as? ReferralValidationException)?.let { ex ->
+                _referralValidation.value = ReferralCaptureUiState.Invalid(ex.reason)
+                clearReferralDiscountOnly()
+            }
+            Timber.e(e, "🎁 captureReferralOnPayment failed")
+        }
+        return result.isSuccess
     }
 
     fun updateCustomerSearchQuery(query: String) {
@@ -579,10 +774,25 @@ class CheckoutViewModel @Inject constructor(
 
         val productItems = current.items.filter { it.type is CartItemType.ProductItem }
         if (productItems.isEmpty()) {
+            // No order is created here, but the referral can still be captured
+            // with no `intendedOrderId`. The qualifying-order webhook on the
+            // backend will pick it up via the customerId attached to the
+            // fast-payment Order shadow row.
+            runCatching { captureReferralOnPayment(orderId = null) }
+                .onFailure { e -> Timber.e(e, "🎁 captureReferralOnPayment threw (fast path)") }
             return Result.success(PaymentNavigationPayload.Fast(amountPesos))
         }
 
-        return createOrderWithCurrentItems().map { order ->
+        return createOrderWithCurrentItems().also { orderResult ->
+            // Persist the referral right before we hand off to PaymentScreen.
+            // Failures are swallowed: the cart already has the discount
+            // applied, so blocking the charge over a transient backend
+            // failure would punish the customer for a backend hiccup.
+            orderResult.getOrNull()?.let { order ->
+                runCatching { captureReferralOnPayment(orderId = order.id) }
+                    .onFailure { e -> Timber.e(e, "🎁 captureReferralOnPayment threw") }
+            }
+        }.map { order ->
             if (current.totalCents == 0) {
                 PaymentNavigationPayload.CompletedFreeCart(
                     amountPesosString = amountPesos,

@@ -505,16 +505,11 @@ fun AngelPayPaymentScreen(
                 is AngelPayPaymentState.Error -> {
                     ErrorContent(
                         state = currentState,
-                        onRetry = {
-                            viewModel.resetPayment()
-                            if (initialAmount != null) {
-                                viewModel.initPayment(
-                                    amount = initialAmount,
-                                    orderId = orderId,
-                                    orderNumber = orderNumber,
-                                )
-                            }
-                        },
+                        // 🔁 Retry re-attempts the SAME charge (card → relaunch
+                        // card; crypto → new QR) instead of restarting the flow
+                        // at rating/tip. Pre-flight errors fall back to the
+                        // payment-method step. (User feedback 2026-05-30.)
+                        onRetry = { viewModel.retryAfterError() },
                         onGoBack = onNavigateBack,
                         onOpenShift = onNavigateToShifts,
                     )

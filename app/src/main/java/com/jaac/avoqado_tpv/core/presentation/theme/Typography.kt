@@ -6,6 +6,7 @@ import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.R
 
 /**
@@ -39,15 +40,44 @@ import com.jaac.avoqado_tpv.R
 /**
  * Primary font family - DM Sans
  * A geometric sans-serif that closely resembles Square Market / ARS Maquette.
- * We use the Variable Font file for all weights.
+ *
+ * **Two builds of the SAME typeface (DM Sans), chosen at compile time:**
+ *
+ * - **PAX (`ENABLE_PAX_SDK = true`):** the VARIABLE font (`dmsans_variable.ttf`).
+ *   Renders perfectly on PAX's font engine. Unchanged — zero risk to production PAX.
+ *
+ * - **Nexgo (`ENABLE_PAX_SDK = false`):** STATIC weight files instantiated from
+ *   the SAME `dmsans_variable.ttf` (pinned wght=300/400/500/600/700, opsz=9 — the
+ *   variable default). The Nexgo N86 (Unisoc/SPRD, Android 9, old FreeType)
+ *   miscomputes glyph advance widths from the variable font's `HVAR` table →
+ *   letters overlap ("Total" looked like "Tbtal"). Static fonts bake advance
+ *   widths into `hmtx` (no `HVAR`) → render correctly. It's the identical DM Sans
+ *   typeface, just frozen per weight — NOT a font change.
+ *
+ * See CHANGELOG 2026-05-28 + the variable-font / HVAR diagnosis.
  */
-private val AvoqadoFontFamily = FontFamily(
+private val VariableFontFamily = FontFamily(
     Font(R.font.dmsans_variable, FontWeight.Light),
     Font(R.font.dmsans_variable, FontWeight.Normal),
     Font(R.font.dmsans_variable, FontWeight.Medium),
     Font(R.font.dmsans_variable, FontWeight.SemiBold),
     Font(R.font.dmsans_variable, FontWeight.Bold)
 )
+
+private val StaticFontFamily = FontFamily(
+    Font(R.font.dmsans_light, FontWeight.Light),
+    Font(R.font.dmsans_regular, FontWeight.Normal),
+    Font(R.font.dmsans_medium, FontWeight.Medium),
+    Font(R.font.dmsans_semibold, FontWeight.SemiBold),
+    Font(R.font.dmsans_bold, FontWeight.Bold)
+)
+
+/**
+ * PAX → variable (unchanged). Nexgo / app-to-app builds → static (FreeType-safe).
+ * Gated by the compile-time PAX flag, NOT `Build.MODEL` (hardware detection is
+ * unreliable on Nexgo — same rule as payment routing).
+ */
+private val AvoqadoFontFamily = if (BuildConfig.ENABLE_PAX_SDK) VariableFontFamily else StaticFontFamily
 
 // ========== Typography Scale ==========
 

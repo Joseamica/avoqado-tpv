@@ -51,6 +51,7 @@ import com.jaac.avoqado_tpv.features.checkout.presentation.components.TaxPercent
 import com.jaac.avoqado_tpv.features.checkout.presentation.components.cart.CartDetailsSheet
 import com.jaac.avoqado_tpv.features.checkout.presentation.components.cart.CartPanelView
 import com.jaac.avoqado_tpv.features.checkout.presentation.components.cart.CustomerSelectorSheet
+import com.jaac.avoqado_tpv.features.referrals.presentation.ReferralCaptureSection
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
 import kotlinx.coroutines.launch
 import timber.log.Timber
@@ -81,6 +82,8 @@ fun CheckoutScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val shortcuts by viewModel.shortcuts.collectAsState()
     val selectedCustomer by viewModel.selectedCustomer.collectAsState()
+    val referralCode by viewModel.referralCode.collectAsState()
+    val referralValidation by viewModel.referralValidation.collectAsState()
 
     // Product opened in the modifier-selection sheet; null = closed.
     var productForModifiers by remember {
@@ -333,6 +336,30 @@ fun CheckoutScreen(
                     }
                 } else null,
                 isSubmittingPayLater = isPayLaterInFlight,
+                referralSection = {
+                    ReferralCaptureSection(
+                        code = referralCode,
+                        uiState = referralValidation,
+                        customerSelected = selectedCustomer != null,
+                        onCodeChange = viewModel::onReferralCodeChange,
+                        onValidate = viewModel::validateReferralCode,
+                        onClear = viewModel::clearReferral,
+                        onForceOverride = {
+                            // Force override is restricted to managers and not
+                            // yet wired to the manager TOTP flow. Until that
+                            // piece ships, show the user that the action is
+                            // coming soon. The button still reflects the
+                            // EXISTING_CUSTOMER state so the operator knows
+                            // why the discount was rejected.
+                            scope.launch {
+                                snackbarHostState.showSnackbar(
+                                    message = "Forzar atribución requiere un manager (próximamente)",
+                                    duration = SnackbarDuration.Short,
+                                )
+                            }
+                        },
+                    )
+                },
             )
         }
     }

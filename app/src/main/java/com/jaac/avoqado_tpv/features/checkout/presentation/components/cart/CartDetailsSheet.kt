@@ -88,6 +88,12 @@ fun CartDetailsSheet(
     isChargeInFlight: Boolean = false,
     onPayLater: (() -> Unit)? = null,
     isSubmittingPayLater: Boolean = false,
+    /**
+     * Optional referral capture content (Plan 5A). When non-null, the
+     * composable is rendered between the items card and the totals
+     * breakdown. Kept as a slot so previews and tests can opt out.
+     */
+    referralSection: (@Composable () -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -211,6 +217,11 @@ fun CartDetailsSheet(
                     onDecrementQuantity = onDecrementQuantity,
                     onApplyTax = onApplyTax,
                 )
+
+                if (referralSection != null) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    referralSection()
+                }
 
                 Spacer(modifier = Modifier.height(12.dp))
 

@@ -1670,6 +1670,40 @@ class AngelPayPaymentViewModel @Inject constructor(
     // Tiny inline tuple to keep cancelCryptoPayment readable.
     private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
+    // ── Retry ────────────────────────────────────────────────────────
+
+    /**
+     * "Reintentar" after an [AngelPayPaymentState.Error]. Returns to the
+     * **payment-method step** ("Método de Pago") — NEVER back to rating/tip —
+     * keeping the amount/tip/rating already captured AND the merchant already
+     * selected. The cashier re-taps Tarjeta/Efectivo/Cripto (1 tap), or
+     * switches merchant first if THEY choose to. We never auto-switch the
+     * merchant on retry (user decision 2026-05-30): in multi-merchant a decline
+     * on one comercio is a common reason to retry on another, but that's the
+     * cashier's call, not ours.
+     *
+     * Idempotency: `currentPaymentAttemptId` is intentionally NOT cleared here,
+     * so re-tapping Tarjeta reuses the same key (`ensurePaymentAttemptId()`) —
+     * a missed processor approval de-dupes and the webhook's integratorReference
+     * still matches the eventual Payment.
+     *
+     * The "charge approved but backend record failed" case is `canRetry = false`
+     * (see [backendRecordFailureState]) → the button is hidden, so this is never
+     * reached for it.
+     *
+     * (User feedback 2026-05-30: AngelPay retry bounced the cashier all the way
+     * back to rating/tip. Blumon retry was already correct.)
+     */
+    fun retryAfterError() {
+        if (pendingAmount > BigDecimal.ZERO) {
+            Timber.i("🔁 [AngelPay] Retry → payment-method step (merchant unchanged)")
+            navigateToStep(PrePaymentNextStep.SELECT_MERCHANT, pendingAmount.toPlainString())
+        } else {
+            Timber.w("🔁 [AngelPay] Retry with no cached context → full reset")
+            resetPayment()
+        }
+    }
+
     // ── Reset ────────────────────────────────────────────────────────
 
     fun resetPayment() {

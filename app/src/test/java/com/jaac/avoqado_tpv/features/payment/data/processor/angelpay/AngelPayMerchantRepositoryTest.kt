@@ -199,4 +199,39 @@ class AngelPayMerchantRepositoryTest {
 
         assertNull(repo.activeAngelPayMerchantId.value)
     }
+
+    // --- seedActiveMerchantFromSession ---
+
+    @Test
+    fun `seedActiveMerchantFromSession sets activeId from the active merchant`() = runTest(dispatcher) {
+        repo.seedActiveMerchantFromSession(listOf(merchantA, merchantB)) // merchantA isActive=true
+
+        assertEquals(merchantA.id, repo.activeAngelPayMerchantId.value)
+    }
+
+    @Test
+    fun `seedActiveMerchantFromSession seeds the lone merchant even if isActive false`() = runTest(dispatcher) {
+        val lone = MerchantSummary(id = 9, name = "Solo", affiliationNumber = "999", isActive = false)
+
+        repo.seedActiveMerchantFromSession(listOf(lone))
+
+        assertEquals(lone.id, repo.activeAngelPayMerchantId.value)
+    }
+
+    @Test
+    fun `seedActiveMerchantFromSession is a no-op on empty list`() = runTest(dispatcher) {
+        repo.seedActiveMerchantFromSession(emptyList())
+
+        assertNull(repo.activeAngelPayMerchantId.value)
+    }
+
+    @Test
+    fun `seedActiveMerchantFromSession is a no-op when multiple merchants and none active`() = runTest(dispatcher) {
+        val b1 = MerchantSummary(id = 1, name = "A", affiliationNumber = "1", isActive = false)
+        val b2 = MerchantSummary(id = 2, name = "B", affiliationNumber = "2", isActive = false)
+
+        repo.seedActiveMerchantFromSession(listOf(b1, b2))
+
+        assertNull(repo.activeAngelPayMerchantId.value)
+    }
 }

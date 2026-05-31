@@ -166,6 +166,13 @@ class AngelPayAuthRepository @Inject constructor(
                     }
                 }
 
+                // Seed the active merchant so the payment screen can pre-select
+                // it without waiting for the optional "report merchants" feature.
+                // Must come BEFORE reportDiscoveredMerchantsIfPossible so the
+                // StateFlow is populated even when reportApi is null (the common
+                // case on terminals that skipped Task 38 wiring).
+                merchantRepository.seedActiveMerchantFromSession(cachedMerchants)
+
                 // ⚠️ ORDER MATTERS: report FIRST so backend creates merchants +
                 // auto-assigns to slots, THEN refresh terminal config so the new
                 // merchants are in the cache, THEN validate against the fresh
@@ -249,6 +256,15 @@ class AngelPayAuthRepository @Inject constructor(
                         _state.value = AngelPayAuthState.Authenticated
                         currentAngelPayAccountId = creds.accountId
                         reportValidation(creds.accountId, success = true)
+                        // Seed the active merchant from the live SDK session so the
+                        // payment screen can pre-select it. getUserMerchants() is a
+                        // cheap in-memory read here (the SDK just authed); wrapped in
+                        // runCatching so a transient SDK hiccup can't block auth.
+                        runCatching {
+                            sdkGateway.getUserMerchants().getOrNull()?.let {
+                                merchantRepository.seedActiveMerchantFromSession(it)
+                            }
+                        }
                         // ⚠️ ORDER MATTERS — see comment in `isAuthenticated`
                         // short-circuit branch. Report first → refresh config →
                         // then validate against fresh intersection.

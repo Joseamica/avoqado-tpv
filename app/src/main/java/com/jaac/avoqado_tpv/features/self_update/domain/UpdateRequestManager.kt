@@ -65,16 +65,25 @@ class UpdateRequestManager @Inject constructor(
      * Checks for Avoqado updates and shows dialog if available.
      *
      * @param commandId Command ID for tracking
+     * @param versionCode Optional target version (from dashboard "Actualizar"
+     *   dropdown). When provided, the dialog targets this specific version;
+     *   when null, it targets the latest (legacy behavior). Old dashboards
+     *   that don't send a versionCode keep getting "latest".
      * @return Result message for command ACK
      */
-    suspend fun handleUpdateRequest(commandId: String): UpdateRequestResult {
-        Timber.i("📥 [$TAG] Handling REQUEST_UPDATE command: $commandId")
+    suspend fun handleUpdateRequest(commandId: String, versionCode: Int? = null): UpdateRequestResult {
+        Timber.i("📥 [$TAG] Handling REQUEST_UPDATE command: $commandId (versionCode=$versionCode)")
 
         currentCommandId = commandId
         _updateRequestState.value = UpdateRequestState.Checking
 
         return try {
-            when (val result = avoqadoUpdateRepository.checkForUpdate()) {
+            // A specific version was requested → fetch exactly that build.
+            // Otherwise fall back to "latest available" (original behavior).
+            val checkResult =
+                if (versionCode != null) avoqadoUpdateRepository.getSpecificVersion(versionCode)
+                else avoqadoUpdateRepository.checkForUpdate()
+            when (val result = checkResult) {
                 is UpdateCheckResult.UpdateAvailable -> {
                     val update = result.updateInfo
                     currentUpdateInfo = update

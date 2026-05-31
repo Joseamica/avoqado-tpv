@@ -969,6 +969,7 @@ class OrderSyncCoordinator @Inject constructor(
         var resultId = orderId
         var resyncNeeded = false
         var conflictDetected = false
+        var permanentlyFailed = false
         var errorMessage: String? = null
 
         activeSyncOrders[orderId] = true
@@ -1013,6 +1014,17 @@ class OrderSyncCoordinator @Inject constructor(
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     Timber.d("🛑 [Sync] Cancelled | order=$orderId | syncRunId=$syncRunId | trigger=$trigger")
                     throw e
+                } catch (e: PermanentSyncException) {
+                    // Permanent 4xx (paid/closed order, not found, forbidden): retrying can
+                    // never succeed. Drop the queued op and mark SYNCED so syncPendingOrders
+                    // never resurrects it — this is what breaks the infinite-retry loop.
+                    Timber.w(
+                        "🛑 [Sync] Permanent failure — dropping queued op, will NOT retry | order=$orderId | " +
+                            "code=${e.httpCode} | ${e.message} | syncRunId=$syncRunId",
+                    )
+                    handlePermanentSyncFailure(orderId, e.message ?: "La operación no se pudo sincronizar")
+                    permanentlyFailed = true
+                    break
                 } catch (e: Exception) {
                     Timber.e(e, "❌ [Sync] Failed (attempt $attempt) | order=$orderId | syncRunId=$syncRunId")
                     if (attempt >= 4) {
@@ -1036,7 +1048,7 @@ class OrderSyncCoordinator @Inject constructor(
             return orderId
         }
 
-        if (resyncNeeded && !conflictDetected) {
+        if (resyncNeeded && !conflictDetected && !permanentlyFailed) {
             Timber.i("🔁 [Sync] Dirty changes detected after sync | order=$orderId | scheduling resync")
             scheduleSync(orderId)
         }
@@ -1099,6 +1111,48 @@ class OrderSyncCoordinator @Inject constructor(
             Timber.e(e, "❌ [Sync] Conflict auto-resolve failed")
             false
         }
+    }
+
+    /**
+     * Handle a PERMANENT sync failure (a 4xx that can never succeed on retry — e.g. the
+     * order is already paid/closed on the server).
+     *
+     * This is the fix for the historical infinite-retry loop. Previously a permanent
+     * failure was caught by the generic handler, retried 4× and marked "ERROR" — and
+     * `syncPendingOrders` resurrected every "ERROR" order back to "PENDING" on each
+     * reconnect, so the same doomed request fired forever. Instead we:
+     *   1. Drop the local pending items that target an order the server won't accept.
+     *   2. Best-effort refresh from the backend so local state mirrors reality.
+     *   3. Mark the order SYNCED so it is NEVER resurrected/retried again.
+     *   4. Surface a user-facing event so the cashier knows the change wasn't applied.
+     */
+    private suspend fun handlePermanentSyncFailure(orderId: String, reason: String) {
+        withContext(NonCancellable) {
+            // 1. Drop un-syncable local pending items (they were never accepted by the server).
+            val pending = draftOrderItemDao.getPendingItemsByOrder(orderId)
+            pending.forEach { draftOrderItemDao.markAsDeleted(it.id) }
+            if (pending.isNotEmpty()) {
+                Timber.w("🛑 [Sync] Dropped ${pending.size} un-syncable pending item(s) | order=$orderId")
+            }
+
+            // 2. Best-effort: refresh the order from the backend so local reflects its true state.
+            val draft = draftOrderDao.getOrder(orderId)
+            if (draft?.isServerCreated == true) {
+                try {
+                    val backendOrder = orderRepository.getOrder(venueId = draft.venueId, orderId = orderId).getOrNull()
+                    if (backendOrder != null) cacheBackendOrder(backendOrder)
+                } catch (e: Exception) {
+                    Timber.e(e, "🛑 [Sync] Permanent-failure backend refresh failed | order=$orderId")
+                }
+            }
+
+            // 3. SYNCED → syncPendingOrders never resurrects it. Loop broken.
+            draftOrderDao.updateSyncStatus(orderId, DraftOrderEntity.SYNC_STATUS_SYNCED, System.currentTimeMillis())
+        }
+
+        // 4. Tell the UI so the cashier knows their change wasn't applied.
+        _syncEvents.emit(SyncEvent.Error(orderId, reason))
+        Timber.i("🛑 [Sync] Permanent failure handled — order marked SYNCED, retry loop broken | order=$orderId")
     }
 
     /**
@@ -1564,4 +1618,18 @@ class OrderSyncCoordinator @Inject constructor(
 class ConflictException(
     val serverVersion: String,
     message: String = "Order was modified by another terminal"
+) : Exception(message)
+
+/**
+ * Exception thrown when the server rejects a queued mutation with a PERMANENT 4xx
+ * (e.g. 400 "order is paid/closed", 404 "order not found", 403 "forbidden").
+ *
+ * Unlike a network error, a 5xx, or a 409 version conflict, retrying the identical
+ * request can NEVER succeed — so the sync layer must DROP the operation instead of
+ * looping forever. This is the root-cause guard for the historical "Cannot add items
+ * to a paid order" infinite-retry bug. 401 (auth) and 5xx (server) stay retryable.
+ */
+class PermanentSyncException(
+    val httpCode: Int,
+    message: String = "La operación no se pudo sincronizar"
 ) : Exception(message)

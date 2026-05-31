@@ -15,6 +15,20 @@ import javax.inject.Singleton
 @Singleton
 class AngelPaySdkGateway @Inject constructor() {
 
+    private companion object {
+        // ⏱️ Auto-close of the SDK's result screen (AngelPay SDK >= 1.0.10).
+        // Before 1.0.10 the SDK stayed on its result screen until the cashier
+        // tapped "Aceptar", and the TPV only recorded the Payment AFTER that —
+        // which left a window for "orphan" charges (webhook arrives, cashier
+        // walks away, Payment never recorded). With these the SDK auto-returns
+        // the ActivityResult to us after N ms (equivalent to pressing Aceptar),
+        // so AngelPayPaymentViewModel records the Payment hands-free.
+        // 0 would skip the SDK result screen entirely; we keep a brief
+        // confirmation visible before falling back to our own success screen.
+        const val APPROVED_RESULT_DISPLAY_MILLIS = 3000L
+        const val ERROR_RESULT_DISPLAY_MILLIS = 5000L
+    }
+
     fun isInitialized(): Boolean = AngelPaySDK.isInitialized()
 
     fun isAuthenticated(): Boolean = AngelPaySDK.isAuthenticated()
@@ -106,6 +120,8 @@ class AngelPaySdkGateway @Inject constructor() {
             // We use the same value as `reference` (the TPV's paymentAttemptId /
             // idempotencyKey) so the webhook receiver can match it to the Payment row.
             integratorReference = reference,
+            approvedResultDisplayMillis = APPROVED_RESULT_DISPLAY_MILLIS,
+            errorResultDisplayMillis = ERROR_RESULT_DISPLAY_MILLIS,
         )
     }
 
@@ -132,6 +148,8 @@ class AngelPaySdkGateway @Inject constructor() {
             // See buildPaymentRequest — integratorReference triggers + is echoed
             // in the AngelPay webhook. Must be set on the tip-fallback path too.
             integratorReference = reference,
+            approvedResultDisplayMillis = APPROVED_RESULT_DISPLAY_MILLIS,
+            errorResultDisplayMillis = ERROR_RESULT_DISPLAY_MILLIS,
         )
     }
 

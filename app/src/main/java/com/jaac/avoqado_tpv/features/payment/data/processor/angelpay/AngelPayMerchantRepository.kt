@@ -206,6 +206,27 @@ class AngelPayMerchantRepository @Inject constructor(
         periodicRefreshJob = null
     }
 
+    /**
+     * Seed [activeAngelPayMerchantId] from an already-fetched SDK merchant list
+     * (e.g. the `getUserMerchants()` result the auth flow holds in hand). This
+     * decouples active-merchant seeding from `fetchAndCacheMerchants()`, which only
+     * ran as a side-effect of the optional "report discovered merchants" feature
+     * (and silently skipped seeding when `reportApi` was null). Without a reliable
+     * seed, the payment screen can't pre-select the merchant and the cashier must
+     * manually pick even for a single-merchant account.
+     *
+     * Idempotent + safe: only sets when there's an active merchant in the list and
+     * we don't already track it. Never clears.
+     */
+    suspend fun seedActiveMerchantFromSession(merchants: List<MerchantSummary>) {
+        val activeId = merchants.firstOrNull { it.isActive }?.id
+            ?: merchants.singleOrNull()?.id
+            ?: return
+        if (_activeAngelPayMerchantId.value == activeId) return
+        _activeAngelPayMerchantId.value = activeId
+        cacheDao.markActive(activeId)
+    }
+
     /** Called from AngelPayAuthRepository on logout / unrecoverable auth failure. */
     fun clearActive() {
         _activeAngelPayMerchantId.value = null

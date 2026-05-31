@@ -62,6 +62,8 @@ class CheckoutViewModelTest {
     private lateinit var mosaicRepository: MosaicRepository
     private lateinit var secureStorage: SecureStorage
     private lateinit var activeCartState: ActiveCartState
+    private lateinit var validateReferralUseCase: com.jaac.avoqado_tpv.features.referrals.domain.usecase.ValidateReferralUseCase
+    private lateinit var captureReferralUseCase: com.jaac.avoqado_tpv.features.referrals.domain.usecase.CaptureReferralUseCase
 
     private val savedCartsFlow = MutableStateFlow<List<SavedCart>>(emptyList())
     private val shortcutsFlow = MutableStateFlow<List<MosaicShortcut>>(emptyList())
@@ -78,6 +80,8 @@ class CheckoutViewModelTest {
         mosaicRepository = mockk(relaxed = true)
         secureStorage = mockk(relaxed = true)
         activeCartState = ActiveCartState() // real instance — no behavior to mock
+        validateReferralUseCase = mockk(relaxed = true)
+        captureReferralUseCase = mockk(relaxed = true)
 
         coEvery { secureStorage.getVenueId() } returns "venue-1"
         coEvery { secureStorage.getStaffId() } returns "staff-1"
@@ -104,6 +108,8 @@ class CheckoutViewModelTest {
         mosaicRepository = mosaicRepository,
         activeCartState = activeCartState,
         secureStorage = secureStorage,
+        validateReferralUseCase = validateReferralUseCase,
+        captureReferralUseCase = captureReferralUseCase,
     )
 
     private fun fakeProduct(

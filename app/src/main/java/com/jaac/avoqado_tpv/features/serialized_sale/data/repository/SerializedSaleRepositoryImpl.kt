@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.serialized_sale.data.repository
 
 import android.util.Log
+import com.google.gson.Gson
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.features.serialized_inventory.domain.model.RegistrationResult
 import com.jaac.avoqado_tpv.features.serialized_sale.data.dto.ItemCategoryDto
@@ -51,9 +52,9 @@ class SerializedSaleRepositoryImpl @Inject constructor(
                     Result.failure(Exception("Empty response from server"))
                 }
             } else {
-                val error = response.errorBody()?.string() ?: "Unknown error"
-                Log.e(TAG, "Scan failed: ${response.code()} - $error")
-                Result.failure(Exception("Scan failed: $error"))
+                val errorBody = response.errorBody()?.string()
+                Log.e(TAG, "Scan failed: ${response.code()} - $errorBody")
+                Result.failure(Exception(parseScanError(errorBody, response.code())))
             }
         } catch (e: CancellationException) {
             throw e // Must re-throw to allow coroutine cancellation
@@ -263,6 +264,37 @@ class SerializedSaleRepositoryImpl @Inject constructor(
     }
 
     // ========== Private Helpers ==========
+
+    /**
+     * Build a user-facing message from the scan error body.
+     *
+     * The backend returns structured custody errors like
+     * `{"error":"SIM_NOT_ACCEPTED","message":"Debes aceptar la recepción..."}`
+     * (avoqado-server `sim-custody-error-codes.ts` + `tpv.routes.ts`). We surface
+     * the human `message` instead of the raw JSON the user used to see.
+     *
+     * The "aceptar la recepción" / "SIM_NOT_ACCEPTED" text is preserved verbatim so
+     * [SerializedSaleViewModel] can route it to the "Mis SIMs" deep-link dialog,
+     * matching the sale-path handling in `onConfirmSale`.
+     */
+    private fun parseScanError(errorBody: String?, statusCode: Int): String {
+        if (errorBody.isNullOrBlank()) return "Error al escanear ($statusCode)"
+        return try {
+            val parsed = Gson().fromJson(errorBody, ScanErrorBody::class.java)
+            parsed?.message?.takeIf { it.isNotBlank() }
+                ?: parsed?.error?.takeIf { it.isNotBlank() }
+                ?: "Error al escanear ($statusCode)"
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not parse scan error body, using generic message", e)
+            "Error al escanear ($statusCode)"
+        }
+    }
+
+    /** Minimal shape of the backend error body for [parseScanError]. */
+    private data class ScanErrorBody(
+        val error: String? = null,
+        val message: String? = null
+    )
 
     private fun mapScanResponse(
         status: String,

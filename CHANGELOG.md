@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+---
+
+## [2.5.3] - 2026-06-02
+
+### **Fixed**
+
+- **Venta SIM — mensaje legible cuando la SIM no está aprobada para vender** (`SerializedSaleRepositoryImpl.kt`, `SerializedSaleViewModel.kt`): al escanear en "Vender SIM" una SIM que el promotor aún no acepta, la pantalla mostraba el JSON crudo del backend (`Scan failed: {"error":"SIM_NOT_ACCEPTED","message":"…"}`). Ahora:
+    - **`scanItem` parsea el error** con `parseScanError()` (Gson, sin regex frágil ante comillas escapadas): extrae el campo `message` legible del body `{error, message}` que devuelve el endpoint de scan (avoqado-server `tpv.routes.ts` → HTTP 400). Fallback a `error`/genérico si no parsea. Reemplaza el `Exception("Scan failed: $rawJson")`.
+    - **`onBarcodeScanned` enruta `SIM_NOT_ACCEPTED` al diálogo "Mis SIMs"** (mismo `simNotAcceptedError` + deep-link "Ir a Mis SIMs" que ya usaba la venta en `onConfirmSale`, plan §3.3), en vez del snackbar con texto crudo. La detección es la misma del flujo de venta (`SIM_NOT_ACCEPTED` / "aceptar la recepción"). Otros errores de scan muestran el `message` legible parseado. Sin tocar Blumon ni el `PaymentViewModel`. Compila en sandboxDebug.
+
 ## [2.5.2] - 2026-05-30
 
 ## [2.5.1] - 2026-05-30

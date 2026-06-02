@@ -158,10 +158,18 @@ class SerializedSaleViewModel @Inject constructor(
                 }
                 .onFailure { error ->
                     Timber.e(error, "📦 [SerializedSale] API FAILED - Error: ${error.message}")
+                    // Plan §3.3 — the custody precheck runs at scan time, so
+                    // SIM_NOT_ACCEPTED surfaces here. Route it to the "Mis SIMs"
+                    // deep-link dialog (same handling as the sale path in
+                    // onConfirmSale) instead of dumping the raw backend error.
+                    val raw = error.message.orEmpty()
+                    val notAccepted = raw.contains("SIM_NOT_ACCEPTED", ignoreCase = true) ||
+                        raw.contains("aceptar la recepción", ignoreCase = true)
                     _uiState.update {
                         it.copy(
                             isLoading = false,
-                            error = error.message ?: "Error al escanear"
+                            simNotAcceptedError = notAccepted,
+                            error = if (notAccepted) null else raw.ifEmpty { "Error al escanear" }
                         )
                     }
                 }

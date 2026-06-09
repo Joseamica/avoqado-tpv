@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -65,6 +66,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.features.sim_custody.domain.model.MySim
 import com.jaac.avoqado_tpv.features.sim_custody.domain.model.SimCustodyState
+import com.jaac.avoqado_tpv.features.sim_custody.domain.model.SimVerificationStatus
 
 /**
  * "Mis SIMs" screen — promoter's SIM custody inbox (plan §3.1).
@@ -76,6 +78,7 @@ import com.jaac.avoqado_tpv.features.sim_custody.domain.model.SimCustodyState
 @Composable
 fun MisSimsScreen(
     onBack: () -> Unit,
+    onNavigateToCorrection: (String) -> Unit = {},
     viewModel: MisSimsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -143,6 +146,7 @@ fun MisSimsScreen(
                     state = state,
                     onAccept = viewModel::acceptOne,
                     onReject = viewModel::rejectOne,
+                    onCorrect = onNavigateToCorrection,
                 )
             }
         }
@@ -430,6 +434,7 @@ private fun SimList(
     state: MisSimsUiState,
     onAccept: (String) -> Unit,
     onReject: (String) -> Unit,
+    onCorrect: (String) -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -443,10 +448,20 @@ private fun SimList(
                 isRejecting = sim.serialNumber in state.rejectingSerials,
                 onAccept = { onAccept(sim.serialNumber) },
                 onReject = { onReject(sim.serialNumber) },
+                onCorrect = onCorrect,
             )
         }
     }
 }
+
+/**
+ * True when this SOLD SIM's back-office documentation was rejected and can be
+ * re-uploaded. Tapping the row deep-links into the existing sale-correction flow.
+ */
+private fun MySim.isCorrectable(): Boolean =
+    custodyState == SimCustodyState.SOLD &&
+        verificationStatus == SimVerificationStatus.FAILED &&
+        verificationId != null
 
 @Composable
 private fun SimRow(
@@ -455,12 +470,17 @@ private fun SimRow(
     isRejecting: Boolean,
     onAccept: () -> Unit,
     onReject: () -> Unit,
+    onCorrect: (String) -> Unit,
 ) {
+    val correctable = sim.isCorrectable()
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(14.dp))
             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(14.dp))
+            .then(
+                if (correctable) Modifier.clickable { sim.verificationId?.let(onCorrect) } else Modifier,
+            )
             .padding(14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -477,7 +497,34 @@ private fun SimRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            StateBadge(sim.custodyState)
+            StateBadge(sim)
+        }
+
+        if (correctable) {
+            Spacer(Modifier.height(8.dp))
+            // Back-office's personalized note to the promoter (e.g. "Sube la imagen
+            // de vinculación donde se vea el número"), falls back to a generic line.
+            Text(
+                text = sim.reviewNotes?.takeIf { it.isNotBlank() }
+                    ?: "La documentación de esta venta necesita corrección.",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "Toca para corregir",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
 
         when (sim.custodyState) {
@@ -530,15 +577,23 @@ private fun SimRow(
 }
 
 @Composable
-private fun StateBadge(state: SimCustodyState) {
-    val (bg, fg, label) = when (state) {
-        SimCustodyState.PROMOTER_PENDING ->
-            Triple(Color(0xFFFFE9A8), Color(0xFF6B4A00), "Pendiente")
-        SimCustodyState.PROMOTER_HELD ->
-            Triple(Color(0xFFD7F5DD), Color(0xFF1B5E20), "En mi poder")
-        SimCustodyState.SOLD ->
+private fun StateBadge(sim: MySim) {
+    // SOLD SIMs surface their documentation-review status so the badge matches the
+    // back-office dashboard ("Revisar" / "En revisión"). COMPLETED or no verification
+    // keep the plain violet "Vendido" badge. Non-sold states are unchanged.
+    val sold = sim.custodyState == SimCustodyState.SOLD
+    val (bg, fg, label) = when {
+        sold && sim.verificationStatus == SimVerificationStatus.FAILED ->
+            Triple(Color(0xFFFAD4D4), Color(0xFF8E1B1B), "Revisar")
+        sold && sim.verificationStatus == SimVerificationStatus.PENDING ->
+            Triple(Color(0xFFFFE3B3), Color(0xFF7A4E00), "En revisión")
+        sold ->
             Triple(Color(0xFFE1D4F5), Color(0xFF4A2D82), "Vendido")
-        SimCustodyState.UNKNOWN ->
+        sim.custodyState == SimCustodyState.PROMOTER_PENDING ->
+            Triple(Color(0xFFFFE9A8), Color(0xFF6B4A00), "Pendiente")
+        sim.custodyState == SimCustodyState.PROMOTER_HELD ->
+            Triple(Color(0xFFD7F5DD), Color(0xFF1B5E20), "En mi poder")
+        else ->
             Triple(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, "—")
     }
     Row(
@@ -547,7 +602,7 @@ private fun StateBadge(state: SimCustodyState) {
             .padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (state == SimCustodyState.PROMOTER_HELD) {
+        if (sim.custodyState == SimCustodyState.PROMOTER_HELD) {
             Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = fg, modifier = Modifier.size(12.dp))
             Spacer(Modifier.width(4.dp))
         }
@@ -635,5 +690,56 @@ private fun MisSimsPreviewPending() {
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
         }
+    }
+}
+
+@Preview(widthDp = 360, heightDp = 640, showBackground = true, name = "PAX A910S — vendidos / revisar")
+@Composable
+private fun MisSimsPreviewSold() {
+    val base = MySim(
+        id = "1",
+        serialNumber = "8952140064325738511F",
+        custodyState = SimCustodyState.SOLD,
+        categoryId = null,
+        categoryName = "$100 de promotor",
+        suggestedPrice = null,
+        assignedAt = null,
+        acceptedAt = null,
+        soldAt = null,
+    )
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        SimRow(
+            sim = base.copy(
+                verificationStatus = SimVerificationStatus.FAILED,
+                verificationId = "v1",
+                reviewNotes = "Sube la imagen de vinculación donde se vea el número.",
+            ),
+            isAccepting = false,
+            isRejecting = false,
+            onAccept = {},
+            onReject = {},
+            onCorrect = {},
+        )
+        SimRow(
+            sim = base.copy(id = "2", verificationStatus = SimVerificationStatus.PENDING),
+            isAccepting = false,
+            isRejecting = false,
+            onAccept = {},
+            onReject = {},
+            onCorrect = {},
+        )
+        SimRow(
+            sim = base.copy(id = "3", verificationStatus = SimVerificationStatus.COMPLETED),
+            isAccepting = false,
+            isRejecting = false,
+            onAccept = {},
+            onReject = {},
+            onCorrect = {},
+        )
     }
 }

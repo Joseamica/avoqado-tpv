@@ -27,6 +27,30 @@ enum class SimCustodyState {
 }
 
 /**
+ * Back-office documentation review status for a SOLD SIM's proof-of-sale, mirrored
+ * from backend `SaleVerificationStatus`. Lets "Mis SIMs" show the same state the
+ * dashboard shows ("Revisar" / "En revisión"). NONE = no verification (or legacy
+ * backend) → the SIM keeps its plain "Vendido" badge.
+ *
+ * PROCESSING is folded into PENDING — both mean "not yet reviewed" for the badge.
+ */
+enum class SimVerificationStatus {
+    NONE,
+    PENDING,
+    COMPLETED,
+    FAILED;
+
+    companion object {
+        fun fromWire(raw: String?): SimVerificationStatus = when (raw) {
+            "PENDING", "PROCESSING" -> PENDING
+            "COMPLETED" -> COMPLETED
+            "FAILED" -> FAILED
+            else -> NONE
+        }
+    }
+}
+
+/**
  * A single SIM in the promoter's inbox.
  *
  * @param suggestedPrice falls back to null when the category has no default
@@ -42,6 +66,12 @@ data class MySim(
     val assignedAt: Instant?,
     val acceptedAt: Instant?,
     val soldAt: Instant?,
+    // Back-office documentation review (only meaningful when custodyState == SOLD).
+    // Drives the "Revisar" / "En revisión" badge and the tap-to-correct deep link.
+    val verificationStatus: SimVerificationStatus = SimVerificationStatus.NONE,
+    val verificationId: String? = null,
+    val rejectionReasons: List<String> = emptyList(),
+    val reviewNotes: String? = null,
 )
 
 /** Summary returned by bulk endpoints. `failed > 0` signals partial success. */

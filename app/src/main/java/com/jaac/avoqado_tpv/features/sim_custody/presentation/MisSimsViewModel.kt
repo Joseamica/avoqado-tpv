@@ -96,6 +96,10 @@ class MisSimsViewModel @Inject constructor(
      * `GET /my-sims` so the inbox stays in sync when the Supervisor assigns
      * or recollects while the promoter has the screen open. Also acts as a
      * fallback when FCM fires but the socket was briefly disconnected.
+     *
+     * `SaleVerificationReviewed` (back-office approves/rejects the proof-of-sale
+     * documentation) also refreshes, so a SOLD SIM's badge flips to "Revisar" /
+     * "Vendido" in real time — same event "Mis Ventas" already listens to.
      */
     private fun observeSocketEvents() {
         viewModelScope.launch {
@@ -104,8 +108,9 @@ class MisSimsViewModel @Inject constructor(
                     when (event) {
                         is SocketEvent.SimCustodyAssignedToPromoter,
                         is SocketEvent.SimCustodyRecollectedFromPromoter,
+                        is SocketEvent.SaleVerificationReviewed,
                         -> {
-                            Timber.tag(TAG).d("sim-custody event received, refreshing: $event")
+                            Timber.tag(TAG).d("sim-custody/verification event received, refreshing: $event")
                             refresh()
                         }
                         else -> Unit

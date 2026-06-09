@@ -17,6 +17,13 @@ data class MySimItemDto(
     val promoterAcceptedAt: String?,
     val soldAt: String?,
     val category: MySimCategoryDto?,
+    // Back-office documentation review (PlayTelecom / Walmart) for SOLD SIMs.
+    // Null for non-sold SIMs, non-serialized venues, or when talking to a legacy
+    // backend that doesn't return these fields — the badge then stays "Vendido".
+    val verificationStatus: String? = null, // PENDING | PROCESSING | COMPLETED | FAILED | null
+    val verificationId: String? = null, // SaleVerification id — needed by the sale-correction flow
+    val rejectionReasons: List<String>? = null, // ["REVIEW_MISSING_LINKING_IMAGE", ...] when FAILED
+    val reviewNotes: String? = null, // Free-text feedback from back-office
 )
 
 data class MySimCategoryDto(

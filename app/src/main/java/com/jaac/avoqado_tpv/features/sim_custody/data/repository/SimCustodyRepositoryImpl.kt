@@ -13,6 +13,7 @@ import com.jaac.avoqado_tpv.features.sim_custody.domain.model.BulkRowResult
 import com.jaac.avoqado_tpv.features.sim_custody.domain.model.BulkSummary
 import com.jaac.avoqado_tpv.features.sim_custody.domain.model.MySim
 import com.jaac.avoqado_tpv.features.sim_custody.domain.model.SimCustodyState
+import com.jaac.avoqado_tpv.features.sim_custody.domain.model.SimVerificationStatus
 import com.jaac.avoqado_tpv.features.sim_custody.domain.repository.SimCustodyRepository
 import java.math.BigDecimal
 import java.time.Instant
@@ -93,6 +94,10 @@ class SimCustodyRepositoryImpl @Inject constructor(
         assignedAt = parseInstant(assignedPromoterAt),
         acceptedAt = parseInstant(promoterAcceptedAt),
         soldAt = parseInstant(soldAt),
+        verificationStatus = SimVerificationStatus.fromWire(verificationStatus),
+        verificationId = verificationId,
+        rejectionReasons = rejectionReasons.orEmpty(),
+        reviewNotes = reviewNotes,
     )
 
     private fun BulkSimCustodyResponseDto.toDomain(): BulkResult = BulkResult(

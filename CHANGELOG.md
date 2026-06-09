@@ -9,6 +9,20 @@
 
 ---
 
+## [2.5.4] - 2026-06-09
+
+### **Changed**
+
+- **"Mis SIMs" ahora refleja el estado de revisión de documentación de las ventas (alineación con Dashboard)**: una SIM vendida aparecía como **"Vendido"** en "Mis SIMs" aunque el back-office hubiera marcado su venta como **"Revisar"** en el Dashboard (p. ej. "Falta imagen de vinculación"). Eran dos status desacoplados (`SerializedItem.custodyState` = custodia física vs `SaleVerification.status` = revisión de evidencia). Ahora "Mis SIMs" muestra, para SIMs **VENDIDAS**, el mismo estado que ve el back-office:
+    - **Badge según verificación** (`MisSimsScreen.StateBadge`): `FAILED` → **"Revisar"** (rojo) · `PENDING`/`PROCESSING` → **"En revisión"** (ámbar) · `COMPLETED` o sin verificación → **"Vendido"** (violeta, como antes). Estados de custodia no vendidos (Pendiente / En mi poder) sin cambios.
+    - **Toca para corregir** (`MisSimsScreen.SimRow`): una SIM vendida con documentación **rechazada** (`FAILED`) hace la fila tocable y reusa el flujo existente `SaleCorrectionScreen` (`NavRoute.SaleCorrection`) para re-subir la imagen — mismo deep-link que ya tenía "Mis Ventas". Muestra el `reviewNotes` del back-office como guía.
+    - **Tiempo real** (`MisSimsViewModel`): suscripción al socket `sale-verification.reviewed` (el mismo que escucha "Mis Ventas") → al aprobar/rechazar desde el Dashboard, el badge se actualiza al instante.
+    - **Modelo/DTO** (`MySim`, `MySimItemDto`, `SimCustodyRepositoryImpl`): nuevo enum `SimVerificationStatus` y campos opcionales `verificationStatus`/`verificationId`/`rejectionReasons`/`reviewNotes` (retrocompatibles; un backend viejo o una SIM no vendida los deja en `NONE`/null y el badge sigue siendo "Vendido").
+    - **Backend (avoqado-server, deploy primero)**: `custody.service.ts` → `listMySims()` ahora hace join read-only `orderItem → order → payments → saleVerification` (mismo patrón que `GET /serialized-inventory/my-sales`) y devuelve los campos de verificación. **No cambia** custodia/venta — es solo lectura (la venta sigue SOLD pase lo que pase con la revisión). Sin migración. Sin backfill: el status se calcula en vivo, así que aplica a **todas** las ventas al desplegar.
+    - Compila en `sandboxDebug`; backend `tsc` sin errores.
+
+---
+
 ## [2.5.3] - 2026-06-02
 
 ### **Fixed**

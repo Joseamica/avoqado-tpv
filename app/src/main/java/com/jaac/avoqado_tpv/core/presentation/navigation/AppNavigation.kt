@@ -2199,7 +2199,11 @@ fun AppNavigation(
         // 📱 Mis SIMs — promoter's SIM custody inbox (PlayTelecom chain-of-custody, plan §3)
         composable(NavRoute.MisSims.route) {
             com.jaac.avoqado_tpv.features.sim_custody.presentation.MisSimsScreen(
-                onBack = { navController.safePopBackStack() }
+                onBack = { navController.safePopBackStack() },
+                onNavigateToCorrection = { verificationId ->
+                    // SOLD SIM with rejected documentation → reuse the sale-correction flow
+                    navController.navigate(NavRoute.SaleCorrection.createRoute(verificationId))
+                },
             )
         }
 

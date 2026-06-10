@@ -208,3 +208,18 @@ data class MySaleItem(
     val rejectionReasons: List<String>? = null,     // ["REVIEW_PORTABILIDAD", ...] when FAILED
     val hasPhotos: Boolean = false                  // True when proof-of-sale photos were uploaded
 )
+
+/**
+ * Response for GET tpv/serialized-inventory/sales-to-review — the promoter's
+ * cross-month "Por revisar" feed (FAILED + PENDING/PROCESSING verifications),
+ * shown pinned at the top of "Mis Ventas". Reuses [MySaleItem].
+ */
+data class SalesToReviewResponse(
+    val success: Boolean,
+    val data: SalesToReviewData?
+)
+
+data class SalesToReviewData(
+    val totalToReview: Int,
+    val sales: List<MySaleItem>
+)

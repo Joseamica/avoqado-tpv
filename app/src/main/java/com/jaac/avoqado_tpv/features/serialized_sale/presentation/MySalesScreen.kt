@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -135,11 +136,15 @@ private fun MySalesScreenContent(
                         totalAmount = uiState.totalAmount
                     )
 
-                    // Sales list grouped by day
-                    if (uiState.salesByDay.isEmpty()) {
+                    // Sales list: pinned "Por revisar" section (cross-month) + day groups.
+                    if (uiState.salesByDay.isEmpty() && uiState.salesToReview.isEmpty()) {
                         EmptyState()
                     } else {
-                        SalesList(salesByDay = uiState.salesByDay, onSaleClick = onSaleClick)
+                        SalesList(
+                            salesToReview = uiState.salesToReview,
+                            salesByDay = uiState.salesByDay,
+                            onSaleClick = onSaleClick
+                        )
                     }
                 }
             }
@@ -237,6 +242,7 @@ private fun SummaryCard(
 
 @Composable
 private fun SalesList(
+    salesToReview: List<SaleItem>,
     salesByDay: Map<String, List<SaleItem>>,
     onSaleClick: (SaleItem) -> Unit = {}
 ) {
@@ -244,6 +250,15 @@ private fun SalesList(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
     ) {
+        // 📌 Pinned "Por revisar" — cross-month sales needing attention (rejected or in review).
+        // Field finding: with many correct sales, promoters get complacent and miss the rejected
+        // ones. Surfacing them at the very top, independent of the selected month, prevents that.
+        if (salesToReview.isNotEmpty()) {
+            item(key = "to_review_section") {
+                ToReviewSection(sales = salesToReview, onSaleClick = onSaleClick)
+            }
+        }
+
         salesByDay.forEach { (dayLabel, sales) ->
             // Day header
             item(key = "header_$dayLabel") {
@@ -266,6 +281,68 @@ private fun SalesList(
                     modifier = Modifier.padding(vertical = 2.dp),
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                 )
+            }
+        }
+    }
+}
+
+/**
+ * Pinned "Por revisar" section shown at the very top of "Mis Ventas".
+ * Cross-month: lists sales that are rejected (FAILED → tap to correct) or still under
+ * review (PENDING). Red-tinted card so it stands out from the normal day-grouped list.
+ */
+@Composable
+private fun ToReviewSection(
+    sales: List<SaleItem>,
+    onSaleClick: (SaleItem) -> Unit = {}
+) {
+    val errorColor = MaterialTheme.avoqadoColors.statusError
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, bottom = 12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = errorColor.copy(alpha = 0.08f)
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = errorColor
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = "Por revisar (${sales.size})",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = errorColor
+                )
+            }
+            Text(
+                text = "Estas ventas necesitan tu atención antes de que se acumulen.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            sales.forEachIndexed { index, sale ->
+                SaleRow(sale = sale, onSaleClick = onSaleClick)
+                if (index < sales.lastIndex) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 2.dp),
+                        color = errorColor.copy(alpha = 0.2f)
+                    )
+                }
             }
         }
     }
@@ -513,6 +590,33 @@ private fun MySalesScreenPreview() {
                 monthDisplay = "Marzo",
                 totalSales = 4,
                 totalAmount = BigDecimal("220.00"),
+                salesToReview = listOf(
+                    SaleItem(
+                        id = "r1",
+                        orderNumber = "SN098",
+                        serialNumber = "8952140000003331111",
+                        categoryName = "SIM Negra",
+                        price = BigDecimal("55.00"),
+                        date = "2026-02-18T12:00:00.000Z",
+                        paymentStatus = "COMPLETED",
+                        isGift = false,
+                        verificationStatus = VerificationReviewStatus.FAILED,
+                        rejectionReasons = listOf(RejectionReason.REVIEW_ILLEGIBLE_IMAGES),
+                        verificationId = "ver_r1"
+                    ),
+                    SaleItem(
+                        id = "r2",
+                        orderNumber = "SN099",
+                        serialNumber = "8952140000004442222",
+                        categoryName = "SIM Blanca",
+                        price = BigDecimal("55.00"),
+                        date = "2026-03-20T12:00:00.000Z",
+                        paymentStatus = "COMPLETED",
+                        isGift = false,
+                        verificationStatus = VerificationReviewStatus.PENDING,
+                        verificationId = "ver_r2"
+                    )
+                ),
                 salesByDay = mapOf(
                     "26 de marzo" to listOf(
                         SaleItem(

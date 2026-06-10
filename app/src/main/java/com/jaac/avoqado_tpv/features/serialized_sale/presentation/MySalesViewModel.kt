@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
+import com.jaac.avoqado_tpv.features.serialized_sale.data.dto.MySaleItem
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,6 +29,9 @@ data class MySalesUiState(
     val totalSales: Int = 0,
     val totalAmount: BigDecimal = BigDecimal.ZERO,
     val salesByDay: Map<String, List<SaleItem>> = emptyMap(),
+    // Cross-month "Por revisar" feed (FAILED + PENDING/PROCESSING), pinned at the top.
+    // Independent of the selected month — a rejected sale from a past month still shows.
+    val salesToReview: List<SaleItem> = emptyList(),
     val error: String? = null
 )
 
@@ -87,6 +91,7 @@ class MySalesViewModel @Inject constructor(
 
     init {
         loadSales()
+        loadSalesToReview()
         observeSocketEvents()
     }
 
@@ -101,6 +106,7 @@ class MySalesViewModel @Inject constructor(
                     if (event is SocketEvent.SaleVerificationReviewed) {
                         Timber.d("📨 sale-verification.reviewed received status=${event.status} — refreshing My Sales")
                         refreshCurrentMonth()
+                        loadSalesToReview()
                     }
                 }
                 .collect {}
@@ -118,24 +124,7 @@ class MySalesViewModel @Inject constructor(
                 if (response.isSuccessful && response.body()?.success == true) {
                     val data = response.body()!!.data!!
 
-                    val sales = data.sales.map { sale ->
-                        SaleItem(
-                            id = sale.id,
-                            orderNumber = sale.orderNumber,
-                            serialNumber = sale.serialNumber.orEmpty(),
-                            categoryName = sale.categoryName.orEmpty(),
-                            price = BigDecimal.valueOf(sale.price),
-                            date = sale.date,
-                            paymentStatus = sale.paymentStatus,
-                            isGift = sale.isGift,
-                            verificationStatus = parseVerificationStatus(sale.verificationStatus),
-                            reviewedAt = sale.reviewedAt,
-                            reviewNotes = sale.reviewNotes,
-                            rejectionReasons = RejectionReason.parseList(sale.rejectionReasons),
-                            verificationId = sale.verificationId,
-                            paymentId = sale.paymentId,
-                        )
-                    }
+                    val sales = data.sales.map { it.toSaleItem() }
 
                     // Group by day (venue timezone)
                     val salesByDay = sales.groupBy { sale ->
@@ -183,6 +172,28 @@ class MySalesViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Load the cross-month "Por revisar" feed (FAILED + PENDING/PROCESSING). Independent
+     * of the selected month — runs once on open and again when a back-office review event
+     * arrives. Failures are non-fatal: the section just stays empty / unchanged so it never
+     * blocks the month list.
+     */
+    fun loadSalesToReview() {
+        viewModelScope.launch {
+            try {
+                val response = apiService.getSalesToReview()
+                if (response.isSuccessful && response.body()?.success == true) {
+                    val items = response.body()?.data?.sales.orEmpty().map { it.toSaleItem() }
+                    _uiState.value = _uiState.value.copy(salesToReview = items)
+                } else {
+                    Timber.w("sales-to-review failed: ${response.code()}")
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "Failed to load sales-to-review")
+            }
+        }
+    }
+
     fun navigateMonth(delta: Int) {
         val currentMonth = _uiState.value.month
         if (currentMonth.isEmpty()) return
@@ -213,3 +224,21 @@ class MySalesViewModel @Inject constructor(
         }
     }
 }
+
+/** Maps the network DTO to the UI model. Shared by the month list and the "Por revisar" feed. */
+internal fun MySaleItem.toSaleItem(): SaleItem = SaleItem(
+    id = id,
+    orderNumber = orderNumber,
+    serialNumber = serialNumber.orEmpty(),
+    categoryName = categoryName.orEmpty(),
+    price = BigDecimal.valueOf(price),
+    date = date,
+    paymentStatus = paymentStatus,
+    isGift = isGift,
+    verificationStatus = MySalesViewModel.parseVerificationStatus(verificationStatus),
+    reviewedAt = reviewedAt,
+    reviewNotes = reviewNotes,
+    rejectionReasons = RejectionReason.parseList(rejectionReasons),
+    verificationId = verificationId,
+    paymentId = paymentId,
+)

@@ -1,5 +1,23 @@
 # CLAUDE.md - Avoqado TPV (Android POS)
 
+## 🔴 CRITICAL — Ask which payment tier BEFORE building or changing anything
+
+Avoqado is a tier-gated SaaS (**FREE · PRO · PREMIUM · ENTERPRISE**). Whenever you add a new
+feature, modify existing behavior, or expose a new capability, **STOP and ask the founder which
+paid tier it falls under** — then wire the gating to match. A change shipped without a tier
+decision is unfinished: it either leaks paid value into a lower tier or hides a free capability
+behind a paywall.
+
+- **Backend (authoritative):** `avoqado-server/src/services/access/basePlan.service.ts` +
+  `avoqado-server/src/middlewares/checkFeatureAccess.middleware.ts`. Obligatory gating questions:
+  `avoqado-server/.claude/rules/feature-gating.md`. PREMIUM-only codes today: `CFDI`, `INVENTORY_TRACKING`.
+- **Dashboard display/CTA map:** `avoqado-web-dashboard/src/config/plan-catalog.ts`
+  (`TierId`, `PLAN_TIERS`, `getTierForFeature()` → FeatureGate upsell).
+- **Enforcement status:** ✅ only **avoqado-web-dashboard** enforces tiers today.
+  ⚠️ **avoqado-ios** and **avoqado-android** have NO tier gating yet — **start adding it now**,
+  mirroring the backend feature codes by exact name. Treat tier codes like permissions: mirrored
+  across backend + every client by exact name — a mismatch fails silently.
+
 ## How This Configuration Works
 
 | Layer | Path | Loaded | Purpose |

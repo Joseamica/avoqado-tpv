@@ -9,6 +9,20 @@
 
 ---
 
+## [2.5.5] - 2026-06-10
+
+### **Added**
+
+- **"Mis Ventas" — sección "Por revisar" pinneada arriba (no se pierden las ventas rechazadas)**: hallazgo de campo — cuando el promotor tiene muchas ventas correctas, se confía y no revisa las que el back-office **no aprobó**. Ahora "Mis Ventas" muestra, fijada al inicio de la lista, una tarjeta roja **"Por revisar (N)"** con las ventas que necesitan su atención.
+    - **Qué incluye**: ventas **rechazadas** (`FAILED` → "Revisar documentación", tocable → flujo `SaleCorrectionScreen` existente para re-subir fotos) y **en revisión** (`PENDING`/`PROCESSING`). Orden: rechazadas primero, luego en revisión; dentro de cada grupo las más viejas arriba (las que más urge atender).
+    - **Cross-mes**: la sección es **independiente del mes seleccionado** — una venta rechazada de un mes anterior sigue apareciendo arriba aunque el promotor esté viendo el mes actual. La lista por día normal no cambia.
+    - **Tiempo real** (`MySalesViewModel`): se recarga al abrir y al recibir el socket `sale-verification.reviewed` (mismo que ya refresca el mes). Fallo no fatal: si el endpoint falla, la sección queda vacía y no bloquea la lista del mes.
+    - **TPV** (`MySalesScreen`, `MySalesViewModel`, `SerializedInventoryDto`, `ApiService`): nueva sección `ToReviewSection`, estado `salesToReview`, mapeo `MySaleItem.toSaleItem()` reutilizado por la lista mensual y el feed. Nuevo endpoint cliente `getSalesToReview()`.
+    - **Backend (avoqado-server, deploy primero)**: nuevo `GET /tpv/serialized-inventory/sales-to-review` — mismo shape `SaleItem` que `my-sales`, sin filtro de mes, filtrando `SaleVerification.status ∈ {PENDING, PROCESSING, FAILED}` del promotor; **siempre** scope por `venueId` (aislamiento de tenant). `serialized-inventory:sell`. Sin migración. Retrocompatible: clientes viejos ignoran el endpoint.
+    - Sin gating nuevo (va sobre el acceso `serialized-inventory` existente). Compila `sandboxDebug`; backend `tsc` sin errores; `MySalesViewModelReviewTest` pasa.
+
+---
+
 ## [2.5.4] - 2026-06-09
 
 ### **Changed**

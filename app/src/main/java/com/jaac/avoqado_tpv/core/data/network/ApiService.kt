@@ -1395,6 +1395,19 @@ interface ApiService {
         @Query("offset") offset: Int = 0
     ): Response<com.jaac.avoqado_tpv.features.serialized_sale.data.dto.MySalesResponse>
 
+    /**
+     * Get the promoter's "Por revisar" feed (cross-month).
+     *
+     * GET /tpv/serialized-inventory/sales-to-review
+     *
+     * Returns the logged-in promoter's sales whose back-office documentation review
+     * is still PENDING/PROCESSING or was REJECTED (FAILED), across ALL months —
+     * NOT month-scoped. Used to pin these at the top of "Mis Ventas" so rejected
+     * sales don't get missed among many correct ones.
+     */
+    @GET("tpv/serialized-inventory/sales-to-review")
+    suspend fun getSalesToReview(): Response<com.jaac.avoqado_tpv.features.serialized_sale.data.dto.SalesToReviewResponse>
+
     // ========== Geolocation (Cell ID) ==========
 
     /**

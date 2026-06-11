@@ -33,7 +33,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartState
 import com.jaac.avoqado_tpv.features.plan.domain.model.PlanTier
-import com.jaac.avoqado_tpv.features.plan.presentation.PlanUpsellCard
+import com.jaac.avoqado_tpv.features.plan.presentation.PlanGate
 
 /**
  * Manual order-level discount. Two modes:
@@ -48,7 +48,8 @@ import com.jaac.avoqado_tpv.features.plan.presentation.PlanUpsellCard
  * apply (UI shows a banner explaining the swap).
  *
  * @param planLocked plan-tier gate (PROMOTIONS requires Plan Pro). When true
- *   the MANUAL ad-hoc discount creation form is replaced by a visible teaser.
+ *   the MANUAL ad-hoc discount creation form renders as a dimmed,
+ *   non-interactive blur-preview behind the upsell card (PlanGate).
  *   Predefined discounts / coupons APPLICATION (CouponSubView, order discount
  *   pickers) is NEVER gated. Default false → fail open, behaves as today.
  */
@@ -61,23 +62,44 @@ fun ManualDiscountSubView(
     modifier: Modifier = Modifier,
     planLocked: Boolean = false,
 ) {
+    Column(modifier = modifier.fillMaxSize()) {
+        SubViewHeader(title = "Descuento", onBack = onBack)
+
+        // Plan gate — blur-preview paywall: when locked, the real form renders
+        // dimmed + non-interactive behind the upsell card. Back stays usable
+        // (header is outside the gate). Entitlement decision unchanged.
+        PlanGate(
+            locked = planLocked,
+            featureTitle = "Descuento manual",
+            tier = PlanTier.PRO,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            ManualDiscountFormBody(
+                cartState = cartState,
+                onApply = onApply,
+                onClear = onClear,
+                onBack = onBack,
+            )
+        }
+    }
+}
+
+/**
+ * Form body (empty state or the percent/amount form). Extracted so [PlanGate]
+ * can render it untouched when unlocked and as a dimmed preview when locked.
+ */
+@Composable
+private fun ManualDiscountFormBody(
+    cartState: CartState,
+    onApply: (amountCents: Int, reason: String?) -> Unit,
+    onClear: () -> Unit,
+    onBack: () -> Unit,
+) {
     var mode by remember { mutableStateOf(DiscountMode.PERCENT) }
     var input by remember { mutableStateOf("") }
     var reason by remember { mutableStateOf("") }
 
-    Column(modifier = modifier.fillMaxSize()) {
-        SubViewHeader(title = "Descuento", onBack = onBack)
-
-        // Plan gate — visible teaser instead of the ad-hoc discount form.
-        if (planLocked) {
-            PlanUpsellCard(
-                featureTitle = "Descuento manual",
-                tier = PlanTier.PRO,
-                modifier = Modifier.padding(16.dp),
-            )
-            return@Column
-        }
-
+    Column(modifier = Modifier.fillMaxWidth()) {
         if (cartState.items.isEmpty()) {
             EmptyState(
                 title = "El carrito está vacío",

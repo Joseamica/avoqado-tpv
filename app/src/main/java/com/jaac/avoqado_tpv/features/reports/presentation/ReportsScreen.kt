@@ -56,7 +56,7 @@ import com.jaac.avoqado_tpv.features.permissions.di.PermissionsEntryPoint
 import com.jaac.avoqado_tpv.features.plan.domain.model.PlanFeatureCatalog
 import com.jaac.avoqado_tpv.features.plan.domain.model.PlanTier
 import com.jaac.avoqado_tpv.features.plan.domain.model.allowsFeature
-import com.jaac.avoqado_tpv.features.plan.presentation.PlanUpsellCard
+import com.jaac.avoqado_tpv.features.plan.presentation.PlanGate
 import com.jaac.avoqado_tpv.features.plan.presentation.PlanUpsellDialog
 import com.jaac.avoqado_tpv.features.reports.domain.models.ComparisonMetrics
 import com.jaac.avoqado_tpv.features.reports.domain.models.HistoricalGrouping
@@ -438,8 +438,12 @@ private fun ReportsScreenContent(
                             }
                         }
                         ReportTab.HISTORY -> {
-                            // Print mode toggle for History tab
-                            if (historicalState is HistoricalReportsState.Success) {
+                            // Print mode toggle for History tab. Hidden while
+                            // the plan gate is locked: the tab content is an
+                            // inert blur-preview, but this button lives in the
+                            // top bar (outside the gated area) and historical
+                            // data can still reach Success behind the preview.
+                            if (!advancedReportsLocked && historicalState is HistoricalReportsState.Success) {
                                 if (isHistoricalPrintMode) {
                                     // Show "Done" button when in print mode
                                     androidx.compose.material3.TextButton(
@@ -534,16 +538,21 @@ private fun ReportsScreenContent(
                             }
 
                             ReportTab.HISTORY -> {
-                                if (advancedReportsLocked) {
-                                    // ⭐ Plan gate — the tab stays visible
-                                    // (discoverable) but shows a teaser
-                                    // instead of loading historical data.
-                                    PlanUpsellCard(
-                                        featureTitle = "Historial de reportes",
-                                        tier = PlanTier.PRO,
-                                        modifier = Modifier.padding(16.dp),
-                                    )
-                                } else {
+                                // ⭐ Plan gate — blur-preview paywall (mirror
+                                // of the dashboard's FeatureGate): the tab
+                                // stays visible and the REAL Historial UI
+                                // renders behind the upsell card as a dimmed,
+                                // non-interactive preview. The entitlement
+                                // decision (advancedReportsLocked) is
+                                // unchanged; whatever the tab naturally
+                                // renders (loading/cache/data) is the
+                                // backdrop.
+                                PlanGate(
+                                    locked = advancedReportsLocked,
+                                    featureTitle = "Historial de reportes",
+                                    tier = PlanTier.PRO,
+                                    modifier = Modifier.fillMaxSize(),
+                                ) {
                                     HistoricalReportsContent(
                                         state = historicalState,
                                         grouping = historicalGrouping,

@@ -4,6 +4,7 @@ import com.jaac.avoqado_tpv.core.data.manager.KioskModeManager
 import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
+import com.jaac.avoqado_tpv.features.plan.data.PlanManager
 import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
@@ -84,4 +85,15 @@ interface PermissionsEntryPoint {
      * @return Singleton instance of TpvSettingsRepository
      */
     fun tpvSettingsRepository(): TpvSettingsRepository
+
+    /**
+     * Get PlanManager instance
+     *
+     * Used for plan-tier gating UI (visible teasers for REFERRAL_PROGRAM,
+     * PROMOTIONS, ADVANCED_REPORTS, SERIALIZED_INVENTORY). Fail-open: when
+     * plan info is unknown the manager allows everything.
+     *
+     * @return Singleton instance of PlanManager
+     */
+    fun planManager(): PlanManager
 }

@@ -94,6 +94,10 @@ fun ShortcutsGridView(
     onConfirmPayLater: suspend () -> Result<Unit>,
     snackbarHostState: SnackbarHostState? = null,
     modifier: Modifier = Modifier,
+    // Plan-tier gate (PROMOTIONS → Plan Pro): gates ONLY the manual ad-hoc
+    // discount form. Cortesía, cupones and predefined discounts stay open.
+    // Default false → fail open, behaves as today.
+    manualDiscountPlanLocked: Boolean = false,
 ) {
     var screen by remember { mutableStateOf(ShortcutsScreen.MAIN) }
 
@@ -120,6 +124,7 @@ fun ShortcutsGridView(
             onClear = onClearManualDiscount,
             onBack = { screen = ShortcutsScreen.MAIN },
             modifier = modifier,
+            planLocked = manualDiscountPlanLocked,
         )
         ShortcutsScreen.COUPON -> CouponSubView(
             cartState = cartState,

@@ -40,6 +40,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -51,6 +52,12 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.features.permissions.di.PermissionsEntryPoint
+import com.jaac.avoqado_tpv.features.plan.domain.model.PlanFeatureCatalog
+import com.jaac.avoqado_tpv.features.plan.domain.model.PlanTier
+import com.jaac.avoqado_tpv.features.plan.domain.model.allowsFeature
+import com.jaac.avoqado_tpv.features.plan.presentation.PlanUpsellCard
+import com.jaac.avoqado_tpv.features.plan.presentation.PlanUpsellDialog
 import com.jaac.avoqado_tpv.features.reports.domain.models.ComparisonMetrics
 import com.jaac.avoqado_tpv.features.reports.domain.models.HistoricalGrouping
 import com.jaac.avoqado_tpv.features.reports.domain.models.HistoricalPeriod
@@ -70,6 +77,7 @@ import com.jaac.avoqado_tpv.features.reports.presentation.components.PeriodFilte
 import com.jaac.avoqado_tpv.features.reports.presentation.components.StaffFilterChips
 import com.jaac.avoqado_tpv.features.reports.presentation.components.StaffSalesBreakdown
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
+import dagger.hilt.android.EntryPointAccessors
 import java.math.BigDecimal
 import java.time.Instant
 
@@ -145,6 +153,31 @@ fun ReportsScreen(
     var printIncludeRatings by remember { mutableStateOf(false) }
     var printIncludeStaffSales by remember { mutableStateOf(false) }
     val isReviewsEnabled = remember { viewModel.isReviewsEnabled }
+
+    // ⭐ Plan-tier gating (fail open — null plan info ⇒ nothing is locked).
+    // Mirrors the platform rule: TODAY summary stays free; historical /
+    // advanced views (7d/30d/90d/custom periods, comparison, Historial tab)
+    // require ADVANCED_REPORTS (Plan Pro). Gated taps show an upsell dialog;
+    // the Historial tab shows an inline teaser. Printing today's report and
+    // everything else in the order flow is untouched.
+    val context = LocalContext.current
+    val planManager = remember {
+        EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            PermissionsEntryPoint::class.java,
+        ).planManager()
+    }
+    val planInfo by planManager.planInfo.collectAsStateWithLifecycle()
+    val advancedReportsLocked = !planInfo.allowsFeature(PlanFeatureCatalog.ADVANCED_REPORTS)
+    var showAdvancedReportsUpsell by remember { mutableStateOf(false) }
+
+    if (showAdvancedReportsUpsell) {
+        PlanUpsellDialog(
+            featureTitle = "Reportes avanzados",
+            tier = PlanTier.PRO,
+            onDismiss = { showAdvancedReportsUpsell = false },
+        )
+    }
 
     if (showPrintOptionsDialog) {
         AlertDialog(
@@ -240,17 +273,26 @@ fun ReportsScreen(
         isHistoricalPrintMode = isHistoricalPrintMode,
         selectedPeriodsForPrint = selectedPeriodsForPrint,
         showHistoricalPrintDialog = showHistoricalPrintDialog,
+        advancedReportsLocked = advancedReportsLocked,
         onNavigateBack = onNavigateBack,
         onRefresh = { viewModel.refresh() },
         onPeriodSelected = { periodType ->
-            if (periodType == PeriodType.CUSTOM) {
+            if (advancedReportsLocked && periodType != PeriodType.TODAY) {
+                // ⭐ Historical periods are Plan Pro — teaser dialog, no change.
+                showAdvancedReportsUpsell = true
+            } else if (periodType == PeriodType.CUSTOM) {
                 showDatePicker = true
             } else {
                 viewModel.changePeriod(periodType)
             }
         },
         onComparisonToggle = { enabled ->
-            viewModel.toggleComparison(enabled)
+            if (advancedReportsLocked && enabled) {
+                // ⭐ Comparison loads a previous (historical) period — Plan Pro.
+                showAdvancedReportsUpsell = true
+            } else {
+                viewModel.toggleComparison(enabled)
+            }
         },
         onToggleStaffSelection = { staffId -> viewModel.toggleStaffSelection(staffId) },
         onClearStaffFilter = { viewModel.clearStaffFilter() },
@@ -330,6 +372,9 @@ private fun ReportsScreenContent(
     isHistoricalPrintMode: Boolean,
     selectedPeriodsForPrint: Set<String>,
     showHistoricalPrintDialog: Boolean,
+    // ⭐ ADVANCED_REPORTS plan gate (Plan Pro). Default false → fail open,
+    // previews and old callers behave as today.
+    advancedReportsLocked: Boolean = false,
     onNavigateBack: () -> Unit,
     onRefresh: () -> Unit = {},
     onPeriodSelected: (PeriodType) -> Unit,
@@ -489,21 +534,32 @@ private fun ReportsScreenContent(
                             }
 
                             ReportTab.HISTORY -> {
-                                HistoricalReportsContent(
-                                    state = historicalState,
-                                    grouping = historicalGrouping,
-                                    isPrintMode = isHistoricalPrintMode,
-                                    selectedPeriodsForPrint = selectedPeriodsForPrint,
-                                    showPrintDialog = showHistoricalPrintDialog,
-                                    onGroupingSelected = onHistoricalGroupingSelected,
-                                    onLoadMore = onLoadMoreHistorical,
-                                    onPeriodClick = onNavigateToPeriodDetail,
-                                    onLoadInitial = onLoadHistoricalSummaries,
-                                    onTogglePeriodSelection = onTogglePeriodSelection,
-                                    onShowPrintDialog = onShowHistoricalPrintDialog,
-                                    onDismissPrintDialog = onDismissHistoricalPrintDialog,
-                                    onPrintHistoricalReports = onPrintHistoricalReports
-                                )
+                                if (advancedReportsLocked) {
+                                    // ⭐ Plan gate — the tab stays visible
+                                    // (discoverable) but shows a teaser
+                                    // instead of loading historical data.
+                                    PlanUpsellCard(
+                                        featureTitle = "Historial de reportes",
+                                        tier = PlanTier.PRO,
+                                        modifier = Modifier.padding(16.dp),
+                                    )
+                                } else {
+                                    HistoricalReportsContent(
+                                        state = historicalState,
+                                        grouping = historicalGrouping,
+                                        isPrintMode = isHistoricalPrintMode,
+                                        selectedPeriodsForPrint = selectedPeriodsForPrint,
+                                        showPrintDialog = showHistoricalPrintDialog,
+                                        onGroupingSelected = onHistoricalGroupingSelected,
+                                        onLoadMore = onLoadMoreHistorical,
+                                        onPeriodClick = onNavigateToPeriodDetail,
+                                        onLoadInitial = onLoadHistoricalSummaries,
+                                        onTogglePeriodSelection = onTogglePeriodSelection,
+                                        onShowPrintDialog = onShowHistoricalPrintDialog,
+                                        onDismissPrintDialog = onDismissHistoricalPrintDialog,
+                                        onPrintHistoricalReports = onPrintHistoricalReports
+                                    )
+                                }
                             }
                         }
                     }

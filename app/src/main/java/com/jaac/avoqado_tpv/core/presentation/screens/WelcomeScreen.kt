@@ -94,6 +94,9 @@ import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.permissions.di.PermissionsEntryPoint
+import com.jaac.avoqado_tpv.features.plan.domain.model.PlanFeatureCatalog
+import com.jaac.avoqado_tpv.features.plan.domain.model.PlanTier
+import com.jaac.avoqado_tpv.features.plan.domain.model.allowsFeature
 import com.jaac.avoqado_tpv.features.remote_command.presentation.LockScreenOverlay
 import com.jaac.avoqado_tpv.features.remote_command.presentation.MaintenanceOverlay
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
@@ -564,6 +567,15 @@ private fun WelcomeScreenContent(
     val kioskModeManager = remember { hiltEntryPoint.kioskModeManager() }
     val modulesRepository = remember { hiltEntryPoint.modulesRepository() }
     val tpvSettingsRepository = remember { hiltEntryPoint.tpvSettingsRepository() }
+    val planManager = remember { hiltEntryPoint.planManager() }
+
+    // 👑 Plan-tier gating (fail open — null plan info ⇒ nothing is locked).
+    // SERIALIZED_INVENTORY product registration ("Alta de Productos") requires
+    // Plan Premium. Exempt venues (grandfathered legacy like PlayTelecom,
+    // demo) are never gated — allowsFeature() returns true for them.
+    val planInfo by planManager.planInfo.collectAsStateWithLifecycle()
+    val serializedInventoryPlanLocked =
+        !planInfo.allowsFeature(PlanFeatureCatalog.SERIALIZED_INVENTORY)
 
     // 📱 Check for simplified order flow (telecom/serialized inventory mode)
     // Use StateFlow so changes (e.g., on logout) trigger recomposition
@@ -648,14 +660,24 @@ private fun WelcomeScreenContent(
             )
 
             // Secondary action: Alta de Productos (inventory registration)
-            // Only shown if user has serialized-inventory:register permission
+            // Only shown if user has serialized-inventory:register permission.
+            // 👑 Plan gate: SERIALIZED_INVENTORY requires Plan Premium — the
+            // tile stays VISIBLE as a teaser (disabled + "Plan Premium" badge,
+            // same pattern as other disabled tiles). Exempt venues
+            // (PlayTelecom/demo) are never locked. Fail open: no plan info ⇒
+            // not locked, behaves as today.
             if (hasInventoryRegisterPermission) {
                 add(
                     ActionButton(
                         icon = Icons.Default.Inventory2,
                         label = moduleLabels?.register ?: "Alta de Productos",
-                        enabled = canWork,
-                        badge = if (!canWork) "Registra tu entrada" else null,
+                        enabled = canWork && !serializedInventoryPlanLocked,
+                        badge = when {
+                            serializedInventoryPlanLocked ->
+                                "Plan ${PlanTier.PREMIUM.displayName}"
+                            !canWork -> "Registra tu entrada"
+                            else -> null
+                        },
                         onClick = onNavigateToInventoryRegister
                     )
                 )

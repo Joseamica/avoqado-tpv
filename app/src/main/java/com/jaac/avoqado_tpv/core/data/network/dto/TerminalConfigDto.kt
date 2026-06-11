@@ -76,7 +76,19 @@ data class TerminalConfigData(
      * updated yet.
      */
     @SerializedName("angelpayAccounts")
-    val angelpayAccounts: List<AngelPayAuthDto>? = null
+    val angelpayAccounts: List<AngelPayAuthDto>? = null,
+
+    /**
+     * Venue plan-tier info (additive 2026-06). Optional: old servers omit it
+     * entirely → null → the app FAILS OPEN (no plan gating, behaves as today).
+     *
+     * `{ "tier": "FREE"|"PRO"|"PREMIUM"|"ENTERPRISE", "grandfathered": bool, "exempt": bool }`
+     *
+     * Cached by PlanManager (via TpvSettingsRepository) so plan gating works
+     * offline. `exempt == true` (grandfathered/demo venues) disables ALL gates.
+     */
+    @SerializedName("plan")
+    val plan: com.jaac.avoqado_tpv.features.plan.data.dto.PlanInfoDto? = null
 )
 
 /**

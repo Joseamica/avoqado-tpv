@@ -32,6 +32,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartState
+import com.jaac.avoqado_tpv.features.plan.domain.model.PlanTier
+import com.jaac.avoqado_tpv.features.plan.presentation.PlanUpsellCard
 
 /**
  * Manual order-level discount. Two modes:
@@ -44,6 +46,11 @@ import com.jaac.avoqado_tpv.features.checkout.domain.model.CartState
  *
  * If a predefined discount is currently applied, this view replaces it on
  * apply (UI shows a banner explaining the swap).
+ *
+ * @param planLocked plan-tier gate (PROMOTIONS requires Plan Pro). When true
+ *   the MANUAL ad-hoc discount creation form is replaced by a visible teaser.
+ *   Predefined discounts / coupons APPLICATION (CouponSubView, order discount
+ *   pickers) is NEVER gated. Default false → fail open, behaves as today.
  */
 @Composable
 fun ManualDiscountSubView(
@@ -52,6 +59,7 @@ fun ManualDiscountSubView(
     onClear: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    planLocked: Boolean = false,
 ) {
     var mode by remember { mutableStateOf(DiscountMode.PERCENT) }
     var input by remember { mutableStateOf("") }
@@ -59,6 +67,16 @@ fun ManualDiscountSubView(
 
     Column(modifier = modifier.fillMaxSize()) {
         SubViewHeader(title = "Descuento", onBack = onBack)
+
+        // Plan gate — visible teaser instead of the ad-hoc discount form.
+        if (planLocked) {
+            PlanUpsellCard(
+                featureTitle = "Descuento manual",
+                tier = PlanTier.PRO,
+                modifier = Modifier.padding(16.dp),
+            )
+            return@Column
+        }
 
         if (cartState.items.isEmpty()) {
             EmptyState(

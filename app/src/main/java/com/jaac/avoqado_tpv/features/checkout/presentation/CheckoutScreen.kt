@@ -31,6 +31,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -51,8 +52,12 @@ import com.jaac.avoqado_tpv.features.checkout.presentation.components.TaxPercent
 import com.jaac.avoqado_tpv.features.checkout.presentation.components.cart.CartDetailsSheet
 import com.jaac.avoqado_tpv.features.checkout.presentation.components.cart.CartPanelView
 import com.jaac.avoqado_tpv.features.checkout.presentation.components.cart.CustomerSelectorSheet
+import com.jaac.avoqado_tpv.features.permissions.di.PermissionsEntryPoint
+import com.jaac.avoqado_tpv.features.plan.domain.model.PlanFeatureCatalog
+import com.jaac.avoqado_tpv.features.plan.domain.model.allowsFeature
 import com.jaac.avoqado_tpv.features.referrals.presentation.ReferralCaptureSection
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
+import dagger.hilt.android.EntryPointAccessors
 import kotlinx.coroutines.launch
 import timber.log.Timber
 
@@ -112,6 +117,21 @@ fun CheckoutScreen(
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+
+    // 👑 Plan-tier gating (fail open — null plan info ⇒ nothing is locked).
+    // Gates ONLY: (a) manual ad-hoc discount creation (PROMOTIONS → Plan Pro)
+    // and (b) referral capture (REFERRAL_PROGRAM → Plan Pro). Charging,
+    // predefined discounts/coupons and printing are NEVER plan-gated.
+    val context = LocalContext.current
+    val planManager = remember {
+        EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            PermissionsEntryPoint::class.java,
+        ).planManager()
+    }
+    val planInfo by planManager.planInfo.collectAsState()
+    val manualDiscountPlanLocked = !planInfo.allowsFeature(PlanFeatureCatalog.PROMOTIONS)
+    val referralPlanLocked = !planInfo.allowsFeature(PlanFeatureCatalog.REFERRAL_PROGRAM)
 
     Scaffold(
         topBar = {
@@ -217,6 +237,7 @@ fun CheckoutScreen(
                             )
                         },
                         snackbarHostState = snackbarHostState,
+                        manualDiscountPlanLocked = manualDiscountPlanLocked,
                     )
                     InputTab.PRODUCTS -> ProductGridView(
                         products = products,
@@ -358,6 +379,7 @@ fun CheckoutScreen(
                                 )
                             }
                         },
+                        planLocked = referralPlanLocked,
                     )
                 },
             )

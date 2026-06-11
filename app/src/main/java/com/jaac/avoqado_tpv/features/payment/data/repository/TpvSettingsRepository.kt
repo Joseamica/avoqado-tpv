@@ -5,6 +5,7 @@ import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.network.dto.toDomain
 import com.jaac.avoqado_tpv.core.data.network.dto.toDto
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
+import com.jaac.avoqado_tpv.features.plan.data.PlanManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -44,7 +45,8 @@ import javax.inject.Singleton
 @Singleton
 class TpvSettingsRepository @Inject constructor(
     private val apiService: ApiService,
-    private val secureStorage: SecureStorage
+    private val secureStorage: SecureStorage,
+    private val planManager: PlanManager
 ) {
     /**
      * Current TPV settings as StateFlow.
@@ -70,6 +72,12 @@ class TpvSettingsRepository @Inject constructor(
             if (response.isSuccessful) {
                 val configData = response.body()?.data
                 val tpvSettingsDto = configData?.tpvSettings
+
+                // Plan-tier gating (additive 2026-06): cache the optional `plan`
+                // object alongside the settings. Absent (old server) → null →
+                // PlanManager clears its cache and the app FAILS OPEN (no gates).
+                // Only updated on SUCCESSFUL fetches — offline keeps the cache.
+                planManager.update(configData?.plan)
 
                 val settings = if (tpvSettingsDto != null) {
                     tpvSettingsDto.toDomain()
@@ -210,6 +218,9 @@ class TpvSettingsRepository @Inject constructor(
     fun clearCache() {
         secureStorage.clearTpvSettings()
         _settings.value = TpvSettings.DEFAULT
+        // Plan info is venue-scoped like the settings — clear it together so a
+        // venue switch never gates (or un-gates) with the previous venue's plan.
+        planManager.clearCache()
         Timber.d("🗑️ TPV settings cache cleared")
     }
 }

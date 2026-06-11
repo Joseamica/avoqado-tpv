@@ -41,6 +41,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.features.plan.domain.model.PlanTier
+import com.jaac.avoqado_tpv.features.plan.presentation.PlanTierBadge
+import com.jaac.avoqado_tpv.features.plan.presentation.planUpsellMessage
 import com.jaac.avoqado_tpv.features.referrals.domain.model.ValidationResult
 
 /**
@@ -73,6 +76,9 @@ sealed class ReferralCaptureUiState {
  *
  * @param customerSelected required for validation. When false, the section
  *   shows a hint to pick a customer first and disables the input.
+ * @param planLocked plan-tier gate (REFERRAL_PROGRAM requires Plan Pro). When
+ *   true the CAPTURE UI is replaced by a visible teaser (tier badge +
+ *   instructional upsell). Default false → fail open, behaves as today.
  */
 @Composable
 fun ReferralCaptureSection(
@@ -84,6 +90,7 @@ fun ReferralCaptureSection(
     onClear: () -> Unit,
     onForceOverride: () -> Unit,
     modifier: Modifier = Modifier,
+    planLocked: Boolean = false,
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
 
@@ -95,7 +102,7 @@ fun ReferralCaptureSection(
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // Header — gift icon + label
+        // Header — gift icon + label (+ tier badge when plan-locked)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 imageVector = Icons.Filled.CardGiftcard,
@@ -110,6 +117,21 @@ fun ReferralCaptureSection(
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
             )
+            if (planLocked) {
+                Spacer(modifier = Modifier.width(8.dp))
+                PlanTierBadge(tier = PlanTier.PRO)
+            }
+        }
+
+        // Plan gate — visible teaser instead of the capture UI. Only the
+        // CAPTURE UI is gated; nothing else in the checkout flow changes.
+        if (planLocked) {
+            Text(
+                text = planUpsellMessage(PlanTier.PRO),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@Column
         }
 
         if (!customerSelected) {

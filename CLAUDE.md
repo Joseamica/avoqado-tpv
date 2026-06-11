@@ -245,3 +245,16 @@ capability the MCP should expose, you MUST add or update the matching MCP tool i
 `avoqado-server/scripts/mcp/` as part of the SAME change — never "later".** A capability that
 exists but isn't reachable through the MCP is unfinished. Treat the MCP like permissions: kept
 in lockstep, never an afterthought.
+
+## 🔴 CRITICAL — Keep the sales presentation in sync
+
+The partner sales presentation (`~/Documents/Programming/Avoqado-HQ/operations/marketing/platform-presentation/`)
+is the canonical "what Avoqado does" document — third parties sell from it. It must never fall
+behind the platform.
+
+**Whenever you add, change, or remove a customer-visible capability (feature, module, product,
+payment method, supported sector, tier packaging), you MUST update BOTH deliverables as part of
+the SAME change — never "later":** the full deck (`avoqado-presentacion.html`) AND the one-pager
+(`avoqado-one-pager.html`), then regenerate both PDFs following that folder's `README.md`.
+Updating only one of the two is an incomplete change. Internal refactors and bugfixes with no
+customer-visible impact are exempt.

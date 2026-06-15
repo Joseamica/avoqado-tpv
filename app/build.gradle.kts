@@ -276,6 +276,11 @@ android {
     }
 
     sourceSets {
+        // Expose Room's exported schema JSONs (app/schemas/) to instrumented tests so
+        // MigrationTestHelper can create a DB at an old version and validate migrations
+        // against the canonical schema. Required by AvoqadoDatabaseMigrationTest.
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+
         getByName("tutorialEmu") {
             // Reuse sandbox-specific implementation files for tutorial emulator builds.
             java.srcDirs("src/sandbox/java")
@@ -387,6 +392,13 @@ android {
         htmlReport = true
         htmlOutput = layout.buildDirectory.file("reports/lint-results-debug.html").get().asFile
     }
+}
+
+// Room schema export (app/schemas/, committed to git). Required so migrations can be
+// written against the exact DDL Room validates, and enables MigrationTestHelper later.
+// Zero runtime cost — JSON is generated at compile time only.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 // AngelPay ships a fat AAR with okhttp/okio classes included.
@@ -648,5 +660,6 @@ dependencies {
     androidTestImplementation("app.cash.turbine:turbine:1.0.0")  // Flow testing
     androidTestImplementation("com.google.truth:truth:1.1.5")  // Assertions
     androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")  // Coroutine testing
+    androidTestImplementation("androidx.room:room-testing:2.7.0")  // MigrationTestHelper (DB upgrade validation)
     kspAndroidTest("com.google.dagger:hilt-compiler:2.57")
 }

@@ -32,7 +32,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
 /**
  * Room database for Avoqado TPV local data persistence.
  *
- * **Current Version:** 17
+ * **Current Version:** 24
  * - v1 → v2: Added blumonSerialNumber to PendingPaymentEntity for merchant account tracking
  * - v2 → v3: Added merchantAccountId to PendingPaymentEntity (provider-agnostic migration)
  * - v3 → v4: Added rating to PendingPaymentEntity (user rating feature - 2025-01-11)
@@ -52,6 +52,12 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
  * - v17 → v18: Added tables + floor elements cache for offline floor plan (2026-02-03)
  * - v18 → v19: Schema hash fix (idempotent migration for external_id + table/floor cache) (2026-02-03)
  * - v19 → v20: Added line_position for stable item ordering (2026-02-03)
+ * - v20 → v21: Added mosaic_shortcut table for unified Checkout shortcuts (2026-05-08)
+ * - v21 → v22: Added angelpay_merchant_cache table (SDK 1.0.5 multi-merchant) (2026-05-18)
+ * - v22 → v23: Added idempotency_key to pending_payments (offline queue dedup) (2026-05-29)
+ * - v23 → v24: **🔴 CRITICAL FIX** - Rebuilt products table (category_color vs color drift from
+ *   MIGRATION_12_13) + normalized historical_periods indices (orphan index from MIGRATION_5_6).
+ *   Fixes "Migration didn't properly handle" crash-loop when updating devices installed ≤DB 12 (2026-06-12)
  *
  * **Entities:**
  * - PendingPaymentEntity: Offline queue for failed payment recordings
@@ -110,8 +116,8 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
         com.jaac.avoqado_tpv.core.data.local.entities.MosaicShortcutEntity::class, // ⭐ v21
         AngelPayMerchantCacheEntity::class // ⭐ v22: AngelPay SDK 1.0.5 multi-merchant cache
     ],
-    version = 23, // ⭐ Version 23: Persist idempotencyKey through offline payment queue (2026-05-29)
-    exportSchema = false // Set to true when adding migrations for production
+    version = 24, // ⭐ Version 24: Repair products/historical_periods schema drift (2026-06-12)
+    exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
 abstract class AvoqadoDatabase : RoomDatabase() {
@@ -1458,6 +1464,115 @@ abstract class AvoqadoDatabase : RoomDatabase() {
         val MIGRATION_22_23 = object : Migration(22, 23) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE pending_payments ADD COLUMN idempotency_key TEXT DEFAULT NULL")
+            }
+        }
+
+        /**
+         * Migration from version 23 to version 24: Repair schema drift in cache tables.
+         *
+         * **CRITICAL FIX (2026-06-12) — entity↔migration mismatch from Dec 2025**
+         *
+         * **Root cause:**
+         * - MIGRATION_12_13 added a column named `color` to `products`, but ProductEntity
+         *   declares `category_color` (the entity was changed 13 seconds after the migration
+         *   in a separate commit and the two never matched). Any device whose `products`
+         *   table came through the migration chain (DB ≤12 installs) has a missing
+         *   `category_color` + an orphan `color` → Room post-migration validation throws
+         *   "Migration didn't properly handle: products" → crash-loop at startup. Fresh
+         *   installs (schema generated from the entity) are unaffected, which is why this
+         *   stayed latent. Same failure mode MIGRATION_16_17 fixed for `pending_payments`.
+         * - MIGRATION_5_6 created an extra composite index on `historical_periods`
+         *   (`index_historical_periods_venue_grouping_period`) that the entity never
+         *   declared — Room expects exactly 2 indices, migrated devices carry 3 → same
+         *   validation crash for devices migrated from DB ≤5.
+         *
+         * **Strategy (minimal blast radius):**
+         * - `products` is rebuilt ONLY on drifted devices — detected by the missing
+         *   `category_color` column. Healthy devices (the vast majority: fresh installs
+         *   whose `products` already matches the entity) are left UNTOUCHED, so their menu
+         *   cache survives the update intact and there is no re-sync blank. Drifted devices
+         *   get a clean DROP + CREATE with the exact DDL Room expects (app/schemas/24.json)
+         *   — for them the cache (a 24h TTL cache) is repopulated on next menu load, a
+         *   negligible cost versus a startup crash-loop.
+         * - `historical_periods`: only the index set is normalized (drop orphan/legacy
+         *   indices, ensure canonical pair). Data rows are always preserved; on healthy
+         *   devices the DROP IF EXISTS / CREATE IF NOT EXISTS are no-ops.
+         * - Idempotent and safe to re-run; NO payment tables touched (pending_payments,
+         *   draft_orders intact).
+         *
+         * **DDL copied verbatim from Room's exported schema (app/schemas/.../24.json).**
+         */
+        val MIGRATION_23_24 = object : Migration(23, 24) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                // Detect the drift: a healthy `products` already has `category_color`; a
+                // device migrated from DB ≤12 has the orphan `color` instead.
+                fun columnExists(table: String, column: String): Boolean {
+                    database.query("PRAGMA table_info($table)").use { cursor ->
+                        val nameIndex = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(nameIndex) == column) return true
+                        }
+                    }
+                    return false
+                }
+
+                // --- products: rebuild ONLY if drifted (missing `category_color`). Healthy
+                // devices keep their cached menu — no DROP, no re-sync blank on update.
+                if (!columnExists("products", "category_color")) {
+                    database.execSQL("DROP TABLE IF EXISTS `products`")
+                    database.execSQL(
+                        """
+                        CREATE TABLE IF NOT EXISTS `products` (
+                            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            `product_id` TEXT NOT NULL,
+                            `venue_id` TEXT NOT NULL,
+                            `name` TEXT NOT NULL,
+                            `sku` TEXT NOT NULL,
+                            `price` TEXT NOT NULL,
+                            `category_id` TEXT NOT NULL,
+                            `category_name` TEXT NOT NULL,
+                            `description` TEXT,
+                            `emoji` TEXT NOT NULL,
+                            `image_url` TEXT,
+                            `available` INTEGER NOT NULL,
+                            `display_order` INTEGER NOT NULL,
+                            `track_inventory` INTEGER NOT NULL,
+                            `inventory_method` TEXT,
+                            `available_quantity` INTEGER,
+                            `modifier_groups_json` TEXT NOT NULL,
+                            `category_color` TEXT,
+                            `category_is_active` INTEGER NOT NULL,
+                            `cached_at` INTEGER NOT NULL
+                        )
+                        """.trimIndent()
+                    )
+                    // Indices with Room's canonical names (schemas/24.json)
+                    database.execSQL(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS `index_products_venue_id_product_id` ON `products` (`venue_id`, `product_id`)"
+                    )
+                    database.execSQL(
+                        "CREATE INDEX IF NOT EXISTS `index_products_venue_id_category_id` ON `products` (`venue_id`, `category_id`)"
+                    )
+                    database.execSQL(
+                        "CREATE INDEX IF NOT EXISTS `index_products_venue_id_available` ON `products` (`venue_id`, `available`)"
+                    )
+                    database.execSQL(
+                        "CREATE INDEX IF NOT EXISTS `index_products_cached_at` ON `products` (`cached_at`)"
+                    )
+                }
+
+                // --- historical_periods: normalize the index set to exactly what the
+                // entity declares. Drops the orphan composite index from MIGRATION_5_6
+                // and the legacy-named unique index, then recreates the canonical pair.
+                // Data rows are preserved (columns already match the entity).
+                database.execSQL("DROP INDEX IF EXISTS `index_historical_periods_venue_grouping_period`")
+                database.execSQL("DROP INDEX IF EXISTS `index_historical_periods_unique`")
+                database.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_historical_periods_venue_id_grouping_period_start` ON `historical_periods` (`venue_id`, `grouping`, `period_start`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_historical_periods_cached_at` ON `historical_periods` (`cached_at`)"
+                )
             }
         }
     }

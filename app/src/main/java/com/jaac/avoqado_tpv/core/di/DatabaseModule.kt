@@ -58,8 +58,9 @@ object DatabaseModule {
      *
      * **Configuration:**
      * - Name: "avoqado_database"
-     * - Migration: fallbackToDestructiveMigration() for development
-     *   → TODO: Add explicit migrations for production (preserves data across app updates)
+     * - Migrations: explicit chain 2→24 (see AvoqadoDatabase companion object).
+     *   NO blanket destructive fallback — a missing migration crashes loudly in QA
+     *   instead of silently wiping pending_payments/draft_orders in production.
      *
      * **World-Class Pattern:**
      * - Square POS: Uses Room.databaseBuilder with explicit migrations
@@ -101,12 +102,27 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_19_20,  // 🧾 Stable ordering (line_position)
                 AvoqadoDatabase.MIGRATION_20_21,  // 🛒 Mosaic shortcuts for unified Checkout
                 AvoqadoDatabase.MIGRATION_21_22,  // 💳 AngelPay multi-merchant offline cache (SDK 1.0.5)
-                AvoqadoDatabase.MIGRATION_22_23   // 🛡️ Persist idempotencyKey through offline payment queue
+                AvoqadoDatabase.MIGRATION_22_23,  // 🛡️ Persist idempotencyKey through offline payment queue
+                AvoqadoDatabase.MIGRATION_23_24   // 🔴 CRITICAL: Repair products/historical_periods schema drift
             )
 
-            // ⚠️ DEVELOPMENT ONLY: Destructive migration (data loss on schema change)
-            // Fallback for cases where explicit migration is missing
-            .fallbackToDestructiveMigration()
+            // 🛡️ NO blanket destructive fallback (removed 2026-06-12).
+            // A missing migration must FAIL LOUDLY (IllegalStateException at startup,
+            // caught in QA before the APK ships) instead of silently wiping the entire
+            // database — including pending_payments (card payments already approved by
+            // Blumon TPV but not yet recorded in the backend = real money) and
+            // draft_orders. This exact silent-wipe path shipped in production until now.
+            //
+            // The ONLY destructive path kept is DB v1 (Dec-2024 schema): no MIGRATION_1_2
+            // exists and the migration chain starts at 2→3, so v1 devices have always
+            // been wiped on update — this preserves that exact behavior for them while
+            // protecting v2+ from any future forgotten migration.
+            //
+            // DEV NOTE: if you change an @Entity without writing a migration, debug
+            // builds now crash at startup instead of wiping the DB. That is intentional
+            // (see .claude/rules/critical-warnings.md — Room Migration Checklist).
+            // Recover on a dev device with: adb uninstall <package> or clear app data.
+            .fallbackToDestructiveMigrationFrom(dropAllTables = true, 1)
 
             // ⚠️ DOWNGRADE SUPPORT (INSTALL_VERSION command rollback)
             // When installing an older version, the database schema will be newer than

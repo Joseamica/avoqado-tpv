@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+---
+
+## [2.5.6] - 2026-06-15
+
 ### **Fixed**
 
 - **Room: migración correctiva 23→24 — crash-loop `Migration didn't properly handle: products` al actualizar terminales viejas**: `MIGRATION_12_13` (dic-2025) agregó la columna `color` a `products`, pero `ProductEntity` declara `category_color` (commits separados por 13 segundos que nunca coincidieron). Cualquier terminal cuya tabla `products` venga de la cadena de migraciones (instalada con DB ≤12) falla la validación post-migración de Room al actualizar y entra en **crash-loop al arrancar** (recuperable solo con factory reset — mismo modo de fallo que `MIGRATION_16_17` corrigió para `pending_payments` en ene-2026, y explicación probable de por qué AVQD-2841653485 necesitó factory reset además del self-update). Adicionalmente `MIGRATION_5_6` creó un índice compuesto extra en `historical_periods` que la entidad no declara (3 índices donde Room espera exactamente 2 — misma falla de validación para dispositivos con DB ≤5).

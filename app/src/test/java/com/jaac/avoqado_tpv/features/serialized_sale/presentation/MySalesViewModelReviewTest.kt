@@ -31,7 +31,7 @@ import retrofit2.Response
  * Unit tests for back-office review status surfacing in `MySalesViewModel`.
  *
  * Covers:
- *   - Verification status enum mapping (PENDING/COMPLETED/FAILED/null)
+ *   - Verification status enum mapping (PENDING/COMPLETED/FAILED/REJECTED/null)
  *   - Rejection reason parsing
  *   - Socket event triggers a refetch (real-time refresh from dashboard)
  *   - Backwards compat — null verification fields don't crash
@@ -100,8 +100,32 @@ class MySalesViewModelReviewTest {
         assertThat(MySalesViewModel.parseVerificationStatus("PROCESSING")).isEqualTo(VerificationReviewStatus.PENDING)
         assertThat(MySalesViewModel.parseVerificationStatus("COMPLETED")).isEqualTo(VerificationReviewStatus.COMPLETED)
         assertThat(MySalesViewModel.parseVerificationStatus("FAILED")).isEqualTo(VerificationReviewStatus.FAILED)
+        assertThat(MySalesViewModel.parseVerificationStatus("REJECTED")).isEqualTo(VerificationReviewStatus.REJECTED)
         // Unknown values fall back to NONE rather than crash
         assertThat(MySalesViewModel.parseVerificationStatus("FUTURE_STATUS")).isEqualTo(VerificationReviewStatus.NONE)
+    }
+
+    @Test
+    fun `REJECTED verification surfaces as terminal — no rejection reasons, note preserved`() = runTest {
+        stubMySales(
+            listOf(
+                saleItem(
+                    verificationStatus = "REJECTED",
+                    rejectionReasons = null,
+                    reviewNotes = "No se logró la portabilidad, cliente desistió"
+                )
+            )
+        )
+
+        val vm = createViewModel()
+        advanceUntilIdle()
+
+        val sale = vm.uiState.value.salesByDay.values.flatten().first()
+        assertThat(sale.verificationStatus).isEqualTo(VerificationReviewStatus.REJECTED)
+        assertThat(sale.rejectionReasons).isEmpty()
+        assertThat(sale.reviewNotes).isEqualTo("No se logró la portabilidad, cliente desistió")
+
+        vm.viewModelScope.cancel()
     }
 
     @Test

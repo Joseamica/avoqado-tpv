@@ -39,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -472,6 +473,12 @@ private fun VerificationStatusBadge(
             MaterialTheme.avoqadoColors.statusError.copy(alpha = 0.15f),
             MaterialTheme.avoqadoColors.statusError,
         )
+        VerificationReviewStatus.REJECTED -> Triple(
+            // Terminal — sale lost. Solid red chip (no "toca para corregir"); not actionable.
+            "Rechazada",
+            MaterialTheme.avoqadoColors.statusError,
+            Color.White,
+        )
         VerificationReviewStatus.NONE -> return
     }
 
@@ -490,27 +497,28 @@ private fun VerificationStatusBadge(
             )
         }
 
-        if (status == VerificationReviewStatus.FAILED) {
-            if (rejectionReasons.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(2.dp))
-                rejectionReasons.forEach { reason ->
-                    Text(
-                        text = "• ${reason.label}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.avoqadoColors.statusError,
-                        fontSize = 11.sp,
-                    )
-                }
-            }
-            if (!reviewNotes.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(2.dp))
+        // Rejection reasons only apply to the fixable "Revisar documentación" (FAILED) outcome.
+        if (status == VerificationReviewStatus.FAILED && rejectionReasons.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(2.dp))
+            rejectionReasons.forEach { reason ->
                 Text(
-                    text = reviewNotes,
+                    text = "• ${reason.label}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MaterialTheme.avoqadoColors.statusError,
                     fontSize = 11.sp,
                 )
             }
+        }
+        // The back-office note (motivo) is shown for both FAILED ("qué corregir") and
+        // REJECTED ("por qué se perdió la venta").
+        if ((status == VerificationReviewStatus.FAILED || status == VerificationReviewStatus.REJECTED) && !reviewNotes.isNullOrBlank()) {
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = reviewNotes,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+            )
         }
     }
 }

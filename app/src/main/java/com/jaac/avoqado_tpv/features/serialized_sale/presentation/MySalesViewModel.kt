@@ -60,7 +60,8 @@ enum class VerificationReviewStatus {
     NONE,       // No verification record exists (or legacy backend)
     PENDING,    // Photos uploaded, waiting for back-office to act
     COMPLETED,  // Back-office approved → "Venta correcta"
-    FAILED      // Back-office rejected → "Revisar documentación"
+    FAILED,     // Back-office rejected, fixable → "Revisar documentación" (promoter re-uploads)
+    REJECTED    // Terminal: sale lost (couldn't link/port, customer gone) → "Rechazada". Not correctable.
 }
 
 /** Rejection reasons echoed from backend; matches enum SaleVerificationRejectionReason. */
@@ -220,6 +221,7 @@ class MySalesViewModel @Inject constructor(
             "PENDING", "PROCESSING" -> VerificationReviewStatus.PENDING
             "COMPLETED" -> VerificationReviewStatus.COMPLETED
             "FAILED" -> VerificationReviewStatus.FAILED
+            "REJECTED" -> VerificationReviewStatus.REJECTED
             else -> VerificationReviewStatus.NONE
         }
     }

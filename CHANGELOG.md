@@ -9,6 +9,16 @@
 
 ---
 
+## [2.5.7] - 2026-06-16
+
+### **Added**
+
+- **"Mis Ventas" — estado "Rechazada" para ventas perdidas**: nuevo estado de verificación `REJECTED` (terminal: no se logró la vinculación/portabilidad o el cliente desistió), distinto de `FAILED` ("Revisar documentación", que el promotor SÍ puede corregir re-subiendo fotos). Se muestra como chip rojo sólido **"Rechazada"** con el motivo del back-office.
+    - **No accionable**: a diferencia de `FAILED`, una venta `REJECTED` **no es tocable** (no lleva al flujo de corrección — está perdida) y **no aparece en la sección "Por revisar"** (esa la alimenta el backend vía `getSalesToReview()`, que excluye REJECTED).
+    - **Retrocompatible**: estados desconocidos siguen cayendo a `NONE` sin crashear; el estado solo se muestra cuando el backend envía `"REJECTED"`. Archivos: `MySalesViewModel.kt` (enum + mapeo), `MySalesScreen.kt` (badge + motivo). `MySalesViewModelReviewTest` 8/8 verde.
+
+---
+
 ## [2.5.6] - 2026-06-15
 
 ### **Fixed**

@@ -149,8 +149,14 @@ class MySalesViewModel @Inject constructor(
                         .getDisplayName(TextStyle.FULL, Locale("es", "MX"))
                         .replaceFirstChar { it.uppercase() }
 
-                    _uiState.value = MySalesUiState(
+                    // Preserve the cross-month "Por revisar" cluster (salesToReview) — it is
+                    // owned by loadSalesToReview(). Rebuilding the whole state object here would
+                    // reset it to emptyList() (its default), so the pinned cluster and its legend
+                    // would silently vanish on every month load / refresh. Use copy() so only the
+                    // month fields change and the cluster survives.
+                    _uiState.value = _uiState.value.copy(
                         isLoading = false,
+                        error = null,
                         month = data.month,
                         monthDisplay = monthDisplay,
                         totalSales = data.totalSales,
@@ -201,6 +207,10 @@ class MySalesViewModel @Inject constructor(
         val current = YearMonth.parse(currentMonth)
         val target = current.plusMonths(delta.toLong())
         loadSales(target.format(monthFormat))
+        // Re-sync the cross-month "Por revisar" cluster too, so a stale snapshot (e.g. a sale
+        // rejected by the back-office while a socket event was missed) can't linger across
+        // month navigation.
+        loadSalesToReview()
     }
 
     /**

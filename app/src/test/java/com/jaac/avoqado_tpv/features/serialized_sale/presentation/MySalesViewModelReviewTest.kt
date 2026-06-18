@@ -8,6 +8,8 @@ import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.features.serialized_sale.data.dto.MySaleItem
 import com.jaac.avoqado_tpv.features.serialized_sale.data.dto.MySalesData
 import com.jaac.avoqado_tpv.features.serialized_sale.data.dto.MySalesResponse
+import com.jaac.avoqado_tpv.features.serialized_sale.data.dto.SalesToReviewData
+import com.jaac.avoqado_tpv.features.serialized_sale.data.dto.SalesToReviewResponse
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -89,6 +91,14 @@ class MySalesViewModelReviewTest {
             data = MySalesData(month = "2026-04", totalSales = items.size, totalAmount = 0.0, sales = items)
         )
         coEvery { apiService.getMySalesHistory(any(), any(), any()) } returns Response.success(body)
+    }
+
+    private fun stubSalesToReview(items: List<MySaleItem>) {
+        val body = SalesToReviewResponse(
+            success = true,
+            data = SalesToReviewData(totalToReview = items.size, sales = items)
+        )
+        coEvery { apiService.getSalesToReview() } returns Response.success(body)
     }
 
     private fun createViewModel(): MySalesViewModel = MySalesViewModel(apiService, socketManager)
@@ -238,6 +248,78 @@ class MySalesViewModelReviewTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) { apiService.getMySalesHistory(any(), any(), any()) }
+
+        vm.viewModelScope.cancel()
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Regression: the pinned "Por revisar" cluster (salesToReview) must not be
+    // clobbered by loadSales(). It is a cross-month feed owned by
+    // loadSalesToReview(); loadSales() rebuilding the whole UI state used to
+    // reset it to emptyList(), so navigating months / refreshing the month
+    // made the cluster (and its legend) silently disappear. (Isaac, 2026-06-16)
+    // ──────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `navigateMonth keeps the Por revisar cluster — loadSales must not clobber salesToReview`() = runTest {
+        stubMySales(listOf(saleItem(verificationStatus = "COMPLETED")))
+        stubSalesToReview(listOf(saleItem(id = "rev-1", verificationStatus = "FAILED")))
+
+        val vm = createViewModel()
+        advanceUntilIdle()
+
+        // Precondition: the cross-month cluster loaded during init.
+        assertThat(vm.uiState.value.salesToReview).hasSize(1)
+
+        // Navigating months reloads only the month list; the pinned cluster must survive.
+        vm.navigateMonth(-1)
+        advanceUntilIdle()
+
+        assertThat(vm.uiState.value.salesToReview).hasSize(1)
+        assertThat(vm.uiState.value.salesToReview.first().id).isEqualTo("rev-1")
+
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `navigateMonth re-syncs the Por revisar cluster from the server`() = runTest {
+        stubMySales(listOf(saleItem(verificationStatus = "COMPLETED")))
+        stubSalesToReview(listOf(saleItem(id = "rev-1", verificationStatus = "FAILED")))
+
+        val vm = createViewModel()
+        advanceUntilIdle()
+        // Cluster fetched once during init.
+        coVerify(exactly = 1) { apiService.getSalesToReview() }
+
+        // Changing months must re-fetch the cross-month cluster so a stale snapshot
+        // (a sale rejected while a socket event was missed) can't linger.
+        vm.navigateMonth(-1)
+        advanceUntilIdle()
+
+        coVerify(atLeast = 2) { apiService.getSalesToReview() }
+
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `refreshing the current month preserves the Por revisar cluster`() = runTest {
+        stubMySales(listOf(saleItem(verificationStatus = "COMPLETED")))
+        stubSalesToReview(
+            listOf(
+                saleItem(id = "rev-1", verificationStatus = "FAILED"),
+                saleItem(id = "rev-2", verificationStatus = "PENDING"),
+            )
+        )
+
+        val vm = createViewModel()
+        advanceUntilIdle()
+        assertThat(vm.uiState.value.salesToReview).hasSize(2)
+
+        // A plain month reload (same month) must not wipe the cluster.
+        vm.loadSales("2026-04")
+        advanceUntilIdle()
+
+        assertThat(vm.uiState.value.salesToReview).hasSize(2)
 
         vm.viewModelScope.cancel()
     }

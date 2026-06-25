@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### **Changed**
+
+- **Logo V2 (rebranding)**: nuevos íconos de launcher (mipmap mdpi→xxxhdpi, fondo negro + mark Q rediseñado, foreground en safe-zone) y logos in-app — `logo_avoqado.png` (lockup) y `logo_avoqado_black.png` (silueta negra del recibo térmico, usada por `PrinterManager`). Nuevo verde de marca #7ADD2C. Solo assets; sin cambios de tema. Ícono sandbox de dev sin cambios.
+
 ---
 
 ## [2.5.7] - 2026-06-16

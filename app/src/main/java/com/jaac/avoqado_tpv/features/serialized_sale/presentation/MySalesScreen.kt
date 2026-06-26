@@ -459,17 +459,17 @@ private fun VerificationStatusBadge(
 ) {
     val (label, bg, fg) = when (status) {
         VerificationReviewStatus.PENDING -> Triple(
-            "En revisión por Administración",
+            "En revisión por administración",
             MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.15f),
             MaterialTheme.avoqadoColors.statusWarning,
         )
         VerificationReviewStatus.COMPLETED -> Triple(
-            "Venta correcta",
+            "Aprobada",
             MaterialTheme.avoqadoColors.statusSuccess.copy(alpha = 0.15f),
             MaterialTheme.avoqadoColors.statusSuccess,
         )
         VerificationReviewStatus.FAILED -> Triple(
-            "Revisar documentación",
+            "Revisar por promotor",
             MaterialTheme.avoqadoColors.statusError.copy(alpha = 0.15f),
             MaterialTheme.avoqadoColors.statusError,
         )

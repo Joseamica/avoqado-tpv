@@ -272,7 +272,7 @@ private fun RejectionReasonsBanner(
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "Revisar documentación",
+                    text = "Revisar por promotor",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = errorColor,
@@ -336,7 +336,7 @@ private fun ResubmittedBanner() {
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = "Documentación reenviada. En revisión por back-office.",
+                text = "Documentación reenviada. En revisión por administración.",
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurface,

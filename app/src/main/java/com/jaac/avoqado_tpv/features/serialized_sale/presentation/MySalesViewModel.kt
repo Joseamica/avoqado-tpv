@@ -58,9 +58,9 @@ data class SaleItem(
 /** Back-office review status for the photo documentation attached to a sale. */
 enum class VerificationReviewStatus {
     NONE,       // No verification record exists (or legacy backend)
-    PENDING,    // Photos uploaded, waiting for back-office to act
-    COMPLETED,  // Back-office approved → "Venta correcta"
-    FAILED,     // Back-office rejected, fixable → "Revisar documentación" (promoter re-uploads)
+    PENDING,    // Photos uploaded, waiting for back-office to act → "En revisión por administración"
+    COMPLETED,  // Back-office approved → "Aprobada"
+    FAILED,     // Back-office rejected, fixable → "Revisar por promotor" (promoter re-uploads)
     REJECTED    // Terminal: sale lost (couldn't link/port, customer gone) → "Rechazada". Not correctable.
 }
 

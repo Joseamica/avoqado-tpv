@@ -7,9 +7,23 @@
 
 ## [Unreleased]
 
+---
+
+## [2.5.8] - 2026-06-25
+
 ### **Changed**
 
 - **Logo V2 (rebranding)**: nuevos íconos de launcher (mipmap mdpi→xxxhdpi, fondo negro + mark Q rediseñado, foreground en safe-zone) y logos in-app — `logo_avoqado.png` (lockup) y `logo_avoqado_black.png` (silueta negra del recibo térmico, usada por `PrinterManager`). Nuevo verde de marca #7ADD2C. Solo assets; sin cambios de tema. Ícono sandbox de dev sin cambios.
+- **Copy de estados de verificación ("Mis Ventas" y revisión de ventas)**: textos unificados en `MySalesScreen`, `WelcomeScreen`, `PendingVerificationsScreen` y `SaleCorrectionScreen`:
+  - `PENDING`: "En revisión por **Administración**" → "En revisión por **administración**" (minúscula).
+  - `COMPLETED`: "Venta correcta" → "**Aprobada**".
+  - `FAILED`: "Revisar documentación" → "**Revisar por promotor**".
+  - Banner de reenvío: "En revisión por **back-office**" → "En revisión por **administración**".
+  - Solo copy/etiquetas; sin cambios de lógica.
+
+### **Fixed**
+
+- **"Mis Ventas" preserva el cluster "Por revisar" al recargar el mes**: `loadSales()` reconstruía `MySalesUiState` con el constructor, que omitía `salesToReview` (default `emptyList`) y borraba el cluster pineado "Por revisar" (feed cross-month que solo mantiene `loadSalesToReview()`) y su leyenda en cada carga/refresh. Con 2+ ventas por revisar la leyenda desaparecía, la venta `FAILED` quedaba en la lista del día y el conteo mostraba (1) habiendo 2. Fix: `loadSales()` usa `_uiState.value.copy(...)` (también resuelve el race init/socket); `navigateMonth()` re-sincroniza con `loadSalesToReview()`. 3 tests de regresión en `MySalesViewModelReviewTest`. (Isaac, Asana 1215587362953156)
 
 ---
 

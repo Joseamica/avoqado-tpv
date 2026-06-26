@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### **Fixed**
+
+- **Splash con logo viejo (rebranding V2)**: `drawable/isotipo.png` seguía con el mark anterior (733×893). Lo usan el **splash nativo** (`windowSplashScreenAnimatedIcon` en `themes.xml`) y el Compose **`SplashScreen`** (`Image(painterResource(R.drawable.isotipo))`), así que ambos mostraban el logo viejo al abrir la app. Reemplazado por el isotipo V2. Solo asset; sin cambios de lógica ni de tema.
+
 ---
 
 ## [2.5.8] - 2026-06-25

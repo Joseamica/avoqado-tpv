@@ -321,6 +321,12 @@ sealed class NavRoute(val route: String) {
     data object MySales : NavRoute("my_sales")
 
     /**
+     * My Commissions ("Mis Comisiones") — the promoter's own cash-out balance +
+     * same-day withdrawal. Gated by SERIALIZED_INVENTORY + cash-out:view_own.
+     */
+    data object MyCommissions : NavRoute("my_commissions")
+
+    /**
      * Sale Correction screen — re-upload rejected documentation for a sale.
      *
      * Reached from "Mis Ventas" when the promoter taps a sale flagged

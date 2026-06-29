@@ -955,6 +955,10 @@ fun AppNavigation(
                     // 📊 Navigate to My Sales screen (promoter sales history)
                     navController.navigate(NavRoute.MySales.route)
                 },
+                onNavigateToMyCommissions = {
+                    // 💰 Navigate to My Commissions screen (promoter cash-out balance + withdrawal)
+                    navController.navigate(NavRoute.MyCommissions.route)
+                },
                 onNavigateToMisSims = {
                     // 📱 Navigate to Mis SIMs screen (promoter SIM custody inbox)
                     navController.navigate(NavRoute.MisSims.route)
@@ -2181,6 +2185,13 @@ fun AppNavigation(
                 onNavigateToCorrection = { verificationId ->
                     navController.navigate(NavRoute.SaleCorrection.createRoute(verificationId))
                 }
+            )
+        }
+
+        // 💰 My Commissions Screen - Promoter's cash-out balance + same-day withdrawal
+        composable(NavRoute.MyCommissions.route) {
+            com.jaac.avoqado_tpv.features.cash_out.presentation.MyCommissionsScreen(
+                onNavigateBack = { navController.safePopBackStack() }
             )
         }
 

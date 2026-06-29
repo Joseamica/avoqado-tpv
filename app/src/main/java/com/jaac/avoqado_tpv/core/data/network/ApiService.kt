@@ -1396,6 +1396,23 @@ interface ApiService {
     ): Response<com.jaac.avoqado_tpv.features.serialized_sale.data.dto.MySalesResponse>
 
     /**
+     * Cash Out — promoter self-service ("Mis Comisiones").
+     * GET /tpv/cash-out/my-saldo — the current promoter's OWN available balance +
+     * whether today is an active withdrawal day. Self-scoped (staffId/venueId come
+     * from the session). Gated by SERIALIZED_INVENTORY + cash-out:view_own.
+     */
+    @GET("tpv/cash-out/my-saldo")
+    suspend fun getPromoterCashOut(): Response<com.jaac.avoqado_tpv.features.cash_out.data.PromoterCashOutResponse>
+
+    /**
+     * POST /tpv/cash-out/withdraw — request a withdrawal ("Retirar") of the full
+     * available balance. Only allowed on a configured active day (enforced server
+     * side). Gated by SERIALIZED_INVENTORY + cash-out:withdraw.
+     */
+    @POST("tpv/cash-out/withdraw")
+    suspend fun withdrawCashOut(): Response<com.jaac.avoqado_tpv.features.cash_out.data.WithdrawResponse>
+
+    /**
      * Get the promoter's "Por revisar" feed (cross-month).
      *
      * GET /tpv/serialized-inventory/sales-to-review

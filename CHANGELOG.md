@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+---
+
+## [2.6.0] - 2026-06-29
+
+### **Added**
+
+- **Mis Comisiones (Cash Out promotor, self-service)**: nueva pantalla para que el promotor vea su **saldo de comisión** disponible y solicite un **retiro ("Retirar")** desde la TPV. Aparece en el menú (WelcomeScreen) donde haya **inventario serializado activo** + permiso `cash-out:view_own`. El retiro solo se permite en un **día activo** configurado (lo valida el backend; el botón se deshabilita si no, y se muestra el mensaje del backend, ej. "Hoy no es un día habilitado para retirar"). Self-scoped: el backend lee `staffId`/`venueId` de la sesión — la TPV nunca envía identidad. Dinero en pesos (BigDecimal). Endpoints `GET tpv/cash-out/my-saldo` + `POST tpv/cash-out/withdraw`. Archivos nuevos: `features/cash_out/` (`CashOutDto`, `MyCommissionsViewModel`, `MyCommissionsScreen`); wiring en `ApiService`, `NavRoute.MyCommissions`, `AppNavigation`, `WelcomeScreen`.
+
 ### **Fixed**
 
 - **Splash con logo viejo (rebranding V2)**: `drawable/isotipo.png` seguía con el mark anterior (733×893). Lo usan el **splash nativo** (`windowSplashScreenAnimatedIcon` en `themes.xml`) y el Compose **`SplashScreen`** (`Image(painterResource(R.drawable.isotipo))`), así que ambos mostraban el logo viejo al abrir la app. Reemplazado por el isotipo V2. Solo asset; sin cambios de lógica ni de tema.

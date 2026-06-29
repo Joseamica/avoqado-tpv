@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.PointOfSale
+import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Schedule
@@ -145,6 +146,7 @@ fun WelcomeScreen(
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Telecom: Vender flow (barcode → price → payment)
     onNavigateToInventoryRegister: () -> Unit = {},  // 📦 Telecom: Alta de productos flow
     onNavigateToMySales: () -> Unit = {},  // 📊 Telecom: My sales history
+    onNavigateToMyCommissions: () -> Unit = {},  // 💰 Telecom: My commissions
     onNavigateToMisSims: () -> Unit = {},  // 📱 Telecom: SIM custody inbox
     onNavigateToTimeclock: () -> Unit = {},  // ⏱ Navigate to TimeclockScreen from WelcomeScreen
     onNavigateToTimeclockForClockOut: () -> Unit = {},  // ⏱ Navigate to TimeclockScreen for clock-out
@@ -305,6 +307,7 @@ fun WelcomeScreen(
         onNavigateToSerializedSale = onNavigateToSerializedSale,  // 📱 Telecom: Vender
         onNavigateToInventoryRegister = onNavigateToInventoryRegister,  // 📦 Telecom: Alta
         onNavigateToMySales = onNavigateToMySales,  // 📊 Telecom: Mis Ventas
+        onNavigateToMyCommissions = onNavigateToMyCommissions,  // 💰 Telecom: Mis Comisiones
         onNavigateToMisSims = onNavigateToMisSims,  // 📱 Telecom: Mis SIMs
         currentTimeEntry = currentTimeEntry,
         requireClockInToLogin = requireClockInToLogin,
@@ -530,6 +533,7 @@ private fun WelcomeScreenContent(
     onNavigateToSerializedSale: () -> Unit = {},  // 📱 Telecom: Vender flow
     onNavigateToInventoryRegister: () -> Unit = {},  // 📦 Telecom: Alta de productos
     onNavigateToMySales: () -> Unit = {},  // 📊 Telecom: My sales history
+    onNavigateToMyCommissions: () -> Unit = {},  // 💰 Telecom: My commissions
     onNavigateToMisSims: () -> Unit = {},  // 📱 Telecom: SIM custody inbox
     currentTimeEntry: TimeEntry? = null,  // ⏱ Current attendance entry
     requireClockInToLogin: Boolean = false,  // ⏱ Whether clock-in is required
@@ -594,12 +598,15 @@ private fun WelcomeScreenContent(
     // custody, not about selling. Gate with the canonical custody permission
     // so non-promoter roles that happen to have :sell don't see the tile.
     var hasSimCustodyAcceptPermission by remember { mutableStateOf(false) }
+    // 💰 Cash Out (Mis Comisiones) — promoter self-service commission withdrawal.
+    var hasCashOutPermission by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         val result = permissionsRepository.getPermissions(forceRefresh = false)
         val permissions = result.getOrNull()
         hasInventoryRegisterPermission = permissions?.contains("serialized-inventory:create") ?: false
         hasInventorySellPermission = permissions?.contains("serialized-inventory:sell") ?: false
         hasSimCustodyAcceptPermission = permissions?.contains("tpv-sim-custody:accept") ?: false
+        hasCashOutPermission = permissions?.contains("cash-out:view_own") ?: false
     }
 
     // 🥝 Kiosk mode state
@@ -692,6 +699,19 @@ private fun WelcomeScreenContent(
                         label = "Mis Ventas",
                         enabled = true,
                         onClick = onNavigateToMySales
+                    )
+                )
+            }
+
+            // 💰 Mis Comisiones — promoter's cash-out balance + same-day withdrawal
+            // Founder's gate: appears wherever serialized inventory is on + cash-out:view_own
+            if (isSerializedInventoryMode && hasCashOutPermission) {
+                add(
+                    ActionButton(
+                        icon = Icons.Default.Payments,
+                        label = "Mis Comisiones",
+                        enabled = true,
+                        onClick = onNavigateToMyCommissions
                     )
                 )
             }

@@ -153,4 +153,22 @@ data class SerializedSaleUiState(
 
     val displayPrice: BigDecimal?
         get() = enteredPrice.toBigDecimalOrNull()
+
+    /**
+     * True when the scanned item's price is centrally fixed and the seller must
+     * NOT be able to edit it — e.g. the promoter SKUs "$100 de promotor" and
+     * "E-SIM de promotor". For these the price field renders read-only, locked
+     * to the suggested price.
+     *
+     * Rule (Asana 1216097720443488, opción 1): an organization-level category
+     * (venueId == null) that carries a suggested price. Venue-created categories
+     * keep venueId set and stay editable; org categories without a suggested
+     * price stay editable too (there is no fixed price to lock to).
+     */
+    val isPriceLocked: Boolean
+        get() {
+            val available = scanResult as? ScanResult.Available ?: return false
+            val category = available.category ?: return false
+            return category.venueId == null && available.suggestedPrice != null
+        }
 }

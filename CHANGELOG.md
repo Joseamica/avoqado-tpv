@@ -7,6 +7,24 @@
 
 ## [Unreleased]
 
+### **Fixed**
+
+- **Cobro "se queda pasmada" cuando el emisor declina (causa raíz)**: el SDK de Blumon entrega los rechazos del emisor (ej. **"PAGO NO PERMITIDO EMISOR"**) como un `SaleIccResponse` **no-nulo** con `authorization` **vacío** + `description` con el motivo (`error=null`). El flujo en `performOnlineAuthorization` solo checaba `response == null`, así que tomaba el rechazo como **éxito** y avanzaba a `CompleteEmvTrans` (finalización del chip) → **se colgaba** sin mostrar nada (caso Arantza, AVQD-2840744149, tarjeta Santander crédito $17,000 — confirmado en portal Blumon + BetterStack: no se cobró, app v2.5.3 en línea). Otras terminales sí mostraban el motivo porque ESOS rechazos vuelven como fallo (Left), que la app ya pintaba. **Fix**: guardia en la rama de éxito de `performOnlineAuthorization` (sandbox+production, idéntico) — si `saleData.authorization` viene vacío, se trata como rechazo y se enruta por la **ruta de error ya existente y probada** (`response == null`), mostrando `saleData.description`. **No toca `CompleteEmvTrans` ni los refunds.** Seguridad del discriminador verificada contra producción: **2850/2850 aprobaciones reales de Blumon (CHIP+CONTACTLESS) tienen `authorization` no-vacío** → cero falsas declinaciones. Pendiente: repro en PAX física (aprobación sigue pasando + declinación ahora muestra el motivo).
+
+- **PIN del cliente: el spinner confundía ("¿cuándo tecleo?")**: durante la captura de PIN, `PaymentLoadingContent` mostraba a la vez "Ingrese su PIN" + ● ● ● ● **y** un `CircularProgressIndicator` girando, que los clientes leían como "está cargando" sin saber que era su turno de teclear (reporte de campo, Arantza 2026-06-29). Ahora el spinner se oculta mientras el SDK pide PIN (`showPinSection`); la sección "Ingrese su PIN" de arriba queda como única señal. Solo UI — **no toca el flujo de cobro**. Nuevo `@Preview` del estado con PIN (`PaymentLoadingContentPinPreview`).
+
+### **Changed**
+
+- **Telemetría de "pago pasmado" ahora visible para la autorización online**: `reportProcessingTimeoutIfNeeded` (PaymentViewModel sandbox+production) solo reportaba a Crashlytics si el mensaje contenía "chip", así que un cuelgue ≥45s en **"Autorizando con banco…"** (paso `SaleIcc` online) quedaba **invisible** — exactamente el caso "se queda pasmada" de Arantza (AVQD-2840744149). Se quitó el filtro `"chip"`: ahora cualquier stall ≥45s emite el non-fatal `recordPaymentEmvStall` (flowOrigin/mensaje/segundos), para diagnosticar el cuelgue remoto sin `adb logcat`. **Solo observabilidad — no cambia el control de flujo del pago.** 3 tests nuevos en `PaymentViewModelTest` (dispara con mensaje no-"chip" ≥45s, no dispara <45s, deduplica). NO se agregó timeout a `SaleIcc` (riesgo de doble cobro, vetado por Edgardo).
+
+---
+
+## [2.6.1] - 2026-06-29
+
+### **Changed**
+
+- **Vender SIM: precio fijo (no editable) para SKUs de promotor**: en la pantalla "Vender SIM" (`SerializedSaleScreen`) el campo **"Precio de venta"** ya no es editable cuando el SIM pertenece a una **categoría a nivel organización con precio sugerido** — p. ej. **"$100 de promotor"** y **"E-SIM de promotor"** ($100). Antes el promotor podía abrir el numpad y cambiar el monto; ahora el campo se muestra de solo lectura, con ícono de candado y leyenda "Precio fijo de promotor — no editable", fijado al precio central de la categoría. Las categorías creadas por la tienda (venue) siguen editables, igual que las categorías org **sin** precio sugerido (no hay precio fijo al cual anclar). Regla en `SerializedSaleUiState.isPriceLocked` (org-level = `venueId == null` + `suggestedPrice != null`); cambio **solo en la app**, sin backend ni Dashboard. 5 tests nuevos en `SerializedSaleUiStateTest`. (Asana 1216097720443488, opción 1).
+
 ---
 
 ## [2.6.0] - 2026-06-29

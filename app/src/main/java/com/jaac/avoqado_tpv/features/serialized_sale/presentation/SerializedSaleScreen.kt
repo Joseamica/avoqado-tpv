@@ -333,6 +333,7 @@ fun SerializedSaleScreen(
 
                             // Step N: Price input
                             if (priceStep != null) {
+                                val priceLocked = uiState.isPriceLocked
                                 StepRow(priceStep) {
                                     Text(
                                         text = "Precio de venta",
@@ -341,20 +342,30 @@ fun SerializedSaleScreen(
                                     )
                                     Spacer(modifier = Modifier.height(Spacing.Space1))
 
-                                    // Clickable price display — opens numpad dialog
+                                    // Price display. For promoter SKUs ($100 de promotor,
+                                    // E-SIM de promotor, etc.) the price is centrally fixed:
+                                    // render read-only (no numpad, lock icon). Otherwise the
+                                    // surface is clickable and opens the numpad dialog.
                                     Surface(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .clickable { showAmountInput = true },
+                                            .then(
+                                                if (priceLocked) Modifier
+                                                else Modifier.clickable { showAmountInput = true }
+                                            ),
                                         shape = RoundedCornerShape(50),
                                         border = androidx.compose.foundation.BorderStroke(
                                             1.dp,
-                                            if (uiState.enteredPrice.isNotEmpty())
-                                                MaterialTheme.colorScheme.primary
-                                            else
-                                                MaterialTheme.colorScheme.outline
+                                            when {
+                                                priceLocked -> MaterialTheme.colorScheme.outline
+                                                uiState.enteredPrice.isNotEmpty() -> MaterialTheme.colorScheme.primary
+                                                else -> MaterialTheme.colorScheme.outline
+                                            }
                                         ),
-                                        color = MaterialTheme.colorScheme.surface
+                                        color = if (priceLocked)
+                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                                        else
+                                            MaterialTheme.colorScheme.surface
                                     ) {
                                         Row(
                                             modifier = Modifier
@@ -376,12 +387,22 @@ fun SerializedSaleScreen(
                                             )
                                             Spacer(modifier = Modifier.weight(1f))
                                             Icon(
-                                                Icons.Default.Edit,
-                                                contentDescription = "Editar precio",
+                                                imageVector = if (priceLocked) Icons.Default.Lock else Icons.Default.Edit,
+                                                contentDescription = if (priceLocked) "Precio fijo" else "Editar precio",
                                                 modifier = Modifier.size(20.dp),
                                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
+                                    }
+
+                                    // Caption explaining why the price can't be edited
+                                    if (priceLocked) {
+                                        Spacer(modifier = Modifier.height(Spacing.Space1))
+                                        Text(
+                                            text = "Precio fijo de promotor — no editable",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
                                 }
 

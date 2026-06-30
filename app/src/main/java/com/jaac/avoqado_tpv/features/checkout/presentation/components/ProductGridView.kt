@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.checkout.presentation.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -41,11 +42,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.ordering.domain.CategoryColors
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
@@ -263,7 +268,8 @@ private fun ProductTile(product: Product, onClick: () -> Unit) {
         enabled = product.available,
     ) {
         Column {
-            // Top thumbnail area — initials over a tinted background.
+            // Top thumbnail area — product photo if available, else initials
+            // over a tinted background.
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -271,15 +277,27 @@ private fun ProductTile(product: Product, onClick: () -> Unit) {
                     .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
                     .background(tint.copy(alpha = 0.85f)),
             ) {
-                Text(
-                    text = product.name.take(2).uppercase(),
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.White,
-                    modifier = Modifier
-                        .align(Alignment.BottomStart)
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                )
+                if (!product.imageUrl.isNullOrEmpty()) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(LocalContext.current)
+                            .data(product.imageUrl)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = product.name,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                } else {
+                    Text(
+                        text = product.name.take(2).uppercase(),
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                    )
+                }
                 if (product.hasModifiers) {
                     Box(
                         modifier = Modifier
@@ -305,9 +323,12 @@ private fun ProductTile(product: Product, onClick: () -> Unit) {
                     text = product.name,
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
+                    maxLines = 1,
+                    softWrap = false,
                     color = MaterialTheme.colorScheme.onSurface,
+                    // Nombre largo que no cabe → se desliza solo hacia la
+                    // izquierda revelándose completo (estilo "marquee").
+                    modifier = Modifier.basicMarquee(),
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(

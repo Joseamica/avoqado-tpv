@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.checkout.presentation.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -164,7 +165,9 @@ private fun ProductResultRow(product: Product, onClick: () -> Unit) {
                 fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                softWrap = false,
+                // Nombre largo → se desliza solo hacia la izquierda (marquee).
+                modifier = Modifier.basicMarquee(),
             )
             Text(
                 text = product.categoryName,

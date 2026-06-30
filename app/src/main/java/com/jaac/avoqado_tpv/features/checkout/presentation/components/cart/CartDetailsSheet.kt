@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.checkout.presentation.components.cart
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -46,11 +48,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartItem
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartItemType
@@ -421,7 +428,7 @@ private fun CartItemRow(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Icon/avatar (initial badge)
+        // Icon/avatar — product photo if available, else initial badge
         Box(
             modifier = Modifier
                 .size(36.dp)
@@ -429,12 +436,24 @@ private fun CartItemRow(
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                text = item.name.take(2).uppercase(),
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (!item.imageUrl.isNullOrEmpty()) {
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(item.imageUrl)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = item.name,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            } else {
+                Text(
+                    text = item.name.take(2).uppercase(),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         Spacer(modifier = Modifier.width(12.dp))
 
@@ -444,8 +463,10 @@ private fun CartItemRow(
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                softWrap = false,
                 color = MaterialTheme.colorScheme.onSurface,
+                // Nombre largo → se desliza solo hacia la izquierda (marquee).
+                modifier = Modifier.basicMarquee(),
             )
             val subtitle = item.modifiersSummary ?: item.itemNote
             if (!subtitle.isNullOrBlank()) {
@@ -459,37 +480,38 @@ private fun CartItemRow(
             }
         }
 
-        Spacer(modifier = Modifier.width(8.dp))
+        Spacer(modifier = Modifier.width(6.dp))
 
         if (item.type is CartItemType.ProductItem) {
             StepperButton(icon = Icons.Filled.Remove, contentDescription = "Quitar uno", onClick = onDecrement)
             Text(
                 text = item.quantity.toString(),
                 modifier = Modifier
-                    .padding(horizontal = 8.dp)
-                    .width(20.dp),
-                style = MaterialTheme.typography.bodyMedium,
+                    .padding(horizontal = 4.dp)
+                    .width(16.dp),
+                style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurface,
             )
             StepperButton(icon = Icons.Filled.Add, contentDescription = "Agregar uno", onClick = onIncrement)
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(6.dp))
         }
 
         Text(
             text = "$${String.format("%.2f", item.totalPriceCents / 100.0)}",
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.bodySmall,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
         )
 
-        Spacer(modifier = Modifier.width(8.dp))
+        Spacer(modifier = Modifier.width(6.dp))
 
         Icon(
             imageVector = Icons.Filled.Delete,
             contentDescription = "Eliminar",
             modifier = Modifier
-                .size(20.dp)
+                .size(18.dp)
                 .clickable(onClick = onDelete),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -504,7 +526,7 @@ private fun StepperButton(
 ) {
     Box(
         modifier = Modifier
-            .size(28.dp)
+            .size(24.dp)
             .clip(CircleShape)
             .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
             .clickable(onClick = onClick),
@@ -513,7 +535,7 @@ private fun StepperButton(
         Icon(
             imageVector = icon,
             contentDescription = contentDescription,
-            modifier = Modifier.size(16.dp),
+            modifier = Modifier.size(14.dp),
             tint = MaterialTheme.colorScheme.onSurface,
         )
     }

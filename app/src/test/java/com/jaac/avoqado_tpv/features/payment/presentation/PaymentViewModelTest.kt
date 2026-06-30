@@ -48,6 +48,7 @@ import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import java.math.BigDecimal
+import com.jaac.avoqado_tpv.core.observability.CrashlyticsContext
 
 /**
  * PaymentViewModelTest
@@ -852,5 +853,51 @@ class PaymentViewModelTest {
         }
 
         viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `reportProcessingTimeoutIfNeeded fires for non-chip processing stall at 45s`() {
+        mockkObject(CrashlyticsContext)
+        every { CrashlyticsContext.recordPaymentEmvStall(any(), any(), any()) } just Runs
+        val viewModel = createViewModel()
+        try {
+            // "Autorizando con banco..." (online auth) lacks the word "chip" - was previously ignored
+            viewModel.reportProcessingTimeoutIfNeeded("Autorizando con banco...", 45)
+            verify(exactly = 1) {
+                CrashlyticsContext.recordPaymentEmvStall(any(), "Autorizando con banco...", 45)
+            }
+        } finally {
+            viewModel.viewModelScope.cancel()
+            unmockkObject(CrashlyticsContext)
+        }
+    }
+
+    @Test
+    fun `reportProcessingTimeoutIfNeeded does not fire below 45s`() {
+        mockkObject(CrashlyticsContext)
+        every { CrashlyticsContext.recordPaymentEmvStall(any(), any(), any()) } just Runs
+        val viewModel = createViewModel()
+        try {
+            viewModel.reportProcessingTimeoutIfNeeded("Autorizando con banco...", 30)
+            verify(exactly = 0) { CrashlyticsContext.recordPaymentEmvStall(any(), any(), any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+            unmockkObject(CrashlyticsContext)
+        }
+    }
+
+    @Test
+    fun `reportProcessingTimeoutIfNeeded dedups repeated identical stalls`() {
+        mockkObject(CrashlyticsContext)
+        every { CrashlyticsContext.recordPaymentEmvStall(any(), any(), any()) } just Runs
+        val viewModel = createViewModel()
+        try {
+            viewModel.reportProcessingTimeoutIfNeeded("Autorizando con banco...", 45)
+            viewModel.reportProcessingTimeoutIfNeeded("Autorizando con banco...", 45)
+            verify(exactly = 1) { CrashlyticsContext.recordPaymentEmvStall(any(), any(), any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+            unmockkObject(CrashlyticsContext)
+        }
     }
 }

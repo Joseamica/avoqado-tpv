@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+---
+
+## [2.6.2] - 2026-06-30
+
+### **Added**
+
+- **Imágenes de producto en el checkout**: el grid de productos (`ProductGridView`), el carrito (`CartDetailsSheet`) y la búsqueda (`SearchOverlayView`) ahora muestran la **foto del producto** (`imageUrl` vía Coil `AsyncImage`, recorte `Crop` + crossfade) cuando existe, con fallback a las iniciales sobre fondo tintado cuando no hay imagen. Los nombres largos se **deslizan solos** (`basicMarquee`) en lugar de cortarse con elipsis. Solo UI de checkout.
+
 ### **Fixed**
 
 - **Cobro "se queda pasmada" cuando el emisor declina (causa raíz)**: el SDK de Blumon entrega los rechazos del emisor (ej. **"PAGO NO PERMITIDO EMISOR"**) como un `SaleIccResponse` **no-nulo** con `authorization` **vacío** + `description` con el motivo (`error=null`). El flujo en `performOnlineAuthorization` solo checaba `response == null`, así que tomaba el rechazo como **éxito** y avanzaba a `CompleteEmvTrans` (finalización del chip) → **se colgaba** sin mostrar nada (caso Arantza, AVQD-2840744149, tarjeta Santander crédito $17,000 — confirmado en portal Blumon + BetterStack: no se cobró, app v2.5.3 en línea). Otras terminales sí mostraban el motivo porque ESOS rechazos vuelven como fallo (Left), que la app ya pintaba. **Fix**: guardia en la rama de éxito de `performOnlineAuthorization` (sandbox+production, idéntico) — si `saleData.authorization` viene vacío, se trata como rechazo y se enruta por la **ruta de error ya existente y probada** (`response == null`), mostrando `saleData.description`. **No toca `CompleteEmvTrans` ni los refunds.** Seguridad del discriminador verificada contra producción: **2850/2850 aprobaciones reales de Blumon (CHIP+CONTACTLESS) tienen `authorization` no-vacío** → cero falsas declinaciones. Pendiente: repro en PAX física (aprobación sigue pasando + declinación ahora muestra el motivo).

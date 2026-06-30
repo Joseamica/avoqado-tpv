@@ -735,7 +735,9 @@ class PaymentViewModel @Inject constructor(
     }
 
     fun reportProcessingTimeoutIfNeeded(message: String, elapsedSeconds: Int) {
-        if (elapsedSeconds < 45 || !message.contains("chip", ignoreCase = true)) return
+        // Fire for ANY processing stall ≥45s, not just "chip" — covers the "Autorizando con
+        // banco…" online-auth hang that was previously invisible to telemetry (Arantza 2026-06-29).
+        if (elapsedSeconds < 45) return
 
         val attemptId = sessionSnapshot.refundAttemptId
             ?: sessionSnapshot.paymentAttemptId
@@ -3879,7 +3881,24 @@ class PaymentViewModel @Inject constructor(
                     }
                     Timber.d("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-                    AuthorizationResult(response = response, userFriendlyError = null)
+                    // 🛑 DECLINE GUARD (2026-06-29): Momentum returns ISSUER declines (e.g. "PAGO NO
+                    // PERMITIDO EMISOR") as a NON-null response with authorization BLANK + description
+                    // set (error=null). The caller only checks `response == null`, so without this the
+                    // flow proceeds to CompleteEmvTrans and HANGS ("se queda pasmada"). Verified in prod
+                    // (2026-06-29): 2850/2850 real Blumon approvals have a non-blank authorization, so
+                    // blank authorization == declined (no false declines). Route through the existing
+                    // (already-tested) `response == null` decline path so the merchant sees the reason.
+                    val declineMessage = blumonDeclineMessage(
+                        authorization = response.saleData.authorization,
+                        description = response.saleData.description,
+                        isRefund = sessionSnapshot.mode == PaymentMode.REFUND,
+                    )
+                    if (declineMessage != null) {
+                        Timber.w("❌ [$saleType] Issuer DECLINE (authorization blank) — emv=${response.saleData.emvResponseCode} desc='${response.saleData.description}'")
+                        AuthorizationResult(response = null, userFriendlyError = declineMessage)
+                    } else {
+                        AuthorizationResult(response = response, userFriendlyError = null)
+                    }
                 }
                 else -> {
                     Timber.e("❌ [$saleType] Unexpected state: both response and failure are null")

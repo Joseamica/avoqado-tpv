@@ -1300,12 +1300,17 @@ private fun PaymentLoadingContent(
                     .padding(32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(64.dp),
-                    color = MaterialTheme.colorScheme.primary
-                )
+                // 🔢 During PIN entry hide the spinner — customers read the spinning circle as
+                // "still loading" and don't know it's their turn to type the PIN (Arantza 2026-06-29).
+                // The "Ingrese su PIN" + ● ● ● ● section above the card is the cue instead.
+                if (!showPinSection) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(64.dp),
+                        color = MaterialTheme.colorScheme.primary
+                    )
 
-                Spacer(modifier = Modifier.height(24.dp))
+                    Spacer(modifier = Modifier.height(24.dp))
+                }
 
                 Text(
                     text = message,
@@ -2751,6 +2756,18 @@ private fun PaymentDetectingCardPreview() {
 private fun PaymentLoadingContentPreview() {
     com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
         PaymentLoadingContent(message = "Configurando terminal...")
+    }
+}
+
+@androidx.compose.ui.tooling.preview.Preview(name = "Loading - PIN entry (no spinner)", showBackground = true, widthDp = 360, heightDp = 640)
+@Composable
+private fun PaymentLoadingContentPinPreview() {
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
+        PaymentLoadingContent(
+            message = "Procesando pago...",
+            pinState = "**",
+            showPinSection = true
+        )
     }
 }
 

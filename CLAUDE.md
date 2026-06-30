@@ -258,3 +258,17 @@ the SAME change — never "later":** the full deck (`avoqado-presentacion.html`)
 (`avoqado-one-pager.html`), then regenerate both PDFs following that folder's `README.md`.
 Updating only one of the two is an incomplete change. Internal refactors and bugfixes with no
 customer-visible impact are exempt.
+
+---
+
+## Fetching Asana task attachments / screenshots
+
+When given an Asana task URL, you **can** see its screenshots and attachments — don't claim you can't.
+
+- `mcp__asana__*` reads task text/comments but **not** files; the `mcp__claude_ai_Asana__` connector is often unauthorized. Don't stop there — use the Asana Personal Access Token directly (it's what powers the `asana` MCP server):
+  1. Read the token (use it, **never print or commit the value**): key `ASANA_ACCESS_TOKEN` under `mcpServers.asana.env` in `~/.claude.json`. Example:
+     `TOKEN=$(python3 -c "import json,os; print(json.load(open(os.path.expanduser('~/.claude.json')))['mcpServers']['asana']['env']['ASANA_ACCESS_TOKEN'])")`
+  2. List attachments + signed URLs (task GID = the long number after `/task/` in the URL):
+     `curl -s -H "Authorization: Bearer $TOKEN" "https://app.asana.com/api/1.0/tasks/<GID>/attachments?opt_fields=name,download_url,created_at"`
+  3. `curl` each `download_url` (pre-signed, needs no auth) to a temp file in the scratchpad, then Read the image. Inline description images are attachments too, so this returns all of them — not just the ones embedded in the text.
+- If slide/screenshot text is unreadable after Read downscales a large image, crop it into regions with PIL and upscale (LANCZOS) before re-reading.

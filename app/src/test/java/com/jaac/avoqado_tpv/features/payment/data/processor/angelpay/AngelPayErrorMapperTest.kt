@@ -123,6 +123,30 @@ class AngelPayErrorMapperTest {
         assertFalse(AngelPayErrorMapper.isAuthError(""))
     }
 
+    @Test
+    fun `isPreChargeRegisterFailure matches only the SDK terminal-registration message`() {
+        // Exact string emitted by the SDK's PaymentActivity pre-charge register step
+        // (byte-identical in the 1.0.10 and 1.0.13 AARs).
+        assertTrue(
+            AngelPayErrorMapper.isPreChargeRegisterFailure(
+                "No fue posible registrar la terminal antes del cobro",
+            ),
+        )
+        // Case-insensitive containment — survives minor casing/wrapping changes.
+        assertTrue(
+            AngelPayErrorMapper.isPreChargeRegisterFailure(
+                "NO FUE POSIBLE REGISTRAR LA TERMINAL ANTES DEL COBRO.",
+            ),
+        )
+
+        // A genuine mid-charge network error (same hardcoded N400 family) must NOT
+        // trigger re-auth — the charge may have reached the gateway.
+        assertFalse(AngelPayErrorMapper.isPreChargeRegisterFailure("Sin conexión a internet"))
+        assertFalse(AngelPayErrorMapper.isPreChargeRegisterFailure("Pago rechazado"))
+        assertFalse(AngelPayErrorMapper.isPreChargeRegisterFailure(null))
+        assertFalse(AngelPayErrorMapper.isPreChargeRegisterFailure(""))
+    }
+
     private fun makeCallResult(
         code: String?,
         category: String?,

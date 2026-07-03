@@ -389,14 +389,17 @@ class AngelPayPaymentViewModelTest {
     }
 
     /** Builds a declined SDK PaymentResult carrying the given AppErrorCatalog code. */
-    private fun sdkFailureResult(sdkCode: String): PaymentResult {
+    private fun sdkFailureResult(
+        sdkCode: String,
+        message: String = "Pago rechazado",
+    ): PaymentResult {
         val call = mockk<CallResult>(relaxed = true)
         every { call.code } returns sdkCode
         every { call.message } returns "msg-$sdkCode"
         val result = mockk<PaymentResult>(relaxed = true)
         every { result.approved } returns false
         every { result.callResult } returns call
-        every { result.message } returns "Pago rechazado"
+        every { result.message } returns message
         return result
     }
 
@@ -454,6 +457,55 @@ class AngelPayPaymentViewModelTest {
             runCurrent()
 
             vm.onAngelPaySdkResult(sdkFailureResult("G500"))
+            runCurrent()
+
+            coVerify(exactly = 0) { angelPayAuthRepository.handleAuthExpiry() }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            coVerify(atLeast = 1) { paymentStateHolder.setCharging(false) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `pre-charge register failure (N400) triggers re-auth and relaunches once`() = runTest(testDispatcher) {
+        // SDK 1.0.10+/1.0.13: PaymentActivity registers the terminal BEFORE charging and,
+        // on failure (expired session being the common cause), aborts with a HARDCODED
+        // N400 + this exact message. Message-based detection — see
+        // AngelPayErrorMapper.isPreChargeRegisterFailure. Safe to relaunch: the SDK
+        // failed before the gateway call, no money moved.
+        val vm = createViewModel()
+        try {
+            coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            vm.onAngelPaySdkResult(
+                sdkFailureResult(
+                    sdkCode = "N400",
+                    message = "No fue posible registrar la terminal antes del cobro",
+                ),
+            )
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayAuthRepository.handleAuthExpiry() }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+            coVerify(exactly = 0) { paymentStateHolder.setCharging(false) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `mid-charge N400 network error does NOT trigger re-auth`() = runTest(testDispatcher) {
+        // Same N400 code but a normal network message: the charge may have reached the
+        // gateway, so re-auth + relaunch is forbidden (double-charge risk).
+        val vm = createViewModel()
+        try {
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            vm.onAngelPaySdkResult(sdkFailureResult(sdkCode = "N400", message = "Sin conexión a internet"))
             runCurrent()
 
             coVerify(exactly = 0) { angelPayAuthRepository.handleAuthExpiry() }

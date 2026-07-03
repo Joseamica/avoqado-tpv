@@ -503,15 +503,15 @@ dependencies {
     // AngelPay fat AAR:
     // - compileOnly for all flavors (types available at compile time in main/)
     // - packaged only in nexgo / nexgoProd to avoid duplicate transitive classes
-    compileOnly(files("libs/angelpaySDK-v1.0.13-fat-release.aar"))
-    "nexgoImplementation"(files("libs/angelpaySDK-v1.0.13-fat-release.aar"))
-    "nexgoProdImplementation"(files("libs/angelpaySDK-v1.0.13-fat-release.aar"))
+    compileOnly(files("libs/angelpaySDK-v1.0.15-fat-release.aar"))
+    "nexgoImplementation"(files("libs/angelpaySDK-v1.0.15-fat-release.aar"))
+    "nexgoProdImplementation"(files("libs/angelpaySDK-v1.0.15-fat-release.aar"))
     // AngelPay SDK types are referenced in unit tests (e.g., AngelPaySdkGatewayTest) for
     // mocking — Result<List<MerchantSummary>> return types and `AngelPaySDK` object need
     // the AAR on the test classpath at both compile time and runtime so MockK can mock
     // the singleton via `mockkObject(AngelPaySDK)`. Production code still uses compileOnly
     // for non-Nexgo flavors, so this affects unit tests only.
-    testImplementation(files("libs/angelpaySDK-v1.0.13-fat-release.aar"))
+    testImplementation(files("libs/angelpaySDK-v1.0.15-fat-release.aar"))
 
     // AngelPay SDK 1.0.7 fat-release.aar ships the full io.github.binaryfoo:emv-bertlv
     // bundle internally (AmexTags, DecodedData, CryptogramInformationDecoder,

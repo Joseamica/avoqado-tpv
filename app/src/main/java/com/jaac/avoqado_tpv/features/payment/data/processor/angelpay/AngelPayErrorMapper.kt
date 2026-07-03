@@ -66,4 +66,23 @@ object AngelPayErrorMapper {
      * retrying with the same credentials would loop for nothing.
      */
     fun isAuthError(code: String?): Boolean = code == "D308"
+
+    /**
+     * Returns true for the SDK's pre-charge terminal-registration failure — the second
+     * shape a dead server-side session takes besides [isAuthError]/D308.
+     *
+     * Since SDK 1.0.10, PaymentActivity re-registers the terminal (fire token + serial,
+     * sent with the stored bearer) BEFORE charging, with a 10 s internal timeout. When
+     * that call fails — expired session being the common cause (incidente Alberto
+     * Dominguez 2026-07-03: misma terminal cobró bien 15 h antes) — the SDK aborts with
+     * this exact message but a HARDCODED `N400` CallResult, so code-based detection is
+     * impossible: a real N400 mid-charge must NOT trigger re-auth (the charge may have
+     * reached the gateway), which is why this matches the message, not the code. Verified
+     * byte-identical in the 1.0.10 and 1.0.13 AARs (`z/j.class` / `b0/j.class`).
+     *
+     * Safe to recover: the SDK fails BEFORE calling the gateway, so no money moved and
+     * one re-auth + relaunch cannot double-charge.
+     */
+    fun isPreChargeRegisterFailure(message: String?): Boolean =
+        message?.contains("registrar la terminal antes del cobro", ignoreCase = true) == true
 }

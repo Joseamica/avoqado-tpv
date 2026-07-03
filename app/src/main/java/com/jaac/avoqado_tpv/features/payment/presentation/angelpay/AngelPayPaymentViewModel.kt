@@ -1073,8 +1073,16 @@ class AngelPayPaymentViewModel @Inject constructor(
             if (result.approved) {
                 recordCardPayment(result)
             } else {
-                if (AngelPayErrorMapper.isAuthError(result.callResult?.code) &&
-                    tryRecoverFromSessionExpiry()
+                val sessionExpiryShape = when {
+                    AngelPayErrorMapper.isAuthError(result.callResult?.code) -> "D308"
+                    // Pre-charge terminal-registration failure: same dead session, but the
+                    // SDK hardcodes N400 there, so only the message identifies it. The SDK
+                    // aborts before the gateway call → relaunching cannot double-charge.
+                    AngelPayErrorMapper.isPreChargeRegisterFailure(result.message) -> "register"
+                    else -> null
+                }
+                if (sessionExpiryShape != null &&
+                    tryRecoverFromSessionExpiry(reason = sessionExpiryShape)
                 ) {
                     // Re-authenticated and relaunched — NOT a terminal outcome,
                     // so the D2 charging gate stays set for the retried attempt.
@@ -1098,12 +1106,15 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     /**
-     * D308 ("Sesión Expirada") mid-payment recovery — AppErrorCatalog SDK 1.0.10.
+     * Expired-session mid-payment recovery — AppErrorCatalog SDK 1.0.10/1.0.13.
      *
      * `ensureAuthenticated()` at [startSdkCardPayment] can't prevent this case: the SDK
      * still reports `isAuthenticated() = true` locally while the server-side session is
      * dead (typical after the terminal sits idle for hours between promoter sales), so
-     * the expiry only surfaces in the PaymentResult. Recovery = logout + full re-auth
+     * the expiry only surfaces in the PaymentResult. It takes TWO shapes ([reason]):
+     * `"D308"` (explicit "Sesión Expirada" during the charge) and `"register"` (the
+     * pre-charge terminal-registration failure, hardcoded N400 — see
+     * [AngelPayErrorMapper.isPreChargeRegisterFailure]). Recovery = logout + full re-auth
      * ([AngelPayAuthRepository.handleAuthExpiry], which re-runs merchant selection and
      * key injection) and ONE relaunch of the exact same request — same
      * `paymentAttemptId`/reference by design, so backend idempotency is preserved.
@@ -1112,19 +1123,19 @@ class AngelPayPaymentViewModel @Inject constructor(
      * request, already retried this attempt, re-auth failed) the caller falls through
      * to the normal error state.
      */
-    private suspend fun tryRecoverFromSessionExpiry(): Boolean {
+    private suspend fun tryRecoverFromSessionExpiry(reason: String): Boolean {
         val attemptId = currentPaymentAttemptId ?: return false
         if (authExpiryRetriedAttemptId == attemptId) {
-            Timber.w("🔐 [AngelPay SDK] D308 again after re-auth — surfacing error | attemptId=$attemptId")
+            Timber.w("🔐 [AngelPay SDK] Session-expiry shape ($reason) again after re-auth — surfacing error | attemptId=$attemptId")
             return false
         }
         val request = lastSdkLaunchRequest ?: return false
         authExpiryRetriedAttemptId = attemptId
-        Timber.w("🔐 [AngelPay SDK] D308 session expired mid-payment — re-authenticating and relaunching once | attemptId=$attemptId")
+        Timber.w("🔐 [AngelPay SDK] Session expired mid-payment (shape=$reason) — re-authenticating and relaunching once | attemptId=$attemptId")
         _state.value = AngelPayPaymentState.WaitingForResult(message = "Sesión expirada, renovando…")
         val reauth = angelPayAuthRepository.handleAuthExpiry()
         if (reauth.isFailure) {
-            Timber.e(reauth.exceptionOrNull(), "❌ [AngelPay SDK] Re-auth after D308 failed")
+            Timber.e(reauth.exceptionOrNull(), "❌ [AngelPay SDK] Re-auth after $reason failed")
             return false
         }
         launchSdkRequest(request = request, usedQaTipFallback = lastSdkLaunchUsedTipFallback)

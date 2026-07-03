@@ -1,22 +1,25 @@
 package com.jaac.avoqado_tpv.features.payment.data.processor.angelpay
 
 /**
- * Maps AngelPay SDK 1.0.5 PaymentResult error codes to operator-facing Spanish messages.
+ * Maps AngelPay SDK PaymentResult error codes to operator-facing Spanish messages.
  *
  * Used by [com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentViewModel]
  * when a payment fails or is declined, so the cashier sees a clear Spanish message instead of
  * the raw SDK error.
  *
- * Code categories per SDK 1.0.5 manual page 14 (AppErrorCatalog):
- *   - S000: SUCCESS (Approved)
- *   - G5xx: GATEWAY (Transaction rejected by the gateway — e.g., declined)
- *   - U100: USER (Operation cancelled by the user)
- *   - U101: USER (Timeout expired)
- *   - E6xx: EMV (chip read error)
- *   - C2xx: CLIENT (Invalid amount / tip rules / MSI rules — config issues; also heuristic
- *     for auth-category errors per spec Open Question #2 — vendor confirmation pending)
- *   - I999: INTERNAL (Unknown error)
- *   - NETWORK (no specific code — connection-related)
+ * Code categories per the SDK AppErrorCatalog (verified against the AARs' actual
+ * `com.angelpay.angelpaysdk.models.AppErrorCatalog$Code` enum, byte-identical in
+ * 1.0.10 and 1.0.13, 2026-07-03):
+ *   - S00x: SUCCESS (Approved / idempotent replay)
+ *   - A0xx: AUTH (registration/PIN/key-injection failures — surface during authenticateSimple,
+ *     not mid-payment)
+ *   - U10x: USER (cancelled / timeout / back / PIN cancelled)
+ *   - C2xx: CLIENT (invalid amount / tip rules / MSI rules / check-in — config issues)
+ *   - D30x: DEVICE (busy, printer, battery, GPS, NFC, SAM, key init; D308 = session expired)
+ *   - N40x: NETWORK (no internet, TLS, gateway timeout, DNS, host unreachable)
+ *   - G50x: GATEWAY (G500 declined by gateway, G502 reversal required, G504 risk/KYC)
+ *   - E6xx: EMV (card read / kernel errors)
+ *   - P70x PRINT · X80x SECURITY · T90x THROTTLE · I9xx INTERNAL
  *
  * Note: this codebase uses [CallResultData] (a local mirror of the SDK's CallResult, defined
  * in [AngelPayResultParser]) since the AngelPay AAR is `compileOnly` on PAX flavors. The
@@ -50,13 +53,17 @@ object AngelPayErrorMapper {
     }
 
     /**
-     * Returns true if the SDK code indicates an authentication problem
-     * (session expired, token rejected). Used by AngelPayPaymentViewModel
-     * to trigger [AngelPayAuthRepository.handleAuthExpiry] + retry.
+     * Returns true if the SDK code means the AngelPay session expired and a logout +
+     * re-auth ([AngelPayAuthRepository.handleAuthExpiry]) can recover the payment.
+     * Used by AngelPayPaymentViewModel to re-authenticate and relaunch the sale once.
      *
-     * Per spec §6.10 + Open Question #2: codes starting with "C2" are the
-     * heuristic match for auth-category errors per the AngelPay SDK catalog.
-     * Vendor confirmation pending — adjust if the real catalog disagrees.
+     * Open Question #2 RESOLVED (2026-07-03) against the SDK 1.0.10 AppErrorCatalog:
+     * session expiry is exactly `D308` ("Sesión Expirada, Inicie sesión nuevamente",
+     * category DEVICE — not AUTH, so category matching would miss it). The previous
+     * `startsWith("C2")` heuristic was wrong: C2xx are CLIENT config errors (amount,
+     * tip, MSI) that a re-auth cannot fix. A0xx AUTH codes are excluded on purpose:
+     * they mean authentication itself failed (credentials, key injection), so
+     * retrying with the same credentials would loop for nothing.
      */
-    fun isAuthError(code: String?): Boolean = code?.startsWith("C2") == true
+    fun isAuthError(code: String?): Boolean = code == "D308"
 }

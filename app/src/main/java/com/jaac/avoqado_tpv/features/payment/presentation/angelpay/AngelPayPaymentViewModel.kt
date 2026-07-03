@@ -4,6 +4,7 @@ import android.content.Intent
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.annotation.VisibleForTesting
 import com.angelpay.angelpaysdk.models.PaymentRequest
 import com.angelpay.angelpaysdk.models.PaymentResult
 import com.jaac.avoqado_tpv.BuildConfig
@@ -22,6 +23,7 @@ import com.jaac.avoqado_tpv.features.payment.data.dto.SendWhatsAppReceiptRequest
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthState
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCredentials
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayErrorMapper
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayIntentBuilder
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantRepository
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResult
@@ -197,6 +199,15 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var currentPaymentAttemptId: String? = null
     // Consumes external payment callback only once per launched attempt.
     private var consumedResultAttemptId: String? = null
+
+    // 🔐 D308 mid-payment session recovery (2026-07-03). The SDK can report
+    // isAuthenticated()=true locally while the server-side session is dead, so the
+    // expiry only surfaces as AppErrorCatalog D308 in the PaymentResult. We keep the
+    // last launched request to re-launch it once after handleAuthExpiry(); the
+    // attempt id guard caps recovery at ONE re-auth per payment attempt.
+    private var lastSdkLaunchRequest: PaymentRequest? = null
+    private var lastSdkLaunchUsedTipFallback: Boolean = false
+    private var authExpiryRetriedAttemptId: String? = null
 
     // 🪙 B4Bit request ID currently in-flight. Used to filter Socket.IO events
     // so we only react to OUR pending crypto payment.
@@ -891,10 +902,16 @@ class AngelPayPaymentViewModel @Inject constructor(
         clearChargingOnTerminal()
     }
 
-    private fun launchSdkRequest(
+    // Internal for tests: the sandbox variant compiles with ANGELPAY_SDK_ENABLED=false,
+    // so startCardPayment can never reach the SDK path in testSandboxDebugUnitTest —
+    // D308-recovery tests prime the launched-request state through this seam instead.
+    @VisibleForTesting
+    internal fun launchSdkRequest(
         request: PaymentRequest,
         usedQaTipFallback: Boolean,
     ) {
+        lastSdkLaunchRequest = request
+        lastSdkLaunchUsedTipFallback = usedQaTipFallback
         prepareExternalLaunch(ensurePaymentAttemptId())
         _state.value = AngelPayPaymentState.LaunchingAngelPaySdk(
             request = request,
@@ -1056,6 +1073,13 @@ class AngelPayPaymentViewModel @Inject constructor(
             if (result.approved) {
                 recordCardPayment(result)
             } else {
+                if (AngelPayErrorMapper.isAuthError(result.callResult?.code) &&
+                    tryRecoverFromSessionExpiry()
+                ) {
+                    // Re-authenticated and relaunched — NOT a terminal outcome,
+                    // so the D2 charging gate stays set for the retried attempt.
+                    return@launch
+                }
                 _state.value = AngelPayPaymentState.Error(
                     message = buildString {
                         append(result.message ?: "Pago rechazado")
@@ -1071,6 +1095,40 @@ class AngelPayPaymentViewModel @Inject constructor(
             // Task 32 — clear D2 charging gate on any terminal outcome.
             clearChargingOnTerminal()
         }
+    }
+
+    /**
+     * D308 ("Sesión Expirada") mid-payment recovery — AppErrorCatalog SDK 1.0.10.
+     *
+     * `ensureAuthenticated()` at [startSdkCardPayment] can't prevent this case: the SDK
+     * still reports `isAuthenticated() = true` locally while the server-side session is
+     * dead (typical after the terminal sits idle for hours between promoter sales), so
+     * the expiry only surfaces in the PaymentResult. Recovery = logout + full re-auth
+     * ([AngelPayAuthRepository.handleAuthExpiry], which re-runs merchant selection and
+     * key injection) and ONE relaunch of the exact same request — same
+     * `paymentAttemptId`/reference by design, so backend idempotency is preserved.
+     *
+     * Returns true only when the payment was relaunched; on any other path (no cached
+     * request, already retried this attempt, re-auth failed) the caller falls through
+     * to the normal error state.
+     */
+    private suspend fun tryRecoverFromSessionExpiry(): Boolean {
+        val attemptId = currentPaymentAttemptId ?: return false
+        if (authExpiryRetriedAttemptId == attemptId) {
+            Timber.w("🔐 [AngelPay SDK] D308 again after re-auth — surfacing error | attemptId=$attemptId")
+            return false
+        }
+        val request = lastSdkLaunchRequest ?: return false
+        authExpiryRetriedAttemptId = attemptId
+        Timber.w("🔐 [AngelPay SDK] D308 session expired mid-payment — re-authenticating and relaunching once | attemptId=$attemptId")
+        _state.value = AngelPayPaymentState.WaitingForResult(message = "Sesión expirada, renovando…")
+        val reauth = angelPayAuthRepository.handleAuthExpiry()
+        if (reauth.isFailure) {
+            Timber.e(reauth.exceptionOrNull(), "❌ [AngelPay SDK] Re-auth after D308 failed")
+            return false
+        }
+        launchSdkRequest(request = request, usedQaTipFallback = lastSdkLaunchUsedTipFallback)
+        return true
     }
 
     private suspend fun recordCardPayment(result: AngelPayResult.Success) {
@@ -1718,6 +1776,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         currentPaymentAttemptId = null // 🛡️ Clear idempotency key so the next attempt generates a fresh one
         consumedResultAttemptId = null
         currentCryptoRequestId = null  // 🪙 Drop in-flight crypto request so old socket events are ignored
+        lastSdkLaunchRequest = null    // 🔐 D308 recovery state — never reuse a request across attempts
+        lastSdkLaunchUsedTipFallback = false
+        authExpiryRetriedAttemptId = null
         // Do NOT clear _currentMerchant: the merchant account selection is independent of
         // the payment attempt. Clearing it here breaks retry — init{} auto-selects only when
         // the merchants Flow emits a NEW value, which doesn't happen on retry, leaving the

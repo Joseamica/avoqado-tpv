@@ -102,11 +102,21 @@ class AngelPayErrorMapperTest {
     }
 
     @Test
-    fun `isAuthError returns true only for C2xx prefix`() {
-        assertTrue(AngelPayErrorMapper.isAuthError("C201"))
-        assertTrue(AngelPayErrorMapper.isAuthError("C299"))
-        assertTrue(AngelPayErrorMapper.isAuthError("C2"))
-        assertFalse(AngelPayErrorMapper.isAuthError("C100"))
+    fun `isAuthError matches only D308 session expiry`() {
+        // Vendor-confirmed vs SDK 1.0.10 AppErrorCatalog (2026-07-03): session
+        // expiry is exactly D308 (category DEVICE).
+        assertTrue(AngelPayErrorMapper.isAuthError("D308"))
+
+        // The old startsWith("C2") heuristic must stay dead — C2xx are CLIENT
+        // config errors (amount/tip/MSI) where a re-auth can't help.
+        assertFalse(AngelPayErrorMapper.isAuthError("C201"))
+        assertFalse(AngelPayErrorMapper.isAuthError("C299"))
+        assertFalse(AngelPayErrorMapper.isAuthError("C2"))
+
+        // A0xx auth-service failures and other families never trigger payment re-auth.
+        assertFalse(AngelPayErrorMapper.isAuthError("A007"))
+        assertFalse(AngelPayErrorMapper.isAuthError("D306"))
+        assertFalse(AngelPayErrorMapper.isAuthError("D307"))
         assertFalse(AngelPayErrorMapper.isAuthError("G500"))
         assertFalse(AngelPayErrorMapper.isAuthError("U100"))
         assertFalse(AngelPayErrorMapper.isAuthError(null))

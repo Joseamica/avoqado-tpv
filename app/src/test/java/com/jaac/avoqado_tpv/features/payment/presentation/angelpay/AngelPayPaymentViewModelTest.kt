@@ -2,8 +2,11 @@ package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 
 import android.content.Context
 import androidx.lifecycle.viewModelScope
+import com.angelpay.angelpaysdk.models.CallResult
 import com.angelpay.angelpaysdk.models.MerchantOption
 import com.angelpay.angelpaysdk.models.MerchantSummary
+import com.angelpay.angelpaysdk.models.PaymentRequest
+import com.angelpay.angelpaysdk.models.PaymentResult
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.ApiService
@@ -364,6 +367,118 @@ class AngelPayPaymentViewModelTest {
             vm.onAngelPayResult(resultCode = 0, data = null)
             runCurrent()
 
+            coVerify(atLeast = 1) { paymentStateHolder.setCharging(false) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // 7. D308 mid-payment session recovery (AppErrorCatalog, byte-identical in
+    //    SDK 1.0.10/1.0.13)
+    //
+    // The sandbox variant compiles with ANGELPAY_SDK_ENABLED=false, so
+    // startCardPayment can never reach the SDK launch path in this suite. The
+    // tests prime the launched-request state through the @VisibleForTesting
+    // launchSdkRequest seam and then drive onAngelPaySdkResult directly.
+    // ----------------------------------------------------------------------
+
+    /** Primes the VM as if an SDK payment had just been launched. */
+    private fun AngelPayPaymentViewModel.primeSdkLaunch() {
+        launchSdkRequest(mockk<PaymentRequest>(relaxed = true), usedQaTipFallback = false)
+    }
+
+    /** Builds a declined SDK PaymentResult carrying the given AppErrorCatalog code. */
+    private fun sdkFailureResult(sdkCode: String): PaymentResult {
+        val call = mockk<CallResult>(relaxed = true)
+        every { call.code } returns sdkCode
+        every { call.message } returns "msg-$sdkCode"
+        val result = mockk<PaymentResult>(relaxed = true)
+        every { result.approved } returns false
+        every { result.callResult } returns call
+        every { result.message } returns "Pago rechazado"
+        return result
+    }
+
+    @Test
+    fun `D308 result triggers handleAuthExpiry and relaunches the same payment once`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.primeSdkLaunch()
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+
+            vm.onAngelPaySdkResult(sdkFailureResult("D308"))
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayAuthRepository.handleAuthExpiry() }
+            // Relaunched — back in LaunchingAngelPaySdk, not Error.
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+            // Recovery is NOT a terminal outcome: the D2 charging gate must stay set.
+            coVerify(exactly = 0) { paymentStateHolder.setCharging(false) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `second D308 on the same attempt surfaces Error instead of looping re-auth`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            vm.onAngelPaySdkResult(sdkFailureResult("D308"))
+            runCurrent()
+            vm.onAngelPaySdkResult(sdkFailureResult("D308"))
+            runCurrent()
+
+            // Only ONE re-auth per payment attempt — the second D308 falls through to Error.
+            coVerify(exactly = 1) { angelPayAuthRepository.handleAuthExpiry() }
+            val state = vm.state.value
+            assertThat(state).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            assertThat((state as AngelPayPaymentState.Error).message).contains("D308")
+            coVerify(atLeast = 1) { paymentStateHolder.setCharging(false) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `non-session error codes do not trigger re-auth`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            vm.onAngelPaySdkResult(sdkFailureResult("G500"))
+            runCurrent()
+
+            coVerify(exactly = 0) { angelPayAuthRepository.handleAuthExpiry() }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            coVerify(atLeast = 1) { paymentStateHolder.setCharging(false) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D308 with failing re-auth surfaces Error without relaunching`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            coEvery { angelPayAuthRepository.handleAuthExpiry() } answers {
+                Result.failure(Exception("re-auth failed"))
+            }
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            vm.onAngelPaySdkResult(sdkFailureResult("D308"))
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayAuthRepository.handleAuthExpiry() }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
             coVerify(atLeast = 1) { paymentStateHolder.setCharging(false) }
         } finally {
             vm.viewModelScope.cancel()

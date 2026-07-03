@@ -9,6 +9,18 @@
 
 ---
 
+## [2.6.3] - 2026-07-03
+
+### **Changed**
+
+- **[Nexgo] AngelPay SDK 1.0.10 → 1.0.13**: se vendoreó `angelpaySDK-v1.0.13-fat-release.aar` (md5 verificado contra el entregable del vendor, iCloud `Socios/AngelPay/dev/sdk_propio/1.13/`) y se actualizaron las 4 referencias de gradle (compileOnly + nexgoImplementation + nexgoProdImplementation + testImplementation). Cambio **100% aditivo** verificado por diff de bytecode: `AppErrorCatalog` byte-idéntico (97 códigos, D308 intacto), librerías nativas EMV byte-idénticas (checksums iguales en arm64-v8a y armeabi-v7a), manifest idéntico, y ninguna firma usada por la TPV cambió. Lo único nuevo: **Ligas de Pago** (`createPaymentLink`/`getPaymentLinks` + modelos `PaymentLink`) — capacidad disponible pero NO integrada aún (requiere decisión de tier antes de construir UI). Verificado: `compileSandboxDebugKotlin` + `compileNexgoDebugKotlin` (la variante que empaqueta el AAR) + suite completa 566/0-fail + `lint --continue`, todo verde. ⚠️ Pendiente: smoke test en Nexgo físico.
+
+### **Fixed**
+
+- **[Nexgo] Sesión AngelPay expirada (D308) ahora se recupera sola durante el cobro**: cuando el SDK de AngelPay devolvía `D308` ("Sesión Expirada" — típico tras horas de terminal inactiva entre ventas de promotor), la app solo mostraba el error y la venta fallaba hasta reiniciar la app. El `ensureAuthenticated()` previo al cobro no lo prevenía porque el SDK sigue reportando `isAuthenticated()=true` localmente aunque la sesión del servidor ya murió. **Fix** (`AngelPayPaymentViewModel`): al recibir `D308` en el `PaymentResult`, la app hace `handleAuthExpiry()` (logout + re-auth completa con re-selección de comercio e inyección de llaves) y **relanza el mismo cobro una sola vez** (mismo `paymentAttemptId`/referencia → idempotencia intacta; guard de 1 reintento por intento evita loops; el gate de charging no se limpia durante la recuperación). Además se corrigió `AngelPayErrorMapper.isAuthError()`: la heurística `startsWith("C2")` era errónea — verificado contra el `AppErrorCatalog` del SDK 1.0.10 (extraído del AAR): `C2xx`=CLIENT (config), auth=`A0xx`, y la sesión expirada es exactamente `D308` (categoría DEVICE). Cierra la "Open Question #2" del spec. Tests: `AngelPayErrorMapperTest` actualizado + 4 tests nuevos en `AngelPayPaymentViewModelTest` (recuperación, no-loop al segundo D308, códigos no-sesión no re-autentican, re-auth fallida muestra error) — priman el estado vía el seam `@VisibleForTesting launchSdkRequest` porque sandbox compila con `ANGELPAY_SDK_ENABLED=false`. **Solo ruta AngelPay/Nexgo — cero cambios en Blumon/PAX.** Verificado: ambas variantes compilan (sandbox + nexgo), suite completa **566 tests / 0 fallos / 5 skipped**, lint limpio. ⚠️ Pendiente: verificar en Nexgo físico dejando expirar la sesión (idle de horas) y cobrando.
+
+---
+
 ## [2.6.2] - 2026-06-30
 
 ### **Added**

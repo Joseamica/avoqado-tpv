@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+### **Fixed**
+
+- **Vender SIM: ya no se puede re-enviar una venta que ya completó**: tras una venta exitosa, `SerializedSaleScreen` conservaba el SIM escaneado y el botón "Vender" activo; si el promotor regresaba (back) a media captura de foto/pago y volvía a presionar "Vender", el backend rechazaba con 400 "Item ya fue vendido" (6 casos en producción 30-jun/1-jul, 5 SIMs de intercambio, todos rechazados por el guard — cero duplicados). Ahora `onConfirmSale` resetea el estado (`returnToScanner()`) inmediatamente después de disparar la navegación; la navegación no se afecta porque el payload viaja por callback, no por uiState. Complementa el `resetOnEnter` existente que solo cubría el retorno feliz desde pago. Cambio hermano en backend (avoqado-server): ese 400 esperado ahora se loguea como `warn` en vez de `error` para no ensuciar dashboards.
+
+### **Changed**
+
+- **Self-update: no intentar el fallback PAX SDK cuando el sistema pide confirmación humana (Android 10+)**: investigación del fallo de instalación en AVQD-2841653112 (2026-07-01) reveló que **cada** self-update de la flota (215 eventos, 37 terminales) dispara el diálogo nativo `STATUS_PENDING_USER_ACTION` — el APK firmado por PAX **no** tiene privilegio de instalación silenciosa, contrario a lo que asumía el código. Cuando nadie confirma el diálogo en 120s, el timeout disparaba el fallback PAX SDK, que en Android 10+ está condenado a fallar por FUSE (100% de fallas históricas) y generaba el log engañoso `ALL install strategies failed`. Ahora, si el diálogo apareció y es Android 10+, se omite el fallback y se reporta el timeout directo (`ApkInstaller.pendingUserConfirmation`, seteado por `InstallResultReceiver` tras validar sessionId). Android ≤9 conserva el fallback intacto (ahí sí funciona). Mismo mensaje/retry para el usuario; el CRITICAL de `SelfUpdateVM Install failed` sigue emitiéndose. **Pendiente (fuera de código)**: gestionar con Blumon/PAX el privilegio `INSTALL_PACKAGES`/firma de plataforma para que el update sea realmente silencioso.
+
 ---
 
 ## [2.6.3] - 2026-07-03

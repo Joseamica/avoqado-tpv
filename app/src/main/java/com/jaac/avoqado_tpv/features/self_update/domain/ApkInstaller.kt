@@ -64,6 +64,14 @@ class ApkInstaller @Inject constructor(
     @Volatile
     internal var pendingInstall: PendingInstall? = null
 
+    /**
+     * Set by [InstallResultReceiver] when the system shows the STATUS_PENDING_USER_ACTION
+     * confirmation dialog for the current session. Used to decide whether the PAX SDK
+     * fallback is worth attempting after a timeout — see [install].
+     */
+    @Volatile
+    internal var pendingUserConfirmation: Boolean = false
+
     // Prevents concurrent installs from SelfUpdateViewModel and UpdateRequestManager
     private val installMutex = Mutex()
 
@@ -86,6 +94,7 @@ class ApkInstaller @Inject constructor(
         withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
         val apkFile = File(apkPath)
+        pendingUserConfirmation = false
 
         val fileMetadata = deviceMetadata() + mapOf(
             "apkPath" to apkPath,
@@ -124,6 +133,23 @@ class ApkInstaller @Inject constructor(
 
         val sessionError = (sessionResult as InstallResult.Error).message
         val sessionDurationMs = System.currentTimeMillis() - startTime
+
+        // If the system already showed the STATUS_PENDING_USER_ACTION confirmation dialog
+        // and we're only here because our internal wait timed out, the PAX SDK fallback is
+        // not worth trying on Android 10+: it's documented (see tryPaxSdkInstall) to fail
+        // due to FUSE cross-process restrictions, and attempting a second install while the
+        // system dialog may still be showing/resolving only adds contention. On Android 9
+        // and below the fallback is still the one strategy known to work, so it always runs
+        // there regardless of pendingUserConfirmation.
+        if (pendingUserConfirmation && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            observability.logWarning(TAG, "Skipping PAX SDK fallback — PackageInstaller dialog awaiting user confirmation", fileMetadata + mapOf(
+                "strategy" to "PACKAGE_INSTALLER",
+                "error" to sessionError,
+                "durationMs" to sessionDurationMs
+            ))
+            return@withContext InstallResult.Error("Error de instalacion: $sessionError")
+        }
+
         observability.logWarning(TAG, "PackageInstaller failed, trying fallback", fileMetadata + mapOf(
             "strategy" to "PACKAGE_INSTALLER",
             "error" to sessionError,

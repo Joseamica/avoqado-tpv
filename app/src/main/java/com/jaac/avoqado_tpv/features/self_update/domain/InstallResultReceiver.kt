@@ -102,6 +102,7 @@ class InstallResultReceiver : BroadcastReceiver() {
                 // user confirms or rejects. The 120s timeout in ApkInstaller protects
                 // against the user never responding.
                 observability.logWarning(TAG, "User confirmation required (STATUS_PENDING_USER_ACTION)", baseMetadata)
+                apkInstaller.pendingUserConfirmation = true
 
                 @Suppress("DEPRECATION")
                 val confirmIntent = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)

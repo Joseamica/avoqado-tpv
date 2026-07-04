@@ -66,6 +66,9 @@ data class TpvSettings(
     val requireVerificationBarcode: Boolean = false,
     // Venue-level shift system toggle (from VenueSettings)
     val enableShifts: Boolean = true,
+    // Venue-level "cambaceo" flag (from VenueSettings): capture hourly promoter
+    // location 11:00–18:00 venue-local while a session is active
+    val trackPromoterLocation: Boolean = false,
     // Card payment server-decoupling kill-switch (default true = legacy: require backend before charge).
     // When false, the (always-online-to-Momentum) charge is allowed even if our backend heartbeat is down.
     // Cached in SecureStorage so it survives the very backend outage it guards against.

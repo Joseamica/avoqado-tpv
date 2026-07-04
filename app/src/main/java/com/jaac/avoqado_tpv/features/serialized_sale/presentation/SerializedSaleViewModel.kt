@@ -299,6 +299,13 @@ class SerializedSaleViewModel @Inject constructor(
                         )
                     }
                     onSuccess(result)
+                    // The item is already SOLD server-side at this point, so a re-submit
+                    // with the stale serial can only ever produce "ya fue vendido" (400).
+                    // Navigation doesn't read uiState (payload captured via callback params),
+                    // so clearing here is safe. Prevents re-selling when the promoter backs
+                    // into this screen mid photo/payment flow (prod 2026-07-01: 6 duplicate
+                    // sell attempts across 5 SIMs, all rejected by the backend guard).
+                    returnToScanner()
                 }
                 .onFailure { error ->
                     Timber.e(error, "Quick sell failed")

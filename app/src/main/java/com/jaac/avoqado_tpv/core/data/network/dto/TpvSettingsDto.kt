@@ -58,6 +58,11 @@ data class TpvSettingsDto(
     @SerializedName("enableShifts")
     val enableShifts: Boolean?,
 
+    // Venue-level "cambaceo" flag (from VenueSettings via terminal config).
+    // Default null so manual constructions (tests) don't need it; old servers omit it.
+    @SerializedName("trackPromoterLocation")
+    val trackPromoterLocation: Boolean? = null,
+
     // Card payment server-decoupling kill-switch
     // Default null so manual constructions (tests) don't need to specify it; Gson populates from JSON,
     // and toDomain() coalesces null -> true (legacy/safe). Backend may omit it for old clients.
@@ -161,6 +166,8 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     requireVerificationBarcode = requireVerificationBarcode ?: false,
     // Shift system defaults to enabled
     enableShifts = enableShifts ?: true,
+    // Cambaceo tracking defaults to disabled (venue must opt in)
+    trackPromoterLocation = trackPromoterLocation ?: false,
     // Card payment kill-switch: default true (legacy: require backend before charge)
     requireAvoqadoServerForCardPayment = requireAvoqadoServerForCardPayment ?: true,
     // Attendance verification defaults to disabled
@@ -208,6 +215,7 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     requireVerificationPhoto = requireVerificationPhoto,
     requireVerificationBarcode = requireVerificationBarcode,
     enableShifts = enableShifts,
+    trackPromoterLocation = trackPromoterLocation,
     requireAvoqadoServerForCardPayment = requireAvoqadoServerForCardPayment,
     requireClockInPhoto = requireClockInPhoto,
     requireClockOutPhoto = requireClockOutPhoto,

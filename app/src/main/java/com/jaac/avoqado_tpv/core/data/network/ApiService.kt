@@ -1448,6 +1448,20 @@ interface ApiService {
         @Body request: com.jaac.avoqado_tpv.core.location.NetworkLocationRequest
     ): Response<com.jaac.avoqado_tpv.core.location.CellLocationResponse>
 
+    /**
+     * Record one periodic promoter location ping ("cambaceo")
+     *
+     * POST /tpv/geolocation/promoter-ping
+     *
+     * Sent hourly by PromoterLocationWorker within 11:00–18:00 venue-local.
+     * venueId + staffId come from the JWT; the backend re-validates the venue's
+     * trackPromoterLocation flag (403 when off — the worker treats that as a no-op).
+     */
+    @POST("tpv/geolocation/promoter-ping")
+    suspend fun sendPromoterLocationPing(
+        @Body request: com.jaac.avoqado_tpv.core.data.network.dto.PromoterLocationPingRequestDto
+    ): Response<com.jaac.avoqado_tpv.core.data.network.dto.PromoterLocationPingResponseDto>
+
     // ==========================================
     // APP UPDATE (Avoqado dual update system)
     // ==========================================

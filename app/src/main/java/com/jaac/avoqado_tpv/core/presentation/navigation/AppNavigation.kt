@@ -66,6 +66,7 @@ import com.jaac.avoqado_tpv.core.session.SessionManager
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.HeartbeatScheduler
 import com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler
+import com.jaac.avoqado_tpv.core.util.PromoterLocationScheduler
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationScreen
 import com.jaac.avoqado_tpv.features.authentication.presentation.LoginScreen
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationState
@@ -781,6 +782,9 @@ fun AppNavigation(
                     Timber.d("💾 Login successful - Starting payment sync")
                     PaymentSyncScheduler.start(context)
 
+                    // 📍 Cambaceo: hourly promoter location ping (self-gated by venue flag + 11-18h window)
+                    PromoterLocationScheduler.start(context)
+
                     // 📦 Fetch modules before navigating to Home
                     // This is critical when user logs out and logs back in without app restart
                     // Modules are cleared on logout but must be reloaded for WelcomeScreen
@@ -1009,6 +1013,9 @@ fun AppNavigation(
                     // - Matches Square/Toast pattern: heartbeat independent of login state
                     //
                     // HeartbeatScheduler.stop(context) ← REMOVED (was causing deadlock)
+
+                    // 📍 Promoter tracking DOES stop with the session (privacy) — unlike heartbeat
+                    PromoterLocationScheduler.stop(context)
 
                     // Clear session
                     homeViewModel.logout()
@@ -2105,6 +2112,9 @@ fun AppNavigation(
                         // Start payment sync worker (offline payment queue)
                         Timber.d("💾 Auto-login after timeclock - Starting payment sync")
                         PaymentSyncScheduler.start(context)
+
+                        // 📍 Cambaceo: hourly promoter location ping (self-gated by venue flag + 11-18h window)
+                        PromoterLocationScheduler.start(context)
 
                         // 📦 FIX: Ensure modules are loaded before navigating to Home
                         // Without this, WelcomeScreen shows wrong UI (full instead of simplified)

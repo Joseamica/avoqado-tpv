@@ -131,6 +131,7 @@ class FastPaymentRecorder @Inject constructor(
                         accessKey = body.data.digitalReceipt.accessKey,
                         amount = body.data.amount,
                         tipAmount = body.data.tipAmount,
+                        autofacturaAvailable = body.data.digitalReceipt.autofacturaAvailable,
                     )
 
                     Timber.i(
@@ -322,6 +323,9 @@ class FastPaymentRecorder @Inject constructor(
             isInternational = cardDetails.isInternational,
             reviewRating = context.rating?.toString(),
             deviceSerialNumber = context.deviceSerialNumber,
+            // 📸 NON-BLOCKING PROOF-OF-SALE (serialized inventory / SIM) — empty for normal payments
+            isPortabilidad = context.isPortabilidad.takeIf { it },
+            serialNumbers = context.serialNumbers.takeIf { it.isNotEmpty() },
             idempotencyKey = context.idempotencyKey, // 🛡️ Idempotency key (2026-04-08)
         )
     }

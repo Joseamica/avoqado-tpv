@@ -87,6 +87,7 @@ class AngelPayPaymentViewModelTest {
     private lateinit var paymentApiService: PaymentApiService
     private lateinit var apiService: ApiService
     private lateinit var socketManager: SocketManager
+    private lateinit var verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager
 
     // Backing state for repositories whose flows the VM observes
     private val authStateFlow = MutableStateFlow<AngelPayAuthState>(AngelPayAuthState.Authenticated)
@@ -138,6 +139,7 @@ class AngelPayPaymentViewModelTest {
         paymentApiService = mockk(relaxed = true)
         apiService = mockk(relaxed = true)
         socketManager = mockk(relaxed = true)
+        verificationUploadManager = mockk(relaxed = true)
 
         // Reactive flows the VM observes
         every { angelPayAuthRepository.state } returns authStateFlow
@@ -174,6 +176,7 @@ class AngelPayPaymentViewModelTest {
         paymentApiService = paymentApiService,
         apiService = apiService,
         socketManager = socketManager,
+        verificationUploadManager = verificationUploadManager,
     )
 
     // ----------------------------------------------------------------------
@@ -532,6 +535,55 @@ class AngelPayPaymentViewModelTest {
             coVerify(exactly = 1) { angelPayAuthRepository.handleAuthExpiry() }
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
             coVerify(atLeast = 1) { paymentStateHolder.setCharging(false) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // skipReview (serialized SIM sales) — bypasses rating/tip, keeps verification
+    // ----------------------------------------------------------------------
+    @Test
+    fun `initPayment with skipReview true bypasses rating and tip`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false,
+            showReviewScreen = true,
+            showTipScreen = true,
+            showVerificationScreen = false,
+        )
+
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00", orderId = "order_1", skipReview = true)
+            runCurrent()
+
+            // showReviewScreen/showTipScreen are both ON, yet skipReview must jump
+            // straight past them to merchant selection.
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `initPayment with skipReview false keeps rating when enabled`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false,
+            showReviewScreen = true,
+            showTipScreen = true,
+            showVerificationScreen = false,
+        )
+
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00", orderId = "order_1", skipReview = false)
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.CollectingRating::class.java)
         } finally {
             vm.viewModelScope.cancel()
         }

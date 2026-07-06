@@ -6304,7 +6304,8 @@ class PaymentViewModel @Inject constructor(
                             receiptUrl = receipt.receiptUrl ?: "", // Fallback to empty if no receipt URL
                             accessKey = "", // Refunds may not have separate access key
                             amount = refundContext.amount.add(refundContext.tip),
-                            tipAmount = refundContext.tip
+                            tipAmount = refundContext.tip,
+                            autofacturaAvailable = receipt.autofacturaAvailable
                         )
 
                         _state.value = currentState.copy(
@@ -6909,7 +6910,8 @@ class PaymentViewModel @Inject constructor(
                         isRefund = currentState.isRefund,  // 💸 Pass refund flag for receipt header
                         isPortabilidad = if (_isSerializedInventoryActive.value) _isPortabilidad.value else null,  // 📱 Sale type for serialized inventory
                         serialNumber = _serialNumber,  // 📱 ICCID/serial for receipt
-                        categoryName = _categoryName  // 📱 Category name for receipt
+                        categoryName = _categoryName,  // 📱 Category name for receipt
+                        autofacturaAvailable = currentState.receipt?.autofacturaAvailable ?: false  // 🧾 Same QR, caption mentions autofactura
                     )
                 }
 

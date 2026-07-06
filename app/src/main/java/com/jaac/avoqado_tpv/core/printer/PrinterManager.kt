@@ -177,7 +177,8 @@ class PrinterManager @Inject constructor(
         isRefund: Boolean = false,  // 💸 Refund mode - changes header and labels
         isPortabilidad: Boolean? = null,  // 📱 Serialized inventory: null=not serialized, false=línea nueva, true=portabilidad
         serialNumber: String? = null,  // 📱 ICCID/serial number for serialized inventory receipt
-        categoryName: String? = null  // 📱 Category name for serialized inventory receipt
+        categoryName: String? = null,  // 📱 Category name for serialized inventory receipt
+        autofacturaAvailable: Boolean = false,  // 🧾 Backend flag: same QR, caption mentions autofactura
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
@@ -380,7 +381,10 @@ class PrinterManager @Inject constructor(
                     Timber.w(e, "⚠️ [Printer] Could not generate/print QR bitmap")
                 }
 
-                printerInstance.printStr("Escanea para recibo digital\n\n", null)
+                printerInstance.printStr(
+                    if (autofacturaAvailable) "Escanea para recibo y factura\n\n" else "Escanea para recibo digital\n\n",
+                    null,
+                )
             }
 
             // ========================================
@@ -1698,7 +1702,8 @@ class PrinterManager @Inject constructor(
         venueAddress: String? = null,
         venueCity: String? = null,
         venueState: String? = null,
-        venueZipCode: String? = null
+        venueZipCode: String? = null,
+        autofacturaAvailable: Boolean = false,  // 🧾 Backend flag: same QR, caption mentions autofactura
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
@@ -1771,7 +1776,10 @@ class PrinterManager @Inject constructor(
                 } catch (e: Exception) {
                     Timber.w(e, "⚠️ [Printer] Could not print QR code")
                 }
-                printerInstance.printStr("Escanea para recibo digital\n\n", null)
+                printerInstance.printStr(
+                    if (autofacturaAvailable) "Escanea para recibo y factura\n\n" else "Escanea para recibo digital\n\n",
+                    null,
+                )
             }
 
             // ========================================

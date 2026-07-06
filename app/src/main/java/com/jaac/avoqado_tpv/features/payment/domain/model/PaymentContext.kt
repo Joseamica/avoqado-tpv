@@ -277,6 +277,13 @@ sealed class PaymentContext {
         val angelPayTransactionId: String? = null,
         val orderId: String? = null,
         val orderNumber: String? = null,
+        // 📸 NON-BLOCKING PROOF-OF-SALE (serialized inventory / SIM) — additive, default off.
+        // Photos are NOT carried here (mirrors Blumon: they're POSTed separately,
+        // post-payment, via the proof-of-sale endpoint keyed by paymentId). Only
+        // isPortabilidad/serialNumbers ride on the payment record itself, so the
+        // SaleVerification created at record time already has the ICCID.
+        val isPortabilidad: Boolean = false,
+        val serialNumbers: List<String> = emptyList(),
     ) : PaymentContext()
 }
 

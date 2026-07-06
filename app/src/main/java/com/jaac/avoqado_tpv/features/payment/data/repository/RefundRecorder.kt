@@ -134,6 +134,7 @@ class RefundRecorder @Inject constructor(
                         accessKey = body.data.digitalReceipt?.accessKey,
                         amount = body.data.amount,
                         status = body.data.status,
+                        autofacturaAvailable = body.data.digitalReceipt?.autofacturaAvailable ?: false,
                     )
 
                     Timber.i(

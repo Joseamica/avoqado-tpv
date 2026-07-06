@@ -69,6 +69,12 @@ fun AngelPayPaymentScreen(
     initialAmount: String?,
     orderId: String? = null,
     orderNumber: String? = null,
+    // 📸 Serialized inventory (SIM) sale — all default off; a normal payment passes nothing.
+    // Proof-of-sale photos are NOT captured here — they're taken AFTER the charge, on
+    // the success screen (mirrors Blumon's post-payment "Vinculación" flow exactly).
+    serialNumber: String? = null,
+    isPortabilidad: Boolean = false,
+    skipReview: Boolean = false,
     onNavigateBack: () -> Unit,
     onNavigateHome: () -> Unit,
     /**
@@ -142,10 +148,17 @@ fun AngelPayPaymentScreen(
     // Auto-start payment when screen opens with amount
     LaunchedEffect(initialAmount) {
         if (initialAmount != null && state is AngelPayPaymentState.Idle) {
+            // 📸 Serialized inventory (SIM) proof-of-sale — no-op for a normal payment
+            // (all args default off), so this doesn't change the normal charge flow.
+            viewModel.setSerializedSaleInfo(
+                serialNumber = serialNumber,
+                isPortabilidad = isPortabilidad,
+            )
             viewModel.initPayment(
                 amount = initialAmount,
                 orderId = orderId,
                 orderNumber = orderNumber,
+                skipReview = skipReview,
             )
         }
     }
@@ -212,14 +225,36 @@ fun AngelPayPaymentScreen(
         showSuccessContent -> {
             val successState = state as? AngelPayPaymentState.Success
             if (successState != null) {
+                val isUploadingProofOfSale by viewModel.isUploadingProofOfSale.collectAsStateWithLifecycle()
+                val proofOfSaleComplete by viewModel.proofOfSaleComplete.collectAsStateWithLifecycle()
                 AngelPaySuccessContent(
                     state = successState,
-                    showReceiptScreen = true,
+                    showReceiptScreen = viewModel.showReceiptScreen,
                     showPrintButton = viewModel.canPrintReceipt,
                     onPrintReceipt = { viewModel.printReceipt(successState.receipt) },
                     onSendReceiptEmail = viewModel::sendReceiptByEmail,
                     onSendReceiptWhatsApp = viewModel::sendReceiptByWhatsApp,
                     isSendingReceipt = isSendingReceipt,
+                    // 📸 Serialized (SIM) sale — post-payment proof-of-sale, mirrors Blumon.
+                    // isSerializedFlow false for a normal payment → success screen is
+                    // byte-identical to before (QR always shown).
+                    isSerializedFlow = viewModel.isSerializedSale,
+                    isPortabilidad = isPortabilidad,
+                    isUploadingProofOfSale = isUploadingProofOfSale,
+                    proofOfSaleComplete = proofOfSaleComplete,
+                    onProofOfSalePhotoTaken = { photoPath, photoLabel ->
+                        val paymentId = successState.receipt?.paymentId
+                        if (paymentId != null) {
+                            viewModel.uploadProofOfSale(
+                                photoPath = photoPath,
+                                paymentId = paymentId,
+                                orderNumber = successState.orderNumber ?: "",
+                                amount = successState.amount,
+                                photoLabel = photoLabel,
+                            )
+                        }
+                    },
+                    onRetakeProofOfSalePhoto = viewModel::retakeProofOfSalePhoto,
                     onNavigateHome = {
                         viewModel.resetPayment()
                         onNavigateHome()
@@ -435,7 +470,7 @@ fun AngelPayPaymentScreen(
                         onStartCryptoPayment = { viewModel.processCryptoPayment(currentState.totalAmount) },
                         onNavigateBack = null, // Back handled by Scaffold top bar
                         showCashOption = true,
-                        showCryptoOption = true,
+                        showCryptoOption = viewModel.showCryptoOption,
                         hideAccountSelector = merchants.size <= 1,
                     )
                 }

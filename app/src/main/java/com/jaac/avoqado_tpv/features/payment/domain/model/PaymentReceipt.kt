@@ -49,6 +49,7 @@ data class PaymentReceipt(
     val accessKey: String,
     val amount: BigDecimal,
     val tipAmount: BigDecimal,
+    val autofacturaAvailable: Boolean = false,
 ) {
     /**
      * Monto total del pago (base + propina).

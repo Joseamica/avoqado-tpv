@@ -81,6 +81,7 @@ class AngelPayTicketBuilder @Inject constructor() {
         cardBrand: String? = null,
         maskedPan: String? = null,
         entryMode: String? = null,
+        autofacturaAvailable: Boolean = false,
     ): PrintTicketRequest {
         val centerBold = PrintStyleRequest(
             alignment = PrintAlignmentRequest.CENTER,
@@ -303,7 +304,7 @@ class AngelPayTicketBuilder @Inject constructor() {
                 add(
                     PrintTicketItemRequest(
                         type = PrintTicketItemType.TEXT,
-                        text = "Escanea para recibo digital",
+                        text = if (autofacturaAvailable) "Escanea para recibo y factura" else "Escanea para recibo digital",
                         style = centerNormal,
                     )
                 )

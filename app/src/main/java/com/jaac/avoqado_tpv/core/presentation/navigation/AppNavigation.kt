@@ -450,7 +450,8 @@ fun AppNavigation(
                                 venueAddress = secureStorage.getVenueAddress(),
                                 venueCity = secureStorage.getVenueCity(),
                                 venueState = secureStorage.getVenueState(),
-                                venueZipCode = secureStorage.getVenueZipCode()
+                                venueZipCode = secureStorage.getVenueZipCode(),
+                                autofacturaAvailable = receipt.autofacturaAvailable
                             )
                         }
                     }
@@ -2165,8 +2166,13 @@ fun AppNavigation(
                             set("serialNumber", serialNumber)  // 📱 ICCID/serial for receipt
                             set("categoryName", categoryName)  // 📱 Category name for receipt
                         }
+                        // 📱 Serialized (SIM) sales skip pre-payment verification on
+                        // BOTH hardware paths — Blumon does this too (see
+                        // `submitAmountDirectToMerchant` in PaymentScreen.kt, driven by
+                        // the same `skipReview` flag above). Proof-of-sale photos are
+                        // captured AFTER the charge, on the success screen, not here.
                         navController.navigate(getPaymentRoute())
-                        Timber.d("💳 Serialized sale: Navigating to payment for order $orderId (#$orderNumber), amount $orderTotal, serial=$serialNumber, category=$categoryName (skipLocalValidation=true, isPortabilidad=$isPortabilidad, nexgo=${isAppToAppPayment()})")
+                        Timber.d("💳 Serialized sale → payment | order $orderId (#$orderNumber), serial=$serialNumber, portabilidad=$isPortabilidad, nexgo=${isAppToAppPayment()}")
                     }
                 },
                 resetOnEnter = shouldReset,
@@ -2279,10 +2285,19 @@ fun AppNavigation(
             val entryPoint = navController.previousBackStackEntry?.savedStateHandle?.get<String>("entryPoint")
             val cameFromCheckout = entryPoint == "checkout"
 
+            // 📸 Serialized inventory (SIM) sale — set by SerializedSaleScreen's
+            // onNavigateToPayment. Null/false for a normal AngelPay charge.
+            val serialNumber = navController.previousBackStackEntry?.savedStateHandle?.get<String>("serialNumber")
+            val isPortabilidad = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("isPortabilidad") ?: false
+            val skipReview = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("skipReview") ?: false
+
             com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentScreen(
                 initialAmount = initialAmount,
                 orderId = orderId,
                 orderNumber = orderNumber,
+                serialNumber = serialNumber,
+                isPortabilidad = isPortabilidad,
+                skipReview = skipReview,
                 onNavigateBack = {
                     val popped = navController.safePopBackStack()
                     if (!popped) {

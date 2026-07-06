@@ -7,13 +7,36 @@
 
 ## [Unreleased]
 
+---
+
+## [2.6.4] - 2026-07-06
+
+### **Added**
+
+- **[Nexgo] Venta de SIM con verificación (foto/código) y registro serializado — paridad con Blumon/PAX**: las terminales Nexgo/AngelPay ahora soportan el flujo completo de `SERIALIZED_INVENTORY` (venta/alta de SIM) que antes solo existía en PAX. Antes, al vender una SIM en Nexgo, el ICCID y la portabilidad **se caían** en el traspaso al cobro de AngelPay (la pantalla ni los recibía) → la venta se registraba mal, sin verificación pendiente. Ahora:
+  - **ICCID + portabilidad se adjuntan al registro del cobro** (campos aditivos en `PaymentContext.AngelPayPayment` + mapeo en `buildAngelPayOrderPaymentRequest`/`buildAngelPayFastPaymentRequest`). Validado en N86 real por **efectivo Y tarjeta** (SDK AngelPay, contactless): el `SaleVerification` PENDING se crea con el `serialNumbers` correcto.
+  - **`skipReview`**: la venta de SIM salta reseña/propina (vía settings efectivos sobre el `PaymentFlowGate` compartido) y va directo a selección de comercio.
+  - **Paso de verificación foto/código aislado**: nueva pantalla `SerializedVerification` (ruta propia entre el escaneo de SIM y el cobro) que reusa `VerificationScreen` + `CameraPreviewScreen` + `BarcodeScannerScreen` + `VerificationUploadManager`. La cámara/subida NO viven dentro del ViewModel de cobro. Las fotos suben a Firebase y, tras el cobro exitoso, se asocian al `SaleVerification` vía `paymentApiService.uploadProofOfSale` (por-foto con slot label "Vinculacion"/"Portabilidad", a prueba de doble-envío). Validado en N86: `photo_count=1`, sin duplicados.
+  - **Aislamiento**: la rama de verificación está gated por `isAppToAppPayment()` (Nexgo) — Blumon/PAX cae siempre en `getPaymentRoute()` con su verificación inline intacta. **Cero cambios de comportamiento en Blumon.** Suite 590/0-fallos; 3 variantes compilan.
+  - ⚠️ Pendiente: para portabilidad exigir 2 fotos (hoy exige ≥1, igual que el componente compartido).
+
+- **Seguimiento de ubicación de promotores en campo ("cambaceo")**: para promotores sin tienda fija (venden puerta a puerta / vía pública), la TPV ahora captura su ubicación cada hora entre las 11:00 y las 18:00 (hora del venue) y la envía al backend (`sendPromoterLocationPing`), donde ADMIN y Supervisor pueden verla en el Dashboard (recorrido del día + última posición, en Auditoría de Promotores). Flag `trackPromoterLocation` en la configuración del venue — **opt-in, desactivado por default**; solo captura donde se activa explícitamente. El `Repository` trata errores transitorios y HTTP 403 (permiso revocado) como no-op, sin bloquear ni reintentar agresivamente. Asana 1216095149541822 (Isaac/PlayTelecom — piloto: Isela Chávez, terminal 2840744194 Telcel, venue virtual "Cambaceo").
+
 ### **Fixed**
+
+- **[Nexgo] "Pago con Crypto" desactivado en el Dashboard seguía apareciendo en la pantalla de selección de comercio**: `AngelPayPaymentScreen` pasaba `showCryptoOption = true` hardcodeado a `MerchantSelectionContent`, ignorando el toggle de Configuración de Terminal — a diferencia del flujo Blumon/PAX (`PaymentScreen.kt`), que ya leía `tpvSettings?.showCryptoOption` correctamente. Ahora `AngelPayPaymentViewModel` expone `showCryptoOption` (mismo patrón que `tipSuggestions`/`defaultTipPercentage`, vía `tpvSettingsRepository.getCurrentSettings()`) y la pantalla lo consume en vez del valor fijo. **Solo ruta AngelPay/Nexgo — cero cambios en Blumon/PAX.**
+
+- **[Nexgo] "Mostrar opciones de recibo" desactivado en el Dashboard no ocultaba las opciones de recibo tras el cobro**: mismo patrón que el bug de Crypto — `AngelPayPaymentScreen` pasaba `showReceiptScreen = true` hardcodeado a `AngelPaySuccessContent`, mientras que Blumon/PAX (`PaymentScreen.kt`) ya leía `viewModel.showReceiptScreen` correctamente (getter existente en ambas variantes de `PaymentViewModel`). Se agregó el mismo getter a `AngelPayPaymentViewModel` y la pantalla ahora lo consume en vez del valor fijo. Se revisaron también `showReviewScreen` y `showTipScreen` (mismo panel de Configuración de Terminal) — ambos ya estaban correctamente conectados en `AngelPayPaymentViewModel`, sin bug. **Solo ruta AngelPay/Nexgo — cero cambios en Blumon/PAX.**
 
 - **Vender SIM: ya no se puede re-enviar una venta que ya completó**: tras una venta exitosa, `SerializedSaleScreen` conservaba el SIM escaneado y el botón "Vender" activo; si el promotor regresaba (back) a media captura de foto/pago y volvía a presionar "Vender", el backend rechazaba con 400 "Item ya fue vendido" (6 casos en producción 30-jun/1-jul, 5 SIMs de intercambio, todos rechazados por el guard — cero duplicados). Ahora `onConfirmSale` resetea el estado (`returnToScanner()`) inmediatamente después de disparar la navegación; la navegación no se afecta porque el payload viaja por callback, no por uiState. Complementa el `resetOnEnter` existente que solo cubría el retorno feliz desde pago. Cambio hermano en backend (avoqado-server): ese 400 esperado ahora se loguea como `warn` en vez de `error` para no ensuciar dashboards.
 
 ### **Changed**
 
+- **Reglas AngelPay alineadas con el SDK actual**: se corrigieron la regla auto-cargada y la guía vigente para distinguir el SDK embebido 1.0.15 del fallback app-to-app, documentar que las credenciales llegan desde la configuración de terminal del backend y retirar credenciales que estaban escritas en la documentación. También se dejó explícito que `cardLast4`, `cardEntryMode` y `folio` están disponibles pero todavía no se persisten. Sin cambios en la lógica de cobro.
+
 - **Self-update: no intentar el fallback PAX SDK cuando el sistema pide confirmación humana (Android 10+)**: investigación del fallo de instalación en AVQD-2841653112 (2026-07-01) reveló que **cada** self-update de la flota (215 eventos, 37 terminales) dispara el diálogo nativo `STATUS_PENDING_USER_ACTION` — el APK firmado por PAX **no** tiene privilegio de instalación silenciosa, contrario a lo que asumía el código. Cuando nadie confirma el diálogo en 120s, el timeout disparaba el fallback PAX SDK, que en Android 10+ está condenado a fallar por FUSE (100% de fallas históricas) y generaba el log engañoso `ALL install strategies failed`. Ahora, si el diálogo apareció y es Android 10+, se omite el fallback y se reporta el timeout directo (`ApkInstaller.pendingUserConfirmation`, seteado por `InstallResultReceiver` tras validar sessionId). Android ≤9 conserva el fallback intacto (ahí sí funciona). Mismo mensaje/retry para el usuario; el CRITICAL de `SelfUpdateVM Install failed` sigue emitiéndose. **Pendiente (fuera de código)**: gestionar con Blumon/PAX el privilegio `INSTALL_PACKAGES`/firma de plataforma para que el update sea realmente silencioso.
+
+- **Recibo impreso: caption menciona autofactura cuando está disponible**: el mismo QR de recibo digital ahora imprime "Escanea para recibo y factura" en vez de "Escanea para recibo digital" cuando el pago es elegible para autofactura (`autofacturaAvailable`, calculado en backend). Aplica a recibos normales y de reembolso (`PaymentReceipt`/`RefundReceipt`), en ambos flujos Blumon/PAX y AngelPay/Nexgo. Default `false` — sin cambio de comportamiento donde el backend no envíe el flag.
 
 ---
 

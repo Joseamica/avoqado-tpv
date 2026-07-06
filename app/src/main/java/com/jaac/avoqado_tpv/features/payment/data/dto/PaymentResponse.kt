@@ -78,4 +78,7 @@ data class DigitalReceiptData(
 
     @SerializedName("receiptUrl")
     val receiptUrl: String,
+
+    @SerializedName("autofacturaAvailable")
+    val autofacturaAvailable: Boolean = false,
 )

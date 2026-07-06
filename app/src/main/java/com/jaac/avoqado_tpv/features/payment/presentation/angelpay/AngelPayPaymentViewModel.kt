@@ -92,6 +92,7 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val paymentApiService: PaymentApiService,
     private val apiService: ApiService,
     private val socketManager: SocketManager,
+    private val verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<AngelPayPaymentState>(AngelPayPaymentState.Idle)
@@ -141,6 +142,143 @@ class AngelPayPaymentViewModel @Inject constructor(
     // TpvSettings for tip suggestions / default tip percentage
     val tipSuggestions: List<Int> get() = tpvSettingsRepository.getCurrentSettings().tipSuggestions
     val defaultTipPercentage: Int? get() = tpvSettingsRepository.getCurrentSettings().defaultTipPercentage
+    val showCryptoOption: Boolean get() = tpvSettingsRepository.getCurrentSettings().showCryptoOption
+    val showReceiptScreen: Boolean get() = tpvSettingsRepository.getCurrentSettings().showReceiptScreen
+
+    /**
+     * 📸 Serialized inventory (SIM) sale: attach metadata to the payment before
+     * charging. Called from the navigation layer for a SIM sale only; a normal
+     * AngelPay payment never calls this, so the recorded context stays byte-identical.
+     */
+    fun setSerializedSaleInfo(
+        serialNumber: String?,
+        isPortabilidad: Boolean,
+    ) {
+        pendingSerialNumbers = listOfNotNull(serialNumber)
+        pendingIsPortabilidad = isPortabilidad
+    }
+
+    /** Whether the in-flight/just-completed payment is a serialized (SIM) sale. */
+    val isSerializedSale: Boolean get() = pendingSerialNumbers.isNotEmpty()
+
+    // ── Post-payment proof-of-sale (serialized SIM sale) — mirrors Blumon exactly ──
+    // Photos are captured AFTER the charge, on the success screen (replacing the QR),
+    // non-blocking. Gated purely by isSerializedSale — a normal AngelPay payment never
+    // reaches this code.
+    private val _isUploadingProofOfSale = MutableStateFlow(false)
+    val isUploadingProofOfSale: StateFlow<Boolean> = _isUploadingProofOfSale.asStateFlow()
+
+    private val _proofOfSaleComplete = MutableStateFlow(false)
+    val proofOfSaleComplete: StateFlow<Boolean> = _proofOfSaleComplete.asStateFlow()
+
+    private val _pendingProofOfSaleUrls = mutableMapOf<String, String>() // label -> Firebase URL
+    private val _sentToBackendUrls = mutableSetOf<String>()
+
+    /**
+     * 📸 Upload a proof-of-sale photo to Firebase, then attach it to the just-recorded
+     * payment's PENDING SaleVerification via a dedicated endpoint keyed by paymentId.
+     * Mirrors Blumon's `PaymentViewModel.uploadProofOfSale` byte-for-byte.
+     */
+    fun uploadProofOfSale(
+        photoPath: String,
+        paymentId: String,
+        orderNumber: String,
+        amount: String,
+        photoLabel: String = "linea",
+    ) {
+        viewModelScope.launch {
+            try {
+                _isUploadingProofOfSale.value = true
+                val requiredCount = if (pendingIsPortabilidad) 2 else 1
+                Timber.i("📸 [AngelPay PROOF-OF-SALE] Starting upload | label=$photoLabel | paymentId=$paymentId | order=$orderNumber | required=$requiredCount")
+
+                val venueSlug = authRepository.getVenueSlug() ?: run {
+                    Timber.e("📸 [AngelPay PROOF-OF-SALE] No venueSlug available")
+                    return@launch
+                }
+
+                val uploadResult = verificationUploadManager.uploadProofOfSale(
+                    localPath = photoPath,
+                    venueSlug = venueSlug,
+                    orderNumber = orderNumber,
+                    amount = amount,
+                    photoLabel = photoLabel,
+                )
+
+                uploadResult.onSuccess { photoUrl ->
+                    Timber.i("📸 [AngelPay PROOF-OF-SALE] Firebase upload success: $photoUrl")
+                    _pendingProofOfSaleUrls[photoLabel] = photoUrl
+                    sendSinglePhotoToBackend(paymentId, photoUrl, photoLabel)
+                    if (_pendingProofOfSaleUrls.size >= requiredCount) {
+                        _proofOfSaleComplete.value = true
+                    }
+                }.onFailure { error ->
+                    Timber.e(error, "📸 [AngelPay PROOF-OF-SALE] Firebase upload failed")
+                }
+            } catch (e: Exception) {
+                Timber.e(e, "📸 [AngelPay PROOF-OF-SALE] Unexpected error")
+            } finally {
+                _isUploadingProofOfSale.value = false
+            }
+        }
+    }
+
+    private suspend fun sendSinglePhotoToBackend(paymentId: String, photoUrl: String, photoLabel: String?) {
+        val backendLabel = when (photoLabel) {
+            "linea" -> "Vinculacion"
+            "portabilidad" -> "Portabilidad"
+            else -> photoLabel
+        }
+        try {
+            val response = paymentApiService.uploadProofOfSale(
+                com.jaac.avoqado_tpv.core.data.network.ProofOfSaleRequest(
+                    paymentId = paymentId,
+                    photoUrls = listOf(photoUrl),
+                    photoLabel = backendLabel,
+                )
+            )
+            if (response.isSuccessful && response.body()?.success == true) {
+                Timber.i("✅ [AngelPay PROOF-OF-SALE] Backend recorded photo for payment $paymentId")
+                _sentToBackendUrls.add(photoUrl)
+            } else {
+                Timber.e("❌ [AngelPay PROOF-OF-SALE] Backend failed: ${response.body()?.message}")
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [AngelPay PROOF-OF-SALE] Backend call error")
+        }
+    }
+
+    /** 📸 Retake a proof-of-sale photo — deletes the existing Firebase upload for the slot. */
+    fun retakeProofOfSalePhoto(photoLabel: String) {
+        val existingUrl = _pendingProofOfSaleUrls.remove(photoLabel)
+        _proofOfSaleComplete.value = false
+        if (existingUrl != null) {
+            viewModelScope.launch {
+                verificationUploadManager.deletePhoto(existingUrl)
+                    .onSuccess { Timber.d("📸 [AngelPay PROOF-OF-SALE] Deleted old $photoLabel photo") }
+                    .onFailure { Timber.w(it, "📸 [AngelPay PROOF-OF-SALE] Failed to delete old $photoLabel photo") }
+            }
+        }
+    }
+
+    /**
+     * 📸 Cleanup photos uploaded to Firebase but never sent to the backend (e.g. app
+     * closed mid-flow before completing all required photos). Mirrors Blumon.
+     */
+    private fun cleanupOrphanedProofOfSalePhotos() {
+        if (_pendingProofOfSaleUrls.isEmpty()) return
+        val urlsToDelete = _pendingProofOfSaleUrls.values.filter { it !in _sentToBackendUrls }
+        _pendingProofOfSaleUrls.clear()
+        _sentToBackendUrls.clear()
+        if (urlsToDelete.isEmpty()) return
+        viewModelScope.launch {
+            urlsToDelete.forEach { url ->
+                verificationUploadManager.deletePhoto(url)
+                    .onSuccess { Timber.d("📸 [AngelPay PROOF-OF-SALE] Deleted orphan: $url") }
+                    .onFailure { Timber.w(it, "📸 [AngelPay PROOF-OF-SALE] Failed to delete orphan: $url") }
+            }
+        }
+    }
     /**
      * Whether the print button should be visible on the AngelPay success
      * screen. Bifurcates by build flavor because PAX and Nexgo terminals
@@ -188,6 +326,11 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var pendingRating: Int? = null
     private var pendingOrderId: String? = null
     private var pendingOrderNumber: String? = null
+    // 📸 Serialized inventory (SIM) proof-of-sale — set via [setSerializedSaleInfo] before
+    // charging. Empty/false for a normal AngelPay payment so the recorded context is
+    // byte-identical to before. Cleared in resetPayment().
+    private var pendingSerialNumbers: List<String> = emptyList()
+    private var pendingIsPortabilidad: Boolean = false
     private var cachedShiftId: String? = null
     private var cachedVenueId: String? = null
     private var cachedStaffId: String? = null
@@ -344,11 +487,14 @@ class AngelPayPaymentViewModel @Inject constructor(
      * @param amount Payment amount as string (e.g., "150.00")
      * @param orderId Optional order ID (null = fast payment)
      * @param orderNumber Optional order number for display
+     * @param skipReview When true, bypass the rating/tip screens (serialized SIM sales).
+     *   Pre-payment verification is still honored via `showVerificationScreen`.
      */
     fun initPayment(
         amount: String,
         orderId: String? = null,
         orderNumber: String? = null,
+        skipReview: Boolean = false,
     ) {
         viewModelScope.launch {
             Timber.i("🔶 [AngelPay] initPayment | amount=$amount, orderId=$orderId")
@@ -433,10 +579,17 @@ class AngelPayPaymentViewModel @Inject constructor(
             // Reused by both cash and card flows below, and persisted across all retries.
             ensurePaymentAttemptId()
 
-            // 4. Use PaymentFlowGate to determine first screen
+            // 4. Use PaymentFlowGate to determine first screen.
+            // skipReview (serialized SIM sales) suppresses rating/tip but KEEPS
+            // pre-payment verification — mirror of Blumon's skipReview semantics.
             val settings = tpvSettingsRepository.getCurrentSettings()
-            val nextStep = PaymentFlowGate.nextAfterAmount(settings)
-            Timber.d("🔶 [AngelPay] FlowGate.nextAfterAmount → $nextStep")
+            val effectiveSettings = if (skipReview) {
+                settings.copy(showReviewScreen = false, showTipScreen = false)
+            } else {
+                settings
+            }
+            val nextStep = PaymentFlowGate.nextAfterAmount(effectiveSettings)
+            Timber.d("🔶 [AngelPay] FlowGate.nextAfterAmount → $nextStep (skipReview=$skipReview)")
 
             navigateToStep(nextStep, amount)
         }
@@ -990,6 +1143,9 @@ class AngelPayPaymentViewModel @Inject constructor(
                 referenceNumber = "CASH-$timestamp",
                 orderId = pendingOrderId,
                 orderNumber = pendingOrderNumber,
+                // 📸 Serialized inventory (SIM) proof-of-sale — empty for a normal payment
+                isPortabilidad = pendingIsPortabilidad,
+                serialNumbers = pendingSerialNumbers,
             )
 
             Timber.d("🔶 [AngelPay] Recording cash payment | amount=$pendingAmount, tip=$pendingTip")
@@ -1179,6 +1335,9 @@ class AngelPayPaymentViewModel @Inject constructor(
             referenceNumber = result.referenceNumber,
             orderId = pendingOrderId,
             orderNumber = pendingOrderNumber,
+            // 📸 Serialized inventory (SIM) proof-of-sale — empty for a normal payment
+            isPortabilidad = pendingIsPortabilidad,
+            serialNumbers = pendingSerialNumbers,
         )
 
         val recordResult = withContext(Dispatchers.IO) {
@@ -1250,6 +1409,9 @@ class AngelPayPaymentViewModel @Inject constructor(
             referenceNumber = result.reference ?: "",
             orderId = pendingOrderId,
             orderNumber = pendingOrderNumber,
+            // 📸 Serialized inventory (SIM) proof-of-sale — empty for a normal payment
+            isPortabilidad = pendingIsPortabilidad,
+            serialNumbers = pendingSerialNumbers,
         )
 
         val recordResult = withContext(Dispatchers.IO) {
@@ -1446,6 +1608,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                             venueName = venueName,
                             staffName = staffName,
                             orderNumber = pendingOrderNumber,
+                            autofacturaAvailable = receipt.autofacturaAvailable,
                         )
                     } else {
                         // Nexgo path — print through the AngelPay SDK
@@ -1478,6 +1641,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                             orderNumber = pendingOrderNumber,
                             receiptUrl = receipt.receiptUrl,
                             appVersionName = BuildConfig.VERSION_NAME,
+                            autofacturaAvailable = receipt.autofacturaAvailable,
                         )
                         com.angelpay.angelpaysdk.AngelPaySDK.printTicket(ticket)
                     }
@@ -1781,6 +1945,11 @@ class AngelPayPaymentViewModel @Inject constructor(
         pendingRating = null
         pendingOrderId = null
         pendingOrderNumber = null
+        pendingSerialNumbers = emptyList()
+        pendingIsPortabilidad = false
+        cleanupOrphanedProofOfSalePhotos()
+        _isUploadingProofOfSale.value = false
+        _proofOfSaleComplete.value = false
         cachedShiftId = null
         cachedVenueId = null
         cachedStaffId = null

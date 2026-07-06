@@ -84,6 +84,15 @@ fun AngelPaySuccessContent(
      */
     onViewInPayments: (paymentId: String) -> Unit = {},
     onStartNewPayment: () -> Unit,
+    // 📸 Serialized (SIM) sale — post-payment proof-of-sale, mirrors Blumon's own
+    // "Vinculación" flow exactly. Default off/false for a normal AngelPay payment, so
+    // the success screen stays byte-identical (QR always shown) unless this is a SIM sale.
+    isSerializedFlow: Boolean = false,
+    isPortabilidad: Boolean = false,
+    isUploadingProofOfSale: Boolean = false,
+    proofOfSaleComplete: Boolean = false,
+    onProofOfSalePhotoTaken: (photoPath: String, photoLabel: String) -> Unit = { _, _ -> },
+    onRetakeProofOfSalePhoto: (photoLabel: String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val subtotalAmount = remember(state.amount) { state.amount.toBigDecimalOrNull() ?: BigDecimal.ZERO }
@@ -93,6 +102,14 @@ fun AngelPaySuccessContent(
     var isPrinting by remember { mutableStateOf(false) }
     var showEmailDialog by remember { mutableStateOf(false) }
     var showWhatsAppDialog by remember { mutableStateOf(false) }
+
+    // 📸 Proof-of-sale local UI state (mirrors Blumon's PaymentScreen locals)
+    var showProofOfSaleCamera by remember { mutableStateOf(false) }
+    var currentPhotoLabel by remember { mutableStateOf("linea") }
+    var capturedPhotoPath by remember { mutableStateOf<String?>(null) }
+    var viewingPhotoLabel by remember { mutableStateOf<String?>(null) }
+    var lineaPhotoPath by remember { mutableStateOf<String?>(null) }
+    var portabilidadPhotoPath by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = modifier
@@ -175,42 +192,70 @@ fun AngelPaySuccessContent(
             }
         }
 
-        // ── QR Code Receipt ──────────────────────────────────────────
-        if (showReceiptScreen && state.receipt?.receiptUrl != null) {
-            Box(
-                modifier = Modifier
-                    .size(160.dp)
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(Color.White)
-                    .border(
-                        width = 8.dp,
-                        color = MaterialTheme.colorScheme.outline,
-                        shape = RoundedCornerShape(24.dp),
-                    ),
-            ) {
-                Image(
-                    painter = rememberQrBitmapPainter(
-                        content = state.receipt.receiptUrl,
-                        size = 120.dp,
-                        padding = 0.dp,
-                    ),
-                    contentDescription = "Codigo QR del recibo",
+        // ── QR Code Receipt (normal) OR proof-of-sale photo (serialized SIM sale) ──
+        if (!isSerializedFlow) {
+            if (showReceiptScreen && state.receipt?.receiptUrl != null) {
+                Box(
                     modifier = Modifier
-                        .size(120.dp)
-                        .align(Alignment.Center),
+                        .size(160.dp)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(Color.White)
+                        .border(
+                            width = 8.dp,
+                            color = MaterialTheme.colorScheme.outline,
+                            shape = RoundedCornerShape(24.dp),
+                        ),
+                ) {
+                    Image(
+                        painter = rememberQrBitmapPainter(
+                            content = state.receipt.receiptUrl,
+                            size = 120.dp,
+                            padding = 0.dp,
+                        ),
+                        contentDescription = "Codigo QR del recibo",
+                        modifier = Modifier
+                            .size(120.dp)
+                            .align(Alignment.Center),
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "Escanea el codigo QR para descargar el recibo",
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp),
                 )
+
+                Spacer(modifier = Modifier.height(16.dp))
             }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Text(
-                text = "Escanea el codigo QR para descargar el recibo",
-                textAlign = TextAlign.Center,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 24.dp),
+        } else {
+            com.jaac.avoqado_tpv.features.payment.presentation.components.ProofOfSalePhotoSection(
+                isPortabilidad = isPortabilidad,
+                lineaPhotoPath = lineaPhotoPath,
+                portabilidadPhotoPath = portabilidadPhotoPath,
+                isUploading = isUploadingProofOfSale,
+                isComplete = proofOfSaleComplete,
+                onTapLinea = {
+                    if (lineaPhotoPath != null) {
+                        viewingPhotoLabel = "linea"
+                    } else {
+                        currentPhotoLabel = "linea"
+                        showProofOfSaleCamera = true
+                    }
+                },
+                onTapPortabilidad = {
+                    if (portabilidadPhotoPath != null) {
+                        viewingPhotoLabel = "portabilidad"
+                    } else {
+                        currentPhotoLabel = "portabilidad"
+                        showProofOfSaleCamera = true
+                    }
+                },
             )
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -468,6 +513,87 @@ fun AngelPaySuccessContent(
             },
             isLoading = isSendingReceipt,
         )
+    }
+
+    // 📸 Proof-of-sale camera dialog (full screen) — serialized SIM sale only.
+    // Mirrors Blumon's own post-payment "Vinculación" camera wiring exactly.
+    if (showProofOfSaleCamera) {
+        val context = androidx.compose.ui.platform.LocalContext.current
+        val outputDirectory = remember {
+            val dir = java.io.File(context.cacheDir, "proof_of_sale_photos")
+            dir.mkdirs()
+            dir
+        }
+        val cameraLabel = when (currentPhotoLabel) {
+            "linea" -> "1. Vinculación"
+            "portabilidad" -> "2. Portabilidad"
+            else -> null
+        }
+
+        com.jaac.avoqado_tpv.features.verification.presentation.components.CameraPreviewScreen(
+            onPhotoCaptured = { photoPath ->
+                showProofOfSaleCamera = false
+                capturedPhotoPath = photoPath
+            },
+            onClose = { showProofOfSaleCamera = false },
+            outputDirectory = outputDirectory,
+            photoLabel = cameraLabel,
+        )
+    }
+
+    // 📸 Photo preview dialog with confirm/retake (multi-photo wizard for portabilidad)
+    capturedPhotoPath?.let { photoPath ->
+        com.jaac.avoqado_tpv.features.payment.presentation.components.ProofOfSalePhotoPreviewDialog(
+            photoPath = photoPath,
+            onConfirm = {
+                if (currentPhotoLabel == "linea") {
+                    lineaPhotoPath = photoPath
+                } else {
+                    portabilidadPhotoPath = photoPath
+                }
+                onProofOfSalePhotoTaken(photoPath, currentPhotoLabel)
+                capturedPhotoPath = null
+
+                if (isPortabilidad) {
+                    when {
+                        currentPhotoLabel == "linea" && portabilidadPhotoPath == null -> {
+                            currentPhotoLabel = "portabilidad"
+                            showProofOfSaleCamera = true
+                        }
+                        currentPhotoLabel == "portabilidad" && lineaPhotoPath == null -> {
+                            currentPhotoLabel = "linea"
+                            showProofOfSaleCamera = true
+                        }
+                    }
+                }
+            },
+            onRetake = {
+                capturedPhotoPath = null
+                showProofOfSaleCamera = true
+            },
+            onDismiss = { capturedPhotoPath = null },
+        )
+    }
+
+    // 📸 View existing photo with retake option
+    viewingPhotoLabel?.let { label ->
+        val viewingPath = if (label == "linea") lineaPhotoPath else portabilidadPhotoPath
+        viewingPath?.let { path ->
+            com.jaac.avoqado_tpv.features.payment.presentation.components.ProofOfSalePhotoPreviewDialog(
+                photoPath = path,
+                onConfirm = { viewingPhotoLabel = null },
+                onRetake = {
+                    viewingPhotoLabel = null
+                    onRetakeProofOfSalePhoto(label)
+                    if (label == "linea") lineaPhotoPath = null else portabilidadPhotoPath = null
+                    currentPhotoLabel = label
+                    showProofOfSaleCamera = true
+                },
+                onDismiss = { viewingPhotoLabel = null },
+                confirmText = "Cerrar",
+                retakeText = "Retomar",
+            )
+        }
     }
 }
 

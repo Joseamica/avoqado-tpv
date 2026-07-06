@@ -47,6 +47,7 @@ data class RefundReceipt(
     val accessKey: String?,
     val amount: BigDecimal,
     val status: String,
+    val autofacturaAvailable: Boolean = false,
 ) {
     /**
      * Verifica si el reembolso fue exitoso.

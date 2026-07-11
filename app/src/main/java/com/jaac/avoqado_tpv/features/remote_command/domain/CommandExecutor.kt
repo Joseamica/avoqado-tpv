@@ -2,6 +2,9 @@ package com.jaac.avoqado_tpv.features.remote_command.domain
 
 import android.app.Activity
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import androidx.annotation.VisibleForTesting
 import com.google.firebase.appdistribution.FirebaseAppDistribution
 import com.google.firebase.appdistribution.FirebaseAppDistributionException
 import com.jaac.avoqado_tpv.BuildConfig
@@ -71,6 +74,37 @@ class CommandExecutor @Inject constructor(
 ) {
     companion object {
         private const val TAG = "CommandExecutor"
+
+        /**
+         * REMOTE_ACTIVATE restart delay. Must exceed the HTTP ACK round-trip:
+         * ConnectionViewModel sends the ACK AFTER execute() returns, so killing
+         * the process immediately would leave the command un-ACKed and the
+         * backend would re-deliver it on every heartbeat (restart loop).
+         */
+        private const val REMOTE_ACTIVATE_RESTART_DELAY_MS = 5_000L
+    }
+
+    /**
+     * Restart hook for REMOTE_ACTIVATE — replaceable in unit tests (the default
+     * touches Handler/Looper/Process, unavailable on the JVM). Relaunches the
+     * app so startup refetches the terminal config for this serial and loads
+     * the NEW venue's merchant credentials into memory.
+     */
+    @VisibleForTesting
+    internal var restartScheduler: (delayMs: Long) -> Unit = { delayMs ->
+        Handler(Looper.getMainLooper()).postDelayed({
+            Timber.w("🔄 [$TAG] REMOTE_ACTIVATE restart firing — reloading config for the new venue")
+            try {
+                val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+                intent?.addFlags(
+                    android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                        android.content.Intent.FLAG_ACTIVITY_NEW_TASK,
+                )
+                context.startActivity(intent)
+            } finally {
+                android.os.Process.killProcess(android.os.Process.myPid())
+            }
+        }, delayMs)
     }
 
     /**
@@ -325,8 +359,27 @@ class CommandExecutor @Inject constructor(
             Timber.i("   🔢 Serial: $serialNumber")
             Timber.i("   🆔 Terminal ID: $terminalId")
 
+            // 🛡️ P0 fix (2026-07-11): re-parenting a terminal WITHOUT re-initializing
+            // the payment processor leaves it charging through the OLD venue's
+            // merchant while the server books sales under the NEW venue — silent
+            // money misrouting (documented in serialized-inventory-and-sim-custody.md:
+            // merchant credentials/sessions load in-memory at startup only; the
+            // heartbeat never refreshes them). Fix: clear the AngelPay session on
+            // Nexgo builds and schedule a full app restart on BOTH processors —
+            // boot refetches the terminal config and loads the new venue's merchants.
+            val angelPaySessionCleared = if (BuildConfig.SUPPORTED_PROCESSOR == "ANGELPAY") {
+                runCatching { angelPayAuthRepositoryProvider.get().logout() }
+                    .onFailure { Timber.w(it, "⚠️ [$TAG] AngelPay logout during REMOTE_ACTIVATE failed") }
+                    .isSuccess
+            } else {
+                false
+            }
+
+            restartScheduler(REMOTE_ACTIVATE_RESTART_DELAY_MS)
+            Timber.i("🔄 [$TAG] App restart scheduled in ${REMOTE_ACTIVATE_RESTART_DELAY_MS}ms (ACK goes out first)")
+
             return CommandResult.success(
-                message = "Terminal activated remotely by SUPERADMIN",
+                message = "Terminal activated remotely by SUPERADMIN — restarting to load new venue's merchants",
                 data = mapOf(
                     "venueId" to venueId,
                     "venueName" to venueName,
@@ -334,7 +387,9 @@ class CommandExecutor @Inject constructor(
                     "terminalId" to terminalId,
                     "serialNumber" to serialNumber,
                     "activatedAt" to Instant.now().toString(),
-                    "activationType" to "REMOTE"
+                    "activationType" to "REMOTE",
+                    "restartScheduledMs" to REMOTE_ACTIVATE_RESTART_DELAY_MS,
+                    "angelpaySessionCleared" to angelPaySessionCleared
                 )
             )
         } catch (e: Exception) {

@@ -1188,6 +1188,19 @@ fun AppNavigation(
                 },
                 onProcessPaymentWithAmount = { order, customAmount, splitType ->
                     menuPaymentScope.launch {
+                        // 🛡️ P1 fix (2026-07-11): AngelPay records order payments with
+                        // splitType hardcodeado a FULLPAYMENT (buildAngelPayOrderPaymentRequest)
+                        // — un cobro PARCIAL en Nexgo se registraría como pago completo y el
+                        // backend cerraría la orden con dinero faltante. Bloquear hasta que
+                        // el recorder AngelPay soporte splits reales.
+                        if (isAppToAppPayment() && splitType != SplitType.FULLPAYMENT) {
+                            Toast.makeText(
+                                context,
+                                "Cobro parcial aún no disponible en esta terminal. Cobra el total de la orden.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            return@launch
+                        }
                         if (!awaitPaxPaymentReady(context, initializationManager, "Order custom payment")) {
                             return@launch
                         }
@@ -1207,16 +1220,36 @@ fun AppNavigation(
                     }
                 },
                 onNavigateToSplitByProduct = { splitOrderId, hasCustomers ->
-                    // 💳 Pass wasPayLaterOrder through savedStateHandle for split screen to forward
-                    navController.currentBackStackEntry?.savedStateHandle?.set("wasPayLaterOrder", hasCustomers)
-                    navController.navigate(NavRoute.SplitByProduct.createRoute(splitOrderId))
-                    Timber.d("📦 Navigating to SplitByProduct: $splitOrderId | wasPayLater=$hasCustomers")
+                    // 🛡️ P1 fix (2026-07-11): las pantallas de split navegan HARDCODED a
+                    // NavRoute.Payment (Blumon) — en Nexgo eso abre la pantalla del
+                    // procesador equivocado. Bloquear en el origen hasta que el flujo
+                    // AngelPay soporte splits (routing + splitType real en el recorder).
+                    if (isAppToAppPayment()) {
+                        Toast.makeText(
+                            context,
+                            "Pagos divididos aún no disponibles en esta terminal.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        // 💳 Pass wasPayLaterOrder through savedStateHandle for split screen to forward
+                        navController.currentBackStackEntry?.savedStateHandle?.set("wasPayLaterOrder", hasCustomers)
+                        navController.navigate(NavRoute.SplitByProduct.createRoute(splitOrderId))
+                        Timber.d("📦 Navigating to SplitByProduct: $splitOrderId | wasPayLater=$hasCustomers")
+                    }
                 },
                 onNavigateToSplitByPerson = { splitOrderId, hasCustomers ->
-                    // 💳 Pass wasPayLaterOrder through savedStateHandle for split screen to forward
-                    navController.currentBackStackEntry?.savedStateHandle?.set("wasPayLaterOrder", hasCustomers)
-                    navController.navigate(NavRoute.SplitByPerson.createRoute(splitOrderId))
-                    Timber.d("👥 Navigating to SplitByPerson: $splitOrderId | wasPayLater=$hasCustomers")
+                    if (isAppToAppPayment()) {
+                        Toast.makeText(
+                            context,
+                            "Pagos divididos aún no disponibles en esta terminal.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        // 💳 Pass wasPayLaterOrder through savedStateHandle for split screen to forward
+                        navController.currentBackStackEntry?.savedStateHandle?.set("wasPayLaterOrder", hasCustomers)
+                        navController.navigate(NavRoute.SplitByPerson.createRoute(splitOrderId))
+                        Timber.d("👥 Navigating to SplitByPerson: $splitOrderId | wasPayLater=$hasCustomers")
+                    }
                 }
             )
         }

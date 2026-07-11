@@ -525,4 +525,63 @@ class CommandExecutorTest {
         assertThat(result.status).isEqualTo(TpvCommandResultStatus.REJECTED)
     }
 
+    // ========================================
+    // REMOTE_ACTIVATE — P0 fix 2026-07-11: re-parenting must re-initialize
+    // the processor (restart → config refetch → NEW venue's merchants).
+    // ========================================
+
+    private fun remoteActivatePayload() = mapOf<String, Any>(
+        "venueId" to "venue-NEW",
+        "venueName" to "Venue Nuevo",
+        "venueSlug" to "venue-nuevo",
+        "venueTimezone" to "America/Mexico_City",
+        "terminalId" to "term-1",
+        "terminalName" to "TPV 1",
+        "serialNumber" to "AVQD-TEST-001",
+    )
+
+    @Test
+    fun `REMOTE_ACTIVATE saves venue, schedules restart and succeeds`() = runTest {
+        // Given — capture the restart instead of touching Handler/Process on JVM
+        var scheduledDelayMs: Long? = null
+        commandExecutor.restartScheduler = { delayMs -> scheduledDelayMs = delayMs }
+        val command = createCommand(TpvCommandType.REMOTE_ACTIVATE, remoteActivatePayload())
+
+        // When
+        val result = commandExecutor.execute(command)
+
+        // Then
+        assertThat(result.status).isEqualTo(TpvCommandResultStatus.SUCCESS)
+        verify { mockSecureStorage.saveVenueId("venue-NEW") }
+        verify { mockSecureStorage.saveVenueSlug("venue-nuevo") }
+        verify { mockSecureStorage.saveSerialNumber("AVQD-TEST-001") }
+        // The money-safety core of the fix: a restart IS scheduled…
+        assertThat(scheduledDelayMs).isNotNull()
+        // …with a delay (not immediate) so the HTTP ACK goes out before the kill.
+        assertThat(scheduledDelayMs).isGreaterThan(0L)
+        assertThat(result.data?.get("restartScheduledMs")).isEqualTo(scheduledDelayMs)
+        // Unit tests build under sandbox (SUPPORTED_PROCESSOR=BLUMON): the AngelPay
+        // graph must never be touched on non-AngelPay builds.
+        verify(exactly = 0) { mockAngelPayAuthRepository.logout() }
+    }
+
+    @Test
+    fun `REMOTE_ACTIVATE with missing venue info is rejected and does NOT restart`() = runTest {
+        // Given
+        var restartScheduled = false
+        commandExecutor.restartScheduler = { restartScheduled = true }
+        val command = createCommand(
+            TpvCommandType.REMOTE_ACTIVATE,
+            payload = mapOf("venueName" to "Sin venueId ni slug"),
+        )
+
+        // When
+        val result = commandExecutor.execute(command)
+
+        // Then
+        assertThat(result.status).isEqualTo(TpvCommandResultStatus.REJECTED)
+        assertThat(restartScheduled).isFalse()
+        verify(exactly = 0) { mockSecureStorage.saveVenueId(any()) }
+    }
+
 }

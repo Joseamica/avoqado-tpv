@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+---
+
+## [2.6.6] - 2026-07-11
+
 ### **Fixed**
 
 - **[Nexgo] 🔴 P0 — Reembolso "parcial" devolvía el monto COMPLETO al tarjetahabiente**: hallazgo confirmado de la auditoría AngelPay del 9-jul. La pantalla de reembolso aceptaba un monto parcial, pero `processSdkRefund()` ni siquiera recibía el monto — el SDK de AngelPay ejecuta cancelación/devolución con `transaction.amount` (la venta original completa), mientras Avoqado registraba solo el parcial: un reembolso de $100 sobre $1,000 devolvía $1,000 y contabilizaba $100. Fix en 3 capas: (1) el toggle "Reembolso parcial" se oculta en builds Nexgo (`allowPartialRefund = ENABLE_PAX_SDK`), (2) guard en `RecordAngelPayRefundUseCase` que rechaza cualquier reembolso que no sea total y primera vez (`requestedAmount != originalAmount` o `alreadyRefunded > 0`) ANTES de tocar el SDK, con mensaje claro al operador, (3) 4 unit tests nuevos (`RecordAngelPayRefundUseCaseTest`). Blumon/PAX conserva el reembolso parcial intacto.

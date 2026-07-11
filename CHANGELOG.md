@@ -7,6 +7,20 @@
 
 ## [Unreleased]
 
+### **Fixed**
+
+- **[Nexgo] 🔴 P0 — Reembolso "parcial" devolvía el monto COMPLETO al tarjetahabiente**: hallazgo confirmado de la auditoría AngelPay del 9-jul. La pantalla de reembolso aceptaba un monto parcial, pero `processSdkRefund()` ni siquiera recibía el monto — el SDK de AngelPay ejecuta cancelación/devolución con `transaction.amount` (la venta original completa), mientras Avoqado registraba solo el parcial: un reembolso de $100 sobre $1,000 devolvía $1,000 y contabilizaba $100. Fix en 3 capas: (1) el toggle "Reembolso parcial" se oculta en builds Nexgo (`allowPartialRefund = ENABLE_PAX_SDK`), (2) guard en `RecordAngelPayRefundUseCase` que rechaza cualquier reembolso que no sea total y primera vez (`requestedAmount != originalAmount` o `alreadyRefunded > 0`) ANTES de tocar el SDK, con mensaje claro al operador, (3) 4 unit tests nuevos (`RecordAngelPayRefundUseCaseTest`). Blumon/PAX conserva el reembolso parcial intacto.
+
+- **[Nexgo] Un cobro aprobado ya no puede perderse permanentemente si Avoqado no responde**: AngelPay ya movió el dinero, pero si el registro al backend fallaba tras 5 reintentos solo quedaba un error "no vuelvas a cobrar" — órdenes, turnos, inventario y reportes quedaban sin actualizar para siempre (la cola offline `pending_payments` + `PaymentSyncWorker` existían desde hace meses pero **ningún flujo la alimentaba**). Ahora los 3 caminos de registro AngelPay (tarjeta SDK, tarjeta app-to-app, efectivo) encolan el pago al fallar (`handleRecordFailure`), disparan un sync inmediato y muestran "quedó EN COLA, se registrará automáticamente". Para reconstruir el contexto exacto al replay (orden vs fast, ICCID/portabilidad de venta SIM, `idempotencyKey` para dedup del backend), `pending_payments` ganó columnas nuevas — **Room v24→v25** (`MIGRATION_24_25`, aditiva, filas viejas quedan como BLUMON) + test instrumentado de migración. La cola replay usa el mismo `idempotencyKey`/`referenceNumber`, así que si el registro original SÍ llegó al servidor, el replay dedupe con 409 y no duplica.
+
+- **[Nexgo] Un error de red ya no bloquea pagos con un falso "config mismatch"**: `AngelPayConfigValidator` convertía cualquier fallo de transporte de `getUserMerchants()` en "0 merchants" → intersección vacía → HardBlock rojo "Sin merchants válidos compartidos. Contacta soporte." (la misma forma de hard block vista en Crashlytics v2.6.5). Ahora un fallo del query regresa `ValidationResult.Unavailable` y el caller conserva el estado de validación anterior — un blip de red no puede volver a disfrazarse de drift de configuración. Lista vacía REAL sigue siendo HardBlock (eso sí es drift).
+
+- **[Nexgo] El dashboard ya no puede tumbar un cobro en curso al cambiar la cuenta AngelPay**: `FETCH_ANGELPAY_MERCHANTS` (comando remoto) llamaba `switchAccount()` — que hace logout del SDK — sin consultar el candado de pago en vuelo. El candado (`PaymentStateProvider`) ya protegía el cambio de *merchant* pero no el cambio de *cuenta completa*. Ahora `switchAccount()` rechaza con "Cobro en curso" mientras `isCharging()`; el dashboard recibe el fallo y puede reintentar al terminar el cobro. `handleAuthExpiry()` (recovery D308 mid-payment, legítimo) queda intacto.
+
+### **Changed**
+
+- **Docs: credenciales QA de AngelPay retiradas de `ANGELPAY_INTEGRATION.md`**: el doc listaba usuario/contraseña del portal QA y un commerceToken en texto plano, y describía un auto-provision en `Application.onCreate()` que ya no existe. Sección reemplazada por punteros a dónde viven realmente las credenciales (config de terminal del backend / vault del equipo) + sugerencia de rotar las del portal.
+
 ---
 
 ## [2.6.5] - 2026-07-06

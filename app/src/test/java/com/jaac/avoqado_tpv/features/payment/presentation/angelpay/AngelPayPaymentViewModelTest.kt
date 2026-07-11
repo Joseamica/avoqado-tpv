@@ -91,6 +91,7 @@ class AngelPayPaymentViewModelTest {
     private lateinit var socketManager: SocketManager
     private lateinit var verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager
     private lateinit var observabilityManager: ObservabilityManager
+    private lateinit var paymentQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
 
     // Backing state for repositories whose flows the VM observes
     private val authStateFlow = MutableStateFlow<AngelPayAuthState>(AngelPayAuthState.Authenticated)
@@ -144,6 +145,8 @@ class AngelPayPaymentViewModelTest {
         socketManager = mockk(relaxed = true)
         verificationUploadManager = mockk(relaxed = true)
         observabilityManager = mockk(relaxed = true)
+        paymentQueueRepository = mockk(relaxed = true)
+        coEvery { paymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
 
         // Reactive flows the VM observes
         every { angelPayAuthRepository.state } returns authStateFlow
@@ -182,6 +185,7 @@ class AngelPayPaymentViewModelTest {
         socketManager = socketManager,
         verificationUploadManager = verificationUploadManager,
         observability = observabilityManager,
+        paymentQueueRepository = paymentQueueRepository,
     )
 
     // ----------------------------------------------------------------------
@@ -628,6 +632,95 @@ class AngelPayPaymentViewModelTest {
             runCurrent()
 
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.CollectingRating::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Offline queue on backend-record failure (P1 fix 2026-07-09)
+    // ----------------------------------------------------------------------
+
+    private fun angelPayContext() = com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext.AngelPayPayment(
+        venueId = "v1",
+        staffId = "s1",
+        shiftId = "shift-1",
+        amount = java.math.BigDecimal("150.00"),
+        tip = java.math.BigDecimal("15.00"),
+        idempotencyKey = "idem-uuid-1",
+        authorizationCode = "AUTH77",
+        referenceNumber = "195978383755",
+        orderId = "order-9",
+        orderNumber = "SN00042",
+        serialNumbers = listOf("8952000000000000001"),
+    )
+
+    @Test
+    fun `handleRecordFailure enqueues the payment and reports queued state`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            val state = vm.handleRecordFailure(
+                paymentLabel = "El pago con tarjeta",
+                context = angelPayContext(),
+                error = RuntimeException("HTTP 503"),
+            )
+
+            // Operator sees the self-healing message, still forbidding a re-charge.
+            assertThat(state.message).contains("EN COLA")
+            assertThat(state.message).contains("NO vuelvas a cobrar")
+            assertThat(state.canRetry).isFalse()
+
+            coVerify(exactly = 1) {
+                paymentQueueRepository.enqueue(
+                    match {
+                        it.processor == ProcessorType.ANGELPAY &&
+                            it.referenceNumber == "195978383755" &&
+                            it.idempotencyKey == "idem-uuid-1" &&
+                            it.orderId == "order-9" &&
+                            it.shiftId == "shift-1" &&
+                            it.serialNumbers == listOf("8952000000000000001")
+                    },
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `handleRecordFailure falls back to manual-review state when enqueue also fails`() = runTest(testDispatcher) {
+        coEvery { paymentQueueRepository.enqueue(any()) } returns Result.failure(RuntimeException("disk full"))
+
+        val vm = createViewModel()
+        try {
+            val state = vm.handleRecordFailure(
+                paymentLabel = "El pago con tarjeta",
+                context = angelPayContext(),
+                error = RuntimeException("HTTP 503"),
+            )
+
+            // Legacy manual-review message — nothing got queued, supervisor must act.
+            assertThat(state.message).contains("avisa al supervisor")
+            assertThat(state.canRetry).isFalse()
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `handleRecordFailure uses idempotencyKey as reference fallback when SDK reference is blank`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            vm.handleRecordFailure(
+                paymentLabel = "El pago con tarjeta",
+                context = angelPayContext().copy(referenceNumber = ""),
+                error = RuntimeException("HTTP 503"),
+            )
+
+            // reference_number is UNIQUE in Room — a blank reference must not collide.
+            coVerify(exactly = 1) {
+                paymentQueueRepository.enqueue(match { it.referenceNumber == "idem-uuid-1" })
+            }
         } finally {
             vm.viewModelScope.cancel()
         }

@@ -183,7 +183,7 @@ class AvoqadoDatabaseMigrationTest {
         val db = DatabaseModule.provideDatabase(appContext)
         try {
             val open = db.openHelper.writableDatabase
-            assertThat(open.version).isEqualTo(24) // migration ran
+            assertThat(open.version).isEqualTo(25) // full chain ran (…23→24→25)
 
             // products: previously-missing column now exists (cache rebuilt empty)
             open.query("SELECT category_color FROM products").use { c ->
@@ -201,6 +201,37 @@ class AvoqadoDatabaseMigrationTest {
             }
         } finally {
             db.close()
+        }
+    }
+
+    /**
+     * v24 → v25: additive `pending_payments` columns for the processor-aware offline
+     * queue (AngelPay order/SIM payments, 2026-07-09). A queued row written on v24
+     * must survive the upgrade with `payment_processor` defaulting to BLUMON (its
+     * pre-v25 semantics) and the new nullable columns empty.
+     */
+    @Test
+    fun migrate24To25_preservesQueueRowsAndDefaultsProcessorToBlumon() {
+        helper.createDatabase(TEST_DB, 24).use { db ->
+            db.execSQL(
+                "INSERT INTO pending_payments (reference_number, venue_id, staff_id, amount, tip, " +
+                    "merchant_account_id, blumon_serial_number, entry_mode, is_international, " +
+                    "created_at, retry_count, sync_status) VALUES " +
+                    "('REF-V24-001','v1','s1','100.00','0.00','m1','SER1','CHIP',0,123,0,'PENDING')",
+            )
+        }
+
+        // Throws if MIGRATION_24_25 leaves the schema diverging from 25.json.
+        val db = helper.runMigrationsAndValidate(TEST_DB, 25, true, AvoqadoDatabase.MIGRATION_24_25)
+        db.query(
+            "SELECT payment_processor, order_id, is_portabilidad, serial_numbers " +
+                "FROM pending_payments WHERE reference_number='REF-V24-001'",
+        ).use { c ->
+            assertThat(c.moveToFirst()).isTrue()
+            assertThat(c.getString(0)).isEqualTo("BLUMON")
+            assertThat(c.isNull(1)).isTrue()   // order_id
+            assertThat(c.getInt(2)).isEqualTo(0) // is_portabilidad
+            assertThat(c.isNull(3)).isTrue()   // serial_numbers
         }
     }
 

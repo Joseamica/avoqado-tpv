@@ -1,14 +1,16 @@
 package com.jaac.avoqado_tpv.features.payment.domain.model
 
+import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
 import java.math.BigDecimal
 
 /**
  * Domain model for queued payment (failed backend recording).
  *
- * **Purpose:** Represents a payment that succeeded with Blumon SDK but failed to record to backend.
+ * **Purpose:** Represents a payment that succeeded with the payment SDK (Blumon TPV or
+ * AngelPay — the money already moved) but failed to record to the Avoqado backend.
  *
  * **Lifecycle:**
- * 1. Created when PaymentViewModel.handlePaymentSuccess() fails to record to backend
+ * 1. Created when the payment ViewModel fails to record to backend after retries
  * 2. Stored in Room DB via PaymentQueueRepository
  * 3. Retrieved by PaymentSyncWorker for retry
  * 4. Converted back to PaymentContext + CardDetails for RecordPaymentUseCase
@@ -17,7 +19,8 @@ import java.math.BigDecimal
  * ```
  * QueuedPayment (Domain)  ←→  PendingPaymentEntity (Room DB)
  *     ↓
- * PaymentContext.FastPayment + CardDetails (for retry)
+ * PaymentContext.FastPayment  (processor = BLUMON)
+ * PaymentContext.AngelPayPayment (processor = ANGELPAY — preserves orderId + SIM metadata)
  * ```
  *
  * **World-Class Examples:**
@@ -56,6 +59,19 @@ data class QueuedPayment(
     // 🛡️ IDEMPOTENCY KEY (2026-05-29) — carried from PaymentContext for queue retries
     val idempotencyKey: String? = null,
 
+    // 🔶 PROCESSOR-AWARE QUEUE (2026-07-09) — which PaymentContext shape to rebuild
+    // on replay. Pre-v25 rows are BLUMON (the queue was Blumon-fast-only until then).
+    val processor: ProcessorType = ProcessorType.BLUMON,
+
+    // Order linkage (AngelPay order payments — null for fast payments)
+    val orderId: String? = null,
+    val orderNumber: String? = null,
+    val shiftId: String? = null,
+
+    // 📸 Serialized inventory (SIM) proof-of-sale metadata (AngelPay)
+    val isPortabilidad: Boolean = false,
+    val serialNumbers: List<String> = emptyList(),
+
     // Retry Tracking
     val createdAt: Long, // Unix timestamp (when payment was originally processed)
     val retryCount: Int = 0,
@@ -75,12 +91,37 @@ data class QueuedPayment(
     }
 
     /**
-     * Convert to PaymentContext.FastPayment for retry.
+     * Convert to the PaymentContext shape this payment was originally recorded with.
      *
-     * **Use Case:** PaymentSyncWorker calls RecordPaymentUseCase with this context
+     * **Use Case:** PaymentSyncWorker calls RecordPaymentUseCase with this context.
+     * ANGELPAY rows rebuild [PaymentContext.AngelPayPayment] so RecordPaymentUseCase
+     * routes them to the SAME recorder as the online path (order vs fast, processor
+     * tag, SIM proof-of-sale metadata). Everything else keeps the legacy
+     * [PaymentContext.FastPayment] shape.
      */
-    fun toPaymentContext(): PaymentContext.FastPayment {
+    fun toPaymentContext(): PaymentContext {
         val normalizedMerchantAccountId = if (isCashQueuedPayment()) null else merchantAccountId
+
+        if (processor == ProcessorType.ANGELPAY) {
+            return PaymentContext.AngelPayPayment(
+                venueId = venueId,
+                staffId = staffId,
+                shiftId = shiftId,
+                amount = amount,
+                tip = tip,
+                rating = rating,
+                merchantAccountId = normalizedMerchantAccountId?.ifBlank { null },
+                deviceSerialNumber = deviceSerialNumber,
+                idempotencyKey = idempotencyKey,
+                cardDetails = toCardDetails(),
+                authorizationCode = authorizationNumber ?: "",
+                referenceNumber = referenceNumber,
+                orderId = orderId,
+                orderNumber = orderNumber,
+                isPortabilidad = isPortabilidad,
+                serialNumbers = serialNumbers,
+            )
+        }
 
         return PaymentContext.FastPayment(
             venueId = venueId,
@@ -123,6 +164,9 @@ data class QueuedPayment(
                 "CONTACTLESS" -> CardEntryMode.CONTACTLESS
                 "SWIPE" -> CardEntryMode.SWIPE
                 "MANUAL" -> CardEntryMode.MANUAL
+                // AngelPay doesn't expose the entry mode — preserve OTHER instead of
+                // inventing CHIP on replay (2026-07-09).
+                "OTHER" -> CardEntryMode.OTHER
                 else -> CardEntryMode.CHIP
             },
             isInternational = isInternational

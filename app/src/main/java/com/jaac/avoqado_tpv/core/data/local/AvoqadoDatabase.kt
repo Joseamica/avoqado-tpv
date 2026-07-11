@@ -116,7 +116,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
         com.jaac.avoqado_tpv.core.data.local.entities.MosaicShortcutEntity::class, // ⭐ v21
         AngelPayMerchantCacheEntity::class // ⭐ v22: AngelPay SDK 1.0.5 multi-merchant cache
     ],
-    version = 24, // ⭐ Version 24: Repair products/historical_periods schema drift (2026-06-12)
+    version = 25, // ⭐ Version 25: pending_payments processor-aware columns for AngelPay offline queue (2026-07-09)
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -1573,6 +1573,30 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                 database.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_historical_periods_cached_at` ON `historical_periods` (`cached_at`)"
                 )
+            }
+        }
+
+        /**
+         * v24 → v25: processor-aware offline payment queue (2026-07-09).
+         *
+         * `pending_payments` was built for Blumon FAST payments only; queueing an
+         * AngelPay payment (which may belong to an ORDER and carry SIM proof-of-sale
+         * metadata) needs extra columns so PaymentSyncWorker can rebuild the exact
+         * PaymentContext shape on replay. Purely additive — existing rows default
+         * to payment_processor='BLUMON' (their pre-v25 semantics).
+         */
+        val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE `pending_payments` ADD COLUMN `payment_processor` TEXT NOT NULL DEFAULT 'BLUMON'"
+                )
+                database.execSQL("ALTER TABLE `pending_payments` ADD COLUMN `order_id` TEXT")
+                database.execSQL("ALTER TABLE `pending_payments` ADD COLUMN `order_number` TEXT")
+                database.execSQL("ALTER TABLE `pending_payments` ADD COLUMN `shift_id` TEXT")
+                database.execSQL(
+                    "ALTER TABLE `pending_payments` ADD COLUMN `is_portabilidad` INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL("ALTER TABLE `pending_payments` ADD COLUMN `serial_numbers` TEXT")
             }
         }
     }

@@ -1763,6 +1763,9 @@ fun AppNavigation(
                 blumonSerialNumber = blumonSerialNumber,
                 refundedAmount = refundedAmount,
                 isProcessing = isNexgoRefundProcessing,
+                // 🛡️ AngelPay SDK refunds are all-or-nothing (it re-uses the ORIGINAL
+                // sale amount) — hide the partial option on Nexgo builds.
+                allowPartialRefund = BuildConfig.ENABLE_PAX_SDK,
                 onNavigateBack = {
                     navController.safePopBackStack()
                 },
@@ -1793,6 +1796,12 @@ fun AppNavigation(
                                 createdAt = createdAt,
                                 requestedReason = refundReason,
                                 appContext = context.applicationContext,
+                                // 🛡️ P0 guard: the SDK refunds the FULL original sale;
+                                // the use case rejects anything that isn't a full,
+                                // first-time refund (partial UI is hidden on Nexgo too).
+                                requestedAmount = refundAmount,
+                                originalAmount = originalAmount,
+                                alreadyRefundedAmount = refundedAmount,
                             )
 
                             result.fold(

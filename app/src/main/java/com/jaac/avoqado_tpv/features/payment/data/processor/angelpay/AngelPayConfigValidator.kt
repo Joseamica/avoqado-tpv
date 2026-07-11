@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.payment.data.processor.angelpay
 
 import com.google.firebase.crashlytics.FirebaseCrashlytics
 import com.jaac.avoqado_tpv.core.data.network.dto.TerminalConfigData
+import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -48,11 +49,20 @@ class AngelPayConfigValidator @Inject constructor(
         config: TerminalConfigData,
         currentAngelPayAccountId: String? = null,
     ): ValidationResult {
+        // ⚠️ A transport/SDK failure is NOT "this session has zero merchants".
+        // Collapsing failure into an empty set made every transient network blip
+        // look like an empty intersection → false HardBlock ("config mismatch")
+        // that stopped payments (P1 fix 2026-07-09). Surface it as Unavailable
+        // so callers keep their previous validation state instead of blocking.
         val sdkMerchantIds: Set<Int> = sdkGateway.getUserMerchants()
-            .getOrNull()
-            ?.map { it.id }
-            ?.toSet()
-            .orEmpty()
+            .getOrElse { error ->
+                Timber.w(error, "🔶 [AngelPay] getUserMerchants() failed — config validation unavailable")
+                return ValidationResult.Unavailable(
+                    reason = error.message ?: "No se pudo consultar merchants del SDK",
+                )
+            }
+            .map { it.id }
+            .toSet()
 
         val avoqadoMerchantIds: Set<Int> = config.merchantAccounts
             .filter { ma ->
@@ -131,6 +141,13 @@ sealed class ValidationResult {
 
     /** Empty intersection — operator cannot charge AngelPay. */
     data class HardBlock(val message: String) : ValidationResult()
+
+    /**
+     * The SDK merchant query itself failed (network/transport) — drift is
+     * UNKNOWN, not proven. Callers must keep their previous validation state
+     * and must NOT block payments on this outcome.
+     */
+    data class Unavailable(val reason: String) : ValidationResult()
 }
 
 /**

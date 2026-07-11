@@ -63,10 +63,19 @@ class RecordAngelPayRefundUseCase @Inject constructor(
      * cancellation vs refund based on whether the transaction date is today, then
      * executes the operation with multi-reference fallback retries.
      *
+     * ⚠️ **FULL refunds only.** The SDK post-operations execute against
+     * `transaction.amount` — the ORIGINAL full sale — and ignore any smaller
+     * amount the operator typed. Without the guard below, a "partial" refund
+     * returns the FULL amount to the cardholder while Avoqado books only the
+     * partial ([recordInBackend]), silently misrouting the difference.
+     *
      * @param paymentReference Original payment reference number stored at charge time.
      * @param createdAt Instant when the original payment was created (determines cancel vs refund).
      * @param requestedReason Refund reason from the operator.
      * @param appContext Application context (needed to access the AngelPay SDK local SQLite DB).
+     * @param requestedAmount Amount the operator asked to refund (sale portion, no tip).
+     * @param originalAmount Original payment sale amount (no tip).
+     * @param alreadyRefundedAmount Amount already refunded on this payment.
      * @return Success with a user-facing result message, or Failure with a localized error.
      */
     suspend fun processSdkRefund(
@@ -74,7 +83,20 @@ class RecordAngelPayRefundUseCase @Inject constructor(
         createdAt: Instant,
         requestedReason: RefundReason,
         appContext: Context,
+        requestedAmount: BigDecimal,
+        originalAmount: BigDecimal,
+        alreadyRefundedAmount: BigDecimal,
     ): Result<String> {
+        if (alreadyRefundedAmount > BigDecimal.ZERO || requestedAmount.compareTo(originalAmount) != 0) {
+            Timber.w(
+                "⛔ [AngelPay Direct Refund] Partial refund blocked | requested=%s original=%s alreadyRefunded=%s",
+                requestedAmount.toPlainString(),
+                originalAmount.toPlainString(),
+                alreadyRefundedAmount.toPlainString(),
+            )
+            return Result.failure(IllegalStateException(PARTIAL_REFUND_UNSUPPORTED_MESSAGE))
+        }
+
         val adapter = postOperationsAdapterFactory.get(ProcessorType.ANGELPAY)
         val zone = ZoneId.of("America/Mexico_City")
         val formatter = DateTimeFormatter.ISO_LOCAL_DATE
@@ -604,6 +626,17 @@ class RecordAngelPayRefundUseCase @Inject constructor(
             tipRefundCents = tipRefundCents,
             processor = "angelpay",
         ).map { } // Discard the RefundReceipt — caller only cares about success/failure.
+    }
+
+    companion object {
+        /**
+         * Shown when the operator asks for a partial AngelPay refund. Kept as a
+         * constant so tests can distinguish the guard from downstream failures.
+         */
+        const val PARTIAL_REFUND_UNSUPPORTED_MESSAGE =
+            "El reembolso parcial no está disponible en terminales AngelPay: la terminal " +
+                "devolvería el monto COMPLETO de la venta original. Realiza el reembolso " +
+                "total o gestiona el parcial con soporte."
     }
 
     // ─── Private helpers (extracted from AppNavigation.kt) ────────────────────

@@ -103,7 +103,8 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_20_21,  // 🛒 Mosaic shortcuts for unified Checkout
                 AvoqadoDatabase.MIGRATION_21_22,  // 💳 AngelPay multi-merchant offline cache (SDK 1.0.5)
                 AvoqadoDatabase.MIGRATION_22_23,  // 🛡️ Persist idempotencyKey through offline payment queue
-                AvoqadoDatabase.MIGRATION_23_24   // 🔴 CRITICAL: Repair products/historical_periods schema drift
+                AvoqadoDatabase.MIGRATION_23_24,  // 🔴 CRITICAL: Repair products/historical_periods schema drift
+                AvoqadoDatabase.MIGRATION_24_25   // 🔶 Processor-aware offline queue (AngelPay order/SIM payments)
             )
 
             // 🛡️ NO blanket destructive fallback (removed 2026-06-12).

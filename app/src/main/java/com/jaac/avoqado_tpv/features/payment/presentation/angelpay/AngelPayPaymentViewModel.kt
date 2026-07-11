@@ -38,10 +38,13 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
+import com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
+import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment
 import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
+import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -95,6 +98,7 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val socketManager: SocketManager,
     private val verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager,
     private val observability: ObservabilityManager,
+    private val paymentQueueRepository: PaymentQueueRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<AngelPayPaymentState>(AngelPayPaymentState.Idle)
@@ -364,6 +368,79 @@ class AngelPayPaymentViewModel @Inject constructor(
             message = "$paymentLabel fue procesado, pero no se pudo registrar en Avoqado. No vuelvas a cobrar; revisa transacciones o avisa al supervisor. Detalle: $detail",
             canRetry = false,
         )
+    }
+
+    /**
+     * AngelPay already moved the money — a backend recording failure must NEVER
+     * strand the sale (P1 fix 2026-07-09). Persist it to the offline queue so
+     * [com.jaac.avoqado_tpv.core.data.workers.PaymentSyncWorker] replays it: the
+     * same idempotencyKey + referenceNumber travel with the row, so backend dedup
+     * makes the replay safe even if the original request actually landed. Falls
+     * back to the manual-review error state only if the LOCAL enqueue also fails.
+     */
+    @VisibleForTesting
+    internal suspend fun handleRecordFailure(
+        paymentLabel: String,
+        context: PaymentContext.AngelPayPayment,
+        error: Throwable,
+    ): AngelPayPaymentState.Error {
+        val queued = QueuedPayment(
+            // UNIQUE column in Room — AngelPay can return a blank reference on edge
+            // paths, so fall back to the attempt UUID to keep the row insertable.
+            referenceNumber = context.referenceNumber.ifBlank {
+                context.idempotencyKey ?: "ANGELPAY-${System.currentTimeMillis()}"
+            },
+            venueId = context.venueId,
+            staffId = context.staffId,
+            amount = context.amount,
+            tip = context.tip,
+            rating = context.rating,
+            merchantAccountId = context.merchantAccountId.orEmpty(),
+            blumonSerialNumber = "", // N/A — AngelPay row
+            deviceSerialNumber = context.deviceSerialNumber,
+            maskedPan = context.cardDetails?.maskedPan,
+            cardBrand = context.cardDetails?.cardBrand?.name,
+            entryMode = context.cardDetails?.entryMode?.name ?: CardEntryMode.OTHER.name,
+            isInternational = context.cardDetails?.isInternational ?: false,
+            authorizationNumber = context.authorizationCode,
+            idempotencyKey = context.idempotencyKey,
+            processor = ProcessorType.ANGELPAY,
+            orderId = context.orderId,
+            orderNumber = context.orderNumber,
+            shiftId = context.shiftId,
+            isPortabilidad = context.isPortabilidad,
+            serialNumbers = context.serialNumbers,
+            createdAt = System.currentTimeMillis(),
+        )
+
+        val enqueueResult = paymentQueueRepository.enqueue(queued)
+        return if (enqueueResult.isSuccess) {
+            Timber.i(
+                "💾 [AngelPay] Payment queued for offline sync | ref=%s order=%s",
+                queued.referenceNumber,
+                queued.orderId ?: "-",
+            )
+            observability.logWarning(
+                tag = "AngelPayRecordQueued",
+                message = "Registro de pago falló — encolado para sync automático",
+                metadata = mapOf(
+                    "reference" to queued.referenceNumber,
+                    "orderId" to (queued.orderId ?: "none"),
+                    "amount" to queued.amount.toPlainString(),
+                    "error" to (error.message ?: "unknown"),
+                ),
+            )
+            // Best-effort immediate kick — the 15-min periodic worker is the guarantee.
+            runCatching { PaymentSyncScheduler.runNow(appContext) }
+            AngelPayPaymentState.Error(
+                message = "$paymentLabel fue procesado, pero Avoqado no respondió. El registro quedó " +
+                    "EN COLA y se completará automáticamente al recuperar conexión. NO vuelvas a cobrar.",
+                canRetry = false,
+            )
+        } else {
+            Timber.e(enqueueResult.exceptionOrNull(), "❌ [AngelPay] Offline enqueue ALSO failed")
+            backendRecordFailureState(paymentLabel, error)
+        }
     }
 
     /**
@@ -1177,9 +1254,10 @@ class AngelPayPaymentViewModel @Inject constructor(
                     _state.value = successState.copy(receipt = receipt)
                 },
                 onFailure = { error ->
-                    Timber.e(error, "🔶 [AngelPay] Cash payment failed to record to backend")
-                    _state.value = backendRecordFailureState("El pago en efectivo", error)
-                    Timber.w("🔶 [AngelPay] Cash payment NOT recorded to backend")
+                    Timber.e(error, "🔶 [AngelPay] Cash payment failed to record to backend — enqueueing for sync")
+                    // Cash rows are first-class queue citizens: QueuedPayment detects the
+                    // CASH-*/EFECTIVO markers and replays with merchant=null + CardDetails.CASH.
+                    _state.value = handleRecordFailure("El pago en efectivo", paymentContext, error)
                 },
             )
         }
@@ -1410,9 +1488,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                 _state.value = successState.copy(receipt = receipt)
             },
             onFailure = { error ->
-                Timber.e(error, "🔶 [AngelPay] Card payment failed to record to backend")
-                _state.value = backendRecordFailureState("El pago con tarjeta", error)
-                Timber.w("🔶 [AngelPay] Card payment NOT recorded to backend")
+                Timber.e(error, "🔶 [AngelPay] Card payment failed to record to backend — enqueueing for sync")
+                _state.value = handleRecordFailure("El pago con tarjeta", paymentContext, error)
             },
         )
     }
@@ -1484,9 +1561,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                 _state.value = successState.copy(receipt = receipt)
             },
             onFailure = { error ->
-                Timber.e(error, "🔶 [AngelPay SDK] Card payment failed to record to backend")
-                _state.value = backendRecordFailureState("El pago con tarjeta", error)
-                Timber.w("🔶 [AngelPay SDK] Card payment NOT recorded to backend")
+                Timber.e(error, "🔶 [AngelPay SDK] Card payment failed to record to backend — enqueueing for sync")
+                _state.value = handleRecordFailure("El pago con tarjeta", paymentContext, error)
             },
         )
     }

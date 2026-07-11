@@ -46,6 +46,7 @@ class AngelPayAuthRepositoryTest {
     private lateinit var terminalConfigRepository: TerminalConfigRepository
     private lateinit var deviceInfoManager: com.jaac.avoqado_tpv.core.util.DeviceInfoManager
     private lateinit var merchantRepository: AngelPayMerchantRepository
+    private lateinit var paymentStateProvider: PaymentStateProvider
     private lateinit var crashlytics: FirebaseCrashlytics
     private lateinit var repo: AngelPayAuthRepository
 
@@ -72,6 +73,8 @@ class AngelPayAuthRepositoryTest {
         terminalConfigRepository = mockk()
         deviceInfoManager = mockk(relaxed = true)
         merchantRepository = mockk(relaxed = true)
+        paymentStateProvider = mockk()
+        every { paymentStateProvider.isCharging() } returns false
         crashlytics = mockk(relaxed = true)
 
         // Sensible defaults — individual tests override.
@@ -89,6 +92,7 @@ class AngelPayAuthRepositoryTest {
             terminalConfigRepository = terminalConfigRepository,
             deviceInfoManager = deviceInfoManager,
             merchantRepository = merchantRepository,
+            paymentStateProvider = paymentStateProvider,
             crashlytics = crashlytics,
             reportApi = null,
         )
@@ -370,10 +374,41 @@ class AngelPayAuthRepositoryTest {
             terminalConfigRepository = terminalConfigRepository,
             deviceInfoManager = deviceInfoManager,
             merchantRepository = merchantRepository,
+            paymentStateProvider = paymentStateProvider,
             crashlytics = crashlytics,
             reportApi = null,
         )
         assertEquals(AngelPayAuthState.Unauthenticated, freshRepo.state.value)
         assertNull("smoke check — type guard", freshRepo.state.value as? AngelPayAuthState.AuthError)
+    }
+
+    // ----------------------------------------------------------------------
+    // D2 charging gate on switchAccount (P1 fix 2026-07-09)
+    // ----------------------------------------------------------------------
+    @Test
+    fun `switchAccount is rejected while a payment is charging`() = runTest(dispatcher) {
+        every { paymentStateProvider.isCharging() } returns true
+
+        val result = repo.switchAccount("acc-cuid-2")
+
+        assertTrue(result.isFailure)
+        // The dangerous side effects must never run mid-charge:
+        verify(exactly = 0) { sdkGateway.logout() }
+        coVerify(exactly = 0) { sdkGateway.authenticateSimple(any(), any()) }
+        verify(exactly = 0) { merchantRepository.clearActive() }
+    }
+
+    @Test
+    fun `switchAccount proceeds when no payment is charging`() = runTest(dispatcher) {
+        every { paymentStateProvider.isCharging() } returns false
+        // Unknown accountId + failing config refetch → resolver failure path,
+        // which proves the guard let the call through to credential resolution.
+        coEvery { credentialResolver.resolveByAccountId("acc-cuid-2") } returns
+            Result.failure(RuntimeException("account not in cached config"))
+
+        val result = repo.switchAccount("acc-cuid-2")
+
+        assertTrue(result.isFailure)
+        coVerify(atLeast = 1) { credentialResolver.resolveByAccountId("acc-cuid-2") }
     }
 }

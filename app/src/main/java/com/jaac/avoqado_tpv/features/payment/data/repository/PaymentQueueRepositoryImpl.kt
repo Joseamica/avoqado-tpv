@@ -168,6 +168,12 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             isInternational = isInternational,
             authorizationNumber = authorizationNumber,
             idempotencyKey = idempotencyKey, // 🛡️ Primary dedup key for queue retries (2026-05-29)
+            paymentProcessor = processor.name, // 🔶 Processor-aware queue (2026-07-09)
+            orderId = orderId,
+            orderNumber = orderNumber,
+            shiftId = shiftId,
+            isPortabilidad = isPortabilidad,
+            serialNumbers = serialNumbers.takeIf { it.isNotEmpty() }?.joinToString(","),
             createdAt = createdAt,
             retryCount = retryCount,
             lastError = lastError,
@@ -201,6 +207,16 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             isInternational = isInternational,
             authorizationNumber = authorizationNumber,
             idempotencyKey = idempotencyKey, // 🛡️ Primary dedup key for queue retries (2026-05-29)
+            // 🔶 Processor-aware queue (2026-07-09) — unknown/legacy values fall back
+            // to BLUMON (the pre-v25 semantics of every existing row).
+            processor = runCatching {
+                com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.valueOf(paymentProcessor)
+            }.getOrDefault(com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.BLUMON),
+            orderId = orderId,
+            orderNumber = orderNumber,
+            shiftId = shiftId,
+            isPortabilidad = isPortabilidad,
+            serialNumbers = serialNumbers?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty(),
             createdAt = createdAt,
             retryCount = retryCount,
             lastError = lastError,

@@ -24,6 +24,8 @@ import org.junit.Test
  *   - AllClear → no drift, no Crashlytics noise
  *   - PartialOperable → non-empty intersection with drift; non-fatal recorded
  *   - HardBlock → empty intersection; non-fatal recorded
+ *   - Unavailable → the SDK merchant QUERY failed (transport) — drift unknown,
+ *     caller keeps previous state, never blocks (P1 fix 2026-07-09)
  */
 class AngelPayConfigValidationTest {
 
@@ -132,5 +134,21 @@ class AngelPayConfigValidationTest {
         val result = validator.validate(config)
 
         assertTrue("expected HardBlock, got $result", result is ValidationResult.HardBlock)
+    }
+
+    @Test
+    fun `transport failure returns Unavailable - never a HardBlock`() = runTest {
+        // A network/SDK error is NOT "the session has zero merchants". Before the
+        // 2026-07-09 fix this collapsed into an empty set → false HardBlock that
+        // stopped payments with a misleading "config mismatch" banner.
+        coEvery { sdkGateway.getUserMerchants() } returns Result.failure(RuntimeException("timeout"))
+        val config = configWith(listOf(avoqadoMerchant(1)))
+
+        val result = validator.validate(config)
+
+        assertTrue("expected Unavailable, got $result", result is ValidationResult.Unavailable)
+        assertEquals("timeout", (result as ValidationResult.Unavailable).reason)
+        // Transient transport noise must not spam Crashlytics as config mismatch.
+        verify(exactly = 0) { crashlytics.recordException(any()) }
     }
 }

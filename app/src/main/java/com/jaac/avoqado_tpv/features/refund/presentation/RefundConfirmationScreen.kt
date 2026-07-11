@@ -57,6 +57,10 @@ import java.util.Locale
  * @param merchantAccountId Merchant account (CRITICAL for multi-merchant)
  * @param blumonSerialNumber Terminal serial (required for SDK)
  * @param refundedAmount Amount already refunded (for partial refund tracking)
+ * @param allowPartialRefund When false the partial-refund toggle is hidden and only a
+ *   FULL refund can be requested. Nexgo/AngelPay passes false: the AngelPay SDK
+ *   post-operations always return the ORIGINAL sale amount, so a partial request
+ *   would over-refund the cardholder (P0 fix 2026-07-09).
  * @param onNavigateBack Called when user cancels/goes back
  * @param onConfirmRefund Called when user confirms refund (amount, reason)
  */
@@ -73,6 +77,7 @@ fun RefundConfirmationScreen(
     blumonSerialNumber: String,
     refundedAmount: BigDecimal = BigDecimal.ZERO,
     isProcessing: Boolean = false,
+    allowPartialRefund: Boolean = true,
     onNavigateBack: () -> Unit,
     onConfirmRefund: (
         amount: BigDecimal,
@@ -244,29 +249,32 @@ fun RefundConfirmationScreen(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // Partial refund toggle
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Reembolso parcial",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                        Switch(
-                            checked = isPartialRefund,
-                            onCheckedChange = { checked ->
-                                isPartialRefund = checked
-                                if (!checked) {
-                                    // Reset to full refundable amount
-                                    refundAmountText = maxRefundable.setScale(2, RoundingMode.HALF_UP).toString()
+                    // Partial refund toggle — hidden when the processor only supports
+                    // full refunds (AngelPay/Nexgo): the SDK ignores custom amounts.
+                    if (allowPartialRefund) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Reembolso parcial",
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            Switch(
+                                checked = isPartialRefund,
+                                onCheckedChange = { checked ->
+                                    isPartialRefund = checked
+                                    if (!checked) {
+                                        // Reset to full refundable amount
+                                        refundAmountText = maxRefundable.setScale(2, RoundingMode.HALF_UP).toString()
+                                    }
                                 }
-                            }
-                        )
-                    }
+                            )
+                        }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
 
                     if (isPartialRefund) {
                         // Amount input for partial refund

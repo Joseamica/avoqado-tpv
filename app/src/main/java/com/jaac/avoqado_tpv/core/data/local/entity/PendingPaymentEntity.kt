@@ -89,6 +89,31 @@ data class PendingPaymentEntity(
     @ColumnInfo(name = "idempotency_key")
     val idempotencyKey: String? = null,
 
+    // 🔶 PROCESSOR-AWARE QUEUE (2026-07-09) — lets PaymentSyncWorker rebuild the exact
+    // PaymentContext shape on replay. Rows written before v25 default to BLUMON
+    // (the queue was Blumon-fast-payment-only until then).
+    @ColumnInfo(name = "payment_processor", defaultValue = PROCESSOR_BLUMON)
+    val paymentProcessor: String = PROCESSOR_BLUMON,
+
+    // Order linkage (AngelPay order payments — null for fast payments)
+    @ColumnInfo(name = "order_id")
+    val orderId: String? = null,
+
+    @ColumnInfo(name = "order_number")
+    val orderNumber: String? = null,
+
+    @ColumnInfo(name = "shift_id")
+    val shiftId: String? = null,
+
+    // 📸 Serialized inventory (SIM) proof-of-sale metadata — rides on the payment
+    // record so the SaleVerification created at replay time still has the ICCID.
+    @ColumnInfo(name = "is_portabilidad", defaultValue = "0")
+    val isPortabilidad: Boolean = false,
+
+    // CSV of serial numbers (ICCIDs are digit-only, comma-safe). Null/empty = none.
+    @ColumnInfo(name = "serial_numbers")
+    val serialNumbers: String? = null,
+
     // Metadata for retry logic
     @ColumnInfo(name = "created_at")
     val createdAt: Long, // Unix timestamp (when payment was processed, not when queued)
@@ -109,5 +134,9 @@ data class PendingPaymentEntity(
         const val SYNC_STATUS_FAILED = "FAILED" // Failed after max retries (manual review needed)
 
         const val MAX_RETRY_ATTEMPTS = 10 // Max retry attempts before marking as FAILED
+
+        // payment_processor values — mirrors ProcessorType enum names (v25, 2026-07-09)
+        const val PROCESSOR_BLUMON = "BLUMON"
+        const val PROCESSOR_ANGELPAY = "ANGELPAY"
     }
 }

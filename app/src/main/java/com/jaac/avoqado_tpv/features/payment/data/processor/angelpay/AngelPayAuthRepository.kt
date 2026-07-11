@@ -51,6 +51,10 @@ class AngelPayAuthRepository @Inject constructor(
     private val terminalConfigRepository: TerminalConfigRepository,
     private val deviceInfoManager: DeviceInfoManager,
     private val merchantRepository: AngelPayMerchantRepository,
+    // 🛡️ D2 charging gate (P1 fix 2026-07-09): account switches log the SDK session
+    // OUT — doing that mid-charge kills the in-flight payment with an ambiguous
+    // outcome. Merchant switches already consult this same lock (AngelPayMerchantRepository).
+    private val paymentStateProvider: PaymentStateProvider,
     private val crashlytics: FirebaseCrashlytics,
     /**
      * Optional backend reporter for the `/tpv/angelpay/report-validation` endpoint
@@ -350,6 +354,18 @@ class AngelPayAuthRepository @Inject constructor(
         accountId: String,
         reportMerchants: Boolean = false,
     ): Result<Unit> {
+        // 🛡️ P1 fix (2026-07-09): a dashboard FETCH_ANGELPAY_MERCHANTS command can
+        // land mid-charge (commands arrive via heartbeat/socket regardless of what
+        // the cashier is doing). switchAccount logs the SDK session out, which would
+        // kill the in-flight payment with an ambiguous post-auth outcome. Reject and
+        // let the dashboard retry once the charge settles.
+        if (paymentStateProvider.isCharging()) {
+            val err = IllegalStateException(
+                "Cobro en curso — no se puede cambiar la cuenta AngelPay durante un pago",
+            )
+            Timber.tag(LOG_TAG).w("switchAccount($accountId) rejected: ${err.message}")
+            return Result.failure(err)
+        }
         if (currentAngelPayAccountId == accountId) {
             // Probe SDK session health before trusting the no-op. Same reasoning
             // as `ensureAuthenticated`'s short-circuit: an "authenticated" session
@@ -539,6 +555,15 @@ class AngelPayAuthRepository @Inject constructor(
             }
             is ValidationResult.HardBlock -> {
                 _state.value = AngelPayAuthState.AuthError(result.message)
+            }
+            is ValidationResult.Unavailable -> {
+                // Transport failure querying the SDK — drift UNKNOWN. Keep the
+                // current auth state; a transient network error must never
+                // masquerade as a "config mismatch" hard block (P1 fix 2026-07-09).
+                Timber.tag(LOG_TAG).w(
+                    "Config validation unavailable (%s) — keeping current auth state",
+                    result.reason,
+                )
             }
         }
     }

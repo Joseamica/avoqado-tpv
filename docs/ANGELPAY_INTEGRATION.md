@@ -158,17 +158,19 @@ features/payment/
 
 ## QA Credentials
 
-Hardcoded in `AvoqadoTPVApplication.onCreate()` when `ENABLE_PAX_SDK == false`:
+**Never commit credentials to this repo** (repo security rule). Where they actually live:
 
-| Field | Value |
-|-------|-------|
-| email | contacto@avoqado.io |
-| password | 123456 |
-| affiliation | 9814275 ultrathink |
-| commerceToken | 1773083056540lIE |
-| Portal URL | https://portal.angelpay-qa.com.mx/ |
-| Portal user | ConatctoAvoq |
-| Portal pass | Avoqado2026@ |
+- **TPV runtime creds** (email/PIN por cuenta AngelPay): ya NO están hardcodeadas en el app —
+  llegan del backend en la respuesta de configuración de terminal (`angelpayAccounts`) y las
+  resuelve `AngelPayCredentialResolver`. Para dar de alta/rotar una cuenta QA se hace en el
+  Dashboard (AngelPayUserAccount del venue), no en código.
+- **Portal QA** (`https://portal.angelpay-qa.com.mx/`): usuario/contraseña en el vault del
+  equipo (iCloud `Socios/AngelPay/` / gestor de contraseñas). Pedirlas a José Antonio si no
+  tienes acceso.
+
+> Nota histórica: versiones viejas de este doc listaban las credenciales QA en texto plano y
+> describían un auto-provision en `AvoqadoTPVApplication.onCreate()` que ya no existe — ambos
+> retirados 2026-07-09. Si esas credenciales de portal siguen vigentes, considerar rotarlas.
 
 ## Vendor Documentation
 

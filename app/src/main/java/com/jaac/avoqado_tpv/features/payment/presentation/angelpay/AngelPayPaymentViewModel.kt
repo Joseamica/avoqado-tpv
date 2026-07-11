@@ -15,6 +15,7 @@ import com.jaac.avoqado_tpv.core.data.network.CryptoPaymentRequest
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.core.domain.TerminalConfig
+import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
@@ -93,6 +94,7 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val apiService: ApiService,
     private val socketManager: SocketManager,
     private val verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager,
+    private val observability: ObservabilityManager,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<AngelPayPaymentState>(AngelPayPaymentState.Idle)
@@ -1207,6 +1209,13 @@ class AngelPayPaymentViewModel @Inject constructor(
             when (result) {
                 is AngelPayResult.Success -> recordCardPayment(result)
                 is AngelPayResult.Failure -> {
+                    logPaymentDecline(
+                        source = "app_to_app",
+                        sdkCode = result.code,
+                        category = result.category,
+                        sdkMessage = result.message,
+                        displayMessage = result.message,
+                    )
                     _state.value = AngelPayPaymentState.Error(
                         message = result.message,
                         canRetry = true,
@@ -1244,21 +1253,57 @@ class AngelPayPaymentViewModel @Inject constructor(
                     // so the D2 charging gate stays set for the retried attempt.
                     return@launch
                 }
-                _state.value = AngelPayPaymentState.Error(
-                    message = buildString {
-                        append(result.message ?: "Pago rechazado")
-                        result.callResult?.let { call ->
-                            if (!call.code.isNullOrBlank()) {
-                                append("\n\nSDK ${call.code}: ${call.message ?: "Sin detalle"}")
-                            }
+                val displayMessage = buildString {
+                    append(result.message ?: "Pago rechazado")
+                    result.callResult?.let { call ->
+                        if (!call.code.isNullOrBlank()) {
+                            append("\n\nSDK ${call.code}: ${call.message ?: "Sin detalle"}")
                         }
-                    },
+                    }
+                }
+                logPaymentDecline(
+                    source = "sdk_contract",
+                    sdkCode = result.callResult?.code,
+                    category = result.callResult?.category,
+                    sdkMessage = result.callResult?.message ?: result.message,
+                    displayMessage = displayMessage,
+                )
+                _state.value = AngelPayPaymentState.Error(
+                    message = displayMessage,
                     canRetry = true,
                 )
             }
             // Task 32 — clear D2 charging gate on any terminal outcome.
             clearChargingOnTerminal()
         }
+    }
+
+    /**
+     * Reports every terminal (non-recovered) AngelPay decline to the backend/Crashlytics.
+     *
+     * These declines never reach our server on their own — the SDK's EMV kernel rejects
+     * the card (e.g. E608 "Limite contactless excedido") before any gateway call is made,
+     * so without this, the only trace of the incident is what the cashier can screenshot.
+     */
+    private fun logPaymentDecline(
+        source: String,
+        sdkCode: String?,
+        category: String?,
+        sdkMessage: String?,
+        displayMessage: String,
+    ) {
+        observability.logWarning(
+            tag = "AngelPayDecline",
+            message = "Pago rechazado ($source): ${sdkCode ?: "sin-código"} ${sdkMessage ?: ""}".trim(),
+            metadata = mapOf(
+                "source" to source,
+                "sdkCode" to (sdkCode ?: "unknown"),
+                "category" to (category ?: "unknown"),
+                "sdkMessage" to (sdkMessage ?: "unknown"),
+                "displayMessage" to displayMessage,
+                "amount" to pendingAmount.toPlainString(),
+            ),
+        )
     }
 
     /**

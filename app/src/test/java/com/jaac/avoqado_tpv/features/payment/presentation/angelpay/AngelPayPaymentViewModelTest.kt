@@ -12,6 +12,7 @@ import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
+import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
@@ -34,6 +35,7 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.unmockkAll
+import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -88,6 +90,7 @@ class AngelPayPaymentViewModelTest {
     private lateinit var apiService: ApiService
     private lateinit var socketManager: SocketManager
     private lateinit var verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager
+    private lateinit var observabilityManager: ObservabilityManager
 
     // Backing state for repositories whose flows the VM observes
     private val authStateFlow = MutableStateFlow<AngelPayAuthState>(AngelPayAuthState.Authenticated)
@@ -140,6 +143,7 @@ class AngelPayPaymentViewModelTest {
         apiService = mockk(relaxed = true)
         socketManager = mockk(relaxed = true)
         verificationUploadManager = mockk(relaxed = true)
+        observabilityManager = mockk(relaxed = true)
 
         // Reactive flows the VM observes
         every { angelPayAuthRepository.state } returns authStateFlow
@@ -177,6 +181,7 @@ class AngelPayPaymentViewModelTest {
         apiService = apiService,
         socketManager = socketManager,
         verificationUploadManager = verificationUploadManager,
+        observability = observabilityManager,
     )
 
     // ----------------------------------------------------------------------
@@ -395,10 +400,12 @@ class AngelPayPaymentViewModelTest {
     private fun sdkFailureResult(
         sdkCode: String,
         message: String = "Pago rechazado",
+        category: String = "UNKNOWN",
     ): PaymentResult {
         val call = mockk<CallResult>(relaxed = true)
         every { call.code } returns sdkCode
         every { call.message } returns "msg-$sdkCode"
+        every { call.category } returns category
         val result = mockk<PaymentResult>(relaxed = true)
         every { result.approved } returns false
         every { result.callResult } returns call
@@ -423,6 +430,8 @@ class AngelPayPaymentViewModelTest {
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
             // Recovery is NOT a terminal outcome: the D2 charging gate must stay set.
             coVerify(exactly = 0) { paymentStateHolder.setCharging(false) }
+            // Recovered silently — nothing terminal happened, so nothing to report.
+            verify(exactly = 0) { observabilityManager.logWarning(any(), any(), any()) }
         } finally {
             vm.viewModelScope.cancel()
         }
@@ -447,6 +456,8 @@ class AngelPayPaymentViewModelTest {
             assertThat(state).isInstanceOf(AngelPayPaymentState.Error::class.java)
             assertThat((state as AngelPayPaymentState.Error).message).contains("D308")
             coVerify(atLeast = 1) { paymentStateHolder.setCharging(false) }
+            // Re-auth failed — this IS a terminal decline shown to the cashier, so report it.
+            verify(exactly = 1) { observabilityManager.logWarning(any(), any(), any()) }
         } finally {
             vm.viewModelScope.cancel()
         }
@@ -465,6 +476,39 @@ class AngelPayPaymentViewModelTest {
             coVerify(exactly = 0) { angelPayAuthRepository.handleAuthExpiry() }
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
             coVerify(atLeast = 1) { paymentStateHolder.setCharging(false) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `E608 contactless-limit decline is reported to observability with the SDK code and category`() = runTest(testDispatcher) {
+        // Regression coverage for the Amaena incident (2026-07-06): AngelPay's EMV kernel
+        // rejects a plastic contactless tap over the regulatory limit (Visa/Mastercard
+        // $1,000 MXN, Amex $1,500 MXN) BEFORE any gateway call, so this decline is invisible
+        // to both AngelPay's and our own backend logs unless the TPV reports it itself.
+        val vm = createViewModel()
+        try {
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            vm.onAngelPaySdkResult(
+                sdkFailureResult(sdkCode = "E608", message = "Limite contactless excedido", category = "EMV"),
+            )
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            verify(exactly = 1) {
+                observabilityManager.logWarning(
+                    tag = "AngelPayDecline",
+                    message = any(),
+                    metadata = match { meta ->
+                        meta["source"] == "sdk_contract" &&
+                            meta["sdkCode"] == "E608" &&
+                            meta["category"] == "EMV"
+                    },
+                )
+            }
         } finally {
             vm.viewModelScope.cancel()
         }

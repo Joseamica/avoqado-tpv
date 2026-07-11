@@ -16,8 +16,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv"
         minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
         targetSdk = 34
-        versionCode = 89
-        versionName = "2.6.4"
+        versionCode = 90
+        versionName = "2.6.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -37,6 +37,11 @@ android {
         buildConfigField("boolean", "ENABLE_BLUMON_INIT", "true")
         buildConfigField("boolean", "ANGELPAY_SDK_ENABLED", "false")
         buildConfigField("boolean", "ANGELPAY_SDK_FALLBACK_ENABLED", "true")
+
+        // Demo-only serial override. "" on every normal flavor → inert (DeviceInfoManager
+        // ignores it). ONLY the gymDemo ("Avoqado Demo") flavor sets a value, and the
+        // override is additionally gated behind BuildConfig.DEBUG. See gymDemo flavor below.
+        buildConfigField("String", "OVERRIDE_TERMINAL_SERIAL", "\"\"")
 
         // ⚠️ REMOVED: Hardcoded terminal configuration (2025-11-05)
         // Serial numbers and merchant accounts now fetched dynamically from backend
@@ -273,6 +278,59 @@ android {
                 abiFilters.add("arm64-v8a")
             }
         }
+
+        // ⭐ DEMO (2026-07-07): "Avoqado Demo" — money-safe TPV demo build.
+        // SANDBOX Blumon processor (test cards, NO real money) BUT pointed at the
+        // PRODUCTION backend, so the sale reflects in the prod demo venue
+        // (avoqado-fitness). Coexists with production/sandbox (own `.demo` id → 2 icons).
+        // Backed by a SANDBOX MerchantAccount copied into prod + Terminal AVQD-2841548418
+        // (see avoqado-server docs/guides/VENUE_CREATION_GUIDE.md §7b, memory note
+        // `avoqado-fitness-prod-sandbox-tpv`). Reuses src/sandbox/java+res via sourceSets +
+        // gymDemoImplementation deps. ⚠️ NEVER sign/ship. Normal variants are UNTOUCHED.
+        create("gymDemo") {
+            dimension = "environment"
+            matchingFallbacks += listOf("sandbox")
+            // Own package id `.demo` → coexists with BOTH the production build (base id) AND
+            // the normal dev `sandbox` build (`.sandbox`) → 3 distinct icons on one device.
+            // Requires a `com.jaac.avoqado_tpv.demo` client in google-services.json (added by
+            // cloning the sandbox client — Firebase metrics for this demo build report under the
+            // sandbox Firebase app, which is fine for a demo). To give it a real Firebase app,
+            // register `com.jaac.avoqado_tpv.demo` in the Firebase console and re-download the json.
+            applicationIdSuffix = ".demo"
+            versionNameSuffix = "-demo"
+            resValue("string", "app_name", "Demo Prod")
+
+            buildConfigField("String", "STORAGE_ENV_PREFIX", "\"prod\"")
+
+            // SANDBOX Blumon processor → test cards, no real money
+            buildConfigField("String", "BLUMON_ENV", "\"SAND\"")
+            buildConfigField("String", "TOKEN_SERVER_URL", "\"https://sandbox-tokener.blumonpay.net\"")
+            buildConfigField("String", "CORE_SERVER_URL", "\"https://sandbox-core.blumonpay.net\"")
+
+            // ⭐ DECOUPLE: point the "_DEV" URLs (used by provideBaseUrl/socket when
+            // BLUMON_ENV != "PROD") at PRODUCTION, so this build hits the prod backend
+            // WITHOUT touching NetworkModule or any other flavor.
+            buildConfigField("String", "API_BASE_URL_DEV", "\"https://api.avoqado.io/api/v1/\"")
+            buildConfigField("String", "SOCKET_URL_DEV", "\"https://api.avoqado.io\"")
+
+            // ⭐ Serial override → resolves to the prod gym Terminal. DEBUG-gated in
+            // DeviceInfoManager; "" on every other flavor.
+            buildConfigField("String", "OVERRIDE_TERMINAL_SERIAL", "\"AVQD-2841548418\"")
+
+            buildConfigField("String", "DEFAULT_TERMINAL_SERIAL", "\"2841548418\"")
+            buildConfigField("String", "DEFAULT_TERMINAL_BRAND", "\"PAX\"")
+            buildConfigField("String", "DEFAULT_TERMINAL_MODEL", "\"A910S\"")
+
+            buildConfigField("String", "SUPPORTED_PROCESSOR", "\"BLUMON\"")
+
+            // AngelPay unused on the PAX/Blumon path — empty placeholders so shared
+            // main/ code compiles.
+            buildConfigField("String", "ANGELPAY_QA_EMAIL", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_PASSWORD", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_AFFILIATION", "\"\"")
+            buildConfigField("String", "ANGELPAY_QA_COMMERCE_TOKEN", "\"\"")
+            buildConfigField("String", "ANGELPAY_ENV", "\"\"")
+        }
     }
 
     sourceSets {
@@ -304,6 +362,13 @@ android {
             // src/main/res (clean, no badge) — that's how you tell `nexgoProd`
             // apart from `nexgo` on the device.
             java.srcDirs("src/sandbox/java")
+        }
+        getByName("gymDemo") {
+            // "Avoqado Demo" reuses the sandbox Blumon implementation (BlumonInitializer,
+            // InitializationManager, sandbox PaymentViewModel) + res (sandbox "a" badge icon
+            // → visually distinct from the prod app). app_name overridden via resValue above.
+            java.srcDirs("src/sandbox/java")
+            res.srcDirs("src/sandbox/res")
         }
     }
 
@@ -471,6 +536,10 @@ dependencies {
     "sandboxImplementation"(files("libs/blumon_sdk-debug.aar"))
     "sandboxImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
 
+    // gymDemo ("Avoqado Demo") reuses the sandbox Blumon SDK + lib-services (sandbox aar)
+    "gymDemoImplementation"(files("libs/blumon_sdk-debug.aar"))
+    "gymDemoImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
+
     // ⭐ TUTORIAL EMULATOR FLAVOR: reuse sandbox SDK API surface for compilation.
     "tutorialEmuImplementation"(files("libs/blumon_sdk-debug.aar"))
     "tutorialEmuImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
@@ -570,6 +639,8 @@ dependencies {
     // OkHttp is flavor-scoped to avoid duplicate classes with AngelPay fat AAR on nexgo.
     "sandboxImplementation"("com.squareup.okhttp3:okhttp:4.12.0")
     "sandboxImplementation"("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    "gymDemoImplementation"("com.squareup.okhttp3:okhttp:4.12.0")
+    "gymDemoImplementation"("com.squareup.okhttp3:logging-interceptor:4.12.0")
     "productionImplementation"("com.squareup.okhttp3:okhttp:4.12.0")
     "productionImplementation"("com.squareup.okhttp3:logging-interceptor:4.12.0")
     "tutorialEmuImplementation"("com.squareup.okhttp3:okhttp:4.12.0")

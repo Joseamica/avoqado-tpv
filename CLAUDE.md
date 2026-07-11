@@ -28,6 +28,13 @@ behind a paywall.
 
 **Rules auto-load** — you don't need to read them manually.
 
+> ⚠️ **The `gymDemo` ("Demo Prod") build variant is INTENTIONAL — do NOT "fix" it.** Its
+> `BLUMON_ENV=SAND` + `API_BASE_URL_DEV`→prod override, the `com.jaac.avoqado_tpv.demo` client in
+> `google-services.json` (cloned from sandbox), and the `BuildConfig.DEBUG`-gated serial override in
+> `DeviceInfoManager` are all deliberate (money-safe prod demo). Normal variants
+> (`production`/`sandbox`/`nexgo*`) are unaffected and `productionRelease` builds as before. Full
+> explanation: `.claude/rules/avoqado-demo-variant.md`.
+
 When rules conflict: `.claude/rules/` wins > this file > `docs/`
 
 **Maintaining this file:** Short rules (1-3 lines) go directly here. Detailed content (code examples, tables, >10 lines) goes in `docs/` or `.claude/rules/`. Keep this file under ~200 lines — it loads every session.
@@ -146,6 +153,7 @@ Same branch (`main`), different Gradle configurations:
 - `critical-warnings.md` — PaymentVM safety, Blumon, variants, Room migrations, auth, money, performance, API paths, timezone
 - `release-and-git.md` — APK signing, version bumps, permissions, cross-repo, git workflow
 - `testing-and-adb.md` — Regression prevention, ADB monitoring, log capture
+- `serialized-inventory-and-sim-custody.md` — PlayTelecom-driven features (serialized_sale, sim_custody), never hardcode client identity, terminal-migration money-safety
 
 ### On-demand docs (`docs/`)
 

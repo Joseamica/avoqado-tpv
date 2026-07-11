@@ -9,6 +9,14 @@
 
 ---
 
+## [2.6.5] - 2026-07-06
+
+### **Added**
+
+- **[Nexgo] Rechazos de AngelPay ahora se reportan a Observability/Crashlytics**: investigando un reporte de Amaena ("se ha excedido el límite de pagos contactless") se confirmó que el código real es `E608` ("Limite contactless excedido", límite regulatorio de Banxico/redes — Visa/Mastercard $1,000 MXN, Amex $1,500 MXN, solo aplica a tap de tarjeta física, no a wallets) — y que **ningún rechazo de AngelPay queda registrado en ningún lado**: el kernel EMV de la terminal rechaza antes de llamar al gateway, así que ni el backend de AngelPay ni el nuestro lo ven; solo quedaba como texto en pantalla que el cajero tenía que fotografiar. Ahora `AngelPayPaymentViewModel` reporta cada decline terminal (código SDK, categoría, mensaje, monto) vía `ObservabilityManager.logWarning` — mismo mecanismo que ya usa `TerminalLog`/Crashlytics para otros eventos. No se reporta cuando el decline se recupera solo (ej. D308 con re-auth exitosa), solo cuando el cajero efectivamente ve el error.
+
+---
+
 ## [2.6.4] - 2026-07-06
 
 ### **Added**

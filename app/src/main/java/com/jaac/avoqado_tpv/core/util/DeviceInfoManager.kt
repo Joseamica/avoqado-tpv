@@ -76,6 +76,16 @@ class DeviceInfoManager @Inject constructor(
      * @throws SecurityException if READ_PHONE_STATE permission not granted (Android 8+)
      */
     fun getSerialNumber(): String {
+        // Demo-build serial override ("Avoqado Demo" / gymDemo flavor): report a specific
+        // backend Terminal serial instead of the hardware serial, so the demo build can point
+        // at the prod gym venue (avoqado-fitness) without re-flashing the device. Gated behind
+        // BuildConfig.DEBUG (a release build ignores it) and OVERRIDE_TERMINAL_SERIAL is "" on
+        // every normal flavor → inert everywhere except gymDemoDebug.
+        if (com.jaac.avoqado_tpv.BuildConfig.DEBUG && com.jaac.avoqado_tpv.BuildConfig.OVERRIDE_TERMINAL_SERIAL.isNotBlank()) {
+            Timber.i("📟 [DemoOverride] Using OVERRIDE_TERMINAL_SERIAL=${com.jaac.avoqado_tpv.BuildConfig.OVERRIDE_TERMINAL_SERIAL}")
+            return com.jaac.avoqado_tpv.BuildConfig.OVERRIDE_TERMINAL_SERIAL
+        }
+
         // Emulator/tutorial flavor on emulator: Build.getSerial() is blocked.
         // On real devices (Nexgo, etc.) with PAX SDK disabled, still try hardware serial.
         if (!com.jaac.avoqado_tpv.BuildConfig.ENABLE_PAX_SDK && isEmulator()) {

@@ -29,7 +29,9 @@ import java.time.ZonedDateTime
  * Self-gates on every run (PromoterLocationGate):
  * - terminal activated + session active (promoter logged in)
  * - venue opted in (tpvSettings.trackPromoterLocation)
- * - within [11:00, 18:00) VENUE-local time (VenueTimeZone, never device tz)
+ * - within the venue-configured capture window (tpvSettings.
+ *   promoterLocationStartHour/EndHour, default [11:00, 18:00)) VENUE-local
+ *   time (VenueTimeZone, never device tz)
  *
  * A null/failed capture is silently skipped — it must NEVER block or crash
  * the terminal. Only transient network errors retry (WorkManager backoff);
@@ -59,6 +61,8 @@ class PromoterLocationWorker @AssistedInject constructor(
                     isAuthenticated = authRepository.isAuthenticated(),
                     trackPromoterLocation = settings.trackPromoterLocation,
                     now = now,
+                    startHour = settings.promoterLocationStartHour,
+                    endHour = settings.promoterLocationEndHour,
                 )
             ) {
                 return Result.success() // out of window / flag off / no session — quiet no-op

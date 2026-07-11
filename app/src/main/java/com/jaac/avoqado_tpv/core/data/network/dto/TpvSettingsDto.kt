@@ -63,6 +63,15 @@ data class TpvSettingsDto(
     @SerializedName("trackPromoterLocation")
     val trackPromoterLocation: Boolean? = null,
 
+    // Configurable "cambaceo" capture window (venue-local hours). Start inclusive,
+    // end exclusive; 0/24 = 24h. Default null so manual constructions (tests) don't
+    // need them; old servers omit them -> toDomain() falls back to legacy 11/18.
+    @SerializedName("promoterLocationStartHour")
+    val promoterLocationStartHour: Int? = null,
+
+    @SerializedName("promoterLocationEndHour")
+    val promoterLocationEndHour: Int? = null,
+
     // Card payment server-decoupling kill-switch
     // Default null so manual constructions (tests) don't need to specify it; Gson populates from JSON,
     // and toDomain() coalesces null -> true (legacy/safe). Backend may omit it for old clients.
@@ -168,6 +177,9 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     enableShifts = enableShifts ?: true,
     // Cambaceo tracking defaults to disabled (venue must opt in)
     trackPromoterLocation = trackPromoterLocation ?: false,
+    // Cambaceo capture window defaults to legacy 11:00-18:00 venue-local
+    promoterLocationStartHour = promoterLocationStartHour ?: 11,
+    promoterLocationEndHour = promoterLocationEndHour ?: 18,
     // Card payment kill-switch: default true (legacy: require backend before charge)
     requireAvoqadoServerForCardPayment = requireAvoqadoServerForCardPayment ?: true,
     // Attendance verification defaults to disabled
@@ -216,6 +228,8 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     requireVerificationBarcode = requireVerificationBarcode,
     enableShifts = enableShifts,
     trackPromoterLocation = trackPromoterLocation,
+    promoterLocationStartHour = promoterLocationStartHour,
+    promoterLocationEndHour = promoterLocationEndHour,
     requireAvoqadoServerForCardPayment = requireAvoqadoServerForCardPayment,
     requireClockInPhoto = requireClockInPhoto,
     requireClockOutPhoto = requireClockOutPhoto,

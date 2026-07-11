@@ -23,6 +23,8 @@
 
 ### **Changed**
 
+- **Cambaceo: la ventana horaria de captura de ubicación ahora es configurable por venue desde el backend**: `PromoterLocationGate` deja de usar la ventana fija 11:00-18:00 y lee `tpvSettings.promoterLocationStartHour/EndHour` de la configuración de terminal (campos nuevos en `TpvSettingsDto`/`TpvSettings`, default 11/18 = mismo comportamiento legacy si el backend no los manda). Clamp defensivo: una ventana inválida (fuera de rango o start ≥ end) cae al default en vez de nunca capturar o crashear. Cambio hermano en avoqado-server (migración `add_promoter_location_window`).
+
 - **Docs: credenciales QA de AngelPay retiradas de `ANGELPAY_INTEGRATION.md`**: el doc listaba usuario/contraseña del portal QA y un commerceToken en texto plano, y describía un auto-provision en `Application.onCreate()` que ya no existe. Sección reemplazada por punteros a dónde viven realmente las credenciales (config de terminal del backend / vault del equipo) + sugerencia de rotar las del portal.
 
 ---

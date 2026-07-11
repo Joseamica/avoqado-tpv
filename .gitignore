@@ -20,3 +20,6 @@ app/google-services.json
 # Claude Code / MCP tools internal data
 .claude-flow/
 .serena/
+
+# graphify knowledge graph output
+graphify-out/

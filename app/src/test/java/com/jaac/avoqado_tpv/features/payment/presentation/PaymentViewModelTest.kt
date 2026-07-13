@@ -309,6 +309,7 @@ class PaymentViewModelTest {
             modulesRepository = mockModulesRepository,
             connectionStateManager = mockConnectionStateManager,
             merchantRepository = mockk(relaxed = true),
+            merchantEligibilityRepository = mockk(relaxed = true),
             criticalNetworkOperationManager = mockCriticalNetworkOperationManager,
             connectionEventManager = mockConnectionEventManager,
             appContext = mockAppContext

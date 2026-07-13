@@ -4,6 +4,8 @@ import com.jaac.avoqado_tpv.core.data.repository.TerminalConfigRepositoryImpl
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
 import com.jaac.avoqado_tpv.features.payment.data.MerchantRepositoryImpl
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
+import com.jaac.avoqado_tpv.features.payment.data.MerchantEligibilityRepositoryImpl
+import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantEligibilityRepository
 import com.jaac.avoqado_tpv.features.reports.data.repository.ReportsRepositoryImpl
 import com.jaac.avoqado_tpv.features.reports.domain.repository.ReportsRepository
 import com.jaac.avoqado_tpv.features.modules.data.repository.ModulesRepositoryImpl
@@ -88,6 +90,19 @@ abstract class RepositoryModule {
     abstract fun bindMerchantRepository(
         impl: MerchantRepositoryImpl
     ): MerchantRepository
+
+    /**
+     * Bind MerchantEligibilityRepository to its implementation
+     * (MERCHANT_ROUTING_RULES — conditional merchant visibility on the TPV).
+     *
+     * @param impl MerchantEligibilityRepositoryImpl instance (Hilt creates automatically)
+     * @return MerchantEligibilityRepository interface
+     */
+    @Binds
+    @Singleton
+    abstract fun bindMerchantEligibilityRepository(
+        impl: MerchantEligibilityRepositoryImpl
+    ): MerchantEligibilityRepository
 
     /**
      * Bind ReportsRepository to its implementation

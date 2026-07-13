@@ -170,6 +170,7 @@ class AngelPayPaymentViewModelTest {
         shiftRepository = shiftRepository,
         authRepository = authRepository,
         merchantRepository = merchantRepository,
+        merchantEligibilityRepository = mockk(relaxed = true),
         secureStorage = secureStorage,
         terminalConfigRepository = terminalConfigRepository,
         intentBuilder = intentBuilder,

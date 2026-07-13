@@ -83,6 +83,8 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val shiftRepository: ShiftRepository,
     private val authRepository: AuthRepository,
     private val merchantRepository: MerchantRepository,
+    // 🧭 MERCHANT_ROUTING_RULES conditional visibility (PREMIUM) — same repo as the Blumon flow
+    private val merchantEligibilityRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantEligibilityRepository,
     private val secureStorage: SecureStorage,
     private val terminalConfigRepository: com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository,
     private val intentBuilder: AngelPayIntentBuilder,
@@ -125,6 +127,26 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     private val _currentMerchant = MutableStateFlow<MerchantAccount?>(null)
     val currentMerchant: StateFlow<MerchantAccount?> = _currentMerchant.asStateFlow()
+
+    // 🧭 MERCHANT_ROUTING_RULES: eligibility for the charge in progress (drives the selector filter +
+    // "showing all accounts" banner). AngelPay only FILTERS (no auto SDK-session switch on auto-select).
+    private val _merchantRouting = MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility?>(null)
+    val merchantRouting: StateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility?> = _merchantRouting.asStateFlow()
+
+    /** Evaluate routing rules for a charge of [totalAmount] pesos and publish to [merchantRouting]. */
+    private fun evaluateRoutingForCharge(totalAmount: String) {
+        viewModelScope.launch {
+            _merchantRouting.value = runCatching {
+                merchantEligibilityRepository.evaluate(
+                    totalAmount = totalAmount.toBigDecimalOrNull() ?: BigDecimal.ZERO,
+                    staffId = authRepository.getStaffId(),
+                )
+            }.getOrElse {
+                Timber.w(it, "🧭 [AngelPay Eligibility] evaluate() threw — fail-open (show all)")
+                com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility.disabled()
+            }
+        }
+    }
 
     /**
      * Multi-AngelPay accounts per venue (2026-05-19) — synchronous flag flipped
@@ -734,6 +756,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             totalAmount = total.toPlainString(),
             rating = rating,
         )
+        evaluateRoutingForCharge(total.toPlainString()) // 🧭 MERCHANT_ROUTING_RULES
         Timber.d("🔶 [AngelPay] Tip=$tipDecimal → SelectingMerchant (total=$total)")
     }
 
@@ -747,6 +770,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             totalAmount = amount,
             rating = rating,
         )
+        evaluateRoutingForCharge(amount) // 🧭 MERCHANT_ROUTING_RULES
         Timber.d("🔶 [AngelPay] Tip skipped → SelectingMerchant")
     }
 
@@ -854,6 +878,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                         message = "No se pudo cambiar a la cuenta AngelPay del merchant: ${switchResult.exceptionOrNull()?.message ?: "error desconocido"}",
                         canRetry = true,
                     )
+                    // 🔌 Circuit breaker: a technical account-switch failure counts against this merchant.
+                    merchantEligibilityRepository.recordChargeFailure(merchant.merchantAccountId ?: merchant.id)
                     return@launch
                 }
             }
@@ -884,6 +910,12 @@ class AngelPayPaymentViewModel @Inject constructor(
                     message = "No se pudo cambiar de merchant: ${err.message ?: "error desconocido"}",
                     canRetry = true,
                 )
+                // 🔌 Circuit breaker: technical merchant-selection failure.
+                merchantEligibilityRepository.recordChargeFailure(merchant.merchantAccountId ?: merchant.id)
+            }
+            result.onSuccess {
+                // 🔌 Circuit breaker: a healthy selection resets this merchant's failure counter.
+                merchantEligibilityRepository.recordChargeSuccess(merchant.merchantAccountId ?: merchant.id)
             }
             } finally {
                 // Clear the synchronous gate on EVERY exit path (success,
@@ -2086,6 +2118,8 @@ class AngelPayPaymentViewModel @Inject constructor(
         // card button permanently disabled when there's a single merchant (selector hidden).
         _isSendingReceipt.value = false
         _sendReceiptMessage.value = null
+        // 🧭 Clear routing eligibility so the next charge re-evaluates (no stale filter/banner)
+        _merchantRouting.value = null
         _state.value = AngelPayPaymentState.Idle
     }
 

@@ -75,6 +75,7 @@ fun MerchantSelectionContent(
     showCryptoOption: Boolean = false,  // 🪙 Show/hide crypto button (B4Bit)
     enableMsiPromotions: Boolean = false,
     hideAccountSelector: Boolean = false,  // 🥝 KIOSK: Hide merchant list when default is pre-configured
+    routingBannerMessage: String? = null,  // 🧭 MERCHANT_ROUTING_RULES: "showing all accounts" notice when no rule matched
 ) {
     // 💵 State for cash payment confirmation dialog
     var showCashConfirmationDialog by remember { mutableStateOf(false) }
@@ -118,6 +119,23 @@ fun MerchantSelectionContent(
                     verticalArrangement = Arrangement.spacedBy(sizes.spacingMedium),
                     modifier = Modifier.fillMaxWidth()
                 ) {
+                    // 🧭 MERCHANT_ROUTING_RULES: notice shown when no rule matched → all accounts visible.
+                    routingBannerMessage?.let { message ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.6f))
+                                .padding(horizontal = 14.dp, vertical = 10.dp)
+                        ) {
+                            Text(
+                                text = message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            )
+                        }
+                    }
+
                     // 🥝 KIOSK: When hideAccountSelector=true, show simplified UI (no merchant list)
                     // This is used in kiosk mode when admin has pre-configured a default merchant
                     val showSimplifiedView = merchants.size <= 1 || hideAccountSelector

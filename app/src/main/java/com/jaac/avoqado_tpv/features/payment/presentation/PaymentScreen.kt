@@ -159,6 +159,8 @@ fun PaymentScreen(
     val context = LocalContext.current
     val state by viewModel.state.collectAsStateWithLifecycle()
     val merchants by viewModel.merchants.collectAsStateWithLifecycle()
+    // 🧭 MERCHANT_ROUTING_RULES: eligibility for the charge in progress (drives filter + banner)
+    val merchantRouting by viewModel.merchantRouting.collectAsStateWithLifecycle()
 
     // 📸 PROOF-OF-SALE: derived from PaymentSession snapshot (module-driven)
     val showProofOfSale by viewModel.showProofOfSale.collectAsStateWithLifecycle()
@@ -470,12 +472,24 @@ fun PaymentScreen(
                 }
 
                 is PaymentState.SelectingMerchant -> {
+                    // 🧭 MERCHANT_ROUTING_RULES: show only eligible accounts (unless show-all), plus a
+                    // banner when no rule matched. Fail-open filtering never leaves the selector empty.
+                    val routing = merchantRouting
+                    val visibleMerchants = if (routing == null || routing.shouldShowAll) {
+                        merchants
+                    } else {
+                        merchants.filter { routing.eligibleMerchantAccountIds.contains(it.merchantAccountId) }
+                            .ifEmpty { merchants }
+                    }
+                    val routingBanner = if (routing?.showFallbackBanner == true) {
+                        "Mostrando todas las cuentas: ninguna regla de cobro aplica a esta venta."
+                    } else null
                     MerchantSelectionContent(
                         subtotalAmount = currentState.subtotal,
                         totalAmount = currentState.totalAmount,
                         tipAmount = currentState.tipAmount,
                         rating = currentState.rating,
-                        merchants = merchants,
+                        merchants = visibleMerchants,
                         currentMerchant = currentMerchant,
                         merchantSwitchingLoading = merchantSwitchingLoading,
                         merchantSwitchMessage = merchantSwitchMessage,
@@ -511,7 +525,9 @@ fun PaymentScreen(
                         showCryptoOption = tpvSettings?.showCryptoOption ?: false,
                         enableMsiPromotions = true,
                         // 🥝 KIOSK MODE: Hide merchant selector when admin pre-configured a default merchant
-                        hideAccountSelector = hideKioskMerchantSelector
+                        hideAccountSelector = hideKioskMerchantSelector,
+                        // 🧭 MERCHANT_ROUTING_RULES: "showing all accounts" notice when no rule matched
+                        routingBannerMessage = routingBanner
                     )
                 }
 

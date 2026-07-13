@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### **Added**
+
+- **🧭 Enrutamiento inteligente de cuentas de cobro (MERCHANT_ROUTING_RULES, PREMIUM)**: la terminal ahora muestra solo la cuenta de cobro correcta según reglas que el admin configura desde el dashboard (horario, geocerca, topes de volumen por día/semana/mes, monto del ticket, quién cobra, circuit breaker) — para que el mesero/cajero nunca cobre en la cuenta equivocada. Al entrar a la selección de cuenta (con el monto ya conocido), la terminal consulta `POST tpv/venues/{venueId}/merchant-eligibility`: si solo una cuenta cumple las reglas la pre-selecciona; si ninguna cumple muestra TODAS con un aviso ("una regla nunca bloquea una venta"); si el venue no tiene el feature PREMIUM o hay error de red, muestra todas como siempre (fail-open). Circuit breaker LOCAL: un merchant con N fallos técnicos seguidos (config del server) se oculta hasta cooldown, se reactiva con un cobro exitoso. Aplica a los 3 flujos (Blumon sandbox+production y AngelPay/Nexgo — este último solo filtra, sin auto-switch de sesión SDK). Kiosco intacto (usa su default fijo). Nuevos: `MerchantEligibilityRepository`/`Impl` + DTO + `ApiService.getMerchantEligibility` + banner en `MerchantSelectionContent`; +10 unit tests (`MerchantEligibilityRepositoryImplTest`). Backend (avoqado-server) + dashboard (página "Reglas de cobro") + 3 MCP tools son el cambio hermano. Enforcement llega con este APK; backends viejos siguen mostrando todo.
+
 ---
 
 ## [2.6.6] - 2026-07-11

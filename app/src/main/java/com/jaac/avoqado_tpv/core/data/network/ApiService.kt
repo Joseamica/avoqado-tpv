@@ -203,6 +203,30 @@ interface ApiService {
     ): Response<com.jaac.avoqado_tpv.core.data.network.dto.TerminalConfigResponse>
 
     /**
+     * Evaluate conditional merchant visibility for the charge in progress
+     * (MERCHANT_ROUTING_RULES, PREMIUM feature).
+     *
+     * POST /tpv/venues/{venueId}/merchant-eligibility
+     *
+     * **AUTHENTICATED ENDPOINT** — same auth as merchant-accounts.
+     *
+     * Given the ticket amount (PESOS) and optionally the staff and terminal
+     * location, the backend returns which merchant accounts the terminal should
+     * offer, an auto-select id when exactly one is eligible, and fallbackAll=true
+     * when none matched (show all with a warning — a rule never blocks a sale).
+     * A venue without the feature returns all merchants eligible.
+     *
+     * @param venueId Venue whose rules to evaluate
+     * @param request Amount + optional staff/location context
+     * @return Eligibility result (which merchants to show, auto-select, fallback)
+     */
+    @POST("tpv/venues/{venueId}/merchant-eligibility")
+    suspend fun getMerchantEligibility(
+        @Path("venueId") venueId: String,
+        @Body request: com.jaac.avoqado_tpv.core.data.network.dto.MerchantEligibilityRequest
+    ): Response<com.jaac.avoqado_tpv.core.data.network.dto.MerchantEligibilityResponse>
+
+    /**
      * Update TPV Settings for a specific terminal
      *
      * PUT /tpv/terminals/{serialNumber}/settings

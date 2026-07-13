@@ -212,6 +212,8 @@ class PaymentViewModel @Inject constructor(
     private val connectionStateManager: com.jaac.avoqado_tpv.core.util.ConnectionStateManager,
     // 🏪 MerchantRepository - Check fallback status and refresh merchants
     private val merchantRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository,
+    // 🧭 MerchantEligibilityRepository - MERCHANT_ROUTING_RULES conditional visibility/auto-select (PREMIUM)
+    private val merchantEligibilityRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantEligibilityRepository,
     // 🚦 CriticalNetworkOperationManager - Blocks network failover during active payments
     private val criticalNetworkOperationManager: com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager,
     // 🔄 ConnectionEventManager - Broadcasts reconnection events (receipt-on-reconnect + queue sync)
@@ -241,6 +243,12 @@ class PaymentViewModel @Inject constructor(
     // Currently active merchant account
     private val _currentMerchant = MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount?>(null)
     val currentMerchant: StateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount?> = _currentMerchant.asStateFlow()
+
+    // 🧭 MERCHANT_ROUTING_RULES: eligibility result for the charge in progress (null until evaluated).
+    // The merchant selector filters `merchants` by `eligibleMerchantAccountIds` (unless shouldShowAll),
+    // and shows the "showing all accounts" banner when `showFallbackBanner` is true.
+    private val _merchantRouting = MutableStateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility?>(null)
+    val merchantRouting: StateFlow<com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility?> = _merchantRouting.asStateFlow()
 
     // Loading state during merchant switch (3-5 seconds)
     private val _merchantSwitchingLoading = MutableStateFlow(false)
@@ -1074,11 +1082,16 @@ class PaymentViewModel @Inject constructor(
                     Timber.i("✅ [Merchants] Successfully switched to: ${account.displayName}")
                     Timber.i("   Serial: ${account.serialNumber}")
                     Timber.i("   TerminalConfig.serialNumber: ${com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber}")
+                    // 🔌 Circuit breaker: a healthy switch resets this merchant's failure counter.
+                    merchantEligibilityRepository.recordChargeSuccess(account.merchantAccountId ?: account.id)
                 } else {
                     val error = result.exceptionOrNull()
                     // Error message is already user-friendly from MultiMerchantSDKManager
                     _merchantSwitchMessage.value = "❌ ${error?.message ?: "Error desconocido al cambiar cuenta"}"
                     Timber.e(error, "❌ [Merchants] Failed to switch to: ${account.displayName}")
+                    // 🔌 Circuit breaker: a technical switch failure (OAuth/DUKPT/re-init) counts against
+                    // this merchant; after its configured threshold the rules hide it until cooldown.
+                    merchantEligibilityRepository.recordChargeFailure(account.merchantAccountId ?: account.id)
                 }
 
             } catch (e: Exception) {
@@ -1802,6 +1815,35 @@ class PaymentViewModel @Inject constructor(
                 return@launch
             }
 
+            // 🧭 MERCHANT_ROUTING_RULES (PREMIUM): decide which merchants to OFFER for this charge.
+            // Fail-open — any error/offline returns shouldShowAll=true so a rule never blocks a sale.
+            // Skipped for kiosk (it uses its own fixed default and hides the selector).
+            val routingEligibility = if (sessionSnapshot.isKioskPayment) {
+                com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility.disabled()
+            } else {
+                runCatching {
+                    merchantEligibilityRepository.evaluate(
+                        totalAmount = totalAmount.toBigDecimalOrNull() ?: java.math.BigDecimal.ZERO,
+                        staffId = resolveAttributionStaffId(),
+                    )
+                }.getOrElse {
+                    Timber.w(it, "🧭 [Eligibility] evaluate() threw — fail-open (show all)")
+                    com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility.disabled()
+                }
+            }
+            _merchantRouting.value = routingEligibility
+
+            // The merchants the cashier can actually pick for THIS charge (filtered by rules, or all).
+            val selectableMerchants = if (routingEligibility.shouldShowAll) {
+                merchants
+            } else {
+                merchants.filter { routingEligibility.eligibleMerchantAccountIds.contains(it.merchantAccountId) }
+                    .ifEmpty { merchants } // safety net — never leave the selector empty
+            }
+            if (!routingEligibility.shouldShowAll && selectableMerchants.size < merchants.size) {
+                Timber.i("🧭 [Eligibility] Rules narrowed merchants: ${merchants.size} → ${selectableMerchants.size} eligible")
+            }
+
             // 🥝 KIOSK MODE: Pre-select default merchant but STILL show Step 3
             // This allows customers to see order summary and choose between Cash/Card
             val tpvSettings = tpvSettingsRepository.getCurrentSettings()
@@ -1827,16 +1869,26 @@ class PaymentViewModel @Inject constructor(
                 _hideKioskMerchantSelector.value = false
             }
 
-            // Pre-select if only 1 merchant (but still show Step 3 for user confirmation)
-            if (merchants.size == 1) {
-                val onlyMerchant = merchants.first()
-                Timber.d("🏪 [Payment Flow] Only 1 merchant (${onlyMerchant.displayName}) → Pre-selecting")
-                _currentMerchant.value = onlyMerchant
-            } else if (_currentMerchant.value == null && merchants.isNotEmpty()) {
-                // Multiple merchants: auto-select first as default
-                val defaultMerchant = merchants.first()
-                Timber.d("🏪 [Payment Flow] Auto-selecting default merchant: ${defaultMerchant.displayName}")
-                _currentMerchant.value = defaultMerchant
+            // Pre-select the merchant for this charge (rules-aware). Still shows Step 3 for confirmation.
+            val autoSelectId = routingEligibility.autoSelectMerchantAccountId
+            val autoSelected = autoSelectId?.let { id -> selectableMerchants.find { it.merchantAccountId == id } }
+            when {
+                autoSelected != null -> {
+                    Timber.i("🧭 [Payment Flow] Rules auto-selected: ${autoSelected.displayName} (only eligible account)")
+                    _currentMerchant.value = autoSelected
+                }
+                selectableMerchants.size == 1 -> {
+                    val onlyMerchant = selectableMerchants.first()
+                    Timber.d("🏪 [Payment Flow] Only 1 selectable merchant (${onlyMerchant.displayName}) → Pre-selecting")
+                    _currentMerchant.value = onlyMerchant
+                }
+                // No selection yet, or the prior selection is no longer eligible → default to first selectable.
+                _currentMerchant.value == null ||
+                    selectableMerchants.none { it.merchantAccountId == _currentMerchant.value?.merchantAccountId } -> {
+                    val defaultMerchant = selectableMerchants.first()
+                    Timber.d("🏪 [Payment Flow] Defaulting to first selectable merchant: ${defaultMerchant.displayName}")
+                    _currentMerchant.value = defaultMerchant
+                }
             }
 
             // ✅ ALWAYS show Step 3 (SelectingMerchant) - user must see summary & confirm payment method
@@ -5349,6 +5401,9 @@ class PaymentViewModel @Inject constructor(
         // 🔄 Clear merchant retry state (prevents stuck loading overlay)
         _merchantSwitchingLoading.value = false
         _merchantSwitchMessage.value = null
+
+        // 🧭 Clear routing eligibility so the next charge re-evaluates from scratch (no stale filter/banner)
+        _merchantRouting.value = null
 
         // 🔄 Clear pending receipt retry so a stale reconnect handler can't fire for the next payment
         pendingReceiptRetry = null

@@ -99,6 +99,8 @@ fun AngelPayPaymentScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val merchants by viewModel.merchants.collectAsStateWithLifecycle()
     val currentMerchant by viewModel.currentMerchant.collectAsStateWithLifecycle()
+    // 🧭 MERCHANT_ROUTING_RULES: eligibility for the charge in progress (drives filter + banner)
+    val merchantRouting by viewModel.merchantRouting.collectAsStateWithLifecycle()
     val isSendingReceipt by viewModel.isSendingReceipt.collectAsStateWithLifecycle()
     val sendReceiptMessage by viewModel.sendReceiptMessage.collectAsStateWithLifecycle()
 
@@ -432,12 +434,23 @@ fun AngelPayPaymentScreen(
                 }
 
                 is AngelPayPaymentState.SelectingMerchant -> {
+                    // 🧭 MERCHANT_ROUTING_RULES: show only eligible accounts (unless show-all) + banner.
+                    val routing = merchantRouting
+                    val visibleMerchants = if (routing == null || routing.shouldShowAll) {
+                        merchants
+                    } else {
+                        merchants.filter { routing.eligibleMerchantAccountIds.contains(it.merchantAccountId) }
+                            .ifEmpty { merchants }
+                    }
+                    val routingBanner = if (routing?.showFallbackBanner == true) {
+                        "Mostrando todas las cuentas: ninguna regla de cobro aplica a esta venta."
+                    } else null
                     MerchantSelectionContent(
                         subtotalAmount = currentState.subtotal,
                         totalAmount = currentState.totalAmount,
                         tipAmount = currentState.tipAmount,
                         rating = currentState.rating,
-                        merchants = merchants,
+                        merchants = visibleMerchants,
                         currentMerchant = currentMerchant,
                         // Multi-AngelPay accounts per venue (2026-05-19): block
                         // Tarjeta/Efectivo/Cripto while a merchant switch is in
@@ -471,7 +484,9 @@ fun AngelPayPaymentScreen(
                         onNavigateBack = null, // Back handled by Scaffold top bar
                         showCashOption = true,
                         showCryptoOption = viewModel.showCryptoOption,
-                        hideAccountSelector = merchants.size <= 1,
+                        hideAccountSelector = visibleMerchants.size <= 1,
+                        // 🧭 MERCHANT_ROUTING_RULES: "showing all accounts" notice when no rule matched
+                        routingBannerMessage = routingBanner,
                     )
                 }
 

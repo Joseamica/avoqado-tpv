@@ -12,4 +12,18 @@ package com.jaac.avoqado_tpv.features.payment.data.processor.angelpay
  */
 interface PaymentStateProvider {
     fun isCharging(): Boolean
+
+    /**
+     * True while the AngelPay payment screen is in ANY non-resolved (working) state —
+     * i.e. a charge attempt is genuinely in progress: collecting rating/tip, selecting
+     * merchant, launching the SDK, waiting for the result, or recording it. False when the
+     * screen is showing a RESOLVED result (Idle / Success / Error / Cancelled), which is NOT
+     * a live charge even though the payment route is still on-screen.
+     *
+     * Consumed by the socket/BLE charge dispatcher ([AppNavigation]) to tell a genuinely
+     * busy terminal from a stale result screen: without this, a terminal left showing a
+     * decline error rejected EVERY subsequent POS-initiated charge until the app restarted
+     * (the route-only guard conflated "on the payment screen" with "busy").
+     */
+    fun isChargeAttemptActive(): Boolean
 }

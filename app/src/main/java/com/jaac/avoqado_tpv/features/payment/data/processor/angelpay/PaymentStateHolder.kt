@@ -18,4 +18,10 @@ class PaymentStateHolder @Inject constructor() : PaymentStateProvider {
     private val charging = AtomicBoolean(false)
     override fun isCharging(): Boolean = charging.get()
     fun setCharging(value: Boolean) { charging.set(value) }
+
+    // Non-resolved (working) AngelPay screen state — see [PaymentStateProvider.isChargeAttemptActive].
+    // Published by AngelPayPaymentViewModel from its own state stream (single funnel).
+    private val chargeAttemptActive = AtomicBoolean(false)
+    override fun isChargeAttemptActive(): Boolean = chargeAttemptActive.get()
+    fun setChargeAttemptActive(value: Boolean) { chargeAttemptActive.set(value) }
 }

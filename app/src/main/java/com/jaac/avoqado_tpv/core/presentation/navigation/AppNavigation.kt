@@ -123,6 +123,7 @@ interface AppNavigationEntryPoint {
     fun bluetoothPaymentService(): com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService
     fun socketManager(): com.jaac.avoqado_tpv.core.data.realtime.SocketManager
     fun recordAngelPayRefundUseCase(): com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase
+    fun paymentStateProvider(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
 }
 
 /**
@@ -205,6 +206,7 @@ fun AppNavigation(
     val bluetoothPaymentService = remember { kioskEntryPoint.bluetoothPaymentService() }
     val socketManager = remember { kioskEntryPoint.socketManager() }
     val recordAngelPayRefundUseCase = remember { kioskEntryPoint.recordAngelPayRefundUseCase() }
+    val paymentStateProvider = remember { kioskEntryPoint.paymentStateProvider() }
 
     // 📥 UPDATE REQUEST OBSERVATION (Remote update commands from dashboard)
     // When dashboard sends REQUEST_UPDATE command, show dialog to user
@@ -238,7 +240,22 @@ fun AppNavigation(
             }
 
             val currentRoute = navController.currentBackStackEntry?.destination?.route
-            if (currentRoute == NavRoute.Payment.route || currentRoute == NavRoute.AngelPayPayment.route) {
+            val onBlumonPayment = currentRoute == NavRoute.Payment.route
+            val onAngelPayPayment = currentRoute == NavRoute.AngelPayPayment.route
+            // Is the terminal GENUINELY busy (a live charge), vs merely SHOWING a resolved
+            // result on the payment route?
+            //  • Blumon/PAX: no shared charge-active signal here → keep the conservative
+            //    route-only guard (reject while on the Payment screen). Unchanged.
+            //  • AngelPay/Nexgo: a decline/success/cancel leaves the result screen up but the
+            //    terminal is FREE. Reject only when a charge is genuinely ACTIVE. This fixes
+            //    the terminal getting stuck ("Ya hay un pago en proceso") after every decline
+            //    until an app restart. The server's per-terminal arbitration already prevents a
+            //    second socket charge from arriving while one is truly in flight (incl. an
+            //    E608-held retry, whose row stays open), so a socket charge only reaches here
+            //    when the slot is free.
+            val terminalGenuinelyBusy = onBlumonPayment ||
+                (onAngelPayPayment && paymentStateProvider.isChargeAttemptActive())
+            if (terminalGenuinelyBusy) {
                 Timber.w("⚠️ [BLE] Payment already in progress - ignoring amount: ${request.amountCents}")
                 // If this came via socket, send rejection back so iOS doesn't hang
                 if (request.source == com.jaac.avoqado_tpv.core.bluetooth.PaymentSource.SOCKET && request.socketRequestId != null) {
@@ -250,6 +267,17 @@ fun AppNavigation(
                     Timber.i("📡 [Socket] Sent rejection for requestId=${request.socketRequestId}")
                 }
                 return@collect
+            }
+            // Stale AngelPay result screen (not busy): the payment screen reads its amount ONCE
+            // on entry (launchSingleTop won't re-fire an in-place charge), so pop back to Home
+            // first and let the code below drive a clean screen. Mirrors the socket-cancel handler.
+            if (onAngelPayPayment) {
+                Timber.i("🔄 [Socket] Stale AngelPay result screen — returning to Home before the new charge")
+                navController.previousBackStackEntry?.savedStateHandle?.let { clearPaymentArgs(it) }
+                navController.navigate(NavRoute.Home.route) {
+                    popUpTo(NavRoute.Home.route) { inclusive = false }
+                    launchSingleTop = true
+                }
             }
 
             val handle = navController.currentBackStackEntry?.savedStateHandle
@@ -2333,6 +2361,13 @@ fun AppNavigation(
             val isPortabilidad = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("isPortabilidad") ?: false
             val skipReview = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("skipReview") ?: false
 
+            // 📡 POS→TPV terminal arbitration: a socket-initiated charge (the socket handler routes
+            // to BOTH the Blumon Payment route and this AngelPay route) stashes these keys. The
+            // Blumon PaymentScreen already reads them; wire the AngelPay screen the same way so a
+            // socket-sourced Nexgo charge reports its result back to the caller (POS long-poll).
+            val paymentSource = navController.previousBackStackEntry?.savedStateHandle?.get<String>("paymentSource")
+            val socketRequestId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("socketRequestId")
+
             com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentScreen(
                 initialAmount = initialAmount,
                 orderId = orderId,
@@ -2340,6 +2375,8 @@ fun AppNavigation(
                 serialNumber = serialNumber,
                 isPortabilidad = isPortabilidad,
                 skipReview = skipReview,
+                paymentSource = paymentSource,
+                socketRequestId = socketRequestId,
                 onNavigateBack = {
                     val popped = navController.safePopBackStack()
                     if (!popped) {

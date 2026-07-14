@@ -43,6 +43,9 @@ sealed class PaymentContext {
     // their own type-based dedup) and for contexts that predate this feature.
     abstract val idempotencyKey: String?
 
+    // POS→TPV arbitration link — closes the TerminalPaymentRequest row server-side
+    abstract val terminalPaymentRequestId: String?
+
     /**
      * Fast Payment: Pago directo sin orden existente.
      *
@@ -75,6 +78,7 @@ sealed class PaymentContext {
         override val blumonSerialNumber: String = "", // ⚠️ LEGACY: Blumon serial (deprecated)
         override val deviceSerialNumber: String? = null, // ⭐ Terminal attribution (2026-01-08)
         override val idempotencyKey: String? = null, // 🛡️ Idempotency key (2026-04-08)
+        override val terminalPaymentRequestId: String? = null, // 📡 POS→TPV arbitration link
         // 📸 PRE-PAYMENT VERIFICATION (2025-01-14)
         // Order reference generated ONCE when entering VerifyingPrePayment state
         // Ensures Firebase photos match the order number created in backend
@@ -130,6 +134,7 @@ sealed class PaymentContext {
         override val blumonSerialNumber: String = "", // ⚠️ LEGACY: Blumon serial (deprecated)
         override val deviceSerialNumber: String? = null, // ⭐ Terminal attribution (2026-01-08)
         override val idempotencyKey: String? = null, // 🛡️ Idempotency key (2026-04-08)
+        override val terminalPaymentRequestId: String? = null, // 📡 POS→TPV arbitration link
         // ⭐ SPLIT PAYMENT FIELDS
         val splitType: SplitType = SplitType.FULLPAYMENT,
         val paidProductIds: List<String> = emptyList(), // Product IDs for PERPRODUCT mode
@@ -185,6 +190,7 @@ sealed class PaymentContext {
         override val blumonSerialNumber: String, // ⚠️ REQUIRED: For SDK merchant switch
         override val deviceSerialNumber: String? = null, // ⭐ Terminal attribution (2026-01-08)
         override val idempotencyKey: String? = null, // 🛡️ Refunds dedupe via type=REFUND, key optional
+        override val terminalPaymentRequestId: String? = null, // 📡 POS→TPV arbitration link
 
         // Refund-specific fields
         val originalPaymentId: String, // Payment being refunded
@@ -271,6 +277,7 @@ sealed class PaymentContext {
         override val blumonSerialNumber: String = "",
         override val deviceSerialNumber: String? = null,
         override val idempotencyKey: String? = null, // 🛡️ Idempotency key (2026-04-08)
+        override val terminalPaymentRequestId: String? = null, // 📡 POS→TPV arbitration link
         val cardDetails: CardDetails? = null,
         val authorizationCode: String = "",
         val referenceNumber: String = "",

@@ -23,6 +23,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEnvironment
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentFlowOrigin
+import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.jaac.avoqado_tpv.features.payment.domain.model.RefundReason
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
@@ -325,6 +326,58 @@ class PaymentViewModelTest {
         val viewModel = createViewModel()
 
         assertThat(viewModel.state.value).isEqualTo(PaymentState.Idle)
+
+        viewModel.viewModelScope.cancel()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // A2. SOCKET → TPV ARBITRATION LINK (terminalPaymentRequestId threading)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * POS→TPV terminal arbitration: when a socket-initiated payment tags the flow via
+     * setSocketPaymentSource("SOCKET", requestId), the recorded PaymentContext MUST carry
+     * that id as `terminalPaymentRequestId` so the backend closes the matching
+     * TerminalPaymentRequest row. Threads the identical path as `idempotencyKey`.
+     */
+    @Test
+    fun `socket-sourced cash payment threads terminalPaymentRequestId into PaymentContext`() = runTest {
+        val viewModel = createViewModel()
+
+        val contextSlot = slot<PaymentContext>()
+        coEvery {
+            mockRecordPaymentUseCase(
+                context = capture(contextSlot),
+                cardDetails = any(),
+                authorizationNumber = any(),
+                referenceNumber = any()
+            )
+        } returns Result.success(
+            PaymentReceipt(
+                paymentId = "pay-socket-001",
+                receiptUrl = "https://receipt.avoqado.io/pay-socket-001",
+                accessKey = "acc-key",
+                amount = BigDecimal("100.00"),
+                tipAmount = BigDecimal.ZERO
+            )
+        )
+
+        // Drive straight to SelectingMerchant (skips rating/tip), tag the socket source,
+        // then record a cash payment (no Blumon SDK) so buildFastPaymentContext runs.
+        viewModel.submitAmountDirectToMerchant("100.00")
+        viewModel.setSocketPaymentSource("SOCKET", "req-123")
+        viewModel.processCashPayment("100.00")
+
+        coVerify(timeout = 2000) {
+            mockRecordPaymentUseCase(
+                context = any(),
+                cardDetails = any(),
+                authorizationNumber = any(),
+                referenceNumber = any()
+            )
+        }
+        assertThat(contextSlot.isCaptured).isTrue()
+        assertThat(contextSlot.captured.terminalPaymentRequestId).isEqualTo("req-123")
 
         viewModel.viewModelScope.cancel()
     }

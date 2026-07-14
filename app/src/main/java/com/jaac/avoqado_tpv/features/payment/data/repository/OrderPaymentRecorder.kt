@@ -296,6 +296,9 @@ class OrderPaymentRecorder @Inject constructor(
             // Generated ONCE per logical payment attempt in PaymentViewModel.startPayment()
             // and persisted through all retries of that attempt.
             idempotencyKey = context.idempotencyKey,
+
+            // 📡 POS→TPV arbitration link — closes the TerminalPaymentRequest row server-side
+            terminalPaymentRequestId = context.terminalPaymentRequestId,
         )
     }
 
@@ -332,6 +335,7 @@ class OrderPaymentRecorder @Inject constructor(
             isPortabilidad = context.isPortabilidad.takeIf { it },
             serialNumbers = context.serialNumbers.takeIf { it.isNotEmpty() },
             idempotencyKey = context.idempotencyKey, // 🛡️ Idempotency key (2026-04-08)
+            terminalPaymentRequestId = context.terminalPaymentRequestId, // 📡 POS→TPV arbitration link
         )
     }
 

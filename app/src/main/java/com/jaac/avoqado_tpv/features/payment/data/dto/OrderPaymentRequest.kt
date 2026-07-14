@@ -118,4 +118,9 @@ data class OrderPaymentRequest(
     // for full explanation. Backend dedupes atomically via @@unique([venueId, idempotencyKey]).
     @SerializedName("idempotencyKey")
     val idempotencyKey: String? = null,
+
+    // 📡 POS→TPV ARBITRATION LINK — when present, backend closes the matching
+    // TerminalPaymentRequest row (single-flight terminal arbitration). Additive/optional.
+    @SerializedName("terminalPaymentRequestId")
+    val terminalPaymentRequestId: String? = null,
 )

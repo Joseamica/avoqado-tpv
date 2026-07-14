@@ -4948,6 +4948,8 @@ class PaymentViewModel @Inject constructor(
             deviceSerialNumber = secureStorage.getSerialNumber(),
             // 🛡️ Idempotency key: generated in startPayment/processCashPayment/etc., reused across retries
             idempotencyKey = session.paymentAttemptId,
+            // 📡 POS→TPV arbitration link — closes the TerminalPaymentRequest row server-side
+            terminalPaymentRequestId = _socketRequestId,
             orderReference = verification?.orderReference,
             verificationPhotos = verification?.photos ?: emptyList(),
             verificationBarcodes = verification?.barcodes?.map { it.barcode } ?: emptyList(),
@@ -4988,6 +4990,8 @@ class PaymentViewModel @Inject constructor(
             deviceSerialNumber = secureStorage.getSerialNumber(),
             // 🛡️ Idempotency key: generated in startPayment/processCashPayment/etc., reused across retries
             idempotencyKey = session.paymentAttemptId,
+            // 📡 POS→TPV arbitration link — closes the TerminalPaymentRequest row server-side
+            terminalPaymentRequestId = _socketRequestId,
             splitType = splitType,
             paidProductIds = split?.paidProductIds ?: emptyList(),
             equalPartsPartySize = split?.equalPartsPartySize,

@@ -25,6 +25,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStat
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEnvironment
+import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
@@ -34,6 +35,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import io.mockk.unmockkAll
 import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
@@ -721,6 +723,518 @@ class AngelPayPaymentViewModelTest {
             // reference_number is UNIQUE in Room — a blank reference must not collide.
             coVerify(exactly = 1) {
                 paymentQueueRepository.enqueue(match { it.referenceNumber == "idem-uuid-1" })
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // POS→TPV terminal arbitration (Slice 4 Part B): terminal:payment_result
+    // emission for SOCKET-initiated charges. Money rule (founder 2026-07):
+    // money moved ⇒ "success"; money did NOT move ⇒ "failed". Guarded by
+    // _paymentSource == "SOCKET" so device-initiated charges emit nothing.
+    // ----------------------------------------------------------------------
+
+    private fun approvedSdkResult(authCode: String = "A1", reference: String = "R1"): PaymentResult {
+        val result = mockk<PaymentResult>(relaxed = true)
+        every { result.approved } returns true
+        every { result.authCode } returns authCode
+        every { result.reference } returns reference
+        every { result.cardBin } returns null
+        every { result.callResult } returns null
+        return result
+    }
+
+    @Test
+    fun `socket-sourced recorded card payment emits success with paymentId`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.success(
+            PaymentReceipt(
+                paymentId = "pay-1",
+                receiptUrl = "https://receipt/pay-1",
+                accessKey = "key-1",
+                amount = java.math.BigDecimal("100.00"),
+                tipAmount = java.math.BigDecimal.ZERO,
+            ),
+        )
+
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00") // caches venue/staff + attemptId
+            runCurrent()
+            vm.setSocketPaymentSource("SOCKET", "req-success")
+
+            vm.onAngelPaySdkResult(approvedSdkResult())
+            runCurrent()
+
+            // recordCardPayment records via withContext(Dispatchers.IO); verify(timeout) waits for it.
+            verify(timeout = 2000) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-success",
+                    status = "success",
+                    paymentId = "pay-1",
+                    transactionId = any(),
+                    cardDetails = any(),
+                    errorMessage = any(),
+                    receiptUrl = any(),
+                    receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `socket-sourced enqueued (money-moved) payment emits success WITHOUT paymentId`() = runTest(testDispatcher) {
+        // The gotcha: card WAS charged but backend record failed → enqueued offline. Money moved ⇒
+        // report success now; paymentId arrives later when the queue syncs.
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-enqueue")
+
+            vm.handleRecordFailure(
+                paymentLabel = "El pago con tarjeta",
+                context = angelPayContext(),
+                error = RuntimeException("HTTP 503"),
+            )
+
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-enqueue",
+                    status = "success",
+                    paymentId = null,
+                    transactionId = any(),
+                    cardDetails = any(),
+                    errorMessage = any(),
+                    receiptUrl = any(),
+                    receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `socket-sourced SDK decline (no money moved) emits failed`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-decline")
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            vm.onAngelPaySdkResult(sdkFailureResult("G500")) // non-session decline → terminal
+            runCurrent()
+
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-decline",
+                    status = "failed",
+                    paymentId = any(),
+                    transactionId = any(),
+                    cardDetails = any(),
+                    errorMessage = any(),
+                    receiptUrl = any(),
+                    receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `charge-active flag flips false on a resolved decline screen (terminal not stuck-busy)`() = runTest(testDispatcher) {
+        // Device-QA regression: after a decline the AngelPay screen stays on the payment route,
+        // but the terminal is FREE. AppNavigation reads paymentStateHolder.isChargeAttemptActive()
+        // to tell a live charge from a stale result screen — a decline must publish `false` so the
+        // next POS-initiated charge isn't rejected with "Ya hay un pago en proceso" until an app
+        // restart. (The bug: the guard checked only the route, conflating "on-screen" with "busy".)
+        val vm = createViewModel()
+        try {
+            runCurrent()
+            // A working state → active.
+            vm.primeSdkLaunch() // LaunchingAngelPaySdk
+            runCurrent()
+            verify { paymentStateHolder.setChargeAttemptActive(true) }
+
+            // Decline → Error is a RESOLVED state → NOT active (terminal free again).
+            vm.onAngelPaySdkResult(sdkFailureResult("G500"))
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            verify { paymentStateHolder.setChargeAttemptActive(false) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `socket-sourced E608 advisory does NOT emit failed and the in-session chip retry emits success`() = runTest(testDispatcher) {
+        // Device-QA 2026-07-14 double-charge regression: a $1,501 tap hit the contactless
+        // limit (E608). Emitting "failed" showed the POS "Reintentar" and dropped
+        // _socketRequestId — while the cashier completed THE SAME charge by chip+PIN
+        // (APPROVED, money moved) → orphaned Payment + human-mediated double charge.
+        // Vendor catalog (AppErrorCatalog, AAR v1.0.15) marks E608 Retry.IMMEDIATE_AFTER_FIX:
+        // hold the socket result so the in-session retry resolves the still-open long-poll.
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.success(
+            PaymentReceipt(
+                paymentId = "pay-e608",
+                receiptUrl = "https://receipt/pay-e608",
+                accessKey = "key-e608",
+                amount = java.math.BigDecimal("1501.00"),
+                tipAmount = java.math.BigDecimal.ZERO,
+            ),
+        )
+
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "1501.00")
+            runCurrent()
+            vm.setSocketPaymentSource("SOCKET", "req-e608")
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            // 1) Tap over the contactless limit → E608 advisory. Cashier sees the error
+            //    (canRetry), but the POS long-poll must stay OPEN: no emit at all.
+            vm.onAngelPaySdkResult(
+                sdkFailureResult(sdkCode = "E608", message = "Limite contactless excedido", category = "EMV"),
+            )
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any())
+            }
+
+            // 2) In-session retry: relaunch (resets the consume guard, same as the real
+            //    Reintentar → Tarjeta path) + chip APPROVED → the ORIGINAL request id
+            //    resolves as success (proves _socketRequestId survived the advisory).
+            vm.primeSdkLaunch()
+            runCurrent()
+            vm.onAngelPaySdkResult(approvedSdkResult())
+            runCurrent()
+
+            verify(timeout = 2000) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-e608",
+                    status = "success",
+                    paymentId = "pay-e608",
+                    transactionId = any(),
+                    cardDetails = any(),
+                    errorMessage = any(),
+                    receiptUrl = any(),
+                    receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `socket-sourced NEVER-retry EMV decline (E606 online rejection) still emits failed`() = runTest(testDispatcher) {
+        // Guard the guard: only IMMEDIATE_AFTER_FIX advisories hold the socket result.
+        // A real EMV decline (vendor retry=NEVER) must keep failing fast to the POS.
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-e606")
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            vm.onAngelPaySdkResult(sdkFailureResult(sdkCode = "E606", message = "Rechazo online", category = "EMV"))
+            runCurrent()
+
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-e606",
+                    status = "failed",
+                    paymentId = any(),
+                    transactionId = any(),
+                    cardDetails = any(),
+                    errorMessage = any(),
+                    receiptUrl = any(),
+                    receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `socket-sourced terminal cancellation emits cancelled`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-cancel")
+
+            vm.onAngelPayResult(resultCode = 0, data = null) // RESULT_CANCELED
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Cancelled::class.java)
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-cancel",
+                    status = "cancelled",
+                    paymentId = any(),
+                    transactionId = any(),
+                    cardDetails = any(),
+                    errorMessage = any(),
+                    receiptUrl = any(),
+                    receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `socket-sourced pre-charge error (invalid amount, no money moved) emits failed`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-premoney")
+
+            vm.initPayment(amount = "0.00") // invalid amount → pre-charge failure
+            runCurrent()
+
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-premoney",
+                    status = "failed",
+                    paymentId = any(),
+                    transactionId = any(),
+                    cardDetails = any(),
+                    errorMessage = any(),
+                    receiptUrl = any(),
+                    receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `device-initiated charge (no socket source) emits nothing`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            // No setSocketPaymentSource → _paymentSource stays null → guard suppresses all emits.
+            vm.handleRecordFailure(
+                paymentLabel = "El pago con tarjeta",
+                context = angelPayContext(),
+                error = RuntimeException("HTTP 503"),
+            )
+            vm.onAngelPayResult(resultCode = 0, data = null)
+            runCurrent()
+
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any())
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Money-safety: a charge whose money moved must ALWAYS be recorded or
+    // enqueued — never dropped. venue/staff null AFTER a successful charge is
+    // recovered (cached → auth → secureStorage); only a fully-lost session
+    // falls back to the loud manual-review state (still a single success emit).
+    // ----------------------------------------------------------------------
+
+    @Test
+    fun `cash charge with null cached venue recovers from auth, enqueues on record failure, emits success once`() = runTest(testDispatcher) {
+        // No initPayment → cachedVenueId/staffId stay null (the post-charge null scenario).
+        every { authRepository.getVenueId() } returns "v-recovered"
+        every { authRepository.getStaffId() } returns "s-recovered"
+        val ctxSlot = slot<com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext>()
+        coEvery { recordPaymentUseCase(capture(ctxSlot), any(), any(), any()) } returns
+            Result.failure(RuntimeException("HTTP 503"))
+
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-cash")
+            vm.startCashPayment()
+            runCurrent()
+
+            // Charge NOT dropped: recovered venue/staff → context built → record fails → enqueued.
+            coVerify(timeout = 2000) {
+                paymentQueueRepository.enqueue(
+                    match { it.referenceNumber.startsWith("CASH-") && it.idempotencyKey != null },
+                )
+            }
+            val ctx = ctxSlot.captured as com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext.AngelPayPayment
+            assertThat(ctx.venueId).isEqualTo("v-recovered")   // recovered from authRepository
+            assertThat(ctx.staffId).isEqualTo("s-recovered")
+            assertThat(ctx.terminalPaymentRequestId).isEqualTo("req-cash") // threaded from _socketRequestId
+            // Exactly ONE socket emit (money moved ⇒ success), from handleRecordFailure.
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-cash", status = "success", paymentId = any(),
+                    transactionId = any(), cardDetails = any(), errorMessage = any(),
+                    receiptUrl = any(), receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `card SDK charge with null cached venue recovers from secureStorage, enqueues on record failure, emits success once`() = runTest(testDispatcher) {
+        // cachedVenueId/staffId null; authRepository returns null → fall through to secureStorage.
+        every { authRepository.getVenueId() } returns null
+        every { authRepository.getStaffId() } returns null
+        every { secureStorage.getVenueId() } returns "v-secure"
+        every { secureStorage.getStaffId() } returns "s-secure"
+        val ctxSlot = slot<com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext>()
+        coEvery { recordPaymentUseCase(capture(ctxSlot), any(), any(), any()) } returns
+            Result.failure(RuntimeException("HTTP 503"))
+
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-card")
+            vm.onAngelPaySdkResult(approvedSdkResult(authCode = "A9", reference = "REF9"))
+
+            coVerify(timeout = 2000) {
+                paymentQueueRepository.enqueue(
+                    match { it.referenceNumber == "REF9" && it.idempotencyKey != null && it.processor == ProcessorType.ANGELPAY },
+                )
+            }
+            val ctx = ctxSlot.captured as com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext.AngelPayPayment
+            assertThat(ctx.venueId).isEqualTo("v-secure")  // recovered from secureStorage (auth was null)
+            assertThat(ctx.terminalPaymentRequestId).isEqualTo("req-card")
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-card", status = "success", paymentId = any(),
+                    transactionId = any(), cardDetails = any(), errorMessage = any(),
+                    receiptUrl = any(), receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `charge with unrecoverable venue does NOT drop money - loud manual-review, no enqueue, one success emit`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns null
+        every { authRepository.getStaffId() } returns null
+        every { secureStorage.getVenueId() } returns null
+        every { secureStorage.getStaffId() } returns null
+
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-orphan")
+            vm.startCashPayment()
+            runCurrent()
+
+            // No venue/staff to build a context → never reaches recordPaymentUseCase or the queue.
+            coVerify(exactly = 0) { recordPaymentUseCase(any(), any(), any(), any()) }
+            coVerify(exactly = 0) { paymentQueueRepository.enqueue(any()) }
+            // Loud manual-review state so a human reconciles the money that moved.
+            val state = vm.state.value
+            assertThat(state).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            assertThat((state as AngelPayPaymentState.Error).message).contains("avisa al supervisor")
+            // Money moved ⇒ exactly one "success" to the POS.
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-orphan", status = "success", paymentId = any(),
+                    transactionId = any(), cardDetails = any(), errorMessage = any(),
+                    receiptUrl = any(), receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Double-charge mitigation: TRANSIENT/retryable pre-money errors do NOT
+    // emit and do NOT clear _socketRequestId, so a terminal-retry-into-success
+    // still reports "success" on the original request (no stale "failed").
+    // ----------------------------------------------------------------------
+
+    @Test
+    fun `transient merchant-select failure on a socket charge does NOT emit`() = runTest(testDispatcher) {
+        authStateFlow.value = AngelPayAuthState.Authenticated
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } returns
+            Result.failure(RuntimeException("SDK switch failed"))
+
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-transient")
+            vm.selectMerchant(angelPayMerchantB) // transient pre-money error (canRetry=true)
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            // No socket result: the request stays open so a terminal retry can still report success.
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any())
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `transient error then a successful charge emits exactly one success for the original request`() = runTest(testDispatcher) {
+        authStateFlow.value = AngelPayAuthState.Authenticated
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } returns
+            Result.failure(RuntimeException("SDK switch failed"))
+
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-retry")
+
+            // 1) Transient failure → no emit, _socketRequestId left intact.
+            vm.selectMerchant(angelPayMerchantB)
+            runCurrent()
+            verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any()) }
+
+            // 2) Cashier retries → charge succeeds (money-moved/enqueued path emits success).
+            vm.handleRecordFailure(
+                paymentLabel = "El pago con tarjeta",
+                context = angelPayContext(),
+                error = RuntimeException("HTTP 503"),
+            )
+
+            // Exactly ONE "success" for the ORIGINAL requestId → proves _socketRequestId survived.
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-retry", status = "success", paymentId = any(),
+                    transactionId = any(), cardDetails = any(), errorMessage = any(),
+                    receiptUrl = any(), receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `real SDK decline still emits failed (regression)`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-decline-reg")
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            vm.onAngelPaySdkResult(sdkFailureResult("G500")) // real decline — money did NOT move
+            runCurrent()
+
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-decline-reg", status = "failed", paymentId = any(),
+                    transactionId = any(), cardDetails = any(), errorMessage = any(),
+                    receiptUrl = any(), receiptAccessKey = any(),
+                )
             }
         } finally {
             vm.viewModelScope.cancel()

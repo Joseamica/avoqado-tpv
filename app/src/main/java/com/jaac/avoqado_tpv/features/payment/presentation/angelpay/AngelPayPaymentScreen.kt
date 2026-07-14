@@ -75,6 +75,11 @@ fun AngelPayPaymentScreen(
     serialNumber: String? = null,
     isPortabilidad: Boolean = false,
     skipReview: Boolean = false,
+    // 📡 POS→TPV terminal arbitration: set only when this charge was initiated by the POS over
+    // Socket.IO (source "SOCKET" + the request id the caller long-polls on). Null for a normal
+    // device-initiated charge. Passed straight to the VM so the terminal outcome reports back.
+    paymentSource: String? = null,
+    socketRequestId: String? = null,
     onNavigateBack: () -> Unit,
     onNavigateHome: () -> Unit,
     /**
@@ -150,6 +155,9 @@ fun AngelPayPaymentScreen(
     // Auto-start payment when screen opens with amount
     LaunchedEffect(initialAmount) {
         if (initialAmount != null && state is AngelPayPaymentState.Idle) {
+            // 📡 POS→TPV arbitration: tag the source BEFORE initPayment so even a pre-charge
+            // failure (invalid amount, no open shift) reports back to the caller. No-op when null.
+            viewModel.setSocketPaymentSource(paymentSource, socketRequestId)
             // 📸 Serialized inventory (SIM) proof-of-sale — no-op for a normal payment
             // (all args default off), so this doesn't change the normal charge flow.
             viewModel.setSerializedSaleInfo(

@@ -186,6 +186,20 @@ class AngelPayPaymentViewModel @Inject constructor(
         pendingIsPortabilidad = isPortabilidad
     }
 
+    /**
+     * 📡 Tag this charge as POS-initiated over Socket.IO so its terminal outcome is reported
+     * back to the caller (POS long-poll) via [emitSocketResultIfSocketSourced]. Called from the
+     * navigation layer for a socket-sourced charge; a device-initiated charge never calls this,
+     * so [_paymentSource] stays null and nothing is ever emitted. Mirrors the Blumon flow.
+     */
+    fun setSocketPaymentSource(source: String?, requestId: String?) {
+        _paymentSource = source
+        _socketRequestId = requestId
+        if (source == "SOCKET") {
+            Timber.i("📡 [AngelPay Socket] Source set | requestId=$requestId")
+        }
+    }
+
     /** Whether the in-flight/just-completed payment is a serialized (SIM) sale. */
     val isSerializedSale: Boolean get() = pendingSerialNumbers.isNotEmpty()
 
@@ -363,6 +377,13 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var cachedVenueId: String? = null
     private var cachedStaffId: String? = null
 
+    // 📡 POS→TPV terminal arbitration: a charge initiated by the POS over Socket.IO carries a
+    // request id the caller long-polls on. Set from the navigation layer via [setSocketPaymentSource];
+    // stays null for device-initiated charges (which therefore never emit). Mirrors the Blumon
+    // production PaymentViewModel. Cleared in [resetPayment] and after each emit.
+    private var _paymentSource: String? = null      // "SOCKET" | null
+    private var _socketRequestId: String? = null
+
     // 🛡️ IDEMPOTENCY KEY (2026-04-08) — Stripe/Square/Toast pattern
     // UUID v4 generated ONCE per logical payment attempt and reused on every retry.
     // Generated in initPayment() and cleared in resetPayment(). Cleared explicitly so
@@ -393,6 +414,33 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     /**
+     * 💥 Last-resort money-safety guard: a charge ALREADY moved money but we cannot reconstruct
+     * venue/staff (session fully gone) so we can neither record NOR enqueue it — both require
+     * venue+staff. We MUST NOT silently drop the sale: alert loudly for manual reconciliation and
+     * report the caller a single "success" (money moved). Extremely rare — venue/staff are cached at
+     * initPayment AND recoverable from authRepository/secureStorage before we ever reach here.
+     */
+    private fun reportChargedButUnrecordable(
+        paymentLabel: String,
+        error: Throwable,
+    ): AngelPayPaymentState.Error {
+        Timber.e(error, "💥 [AngelPay] $paymentLabel: money moved but venue/staff unrecoverable — cannot record OR enqueue")
+        observability.logWarning(
+            tag = "AngelPayChargeOrphaned",
+            message = "$paymentLabel cobrado pero imposible registrar/encolar (sesión perdida)",
+            metadata = mapOf(
+                "amount" to pendingAmount.add(pendingTip).toPlainString(),
+                "attemptId" to (currentPaymentAttemptId ?: "none"),
+                "socketRequestId" to (_socketRequestId ?: "none"),
+                "error" to (error.message ?: "unknown"),
+            ),
+        )
+        // 📡 money moved ⇒ tell the caller success ONCE (guard clears _socketRequestId).
+        emitSocketResultIfSocketSourced(status = "success")
+        return backendRecordFailureState(paymentLabel, error)
+    }
+
+    /**
      * AngelPay already moved the money — a backend recording failure must NEVER
      * strand the sale (P1 fix 2026-07-09). Persist it to the offline queue so
      * [com.jaac.avoqado_tpv.core.data.workers.PaymentSyncWorker] replays it: the
@@ -406,6 +454,12 @@ class AngelPayPaymentViewModel @Inject constructor(
         context: PaymentContext.AngelPayPayment,
         error: Throwable,
     ): AngelPayPaymentState.Error {
+        // 📡 POS→TPV: the card WAS charged (money moved) — the backend record merely failed and is
+        // being enqueued for offline sync. Report SUCCESS to the POS now (founder rule 2026-07:
+        // money moved ⇒ success). No paymentId yet; the synced REST record reconciles the row later.
+        // No-op unless socket-sourced.
+        emitSocketResultIfSocketSourced(status = "success")
+
         val queued = QueuedPayment(
             // UNIQUE column in Room — AngelPay can return a blank reference on edge
             // paths, so fall back to the attempt UUID to keep the row insertable.
@@ -493,6 +547,22 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     init {
+        // 📡 Publish "is a charge genuinely active?" to the shared PaymentStateHolder so the
+        // socket/BLE charge dispatcher (AppNavigation) can tell a live charge from a stale
+        // RESOLVED result screen. Single funnel over our own state stream — a decline that
+        // leaves the Error screen up is NOT active, so it no longer blocks the next POS charge.
+        // (Idle/Success/Error/Cancelled = resolved → not active; every other state = working.)
+        viewModelScope.launch {
+            state.collect { s ->
+                paymentStateHolder.setChargeAttemptActive(
+                    s !is AngelPayPaymentState.Idle &&
+                        s !is AngelPayPaymentState.Success &&
+                        s !is AngelPayPaymentState.Error &&
+                        s !is AngelPayPaymentState.Cancelled,
+                )
+            }
+        }
+
         // Load AngelPay merchants
         viewModelScope.launch {
             merchantRepository.getActiveMerchants().collect { allMerchants ->
@@ -603,6 +673,8 @@ class AngelPayPaymentViewModel @Inject constructor(
             val amountDecimal = amount.toBigDecimalOrNull()
             if (amountDecimal == null || amountDecimal <= BigDecimal.ZERO) {
                 _state.value = AngelPayPaymentState.Error("Monto invalido")
+                // 📡 POS→TPV: pre-charge validation error — no money moved (no-op unless socket-sourced).
+                emitSocketResultIfSocketSourced(status = "failed", errorMessage = "Monto invalido")
                 return@launch
             }
 
@@ -637,6 +709,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                         canRetry = false,
                         showOpenShiftButton = true,
                     )
+                    // 📡 POS→TPV: pre-charge gate (no open shift) — no money moved (no-op unless socket-sourced).
+                    emitSocketResultIfSocketSourced(status = "failed", errorMessage = "Debes abrir un turno antes de cobrar")
                     return@launch
                 }
                 resolved
@@ -844,6 +918,8 @@ class AngelPayPaymentViewModel @Inject constructor(
                     message = "Merchant inválido para AngelPay: ${err.message}",
                     canRetry = false,
                 )
+                // 📡 POS→TPV: pre-charge merchant error — no money moved (no-op unless socket-sourced).
+                emitSocketResultIfSocketSourced(status = "failed", errorMessage = "Merchant inválido para AngelPay: ${err.message}")
                 _selectionInProgress.value = false
                 return@launch
             }
@@ -878,6 +954,11 @@ class AngelPayPaymentViewModel @Inject constructor(
                         message = "No se pudo cambiar a la cuenta AngelPay del merchant: ${switchResult.exceptionOrNull()?.message ?: "error desconocido"}",
                         canRetry = true,
                     )
+                    // 📡 POS→TPV: TRANSIENT/retryable pre-money error (money did NOT move). Do NOT emit and
+                    // do NOT clear _socketRequestId — a terminal-side retry can still succeed on THIS request;
+                    // leaving the id set lets that success re-emit "success" to the still-open POS long-poll
+                    // (~315s), avoiding a stale "failed" → human double-charge. Trade-off: on ABANDONMENT the
+                    // long-poll times out → server watchdog marks the row UNKNOWN (false-busy) — accepted.
                     // 🔌 Circuit breaker: a technical account-switch failure counts against this merchant.
                     merchantEligibilityRepository.recordChargeFailure(merchant.merchantAccountId ?: merchant.id)
                     return@launch
@@ -910,6 +991,11 @@ class AngelPayPaymentViewModel @Inject constructor(
                     message = "No se pudo cambiar de merchant: ${err.message ?: "error desconocido"}",
                     canRetry = true,
                 )
+                // 📡 POS→TPV: TRANSIENT/retryable pre-money error (money did NOT move). Do NOT emit and do
+                // NOT clear _socketRequestId — a terminal-side retry can still succeed on THIS request;
+                // leaving the id set lets that success re-emit "success" to the still-open POS long-poll
+                // (~315s), avoiding a stale "failed" → human double-charge. Trade-off: on ABANDONMENT the
+                // long-poll times out → server watchdog marks the row UNKNOWN (false-busy) — accepted.
                 // 🔌 Circuit breaker: technical merchant-selection failure.
                 merchantEligibilityRepository.recordChargeFailure(merchant.merchantAccountId ?: merchant.id)
             }
@@ -1051,6 +1137,11 @@ class AngelPayPaymentViewModel @Inject constructor(
                 message = "Cambio de merchant no se completó. Reintenta.",
                 canRetry = true,
             )
+            // 📡 POS→TPV: TRANSIENT/retryable pre-money error (money did NOT move). Do NOT emit and do NOT
+            // clear _socketRequestId — a terminal-side retry can still succeed on THIS request; leaving the
+            // id set lets that success re-emit "success" to the still-open POS long-poll (~315s), avoiding a
+            // stale "failed" → human double-charge. Trade-off: on ABANDONMENT the long-poll times out →
+            // server watchdog marks the row UNKNOWN (false-busy) — accepted over the double-charge risk.
             false
         }
     }
@@ -1075,6 +1166,11 @@ class AngelPayPaymentViewModel @Inject constructor(
                 message = initError?.message ?: "AngelPay SDK no está inicializado",
                 canRetry = true,
             )
+            // 📡 POS→TPV: TRANSIENT/retryable pre-money error (money did NOT move). Do NOT emit and do NOT
+            // clear _socketRequestId — a terminal-side retry can still succeed on THIS request; leaving the
+            // id set lets that success re-emit "success" to the still-open POS long-poll (~315s), avoiding a
+            // stale "failed" → human double-charge. Trade-off: on ABANDONMENT the long-poll times out →
+            // server watchdog marks the row UNKNOWN (false-busy) — accepted over the double-charge risk.
             clearChargingOnTerminal()
             return
         }
@@ -1098,6 +1194,11 @@ class AngelPayPaymentViewModel @Inject constructor(
                 message = error?.message ?: "No se pudo autenticar AngelPay SDK",
                 canRetry = true,
             )
+            // 📡 POS→TPV: TRANSIENT/retryable pre-money error (money did NOT move). Do NOT emit and do NOT
+            // clear _socketRequestId — a terminal-side retry can still succeed on THIS request; leaving the
+            // id set lets that success re-emit "success" to the still-open POS long-poll (~315s), avoiding a
+            // stale "failed" → human double-charge. Trade-off: on ABANDONMENT the long-poll times out →
+            // server watchdog marks the row UNKNOWN (false-busy) — accepted over the double-charge risk.
             clearChargingOnTerminal()
             return
         }
@@ -1163,6 +1264,11 @@ class AngelPayPaymentViewModel @Inject constructor(
             message = validationError?.message ?: "No se pudo iniciar el cobro con AngelPay SDK",
             canRetry = true,
         )
+        // 📡 POS→TPV: TRANSIENT/retryable pre-money error (money did NOT move). Do NOT emit and do NOT
+        // clear _socketRequestId — a terminal-side retry can still succeed on THIS request; leaving the id
+        // set lets that success re-emit "success" to the still-open POS long-poll (~315s), avoiding a stale
+        // "failed" → human double-charge. Trade-off: on ABANDONMENT the long-poll times out → server
+        // watchdog marks the row UNKNOWN (false-busy) — accepted over the double-charge risk.
         clearChargingOnTerminal()
     }
 
@@ -1229,12 +1335,15 @@ class AngelPayPaymentViewModel @Inject constructor(
                 attemptId = currentPaymentAttemptId,
             )
 
-            val venueId = cachedVenueId ?: run {
-                _state.value = AngelPayPaymentState.Error("Error: No hay venue activo")
-                return@launch
-            }
-            val staffId = cachedStaffId ?: run {
-                _state.value = AngelPayPaymentState.Error("Error: No hay staff activo")
+            // 💰 Money moved (cash collected). Recover venue/staff from the most reliable source so
+            // this sale is ALWAYS recorded or enqueued — never dropped (cached → auth → secureStorage).
+            val venueId = cachedVenueId ?: authRepository.getVenueId() ?: secureStorage.getVenueId()
+            val staffId = cachedStaffId ?: authRepository.getStaffId() ?: secureStorage.getStaffId()
+            if (venueId == null || staffId == null) {
+                _state.value = reportChargedButUnrecordable(
+                    paymentLabel = "El pago en efectivo",
+                    error = IllegalStateException("venue/staff no recuperable tras cobro en efectivo"),
+                )
                 return@launch
             }
 
@@ -1249,6 +1358,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 merchantAccountId = null, // Cash = no processor
                 deviceSerialNumber = TerminalConfig.serialNumber,
                 idempotencyKey = ensurePaymentAttemptId(), // 🛡️ Idempotency key (2026-04-08)
+                terminalPaymentRequestId = _socketRequestId, // 📡 POS→TPV arbitration link (null unless socket-sourced)
                 cardDetails = CardDetails.CASH,
                 authorizationCode = "EFECTIVO",
                 referenceNumber = "CASH-$timestamp",
@@ -1284,6 +1394,14 @@ class AngelPayPaymentViewModel @Inject constructor(
                 onSuccess = { receipt ->
                     Timber.i("🔶 [AngelPay] Cash payment recorded | receipt=${receipt.receiptUrl}")
                     _state.value = successState.copy(receipt = receipt)
+                    // 📡 POS→TPV: report success to the caller (no-op unless socket-sourced).
+                    emitSocketResultIfSocketSourced(
+                        status = "success",
+                        paymentId = receipt.paymentId,
+                        transactionId = receipt.paymentId,
+                        receiptUrl = receipt.receiptUrl,
+                        receiptAccessKey = receipt.accessKey,
+                    )
                 },
                 onFailure = { error ->
                     Timber.e(error, "🔶 [AngelPay] Cash payment failed to record to backend — enqueueing for sync")
@@ -1330,9 +1448,22 @@ class AngelPayPaymentViewModel @Inject constructor(
                         message = result.message,
                         canRetry = true,
                     )
+                    if (isRecoverableEmvAdvisory(result.code)) {
+                        // 📡 POS→TPV: recoverable EMV advisory — hold the socket result for the
+                        // in-session retry (see the sdk_contract site for the full rationale).
+                        Timber.i("📡 [AngelPay Socket] Recoverable EMV advisory ${result.code} — holding socket result for in-session retry")
+                    } else {
+                        // 📡 POS→TPV: real decline — the card was NOT charged (no-op unless socket-sourced).
+                        emitSocketResultIfSocketSourced(status = "failed", errorMessage = result.message)
+                    }
                 }
                 is AngelPayResult.Cancelled -> {
                     _state.value = AngelPayPaymentState.Cancelled
+                    // 📡 POS→TPV: user cancelled at the terminal (no-op unless socket-sourced).
+                    emitSocketResultIfSocketSourced(
+                        status = "cancelled",
+                        errorMessage = "Pago cancelado en la terminal",
+                    )
                 }
             }
             // Task 32 — clear D2 charging gate on any terminal outcome.
@@ -1382,11 +1513,48 @@ class AngelPayPaymentViewModel @Inject constructor(
                     message = displayMessage,
                     canRetry = true,
                 )
+                if (isRecoverableEmvAdvisory(result.callResult?.code)) {
+                    // 📡 POS→TPV: vendor-classified Retry.IMMEDIATE_AFTER_FIX EMV advisory (e.g. E608
+                    // tap over the contactless limit → cashier completes THIS charge by chip). NOT a
+                    // terminal outcome: do NOT emit "failed" and do NOT clear _socketRequestId — the
+                    // POS long-poll stays open (~315s) so the in-session retry's success resolves it
+                    // and the REST record keeps the terminalPaymentRequestId arbitration link.
+                    // (Device-QA 2026-07-14: emitting "failed" here showed the POS "Reintentar" while
+                    // the chip retry APPROVED → orphaned Payment → human-mediated double charge.)
+                    // Trade-off (same as the transient pre-money sites): abandonment → watchdog UNKNOWN.
+                    Timber.i(
+                        "📡 [AngelPay Socket] Recoverable EMV advisory ${result.callResult?.code} — holding socket result for in-session retry",
+                    )
+                } else {
+                    // 📡 POS→TPV: real SDK decline — the card was NOT charged (no-op unless socket-sourced).
+                    emitSocketResultIfSocketSourced(status = "failed", errorMessage = displayMessage)
+                }
             }
             // Task 32 — clear D2 charging gate on any terminal outcome.
             clearChargingOnTerminal()
         }
     }
+
+    /**
+     * EMV advisories the AngelPay vendor catalog marks `Retry.IMMEDIATE_AFTER_FIX` —
+     * the payment SESSION is still alive at the terminal: the cashier fixes the condition
+     * (E608 tap over the contactless limit → insert chip; E615 chip required; E603 card
+     * removed; E607 CVM failed; …) and retries THIS SAME charge. They are NOT terminal
+     * outcomes, so a socket-sourced charge must NOT report "failed" to the POS on them.
+     *
+     * Source of truth: `AppErrorCatalog$Code` inside the vendored AAR (v1.0.15), extracted
+     * via javap 2026-07-14 — every EMV (E6xx) code whose retry policy is IMMEDIATE_AFTER_FIX.
+     * The runtime CallResult does not carry the retry policy, hence this mirrored set.
+     * NEVER-retry EMV codes (E601 not supported, E604 PIN attempts exceeded, E605/E606
+     * offline/online rejection, E610 expired, E619, E621, E622 AMEX) stay hard declines.
+     */
+    private val recoverableEmvAdvisoryCodes = setOf(
+        "E600", "E603", "E607", "E608", "E609", "E611", "E612", "E613", "E614",
+        "E615", "E616", "E617", "E618", "E620", "E623", "E624", "E625", "E699",
+    )
+
+    private fun isRecoverableEmvAdvisory(sdkCode: String?): Boolean =
+        sdkCode != null && sdkCode.uppercase() in recoverableEmvAdvisoryCodes
 
     /**
      * Reports every terminal (non-recovered) AngelPay decline to the backend/Crashlytics.
@@ -1456,12 +1624,15 @@ class AngelPayPaymentViewModel @Inject constructor(
     private suspend fun recordCardPayment(result: AngelPayResult.Success) {
         _state.value = AngelPayPaymentState.RecordingPayment()
 
-        val venueId = cachedVenueId ?: run {
-            _state.value = AngelPayPaymentState.Error("Error: No hay venue activo")
-            return
-        }
-        val staffId = cachedStaffId ?: run {
-            _state.value = AngelPayPaymentState.Error("Error: No hay staff activo")
+        // 💰 Money moved (card charged). Recover venue/staff from the most reliable source so this
+        // charge is ALWAYS recorded or enqueued — never dropped (cached → auth → secureStorage).
+        val venueId = cachedVenueId ?: authRepository.getVenueId() ?: secureStorage.getVenueId()
+        val staffId = cachedStaffId ?: authRepository.getStaffId() ?: secureStorage.getStaffId()
+        if (venueId == null || staffId == null) {
+            _state.value = reportChargedButUnrecordable(
+                paymentLabel = "El pago con tarjeta",
+                error = IllegalStateException("venue/staff no recuperable tras cobro con tarjeta"),
+            )
             return
         }
 
@@ -1485,6 +1656,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             merchantAccountId = merchantAccountId,
             deviceSerialNumber = TerminalConfig.serialNumber,
             idempotencyKey = ensurePaymentAttemptId(), // 🛡️ Idempotency key (2026-04-08)
+            terminalPaymentRequestId = _socketRequestId, // 📡 POS→TPV arbitration link (null unless socket-sourced)
             cardDetails = cardDetails,
             authorizationCode = result.authorizationCode,
             referenceNumber = result.referenceNumber,
@@ -1518,6 +1690,14 @@ class AngelPayPaymentViewModel @Inject constructor(
             onSuccess = { receipt ->
                 Timber.i("🔶 [AngelPay] Card payment recorded | receipt=${receipt.receiptUrl}")
                 _state.value = successState.copy(receipt = receipt)
+                // 📡 POS→TPV: report success to the caller (no-op unless socket-sourced).
+                emitSocketResultIfSocketSourced(
+                    status = "success",
+                    paymentId = receipt.paymentId,
+                    transactionId = receipt.paymentId,
+                    receiptUrl = receipt.receiptUrl,
+                    receiptAccessKey = receipt.accessKey,
+                )
             },
             onFailure = { error ->
                 Timber.e(error, "🔶 [AngelPay] Card payment failed to record to backend — enqueueing for sync")
@@ -1529,12 +1709,15 @@ class AngelPayPaymentViewModel @Inject constructor(
     private suspend fun recordCardPayment(result: PaymentResult) {
         _state.value = AngelPayPaymentState.RecordingPayment()
 
-        val venueId = cachedVenueId ?: run {
-            _state.value = AngelPayPaymentState.Error("Error: No hay venue activo")
-            return
-        }
-        val staffId = cachedStaffId ?: run {
-            _state.value = AngelPayPaymentState.Error("Error: No hay staff activo")
+        // 💰 Money moved (card charged). Recover venue/staff from the most reliable source so this
+        // charge is ALWAYS recorded or enqueued — never dropped (cached → auth → secureStorage).
+        val venueId = cachedVenueId ?: authRepository.getVenueId() ?: secureStorage.getVenueId()
+        val staffId = cachedStaffId ?: authRepository.getStaffId() ?: secureStorage.getStaffId()
+        if (venueId == null || staffId == null) {
+            _state.value = reportChargedButUnrecordable(
+                paymentLabel = "El pago con tarjeta",
+                error = IllegalStateException("venue/staff no recuperable tras cobro con tarjeta"),
+            )
             return
         }
 
@@ -1558,6 +1741,7 @@ class AngelPayPaymentViewModel @Inject constructor(
             merchantAccountId = merchantAccountId,
             deviceSerialNumber = TerminalConfig.serialNumber,
             idempotencyKey = ensurePaymentAttemptId(),
+            terminalPaymentRequestId = _socketRequestId, // 📡 POS→TPV arbitration link (null unless socket-sourced)
             cardDetails = cardDetails,
             authorizationCode = result.authCode ?: "",
             referenceNumber = result.reference ?: "",
@@ -1591,6 +1775,14 @@ class AngelPayPaymentViewModel @Inject constructor(
             onSuccess = { receipt ->
                 Timber.i("🔶 [AngelPay SDK] Card payment recorded | receipt=${receipt.receiptUrl}")
                 _state.value = successState.copy(receipt = receipt)
+                // 📡 POS→TPV: report success to the caller (no-op unless socket-sourced).
+                emitSocketResultIfSocketSourced(
+                    status = "success",
+                    paymentId = receipt.paymentId,
+                    transactionId = receipt.paymentId,
+                    receiptUrl = receipt.receiptUrl,
+                    receiptAccessKey = receipt.accessKey,
+                )
             },
             onFailure = { error ->
                 Timber.e(error, "🔶 [AngelPay SDK] Card payment failed to record to backend — enqueueing for sync")
@@ -2030,6 +2222,14 @@ class AngelPayPaymentViewModel @Inject constructor(
             orderNumber = event.orderNumber,
             isCash = false,
         )
+        // 📡 POS→TPV: report crypto success to the caller (no-op unless socket-sourced).
+        emitSocketResultIfSocketSourced(
+            status = "success",
+            paymentId = receipt.paymentId,
+            transactionId = receipt.paymentId,
+            receiptUrl = receipt.receiptUrl.ifBlank { null },
+            receiptAccessKey = receipt.accessKey.ifBlank { null },
+        )
 
         currentCryptoRequestId = null
     }
@@ -2090,6 +2290,39 @@ class AngelPayPaymentViewModel @Inject constructor(
         }
     }
 
+    // ── POS→TPV socket result ─────────────────────────────────────────
+
+    /**
+     * 📡 Report the terminal outcome of a SOCKET-initiated charge to the caller (POS long-poll)
+     * via [SocketManager.emitTerminalPaymentResult]. No-op for device-initiated charges (guard:
+     * [_paymentSource] == "SOCKET"). Clears [_socketRequestId] after emitting so one request maps
+     * to exactly one result — a subsequent retry/reset can never double-emit. cardDetails is always
+     * null: AngelPay does not return a reliable maskedPan/brand. Mirrors the Blumon PaymentViewModel.
+     */
+    private fun emitSocketResultIfSocketSourced(
+        status: String,
+        paymentId: String? = null,
+        transactionId: String? = null,
+        errorMessage: String? = null,
+        receiptUrl: String? = null,
+        receiptAccessKey: String? = null,
+    ) {
+        if (_paymentSource != "SOCKET") return
+        val requestId = _socketRequestId ?: return
+        socketManager.emitTerminalPaymentResult(
+            requestId = requestId,
+            status = status,
+            paymentId = paymentId,
+            transactionId = transactionId,
+            cardDetails = null,
+            errorMessage = errorMessage,
+            receiptUrl = receiptUrl,
+            receiptAccessKey = receiptAccessKey,
+        )
+        _socketRequestId = null
+        Timber.i("📡 [AngelPay Socket] Emitted terminal:payment_result | status=$status | requestId=$requestId")
+    }
+
     // ── Reset ────────────────────────────────────────────────────────
 
     fun resetPayment() {
@@ -2120,6 +2353,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         _sendReceiptMessage.value = null
         // 🧭 Clear routing eligibility so the next charge re-evaluates (no stale filter/banner)
         _merchantRouting.value = null
+        // 📡 Clear socket arbitration source so a stale request id never leaks into the next charge.
+        _paymentSource = null
+        _socketRequestId = null
         _state.value = AngelPayPaymentState.Idle
     }
 

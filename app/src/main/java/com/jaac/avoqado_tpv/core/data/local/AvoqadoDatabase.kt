@@ -116,7 +116,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
         com.jaac.avoqado_tpv.core.data.local.entities.MosaicShortcutEntity::class, // ⭐ v21
         AngelPayMerchantCacheEntity::class // ⭐ v22: AngelPay SDK 1.0.5 multi-merchant cache
     ],
-    version = 25, // ⭐ Version 25: pending_payments processor-aware columns for AngelPay offline queue (2026-07-09)
+    version = 26, // ⭐ Version 26: pending_payments carries terminalPaymentRequestId (POS→TPV arbitration link) (2026-07-14)
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -1597,6 +1597,20 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                     "ALTER TABLE `pending_payments` ADD COLUMN `is_portabilidad` INTEGER NOT NULL DEFAULT 0"
                 )
                 database.execSQL("ALTER TABLE `pending_payments` ADD COLUMN `serial_numbers` TEXT")
+            }
+        }
+
+        /**
+         * v26 (2026-07-14) — carry the POS→TPV arbitration link through the offline queue.
+         *
+         * Additive + nullable: existing queued rows (real money awaiting sync) keep their data
+         * and simply get NULL, which replays exactly as before. See
+         * [com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity.terminalPaymentRequestId]
+         * for why its absence stranded terminals on UNKNOWN.
+         */
+        val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE `pending_payments` ADD COLUMN `terminal_payment_request_id` TEXT")
             }
         }
     }

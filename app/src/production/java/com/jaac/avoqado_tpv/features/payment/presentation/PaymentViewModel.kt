@@ -5709,6 +5709,11 @@ class PaymentViewModel @Inject constructor(
                         isInternational = cardDetails.isInternational,
                         authorizationNumber = authorizationNumber,
                         idempotencyKey = sessionSnapshot.paymentAttemptId, // 🛡️ Primary dedup key (2026-05-29)
+                        // 📡 Carry the POS→TPV arbitration link through the queue: the replayed
+                        // record is what closes the TerminalPaymentRequest row. Without it a
+                        // fast payment's row can never be reconciled (the watchdog matches via
+                        // orderId, which fast payments don't have) → UNKNOWN → slot held forever.
+                        terminalPaymentRequestId = _socketRequestId,
                         createdAt = System.currentTimeMillis(),
                         retryCount = 0,
                         lastError = error.message,

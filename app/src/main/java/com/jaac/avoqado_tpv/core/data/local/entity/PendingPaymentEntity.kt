@@ -95,6 +95,17 @@ data class PendingPaymentEntity(
     @ColumnInfo(name = "payment_processor", defaultValue = PROCESSOR_BLUMON)
     val paymentProcessor: String = PROCESSOR_BLUMON,
 
+    // 📡 POS→TPV arbitration link (2026-07-14, v26) — the requestId of the socket-initiated
+    // charge this payment belongs to. WITHOUT it on the queue, a replayed payment reaches the
+    // backend with terminalPaymentRequestId=null, so closeRowFromPaymentTx never runs and the
+    // TerminalPaymentRequest row is left for the watchdog — which is BLIND to fast payments
+    // (it reconciles via row.orderId, null for them) → the row parks at UNKNOWN and holds the
+    // per-terminal slot forever. Both failures share one cause (a network drop), so they are
+    // correlated, not a rare conjunction. Null for device-initiated charges and for rows
+    // written before v26.
+    @ColumnInfo(name = "terminal_payment_request_id")
+    val terminalPaymentRequestId: String? = null,
+
     // Order linkage (AngelPay order payments — null for fast payments)
     @ColumnInfo(name = "order_id")
     val orderId: String? = null,

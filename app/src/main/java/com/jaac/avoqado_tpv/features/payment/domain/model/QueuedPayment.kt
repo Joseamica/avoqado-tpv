@@ -63,6 +63,12 @@ data class QueuedPayment(
     // on replay. Pre-v25 rows are BLUMON (the queue was Blumon-fast-only until then).
     val processor: ProcessorType = ProcessorType.BLUMON,
 
+    // 📡 POS→TPV arbitration link (2026-07-14) — must survive the queue, or the replayed
+    // payment reaches the backend with terminalPaymentRequestId=null and the terminal's
+    // TerminalPaymentRequest row is never closed (fast payments can't be reconciled by the
+    // watchdog either → UNKNOWN → slot held forever). Null for device-initiated charges.
+    val terminalPaymentRequestId: String? = null,
+
     // Order linkage (AngelPay order payments — null for fast payments)
     val orderId: String? = null,
     val orderNumber: String? = null,
@@ -120,6 +126,7 @@ data class QueuedPayment(
                 orderNumber = orderNumber,
                 isPortabilidad = isPortabilidad,
                 serialNumbers = serialNumbers,
+                terminalPaymentRequestId = terminalPaymentRequestId, // 📡 closes the arbitration row on replay
             )
         }
 
@@ -132,7 +139,8 @@ data class QueuedPayment(
             merchantAccountId = normalizedMerchantAccountId, // Cash queue retries must keep merchant null
             blumonSerialNumber = blumonSerialNumber, // ⚠️ LEGACY: Fallback for old records
             deviceSerialNumber = deviceSerialNumber, // ⭐ Terminal attribution (2026-01-08)
-            idempotencyKey = idempotencyKey // 🛡️ Primary dedup key for queue retries (2026-05-29)
+            idempotencyKey = idempotencyKey, // 🛡️ Primary dedup key for queue retries (2026-05-29)
+            terminalPaymentRequestId = terminalPaymentRequestId // 📡 closes the arbitration row on replay
         )
     }
 

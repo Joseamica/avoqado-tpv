@@ -169,6 +169,7 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             authorizationNumber = authorizationNumber,
             idempotencyKey = idempotencyKey, // 🛡️ Primary dedup key for queue retries (2026-05-29)
             paymentProcessor = processor.name, // 🔶 Processor-aware queue (2026-07-09)
+            terminalPaymentRequestId = terminalPaymentRequestId, // 📡 POS→TPV arbitration link (2026-07-14)
             orderId = orderId,
             orderNumber = orderNumber,
             shiftId = shiftId,
@@ -212,6 +213,7 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             processor = runCatching {
                 com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.valueOf(paymentProcessor)
             }.getOrDefault(com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.BLUMON),
+            terminalPaymentRequestId = terminalPaymentRequestId, // 📡 POS→TPV arbitration link (2026-07-14)
             orderId = orderId,
             orderNumber = orderNumber,
             shiftId = shiftId,

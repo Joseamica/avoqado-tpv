@@ -481,6 +481,10 @@ class AngelPayPaymentViewModel @Inject constructor(
             authorizationNumber = context.authorizationCode,
             idempotencyKey = context.idempotencyKey,
             processor = ProcessorType.ANGELPAY,
+            // 📡 Carry the arbitration link through the queue — the replayed record is what
+            // closes the terminal's TerminalPaymentRequest row (the watchdog can't reconcile
+            // a fast payment: its row has no orderId).
+            terminalPaymentRequestId = context.terminalPaymentRequestId,
             orderId = context.orderId,
             orderNumber = context.orderNumber,
             shiftId = context.shiftId,

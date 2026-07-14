@@ -329,6 +329,48 @@ class AvoqadoDatabaseMigrationTest {
         }
     }
 
+    /**
+     * v25 → v26 adds `pending_payments.terminal_payment_request_id` (the POS→TPV arbitration
+     * link). It is purely additive + nullable, so Room's own schema validation against 26.json
+     * is the whole contract.
+     */
+    @Test
+    fun migrate25To26_freshSchema_validatesAgainstV26() {
+        helper.createDatabase(TEST_DB, 25).close()
+        // Throws if MIGRATION_25_26 leaves the schema diverging from 26.json.
+        helper.runMigrationsAndValidate(TEST_DB, 26, true, AvoqadoDatabase.MIGRATION_25_26)
+    }
+
+    /**
+     * The money guarantee: a queued payment is REAL money that hasn't reached the backend yet.
+     * v25 → v26 must preserve every existing row untouched (new column simply reads NULL, which
+     * replays exactly as it did before). A destructive fallback here would silently delete
+     * un-synced sales — the failure mode this whole suite exists to prevent.
+     */
+    @Test
+    fun migrate25To26_preservesQueuedPaymentsAndDefaultsTheNewColumnToNull() {
+        helper.createDatabase(TEST_DB, 25).use { db ->
+            db.execSQL(
+                "INSERT INTO pending_payments (reference_number, venue_id, staff_id, amount, tip, " +
+                    "merchant_account_id, blumon_serial_number, entry_mode, is_international, " +
+                    "created_at, idempotency_key, payment_processor, retry_count, sync_status) VALUES " +
+                    "('REF-V26-001','v1','s1','250.00','25.00','m1','SER1','CHIP',0,123,'idem-1','BLUMON',0,'PENDING')",
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 26, true, AvoqadoDatabase.MIGRATION_25_26)
+
+        migrated.query(
+            "SELECT reference_number, amount, idempotency_key, terminal_payment_request_id " +
+                "FROM pending_payments WHERE reference_number = 'REF-V26-001'",
+        ).use { c ->
+            assertTrue("the queued payment (real money) must survive the migration", c.moveToFirst())
+            assertEquals("250.00", c.getString(1)) // amount intact
+            assertEquals("idem-1", c.getString(2)) // dedup key intact → replay still de-dupes
+            assertTrue("pre-v26 rows carry no arbitration link", c.isNull(3))
+        }
+    }
+
     companion object {
         private const val TEST_DB = "migration-test-avoqado"
         // database.identityHash from app/schemas/.../23.json

@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 
 import android.content.Intent
 import android.content.Context
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.annotation.VisibleForTesting
@@ -101,6 +102,9 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager,
     private val observability: ObservabilityManager,
     private val paymentQueueRepository: PaymentQueueRepository,
+    // 📡 Survives process/Activity death while the AngelPay SDK Activity holds the foreground —
+    // see [_paymentSource] / [_socketRequestId]. Hilt provides this automatically to @HiltViewModel.
+    private val savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<AngelPayPaymentState>(AngelPayPaymentState.Idle)
@@ -193,8 +197,15 @@ class AngelPayPaymentViewModel @Inject constructor(
      * so [_paymentSource] stays null and nothing is ever emitted. Mirrors the Blumon flow.
      */
     fun setSocketPaymentSource(source: String?, requestId: String?) {
+        // Called from a LaunchedEffect keyed on (source, requestId), so it re-runs on every
+        // recomposition AND after an Activity/VM recreation. Ignore a null/repeat tag for the
+        // request already in flight: after a VM death the savedStateHandle may already hold the
+        // right values, and re-tagging with the SAME id must not reset the emitted-flag (that
+        // would allow a second emit for one request).
+        if (requestId != null && requestId == _socketRequestId && source == _paymentSource) return
         _paymentSource = source
         _socketRequestId = requestId
+        _socketResultEmitted = false
         if (source == "SOCKET") {
             Timber.i("📡 [AngelPay Socket] Source set | requestId=$requestId")
         }
@@ -379,10 +390,33 @@ class AngelPayPaymentViewModel @Inject constructor(
 
     // 📡 POS→TPV terminal arbitration: a charge initiated by the POS over Socket.IO carries a
     // request id the caller long-polls on. Set from the navigation layer via [setSocketPaymentSource];
-    // stays null for device-initiated charges (which therefore never emit). Mirrors the Blumon
-    // production PaymentViewModel. Cleared in [resetPayment] and after each emit.
-    private var _paymentSource: String? = null      // "SOCKET" | null
-    private var _socketRequestId: String? = null
+    // stays null for device-initiated charges (which therefore never emit).
+    //
+    // ⚠️ BACKED BY SavedStateHandle ON PURPOSE — do NOT "simplify" these back to plain fields.
+    // The AngelPay SDK runs in its OWN Activity (com.angelpay.angelpaysdk.ui.PaymentActivity), so
+    // MainActivity is stopped and Android may destroy it mid-charge. On recreation the NavController
+    // restores the backstack but a PLAIN field would come back null, and the VM that RECORDS the
+    // payment would not be the VM that was configured → the recorded payment carries
+    // terminalPaymentRequestId = null and no terminal:payment_result is emitted → the server's
+    // arbitration row stays CANCELLED/FAILED for a charge whose money actually MOVED, and the 🚨
+    // reconcile alert never fires. (That the app loses foreground here is already codified by
+    // ForegroundRecoveryGate.arm(reason = "angelpay_sdk_approved") in AngelPayPaymentScreen.)
+    // Cleared in [resetPayment]; the emit clears only the emitted-flag, never the request id.
+    private var _paymentSource: String?              // "SOCKET" | null
+        get() = savedStateHandle[KEY_PAYMENT_SOURCE]
+        set(value) { savedStateHandle[KEY_PAYMENT_SOURCE] = value }
+    private var _socketRequestId: String?
+        get() = savedStateHandle[KEY_SOCKET_REQUEST_ID]
+        set(value) { savedStateHandle[KEY_SOCKET_REQUEST_ID] = value }
+
+    // One emit per request — tracked separately so the REQUEST ID SURVIVES the emit. Clearing the
+    // id on emit (the old behavior) silently broke retry-after-decline: the decline emits "failed"
+    // and nulls the id, the cashier retries ON THE TERMINAL, the card is APPROVED, and the recorded
+    // payment carries terminalPaymentRequestId = null → the server can never reconcile the FAILED
+    // row to COMPLETED and the 🚨 "money moved despite close" alert never fires.
+    private var _socketResultEmitted: Boolean
+        get() = savedStateHandle[KEY_SOCKET_EMITTED] ?: false
+        set(value) { savedStateHandle[KEY_SOCKET_EMITTED] = value }
 
     // 🛡️ IDEMPOTENCY KEY (2026-04-08) — Stripe/Square/Toast pattern
     // UUID v4 generated ONCE per logical payment attempt and reused on every retry.
@@ -435,7 +469,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                 "error" to (error.message ?: "unknown"),
             ),
         )
-        // 📡 money moved ⇒ tell the caller success ONCE (guard clears _socketRequestId).
+        // 📡 money moved ⇒ tell the caller success ONCE (guard de-dupes via _socketResultEmitted).
         emitSocketResultIfSocketSourced(status = "success")
         return backendRecordFailureState(paymentLabel, error)
     }
@@ -1992,7 +2026,21 @@ class AngelPayPaymentViewModel @Inject constructor(
                             appVersionName = BuildConfig.VERSION_NAME,
                             autofacturaAvailable = receipt.autofacturaAvailable,
                         )
+                        // 🖨️ A6 (SDK 1.0.16): `printTicket` RETURNS `kotlin.Result`
+                        // instead of throwing (javap: `printTicket-IoAF18A`).
+                        // Discarding it meant a FAILED print fell straight through
+                        // to the "printed successfully" log below. Rethrow the SDK's
+                        // real error so the catch — and the log — tell the truth.
                         com.angelpay.angelpaysdk.AngelPaySDK.printTicket(ticket)
+                            .getOrElse { err ->
+                                // `getOrThrow()` would rethrow a raw Throwable, which
+                                // the `catch (e: Exception)` below would NOT catch.
+                                throw (err as? Exception)
+                                    ?: IllegalStateException(
+                                        "Fallo de impresión AngelPay: ${err.message}",
+                                        err,
+                                    )
+                            }
                     }
                     Timber.i("🔶 [AngelPay] Receipt printed successfully")
                 } catch (e: Exception) {
@@ -2299,9 +2347,16 @@ class AngelPayPaymentViewModel @Inject constructor(
     /**
      * 📡 Report the terminal outcome of a SOCKET-initiated charge to the caller (POS long-poll)
      * via [SocketManager.emitTerminalPaymentResult]. No-op for device-initiated charges (guard:
-     * [_paymentSource] == "SOCKET"). Clears [_socketRequestId] after emitting so one request maps
-     * to exactly one result — a subsequent retry/reset can never double-emit. cardDetails is always
-     * null: AngelPay does not return a reliable maskedPan/brand. Mirrors the Blumon PaymentViewModel.
+     * [_paymentSource] == "SOCKET"). cardDetails is always null: AngelPay does not return a
+     * reliable maskedPan/brand. Mirrors the Blumon PaymentViewModel.
+     *
+     * ⚠️ De-duped via [_socketResultEmitted] — NOT by nulling [_socketRequestId]. The request id
+     * must SURVIVE the emit because it is also the arbitration link threaded into the recorded
+     * payment (terminalPaymentRequestId). Nulling it here silently broke retry-after-decline:
+     * decline emits "failed" → cashier retries ON THE TERMINAL → card APPROVED → the recorded
+     * payment carried a null link → the server could never reconcile the FAILED row to COMPLETED
+     * and the 🚨 "money moved despite close" alert never fired. One emit per request, but the link
+     * lives until [resetPayment].
      */
     private fun emitSocketResultIfSocketSourced(
         status: String,
@@ -2313,6 +2368,10 @@ class AngelPayPaymentViewModel @Inject constructor(
     ) {
         if (_paymentSource != "SOCKET") return
         val requestId = _socketRequestId ?: return
+        if (_socketResultEmitted) {
+            Timber.d("📡 [AngelPay Socket] Result already emitted for $requestId — skipping (status=$status)")
+            return
+        }
         socketManager.emitTerminalPaymentResult(
             requestId = requestId,
             status = status,
@@ -2323,9 +2382,21 @@ class AngelPayPaymentViewModel @Inject constructor(
             receiptUrl = receiptUrl,
             receiptAccessKey = receiptAccessKey,
         )
-        _socketRequestId = null
+        _socketResultEmitted = true
         Timber.i("📡 [AngelPay Socket] Emitted terminal:payment_result | status=$status | requestId=$requestId")
     }
+
+    /** Test seam: drive the emit directly (the real call sites need a full SDK round-trip). */
+    @androidx.annotation.VisibleForTesting
+    internal fun emitSocketResultForTest(
+        status: String,
+        paymentId: String? = null,
+        errorMessage: String? = null,
+    ) = emitSocketResultIfSocketSourced(status = status, paymentId = paymentId, errorMessage = errorMessage)
+
+    /** Test seam: the arbitration link must survive an emit — see the regression tests. */
+    @androidx.annotation.VisibleForTesting
+    internal fun socketRequestIdForTest(): String? = _socketRequestId
 
     // ── Reset ────────────────────────────────────────────────────────
 
@@ -2360,6 +2431,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         // 📡 Clear socket arbitration source so a stale request id never leaks into the next charge.
         _paymentSource = null
         _socketRequestId = null
+        _socketResultEmitted = false
         _state.value = AngelPayPaymentState.Idle
     }
 
@@ -2422,6 +2494,12 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     private companion object {
+        // 📡 SavedStateHandle keys for the POS→TPV arbitration link. These MUST survive
+        // MainActivity death while the AngelPay SDK Activity is in front — see [_paymentSource].
+        const val KEY_PAYMENT_SOURCE = "angelpay_socket_payment_source"
+        const val KEY_SOCKET_REQUEST_ID = "angelpay_socket_request_id"
+        const val KEY_SOCKET_EMITTED = "angelpay_socket_result_emitted"
+
         /**
          * Nexgo terminal models that ship with a built-in thermal
          * printer. Matched against the uppercased `model` returned by

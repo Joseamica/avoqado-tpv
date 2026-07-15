@@ -226,6 +226,47 @@ class InitializationManager @Inject constructor(
     }
 
     /**
+     * Read the posId the Blumon SDK will ACTUALLY use — straight from its own Init table.
+     *
+     * **Why this exists (2026-07-15):**
+     * No SDK use case takes a posId. `ValidateCancelParams` has a single field (`operation`),
+     * and `CancelIccParams`/`SaleIccParams` have none either. The SDK injects the posId itself
+     * by reading `InitData.getPosId()` from its local Room table. That means the EFFECTIVE
+     * affiliation of a sale/refund is whatever this table holds — NOT the posId of the merchant
+     * the cashier picked. The two can diverge (e.g. `switchMerchant()` no-ops on a serial match
+     * while the table still holds the previous merchant's posId), and until now nothing in the
+     * logs could tell a human which affiliation was really hit.
+     *
+     * This is the same source of truth STEP 3's verification already reads — exposed read-only.
+     *
+     * **Contract:** pure read, never throws, never mutates init state. Returns null when the
+     * value cannot be established (SDK disabled for this flavor, table empty, use-case failure);
+     * callers must treat null as "unknown", never as "matches".
+     *
+     * @return posId from the SDK's Init table, or null if it cannot be read
+     */
+    suspend fun readEffectivePosId(): String? {
+        if (!com.jaac.avoqado_tpv.BuildConfig.ENABLE_BLUMON_INIT) {
+            Timber.d("🧪 [InitializationManager] readEffectivePosId skipped (Blumon disabled for this flavor)")
+            return null
+        }
+
+        return try {
+            val initDataResult = getInitDataUseCase.run(GetInitDataParams())
+            if (initDataResult.isLeft) {
+                Timber.w("⚠️ [InitializationManager] readEffectivePosId failed: ${initDataResult.leftValue()}")
+                null
+            } else {
+                initDataResult.rightValue().initData.posId
+            }
+        } catch (e: Throwable) {
+            // Catches UnsatisfiedLinkError / lateinit DAL errors on non-PAX devices too.
+            Timber.w(e, "⚠️ [InitializationManager] readEffectivePosId threw — treating posId as unknown")
+            null
+        }
+    }
+
+    /**
      * Determine if initialization is needed
      */
     private fun shouldInitialize(lastInit: Long?, now: Long): Boolean {

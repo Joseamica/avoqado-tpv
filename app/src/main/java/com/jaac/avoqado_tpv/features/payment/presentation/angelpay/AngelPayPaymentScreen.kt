@@ -152,12 +152,25 @@ fun AngelPayPaymentScreen(
         viewModel.onAngelPaySdkResult(result)
     }
 
+    // 📡 POS→TPV arbitration: tag the source UNCONDITIONALLY, keyed on the values themselves —
+    // exactly the Blumon pattern (PaymentScreen.kt). It used to live inside the
+    // `LaunchedEffect(initialAmount) { if (... && state is Idle) }` block below, which made the
+    // tag hostage to that block's key AND its Idle guard. When the AngelPay SDK Activity holds the
+    // foreground, Android can destroy MainActivity; the NavController then restores the
+    // savedStateHandle but the VM is NEW with null fields (it has no SavedStateHandle — see the
+    // VM's own backing). If the SDK result lands first, state != Idle, the gated block never
+    // re-runs, and the recorded payment carries terminalPaymentRequestId = null while the socket
+    // result is never emitted → the server's arbitration row says CANCELLED/FAILED for a charge
+    // whose money actually moved, and the 🚨 reconcile alert never fires.
+    // Keyed on (paymentSource, socketRequestId) so it re-tags on every recomposition/recreation,
+    // regardless of payment state. The VM-side SavedStateHandle backing is the other half.
+    LaunchedEffect(paymentSource, socketRequestId) {
+        viewModel.setSocketPaymentSource(paymentSource, socketRequestId)
+    }
+
     // Auto-start payment when screen opens with amount
     LaunchedEffect(initialAmount) {
         if (initialAmount != null && state is AngelPayPaymentState.Idle) {
-            // 📡 POS→TPV arbitration: tag the source BEFORE initPayment so even a pre-charge
-            // failure (invalid amount, no open shift) reports back to the caller. No-op when null.
-            viewModel.setSocketPaymentSource(paymentSource, socketRequestId)
             // 📸 Serialized inventory (SIM) proof-of-sale — no-op for a normal payment
             // (all args default off), so this doesn't change the normal charge flow.
             viewModel.setSerializedSaleInfo(

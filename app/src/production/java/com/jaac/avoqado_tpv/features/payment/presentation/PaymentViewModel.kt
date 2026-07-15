@@ -217,11 +217,22 @@ class PaymentViewModel @Inject constructor(
     private val merchantEligibilityRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantEligibilityRepository,
     // 🚦 CriticalNetworkOperationManager - Blocks network failover during active payments
     private val criticalNetworkOperationManager: com.jaac.avoqado_tpv.core.util.CriticalNetworkOperationManager,
+    // 🔒 PaymentStateHolder — publishes the MONEY WINDOW (charge launched, result pending)
+    // so the socket-cancel gate in AppNavigation can refuse POS cancels mid-authorization
+    private val paymentStateHolder: com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder,
     // 🔄 ConnectionEventManager - Broadcasts reconnection events (receipt-on-reconnect + queue sync)
     private val connectionEventManager: ConnectionEventManager,
     // 📱 Application context - for PaymentSyncScheduler.runNow() on reconnect
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
+
+    // 🔒 True while handlePaymentSuccess's recording coroutine is running. PaymentState.Success is
+    // published BEFORE that coroutine starts (card approved, nothing recorded yet), so the state
+    // collector cannot tell "approved and recorded" from "approved, still recording" on its own.
+    // This flag is what makes that distinction: the collector leaves the terminal marked BUSY while
+    // it is true. @Volatile because it is written on the main thread and read from the collector.
+    @Volatile
+    private var recordingInFlight = false
 
     private val _state = MutableStateFlow<PaymentState>(PaymentState.Idle)
     val state: StateFlow<PaymentState> = _state.asStateFlow()
@@ -454,6 +465,80 @@ class PaymentViewModel @Inject constructor(
 
         // 🔄 Receipt-on-reconnect + offline-queue sync on connection restored
         listenToConnectionRestored()
+
+        // 🔒 CLOSE the MONEY WINDOW on any RESOLVED state. The window is OPENED imperatively
+        // at the two authorization call sites (performOnlineAuthorization /
+        // performRefundAuthorization) — never from here.
+        //
+        // ⚠️ Do NOT "simplify" this to `setCharging(s is PaymentState.Processing)`. Processing
+        // is ALSO used for four PRE-CARD setup steps ("Iniciando pago...", "Configurando
+        // sistema de pago...", "Sincronizando orden...", "Configurando cuenta ...") that run
+        // before any card exists. Gating on Processing refuses POS cancels during those
+        // seconds — exactly when a cashier cancels — and the cancel event is then LOST
+        // (SharedFlow, no replay; BluetoothPaymentService already cleared its requestId),
+        // leaving the terminal stranded on "insert card" holding the server slot until the
+        // 300s timeout. Money-safety must not cost a stranded terminal on the common path.
+        //
+        // Keeping the window open across every Processing message between the auth call and a
+        // resolved state means it also covers RECORDING the result — killing the screen there
+        // orphans a charge just as badly as killing it mid-authorization.
+        //
+        // 🚦 SECOND, WIDER signal — "is a charge attempt WORKING?" — for the socket/BLE BUSY guard
+        // in AppNavigation. Deliberately NOT the same predicate as the money window above; the two
+        // answer opposite questions and must never be merged:
+        //   • money window (narrow): only while an authorization can reach the host → refuse a cancel.
+        //   • charge active (wide): any non-RESOLVED state → refuse a SECOND charge.
+        // Using the narrow one for BUSY would let a second POS charge hijack a terminal that is
+        // waiting for a card; using the wide one for CANCEL brings back the stranded-terminal bug.
+        // RESOLVED (= free) is only Idle/Success/Error/PrintError — a receipt or error left on
+        // screen is NOT a busy terminal. Everything else (entering amount, rating, tip, merchant
+        // selection, detecting card, processing, verifying) IS an active attempt.
+        // 🔴 `Success` is handled SPECIALLY here — do NOT fold it into `resolved`.
+        // `_state.value = PaymentState.Success(...)` is published the instant the host approves
+        // the card — BEFORE the payment is recorded (and before the offline-queue fallback, which
+        // is ALSO viewModelScope-bound). Treating Success as "free" told both guards the terminal
+        // was idle while the recording HTTP call was still in flight; a POS charge or cancel then
+        // popped this screen → viewModelScope cancelled → record AND queue both died → money moved
+        // with no record and no alert. Refunds are worse: they have NO offline queue at all.
+        //
+        // ⚠️ CONTRACT — read before adding a Success site: whoever publishes a Success that is
+        // followed by a recording call MUST set `recordingInFlight = true` BEFORE the publish, on
+        // the same thread, and MUST release it in a `finally`. This collector runs on a DIFFERENT
+        // thread than the publisher (`continuePaymentFlow` = launch(Dispatchers.IO)), so claiming
+        // the flag *after* the publish is a race: the collector can observe Success while the flag
+        // is still false, take the `!recordingInFlight` branch below, declare the terminal free
+        // mid-record, and never be woken again to correct it. `@Volatile` gives visibility, NOT
+        // ordering — only claim-before-publish closes that window.
+        // Error/PrintError/Idle are genuinely terminal — no money work follows them.
+        viewModelScope.launch {
+            state.collect { s ->
+                val resolved = s is PaymentState.Idle ||
+                    s is PaymentState.Error ||
+                    s is PaymentState.PrintError
+                if (resolved) {
+                    paymentStateHolder.setChargeAttemptActive(false)
+                    paymentStateHolder.setCharging(false)
+                } else if (s !is PaymentState.Success) {
+                    // Working (entering amount, rating, tip, merchant, detecting card, processing…)
+                    paymentStateHolder.setChargeAttemptActive(true)
+                    // The money window is opened imperatively at the authorization call sites; it
+                    // must NOT be re-opened here, and it closes as soon as we are back at a step
+                    // where no authorization can be in flight.
+                    if (s is PaymentState.EnteringAmount || s is PaymentState.DetectingCard) {
+                        paymentStateHolder.setCharging(false)
+                    }
+                } else if (!recordingInFlight) {
+                    // Success with NO recording coroutine running (cash and the other Success
+                    // sites that never call handlePaymentSuccess — there are ~13 Success sites but
+                    // only 3 record through it). Nothing owns the flags, so close them here or the
+                    // terminal would refuse every future POS charge until an app restart.
+                    paymentStateHolder.setChargeAttemptActive(false)
+                    paymentStateHolder.setCharging(false)
+                }
+                // Success WITH recordingInFlight: leave both flags alone — handlePaymentSuccess's
+                // `finally` owns them until the record (or its offline-queue fallback) is done.
+            }
+        }
     }
 
     /**
@@ -3069,6 +3154,13 @@ class PaymentViewModel @Inject constructor(
 
                 Timber.i("🎉 PAYMENT APPROVED WITH ONLINE AUTHORIZATION!")
 
+                // 🔒 Claim BEFORE publishing Success. The collector runs on another thread: if it
+                // observed Success while this flag was still false it would take the
+                // `!recordingInFlight` branch, declare the terminal free mid-record, and never be
+                // woken again to correct it. Claiming first on this same thread makes that race
+                // impossible — @Volatile alone gives visibility, not ordering.
+                recordingInFlight = true
+
                 // ✅ FIX: Display total (subtotal + tip) in Success screen
                 _state.value = PaymentState.Success(
                     authCode = saleData.authorization ?: "",
@@ -3137,15 +3229,25 @@ class PaymentViewModel @Inject constructor(
         emvTagList: String,
         isContactless: Boolean = false
     ): AuthorizationResult {
+        // 🔒 OPEN the money window: from here on an authorization can reach the host, so a
+        // POS socket-cancel must be refused (it would destroy the coroutine that receives the
+        // bank response → charge approved with nobody recording it). Closed by the init-block
+        // collector on the next RESOLVED state (which is only reached AFTER recording), and
+        // by onCleared() as a backstop.
+        paymentStateHolder.setCharging(true)
         return try {
-            // ✅ CRITICAL FIX: Use posId from current merchant instead of SDK database
-            // Reason: SDK database may have stale posId after merchant switching
-            // The SDK stores posId internally and doesn't update immediately after InsertInitUseCase
+            // ⚠️ This posId is NEVER sent anywhere. `SaleIccParams`/`SaleCtlsParams` have no posId
+            // field — the SDK injects the one it reads from its own Init table
+            // (`InitData.getPosId()`), written by InitializationManager. So the EFFECTIVE
+            // affiliation is whatever that table holds, not what we read here.
+            // This guard only asserts the merchant selection is complete: a merchant without a
+            // posId means its config never loaded, so nothing about the SDK's state can be
+            // trusted → refuse rather than charge blind.
             val currentMerchantAccount = _currentMerchant.value
             val posIdToUse = currentMerchantAccount?.posId
 
             if (posIdToUse == null) {
-                Timber.e("❌ [Payment] No posId available - current merchant: ${currentMerchantAccount?.displayName ?: "null"}")
+                Timber.e("❌ [Payment] Merchant sin posId configurado - current merchant: ${currentMerchantAccount?.displayName ?: "null"}")
                 return AuthorizationResult(
                     response = null,
                     userFriendlyError = "Error de configuración del merchant.\n\n" +
@@ -3153,9 +3255,11 @@ class PaymentViewModel @Inject constructor(
                 )
             }
 
-            Timber.i("✅ [Payment] Using posId from current merchant: $posIdToUse")
-            Timber.i("   Merchant: ${currentMerchantAccount.displayName}")
-            Timber.i("   Serial: ${currentMerchantAccount.serialNumber}")
+            Timber.i(
+                "💳 [Payment] Merchant seleccionado: ${currentMerchantAccount.displayName} " +
+                    "(serial=${currentMerchantAccount.serialNumber}, posId configurado=$posIdToUse — " +
+                    "el SDK usa el posId de su tabla Init, no éste)"
+            )
 
             val saleType = if (isContactless) "SaleCtls (CONTACTLESS)" else "SaleIcc (CHIP)"
             val selectedMsiMonths = sessionSnapshot.selectedMsiMonths
@@ -3240,6 +3344,10 @@ class PaymentViewModel @Inject constructor(
                             merchantIsFallback = runCatching { merchantRepository.isUsingFallback() }.getOrDefault(false),
                             processUptimeMs = android.os.SystemClock.elapsedRealtime(),
                             blumonEnv = com.jaac.avoqado_tpv.BuildConfig.BLUMON_ENV,
+                            // 🔑 La ÚNICA señal autoritativa: el posId real de la tabla Init del SDK.
+                            // Sin esto el snapshot compara dos creencias de la app y puede decir
+                            // merchantMismatch=false mientras el SDK cobra a otro comercio.
+                            effectivePosId = initializationManager.readEffectivePosId(),
                         )
                     }
 
@@ -3439,6 +3547,8 @@ class PaymentViewModel @Inject constructor(
                     merchantIsFallback = runCatching { merchantRepository.isUsingFallback() }.getOrDefault(false),
                     processUptimeMs = android.os.SystemClock.elapsedRealtime(),
                     blumonEnv = com.jaac.avoqado_tpv.BuildConfig.BLUMON_ENV,
+                    // 🔑 Señal autoritativa — ver el otro call site.
+                    effectivePosId = initializationManager.readEffectivePosId(),
                 )
             }
 
@@ -3487,13 +3597,18 @@ class PaymentViewModel @Inject constructor(
         emvTagList: String,
         originalOperationNumber: Int  // 💸 CRITICAL: Blumon operation number from original payment
     ): RefundAuthorizationResult {
+        // 🔒 OPEN the money window — a refund moves money too (see performOnlineAuthorization).
+        paymentStateHolder.setCharging(true)
         return try {
-            // ✅ Use posId from current merchant (same as payment authorization)
+            // ⚠️ This posId is NEVER sent anywhere. `ValidateCancelParams` has ONE field
+            // (`operation`) and `CancelIccParams` has no posId either — the SDK injects the one
+            // it reads from its own Init table (`InitData.getPosId()`). This guard only asserts
+            // the merchant selection is complete: no posId ⇒ config never loaded ⇒ refuse.
             val currentMerchantAccount = _currentMerchant.value
             val posIdToUse = currentMerchantAccount?.posId
 
             if (posIdToUse == null) {
-                Timber.e("❌ [Refund] No posId available - current merchant: ${currentMerchantAccount?.displayName ?: "null"}")
+                Timber.e("❌ [Refund] Merchant sin posId configurado - current merchant: ${currentMerchantAccount?.displayName ?: "null"}")
                 return RefundAuthorizationResult(
                     response = null,
                     userFriendlyError = "Error de configuración del merchant.\n\n" +
@@ -3501,19 +3616,74 @@ class PaymentViewModel @Inject constructor(
                 )
             }
 
-            Timber.i("✅ [Refund] Using posId from current merchant: $posIdToUse")
-            Timber.i("   Merchant: ${currentMerchantAccount.displayName}")
-            Timber.i("   Serial: ${currentMerchantAccount.serialNumber}")
+            // ═══════════════════════════════════════════════════════════════════════════
+            // DIAGNÓSTICO DE AFILIACIÓN REAL (leer esto antes de creerle a cualquier log)
+            // ═══════════════════════════════════════════════════════════════════════════
+            // Como ningún parámetro lleva posId, la ÚNICA forma de saber a qué afiliación pegó
+            // de verdad un reembolso es leer la tabla Init del SDK — que es lo que hace
+            // readEffectivePosId(). Este es el ÚLTIMO punto con evidencia autoritativa antes de
+            // que el dinero se mueva, así que un MISMATCH aquí CORTA el reembolso (fail-closed).
+            //
+            // ⚠️ NO degradar esto a "observabilidad pura" argumentando que el guard de startRefund
+            // ya cortó: entre aquel guard y esta línea corre awaitInitialization(), que puede
+            // re-inicializar el SDK con OTRO posId. Un MISMATCH aquí es exactamente el caso en que
+            // ese guard falló — que es cuando más importa cortar, no cuando menos.
+            //
+            // Asimetría deliberada con isMerchantEffectivelyActive (allá "desconocido" ⇒ desalineado,
+            // acá "NO VERIFICABLE" ⇒ se procede): allá un desconocido cuesta un re-init de 3-5s y es
+            // recuperable; acá bloquearía TODO reembolso cada vez que falle la lectura de la tabla
+            // Init — y no tenemos ni un dato de fierro sobre con qué frecuencia devuelve null.
+            // Revisar esta decisión en cuanto haya QA en dispositivo.
+            val effectivePosId = initializationManager.readEffectivePosId()
+            val activeSerial = com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber
+            val posIdDiagnostic = "posId efectivo (SDK Init) = ${effectivePosId ?: "desconocido"} | " +
+                "esperado (merchant '${currentMerchantAccount.displayName}') = $posIdToUse | " +
+                "serial activo = $activeSerial"
+            val posIdVerdict = when {
+                effectivePosId == null -> "NO VERIFICABLE"
+                effectivePosId == posIdToUse -> "MATCH"
+                else -> "MISMATCH"
+            }
+            when (posIdVerdict) {
+                "MATCH" -> Timber.i("🔍 [Refund] $posIdDiagnostic | MATCH")
+                "NO VERIFICABLE" -> Timber.w(
+                    "🔍 [Refund] $posIdDiagnostic | ⚠️ NO VERIFICABLE (no se pudo leer la tabla Init del SDK)"
+                )
+                else -> Timber.e(
+                    "🚨 [Refund] $posIdDiagnostic | ❌ MISMATCH — el reembolso NO va a pegar a la " +
+                        "afiliación esperada; el dinero sale de otro comercio. ABORTADO."
+                )
+            }
+            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.logPaymentBreadcrumb(
+                "Refund posId check [$posIdVerdict]: $posIdDiagnostic"
+            )
+
+            // 🔒 FAIL-CLOSED: probado que el SDK pegaría a otra afiliación ⇒ no se reembolsa.
+            // La tarjeta ya se leyó, así que el cajero tiene que reintentar — es el precio correcto:
+            // la alternativa es sacar el dinero del comercio equivocado en silencio.
+            if (posIdVerdict == "MISMATCH") {
+                return RefundAuthorizationResult(
+                    response = null,
+                    userFriendlyError = "No se pudo reembolsar: la terminal está configurada con otra " +
+                        "cuenta de cobro (esperada: ${currentMerchantAccount.displayName}).\n\n" +
+                        "El reembolso debe salir de la misma cuenta del pago original. " +
+                        "Vuelva a intentar; si persiste, reporte a soporte."
+                )
+            }
 
             // ═══════════════════════════════════════════════════════════════════════════
             // PASO 0: ValidateCancel preflight (Blumon SDK contract)
             // ═══════════════════════════════════════════════════════════════════════════
             // Blumon backend rejects /retail/present/cancel/{operationID} with TX_024
-            // ("TIEMPO EXCEDIDO PARA REALIZAR CANCELACIÓN") when no prior validate
-            // request was made. Confirmed by inspecting closed-source SDK bytecode +
-            // reproducing the failure on a transaction completed 28 seconds earlier
-            // (sandbox + production, chip + contactless). The error message is misleading
-            // — the actual cause is the missing validate handshake, not a real time window.
+            // ("TIEMPO EXCEDIDO PARA REALIZAR CANCELACIÓN"). The closed-source SDK bytecode
+            // shows a validate→cancel handshake, which is why this preflight exists.
+            //
+            // ⚠️ CAUSA RAÍZ DESCONOCIDA (2026-07-15). Este preflight NO resolvió el TX_024:
+            // con el preflight ya implementado el error SIGUE saliendo, tanto a los 28 segundos
+            // como a los 2.5 minutos de la venta original → el tiempo tampoco es la causa
+            // (falla igual en ambos extremos). Ningún reembolso Blumon se ha verificado exitoso,
+            // ni en sandbox ni en producción. Pendiente de respuesta de Blumon; no sustituir
+            // esto por otra teoría sin evidencia.
             Timber.i("🔍 [ValidateCancel] Preflight for operation: $originalOperationNumber")
             com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.logPaymentBreadcrumb(
                 "ValidateCancel preflight starting for op=$originalOperationNumber"
@@ -3759,6 +3929,8 @@ class PaymentViewModel @Inject constructor(
                 TransResultEnum.RESULT_OFFLINE_APPROVED -> {
                     // Card approved offline (no online authorization needed)
                     Timber.i("🎉 [CONTACTLESS PHASE 3] RESULT_OFFLINE_APPROVED → Payment approved offline!")
+                    // 🔒 Claim before publishing Success — see handlePaymentSuccess.
+                    recordingInFlight = true
                     // ✅ FIX: Display total (subtotal + tip)
                     _state.value = PaymentState.Success(
                         authCode = "OFFLINE_APPROVED",
@@ -3992,6 +4164,9 @@ class PaymentViewModel @Inject constructor(
             Timber.i("ℹ️  [CONTACTLESS ONLINE] Skipping CompleteEmvTrans (not required for contactless)")
 
             Timber.i("🎉 CONTACTLESS PAYMENT APPROVED WITH ONLINE AUTHORIZATION!")
+
+            // 🔒 Claim before publishing Success — see handlePaymentSuccess.
+            recordingInFlight = true
 
             // ✅ FIX: Display total (subtotal + tip)
             _state.value = PaymentState.Success(
@@ -4241,6 +4416,10 @@ class PaymentViewModel @Inject constructor(
                         entryMode = CardDetails.CASH.entryMode.name,
                         isInternational = false,
                         authorizationNumber = "EFECTIVO",
+                        // 📡 Arbitration link (see the card enqueue site): a socket-dispatched
+                        // request settled in CASH still moved money — the replay must close
+                        // the TerminalPaymentRequest row or the slot stays held (UNKNOWN).
+                        terminalPaymentRequestId = _socketRequestId,
                         createdAt = System.currentTimeMillis(),
                         retryCount = 0,
                         lastError = error.message,
@@ -4723,6 +4902,8 @@ class PaymentViewModel @Inject constructor(
                         entryMode = CardDetails.CASH.entryMode.name,
                         isInternational = false,
                         authorizationNumber = "EFECTIVO-CONFIRMADO",
+                        // 📡 Arbitration link (see the card enqueue site) — same reason as above.
+                        terminalPaymentRequestId = _socketRequestId,
                         createdAt = System.currentTimeMillis(),
                         retryCount = 0,
                         lastError = error.message,
@@ -5525,6 +5706,12 @@ class PaymentViewModel @Inject constructor(
         entryMode: CardEntryMode,
         blumonOperationNumber: Int? = null, // 💸 Operation number from SDK for refunds
     ) {
+        // 🔒 Claim the flags BEFORE launching: the caller has ALREADY published
+        // PaymentState.Success (the card is approved — money moved), and the state collector is a
+        // separate coroutine that has not observed it yet. Setting this synchronously here means
+        // that when the collector does wake up on Success it sees `recordingInFlight == true` and
+        // leaves the flags to our `finally`, instead of declaring the terminal free mid-record.
+        recordingInFlight = true
         viewModelScope.launch {
             try {
                 // Extract authorization and reference using reflection (SDK type not directly accessible)
@@ -5736,6 +5923,18 @@ class PaymentViewModel @Inject constructor(
 
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Backend Recording] Unexpected error")
+            } finally {
+                // 🔒 THE money-work is over (recorded, or enqueued, or failed) — only NOW is the
+                // terminal free. Both flags MUST be closed here and NOT by the state collector,
+                // because PaymentState.Success is published BEFORE this function even runs (the
+                // card is already approved at that point but nothing is recorded yet). Closing on
+                // Success would tell the guards "free" while this coroutine is still doing the
+                // recording HTTP call — a POS charge or cancel would then pop this screen, cancel
+                // viewModelScope, and kill BOTH the record AND the offline-queue fallback (which
+                // is itself viewModelScope-bound) → money moved, no record, no queue, no alert.
+                recordingInFlight = false
+                paymentStateHolder.setCharging(false)
+                paymentStateHolder.setChargeAttemptActive(false)
             }
         }
     }
@@ -7475,15 +7674,74 @@ class PaymentViewModel @Inject constructor(
                 // ═══════════════════════════════════════════════════════════════════════════
                 _state.value = PaymentState.Processing("Configurando cuenta de comerciante...")
 
-                // Find merchant account by serial number OR merchantAccountId (from original payment)
-                val targetMerchant = _merchants.value.find {
-                    it.serialNumber == context.blumonSerialNumber ||
-                    it.merchantAccountId == context.merchantAccountId
+                // 🔒 FAIL-CLOSED: nunca reembolsar con merchants de fallback.
+                // MerchantAccount.SANDBOX_ACCOUNT_* son suplentes hardcodeados que se usan cuando
+                // la config del backend nunca cargó. Traen seriales REALES con un posId que puede
+                // pertenecer a otro venue → reembolsar con ellos saca dinero de la afiliación
+                // equivocada. La ruta de VENTA ya se niega a cobrar en fallback
+                // (proceedToMerchantSelection, que además reintenta el fetch); el dinero que SALE
+                // recibe el mismo trato, sin reintento: un reembolso puede esperar a que haya
+                // configuración real.
+                if (merchantRepository.isUsingFallback()) {
+                    Timber.e("❌ [REFUND] Merchants en fallback (la config del backend nunca cargó) — no se reembolsa")
+                    _state.value = PaymentState.Error(
+                        message = "No se pudieron cargar las cuentas de pago reales.\n\n" +
+                                "No es seguro reembolsar con la configuración de respaldo. " +
+                                "Cierra y vuelve a abrir la app, o contacta al administrador.",
+                        canRetry = false
+                    )
+                    return@launch
                 }
+
+                // Resolver el merchant DUEÑO del pago original.
+                // Precedencia ESTRICTA (antes no existía — era un `find { serial == x || id == y }`
+                // que devolvía el PRIMERO en cumplir cualquiera de las dos, dependiendo del orden
+                // de la lista):
+                //   1º merchantAccountId (CUID del backend = identidad real de la cuenta)
+                //   2º serial, SOLO como fallback explícito y logueado
+                // Además NUNCA se compara contra valores en blanco: los merchants AngelPay mapean
+                // a serialNumber = "" (TerminalConfigMapper), así que un blumonSerialNumber vacío
+                // en el contexto hacía match ("" == "") con un merchant que no es el dueño.
+                // Ante 0 o >1 candidatos: ABORTAR, no adivinar.
+                val contextMerchantAccountId = context.merchantAccountId?.takeIf { it.isNotBlank() }
+                val contextSerial = context.blumonSerialNumber.takeIf { it.isNotBlank() }
+
+                val matchesById = contextMerchantAccountId?.let { wanted ->
+                    _merchants.value.filter { !it.merchantAccountId.isNullOrBlank() && it.merchantAccountId == wanted }
+                }.orEmpty()
+
+                val candidates = when {
+                    matchesById.isNotEmpty() -> matchesById
+                    contextSerial != null -> {
+                        Timber.w(
+                            "⚠️ [REFUND] Sin match por merchantAccountId ('${contextMerchantAccountId ?: "vacío"}') — " +
+                                "usando serial '$contextSerial' como fallback explícito"
+                        )
+                        _merchants.value.filter { it.serialNumber.isNotBlank() && it.serialNumber == contextSerial }
+                    }
+                    else -> emptyList()
+                }
+
+                // Ambigüedad = no sabemos de qué cuenta sale el dinero → no adivinar.
+                if (candidates.size > 1) {
+                    Timber.e("❌ [REFUND] Ambiguo: ${candidates.size} merchants coinciden con el pago original")
+                    candidates.forEach { m ->
+                        Timber.e("      - ${m.displayName}: serial='${m.serialNumber}', merchantId='${m.merchantAccountId}', posId='${m.posId}'")
+                    }
+                    _state.value = PaymentState.Error(
+                        message = "No se pudo identificar con certeza la cuenta del comerciante original.\n\n" +
+                                "Hay varias cuentas que coinciden. No es seguro reembolsar. " +
+                                "Contacta al administrador.",
+                        canRetry = false
+                    )
+                    return@launch
+                }
+
+                val targetMerchant = candidates.firstOrNull()
 
                 if (targetMerchant == null) {
                     Timber.e("❌ [REFUND] Merchant not found!")
-                    Timber.e("   🔍 Looking for serial: '${context.blumonSerialNumber}' or merchantId: '${context.merchantAccountId}'")
+                    Timber.e("   🔍 Looking for merchantId: '${context.merchantAccountId}' or serial: '${context.blumonSerialNumber}'")
                     Timber.e("   📋 Available merchants (${_merchants.value.size}):")
                     _merchants.value.forEach { m ->
                         Timber.e("      - ${m.displayName}: serial='${m.serialNumber}', merchantId='${m.merchantAccountId}'")
@@ -7496,10 +7754,16 @@ class PaymentViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Switch SDK to target merchant
-                if (!multiMerchantSDKManager.isMerchantActive(targetMerchant)) {
-                    Timber.i("🔄 [REFUND] Switching to merchant: ${targetMerchant.displayName}")
-                    val switchResult = multiMerchantSDKManager.switchMerchant(targetMerchant)
+                // Switch SDK to target merchant.
+                // ⚠️ isMerchantActive() compara SOLO el serial y NO prueba a qué afiliación va a
+                // pegar el SDK: éste enruta con el posId de su propia tabla Init, y switchMerchant()
+                // hace NO-OP cuando el serial coincide → puede dejar vivo el posId de otro merchant.
+                // Para dinero que SALE verificamos el posId EFECTIVO y forzamos el re-init ante
+                // cualquier duda (incluido "no se pudo leer"): un re-init de más cuesta 3-5s;
+                // un reembolso mal ruteado cuesta dinero del comercio equivocado.
+                if (!multiMerchantSDKManager.isMerchantEffectivelyActive(targetMerchant)) {
+                    Timber.i("🔄 [REFUND] Switching to merchant: ${targetMerchant.displayName} (re-init forzado)")
+                    val switchResult = multiMerchantSDKManager.switchMerchant(targetMerchant, force = true)
 
                     if (switchResult.isFailure) {
                         val error = switchResult.exceptionOrNull()
@@ -7747,6 +8011,11 @@ class PaymentViewModel @Inject constructor(
             Timber.i("   Reference: ${cancelData.reference}")
             Timber.i("   Description: ${cancelData.description}")
 
+            // 🔒 Claim before publishing Success — see handlePaymentSuccess. A refund moves money
+            // too, and unlike a sale it has NO offline queue: if the terminal is declared free
+            // mid-record and a POS charge pops this screen, the refund record is simply lost.
+            recordingInFlight = true
+
             _state.value = PaymentState.Success(
                 authCode = cancelData.reference ?: "", // CancelData uses reference, not authorization
                 amount = getAmountForFlow(),
@@ -7803,6 +8072,8 @@ class PaymentViewModel @Inject constructor(
                 }
                 TransResultEnum.RESULT_OFFLINE_APPROVED -> {
                     Timber.i("🎉 [CONTACTLESS REFUND] Offline approved!")
+                    // 🔒 Claim before publishing Success — see handlePaymentSuccess.
+                    recordingInFlight = true
                     _state.value = PaymentState.Success(
                         authCode = "OFFLINE_APPROVED",
                         amount = getAmountForFlow(),
@@ -7903,6 +8174,9 @@ class PaymentViewModel @Inject constructor(
             Timber.i("🎉 CONTACTLESS REFUND APPROVED!")
             Timber.i("   Reference: ${cancelData.reference}")
             Timber.i("   Description: ${cancelData.description}")
+
+            // 🔒 Claim before publishing Success — see handlePaymentSuccess.
+            recordingInFlight = true
 
             _state.value = PaymentState.Success(
                 authCode = cancelData.reference ?: "", // CancelData uses reference, not authorization
@@ -8063,6 +8337,14 @@ class PaymentViewModel @Inject constructor(
                     refundContextClear = true,
                     refundAttemptIdClear = true
                 )
+            } finally {
+                // 🔒 Release the money window — mirrors handlePaymentSuccess. The caller claimed
+                // `recordingInFlight` before publishing Success, so the state collector left the
+                // flags to us; if we did not close them here the terminal would refuse every
+                // future POS charge until the app restarts.
+                recordingInFlight = false
+                paymentStateHolder.setCharging(false)
+                paymentStateHolder.setChargeAttemptActive(false)
             }
         }
     }
@@ -8070,6 +8352,13 @@ class PaymentViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         criticalNetworkOperationManager.setPaymentFlowInProgress(false)
+        // 🔒 The state collector died with viewModelScope — never leave the singleton flags stuck
+        // true. A stuck money-window flag would refuse every future POS cancel; a stuck
+        // charge-active flag would refuse every future POS CHARGE ("Ya hay un pago en proceso")
+        // until an app restart — the exact bug this signal exists to fix.
+        recordingInFlight = false
+        paymentStateHolder.setCharging(false)
+        paymentStateHolder.setChargeAttemptActive(false)
         // Use standalone scope since viewModelScope is already cancelled
         cleanupOrphanedProofOfSalePhotos(scope = CoroutineScope(kotlinx.coroutines.Dispatchers.IO))
     }

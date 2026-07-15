@@ -179,11 +179,17 @@ object CrashlyticsContext {
      *  - failure=<class>             SaleIccFailure subclass or EXCEPTION:<Throwable>
      *  - initFlag=true|false         `_isInitialized.value` (in-memory)
      *  - ageHours=<long>             Hours since last successful init, -1 if never initialized
-     *  - posIdInit=<string>          Last init's posId (from disk)
-     *  - posIdCurrent=<string>       Currently selected merchant's posId
+     *  - posIdEffective=<string>     🔑 AUTORITATIVO: posId REAL de la tabla Init del SDK
+     *                                (`InitializationManager.readEffectivePosId()`), o `no-leido`.
+     *                                Es el único que dice a qué afiliación pega el dinero.
+     *  - posIdInit=<string>          ⚠️ CREENCIA: last init's posId (from disk)
+     *  - posIdCurrent=<string>       ⚠️ CREENCIA: currently selected merchant's posId
      *  - serialInit=<string>         Last init's serial (from disk)
      *  - serialCurrent=<string>      TerminalConfig.serialNumber (runtime)
-     *  - merchantMismatch=true|false posIdInit ≠ posIdCurrent OR serialInit ≠ serialCurrent
+     *  - merchantMismatch=true|false posIdEffective ≠ posIdCurrent (si hay lectura autoritativa),
+     *                                si no cae a posIdInit ≠ posIdCurrent OR serialInit ≠ serialCurrent
+     *  - mismatchVerificado=true|f   true = merchantMismatch se calculó contra la tabla Init real.
+     *                                false = se calculó comparando dos creencias de la app; NO es prueba.
      *  - fallback=true|false         `MerchantRepository.isUsingFallback()`
      *  - uptimeMin=<long>            SystemClock.elapsedRealtime / 60_000
      *  - env=PROD|SAND               BuildConfig.BLUMON_ENV
@@ -199,6 +205,7 @@ object CrashlyticsContext {
         merchantIsFallback: Boolean,
         processUptimeMs: Long,
         blumonEnv: String,
+        effectivePosId: String? = null,
     ) {
         runCatching {
             val nowMs = System.currentTimeMillis()
@@ -212,22 +219,43 @@ object CrashlyticsContext {
             val posIdCurrent = currentMerchantPosId.orEmpty()
             val serialInit = lastInitSerial.orEmpty()
             val serialCurrent = currentSerial.orEmpty()
-            // merchantMismatch fires when init ran with a different merchant than current.
-            // Catches the case where switchMerchant() no-op'd because the active merchant matched
-            // the cached one but the underlying SDK was initialized with a stale context.
-            val merchantMismatch =
+            // ⚠️ posIdInit y posIdCurrent son AMBOS CREENCIAS de la app: posIdInit sale de disco
+            // (con qué posId la app CREE que inicializó) y posIdCurrent es la SELECCIÓN de merchant.
+            // Ninguno lee la tabla Init del SDK, que es lo único que decide a qué afiliación pega
+            // el dinero. Un log que compara creencia contra creencia puede reportar
+            // merchantMismatch=false mientras el SDK cobra a otro comercio — exactamente el error
+            // que hizo perder 2 días al diagnóstico del TX_024.
+            // Por eso `posIdEffective` (de InitializationManager.readEffectivePosId(), la fila real
+            // de la tabla Init) es la señal AUTORITATIVA: cuando está disponible, es la que manda.
+            val posIdEffective = effectivePosId.orEmpty()
+            // 🔑 UNA sola fuente de verdad para "¿este veredicto se verificó?". Debe ser
+            // EXACTAMENTE la condición de la rama autoritativa de abajo: si se calcula por separado,
+            // las dos se desincronizan y el snapshot acaba jurando "verificado" sobre un veredicto
+            // que en realidad se supuso — el pecado exacto que esta clave existe para matar.
+            val mismatchVerificado = posIdEffective.isNotEmpty() && posIdCurrent.isNotEmpty()
+            val merchantMismatch = if (mismatchVerificado) {
+                // Verdad de fierro: lo que el SDK REALMENTE tiene vs lo que se seleccionó.
+                posIdEffective != posIdCurrent ||
+                    (serialInit.isNotEmpty() && serialCurrent.isNotEmpty() && serialInit != serialCurrent)
+            } else {
+                // Sin lectura autoritativa: se cae al criterio viejo (creencia vs creencia). Es
+                // mejor que nada, pero NO es prueba — leer junto a posIdEffective= para saber si
+                // este valor se pudo verificar o solo se supuso.
                 (posIdInit.isNotEmpty() && posIdCurrent.isNotEmpty() && posIdInit != posIdCurrent) ||
                     (serialInit.isNotEmpty() && serialCurrent.isNotEmpty() && serialInit != serialCurrent)
+            }
 
             val snapshot = buildString {
                 append("failure=").append(failureClass).append(' ')
                 append("initFlag=").append(initFlagInMemory).append(' ')
                 append("ageHours=").append(ageHours).append(' ')
+                append("posIdEffective=").append(posIdEffective.ifEmpty { "no-leido" }).append(' ')
                 append("posIdInit=").append(posIdInit).append(' ')
                 append("posIdCurrent=").append(posIdCurrent).append(' ')
                 append("serialInit=").append(serialInit).append(' ')
                 append("serialCurrent=").append(serialCurrent).append(' ')
                 append("merchantMismatch=").append(merchantMismatch).append(' ')
+                append("mismatchVerificado=").append(mismatchVerificado).append(' ')
                 append("fallback=").append(merchantIsFallback).append(' ')
                 append("uptimeMin=").append(uptimeMinutes).append(' ')
                 append("env=").append(blumonEnv)

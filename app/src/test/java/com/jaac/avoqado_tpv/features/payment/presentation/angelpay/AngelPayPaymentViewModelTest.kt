@@ -189,6 +189,9 @@ class AngelPayPaymentViewModelTest {
         verificationUploadManager = verificationUploadManager,
         observability = observabilityManager,
         paymentQueueRepository = paymentQueueRepository,
+        // Real handle (a plain in-memory map here) — the socket arbitration fields are backed by
+        // it so they survive Activity/VM death while the AngelPay SDK Activity is in front.
+        savedStateHandle = androidx.lifecycle.SavedStateHandle(),
     )
 
     // ----------------------------------------------------------------------
@@ -387,6 +390,101 @@ class AngelPayPaymentViewModelTest {
             vm.viewModelScope.cancel()
         }
     }
+
+    // ----------------------------------------------------------------------
+    // 6b. POS→TPV arbitration link survival (regression, 2026-07-14)
+    //
+    // The link (_socketRequestId) is BOTH the emit target AND the
+    // terminalPaymentRequestId threaded into the recorded payment. It used to be
+    // nulled on emit, which silently broke retry-after-decline: the decline emits
+    // "failed" and nulls the id → cashier retries ON THE TERMINAL → card APPROVED
+    // → the recorded payment carries a null link → the server can never reconcile
+    // the FAILED row to COMPLETED and the 🚨 "money moved despite close" alert
+    // never fires. Now de-duped by a separate flag; the id lives until reset.
+    // ----------------------------------------------------------------------
+
+    @Test
+    fun `socket request id SURVIVES the emit so a retry-after-decline still threads the arbitration link`() =
+        runTest(testDispatcher) {
+            val vm = createViewModel()
+            try {
+                vm.setSocketPaymentSource("SOCKET", "REQ-RETRY")
+                runCurrent()
+
+                // First terminal outcome (a decline) emits exactly once.
+                vm.emitSocketResultForTest(status = "failed", errorMessage = "declinada")
+                runCurrent()
+                verify(exactly = 1) {
+                    socketManager.emitTerminalPaymentResult(
+                        requestId = "REQ-RETRY", status = "failed", any(), any(), any(), any(), any(), any(),
+                    )
+                }
+
+                // 🔑 The id must STILL be there — it is the link the recorded payment carries.
+                assertThat(vm.socketRequestIdForTest()).isEqualTo("REQ-RETRY")
+
+                // A second emit for the SAME request is suppressed (one result per request)…
+                vm.emitSocketResultForTest(status = "success", paymentId = "pay-1")
+                runCurrent()
+                verify(exactly = 0) {
+                    socketManager.emitTerminalPaymentResult(
+                        requestId = "REQ-RETRY", status = "success", any(), any(), any(), any(), any(), any(),
+                    )
+                }
+                // …but the link is STILL intact for the retry's payment record.
+                assertThat(vm.socketRequestIdForTest()).isEqualTo("REQ-RETRY")
+            } finally {
+                vm.viewModelScope.cancel()
+            }
+        }
+
+    @Test
+    fun `re-tagging the SAME request id is a no-op and cannot re-open the emit gate`() =
+        runTest(testDispatcher) {
+            val vm = createViewModel()
+            try {
+                vm.setSocketPaymentSource("SOCKET", "REQ-SAME")
+                vm.emitSocketResultForTest(status = "success", paymentId = "pay-9")
+                runCurrent()
+
+                // The screen re-tags on every recomposition / after an Activity+VM recreation.
+                // Re-tagging the same request must NOT reset the emitted flag (double emit).
+                vm.setSocketPaymentSource("SOCKET", "REQ-SAME")
+                vm.emitSocketResultForTest(status = "success", paymentId = "pay-9")
+                runCurrent()
+
+                verify(exactly = 1) {
+                    socketManager.emitTerminalPaymentResult(
+                        requestId = "REQ-SAME", status = "success", any(), any(), any(), any(), any(), any(),
+                    )
+                }
+            } finally {
+                vm.viewModelScope.cancel()
+            }
+        }
+
+    @Test
+    fun `a NEW request id re-opens the emit gate (next charge must report its own result)`() =
+        runTest(testDispatcher) {
+            val vm = createViewModel()
+            try {
+                vm.setSocketPaymentSource("SOCKET", "REQ-1")
+                vm.emitSocketResultForTest(status = "success", paymentId = "pay-1")
+                runCurrent()
+
+                vm.setSocketPaymentSource("SOCKET", "REQ-2")
+                vm.emitSocketResultForTest(status = "success", paymentId = "pay-2")
+                runCurrent()
+
+                verify(exactly = 1) {
+                    socketManager.emitTerminalPaymentResult(
+                        requestId = "REQ-2", status = "success", any(), any(), any(), any(), any(), any(),
+                    )
+                }
+            } finally {
+                vm.viewModelScope.cancel()
+            }
+        }
 
     // ----------------------------------------------------------------------
     // 7. D308 mid-payment session recovery (AppErrorCatalog, byte-identical in

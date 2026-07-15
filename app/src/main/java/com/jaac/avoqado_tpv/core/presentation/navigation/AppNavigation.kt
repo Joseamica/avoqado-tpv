@@ -42,6 +42,7 @@ import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.activity.ComponentActivity
@@ -72,6 +73,8 @@ import com.jaac.avoqado_tpv.features.authentication.presentation.LoginScreen
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationState
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationViewModel
 import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
+import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreen
 import com.jaac.avoqado_tpv.features.ordering.domain.TableRepository
 import com.jaac.avoqado_tpv.features.ordering.presentation.FloorPlanCanvasScreen
@@ -124,6 +127,112 @@ interface AppNavigationEntryPoint {
     fun socketManager(): com.jaac.avoqado_tpv.core.data.realtime.SocketManager
     fun recordAngelPayRefundUseCase(): com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase
     fun paymentStateProvider(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
+
+    // 🛡️ A5 — AngelPay refunds must resolve the merchant that OWNS the original
+    // payment and authenticate as ITS AngelPay account before refunding.
+    // Resolved LAZILY inside the Nexgo-only refund branch (never on PAX flavors).
+    fun merchantRepository(): com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
+    fun angelPayAuthRepository(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
+}
+
+/**
+ * 🛡️ A5 (2026-07-15) — Make sure the AngelPay SDK session belongs to the merchant
+ * that OWNS the payment we're about to refund, BEFORE any money moves.
+ *
+ * **The bug:** the Nexgo refund branch called `processSdkRefund()` directly — it never
+ * resolved the payment's merchant and never called `switchAccount()` (which until now
+ * was only reachable from `CommandExecutor`). So a refund ran against whatever AngelPay
+ * session happened to be active. On a venue with several AngelPay logins that means the
+ * refund is looked up (and charged back) on the WRONG account. `MerchantAccount
+ * .angelpayUserAccountId` exists exactly for this and is already honored when CHARGING
+ * (`AngelPayPaymentViewModel.selectMerchant`) — this reuses that same pattern.
+ *
+ * **FAIL-CLOSED:** any failure to identify the owner, or to switch to its account,
+ * returns `failure` and the caller must NOT refund. Refunding on an unverified session
+ * is worse than not refunding: the money leaves the wrong merchant's account.
+ *
+ * @return `success` when the SDK is authenticated as the payment's owner (or the switch
+ *   was provably unnecessary); `failure` with a cashier-readable Spanish message otherwise.
+ */
+private suspend fun ensureAngelPayRefundAccount(
+    merchantRepository: MerchantRepository,
+    angelPayAuthRepository: AngelPayAuthRepository,
+    merchantAccountId: String,
+): Result<Unit> {
+    if (merchantAccountId.isBlank()) {
+        return Result.failure(
+            IllegalStateException(
+                "Este pago no tiene merchant asociado — no se puede reembolsar desde la terminal. " +
+                    "No se reembolsó nada. Contacta a soporte.",
+            ),
+        )
+    }
+
+    // Self-heal before failing closed: the merchant list can still be the offline
+    // fallback (network was down at startup). Fallback rows carry no backend CUID,
+    // so the owner lookup below would miss and we'd block a refund that is actually
+    // fine. Same self-heal spirit as `AngelPayAuthRepository.switchAccount`.
+    if (merchantRepository.isUsingFallback()) {
+        Timber.w("🔶 [AngelPay Refund] Merchant list is FALLBACK — refreshing before resolving the payment's owner")
+        merchantRepository.refreshMerchants()
+    }
+
+    val owner = merchantRepository.getActiveMerchants().first().firstOrNull { account ->
+        // Match ONLY on the backend CUID — never OR-ed with serialNumber. AngelPay
+        // merchants map to serialNumber = "" (TerminalConfigMapper), so a serial-based
+        // match would happily bind a blank serial to the WRONG merchant.
+        !account.merchantAccountId.isNullOrBlank() && account.merchantAccountId == merchantAccountId
+    }
+
+    if (owner == null) {
+        Timber.e("🔶 [AngelPay Refund] No merchant matches merchantAccountId=%s — refusing to refund", merchantAccountId)
+        return Result.failure(
+            IllegalStateException(
+                "No se encontró el merchant dueño de este pago. No se reembolsó nada. Contacta a soporte.",
+            ),
+        )
+    }
+
+    val targetAccountId = owner.angelpayUserAccountId
+    if (targetAccountId.isNullOrBlank()) {
+        // Legacy / un-backfilled row. The ORIGINAL sale was itself charged without an
+        // account switch (selectMerchant skips the switch when this is null), so the
+        // active session IS the one that took the money. Mirror the charge path rather
+        // than fail-closed here — otherwise single-AngelPay-account venues, where this
+        // field is routinely null, would lose refunds entirely.
+        Timber.w(
+            "🔶 [AngelPay Refund] Merchant %s has no angelpayUserAccountId — refunding on the current session (legacy single-account behavior)",
+            owner.displayName,
+        )
+        return Result.success(Unit)
+    }
+
+    val currentAccountId = angelPayAuthRepository.getCurrentAngelPayAccountId()
+    if (targetAccountId == currentAccountId) {
+        Timber.i("🔶 [AngelPay Refund] Session already on the payment's owner account ($targetAccountId) — no switch needed")
+        return Result.success(Unit)
+    }
+
+    // NOTE: unlike `selectMerchant` (which skips the switch when currentAccountId is
+    // null), we ALSO switch when there is no live session. For money going OUT we want
+    // the owner's account proven, not assumed via whatever default `ensureAuthenticated`
+    // would pick.
+    Timber.tag("AngelPayAuth").i(
+        "refund: switching AngelPay session $currentAccountId → $targetAccountId (merchant ${owner.displayName})",
+    )
+    return angelPayAuthRepository.switchAccount(targetAccountId).fold(
+        onSuccess = { Result.success(Unit) },
+        onFailure = { err ->
+            Timber.e(err, "🔶 [AngelPay Refund] switchAccount FAILED — refusing to refund on the wrong account")
+            Result.failure(
+                IllegalStateException(
+                    "No se pudo cambiar a la cuenta AngelPay del pago original: " +
+                        "${err.message ?: "error desconocido"}. No se reembolsó nada.",
+                    err,
+                ),
+            )
+        },
+    )
 }
 
 /**
@@ -243,18 +352,25 @@ fun AppNavigation(
             val onBlumonPayment = currentRoute == NavRoute.Payment.route
             val onAngelPayPayment = currentRoute == NavRoute.AngelPayPayment.route
             // Is the terminal GENUINELY busy (a live charge), vs merely SHOWING a resolved
-            // result on the payment route?
-            //  • Blumon/PAX: no shared charge-active signal here → keep the conservative
-            //    route-only guard (reject while on the Payment screen). Unchanged.
-            //  • AngelPay/Nexgo: a decline/success/cancel leaves the result screen up but the
-            //    terminal is FREE. Reject only when a charge is genuinely ACTIVE. This fixes
-            //    the terminal getting stuck ("Ya hay un pago en proceso") after every decline
-            //    until an app restart. The server's per-terminal arbitration already prevents a
-            //    second socket charge from arriving while one is truly in flight (incl. an
-            //    E608-held retry, whose row stays open), so a socket charge only reaches here
-            //    when the slot is free.
-            val terminalGenuinelyBusy = onBlumonPayment ||
-                (onAngelPayPayment && paymentStateProvider.isChargeAttemptActive())
+            // result on the payment route? BOTH rails now publish `isChargeAttemptActive()` from
+            // their own state stream, so neither uses the old route-only guard.
+            //
+            // The route-only guard conflated "a payment screen is open" with "busy": after ANY
+            // resolved outcome the screen stays up (receipt/QR on success, message on decline), so
+            // the terminal REJECTED every subsequent POS charge until a human tapped Home.
+            // Reproduced on hardware 2026-07-14 — Nexgo (after a decline) and PAX (with the
+            // receipt/QR of the previous sale on screen, terminal completely idle).
+            //
+            // Safe to share one flag across both rails: the route is picked by the COMPILE-TIME
+            // constant BuildConfig.ENABLE_PAX_SDK (see isAppToAppPayment/getPaymentRoute), so a
+            // PAX build never opens the AngelPay screen and a Nexgo build never opens the Blumon
+            // one → exactly ONE writer per APK, never a race between the two VMs.
+            //
+            // The server's per-terminal arbitration already prevents a second socket charge from
+            // arriving while one is truly in flight (incl. an E608-held retry, whose row stays
+            // open), so a socket charge only reaches here when the slot is free.
+            val terminalGenuinelyBusy = (onBlumonPayment || onAngelPayPayment) &&
+                paymentStateProvider.isChargeAttemptActive()
             if (terminalGenuinelyBusy) {
                 Timber.w("⚠️ [BLE] Payment already in progress - ignoring amount: ${request.amountCents}")
                 // If this came via socket, send rejection back so iOS doesn't hang
@@ -268,11 +384,13 @@ fun AppNavigation(
                 }
                 return@collect
             }
-            // Stale AngelPay result screen (not busy): the payment screen reads its amount ONCE
-            // on entry (launchSingleTop won't re-fire an in-place charge), so pop back to Home
+            // Stale result screen on EITHER rail (not busy — the guard above already let us
+            // through): the payment screen reads its amount ONCE on entry and `launchSingleTop`
+            // below would REUSE the existing entry without re-firing, so the new charge would
+            // silently inherit the OLD screen (old amount, old socketRequestId). Pop back to Home
             // first and let the code below drive a clean screen. Mirrors the socket-cancel handler.
-            if (onAngelPayPayment) {
-                Timber.i("🔄 [Socket] Stale AngelPay result screen — returning to Home before the new charge")
+            if (onAngelPayPayment || onBlumonPayment) {
+                Timber.i("🔄 [Socket] Stale result screen — returning to Home before the new charge")
                 navController.previousBackStackEntry?.savedStateHandle?.let { clearPaymentArgs(it) }
                 navController.navigate(NavRoute.Home.route) {
                     popUpTo(NavRoute.Home.route) { inclusive = false }
@@ -334,6 +452,21 @@ fun AppNavigation(
         bluetoothPaymentService.paymentCancelRequests.collect { requestId ->
             val currentRoute = navController.currentBackStackEntry?.destination?.route
             if (currentRoute == NavRoute.Payment.route || currentRoute == NavRoute.AngelPayPayment.route) {
+                // 🔒 MONEY WINDOW gate (Square NOT_CANCELABLE / Stripe terminal_reader_busy
+                // pattern): while a charge is launched and its result is pending — Blumon:
+                // PaymentState.Processing (card presented → EMV → online auth → recording);
+                // AngelPay: SDK/app-to-app flow in flight — navigating away would destroy
+                // the component that receives the money result, silently orphaning a
+                // possibly-APPROVED charge. REFUSE the cancel and emit NOTHING to the server:
+                // reporting "cancel failed" would mark the row FAILED and free the terminal
+                // slot with the charge still live. The row stays CANCEL_REQUESTED; either the
+                // result arrives (REST close reconciles → POS sees Pagado, 🚨 alert fires) or
+                // it declines (slot frees normally). Cancel while merely WAITING for a card
+                // (DetectingCard / tip / rating / merchant selection) still works below.
+                if (paymentStateProvider.isCharging()) {
+                    Timber.w("🚫 [Cancel] REFUSED — charge in flight, result handler must survive (requestId=$requestId)")
+                    return@collect
+                }
                 Timber.i("🚫 [Cancel] Cancelling payment (requestId=$requestId) - navigating to Home")
                 // 🧹 CRITICAL: Clear stale payment args from Home's handle BEFORE navigating.
                 // Without this, the next manual Fast Payment inherits paymentSource=SOCKET,
@@ -1852,6 +1985,24 @@ fun AppNavigation(
 
                         isNexgoRefundProcessing = true
                         refundScope.launch {
+                            // 🛡️ A5: FAIL-CLOSED — prove the SDK session belongs to the
+                            // merchant that owns this payment BEFORE any money moves.
+                            val accountReady = ensureAngelPayRefundAccount(
+                                merchantRepository = kioskEntryPoint.merchantRepository(),
+                                angelPayAuthRepository = kioskEntryPoint.angelPayAuthRepository(),
+                                merchantAccountId = merchantAccountId,
+                            )
+                            if (accountReady.isFailure) {
+                                isNexgoRefundProcessing = false
+                                Toast.makeText(
+                                    context,
+                                    accountReady.exceptionOrNull()?.message
+                                        ?: "No se pudo verificar la cuenta AngelPay del pago original. No se reembolsó nada.",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                                return@launch
+                            }
+
                             val result = recordAngelPayRefundUseCase.processSdkRefund(
                                 paymentReference = referenceNumber,
                                 createdAt = createdAt,

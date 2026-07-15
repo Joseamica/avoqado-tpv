@@ -312,6 +312,8 @@ class PaymentViewModelTest {
             merchantRepository = mockk(relaxed = true),
             merchantEligibilityRepository = mockk(relaxed = true),
             criticalNetworkOperationManager = mockCriticalNetworkOperationManager,
+            // Real holder (tiny AtomicBoolean singleton) — lets tests observe the money window
+            paymentStateHolder = com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder(),
             connectionEventManager = mockConnectionEventManager,
             appContext = mockAppContext
         )

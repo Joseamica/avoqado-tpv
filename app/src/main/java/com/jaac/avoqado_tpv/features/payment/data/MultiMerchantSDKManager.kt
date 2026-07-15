@@ -90,13 +90,89 @@ class MultiMerchantSDKManager @Inject constructor(
     fun getCurrentMerchant(): MerchantAccount? = currentMerchant
 
     /**
-     * Check if a merchant account is currently active
+     * Check if a merchant account is currently active — **SERIAL ONLY.**
+     *
+     * ⚠️ **This does NOT prove the SDK will bill this merchant.** It compares the runtime
+     * serial and nothing else. The Blumon SDK routes on the posId it reads from its OWN Init
+     * table (`InitData.getPosId()`), which this check never looks at — so two merchants that
+     * share a serial, or an Init table left holding a previous merchant's posId, both pass here.
+     *
+     * Kept cheap and synchronous **on purpose**: the sale route calls it before every charge,
+     * and making it read the SDK table would add a Room hit (and a false-negative → a 3-5s
+     * re-init) to every cobro. Sales accept that risk; money-OUT paths must not.
+     *
+     * For anything irreversible (refunds), use [isMerchantEffectivelyActive] instead.
      *
      * @param account Merchant account to check
-     * @return true if this account is currently active
+     * @return true if this account's serial matches the runtime serial
      */
     fun isMerchantActive(account: MerchantAccount): Boolean {
         return account.serialNumber == TerminalConfig.serialNumber
+    }
+
+    /**
+     * Check whether the SDK is REALLY aligned with this merchant — serial **and** the posId
+     * the SDK will actually use, read from its own Init table.
+     *
+     * **Why this exists (2026-07-15):** [isMerchantActive] compares only the serial, so
+     * [switchMerchant] can no-op on a serial match and leave the SDK initialized with another
+     * merchant's posId. Nothing downstream can correct that: no use case accepts a posId, the
+     * SDK injects `InitData.getPosId()` itself. For a refund that means the money can leave the
+     * WRONG affiliation with every log claiming success.
+     *
+     * **Criterion** mirrors `CrashlyticsContext.recordSdkStalenessSnapshot`'s `merchantMismatch`
+     * (posIdInit vs posIdCurrent, serialInit vs serialCurrent) with one deliberate difference:
+     * that snapshot is telemetry and reports "no mismatch" when a side is unknown; this is a
+     * **money guard**, so unknown ⇒ **not aligned** (fail-CLOSED). A false negative costs a 3-5s
+     * re-init that re-asserts the correct posId; a false positive costs a misrouted refund.
+     *
+     * **Cost:** one Room read on the SDK's Init table. Only call it on paths that can afford it
+     * (refunds) — never per-cobro. Callers that get `false` should switch with `force = true`,
+     * otherwise [switchMerchant]'s serial-only fast path will no-op right back into the bug.
+     *
+     * @param account Merchant account the caller intends to transact with
+     * @return true only if serial AND effective posId both match; false on any doubt
+     */
+    suspend fun isMerchantEffectivelyActive(account: MerchantAccount): Boolean {
+        if (!isMerchantActive(account)) {
+            Timber.d(
+                "   [MerchantCheck] Serial no coincide: activo='${TerminalConfig.serialNumber}' " +
+                    "esperado='${account.serialNumber}' (${account.displayName})"
+            )
+            return false
+        }
+
+        val expectedPosId = account.posId.orEmpty()
+        if (expectedPosId.isEmpty()) {
+            Timber.w(
+                "⚠️ [MerchantCheck] Merchant '${account.displayName}' no tiene posId configurado — " +
+                    "no se puede verificar la afiliación del SDK (se asume desalineado)"
+            )
+            return false
+        }
+
+        val effectivePosId = initializationManager.readEffectivePosId().orEmpty()
+        if (effectivePosId.isEmpty()) {
+            Timber.w(
+                "⚠️ [MerchantCheck] No se pudo leer el posId efectivo de la tabla Init del SDK — " +
+                    "se asume desalineado (fail-closed)"
+            )
+            return false
+        }
+
+        if (effectivePosId != expectedPosId) {
+            Timber.e(
+                "🚨 [MerchantCheck] MISMATCH de afiliación: posId efectivo (SDK Init)='$effectivePosId' " +
+                    "≠ esperado='$expectedPosId' (merchant '${account.displayName}', serial '${account.serialNumber}')"
+            )
+            return false
+        }
+
+        Timber.i(
+            "✅ [MerchantCheck] SDK alineado con '${account.displayName}' " +
+                "(posId=$effectivePosId, serial=${account.serialNumber})"
+        )
+        return true
     }
 
     /**
@@ -123,18 +199,25 @@ class MultiMerchantSDKManager @Inject constructor(
      * - Generic error: Returns failure with exception message
      *
      * @param targetAccount Merchant account to switch to
+     * @param force Skip the "already on this merchant" fast path and always re-initialize.
+     *              Pass true when serial equality is not enough proof — e.g. after
+     *              [isMerchantEffectivelyActive] returned false because the SDK's Init table
+     *              holds another merchant's posId. Without it, the serial-only fast path below
+     *              no-ops and the stale posId survives the "switch".
      * @return Result.success if switch succeeded, Result.failure if error occurred
      */
-    suspend fun switchMerchant(targetAccount: MerchantAccount): Result<Unit> {
+    suspend fun switchMerchant(targetAccount: MerchantAccount, force: Boolean = false): Result<Unit> {
         return runWithMerchantSwitchGuard {
             switchMutex.withLock {
                 try {
-                    Timber.i("🔄 [MultiMerchantSDKManager] Switching to merchant: ${targetAccount.displayName}")
+                    Timber.i("🔄 [MultiMerchantSDKManager] Switching to merchant: ${targetAccount.displayName}${if (force) " (forced re-init)" else ""}")
                     Timber.d("   Current serial: ${TerminalConfig.serialNumber}")
                     Timber.d("   Target serial: ${targetAccount.serialNumber}")
 
                     // Step 1: Check if already on target merchant (optimization)
-                    if (isMerchantActive(targetAccount)) {
+                    // ⚠️ Serial-only — see isMerchantActive. Callers needing posId-level certainty
+                    // pass force=true so this cannot silently no-op on a stale SDK Init table.
+                    if (!force && isMerchantActive(targetAccount)) {
                         Timber.d("   ✅ Already on target merchant - skipping switch")
                         currentMerchant = targetAccount
                         return@withLock Result.success(Unit)

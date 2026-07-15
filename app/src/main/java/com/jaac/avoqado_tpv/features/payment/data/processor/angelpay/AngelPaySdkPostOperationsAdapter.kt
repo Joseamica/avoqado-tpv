@@ -161,9 +161,17 @@ class AngelPaySdkPostOperationsAdapter @Inject constructor(
 
     override fun printTicket(transaction: UnifiedTransaction): Result<Unit> {
         return try {
-            AngelPaySDK.printTicket(ticketBuilder.buildHistoryTicket(transaction))
-            Result.success(Unit)
+            // 🖨️ A6 (SDK 1.0.16): `printTicket` RETURNS `kotlin.Result` — it no longer
+            // throws on a failed print (verified with javap: the signature is mangled
+            // to `printTicket-IoAF18A`, which only happens for a Result return type).
+            // We used to discard that value and hardcode `Result.success(Unit)`, which
+            // made the catch below dead code for SDK-side failures: a print that never
+            // came out still reported success to the caller. Propagate the SDK's own
+            // failure instead of inventing a success.
+            AngelPaySDK.printTicket(ticketBuilder.buildHistoryTicket(transaction)).map { }
         } catch (e: Exception) {
+            // Still reachable: the ticket BUILDER can throw, and the SDK may throw
+            // outside its Result envelope (e.g. missing printer permission).
             Result.failure(e)
         }
     }

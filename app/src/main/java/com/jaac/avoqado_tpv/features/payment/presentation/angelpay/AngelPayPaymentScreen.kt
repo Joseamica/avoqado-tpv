@@ -7,13 +7,17 @@ import com.angelpay.angelpaysdk.AngelPayPaymentContract
 import com.angelpay.angelpaysdk.models.PaymentResult
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
@@ -636,56 +640,65 @@ private fun ErrorContent(
     onGoBack: () -> Unit,
     onOpenShift: () -> Unit,
 ) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-        modifier = Modifier.padding(32.dp),
-    ) {
-        Icon(
-            imageVector = Icons.Default.Warning,
-            contentDescription = null,
-            tint = MaterialTheme.avoqadoColors.statusError,
-            modifier = Modifier.size(64.dp),
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = "Error en el pago",
-            style = MaterialTheme.typography.titleLarge,
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            text = state.message,
-            style = MaterialTheme.typography.bodyLarge,
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(modifier = Modifier.height(24.dp))
-
-        if (state.showOpenShiftButton) {
-            Button(
-                onClick = onOpenShift,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Abrir Turno")
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-        }
-
-        if (state.canRetry) {
-            Button(
-                onClick = onRetry,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("Reintentar")
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-        }
-
-        OutlinedButton(
-            onClick = onGoBack,
-            modifier = Modifier.fillMaxWidth(),
+    // 🩹 Same fix as Blumon's PaymentErrorContent — center when short, scroll when the
+    // AngelPay SDK error message + up to 3 stacked buttons don't fit the viewport.
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val minContentHeight = maxHeight
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .heightIn(min = minContentHeight)
+                .padding(32.dp),
         ) {
-            Text("Regresar")
+            Icon(
+                imageVector = Icons.Default.Warning,
+                contentDescription = null,
+                tint = MaterialTheme.avoqadoColors.statusError,
+                modifier = Modifier.size(64.dp),
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Error en el pago",
+                style = MaterialTheme.typography.titleLarge,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = state.message,
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+
+            if (state.showOpenShiftButton) {
+                Button(
+                    onClick = onOpenShift,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Abrir Turno")
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            if (state.canRetry) {
+                Button(
+                    onClick = onRetry,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Reintentar")
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            OutlinedButton(
+                onClick = onGoBack,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Regresar")
+            }
         }
     }
 }

@@ -3695,7 +3695,11 @@ class PaymentViewModel @Inject constructor(
                 }
                 TransResultEnum.RESULT_OFFLINE_APPROVED -> {
                     Timber.i("🎉 [CONTACTLESS REFUND] Offline approved!")
-                    // 🔒 Claim before publishing Success — see handlePaymentSuccess.
+                    // 🔒 The card chip approved this without calling the bank — money already
+                    // moved. Open the SAME money window as an online authorization, or a POS
+                    // cancel during the backend recording call would go unblocked and the refund
+                    // record would be lost (this one has NO offline queue — see handleRefundSuccess).
+                    paymentStateHolder.setCharging(true)
                     recordingInFlight = true
                     _state.value = PaymentState.Success(
                         authCode = "OFFLINE_APPROVED",
@@ -4539,7 +4543,11 @@ class PaymentViewModel @Inject constructor(
                 TransResultEnum.RESULT_OFFLINE_APPROVED -> {
                     // Card approved offline (no online authorization needed)
                     Timber.i("🎉 [CONTACTLESS PHASE 3] RESULT_OFFLINE_APPROVED → Payment approved offline!")
-                    // 🔒 Claim before publishing Success — see handlePaymentSuccess.
+                    // 🔒 The card chip approved this without calling the bank — money already
+                    // moved. Open the SAME money window as an online authorization, or a POS
+                    // cancel during the backend recording call would go unblocked and the sale
+                    // would be lost mid-record.
+                    paymentStateHolder.setCharging(true)
                     recordingInFlight = true
                     // ✅ FIX: Display total (subtotal + tip)
                     _state.value = PaymentState.Success(

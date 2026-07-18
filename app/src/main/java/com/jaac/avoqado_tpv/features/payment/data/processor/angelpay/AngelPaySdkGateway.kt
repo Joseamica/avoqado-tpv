@@ -11,6 +11,8 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Singleton
 class AngelPaySdkGateway @Inject constructor() {
@@ -188,16 +190,24 @@ class AngelPaySdkGateway @Inject constructor() {
     // so the AngelPayAuthRepository (Task 30) can drive the retry / re-auth state machine.
 
     /** Returns the merchants the authenticated user can switch between (with `isActive` flag). */
-    suspend fun getUserMerchants(): Result<List<MerchantSummary>> {
-        return AngelPaySDK.getUserMerchants().fold(
+    suspend fun getUserMerchants(): Result<List<MerchantSummary>> = withContext(Dispatchers.IO) {
+        // Same rationale as `switchMerchant` — keep the SDK's blocking work off the main thread.
+        AngelPaySDK.getUserMerchants().fold(
             onSuccess = { Result.success(it) },
             onFailure = { Result.failure(mapSdkError(it)) },
         )
     }
 
     /** Switches the active merchant without re-authenticating (SDK fetches new JWT internally). */
-    suspend fun switchMerchant(merchantId: Int): Result<Unit> {
-        return AngelPaySDK.switchMerchant(merchantId).fold(
+    suspend fun switchMerchant(merchantId: Int): Result<Unit> = withContext(Dispatchers.IO) {
+        // ⚠️ MUST run off the main thread. `AngelPaySDK.switchMerchant` internally does
+        // blocking Nexgo device-info reads (getModel / serial CSN·DSN via SPI / firmware)
+        // BEFORE its HTTP calls, and its ktor client resumes on Dispatchers.Unconfined —
+        // so when this was invoked from `viewModelScope` (Main), the synchronous reads froze
+        // the UI thread ~8.5s at startup (503 skipped frames) and tripped the caller's 8s
+        // `withTimeoutOrNull` watchdog with a *false* SwitchTimeoutError, even though the SDK
+        // switch actually completed in the background. (Nexgo N86, 2026-07-15.)
+        AngelPaySDK.switchMerchant(merchantId).fold(
             onSuccess = { Result.success(Unit) },
             onFailure = { Result.failure(mapSdkError(it)) },
         )
@@ -211,8 +221,9 @@ class AngelPaySdkGateway @Inject constructor() {
      * Wraps `AngelPaySDK.selectMerchant` with the same error categorization as
      * `getUserMerchants`/`switchMerchant` so Task 30's AuthRepository can react uniformly.
      */
-    suspend fun selectMerchant(merchantId: Int, temporaryToken: String): Result<Unit> {
-        return AngelPaySDK.selectMerchant(
+    suspend fun selectMerchant(merchantId: Int, temporaryToken: String): Result<Unit> = withContext(Dispatchers.IO) {
+        // Same rationale as `switchMerchant` — keep the SDK's blocking work off the main thread.
+        AngelPaySDK.selectMerchant(
             merchantId = merchantId,
             temporaryToken = temporaryToken,
         ).fold(
@@ -235,9 +246,11 @@ class AngelPaySdkGateway @Inject constructor() {
     suspend fun authenticateSimple(
         email: String,
         pin: String,
-    ): Result<AuthenticateSimpleResult> {
+    ): Result<AuthenticateSimpleResult> = withContext(Dispatchers.IO) {
+        // Same rationale as `switchMerchant`: authenticateSimple does the SDK's blocking
+        // device-info reads + `initKeys`/post-auth HTTP; keep it off the main thread.
         timber.log.Timber.tag("AngelPaySdkGateway").i("AngelPaySDK.authenticateSimple(email=$email) — calling SDK")
-        return AngelPaySDK.authenticateSimple(email = email, password = pin).fold(
+        AngelPaySDK.authenticateSimple(email = email, password = pin).fold(
             onSuccess = {
                 timber.log.Timber.tag("AngelPaySdkGateway").i("SDK authenticateSimple → Success (type=${it::class.simpleName})")
                 Result.success(it)

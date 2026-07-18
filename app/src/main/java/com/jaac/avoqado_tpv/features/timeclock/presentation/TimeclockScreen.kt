@@ -942,16 +942,24 @@ private fun PhotoConfirmationScreen(
 
 @Composable
 private fun ErrorContent(message: String, onRetry: (() -> Unit)?, onBack: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(message, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(24.dp))
-        if (onRetry != null) Button(onClick = onRetry) { Text("Reintentar") }
-        Spacer(Modifier.height(12.dp))
-        OutlinedButton(onClick = onBack) { Text("Volver") }
+    // 🩹 Center when short, scroll when a long error message pushes the buttons off-screen.
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val minContentHeight = maxHeight
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .heightIn(min = minContentHeight)
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(message, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(24.dp))
+            if (onRetry != null) Button(onClick = onRetry) { Text("Reintentar") }
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(onClick = onBack) { Text("Volver") }
+        }
     }
 }
 

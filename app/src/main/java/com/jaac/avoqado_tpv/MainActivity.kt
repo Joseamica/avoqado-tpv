@@ -14,6 +14,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -742,9 +744,15 @@ private fun PermissionDeniedScreen(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
+        // 🩹 Center when short, scroll when the explanation card + 2 stacked buttons
+        // don't fit the viewport — this screen has no recovery path if a button clips.
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val minContentHeight = maxHeight
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .heightIn(min = minContentHeight)
                 .padding(32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
@@ -816,6 +824,7 @@ private fun PermissionDeniedScreen(
             ) {
                 Text("Solicitar Nuevamente")
             }
+        }
         }
     }
 }

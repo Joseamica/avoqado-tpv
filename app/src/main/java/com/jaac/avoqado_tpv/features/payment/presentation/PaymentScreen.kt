@@ -2285,82 +2285,95 @@ private fun PaymentErrorContent(
     onCashFallback: () -> Unit = {},
     onCancel: () -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+    // 🩹 Center the card when it fits, but SCROLL when it doesn't. On the short
+    // PAX A910S (~640dp) a long error message + the two action buttons — worse
+    // still with the global "Sin conexión" banner stealing top space — used to
+    // overflow a centered, non-scrollable Column and clip the bottom button(s)
+    // ("Reintentar"/"Cancelar") off-screen. heightIn(min = maxHeight) keeps the
+    // vertical centering for short errors while allowing scroll for tall ones.
+    BoxWithConstraints(
+        modifier = Modifier.fillMaxSize()
     ) {
-        AvoqadoCard(
-            modifier = Modifier.fillMaxWidth()
+        val minContentHeight = maxHeight
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .heightIn(min = minContentHeight)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            Column(
-                modifier = Modifier.padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+            AvoqadoCard(
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Text(
-                    text = "❌",
-                    style = MaterialTheme.typography.displayLarge,
-                    color = MaterialTheme.colorScheme.error
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Text(
-                    text = if (isRefund) "Error en el Reembolso" else "Error en el Pago",
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Center
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Text(
-                    text = message,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
-                )
-
-                Spacer(modifier = Modifier.height(32.dp))
-
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    modifier = Modifier.padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // ⭐ SHIFT VALIDATION: Show "Abrir Turno" button when no shift is open
-                    if (showOpenShiftButton) {
+                    Text(
+                        text = "❌",
+                        style = MaterialTheme.typography.displayLarge,
+                        color = MaterialTheme.colorScheme.error
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = if (isRefund) "Error en el Reembolso" else "Error en el Pago",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(32.dp))
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        // ⭐ SHIFT VALIDATION: Show "Abrir Turno" button when no shift is open
+                        if (showOpenShiftButton) {
+                            AvoqadoButton(
+                                text = "Abrir Turno",
+                                onClick = onOpenShift,
+                                fullWidth = true
+                            )
+                        } else {
+                            if (showCashFallback) {
+                                AvoqadoButton(
+                                    text = "Cobrar en Efectivo",
+                                    onClick = onCashFallback,
+                                    fullWidth = true
+                                )
+                            }
+
+                            if (canRetry) {
+                                AvoqadoButton(
+                                    text = "Reintentar",
+                                    onClick = onRetry,
+                                    fullWidth = true
+                                )
+                            }
+                        }
+
                         AvoqadoButton(
-                            text = "Abrir Turno",
-                            onClick = onOpenShift,
+                            text = "Cancelar",
+                            onClick = onCancel,
                             fullWidth = true
                         )
-                    } else {
-                        if (showCashFallback) {
-                            AvoqadoButton(
-                                text = "Cobrar en Efectivo",
-                                onClick = onCashFallback,
-                                fullWidth = true
-                            )
-                        }
-
-                        if (canRetry) {
-                            AvoqadoButton(
-                                text = "Reintentar",
-                                onClick = onRetry,
-                                fullWidth = true
-                            )
-                        }
                     }
-
-                    AvoqadoButton(
-                        text = "Cancelar",
-                        onClick = onCancel,
-                        fullWidth = true
-                    )
                 }
             }
         }

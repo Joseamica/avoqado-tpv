@@ -79,6 +79,13 @@ class PaymentViewModelTest {
     // MOCKS requiring explicit configuration
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Real holder (a pair of AtomicBooleans) hoisted to a field so tests can OBSERVE the two
+     * money signals instead of just satisfying the constructor. Recreated per test in setup().
+     */
+    private lateinit var paymentStateHolder:
+        com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder
+
     private lateinit var mockInitializationManager: InitializationManager
     private lateinit var mockMultiMerchantSDKManager: MultiMerchantSDKManager
     private lateinit var mockTransProcessRepository: TransProcessRepository
@@ -141,6 +148,9 @@ class PaymentViewModelTest {
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
+        // Fresh per test — it is a @Singleton in prod, so leaking state across tests would hide bugs.
+        paymentStateHolder =
+            com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder()
         mockkObject(TerminalConfig)
         every { TerminalConfig.serialNumber } returns "TEST-SERIAL"
         every { TerminalConfig.brand } returns "PAX"
@@ -313,7 +323,7 @@ class PaymentViewModelTest {
             merchantEligibilityRepository = mockk(relaxed = true),
             criticalNetworkOperationManager = mockCriticalNetworkOperationManager,
             // Real holder (tiny AtomicBoolean singleton) — lets tests observe the money window
-            paymentStateHolder = com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder(),
+            paymentStateHolder = paymentStateHolder,
             connectionEventManager = mockConnectionEventManager,
             appContext = mockAppContext
         )
@@ -954,6 +964,54 @@ class PaymentViewModelTest {
         } finally {
             viewModel.viewModelScope.cancel()
             unmockkObject(CrashlyticsContext)
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // LAS DOS SEÑALES DE DINERO (isCharging / isChargeAttemptActive)
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Contestan preguntas OPUESTAS y NO deben unificarse:
+    //   · isCharging()            → ventana de dinero (angosta). Gatea el CANCEL del POS.
+    //   · isChargeAttemptActive() → "trabajando" (ancha). Gatea el COBRO del POS.
+    // Confundirlas ya causó dos bugs reales: la angosta usada para "ocupado" deja que un 2º POS
+    // secuestre una terminal esperando tarjeta; la ancha usada para "cancel" varaba la terminal.
+
+    @Test
+    fun `las dos senales de dinero son independientes - abrir la ventana NO marca ocupado`() {
+        // El miedo concreto: que abrir la ventana de dinero en un cobro aprobado por la tarjeta
+        // (sin pasar por el banco) acabe bloqueando cobros. NO puede: son AtomicBooleans distintos
+        // y AppNavigation los lee por separado (isCharging → cancel, isChargeAttemptActive → cobro).
+        paymentStateHolder.setCharging(true)
+
+        assertThat(paymentStateHolder.isCharging()).isTrue()
+        assertThat(paymentStateHolder.isChargeAttemptActive()).isFalse()
+    }
+
+    @Test
+    fun `las dos senales de dinero son independientes - marcar ocupado NO abre la ventana`() {
+        paymentStateHolder.setChargeAttemptActive(true)
+
+        assertThat(paymentStateHolder.isChargeAttemptActive()).isTrue()
+        assertThat(paymentStateHolder.isCharging()).isFalse()
+    }
+
+    @Test
+    fun `el VM arranca con las dos banderas apagadas - sin residuo de un cobro anterior`() = runTest {
+        paymentStateHolder.setCharging(true)
+        paymentStateHolder.setChargeAttemptActive(true)
+
+        val viewModel = createViewModel()
+        try {
+            // El colector del init publica desde el estado real (Idle) y limpia el residuo:
+            // sin esto, un holder @Singleton contaminado por un cobro anterior dejaría la
+            // terminal rechazando cancels/cobros para siempre.
+            testScheduler.advanceUntilIdle()
+
+            assertThat(viewModel.state.value).isEqualTo(PaymentState.Idle)
+            assertThat(paymentStateHolder.isCharging()).isFalse()
+            assertThat(paymentStateHolder.isChargeAttemptActive()).isFalse()
+        } finally {
+            viewModel.viewModelScope.cancel()
         }
     }
 }

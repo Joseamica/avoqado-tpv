@@ -3,7 +3,9 @@ package com.jaac.avoqado_tpv.features.payments.presentation
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Print
@@ -789,19 +791,25 @@ private fun ErrorContent(
     message: String,
     onRetry: () -> Unit
 ) {
-    Box(
-        modifier = modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
+    // 🩹 Center when short, scroll when a long error message pushes the button off-screen.
+    BoxWithConstraints(
+        modifier = modifier.fillMaxSize()
     ) {
+        val minContentHeight = maxHeight
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .heightIn(min = minContentHeight)
         ) {
             Text(
                 text = message,
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.error
             )
+            Spacer(modifier = Modifier.height(16.dp))
             Button(onClick = onRetry) {
                 Text("Reintentar")
             }

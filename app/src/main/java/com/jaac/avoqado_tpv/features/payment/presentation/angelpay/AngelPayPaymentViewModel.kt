@@ -22,6 +22,8 @@ import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthReposito
 import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
 import com.jaac.avoqado_tpv.features.payment.data.dto.SendReceiptRequest
 import com.jaac.avoqado_tpv.features.payment.data.dto.SendWhatsAppReceiptRequest
+import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity
+import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthState
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCredentials
@@ -102,6 +104,9 @@ class AngelPayPaymentViewModel @Inject constructor(
     private val verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager,
     private val observability: ObservabilityManager,
     private val paymentQueueRepository: PaymentQueueRepository,
+    // 📒 PaymentAttemptLedger — La Libreta write-ahead: observational marks only, never
+    // blocks a charge (every ledger entry point is runCatching + venue-flag gated).
+    private val paymentAttemptLedger: PaymentAttemptLedger,
     // 📡 Survives process/Activity death while the AngelPay SDK Activity holds the foreground —
     // see [_paymentSource] / [_socketRequestId]. Hilt provides this automatically to @HiltViewModel.
     private val savedStateHandle: SavedStateHandle,
@@ -425,6 +430,23 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var currentPaymentAttemptId: String? = null
     // Consumes external payment callback only once per launched attempt.
     private var consumedResultAttemptId: String? = null
+    // 📒 [Libreta] Fingerprint of the last attempt THIS ViewModel instance successfully opened
+    // a ledger row for: attemptId + the EXACT cents it was opened with. AngelPay deliberately
+    // REUSES the attemptId on retry-after-decline (see [retryAfterError]) and on the SDK→
+    // app-to-app in-session fallback — both with IDENTICAL amounts — and without this guard
+    // every one of those legit reuses would trip the ledger's PK-collision "REUSE" alarm.
+    // The guard is AMOUNT-AWARE on purpose: a stale attemptId reused for DIFFERENT money
+    // (state contamination — initPayment overwrites pendingAmount/pendingTip while
+    // ensurePaymentAttemptId only generates when null) is exactly the dedup-swallowed
+    // double-charge signal spec §6 reserves the alarm for, so ANY cent mismatch falls through
+    // to openAttempt and lets the collision alarm fire. Armed ONLY when openAttempt reported
+    // success — a collided/failed open must never arm the suppression. Purely ledger
+    // bookkeeping; NOT cleared in resetPayment() on purpose — a new attempt generates a fresh
+    // UUID, so the comparison self-corrects, and a post-process-death VM starts at null and
+    // opens normally.
+    private var ledgerOpenedAttemptId: String? = null
+    private var ledgerOpenedAmountCents: Long? = null
+    private var ledgerOpenedTipCents: Long? = null
 
     // 🔐 D308 mid-payment session recovery (2026-07-03). The SDK can report
     // isAuthenticated()=true locally while the server-side session is dead, so the
@@ -529,6 +551,10 @@ class AngelPayPaymentViewModel @Inject constructor(
 
         val enqueueResult = paymentQueueRepository.enqueue(queued)
         return if (enqueueResult.isSuccess) {
+            // 📒 [Libreta] ENTREGADA_A_COLA — pending_payments owns the money now (its own
+            // idempotency + retry); the ledger row rests. For the cash path (no ledger row
+            // is opened for cash) this is a CAS no-match no-op inside the ledger.
+            context.idempotencyKey?.let { paymentAttemptLedger.markDeliveredToQueue(it) }
             Timber.i(
                 "💾 [AngelPay] Payment queued for offline sync | ref=%s order=%s",
                 queued.referenceNumber,
@@ -572,6 +598,61 @@ class AngelPayPaymentViewModel @Inject constructor(
         currentPaymentAttemptId = generated
         Timber.i("🛡️ [AngelPay Idempotency] Generated new paymentAttemptId=$generated")
         return generated
+    }
+
+    /**
+     * 📒 [Libreta] Write-ahead before launching the AngelPay SDK/intent. The SDK returns
+     * exactly once — if the process dies while it runs, this row + integratorReference
+     * (== attemptId) are the only correlation evidence that a charge was in flight.
+     *
+     * Suspend on purpose: both launch sites await it, so the row is COMMITTED before the
+     * launch trigger (the `Launching*` state emission the Screen reacts to) can fire —
+     * the pre-SDK barrier (spec §4.4). A ledger failure never blocks the charge: the
+     * ledger's entry points are runCatching inside, and this outer runCatching also
+     * covers argument building (cents conversion, venue lookup).
+     *
+     * Single helper for both launch paths instead of the brief's duplicated block —
+     * identical-by-construction beats identical-by-copy in a single-variant main/ file.
+     *
+     * Re-open suppression is AMOUNT-AWARE: only an attempt already opened with the SAME
+     * attemptId AND the SAME amount/tip cents skips [PaymentAttemptLedger.openAttempt]
+     * (the legit reuse shapes — retry-after-decline, SDK→app-to-app fallback — never change
+     * the money). A cent mismatch on a reused id falls through so the ledger's PK-collision
+     * "REUSE" alarm fires — see [ledgerOpenedAttemptId] for the full rationale.
+     */
+    @VisibleForTesting
+    internal suspend fun openLedgerAttemptAndMarkAuthorizing(paymentAttemptId: String) {
+        runCatching {
+            val venueIdForLedger = cachedVenueId ?: authRepository.getVenueId() ?: secureStorage.getVenueId()
+            if (venueIdForLedger != null) {
+                val amountCents = pendingAmount.movePointRight(2).setScale(0, RoundingMode.HALF_UP).longValueExact()
+                val tipCents = pendingTip.movePointRight(2).setScale(0, RoundingMode.HALF_UP).longValueExact()
+                val alreadyOpenedForSameMoney = ledgerOpenedAttemptId == paymentAttemptId &&
+                    ledgerOpenedAmountCents == amountCents &&
+                    ledgerOpenedTipCents == tipCents
+                if (!alreadyOpenedForSameMoney) {
+                    val opened = paymentAttemptLedger.openAttempt(
+                        attemptId = paymentAttemptId,
+                        venueId = venueIdForLedger,
+                        processor = PaymentAttemptEntity.PROCESSOR_ANGELPAY,
+                        amountCents = amountCents,
+                        tipCents = tipCents,
+                        recordingRoute = if (pendingOrderId != null) PaymentAttemptEntity.ROUTE_ORDER else PaymentAttemptEntity.ROUTE_FAST,
+                        // Hand-built snapshot: unlike Blumon, AngelPay has no pre-charge
+                        // PaymentContext object to Gson-serialize (it is built AFTER the SDK
+                        // returns, in recordCardPayment) — so the known-before-charge business
+                        // facts are captured directly.
+                        contextJson = "{\"schema\":1,\"processor\":\"ANGELPAY\",\"orderId\":${pendingOrderId?.let { "\"$it\"" } ?: "null"},\"orderNumber\":${pendingOrderNumber?.let { "\"$it\"" } ?: "null"}}"
+                    )
+                    if (opened) {
+                        ledgerOpenedAttemptId = paymentAttemptId
+                        ledgerOpenedAmountCents = amountCents
+                        ledgerOpenedTipCents = tipCents
+                    }
+                }
+                paymentAttemptLedger.markAuthorizing(paymentAttemptId)
+            }
+        }.onFailure { Timber.e(it, "📒 [Libreta] pre-launch write failed — charge continues unledgered") }
     }
 
     private fun isSdkFlowEnabled(): Boolean {
@@ -1216,6 +1297,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         val staffName = secureStorage.getStaffName()
         val paymentAttemptId = ensurePaymentAttemptId()
 
+        // 📒 [Libreta] Pre-SDK barrier — committed before auth/validation/launch below.
+        openLedgerAttemptAndMarkAuthorizing(paymentAttemptId)
+
         // Task 31 — delegate auth orchestration to AngelPayAuthRepository so the
         // D4 resolver (backend-preferred + BuildConfig fallback), retry/backoff,
         // state machine, and post-auth config validation all live in one place.
@@ -1335,9 +1419,19 @@ class AngelPayPaymentViewModel @Inject constructor(
         )
     }
 
-    private fun startAppToAppCardPayment(credentials: AngelPayCredentials) {
+    // 📒 [Libreta] `suspend` since 2026-07-18: the write-ahead row must be COMMITTED before
+    // the launch trigger (`_state.value = LaunchingAngelPay`, which the Screen reacts to by
+    // firing the intent) — same write→launch relocation Task 4 applied to Blumon. Every call
+    // site already runs inside a coroutine (startCardPayment's viewModelScope.launch, or the
+    // suspend SDK path's fallbacks), so no call-site restructuring was needed.
+    private suspend fun startAppToAppCardPayment(credentials: AngelPayCredentials) {
         val staffName = secureStorage.getStaffName()
         val paymentAttemptId = ensurePaymentAttemptId()
+
+        // 📒 [Libreta] Pre-intent barrier. On the SDK→app-to-app in-session fallback the row
+        // is already open+AUTORIZANDO — the helper's attemptId guard + the CAS make this a no-op.
+        openLedgerAttemptAndMarkAuthorizing(paymentAttemptId)
+
         val intent = intentBuilder.buildSaleIntent(
             amount = pendingAmount,
             tip = pendingTip,
@@ -1472,6 +1566,25 @@ class AngelPayPaymentViewModel @Inject constructor(
 
             val result = resultParser.parse(resultCode, data)
 
+            // 📒 [Libreta] AngelPay's single return IS the host verdict (no separate
+            // host-response moment exists for this processor). Marked here, before any
+            // record/publish step — everything since the result arrived (consume guard,
+            // state set, parse) is non-suspending, so an approval can never be lost to a
+            // cancellation before this write. approved=false (decline AND user cancel:
+            // money did not move) lands the row in DESCARTADA inside the ledger.
+            // currentPaymentAttemptId is read directly (never ensurePaymentAttemptId():
+            // minting an id here would be a state side effect for a stray null-attempt
+            // result, and a minted id matches no row anyway).
+            currentPaymentAttemptId?.let { attemptIdForLedger ->
+                paymentAttemptLedger.markHostResponded(
+                    attemptId = attemptIdForLedger,
+                    approved = result is AngelPayResult.Success,
+                    operationId = null,
+                    referenceNumber = (result as? AngelPayResult.Success)?.referenceNumber,
+                    authCode = (result as? AngelPayResult.Success)?.authorizationCode,
+                )
+            }
+
             when (result) {
                 is AngelPayResult.Success -> recordCardPayment(result)
                 is AngelPayResult.Failure -> {
@@ -1514,6 +1627,32 @@ class AngelPayPaymentViewModel @Inject constructor(
             if (!consumeResultForCurrentAttempt(source = "sdk_contract")) return@launch
             Timber.i("🔶 [AngelPay SDK] Result received | approved=${result.approved}, status=${result.status}")
             _state.value = AngelPayPaymentState.WaitingForResult(message = "Validando resultado del pago...")
+
+            // 📒 [Libreta] AngelPay's single return IS the host verdict (no separate
+            // host-response moment exists for this processor). One deliberate exception:
+            // a session-expiry-shaped DECLINE (D308 / pre-charge register failure — money
+            // did NOT move, per AngelPayErrorMapper) may be RELAUNCHED with the SAME
+            // attemptId by tryRecoverFromSessionExpiry below; marking DESCARTADA now would
+            // blind the row to that retry's outcome, so its mark is deferred until the
+            // recovery decision. The shape checks are pure (no suspension), and an APPROVED
+            // result is always marked HERE — before any cancellable work — so an approval
+            // can never be lost. (Mirrors the `sessionExpiryShape` when-block below.)
+            val ledgerExpiryShapedDecline = !result.approved && (
+                AngelPayErrorMapper.isAuthError(result.callResult?.code) ||
+                    AngelPayErrorMapper.isPreChargeRegisterFailure(result.message)
+                )
+            if (!ledgerExpiryShapedDecline) {
+                currentPaymentAttemptId?.let { attemptIdForLedger ->
+                    paymentAttemptLedger.markHostResponded(
+                        attemptId = attemptIdForLedger,
+                        approved = result.approved,
+                        operationId = null,
+                        referenceNumber = result.reference,
+                        authCode = result.authCode,
+                    )
+                }
+            }
+
             if (result.approved) {
                 recordCardPayment(result)
             } else {
@@ -1530,7 +1669,21 @@ class AngelPayPaymentViewModel @Inject constructor(
                 ) {
                     // Re-authenticated and relaunched — NOT a terminal outcome,
                     // so the D2 charging gate stays set for the retried attempt.
+                    // (📒 the ledger row stays AUTORIZANDO for the relaunched attempt.)
                     return@launch
+                }
+                // 📒 [Libreta] Expiry-shaped decline that did NOT relaunch — now it IS the
+                // terminal host verdict for this attempt (deferred from the mark above).
+                if (ledgerExpiryShapedDecline) {
+                    currentPaymentAttemptId?.let { attemptIdForLedger ->
+                        paymentAttemptLedger.markHostResponded(
+                            attemptId = attemptIdForLedger,
+                            approved = false,
+                            operationId = null,
+                            referenceNumber = result.reference,
+                            authCode = result.authCode,
+                        )
+                    }
                 }
                 val displayMessage = buildString {
                     append(result.message ?: "Pago rechazado")
@@ -1727,6 +1880,12 @@ class AngelPayPaymentViewModel @Inject constructor(
         recordResult.fold(
             onSuccess = { receipt ->
                 Timber.i("🔶 [AngelPay] Card payment recorded | receipt=${receipt.receiptUrl}")
+                // 📒 [Libreta] Money moved and the backend owns the record from here on:
+                // HOST_RESPONDIO → AUTORIZADO (card facts) → REGISTRADO.
+                paymentContext.idempotencyKey?.let { attemptIdForLedger ->
+                    paymentAttemptLedger.markAuthorized(attemptIdForLedger, null, cardDetails.cardBrand.name, cardDetails.entryMode.name)
+                    paymentAttemptLedger.markRecorded(attemptIdForLedger)
+                }
                 _state.value = successState.copy(receipt = receipt)
                 // 📡 POS→TPV: report success to the caller (no-op unless socket-sourced).
                 emitSocketResultIfSocketSourced(
@@ -1739,6 +1898,9 @@ class AngelPayPaymentViewModel @Inject constructor(
             },
             onFailure = { error ->
                 Timber.e(error, "🔶 [AngelPay] Card payment failed to record to backend — enqueueing for sync")
+                // 📒 [Libreta] REGISTRO_FALLIDO — the row is the evidence until the queue
+                // takes over (handleRecordFailure marks ENTREGADA_A_COLA on enqueue success).
+                paymentContext.idempotencyKey?.let { paymentAttemptLedger.markRecordFailed(it, error.message) }
                 _state.value = handleRecordFailure("El pago con tarjeta", paymentContext, error)
             },
         )
@@ -1812,6 +1974,12 @@ class AngelPayPaymentViewModel @Inject constructor(
         recordResult.fold(
             onSuccess = { receipt ->
                 Timber.i("🔶 [AngelPay SDK] Card payment recorded | receipt=${receipt.receiptUrl}")
+                // 📒 [Libreta] Money moved and the backend owns the record from here on:
+                // HOST_RESPONDIO → AUTORIZADO (card facts) → REGISTRADO.
+                paymentContext.idempotencyKey?.let { attemptIdForLedger ->
+                    paymentAttemptLedger.markAuthorized(attemptIdForLedger, null, cardDetails.cardBrand.name, cardDetails.entryMode.name)
+                    paymentAttemptLedger.markRecorded(attemptIdForLedger)
+                }
                 _state.value = successState.copy(receipt = receipt)
                 // 📡 POS→TPV: report success to the caller (no-op unless socket-sourced).
                 emitSocketResultIfSocketSourced(
@@ -1824,6 +1992,9 @@ class AngelPayPaymentViewModel @Inject constructor(
             },
             onFailure = { error ->
                 Timber.e(error, "🔶 [AngelPay SDK] Card payment failed to record to backend — enqueueing for sync")
+                // 📒 [Libreta] REGISTRO_FALLIDO — the row is the evidence until the queue
+                // takes over (handleRecordFailure marks ENTREGADA_A_COLA on enqueue success).
+                paymentContext.idempotencyKey?.let { paymentAttemptLedger.markRecordFailed(it, error.message) }
                 _state.value = handleRecordFailure("El pago con tarjeta", paymentContext, error)
             },
         )

@@ -17,6 +17,8 @@ import com.jaac.avoqado_tpv.features.modules.domain.model.VenueModule
 import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
 import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
 import com.jaac.avoqado_tpv.features.payment.data.MultiMerchantSDKManager
+import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity
+import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
@@ -57,7 +59,7 @@ import com.jaac.avoqado_tpv.core.observability.CrashlyticsContext
  * Tests the payment state machine, multi-merchant switching, refund flow,
  * state contamination prevention, and flow origin management.
  *
- * PaymentViewModel has 33 constructor dependencies. Most are relaxed mocks.
+ * PaymentViewModel has 34 constructor dependencies. Most are relaxed mocks.
  * Key dependencies requiring explicit configuration:
  * - InitializationManager: SDK readiness
  * - TransProcessRepository: PIN dialog flows
@@ -98,6 +100,7 @@ class PaymentViewModelTest {
     private lateinit var mockGetMerchantsUseCase: GetMerchantsUseCase
     private lateinit var mockRecordPaymentUseCase: RecordPaymentUseCase
     private lateinit var mockRecordRefundUseCase: RecordRefundUseCase
+    private lateinit var mockPaymentAttemptLedger: PaymentAttemptLedger
     private lateinit var mockConnectionStateManager: ConnectionStateManager
     private lateinit var mockCriticalNetworkOperationManager: CriticalNetworkOperationManager
     private lateinit var mockSetSelectAppCodeUseCase: SetSelectAppCodeUseCase
@@ -246,6 +249,9 @@ class PaymentViewModelTest {
         mockRecordPaymentUseCase = mockk(relaxed = true)
         mockRecordRefundUseCase = mockk(relaxed = true)
 
+        // 📒 Ledger (La Libreta) — relaxed: the wiring is observational, tests verify the calls
+        mockPaymentAttemptLedger = mockk(relaxed = true)
+
         // Configure connectivity manager
         mockConnectionStateManager = mockk(relaxed = true) {
             every { isFullyConnected() } returns true
@@ -274,7 +280,7 @@ class PaymentViewModelTest {
     }
 
     /**
-     * Create PaymentViewModel with all 33 dependencies.
+     * Create PaymentViewModel with all 34 dependencies.
      * Most are relaxed mocks; key dependencies are configured in setup().
      *
      * IMPORTANT: Must cancel viewModelScope at end of each test to prevent
@@ -325,6 +331,7 @@ class PaymentViewModelTest {
             // Real holder (tiny AtomicBoolean singleton) — lets tests observe the money window
             paymentStateHolder = paymentStateHolder,
             connectionEventManager = mockConnectionEventManager,
+            paymentAttemptLedger = mockPaymentAttemptLedger,
             appContext = mockAppContext
         )
     }
@@ -794,6 +801,10 @@ class PaymentViewModelTest {
 
         // Start a payment to set various state
         viewModel.startPayment("150.00")
+        // Wait for Dispatchers.IO coroutines (shift/merchant work outside the test dispatcher) so the
+        // flow publishes its terminal state BEFORE resetPayment — without this the assert races them
+        // (same pattern as `consecutive payments dont leak state`). Flaked once under full-suite load.
+        Thread.sleep(1000)
         testDispatcher.scheduler.advanceUntilIdle()
 
         // Reset
@@ -1013,5 +1024,48 @@ class PaymentViewModelTest {
         } finally {
             viewModel.viewModelScope.cancel()
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // LIBRETA WRITE-AHEAD (PaymentAttemptLedger wiring — Blumon path)
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Only the JVM-reachable wiring is verified here: openAttempt (startPayment) and
+    // markDiscardedBeforeCharge (cancelPayment). The performOnlineAuthorization and
+    // handlePaymentSuccess marks need the real Blumon SDK → device drills (Task 7).
+
+    @Test
+    fun `startPayment opens a ledger attempt before charging`() = runTest {
+        val viewModel = createViewModel()
+
+        viewModel.startPayment("100.00", null)
+        Thread.sleep(1000) // Dispatchers.IO outside the test dispatcher — file pattern
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        coVerify {
+            mockPaymentAttemptLedger.openAttempt(
+                any(), any(), PaymentAttemptEntity.PROCESSOR_BLUMON,
+                any(), any(), any(), any(), any()
+            )
+        }
+
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `cancelPayment discards the ledger row only from PREPARANDO`() = runTest {
+        val viewModel = createViewModel()
+
+        // No attempt open (paymentAttemptId is null) → nothing to discard
+        viewModel.cancelPayment()
+        coVerify(exactly = 0) { mockPaymentAttemptLedger.markDiscardedBeforeCharge(any(), any()) }
+
+        // Open an attempt, then cancel → exactly one discard with the user_cancel reason
+        viewModel.startPayment("100.00", null)
+        Thread.sleep(1000) // Dispatchers.IO outside the test dispatcher — file pattern
+        testDispatcher.scheduler.advanceUntilIdle()
+        viewModel.cancelPayment()
+        coVerify(exactly = 1) { mockPaymentAttemptLedger.markDiscardedBeforeCharge(any(), "user_cancel") }
+
+        viewModel.viewModelScope.cancel()
     }
 }

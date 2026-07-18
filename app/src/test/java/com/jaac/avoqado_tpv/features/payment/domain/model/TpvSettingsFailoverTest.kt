@@ -51,11 +51,50 @@ class TpvSettingsFailoverTest {
         assertThat(domain.cellularFailoverMode).isEqualTo(CellularFailoverMode.OFF)
     }
 
+    // La libreta (write-ahead payment ledger) rollout flag — mirrors the failover cases above
+
+    @Test
+    fun `toDomain maps payment ledger mode from raw value`() {
+        val dto = baseDto(paymentLedgerMode = "SHADOW")
+
+        val domain = dto.toDomain()
+
+        assertThat(domain.paymentLedgerMode).isEqualTo(PaymentLedgerMode.SHADOW)
+    }
+
+    @Test
+    fun `toDomain defaults payment ledger mode to OFF when null`() {
+        val dto = baseDto(paymentLedgerMode = null)
+
+        val domain = dto.toDomain()
+
+        assertThat(domain.paymentLedgerMode).isEqualTo(PaymentLedgerMode.OFF)
+    }
+
+    @Test
+    fun `toDomain falls back to OFF for unknown payment ledger mode`() {
+        val dto = baseDto(paymentLedgerMode = "GARBAGE")
+
+        val domain = dto.toDomain()
+
+        assertThat(domain.paymentLedgerMode).isEqualTo(PaymentLedgerMode.OFF)
+    }
+
+    @Test
+    fun `toDto maps payment ledger mode from domain`() {
+        val settings = TpvSettings(paymentLedgerMode = PaymentLedgerMode.ACTIVE)
+
+        val dto = settings.toDto()
+
+        assertThat(dto.paymentLedgerMode).isEqualTo("ACTIVE")
+    }
+
     private fun baseDto(
         cellularFailoverMode: String? = "OFF",
         cellularFailoverBadReadingsThreshold: Int? = 3,
         cellularFailoverCooldownSeconds: Int? = 60,
-        cellularFailoverMinCellHoldSeconds: Int? = 120
+        cellularFailoverMinCellHoldSeconds: Int? = 120,
+        paymentLedgerMode: String? = null
     ): TpvSettingsDto = TpvSettingsDto(
         showReviewScreen = null,
         showTipScreen = null,
@@ -86,6 +125,7 @@ class TpvSettingsFailoverTest {
         cellularFailoverMode = cellularFailoverMode,
         cellularFailoverBadReadingsThreshold = cellularFailoverBadReadingsThreshold,
         cellularFailoverCooldownSeconds = cellularFailoverCooldownSeconds,
-        cellularFailoverMinCellHoldSeconds = cellularFailoverMinCellHoldSeconds
+        cellularFailoverMinCellHoldSeconds = cellularFailoverMinCellHoldSeconds,
+        paymentLedgerMode = paymentLedgerMode
     )
 }

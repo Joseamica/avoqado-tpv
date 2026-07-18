@@ -32,7 +32,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
 /**
  * Room database for Avoqado TPV local data persistence.
  *
- * **Current Version:** 24
+ * **Current Version:** 27
  * - v1 → v2: Added blumonSerialNumber to PendingPaymentEntity for merchant account tracking
  * - v2 → v3: Added merchantAccountId to PendingPaymentEntity (provider-agnostic migration)
  * - v3 → v4: Added rating to PendingPaymentEntity (user rating feature - 2025-01-11)
@@ -58,6 +58,9 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
  * - v23 → v24: **🔴 CRITICAL FIX** - Rebuilt products table (category_color vs color drift from
  *   MIGRATION_12_13) + normalized historical_periods indices (orphan index from MIGRATION_5_6).
  *   Fixes "Migration didn't properly handle" crash-loop when updating devices installed ≤DB 12 (2026-06-12)
+ * - v24 → v25: Processor-aware offline queue — pending_payments carries payment_processor/order/SIM metadata (2026-07-09)
+ * - v25 → v26: pending_payments carries terminalPaymentRequestId (POS→TPV arbitration link) (2026-07-14)
+ * - v26 → v27: Added payment_attempts — write-ahead ledger de cobros (la libreta) (2026-07-18)
  *
  * **Entities:**
  * - PendingPaymentEntity: Offline queue for failed payment recordings
@@ -114,9 +117,10 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
         CachedShiftEntity::class,
         VerificationQueueEntity::class,
         com.jaac.avoqado_tpv.core.data.local.entities.MosaicShortcutEntity::class, // ⭐ v21
-        AngelPayMerchantCacheEntity::class // ⭐ v22: AngelPay SDK 1.0.5 multi-merchant cache
+        AngelPayMerchantCacheEntity::class, // ⭐ v22: AngelPay SDK 1.0.5 multi-merchant cache
+        com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity::class // ⭐ v27: payment_attempts write-ahead ledger (la libreta)
     ],
-    version = 26, // ⭐ Version 26: pending_payments carries terminalPaymentRequestId (POS→TPV arbitration link) (2026-07-14)
+    version = 27, // ⭐ Version 27: payment_attempts — write-ahead ledger de cobros (la libreta) (2026-07-18)
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -255,6 +259,16 @@ abstract class AvoqadoDatabase : RoomDatabase() {
      *   AngelPayCredentialResolver)
      */
     abstract fun angelPayMerchantCacheDao(): AngelPayMerchantCacheDao
+
+    /**
+     * DAO for the write-ahead ledger of card-charge attempts (la libreta, v27).
+     *
+     * **Use Cases:**
+     * - Write evidence BEFORE the SDK is invoked (closes the Mindform window)
+     * - CAS state transitions at every durable boundary of a charge
+     * - Sweep/quarantine of stuck attempts (never feeds reports)
+     */
+    abstract fun paymentAttemptDao(): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao
 
     companion object {
         const val DATABASE_NAME = "avoqado_database"
@@ -1611,6 +1625,37 @@ abstract class AvoqadoDatabase : RoomDatabase() {
         val MIGRATION_25_26 = object : Migration(25, 26) {
             override fun migrate(database: SupportSQLiteDatabase) {
                 database.execSQL("ALTER TABLE `pending_payments` ADD COLUMN `terminal_payment_request_id` TEXT")
+            }
+        }
+
+        /**
+         * v27 (2026-07-18) — la libreta: write-ahead ledger of card-charge attempts.
+         *
+         * New table only — zero risk to existing rows. Closes the Mindform window
+         * ("money moved, no record, no queue"): evidence now exists BEFORE the SDK
+         * is invoked. DDL copied verbatim from app/schemas/.../27.json.
+         */
+        val MIGRATION_26_27 = object : Migration(26, 27) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `payment_attempts` (" +
+                        "`attempt_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, " +
+                        "`processor` TEXT NOT NULL, `kind` TEXT NOT NULL DEFAULT 'SALE', " +
+                        "`state` TEXT NOT NULL, `state_version` INTEGER NOT NULL DEFAULT 0, " +
+                        "`amount_cents` INTEGER NOT NULL, `tip_cents` INTEGER NOT NULL, " +
+                        "`currency` TEXT NOT NULL DEFAULT 'MXN', `recording_route` TEXT NOT NULL, " +
+                        "`context_schema_version` INTEGER NOT NULL DEFAULT 1, " +
+                        "`payment_context_json` TEXT NOT NULL, " +
+                        "`operation_id` TEXT, `reference_number` TEXT, `auth_code` TEXT, " +
+                        "`host_approved` INTEGER, `masked_pan` TEXT, `card_brand` TEXT, " +
+                        "`entry_mode` TEXT, `last_error` TEXT, " +
+                        "`verify_attempts` INTEGER NOT NULL DEFAULT 0, `lease_until` INTEGER, " +
+                        "`created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`attempt_id`))"
+                )
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_attempts_state` ON `payment_attempts` (`state`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_attempts_venue_id` ON `payment_attempts` (`venue_id`)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_attempts_created_at` ON `payment_attempts` (`created_at`)")
             }
         }
     }

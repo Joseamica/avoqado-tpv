@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.checkout.presentation.components.cart
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
@@ -56,6 +57,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.PopupProperties
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
@@ -105,6 +107,10 @@ fun CartDetailsSheet(
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
+    BackHandler(enabled = showMenu) {
+        showMenu = false
+    }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -129,6 +135,7 @@ fun CartDetailsSheet(
                 DropdownMenu(
                     expanded = showMenu,
                     onDismissRequest = { showMenu = false },
+                    properties = PopupProperties(focusable = false),
                 ) {
                     DropdownMenuItem(
                         text = {

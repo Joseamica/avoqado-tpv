@@ -15,6 +15,24 @@ enum class CellularFailoverMode {
 }
 
 /**
+ * La libreta (write-ahead payment ledger) rollout stage.
+ * OFF = no writes at all · SHADOW = writes + observability, zero behavior change ·
+ * ACTIVE = recovery + UI enabled (Plan 3). Default OFF — canary rollout per venue.
+ */
+enum class PaymentLedgerMode {
+    OFF,
+    SHADOW,
+    ACTIVE;
+
+    companion object {
+        fun fromRaw(raw: String?): PaymentLedgerMode {
+            if (raw.isNullOrBlank()) return OFF
+            return entries.firstOrNull { it.name == raw } ?: OFF
+        }
+    }
+}
+
+/**
  * TPV Screen Configuration Settings
  *
  * Configures the payment flow screens based on venue preferences.
@@ -52,6 +70,7 @@ enum class CellularFailoverMode {
  * @param cellularFailoverBadReadingsThreshold Consecutive bad readings required before failover.
  * @param cellularFailoverCooldownSeconds Minimum seconds between network toggles.
  * @param cellularFailoverMinCellHoldSeconds Minimum seconds to stay on cellular before WiFi restore.
+ * @param paymentLedgerMode La libreta (write-ahead payment ledger) rollout stage. Default OFF.
  */
 data class TpvSettings(
     val showReviewScreen: Boolean = true,
@@ -110,7 +129,9 @@ data class TpvSettings(
     val cellularFailoverMode: CellularFailoverMode = CellularFailoverMode.OFF,
     val cellularFailoverBadReadingsThreshold: Int = 3,
     val cellularFailoverCooldownSeconds: Int = 60,
-    val cellularFailoverMinCellHoldSeconds: Int = 120
+    val cellularFailoverMinCellHoldSeconds: Int = 120,
+    // La libreta (write-ahead payment ledger) — OFF by default, canary rollout per venue
+    val paymentLedgerMode: PaymentLedgerMode = PaymentLedgerMode.OFF
 ) {
     companion object {
         /**

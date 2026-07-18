@@ -73,6 +73,7 @@ import com.jaac.avoqado_tpv.features.authentication.presentation.LoginScreen
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationState
 import com.jaac.avoqado_tpv.features.activation.presentation.ActivationViewModel
 import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
+import com.jaac.avoqado_tpv.features.payment.data.ledger.LedgerSweepScheduler
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreen
@@ -943,6 +944,10 @@ fun AppNavigation(
                     // Start payment sync worker (offline payment queue)
                     Timber.d("💾 Login successful - Starting payment sync")
                     PaymentSyncScheduler.start(context)
+
+                    // 📒 Libreta shadow sweep (periodic 6h + one-shot catch-up; self-gated by paymentLedgerMode)
+                    LedgerSweepScheduler.schedule(context)
+                    LedgerSweepScheduler.runOnceNow(context)
 
                     // 📍 Cambaceo: hourly promoter location ping (self-gated by venue flag + 11-18h window)
                     PromoterLocationScheduler.start(context)
@@ -2334,6 +2339,10 @@ fun AppNavigation(
                         // Start payment sync worker (offline payment queue)
                         Timber.d("💾 Auto-login after timeclock - Starting payment sync")
                         PaymentSyncScheduler.start(context)
+
+                        // 📒 Libreta shadow sweep (periodic 6h + one-shot catch-up; self-gated by paymentLedgerMode)
+                        LedgerSweepScheduler.schedule(context)
+                        LedgerSweepScheduler.runOnceNow(context)
 
                         // 📍 Cambaceo: hourly promoter location ping (self-gated by venue flag + 11-18h window)
                         PromoterLocationScheduler.start(context)

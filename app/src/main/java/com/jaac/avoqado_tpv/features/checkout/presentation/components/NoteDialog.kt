@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.jaac.avoqado_tpv.core.presentation.systemui.ImmersiveSystemUiEffect
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 
 /**
@@ -55,6 +56,8 @@ fun NoteDialog(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                ImmersiveSystemUiEffect()
+
                 OutlinedTextField(
                     value = note,
                     onValueChange = { if (it.length <= MAX_NOTE_LENGTH) note = it },

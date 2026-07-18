@@ -94,6 +94,8 @@ class AngelPayPaymentViewModelTest {
     private lateinit var verificationUploadManager: com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager
     private lateinit var observabilityManager: ObservabilityManager
     private lateinit var paymentQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
+    // 📒 La Libreta (Task 5) — relaxed: every mark is observational and must never affect the flow.
+    private lateinit var paymentAttemptLedger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
 
     // Backing state for repositories whose flows the VM observes
     private val authStateFlow = MutableStateFlow<AngelPayAuthState>(AngelPayAuthState.Authenticated)
@@ -149,6 +151,7 @@ class AngelPayPaymentViewModelTest {
         observabilityManager = mockk(relaxed = true)
         paymentQueueRepository = mockk(relaxed = true)
         coEvery { paymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
+        paymentAttemptLedger = mockk(relaxed = true)
 
         // Reactive flows the VM observes
         every { angelPayAuthRepository.state } returns authStateFlow
@@ -189,6 +192,7 @@ class AngelPayPaymentViewModelTest {
         verificationUploadManager = verificationUploadManager,
         observability = observabilityManager,
         paymentQueueRepository = paymentQueueRepository,
+        paymentAttemptLedger = paymentAttemptLedger,
         // Real handle (a plain in-memory map here) — the socket arbitration fields are backed by
         // it so they survive Activity/VM death while the AngelPay SDK Activity is in front.
         savedStateHandle = androidx.lifecycle.SavedStateHandle(),
@@ -821,6 +825,274 @@ class AngelPayPaymentViewModelTest {
             // reference_number is UNIQUE in Room — a blank reference must not collide.
             coVerify(exactly = 1) {
                 paymentQueueRepository.enqueue(match { it.referenceNumber == "idem-uuid-1" })
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // 📒 La Libreta write-ahead (Task 5) — observational marks on the AngelPay
+    // path. AngelPay has NO separate host-response moment: the SDK's single
+    // return IS the verdict, so markHostResponded fires at result arrival
+    // (approved=false → DESCARTADA inside the ledger). All marks are relaxed
+    // mocks: a ledger failure must never alter the payment flow.
+    // ----------------------------------------------------------------------
+
+    @Test
+    fun `handleRecordFailure with enqueue OK marks the ledger row delivered to queue`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            vm.handleRecordFailure(
+                paymentLabel = "El pago con tarjeta",
+                context = angelPayContext(), // idempotencyKey == attemptId == "idem-uuid-1"
+                error = RuntimeException("HTTP 503"),
+            )
+
+            coVerify(exactly = 1) { paymentAttemptLedger.markDeliveredToQueue("idem-uuid-1") }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `handleRecordFailure does NOT mark delivered to queue when the enqueue also fails`() = runTest(testDispatcher) {
+        coEvery { paymentQueueRepository.enqueue(any()) } returns Result.failure(RuntimeException("disk full"))
+
+        val vm = createViewModel()
+        try {
+            vm.handleRecordFailure(
+                paymentLabel = "El pago con tarjeta",
+                context = angelPayContext(),
+                error = RuntimeException("HTTP 503"),
+            )
+
+            // Nothing got queued — the row must stay in REGISTRO_FALLIDO (sweep evidence).
+            coVerify(exactly = 0) { paymentAttemptLedger.markDeliveredToQueue(any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `declined SDK result marks the host verdict approved=false at result arrival`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            vm.primeSdkLaunch() // generates + registers the attemptId pre-launch
+            runCurrent()
+
+            val declined = mockk<PaymentResult>(relaxed = true)
+            every { declined.approved } returns false
+            every { declined.message } returns "Transaccion declinada"
+            every { declined.callResult } returns null
+            every { declined.authCode } returns null
+            every { declined.reference } returns null
+            every { declined.cardBin } returns null
+
+            vm.onAngelPaySdkResult(declined)
+            runCurrent()
+
+            // The ledger converts approved=false into DESCARTADA — one mark, no record marks.
+            coVerify(exactly = 1) {
+                paymentAttemptLedger.markHostResponded(any(), false, null, null, null)
+            }
+            coVerify(exactly = 0) { paymentAttemptLedger.markAuthorized(any(), any(), any(), any()) }
+            coVerify(exactly = 0) { paymentAttemptLedger.markRecorded(any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `cancelled app-to-app result marks the host verdict approved=false`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00") // caches venue/staff + attemptId
+            runCurrent()
+
+            // resultCode != RESULT_OK with no extras → AngelPayResult.Cancelled (no money moved).
+            vm.onAngelPayResult(resultCode = 0, data = null)
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Cancelled::class.java)
+            coVerify(exactly = 1) {
+                paymentAttemptLedger.markHostResponded(any(), false, null, null, null)
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `approved SDK result marks host verdict then AUTORIZADO and REGISTRADO on record success`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.success(
+            PaymentReceipt(
+                paymentId = "pay-led-1",
+                receiptUrl = "https://receipt/pay-led-1",
+                accessKey = "key-led-1",
+                amount = java.math.BigDecimal("100.00"),
+                tipAmount = java.math.BigDecimal.ZERO,
+            ),
+        )
+
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00")
+            runCurrent()
+
+            vm.onAngelPaySdkResult(approvedSdkResult(authCode = "A1", reference = "R1"))
+            runCurrent()
+
+            // recordCardPayment hops through withContext(Dispatchers.IO) — wait for the tail mark.
+            coVerify(timeout = 2000, exactly = 1) { paymentAttemptLedger.markRecorded(any()) }
+            coVerify(exactly = 1) {
+                paymentAttemptLedger.markHostResponded(any(), true, null, "R1", "A1")
+            }
+            // AngelPay returns no maskedPan; brand/entryMode captured from the built CardDetails.
+            coVerify(exactly = 1) { paymentAttemptLedger.markAuthorized(any(), null, "UNKNOWN", "OTHER") }
+            coVerify(exactly = 0) { paymentAttemptLedger.markRecordFailed(any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `approved SDK result with record failure marks REGISTRO_FALLIDO then delivered to queue`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.failure(RuntimeException("HTTP 503"))
+
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00")
+            runCurrent()
+
+            vm.onAngelPaySdkResult(approvedSdkResult())
+            runCurrent()
+
+            // markRecordFailed runs BEFORE handleRecordFailure so the queue mark's CAS
+            // (REGISTRO_FALLIDO → ENTREGADA_A_COLA) can match.
+            coVerify(timeout = 2000, exactly = 1) { paymentAttemptLedger.markDeliveredToQueue(any()) }
+            coVerify(exactly = 1) { paymentAttemptLedger.markRecordFailed(any(), "HTTP 503") }
+            coVerify(exactly = 0) { paymentAttemptLedger.markRecorded(any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D308 recovery relaunch defers the ledger verdict - no DESCARTADA for a live retry`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            // First D308: recovery relaunches the SAME attemptId — an early DESCARTADA would
+            // blind the ledger to the retried charge's outcome, so NO verdict is written.
+            vm.onAngelPaySdkResult(sdkFailureResult("D308"))
+            runCurrent()
+            coVerify(exactly = 0) { paymentAttemptLedger.markHostResponded(any(), any(), any(), any(), any()) }
+
+            // Second D308 on the same attempt: recovery is spent → terminal decline → the
+            // DEFERRED mark now fires exactly once with approved=false.
+            vm.onAngelPaySdkResult(sdkFailureResult("D308"))
+            runCurrent()
+            coVerify(exactly = 1) { paymentAttemptLedger.markHostResponded(any(), false, null, any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `pre-launch guard suppresses re-open only for the same attempt id AND same amounts`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery {
+            paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns true
+
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00")
+            runCurrent()
+
+            // Legit reuse shape (retry-after-decline / SDK→app-to-app fallback): SAME id,
+            // SAME amounts → the second call must NOT re-open (no false REUSE alarm)…
+            vm.openLedgerAttemptAndMarkAuthorizing("attempt-X")
+            vm.openLedgerAttemptAndMarkAuthorizing("attempt-X")
+
+            coVerify(exactly = 1) {
+                paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any())
+            }
+            // …but AUTORIZANDO is (re)marked on every launch — the CAS resolves duplicates.
+            coVerify(exactly = 2) { paymentAttemptLedger.markAuthorizing("attempt-X") }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `pre-launch guard does NOT suppress re-open when the amount changed - collision alarm stays reachable`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery {
+            paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns true
+
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00")
+            runCurrent()
+            vm.openLedgerAttemptAndMarkAuthorizing("attempt-X")
+
+            // State-contamination shape (spec §6): a surviving VM without resetPayment —
+            // initPayment overwrites pendingAmount while ensurePaymentAttemptId keeps the
+            // stale id. DIFFERENT money on the SAME id must fall through to openAttempt so
+            // the ledger's PK-collision "REUSE" alarm fires.
+            vm.initPayment(amount = "250.00")
+            runCurrent()
+            vm.openLedgerAttemptAndMarkAuthorizing("attempt-X")
+
+            coVerify(exactly = 2) {
+                paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any())
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `a collided or failed open does not arm the re-open suppression`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        // openAttempt = false ⇒ PK collision (the REUSE alarm path) — suppression must NOT arm.
+        coEvery {
+            paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns false
+
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00")
+            runCurrent()
+
+            vm.openLedgerAttemptAndMarkAuthorizing("attempt-X")
+            vm.openLedgerAttemptAndMarkAuthorizing("attempt-X")
+
+            // Same id + same amounts, but the first open never succeeded → both calls open.
+            coVerify(exactly = 2) {
+                paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any())
             }
         } finally {
             vm.viewModelScope.cancel()

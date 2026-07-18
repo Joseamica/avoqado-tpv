@@ -7,11 +7,18 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+
+enum class ScreenProfile {
+    CompactSquare,
+    CompactPortrait,
+    RegularPortrait,
+}
 
 /**
  * Responsive Sizes Token System
@@ -34,6 +41,7 @@ import androidx.compose.ui.unit.dp
 data class ResponsiveSizes(
     val screenHeight: Dp,
     val screenWidth: Dp,
+    val screenProfile: ScreenProfile,
     val sizeCategory: String,
     val isSquareScreen: Boolean,
 
@@ -67,6 +75,11 @@ data class ResponsiveSizes(
          */
         fun calculate(height: Dp, width: Dp): ResponsiveSizes {
             val isSquare = (height - width).value.let { kotlin.math.abs(it) } < 80f
+            val screenProfile = when {
+                isSquare -> ScreenProfile.CompactSquare
+                height < 600.dp -> ScreenProfile.CompactPortrait
+                else -> ScreenProfile.RegularPortrait
+            }
             val category = when {
                 isSquare -> "small" // Square screens (N62 480x480) = compact
                 height < 600.dp -> "small"
@@ -77,6 +90,7 @@ data class ResponsiveSizes(
             return ResponsiveSizes(
                 screenHeight = height,
                 screenWidth = width,
+                screenProfile = screenProfile,
                 sizeCategory = category,
                 isSquareScreen = isSquare,
 
@@ -146,21 +160,32 @@ data class ResponsiveSizes(
                     else -> 20.dp
                 },
 
-                // Keyboard sizing — square screens need compact buttons
-                keyboardButtonSize = if (isSquare) 52.dp else when (category) {
-                    "small" -> 56.dp
-                    "medium" -> 68.dp
-                    else -> 80.dp
+                // Keyboard sizing — compact square screens prioritize touch targets
+                keyboardButtonSize = when (screenProfile) {
+                    ScreenProfile.CompactSquare -> 60.dp
+                    ScreenProfile.CompactPortrait,
+                    ScreenProfile.RegularPortrait -> 80.dp
                 },
-                keyboardActionWidth = if (isSquare) 64.dp else when (category) {
-                    "small" -> 72.dp
-                    "medium" -> 88.dp
-                    else -> 100.dp
+                keyboardActionWidth = when (screenProfile) {
+                    ScreenProfile.CompactSquare -> 72.dp
+                    ScreenProfile.CompactPortrait,
+                    ScreenProfile.RegularPortrait -> 100.dp
                 },
-                keyboardSpacing = if (isSquare) 4.dp else 8.dp,
-                keyboardFontSize = if (isSquare) 18 else 24,
+                keyboardSpacing = if (screenProfile == ScreenProfile.CompactSquare) 4.dp else 8.dp,
+                keyboardFontSize = if (screenProfile == ScreenProfile.CompactSquare) 22 else 24,
             )
         }
+    }
+}
+
+@Composable
+fun rememberResponsiveSizes(): ResponsiveSizes {
+    val configuration = LocalConfiguration.current
+    return remember(configuration.screenHeightDp, configuration.screenWidthDp) {
+        ResponsiveSizes.calculate(
+            height = configuration.screenHeightDp.dp,
+            width = configuration.screenWidthDp.dp,
+        )
     }
 }
 
@@ -235,11 +260,7 @@ fun ResponsiveScaffold(
         // Calculate sizes based on PHYSICAL screen dimensions (not available space).
         // Using LocalConfiguration ensures the size category stays stable
         // even when banners/overlays reduce available space.
-        val configuration = LocalConfiguration.current
-        val sizes = ResponsiveSizes.calculate(
-            height = configuration.screenHeightDp.dp,
-            width = configuration.screenWidthDp.dp
-        )
+        val sizes = rememberResponsiveSizes()
 
         // Provide sizes to all children via CompositionLocal
         CompositionLocalProvider(LocalResponsiveSizes provides sizes) {

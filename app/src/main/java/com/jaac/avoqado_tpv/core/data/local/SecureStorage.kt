@@ -11,6 +11,7 @@ import com.jaac.avoqado_tpv.features.modules.data.dto.VenueModuleDto
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductDisplayMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.CellularFailoverMode
+import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentLedgerMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import timber.log.Timber
@@ -155,6 +156,8 @@ class SecureStorage @Inject constructor(
         private const val KEY_TPV_CELLULAR_FAILOVER_BAD_READINGS_THRESHOLD = "tpv_cellular_failover_bad_readings_threshold"
         private const val KEY_TPV_CELLULAR_FAILOVER_COOLDOWN_SECONDS = "tpv_cellular_failover_cooldown_seconds"
         private const val KEY_TPV_CELLULAR_FAILOVER_MIN_CELL_HOLD_SECONDS = "tpv_cellular_failover_min_cell_hold_seconds"
+        // La libreta (write-ahead payment ledger) rollout flag
+        private const val KEY_TPV_PAYMENT_LEDGER_MODE = "tpv_payment_ledger_mode"
 
         // Module cache keys
         private const val KEY_CACHED_MODULES = "cached_modules"
@@ -1199,8 +1202,10 @@ class SecureStorage @Inject constructor(
             putInt(KEY_TPV_CELLULAR_FAILOVER_BAD_READINGS_THRESHOLD, settings.cellularFailoverBadReadingsThreshold)
             putInt(KEY_TPV_CELLULAR_FAILOVER_COOLDOWN_SECONDS, settings.cellularFailoverCooldownSeconds)
             putInt(KEY_TPV_CELLULAR_FAILOVER_MIN_CELL_HOLD_SECONDS, settings.cellularFailoverMinCellHoldSeconds)
+            // La libreta (write-ahead payment ledger) rollout flag
+            putString(KEY_TPV_PAYMENT_LEDGER_MODE, settings.paymentLedgerMode.name)
         }.apply()
-        Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, showVerification=${settings.showVerificationScreen}, enableShifts=${settings.enableShifts}, kioskEnabled=${settings.kioskModeEnabled}, showQuickPayment=${settings.showQuickPayment}, showOrderManagement=${settings.showOrderManagement}, showCrypto=${settings.showCryptoOption}, failoverMode=${settings.cellularFailoverMode}")
+        Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, showVerification=${settings.showVerificationScreen}, enableShifts=${settings.enableShifts}, kioskEnabled=${settings.kioskModeEnabled}, showQuickPayment=${settings.showQuickPayment}, showOrderManagement=${settings.showOrderManagement}, showCrypto=${settings.showCryptoOption}, failoverMode=${settings.cellularFailoverMode}, ledgerMode=${settings.paymentLedgerMode}")
     }
 
     /**
@@ -1275,6 +1280,10 @@ class SecureStorage @Inject constructor(
             cellularFailoverMinCellHoldSeconds = encryptedPrefs.getInt(
                 KEY_TPV_CELLULAR_FAILOVER_MIN_CELL_HOLD_SECONDS,
                 120
+            ),
+            // La libreta (write-ahead payment ledger) rollout flag (default: OFF)
+            paymentLedgerMode = PaymentLedgerMode.fromRaw(
+                encryptedPrefs.getString(KEY_TPV_PAYMENT_LEDGER_MODE, null)
             )
         )
     }
@@ -1323,6 +1332,8 @@ class SecureStorage @Inject constructor(
             remove(KEY_TPV_CELLULAR_FAILOVER_BAD_READINGS_THRESHOLD)
             remove(KEY_TPV_CELLULAR_FAILOVER_COOLDOWN_SECONDS)
             remove(KEY_TPV_CELLULAR_FAILOVER_MIN_CELL_HOLD_SECONDS)
+            // La libreta (write-ahead payment ledger) rollout flag
+            remove(KEY_TPV_PAYMENT_LEDGER_MODE)
         }.apply()
         Timber.d("TPV settings cleared")
     }

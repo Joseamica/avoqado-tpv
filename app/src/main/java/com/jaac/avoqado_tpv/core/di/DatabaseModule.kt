@@ -58,7 +58,7 @@ object DatabaseModule {
      *
      * **Configuration:**
      * - Name: "avoqado_database"
-     * - Migrations: explicit chain 2→24 (see AvoqadoDatabase companion object).
+     * - Migrations: explicit chain 2→27 (see AvoqadoDatabase companion object).
      *   NO blanket destructive fallback — a missing migration crashes loudly in QA
      *   instead of silently wiping pending_payments/draft_orders in production.
      *
@@ -105,7 +105,8 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_22_23,  // 🛡️ Persist idempotencyKey through offline payment queue
                 AvoqadoDatabase.MIGRATION_23_24,  // 🔴 CRITICAL: Repair products/historical_periods schema drift
                 AvoqadoDatabase.MIGRATION_24_25,  // 🔶 Processor-aware offline queue (AngelPay order/SIM payments)
-                AvoqadoDatabase.MIGRATION_25_26   // 📡 Offline queue carries the POS→TPV arbitration link
+                AvoqadoDatabase.MIGRATION_25_26,  // 📡 Offline queue carries the POS→TPV arbitration link
+                AvoqadoDatabase.MIGRATION_26_27   // 📒 La libreta — write-ahead ledger de cobros
             )
 
             // 🛡️ NO blanket destructive fallback (removed 2026-06-12).
@@ -166,6 +167,16 @@ object DatabaseModule {
     ): PendingPaymentDao {
         return database.pendingPaymentDao()
     }
+
+    /**
+     * Provides PaymentAttemptDao (la libreta — write-ahead ledger of card-charge attempts, v27).
+     *
+     * **Injected Into:**
+     * - PaymentAttemptLedger (Task 2 — writes evidence before the SDK is invoked)
+     */
+    @Provides
+    fun providePaymentAttemptDao(database: AvoqadoDatabase): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao =
+        database.paymentAttemptDao()
 
     /**
      * Provides MosaicShortcutDao for unified Checkout shortcut tiles.

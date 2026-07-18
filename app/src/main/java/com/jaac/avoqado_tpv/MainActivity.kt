@@ -24,9 +24,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
@@ -36,6 +33,7 @@ import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
 import com.jaac.avoqado_tpv.core.presentation.navigation.AppNavigation
+import com.jaac.avoqado_tpv.core.presentation.systemui.applyTpvImmersiveMode
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.ForegroundRecoveryGate
@@ -180,7 +178,7 @@ class MainActivity : ComponentActivity() {
         // Edge-to-edge: content draws behind system bars (status bar, nav bar)
         // This allows ModalBottomSheet scrim to cover the entire screen seamlessly
         enableEdgeToEdge()
-        applyTutorialImmersiveNavigation()
+        applyTpvImmersiveMode(window)
 
         // Check/Request READ_PHONE_STATE permission (MANDATORY on Android 8+)
         checkAndRequestPhoneStatePermission()
@@ -267,7 +265,7 @@ class MainActivity : ComponentActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) {
-            applyTutorialImmersiveNavigation()
+            applyTpvImmersiveMode(window)
         }
     }
 
@@ -275,7 +273,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         AppUpdateReceiver.isActivityResumed = true
         ForegroundRecoveryGate.disarm(reason = "activity_resumed")
-        applyTutorialImmersiveNavigation()
+        applyTpvImmersiveMode(window)
         evictStaleConnectionsOnResume()
     }
 
@@ -350,31 +348,6 @@ class MainActivity : ComponentActivity() {
                 Timber.w("🛡️ [ForegroundRecovery] Relaunch triggered | seq=$armSequence")
             }
         }, 350L)
-    }
-
-    /**
-     * Tutorial emulator UX: hide 3-button nav bar so screenshots match PAX hardware.
-     * Only applied when PAX SDK is disabled (tutorialEmu flavor) AND device has no
-     * physical nav buttons (skip on Nexgo and similar terminals that need soft nav bar).
-     */
-    private fun applyTutorialImmersiveNavigation() {
-        if (BuildConfig.ENABLE_PAX_SDK) return
-
-        // Nexgo (and other non-PAX terminals) rely on soft navigation bar — don't hide it
-        val model = android.os.Build.MODEL?.uppercase() ?: ""
-        if (model.startsWith("N86") || model.startsWith("N5") || model.contains("NEXGO")) return
-
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        WindowInsetsControllerCompat(window, window.decorView).apply {
-            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            hide(WindowInsetsCompat.Type.systemBars())
-        }
-
-        // Some transient surfaces (dialogs/sheets) can request bars again;
-        // posting a second hide keeps tutorial screenshots clean.
-        window.decorView.post {
-            WindowInsetsControllerCompat(window, window.decorView).hide(WindowInsetsCompat.Type.systemBars())
-        }
     }
 
     /**

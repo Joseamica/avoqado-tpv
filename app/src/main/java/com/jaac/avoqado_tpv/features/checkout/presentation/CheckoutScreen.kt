@@ -3,11 +3,14 @@ package com.jaac.avoqado_tpv.features.checkout.presentation
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -18,6 +21,7 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -36,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.jaac.avoqado_tpv.core.presentation.systemui.ImmersiveSystemUiEffect
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.checkout.domain.model.CartState
 import com.jaac.avoqado_tpv.features.checkout.domain.model.PaymentNavigationPayload
@@ -92,6 +97,11 @@ fun CheckoutScreen(
 
     // Product opened in the modifier-selection sheet; null = closed.
     var productForModifiers by remember {
+        mutableStateOf<com.jaac.avoqado_tpv.features.ordering.domain.Product?>(null)
+    }
+
+    // Producto agotado abierto en el modal informativo (Fase 2); null = cerrado.
+    var productUnavailableInfo by remember {
         mutableStateOf<com.jaac.avoqado_tpv.features.ordering.domain.Product?>(null)
     }
 
@@ -244,12 +254,13 @@ fun CheckoutScreen(
                         categories = categories,
                         isLoading = isLoading,
                         onProductTap = { product ->
-                            // If product has modifiers, open the detail sheet
-                            // for selection; otherwise add directly.
-                            if (product.hasModifiers) {
-                                productForModifiers = product
-                            } else {
-                                viewModel.addProduct(product)
+                            when {
+                                // 🚫 Agotado: no se agrega, solo se informa QUÉ falta.
+                                !product.available -> productUnavailableInfo = product
+                                // Con modificadores → hoja de selección.
+                                product.hasModifiers -> productForModifiers = product
+                                // Directo al carrito.
+                                else -> viewModel.addProduct(product)
                             }
                         },
                     )
@@ -310,6 +321,8 @@ fun CheckoutScreen(
             onDismissRequest = { showCartDetailsSheet = false },
             sheetState = cartDetailsSheetState,
         ) {
+            ImmersiveSystemUiEffect()
+
             CartDetailsSheet(
                 cartState = cartState,
                 customerName = selectedCustomer?.displayName,
@@ -421,6 +434,8 @@ fun CheckoutScreen(
             },
             sheetState = customerSheetState,
         ) {
+            ImmersiveSystemUiEffect()
+
             CustomerSelectorSheet(
                 viewModel = viewModel,
                 onPick = { customer ->
@@ -449,10 +464,10 @@ fun CheckoutScreen(
             onProductTap = { product ->
                 viewModel.updateSearchQuery("")
                 showSearch = false
-                if (product.hasModifiers) {
-                    productForModifiers = product
-                } else {
-                    viewModel.addProduct(product)
+                when {
+                    !product.available -> productUnavailableInfo = product
+                    product.hasModifiers -> productForModifiers = product
+                    else -> viewModel.addProduct(product)
                 }
             },
             onDismiss = {
@@ -469,6 +484,8 @@ fun CheckoutScreen(
             onDismissRequest = { productForModifiers = null },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
+            ImmersiveSystemUiEffect()
+
             ProductDetailSheet(
                 product = product,
                 onClose = { productForModifiers = null },
@@ -478,6 +495,15 @@ fun CheckoutScreen(
                 },
             )
         }
+    }
+
+    // Modal informativo al tocar un producto agotado (Fase 2). Solo informa QUÉ
+    // falta — nunca agrega al carrito.
+    productUnavailableInfo?.let { product ->
+        UnavailableProductDialog(
+            product = product,
+            onDismiss = { productUnavailableInfo = null },
+        )
     }
 
     // Barcode scanner (full-screen camera)
@@ -493,6 +519,7 @@ fun CheckoutScreen(
                                 duration = SnackbarDuration.Short,
                             )
                         }
+                        !product.available -> productUnavailableInfo = product
                         product.hasModifiers -> productForModifiers = product
                         else -> viewModel.addProduct(product)
                     }
@@ -501,6 +528,98 @@ fun CheckoutScreen(
             onClose = { showBarcodeScanner = false },
         )
     }
+}
+
+/**
+ * Modal informativo para un producto que no se puede vender ahora mismo.
+ *
+ * Solo informa —nunca agrega al carrito—. Cuando el backend manda el detalle de
+ * insumos (Fase 2), lista exactamente QUÉ falta; si no, cae a un texto genérico
+ * según el método de inventario.
+ */
+@Composable
+private fun UnavailableProductDialog(
+    product: com.jaac.avoqado_tpv.features.ordering.domain.Product,
+    onDismiss: () -> Unit,
+) {
+    val isRecipe = product.inventoryMethod == "RECIPE"
+    // Prefiere la lista de insumos insuficientes; si viene vacía usa el cuello de
+    // botella; si no hay nada (backend viejo) queda vacío → texto genérico.
+    val shortages = product.insufficientIngredients
+        .ifEmpty { product.limitingIngredient?.let { listOf(it) } ?: emptyList() }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Entendido") }
+        },
+        title = { Text(product.name) },
+        text = {
+            Column {
+                ImmersiveSystemUiEffect()
+
+                when {
+                    // Fase 2: sabemos QUÉ insumo(s) faltan.
+                    isRecipe && shortages.isNotEmpty() -> {
+                        Text("No disponible porque falta:")
+                        Spacer(modifier = Modifier.height(8.dp))
+                        shortages.forEach { ing ->
+                            Text(
+                                text = "•  " + describeShortage(ing),
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "Avisa al encargado para resurtir.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    // Receta agotada pero sin detalle (backend viejo).
+                    isRecipe -> Text(
+                        "No disponible. Se agotó un insumo de la receta. " +
+                            "Avisa al encargado para resurtir.",
+                    )
+                    // Producto por cantidad agotado.
+                    product.trackInventory -> Text("No disponible. Se agotó el stock de este producto.")
+                    // Inactivo u otra causa.
+                    else -> Text("Este producto no está disponible por ahora.")
+                }
+            }
+        },
+    )
+}
+
+/** "Pan: agotado" · "Pan: quedan 0.5 kg (se necesita 1 kg)" */
+private fun describeShortage(
+    ing: com.jaac.avoqado_tpv.features.ordering.domain.IngredientShortage,
+): String {
+    val unit = unitLabel(ing.unit)
+    return if (ing.available <= 0.0) {
+        "${ing.name}: agotado"
+    } else {
+        "${ing.name}: quedan ${formatQty(ing.available)}$unit (se necesita ${formatQty(ing.required)}$unit)"
+    }
+}
+
+private fun formatQty(value: Double): String {
+    return if (value % 1.0 == 0.0) {
+        value.toLong().toString()
+    } else {
+        String.format(java.util.Locale.US, "%.2f", value).trimEnd('0').trimEnd('.')
+    }
+}
+
+/** Unidad del backend → forma corta legible (con espacio inicial para concatenar). */
+private fun unitLabel(unit: String): String = when (unit.uppercase()) {
+    "PIECE", "PIEZA", "UNIT", "UNIDAD" -> " pza"
+    "GRAM", "GRAMO" -> " g"
+    "KILOGRAM", "KILO", "KG" -> " kg"
+    "LITER", "LITRO" -> " l"
+    "MILLILITER", "ML" -> " ml"
+    "", "NONE" -> ""
+    else -> " ${unit.lowercase()}"
 }
 
 @Preview(name = "Checkout - Empty cart", device = PAX_A910S, showSystemUi = true)

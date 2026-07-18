@@ -52,7 +52,13 @@ data class Product(
 
     // Category active status (from dashboard toggle)
     // Used to filter out inactive categories when extracting from products
-    val categoryIsActive: Boolean = true
+    val categoryIsActive: Boolean = true,
+
+    // ✅ FASE 2 (RECIPE only): which raw material limits availability, and which
+    // ones are fully depleted. Populated by backend; empty on QUANTITY products
+    // or older backends. Used by the "SIN INSUMOS" info modal to say WHAT ran out.
+    val limitingIngredient: IngredientShortage? = null,
+    val insufficientIngredients: List<IngredientShortage> = emptyList()
 ) {
     /**
      * Convenience property: Formatted price for UI
@@ -81,6 +87,28 @@ data class Product(
     val effectiveCategoryColor: String
         get() = categoryColor ?: CategoryColors.getAutoColor(categoryId)
 }
+
+/**
+ * Ingredient (raw material) shortage detail for RECIPE products (Fase 2).
+ *
+ * Comes from the backend so the TPV can tell the cashier exactly WHAT ran out
+ * ("Sin pan") instead of a generic "SIN INSUMOS".
+ *
+ * @param name Raw material name (e.g. "Pan")
+ * @param required Quantity needed per portion (in [unit])
+ * @param available Current stock (in [unit])
+ * @param unit Stock unit (e.g. "PIECE", "GRAM")
+ * @param maxPortions How many portions this ingredient alone allows (0 = blocker)
+ */
+@Immutable
+data class IngredientShortage(
+    val rawMaterialId: String,
+    val name: String,
+    val required: Double,
+    val available: Double,
+    val unit: String,
+    val maxPortions: Int
+)
 
 /**
  * Product category

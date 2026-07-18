@@ -14,18 +14,13 @@ import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material3.*
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.unit.dp
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import com.jaac.avoqado_tpv.BuildConfig
+import com.jaac.avoqado_tpv.core.presentation.systemui.ImmersiveSystemUiEffect
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 
 /**
@@ -86,7 +81,7 @@ fun SettingsBottomSheet(
         containerColor = MaterialTheme.colorScheme.background,
         tonalElevation = 0.dp
     ) {
-        HideSystemBarsInTutorialDialog()
+        ImmersiveSystemUiEffect()
 
         Column(
             modifier = Modifier
@@ -178,25 +173,6 @@ fun SettingsBottomSheet(
             )
 
             Spacer(modifier = Modifier.height(16.dp))
-        }
-    }
-}
-
-@Composable
-private fun HideSystemBarsInTutorialDialog() {
-    if (BuildConfig.ENABLE_PAX_SDK) return
-
-    val view = LocalView.current
-    LaunchedEffect(view) {
-        val dialogWindow = (view.parent as? DialogWindowProvider)?.window ?: return@LaunchedEffect
-        WindowCompat.setDecorFitsSystemWindows(dialogWindow, false)
-
-        val controller = WindowInsetsControllerCompat(dialogWindow, dialogWindow.decorView)
-        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        controller.hide(WindowInsetsCompat.Type.systemBars())
-
-        dialogWindow.decorView.post {
-            controller.hide(WindowInsetsCompat.Type.systemBars())
         }
     }
 }

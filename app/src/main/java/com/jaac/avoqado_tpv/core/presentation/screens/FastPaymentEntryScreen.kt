@@ -16,6 +16,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.CustomKeyboard
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
+import com.jaac.avoqado_tpv.core.presentation.components.ScreenProfile
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import java.math.BigDecimal
 
@@ -72,7 +73,7 @@ fun FastPaymentEntryScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             val sizes = LocalResponsiveSizes.current
-            val isCompact = sizes.isSquareScreen
+            val isCompact = sizes.screenProfile == ScreenProfile.CompactSquare
 
             Column(
                 modifier = Modifier
@@ -172,9 +173,10 @@ fun FastPaymentEntryScreen(
 // ══════════════════════════════════════════════════════════════════════════
 
 private const val PAX_A910S = "spec:width=720px,height=1280px,dpi=320"
-private const val NEXGO_N62 = "spec:width=480px,height=480px,dpi=240"
+private const val NEXGO_N62 = "spec:width=480px,height=480px,dpi=160"
+private const val NEXGO_N86 = "spec:width=720px,height=1280px,dpi=320"
 
-@Preview(device = PAX_A910S, showSystemUi = true)
+@Preview(name = "PAX A910S", device = PAX_A910S, showSystemUi = true)
 @Composable
 private fun FastPaymentEntryScreenPreview() {
     AvoqadoTheme {
@@ -182,9 +184,17 @@ private fun FastPaymentEntryScreenPreview() {
     }
 }
 
-@Preview(device = NEXGO_N62, showSystemUi = true)
+@Preview(name = "NEXGO N62", device = NEXGO_N62, showSystemUi = true)
 @Composable
 private fun FastPaymentEntryScreenN62Preview() {
+    AvoqadoTheme {
+        FastPaymentEntryScreen()
+    }
+}
+
+@Preview(name = "NEXGO N86", device = NEXGO_N86, showSystemUi = true)
+@Composable
+private fun FastPaymentEntryScreenN86Preview() {
     AvoqadoTheme {
         FastPaymentEntryScreen()
     }

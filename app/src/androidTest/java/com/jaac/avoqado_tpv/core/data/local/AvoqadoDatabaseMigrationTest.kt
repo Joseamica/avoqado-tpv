@@ -183,7 +183,7 @@ class AvoqadoDatabaseMigrationTest {
         val db = DatabaseModule.provideDatabase(appContext)
         try {
             val open = db.openHelper.writableDatabase
-            assertThat(open.version).isEqualTo(25) // full chain ran (…23→24→25)
+            assertThat(open.version).isEqualTo(27) // full chain ran (…23→24→25→26→27)
 
             // products: previously-missing column now exists (cache rebuilt empty)
             open.query("SELECT category_color FROM products").use { c ->
@@ -364,10 +364,45 @@ class AvoqadoDatabaseMigrationTest {
             "SELECT reference_number, amount, idempotency_key, terminal_payment_request_id " +
                 "FROM pending_payments WHERE reference_number = 'REF-V26-001'",
         ).use { c ->
-            assertTrue("the queued payment (real money) must survive the migration", c.moveToFirst())
-            assertEquals("250.00", c.getString(1)) // amount intact
-            assertEquals("idem-1", c.getString(2)) // dedup key intact → replay still de-dupes
-            assertTrue("pre-v26 rows carry no arbitration link", c.isNull(3))
+            assertThat(c.moveToFirst()).isTrue() // the queued payment (real money) must survive the migration
+            assertThat(c.getString(1)).isEqualTo("250.00") // amount intact
+            assertThat(c.getString(2)).isEqualTo("idem-1") // dedup key intact → replay still de-dupes
+            assertThat(c.isNull(3)).isTrue() // pre-v26 rows carry no arbitration link
+        }
+    }
+
+    @Test
+    fun migrate26To27_freshSchema_validatesAgainstV27() {
+        helper.createDatabase(TEST_DB, 26).close()
+        // Throws if MIGRATION_26_27 leaves the schema diverging from 27.json.
+        helper.runMigrationsAndValidate(TEST_DB, 27, true, AvoqadoDatabase.MIGRATION_26_27)
+    }
+
+    /**
+     * The money guarantee, v27 edition: queued payments (real money) and every
+     * other table must survive untouched — v27 only ADDS payment_attempts.
+     */
+    @Test
+    fun migrate26To27_preservesQueuedPaymentsAndCreatesEmptyLedger() {
+        helper.createDatabase(TEST_DB, 26).use { db ->
+            db.execSQL(
+                "INSERT INTO pending_payments (reference_number, venue_id, staff_id, amount, tip, " +
+                    "merchant_account_id, blumon_serial_number, entry_mode, is_international, " +
+                    "created_at, idempotency_key, payment_processor, retry_count, sync_status) VALUES " +
+                    "('REF-V27-001','v1','s1','980.00','98.00','m1','SER1','CHIP',0,123,'idem-27','BLUMON',0,'PENDING')",
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 27, true, AvoqadoDatabase.MIGRATION_26_27)
+
+        migrated.query("SELECT amount, idempotency_key FROM pending_payments WHERE reference_number = 'REF-V27-001'").use { c ->
+            assertThat(c.moveToFirst()).isTrue()
+            assertThat(c.getString(0)).isEqualTo("980.00")
+            assertThat(c.getString(1)).isEqualTo("idem-27")
+        }
+        migrated.query("SELECT COUNT(*) FROM payment_attempts").use { c ->
+            assertThat(c.moveToFirst()).isTrue()
+            assertThat(c.getInt(0)).isEqualTo(0)
         }
     }
 

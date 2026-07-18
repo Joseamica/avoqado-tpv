@@ -1,9 +1,11 @@
 package com.jaac.avoqado_tpv.features.ordering.data.mappers
 
 import com.jaac.avoqado_tpv.features.ordering.data.dto.CategoryDto
+import com.jaac.avoqado_tpv.features.ordering.data.dto.IngredientShortageDto
 import com.jaac.avoqado_tpv.features.ordering.data.dto.ModifierDto
 import com.jaac.avoqado_tpv.features.ordering.data.dto.ModifierGroupDto
 import com.jaac.avoqado_tpv.features.ordering.data.dto.ProductDto
+import com.jaac.avoqado_tpv.features.ordering.domain.IngredientShortage
 import com.jaac.avoqado_tpv.features.ordering.domain.ModifierType
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
@@ -51,7 +53,24 @@ fun ProductDto.toDomain(): Product {
         categoryColor = category.color,
         // Category active status (from dashboard toggle)
         // Used to filter inactive categories in getCategories()
-        categoryIsActive = category.isActive
+        categoryIsActive = category.isActive,
+        // ✅ FASE 2: ingredient shortage detail (RECIPE only; null on older backends)
+        limitingIngredient = limitingIngredient?.toDomain(),
+        insufficientIngredients = insufficientIngredients?.map { it.toDomain() } ?: emptyList()
+    )
+}
+
+/**
+ * Map IngredientShortageDto to domain (Fase 2)
+ */
+fun IngredientShortageDto.toDomain(): IngredientShortage {
+    return IngredientShortage(
+        rawMaterialId = rawMaterialId ?: "",
+        name = name,
+        required = required ?: 0.0,
+        available = available ?: 0.0,
+        unit = unit ?: "",
+        maxPortions = maxPortions ?: 0
     )
 }
 

@@ -1,0 +1,1736 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 27,
+    "identityHash": "62438c2d4c0ea1cf106790984098f22c",
+    "entities": [
+      {
+        "tableName": "pending_payments",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `reference_number` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `amount` TEXT NOT NULL, `tip` TEXT NOT NULL, `rating` INTEGER, `merchant_account_id` TEXT NOT NULL, `blumon_serial_number` TEXT NOT NULL, `device_serial_number` TEXT, `masked_pan` TEXT, `card_brand` TEXT, `entry_mode` TEXT NOT NULL, `is_international` INTEGER NOT NULL, `authorization_number` TEXT, `idempotency_key` TEXT, `payment_processor` TEXT NOT NULL DEFAULT 'BLUMON', `terminal_payment_request_id` TEXT, `order_id` TEXT, `order_number` TEXT, `shift_id` TEXT, `is_portabilidad` INTEGER NOT NULL DEFAULT 0, `serial_numbers` TEXT, `created_at` INTEGER NOT NULL, `retry_count` INTEGER NOT NULL, `last_error` TEXT, `sync_status` TEXT NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "referenceNumber",
+            "columnName": "reference_number",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "venueId",
+            "columnName": "venue_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "staffId",
+            "columnName": "staff_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "amount",
+            "columnName": "amount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tip",
+            "columnName": "tip",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rating",
+            "columnName": "rating",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "merchantAccountId",
+            "columnName": "merchant_account_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "blumonSerialNumber",
+            "columnName": "blumon_serial_number",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deviceSerialNumber",
+            "columnName": "device_serial_number",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "maskedPan",
+            "columnName": "masked_pan",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "cardBrand",
+            "columnName": "card_brand",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "entryMode",
+            "columnName": "entry_mode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isInternational",
+            "columnName": "is_international",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "authorizationNumber",
+            "columnName": "authorization_number",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "idempotencyKey",
+            "columnName": "idempotency_key",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "paymentProcessor",
+            "columnName": "payment_processor",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'BLUMON'"
+          },
+          {
+            "fieldPath": "terminalPaymentRequestId",
+            "columnName": "terminal_payment_request_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "orderId",
+            "columnName": "order_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "orderNumber",
+            "columnName": "order_number",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "shiftId",
+            "columnName": "shift_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "isPortabilidad",
+            "columnName": "is_portabilidad",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "serialNumbers",
+            "columnName": "serial_numbers",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "retryCount",
+            "columnName": "retry_count",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastError",
+            "columnName": "last_error",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "syncStatus",
+            "columnName": "sync_status",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_pending_payments_reference_number",
+            "unique": true,
+            "columnNames": [
+              "reference_number"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_pending_payments_reference_number` ON `${TABLE_NAME}` (`reference_number`)"
+          },
+          {
+            "name": "index_pending_payments_sync_status",
+            "unique": false,
+            "columnNames": [
+              "sync_status"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_pending_payments_sync_status` ON `${TABLE_NAME}` (`sync_status`)"
+          },
+          {
+            "name": "index_pending_payments_created_at",
+            "unique": false,
+            "columnNames": [
+              "created_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_pending_payments_created_at` ON `${TABLE_NAME}` (`created_at`)"
+          }
+        ]
+      },
+      {
+        "tableName": "draft_orders",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `order_number` TEXT NOT NULL, `table_id` TEXT, `table_name` TEXT, `covers` INTEGER NOT NULL, `waiter_id` TEXT, `waiter_name` TEXT, `customer_name` TEXT, `customer_phone` TEXT, `special_requests` TEXT, `status` TEXT NOT NULL, `kitchen_status` TEXT NOT NULL, `payment_status` TEXT NOT NULL, `order_type` TEXT NOT NULL, `subtotal` TEXT NOT NULL, `discount_amount` TEXT NOT NULL, `tax` TEXT NOT NULL, `total` TEXT NOT NULL, `paid_amount` TEXT NOT NULL, `remaining_balance` TEXT NOT NULL, `notes` TEXT, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `version` INTEGER NOT NULL, `sync_status` TEXT NOT NULL, `is_server_created` INTEGER NOT NULL, `last_sync_at` INTEGER, `conflict_data` TEXT, `merchant_account_id` TEXT, `merchant_account_name` TEXT, `last_split_type` TEXT, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "venueId",
+            "columnName": "venue_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "orderNumber",
+            "columnName": "order_number",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tableId",
+            "columnName": "table_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "tableName",
+            "columnName": "table_name",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "covers",
+            "columnName": "covers",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "waiterId",
+            "columnName": "waiter_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "waiterName",
+            "columnName": "waiter_name",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "customerName",
+            "columnName": "customer_name",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "customerPhone",
+            "columnName": "customer_phone",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "specialRequests",
+            "columnName": "special_requests",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "kitchenStatus",
+            "columnName": "kitchen_status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "paymentStatus",
+            "columnName": "payment_status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "orderType",
+            "columnName": "order_type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "subtotal",
+            "columnName": "subtotal",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "discountAmount",
+            "columnName": "discount_amount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tax",
+            "columnName": "tax",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "total",
+            "columnName": "total",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "paidAmount",
+            "columnName": "paid_amount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "remainingBalance",
+            "columnName": "remaining_balance",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "version",
+            "columnName": "version",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "syncStatus",
+            "columnName": "sync_status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isServerCreated",
+            "columnName": "is_server_created",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastSyncAt",
+            "columnName": "last_sync_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "conflictData",
+            "columnName": "conflict_data",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "merchantAccountId",
+            "columnName": "merchant_account_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "merchantAccountName",
+            "columnName": "merchant_account_name",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastSplitType",
+            "columnName": "last_split_type",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_draft_orders_venue_id_order_number",
+            "unique": true,
+            "columnNames": [
+              "venue_id",
+              "order_number"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_draft_orders_venue_id_order_number` ON `${TABLE_NAME}` (`venue_id`, `order_number`)"
+          },
+          {
+            "name": "index_draft_orders_table_id",
+            "unique": false,
+            "columnNames": [
+              "table_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_draft_orders_table_id` ON `${TABLE_NAME}` (`table_id`)"
+          },
+          {
+            "name": "index_draft_orders_sync_status",
+            "unique": false,
+            "columnNames": [
+              "sync_status"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_draft_orders_sync_status` ON `${TABLE_NAME}` (`sync_status`)"
+          },
+          {
+            "name": "index_draft_orders_updated_at",
+            "unique": false,
+            "columnNames": [
+              "updated_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_draft_orders_updated_at` ON `${TABLE_NAME}` (`updated_at`)"
+          }
+        ]
+      },
+      {
+        "tableName": "draft_order_items",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `external_id` TEXT, `line_position` INTEGER NOT NULL, `order_id` TEXT NOT NULL, `product_id` TEXT NOT NULL, `product_name` TEXT NOT NULL, `product_sku` TEXT, `quantity` INTEGER NOT NULL, `unit_price` TEXT NOT NULL, `total_price` TEXT NOT NULL, `modifiers` TEXT NOT NULL, `notes` TEXT, `kitchen_status` TEXT NOT NULL, `created_at` INTEGER NOT NULL, `sent_to_kitchen_at` INTEGER, `sync_status` TEXT NOT NULL, `is_server_created` INTEGER NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`order_id`) REFERENCES `draft_orders`(`id`) ON UPDATE CASCADE ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "externalId",
+            "columnName": "external_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "linePosition",
+            "columnName": "line_position",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "orderId",
+            "columnName": "order_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "productId",
+            "columnName": "product_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "productName",
+            "columnName": "product_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "productSku",
+            "columnName": "product_sku",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "quantity",
+            "columnName": "quantity",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "unitPrice",
+            "columnName": "unit_price",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalPrice",
+            "columnName": "total_price",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modifiers",
+            "columnName": "modifiers",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notes",
+            "columnName": "notes",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "kitchenStatus",
+            "columnName": "kitchen_status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sentToKitchenAt",
+            "columnName": "sent_to_kitchen_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "syncStatus",
+            "columnName": "sync_status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isServerCreated",
+            "columnName": "is_server_created",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_draft_order_items_order_id",
+            "unique": false,
+            "columnNames": [
+              "order_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_draft_order_items_order_id` ON `${TABLE_NAME}` (`order_id`)"
+          },
+          {
+            "name": "index_draft_order_items_product_id",
+            "unique": false,
+            "columnNames": [
+              "product_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_draft_order_items_product_id` ON `${TABLE_NAME}` (`product_id`)"
+          },
+          {
+            "name": "index_draft_order_items_sync_status",
+            "unique": false,
+            "columnNames": [
+              "sync_status"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_draft_order_items_sync_status` ON `${TABLE_NAME}` (`sync_status`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "draft_orders",
+            "onDelete": "CASCADE",
+            "onUpdate": "CASCADE",
+            "columns": [
+              "order_id"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "historical_periods",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `venue_id` TEXT NOT NULL, `grouping` TEXT NOT NULL, `period_start` INTEGER NOT NULL, `period_end` INTEGER NOT NULL, `label` TEXT NOT NULL, `subtitle` TEXT NOT NULL, `total_sales` TEXT NOT NULL, `total_orders` INTEGER NOT NULL, `total_products` INTEGER NOT NULL, `average_order_value` TEXT NOT NULL, `sales_change` TEXT, `orders_change` TEXT, `cached_at` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "venueId",
+            "columnName": "venue_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "grouping",
+            "columnName": "grouping",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "periodStart",
+            "columnName": "period_start",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "periodEnd",
+            "columnName": "period_end",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "label",
+            "columnName": "label",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "subtitle",
+            "columnName": "subtitle",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalSales",
+            "columnName": "total_sales",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalOrders",
+            "columnName": "total_orders",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalProducts",
+            "columnName": "total_products",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "averageOrderValue",
+            "columnName": "average_order_value",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "salesChange",
+            "columnName": "sales_change",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "ordersChange",
+            "columnName": "orders_change",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "cachedAt",
+            "columnName": "cached_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_historical_periods_cached_at",
+            "unique": false,
+            "columnNames": [
+              "cached_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_historical_periods_cached_at` ON `${TABLE_NAME}` (`cached_at`)"
+          },
+          {
+            "name": "index_historical_periods_venue_id_grouping_period_start",
+            "unique": true,
+            "columnNames": [
+              "venue_id",
+              "grouping",
+              "period_start"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_historical_periods_venue_id_grouping_period_start` ON `${TABLE_NAME}` (`venue_id`, `grouping`, `period_start`)"
+          }
+        ]
+      },
+      {
+        "tableName": "products",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `product_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `name` TEXT NOT NULL, `sku` TEXT NOT NULL, `price` TEXT NOT NULL, `category_id` TEXT NOT NULL, `category_name` TEXT NOT NULL, `description` TEXT, `emoji` TEXT NOT NULL, `image_url` TEXT, `available` INTEGER NOT NULL, `display_order` INTEGER NOT NULL, `track_inventory` INTEGER NOT NULL, `inventory_method` TEXT, `available_quantity` INTEGER, `modifier_groups_json` TEXT NOT NULL, `category_color` TEXT, `category_is_active` INTEGER NOT NULL, `cached_at` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "productId",
+            "columnName": "product_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "venueId",
+            "columnName": "venue_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sku",
+            "columnName": "sku",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "price",
+            "columnName": "price",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "categoryId",
+            "columnName": "category_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "categoryName",
+            "columnName": "category_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "emoji",
+            "columnName": "emoji",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "imageUrl",
+            "columnName": "image_url",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "available",
+            "columnName": "available",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayOrder",
+            "columnName": "display_order",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trackInventory",
+            "columnName": "track_inventory",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "inventoryMethod",
+            "columnName": "inventory_method",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "availableQuantity",
+            "columnName": "available_quantity",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "modifierGroupsJson",
+            "columnName": "modifier_groups_json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "categoryColor",
+            "columnName": "category_color",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "categoryIsActive",
+            "columnName": "category_is_active",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cachedAt",
+            "columnName": "cached_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_products_venue_id_product_id",
+            "unique": true,
+            "columnNames": [
+              "venue_id",
+              "product_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_products_venue_id_product_id` ON `${TABLE_NAME}` (`venue_id`, `product_id`)"
+          },
+          {
+            "name": "index_products_venue_id_category_id",
+            "unique": false,
+            "columnNames": [
+              "venue_id",
+              "category_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_products_venue_id_category_id` ON `${TABLE_NAME}` (`venue_id`, `category_id`)"
+          },
+          {
+            "name": "index_products_venue_id_available",
+            "unique": false,
+            "columnNames": [
+              "venue_id",
+              "available"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_products_venue_id_available` ON `${TABLE_NAME}` (`venue_id`, `available`)"
+          },
+          {
+            "name": "index_products_cached_at",
+            "unique": false,
+            "columnNames": [
+              "cached_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_products_cached_at` ON `${TABLE_NAME}` (`cached_at`)"
+          }
+        ]
+      },
+      {
+        "tableName": "product_categories",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `category_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `name` TEXT NOT NULL, `display_order` INTEGER NOT NULL, `product_count` INTEGER NOT NULL, `emoji` TEXT NOT NULL, `color` TEXT, `is_active` INTEGER NOT NULL DEFAULT 1, `cached_at` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "categoryId",
+            "columnName": "category_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "venueId",
+            "columnName": "venue_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayOrder",
+            "columnName": "display_order",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "productCount",
+            "columnName": "product_count",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "emoji",
+            "columnName": "emoji",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "color",
+            "columnName": "color",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "isActive",
+            "columnName": "is_active",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "cachedAt",
+            "columnName": "cached_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_product_categories_venue_id_category_id",
+            "unique": true,
+            "columnNames": [
+              "venue_id",
+              "category_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_product_categories_venue_id_category_id` ON `${TABLE_NAME}` (`venue_id`, `category_id`)"
+          },
+          {
+            "name": "index_product_categories_cached_at",
+            "unique": false,
+            "columnNames": [
+              "cached_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_product_categories_cached_at` ON `${TABLE_NAME}` (`cached_at`)"
+          }
+        ]
+      },
+      {
+        "tableName": "tables_cache",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `table_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `number` TEXT NOT NULL, `capacity` INTEGER NOT NULL, `position_x` REAL, `position_y` REAL, `shape` TEXT NOT NULL, `rotation` INTEGER NOT NULL, `status` TEXT NOT NULL, `current_order_id` TEXT, `current_order_number` TEXT, `current_order_covers` INTEGER, `current_order_total` TEXT, `current_order_item_count` INTEGER, `current_order_waiter_id` TEXT, `current_order_waiter_name` TEXT, `current_order_created_at` TEXT, `area_id` TEXT, `area_name` TEXT, `cached_at` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tableId",
+            "columnName": "table_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "venueId",
+            "columnName": "venue_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "number",
+            "columnName": "number",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "capacity",
+            "columnName": "capacity",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "positionX",
+            "columnName": "position_x",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "positionY",
+            "columnName": "position_y",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "shape",
+            "columnName": "shape",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rotation",
+            "columnName": "rotation",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currentOrderId",
+            "columnName": "current_order_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "currentOrderNumber",
+            "columnName": "current_order_number",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "currentOrderCovers",
+            "columnName": "current_order_covers",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "currentOrderTotal",
+            "columnName": "current_order_total",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "currentOrderItemCount",
+            "columnName": "current_order_item_count",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "currentOrderWaiterId",
+            "columnName": "current_order_waiter_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "currentOrderWaiterName",
+            "columnName": "current_order_waiter_name",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "currentOrderCreatedAt",
+            "columnName": "current_order_created_at",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "areaId",
+            "columnName": "area_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "areaName",
+            "columnName": "area_name",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "cachedAt",
+            "columnName": "cached_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_tables_cache_venue_id_table_id",
+            "unique": true,
+            "columnNames": [
+              "venue_id",
+              "table_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_tables_cache_venue_id_table_id` ON `${TABLE_NAME}` (`venue_id`, `table_id`)"
+          },
+          {
+            "name": "index_tables_cache_venue_id",
+            "unique": false,
+            "columnNames": [
+              "venue_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_tables_cache_venue_id` ON `${TABLE_NAME}` (`venue_id`)"
+          },
+          {
+            "name": "index_tables_cache_cached_at",
+            "unique": false,
+            "columnNames": [
+              "cached_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_tables_cache_cached_at` ON `${TABLE_NAME}` (`cached_at`)"
+          }
+        ]
+      },
+      {
+        "tableName": "floor_elements_cache",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `element_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `type` TEXT NOT NULL, `position_x` REAL NOT NULL, `position_y` REAL NOT NULL, `width` REAL, `height` REAL, `rotation` INTEGER NOT NULL, `end_x` REAL, `end_y` REAL, `label` TEXT, `color` TEXT, `area_id` TEXT, `cached_at` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "elementId",
+            "columnName": "element_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "venueId",
+            "columnName": "venue_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "type",
+            "columnName": "type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "positionX",
+            "columnName": "position_x",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "positionY",
+            "columnName": "position_y",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "width",
+            "columnName": "width",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "height",
+            "columnName": "height",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "rotation",
+            "columnName": "rotation",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endX",
+            "columnName": "end_x",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "endY",
+            "columnName": "end_y",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "label",
+            "columnName": "label",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "color",
+            "columnName": "color",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "areaId",
+            "columnName": "area_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "cachedAt",
+            "columnName": "cached_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_floor_elements_cache_venue_id_element_id",
+            "unique": true,
+            "columnNames": [
+              "venue_id",
+              "element_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_floor_elements_cache_venue_id_element_id` ON `${TABLE_NAME}` (`venue_id`, `element_id`)"
+          },
+          {
+            "name": "index_floor_elements_cache_venue_id",
+            "unique": false,
+            "columnNames": [
+              "venue_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_floor_elements_cache_venue_id` ON `${TABLE_NAME}` (`venue_id`)"
+          },
+          {
+            "name": "index_floor_elements_cache_cached_at",
+            "unique": false,
+            "columnNames": [
+              "cached_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_floor_elements_cache_cached_at` ON `${TABLE_NAME}` (`cached_at`)"
+          }
+        ]
+      },
+      {
+        "tableName": "cached_shift",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `status` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `staff_name` TEXT NOT NULL, `start_time` TEXT NOT NULL, `total_sales` TEXT NOT NULL, `total_orders` INTEGER NOT NULL, `duration_minutes` INTEGER, `cached_at` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "venueId",
+            "columnName": "venue_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "staffId",
+            "columnName": "staff_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "staffName",
+            "columnName": "staff_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startTime",
+            "columnName": "start_time",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalSales",
+            "columnName": "total_sales",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalOrders",
+            "columnName": "total_orders",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "durationMinutes",
+            "columnName": "duration_minutes",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "cachedAt",
+            "columnName": "cached_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_cached_shift_venue_id",
+            "unique": true,
+            "columnNames": [
+              "venue_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_cached_shift_venue_id` ON `${TABLE_NAME}` (`venue_id`)"
+          }
+        ]
+      },
+      {
+        "tableName": "verification_queue",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `venueId` TEXT NOT NULL, `staffId` TEXT NOT NULL, `paymentId` TEXT NOT NULL, `orderId` TEXT, `photoLocalPaths` TEXT NOT NULL, `photoUrls` TEXT NOT NULL, `scannedBarcodes` TEXT NOT NULL, `syncStatus` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `syncAttempts` INTEGER NOT NULL, `lastSyncError` TEXT, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "venueId",
+            "columnName": "venueId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "staffId",
+            "columnName": "staffId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "paymentId",
+            "columnName": "paymentId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "orderId",
+            "columnName": "orderId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "photoLocalPaths",
+            "columnName": "photoLocalPaths",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "photoUrls",
+            "columnName": "photoUrls",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "scannedBarcodes",
+            "columnName": "scannedBarcodes",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "syncStatus",
+            "columnName": "syncStatus",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "syncAttempts",
+            "columnName": "syncAttempts",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastSyncError",
+            "columnName": "lastSyncError",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_verification_queue_venueId",
+            "unique": false,
+            "columnNames": [
+              "venueId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_verification_queue_venueId` ON `${TABLE_NAME}` (`venueId`)"
+          },
+          {
+            "name": "index_verification_queue_paymentId",
+            "unique": false,
+            "columnNames": [
+              "paymentId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_verification_queue_paymentId` ON `${TABLE_NAME}` (`paymentId`)"
+          },
+          {
+            "name": "index_verification_queue_syncStatus",
+            "unique": false,
+            "columnNames": [
+              "syncStatus"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_verification_queue_syncStatus` ON `${TABLE_NAME}` (`syncStatus`)"
+          }
+        ]
+      },
+      {
+        "tableName": "mosaic_shortcut",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `product_id` TEXT NOT NULL, `position` INTEGER NOT NULL, `label` TEXT NOT NULL, `color_hex` TEXT, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "venueId",
+            "columnName": "venue_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "productId",
+            "columnName": "product_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "position",
+            "columnName": "position",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "label",
+            "columnName": "label",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "colorHex",
+            "columnName": "color_hex",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_mosaic_shortcut_venue_id",
+            "unique": false,
+            "columnNames": [
+              "venue_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_mosaic_shortcut_venue_id` ON `${TABLE_NAME}` (`venue_id`)"
+          },
+          {
+            "name": "index_mosaic_shortcut_venue_id_position",
+            "unique": true,
+            "columnNames": [
+              "venue_id",
+              "position"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_mosaic_shortcut_venue_id_position` ON `${TABLE_NAME}` (`venue_id`, `position`)"
+          }
+        ]
+      },
+      {
+        "tableName": "angelpay_merchant_cache",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`merchantId` INTEGER NOT NULL, `name` TEXT NOT NULL, `affiliationNumber` TEXT NOT NULL, `isActive` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`merchantId`))",
+        "fields": [
+          {
+            "fieldPath": "merchantId",
+            "columnName": "merchantId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "affiliationNumber",
+            "columnName": "affiliationNumber",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isActive",
+            "columnName": "isActive",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "merchantId"
+          ]
+        }
+      },
+      {
+        "tableName": "payment_attempts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`attempt_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `processor` TEXT NOT NULL, `kind` TEXT NOT NULL DEFAULT 'SALE', `state` TEXT NOT NULL, `state_version` INTEGER NOT NULL DEFAULT 0, `amount_cents` INTEGER NOT NULL, `tip_cents` INTEGER NOT NULL, `currency` TEXT NOT NULL DEFAULT 'MXN', `recording_route` TEXT NOT NULL, `context_schema_version` INTEGER NOT NULL DEFAULT 1, `payment_context_json` TEXT NOT NULL, `operation_id` TEXT, `reference_number` TEXT, `auth_code` TEXT, `host_approved` INTEGER, `masked_pan` TEXT, `card_brand` TEXT, `entry_mode` TEXT, `last_error` TEXT, `verify_attempts` INTEGER NOT NULL DEFAULT 0, `lease_until` INTEGER, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`attempt_id`))",
+        "fields": [
+          {
+            "fieldPath": "attemptId",
+            "columnName": "attempt_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "venueId",
+            "columnName": "venue_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "processor",
+            "columnName": "processor",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'SALE'"
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stateVersion",
+            "columnName": "state_version",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "amountCents",
+            "columnName": "amount_cents",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tipCents",
+            "columnName": "tip_cents",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currency",
+            "columnName": "currency",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'MXN'"
+          },
+          {
+            "fieldPath": "recordingRoute",
+            "columnName": "recording_route",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contextSchemaVersion",
+            "columnName": "context_schema_version",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "paymentContextJson",
+            "columnName": "payment_context_json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationId",
+            "columnName": "operation_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "referenceNumber",
+            "columnName": "reference_number",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "authCode",
+            "columnName": "auth_code",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "hostApproved",
+            "columnName": "host_approved",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "maskedPan",
+            "columnName": "masked_pan",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "cardBrand",
+            "columnName": "card_brand",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "entryMode",
+            "columnName": "entry_mode",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastError",
+            "columnName": "last_error",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "verifyAttempts",
+            "columnName": "verify_attempts",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "leaseUntil",
+            "columnName": "lease_until",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "attempt_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_payment_attempts_state",
+            "unique": false,
+            "columnNames": [
+              "state"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_payment_attempts_state` ON `${TABLE_NAME}` (`state`)"
+          },
+          {
+            "name": "index_payment_attempts_venue_id",
+            "unique": false,
+            "columnNames": [
+              "venue_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_payment_attempts_venue_id` ON `${TABLE_NAME}` (`venue_id`)"
+          },
+          {
+            "name": "index_payment_attempts_created_at",
+            "unique": false,
+            "columnNames": [
+              "created_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_payment_attempts_created_at` ON `${TABLE_NAME}` (`created_at`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '62438c2d4c0ea1cf106790984098f22c')"
+    ]
+  }
+}

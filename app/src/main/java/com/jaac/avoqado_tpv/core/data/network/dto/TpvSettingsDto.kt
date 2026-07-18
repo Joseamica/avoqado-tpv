@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.core.data.network.dto
 
 import com.google.gson.annotations.SerializedName
 import com.jaac.avoqado_tpv.features.payment.domain.model.CellularFailoverMode
+import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentLedgerMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.TpvSettings
 
 /**
@@ -156,7 +157,11 @@ data class TpvSettingsDto(
     val cellularFailoverCooldownSeconds: Int? = null,
 
     @SerializedName("cellularFailoverMinCellHoldSeconds")
-    val cellularFailoverMinCellHoldSeconds: Int? = null
+    val cellularFailoverMinCellHoldSeconds: Int? = null,
+
+    // La libreta (write-ahead payment ledger) rollout flag — null/unknown coalesces to OFF
+    @SerializedName("paymentLedgerMode")
+    val paymentLedgerMode: String? = null
 )
 
 /**
@@ -210,7 +215,8 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     cellularFailoverMode = CellularFailoverMode.fromRaw(cellularFailoverMode),
     cellularFailoverBadReadingsThreshold = cellularFailoverBadReadingsThreshold ?: 3,
     cellularFailoverCooldownSeconds = cellularFailoverCooldownSeconds ?: 60,
-    cellularFailoverMinCellHoldSeconds = cellularFailoverMinCellHoldSeconds ?: 120
+    cellularFailoverMinCellHoldSeconds = cellularFailoverMinCellHoldSeconds ?: 120,
+    paymentLedgerMode = PaymentLedgerMode.fromRaw(paymentLedgerMode)
 )
 
 /**
@@ -253,7 +259,8 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     cellularFailoverMode = cellularFailoverMode.name,
     cellularFailoverBadReadingsThreshold = cellularFailoverBadReadingsThreshold,
     cellularFailoverCooldownSeconds = cellularFailoverCooldownSeconds,
-    cellularFailoverMinCellHoldSeconds = cellularFailoverMinCellHoldSeconds
+    cellularFailoverMinCellHoldSeconds = cellularFailoverMinCellHoldSeconds,
+    paymentLedgerMode = paymentLedgerMode.name
 )
 
 /**

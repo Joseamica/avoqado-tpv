@@ -9,16 +9,12 @@ import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.abs
 
 /**
  * CustomKeyboard - Teclado numérico reutilizable
@@ -56,16 +52,11 @@ fun CustomKeyboard(
     onConfirmClick: () -> Unit,
     onToggleClick: (() -> Unit)? = null
 ) {
-    // Adaptive sizing: square screens (N62 480x480) get compact buttons
-    // Uses LocalConfiguration directly — safe to use outside ResponsiveScaffold
-    val config = LocalConfiguration.current
-    val isSquare = remember(config.screenHeightDp, config.screenWidthDp) {
-        abs(config.screenHeightDp - config.screenWidthDp) < 80
-    }
-    val btnSize: Dp = if (isSquare) 52.dp else 80.dp
-    val actionWidth: Dp = if (isSquare) 64.dp else 100.dp
-    val gap: Dp = if (isSquare) 4.dp else 8.dp
-    val fontSize: Int = if (isSquare) 18 else 24
+    val sizes = rememberResponsiveSizes()
+    val btnSize = sizes.keyboardButtonSize
+    val actionWidth = sizes.keyboardActionWidth
+    val gap = sizes.keyboardSpacing
+    val fontSize = sizes.keyboardFontSize
 
     val keys = listOf(
         listOf(1, 2, 3),

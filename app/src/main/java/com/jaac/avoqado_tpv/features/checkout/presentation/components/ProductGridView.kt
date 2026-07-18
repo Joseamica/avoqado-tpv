@@ -40,6 +40,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -52,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.ordering.domain.CategoryColors
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
@@ -260,12 +262,33 @@ private fun ProductTile(product: Product, onClick: () -> Unit) {
     val tintHex = product.categoryColor ?: CategoryColors.getAutoColor(product.categoryId)
     val tint = parseHexColor(tintHex) ?: MaterialTheme.colorScheme.primary
 
+    val isOutOfStock = !product.available
+    val stockQty = product.availableQuantity
+    val isRecipe = product.inventoryMethod == "RECIPE"
+    // Muestra el numerito solo cuando hay stock (>0) en un producto rastreado.
+    // El 0 no se pinta aquí — lo cubre el scrim de agotado.
+    val showStockCount = product.trackInventory && stockQty != null && stockQty > 0
+    val isLowStock = showStockCount && (stockQty ?: 0) <= 5
+    val lowStockColor = MaterialTheme.avoqadoColors.statusWarning
+    // Etiqueta de agotado según el MOTIVO:
+    //  - stock 0 por RECETA → se acabó un insumo de la receta (no el producto)
+    //  - stock 0 por CANTIDAD → el producto mismo se acabó
+    //  - no disponible por otra causa (inactivo) → genérico
+    val outOfStockLabel = when {
+        product.trackInventory && (stockQty ?: 0) <= 0 && isRecipe -> "SIN INSUMOS"
+        product.trackInventory && (stockQty ?: 0) <= 0 -> "AGOTADO"
+        else -> "NO DISPONIBLE"
+    }
+
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surface,
         onClick = onClick,
-        enabled = product.available,
+        // Siempre tocable: el agotado ya no se agrega (el handler lo intercepta y
+        // abre el modal informativo), pero el tap DEBE llegar para poder informar.
+        // El look "deshabilitado" lo dan el scrim + la atenuación, no enabled=false.
+        enabled = true,
     ) {
         Column {
             // Top thumbnail area — product photo if available, else initials
@@ -298,6 +321,32 @@ private fun ProductTile(product: Product, onClick: () -> Unit) {
                             .padding(horizontal = 8.dp, vertical = 6.dp),
                     )
                 }
+
+                // 🔢 Badge de stock (arriba-izquierda). RECETA se muestra con "~"
+                // porque es una estimación (los insumos se comparten entre
+                // productos); CANTIDAD es el conteo exacto. Ámbar cuando queda
+                // poco (≤5) para que el cajero note que hay que resurtir.
+                if (showStockCount) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(6.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(
+                                if (isLowStock) lowStockColor
+                                else Color.Black.copy(alpha = 0.6f),
+                            )
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                    ) {
+                        Text(
+                            text = if (isRecipe) "~$stockQty" else "$stockQty",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isLowStock) Color.Black else Color.White,
+                        )
+                    }
+                }
+
                 if (product.hasModifiers) {
                     Box(
                         modifier = Modifier
@@ -315,10 +364,36 @@ private fun ProductTile(product: Product, onClick: () -> Unit) {
                         )
                     }
                 }
+                // 🚫 Agotado: Surface(enabled=false) ya bloquea el tap, pero sin
+                // señal visual el tile se veía idéntico a uno disponible (foto,
+                // precio, incluso el ícono "tiene modificadores"), así que el
+                // toque no hacía nada y se sentía como app rota. El texto cambia
+                // según el motivo: RECETA = "SIN INSUMOS" (se acabó un insumo, no
+                // el producto), CANTIDAD = "AGOTADO".
+                if (isOutOfStock) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.6f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = outOfStockLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                        )
+                    }
+                }
             }
 
-            // Info row
-            Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+            // Info row — atenuado cuando está agotado, para reforzar el estado
+            // no-seleccionable del scrim de arriba.
+            Column(
+                modifier = Modifier
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                    .alpha(if (isOutOfStock) 0.5f else 1f),
+            ) {
                 Text(
                     text = product.name,
                     style = MaterialTheme.typography.bodySmall,
@@ -414,9 +489,16 @@ private fun ProductGridInsideCategoryPreview() {
     AvoqadoTheme {
         ProductGridView(
             products = listOf(
-                fakeProduct("p1", "Hamburguesa Clásica", 14450, hasModifiers = true, categoryId = "c1"),
-                fakeProduct("p2", "Hamburguesa BBQ", 16500, hasModifiers = true, categoryId = "c1"),
-                fakeProduct("p3", "Hamburguesa Doble", 18900, hasModifiers = false, categoryId = "c1"),
+                // Con stock (receta) → badge "~12".
+                fakeProduct("p1", "Hamburguesa de Pollo", 11900, hasModifiers = true, categoryId = "c1", trackInventory = true, inventoryMethod = "RECIPE", availableQuantity = 12),
+                // 🚫 Agotado por receta + con modificadores: reproduce el caso que
+                // se veía "roto" — ícono de modificadores visible pero tap sin
+                // efecto. Ahora muestra "SIN INSUMOS".
+                fakeProduct("p2", "Hamburguesa BBQ", 16500, hasModifiers = true, categoryId = "c1", available = false, trackInventory = true, inventoryMethod = "RECIPE", availableQuantity = 0),
+                // Poco stock (cantidad) → badge "3" en ámbar.
+                fakeProduct("p3", "Coca-Cola 600ml", 3500, categoryId = "c1", trackInventory = true, inventoryMethod = "QUANTITY", availableQuantity = 3),
+                // Agotado por cantidad → "AGOTADO".
+                fakeProduct("p4", "Agua Mineral 1L", 2500, categoryId = "c1", available = false, trackInventory = true, inventoryMethod = "QUANTITY", availableQuantity = 0),
             ),
             categories = listOf(fakeCategory("c1", "Hamburguesas", "#FF5722")),
             isLoading = false,
@@ -447,6 +529,10 @@ private fun fakeProduct(
     priceCents: Int,
     hasModifiers: Boolean = false,
     categoryId: String = "c1",
+    available: Boolean = true,
+    trackInventory: Boolean = false,
+    inventoryMethod: String? = null,
+    availableQuantity: Int? = null,
 ) = Product(
     id = id,
     name = name,
@@ -457,7 +543,10 @@ private fun fakeProduct(
     description = null,
     emoji = "",
     imageUrl = null,
-    available = true,
+    available = available,
+    trackInventory = trackInventory,
+    inventoryMethod = inventoryMethod,
+    availableQuantity = availableQuantity,
     modifierGroups = if (hasModifiers) {
         listOf(
             com.jaac.avoqado_tpv.features.ordering.domain.ModifierGroup(

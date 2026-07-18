@@ -50,6 +50,8 @@ fun AmountInputBottomSheet(
     onConfirm: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val sizes = rememberResponsiveSizes()
+    val isCompactSquare = sizes.screenProfile == ScreenProfile.CompactSquare
     var amount by remember { mutableStateOf("0") }
     var showError by remember { mutableStateOf(false) }
 
@@ -133,14 +135,17 @@ fun AmountInputBottomSheet(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(24.dp),
+                    .padding(
+                        horizontal = if (isCompactSquare) 16.dp else 24.dp,
+                        vertical = if (isCompactSquare) 12.dp else 24.dp,
+                    ),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // Header with close button
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 16.dp),
+                        .padding(bottom = if (isCompactSquare) 8.dp else 16.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -163,7 +168,7 @@ fun AmountInputBottomSheet(
                 // Amount display (large)
                 Text(
                     text = formattedAmount,
-                    fontSize = 48.sp,
+                    fontSize = if (isCompactSquare) 40.sp else 48.sp,
                     fontWeight = FontWeight.Bold,
                     color = if (isValid)
                         MaterialTheme.colorScheme.onSurface
@@ -172,7 +177,7 @@ fun AmountInputBottomSheet(
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 16.dp)
+                        .padding(vertical = if (isCompactSquare) 8.dp else 16.dp)
                 )
 
                 // Custom keyboard
@@ -214,7 +219,7 @@ fun AmountInputBottomSheet(
 
                 // Error message
                 if (showError) {
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(if (isCompactSquare) 8.dp else 12.dp))
                     Text(
                         text = "Ingresa un monto mayor a $0.00",
                         style = MaterialTheme.typography.bodySmall,
@@ -228,9 +233,29 @@ fun AmountInputBottomSheet(
     }  // Close Box (outer)
 }
 
+private const val NEXGO_N62 = "spec:width=480px,height=480px,dpi=160"
+
 @Preview(showBackground = true)
 @Composable
 private fun AmountInputBottomSheetPreview() {
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+        ) {
+            AmountInputBottomSheet(
+                visible = true,
+                onDismiss = {},
+                onConfirm = {}
+            )
+        }
+    }
+}
+
+@Preview(name = "Amount overlay - NEXGO N62", device = NEXGO_N62, showSystemUi = true)
+@Composable
+private fun AmountInputBottomSheetN62Preview() {
     com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
         Box(
             modifier = Modifier

@@ -221,6 +221,8 @@ class PaymentViewModel @Inject constructor(
     private val paymentStateHolder: com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder,
     // 🔄 ConnectionEventManager - Broadcasts reconnection events (receipt-on-reconnect + queue sync)
     private val connectionEventManager: ConnectionEventManager,
+    // 📒 PaymentAttemptLedger — La Libreta write-ahead: observational marks only, never blocks a charge
+    private val paymentAttemptLedger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger,
     // 📱 Application context - for PaymentSyncScheduler.runNow() on reconnect
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
@@ -2604,6 +2606,28 @@ class PaymentViewModel @Inject constructor(
         // ⭐ CRITICAL: Validate shift is open before processing payment (Square/Toast pattern)
         // Without an open shift, cash reconciliation is impossible and payments can't be properly tracked
         viewModelScope.launch {
+            // 📒 [Libreta] Write-ahead: the attempt exists on disk BEFORE any SDK code runs.
+            // Committed before proceeding (suspend). A ledger failure never blocks the charge —
+            // the helper is runCatching inside; this outer runCatching also covers arg building.
+            runCatching {
+                sessionSnapshot.paymentAttemptId?.let { attemptIdForLedger ->
+                    val ledgerContext = createPaymentContext()
+                    val route = if (ledgerContext.isOrderPayment())
+                        com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.ROUTE_ORDER
+                    else
+                        com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.ROUTE_FAST
+                    paymentAttemptLedger.openAttempt(
+                        attemptId = attemptIdForLedger,
+                        venueId = currentVenueId,
+                        processor = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.PROCESSOR_BLUMON,
+                        amountCents = sessionSnapshot.amount.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact(),
+                        tipCents = sessionSnapshot.tip.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact(),
+                        recordingRoute = route,
+                        contextJson = com.google.gson.Gson().toJson(ledgerContext)
+                    )
+                }
+            }
+
             // 🔧 CRITICAL: Await SDK initialization before proceeding with payment
             // SDK init is triggered after login (LoginViewModel.initializeBlumonSDK)
             // This ensures SDK is ready even if user navigates quickly to payment screen
@@ -3848,6 +3872,8 @@ class PaymentViewModel @Inject constructor(
         // collector on the next RESOLVED state (which is only reached AFTER recording), and
         // by onCleared() as a backstop.
         paymentStateHolder.setCharging(true)
+        // 📒 [Libreta] Barrier: AUTORIZANDO is committed BEFORE the SDK may fire (spec §4.4).
+        sessionSnapshot.paymentAttemptId?.let { paymentAttemptLedger.markAuthorizing(it) }
         return try {
             // ⚠️ This posId is NEVER sent anywhere. `SaleIccParams`/`SaleCtlsParams` have no posId
             // field — the SDK injects the one it reads from its own Init table
@@ -4132,6 +4158,18 @@ class PaymentViewModel @Inject constructor(
                         description = response.saleData.description,
                         isRefund = sessionSnapshot.mode == PaymentMode.REFUND,
                     )
+                    // 📒 [Libreta] The instant the host answered — BEFORE EMV completion and
+                    // BEFORE publishing Success. This closes the Mindform window: from here on,
+                    // a process death leaves an operationId on disk to reconcile against.
+                    sessionSnapshot.paymentAttemptId?.let { attemptIdForLedger ->
+                        paymentAttemptLedger.markHostResponded(
+                            attemptId = attemptIdForLedger,
+                            approved = declineMessage == null,
+                            operationId = response.operation,
+                            referenceNumber = response.saleData.reference,
+                            authCode = response.saleData.authorization
+                        )
+                    }
                     if (declineMessage != null) {
                         Timber.w("❌ [$saleType] Issuer DECLINE (authorization blank) — emv=${response.saleData.emvResponseCode} desc='${response.saleData.description}'")
                         AuthorizationResult(response = null, userFriendlyError = declineMessage)
@@ -5612,6 +5650,9 @@ class PaymentViewModel @Inject constructor(
         viewModelScope.launch {
             stopDetectCardUseCase.runInfallible(StopDetectCardParams())
             _isPaymentInProgress.value = false  // 🚦 Release guard
+            // 📒 [Libreta] Only a row still in PREPARANDO can be discarded by a user cancel —
+            // once AUTORIZANDO, the outcome is unknown and the row must survive (spec §4.2).
+            sessionSnapshot.paymentAttemptId?.let { paymentAttemptLedger.markDiscardedBeforeCharge(it, "user_cancel") }
             // 🛡️ Clear idempotency keys so the next attempt generates a fresh one
             updateSessionSnapshot(
                 reason = "cancelPayment",
@@ -6416,6 +6457,16 @@ class PaymentViewModel @Inject constructor(
                     )
                 }
 
+                // 📒 [Libreta] Money moved (covers offline-approved contactless too, via from-PREPARANDO).
+                context.idempotencyKey?.let { attemptIdForLedger ->
+                    paymentAttemptLedger.markAuthorized(
+                        attemptId = attemptIdForLedger,
+                        maskedPan = cardDetails.maskedPan,
+                        cardBrand = cardDetails.cardBrand.name,
+                        entryMode = cardDetails.entryMode.name
+                    )
+                }
+
                 Timber.d("💾 [Backend Recording] Context: venue=$currentVenueId, staff=$currentStaffId, shift=$currentShiftId, amount=${getAmountForFlow()}, tip=${getTipForFlow()}, rating=${getRatingForFlow()}, merchantId=${context.merchantAccountId}, blumonSerial=${context.blumonSerialNumber}")
 
                 // 🔍 DEBUG: Trace blumonOperationNumber being passed to recorder
@@ -6442,6 +6493,8 @@ class PaymentViewModel @Inject constructor(
 
                 // 4. Handle result
                 result.onSuccess { receipt ->
+                    // 📒 [Libreta] REGISTRADO — the backend owns the money record from here on.
+                    context.idempotencyKey?.let { paymentAttemptLedger.markRecorded(it) }
                     Timber.i("✅ [Backend Recording] Payment recorded successfully | paymentId=${receipt.paymentId}")
                     Timber.i("📄 [Backend Recording] Receipt URL: ${receipt.receiptUrl}")
 
@@ -6467,6 +6520,8 @@ class PaymentViewModel @Inject constructor(
                     // 🔄 Clear any pending retry (recording succeeded on the happy path)
                     pendingReceiptRetry = null
                 }.onFailure { error ->
+                    // 📒 [Libreta] REGISTRO_FALLIDO — the row is the evidence until the queue takes over.
+                    context.idempotencyKey?.let { paymentAttemptLedger.markRecordFailed(it, error.message) }
                     Timber.e("❌ [Backend Recording] Failed to record payment: ${error.message}")
 
                     // 🔄 Store retry context so listenToConnectionRestored() can re-attempt when connectivity returns
@@ -6513,6 +6568,8 @@ class PaymentViewModel @Inject constructor(
                     viewModelScope.launch {
                         val queueResult = paymentQueueRepository.enqueue(queuedPayment)
                         queueResult.onSuccess {
+                            // 📒 [Libreta] ENTREGADA_A_COLA — pending_payments owns the money now.
+                            context.idempotencyKey?.let { attemptIdForLedger -> paymentAttemptLedger.markDeliveredToQueue(attemptIdForLedger) }
                             Timber.i("✅ [Offline Queue] Payment queued successfully | ref=$referenceNumber")
                             Timber.i("   → PaymentSyncWorker will retry every 15 minutes")
                             Timber.i("   → Payment will sync automatically when network is available")

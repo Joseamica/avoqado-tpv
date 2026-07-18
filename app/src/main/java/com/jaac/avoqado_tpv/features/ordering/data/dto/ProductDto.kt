@@ -80,7 +80,43 @@ data class ProductDto(
     // - QUANTITY: Returns inventory.currentStock
     // - RECIPE: Calculates available portions from ingredients
     @SerializedName("availableQuantity")
-    val availableQuantity: Int?
+    val availableQuantity: Int?,
+
+    // ✅ FASE 2 (optional, RECIPE only): which raw material is the bottleneck,
+    // and which ones can't make even one portion. Lets the TPV tell the cashier
+    // exactly WHAT ran out instead of a generic "SIN INSUMOS".
+    // Null on QUANTITY products and on older backends → TPV falls back to generic.
+    @SerializedName("limitingIngredient")
+    val limitingIngredient: IngredientShortageDto? = null,
+
+    @SerializedName("insufficientIngredients")
+    val insufficientIngredients: List<IngredientShortageDto>? = null
+)
+
+/**
+ * Ingredient shortage DTO (Fase 2)
+ *
+ * Backend: product.dashboard.service.ts → computeRecipeShortage()
+ * Describes a recipe raw material and how far its stock is from one portion.
+ */
+data class IngredientShortageDto(
+    @SerializedName("rawMaterialId")
+    val rawMaterialId: String?,
+
+    @SerializedName("name")
+    val name: String,
+
+    @SerializedName("required")
+    val required: Double?,
+
+    @SerializedName("available")
+    val available: Double?,
+
+    @SerializedName("unit")
+    val unit: String?,
+
+    @SerializedName("maxPortions")
+    val maxPortions: Int?
 )
 
 /**

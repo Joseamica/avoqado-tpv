@@ -7,7 +7,21 @@
 
 ## [Unreleased]
 
+### **Changed**
+
+- **Cobrar: header removido para ganar altura vertical — flecha atrás movida junto al search**: en la pantalla de Cobrar (`CheckoutScreen`) se quitó la barra de título "← Cobrar" para reclamar la altura del header en la PAX A910S (640dp). La navegación atrás ahora vive **inline, a la izquierda del `SearchBarView`** (mismo `IconButton` de flecha, `contentDescription="Volver"`), así que el cajero sigue pudiendo regresar. Cambio acotado a esta pantalla; el `SearchBarView` toma el ancho restante con `weight(1f)`.
+
+- **Buscar actualizaciones: una sola fuente (Avoqado) y búsqueda automática al entrar**: la pantalla de actualizaciones ya no pide elegir entre "Buscar (Proveedor)" y "Buscar (Avoqado)". Al tocar "Buscar actualizaciones" en el modal de configuración, `SelfUpdateViewModel` lanza la verificación contra Avoqado en su `init` (solo si no hay una actualización forzada pendiente, que conserva su prioridad), por lo que la pantalla abre directamente en "Verificando..." y aterriza en "¡Estás al día!" o en la tarjeta de nueva versión con un botón **Actualizar** (antes "Descargar"). El estado `Idle` queda como respaldo tras un cancelar, con un único botón "Buscar actualizaciones". La ruta del proveedor (Blumon/PAX) permanece intacta en el ViewModel, solo deja de exponerse en la UI.
+
+### **Fixed**
+
+- **Splash nativo recortado como bloque verde en Android 12 (PAX A910S)**: Android enmascara el tercio exterior del ícono de splash y el isotipo completo terminaba ampliado y recortado como un bloque verde. La capa nativa ahora muestra únicamente la semilla terracota, en el canvas de `108dp` que renderiza correctamente el firmware PAX; al cargar Compose, la misma semilla continúa sin salto hacia el crecimiento verde desde el pico. Se añadieron tests de regresión para el recurso y su conexión con el tema de arranque.
+
+## [2.7.1] - 2026-07-21
+
 ### **Added**
+
+- **Loader de marca Avoqado en splash y cargas bloqueantes (todos los tiers y variantes)**: nuevo loader vectorial sin bitmaps para terminales de memoria limitada: aparece primero la semilla terracota y el verde se dibuja desde el pico inferior hasta completar el isotipo. El splash nativo presenta la semilla antes de que Compose cargue; el splash Compose continúa el crecimiento y, junto con la verificación de sesión/permisos y los estados de carga de pantalla o sección completa, reutiliza el mismo componente. Incluye el placeholder compacto al preparar una orden (PAX + Nexgo), el modal de inicialización Blumon (solo PAX, ahora gateado explícitamente con `ENABLE_PAX_SDK`) y los estados bloqueantes de cobro AngelPay (solo Nexgo). Los indicadores pequeños de botones, paginación y pull-to-refresh se conservan como spinners convencionales para mantener legibilidad y contexto. Cambio exclusivamente visual: no modifica navegación, estados de negocio, pagos ni gating comercial. Verificado con test unitario de la línea de tiempo, tests de `AngelPayPaymentViewModel`, builds `sandbox`/`production`/`tutorialEmu`/`nexgo`/`nexgoProd` y reproducción real en PAX A910S.
 
 - **Room v27 — tabla `payment_attempts` (la libreta, write-ahead ledger de cobros) + DAO + migración (Task 1 del plan libreta write-ahead, spec 2026-07-17)**: fundación de datos para registrar CADA intento de cobro con tarjeta ANTES de invocar el SDK, cerrando la ventana Mindform ("el banco aprobó, la app murió, cero registro y cero cola"). La feature quedó completa en este mismo cambio: tabla + helper `PaymentAttemptLedger` (Task 2) + cableado en los DOS procesadores (Blumon Task 4, AngelPay Task 5) + flag de rollout `paymentLedgerMode` (Task 3) + sweep de sombra con poda (Task 6).
   - **`PaymentAttemptEntity`** (`features/payment/data/ledger/`): 1 fila por intento, PK = el MISMO UUID que viaja al backend como `idempotencyKey`; estados en español (`PREPARANDO`→`AUTORIZANDO`→`HOST_RESPONDIO`→…→`CERRADA`, cuarentena `INDETERMINADO`) porque salen verbatim en tooling de ops; montos en **centavos como Long** (nunca texto decimal); snapshot Gson del PaymentContext + outcome del host (operationId/authCode/maskedPan…) + bookkeeping de recovery (`verify_attempts`, `lease_until`). Índices en `state`, `venue_id`, `created_at`.

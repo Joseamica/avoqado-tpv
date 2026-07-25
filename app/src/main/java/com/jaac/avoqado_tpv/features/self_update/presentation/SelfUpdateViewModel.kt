@@ -79,6 +79,13 @@ class SelfUpdateViewModel @Inject constructor(
         // Auto-start Avoqado update if there's a pending forced update
         // This triggers when user clicks "Actualizar Ahora" from ForceUpdateDialog
         checkAndAutoStartPendingUpdate()
+
+        // No pending forced update: entering the screen means the user asked for
+        // "Buscar actualizaciones", so check Avoqado right away instead of showing
+        // an idle screen that requires a second tap.
+        if (_state.value is SelfUpdateState.Idle) {
+            checkForUpdateAvoqado()
+        }
     }
 
     /**

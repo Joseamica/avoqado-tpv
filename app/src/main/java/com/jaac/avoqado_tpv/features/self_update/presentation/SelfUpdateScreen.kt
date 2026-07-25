@@ -81,7 +81,6 @@ fun SelfUpdateScreen(
             when (val currentState = state) {
                 is SelfUpdateState.Idle -> {
                     IdleContent(
-                        onCheckBlumon = { viewModel.checkForUpdateBlumon() },
                         onCheckAvoqado = { viewModel.checkForUpdateAvoqado() }
                     )
                 }
@@ -146,7 +145,6 @@ fun SelfUpdateScreen(
 
 @Composable
 private fun IdleContent(
-    onCheckBlumon: () -> Unit,
     onCheckAvoqado: () -> Unit
 ) {
     Column(
@@ -172,32 +170,9 @@ private fun IdleContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        Text(
-            text = "Selecciona una fuente de actualizaciones:",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Blumon (Provider) button
         Button(
-            onClick = onCheckBlumon,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.CloudDownload,
-                contentDescription = null,
-                modifier = Modifier.size(24.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text("Buscar (Proveedor)")
-        }
-
-        // Avoqado (Self-managed) button
-        OutlinedButton(
             onClick = onCheckAvoqado,
             modifier = Modifier
                 .fillMaxWidth()
@@ -209,33 +184,7 @@ private fun IdleContent(
                 modifier = Modifier.size(24.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
-            Text("Buscar (Avoqado)")
-        }
-
-        // Info card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant
-            )
-        ) {
-            Row(
-                modifier = Modifier.padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Info,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Text(
-                    text = "Proveedor: Actualizaciones oficiales de PAX\nAvoqado: Actualizaciones de emergencia",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+            Text("Buscar actualizaciones")
         }
     }
 }
@@ -657,12 +606,12 @@ private fun AvoqadoUpdateAvailableContent(
                 .height(48.dp)
         ) {
             Icon(
-                imageVector = Icons.Default.Download,
+                imageVector = Icons.Default.SystemUpdate,
                 contentDescription = null,
                 modifier = Modifier.size(24.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
-            Text("Descargar")
+            Text("Actualizar")
         }
 
         OutlinedButton(

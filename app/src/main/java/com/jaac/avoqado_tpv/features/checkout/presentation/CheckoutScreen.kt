@@ -144,29 +144,9 @@ fun CheckoutScreen(
     val referralPlanLocked = !planInfo.allowsFeature(PlanFeatureCatalog.REFERRAL_PROGRAM)
 
     Scaffold(
-        topBar = {
-            // Compact top bar — Row instead of TopAppBar to control vertical
-            // padding. Saves ~16dp vs default Material3 TopAppBar, which is
-            // measurable on PAX A910S (640dp tall).
-            androidx.compose.foundation.layout.Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 2.dp),
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = onNavigateBack) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Volver",
-                    )
-                }
-                Text(
-                    text = "Cobrar",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-        },
+        // Header ("Cobrar" title bar) intentionally removed on this screen to reclaim
+        // vertical height on the PAX A910S (640dp tall). Back navigation moves inline,
+        // to the LEFT of the search bar, so the operator can still go back.
         snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
     ) { padding ->
         Column(
@@ -175,12 +155,25 @@ fun CheckoutScreen(
                 .padding(padding)
                 .background(MaterialTheme.colorScheme.background),
         ) {
-            SearchBarView(
-                isLoading = isLoading,
-                onSearchTap = { showSearch = true },
-                onRefresh = { viewModel.refreshProducts() },
-                onBarcodeScan = { showBarcodeScanner = true },
-            )
+            // Back arrow + search bar in a single row (replaces the removed top header).
+            androidx.compose.foundation.layout.Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onNavigateBack) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Volver",
+                    )
+                }
+                SearchBarView(
+                    isLoading = isLoading,
+                    onSearchTap = { showSearch = true },
+                    onRefresh = { viewModel.refreshProducts() },
+                    onBarcodeScan = { showBarcodeScanner = true },
+                    modifier = Modifier.weight(1f),
+                )
+            }
 
             TabSelectorView(
                 selectedTab = selectedTab,

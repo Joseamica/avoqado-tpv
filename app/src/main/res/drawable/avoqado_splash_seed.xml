@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="800"
+    android:viewportHeight="800">
+    <!--
+    Android 12 masks native splash artwork like an adaptive icon. Keeping only
+    the seed here avoids device-specific cropping; Compose continues the logo
+    by drawing the green silhouette as soon as the app content is ready.
+    -->
+    <path
+        android:fillColor="#D97452"
+        android:pathData="M388.2,267.4c-23.9,4.6 -43.8,15.2 -61.1,32.7c-21.2,21.4 -32.4,47.5 -32.3,75.9c0,28.3 9.9,47.3 35.4,68.6c17.4,14.5 26.4,18.3 57.4,24.1c18,3.4 21.5,3.7 36.9,3.7c14.6,0.1 18.2,-0.3 25.4,-2.2c25.6,-6.9 40.9,-21.9 48.1,-47.2c3.1,-10.8 3.8,-32.8 1.6,-47.3c-5.8,-36.7 -21,-69.6 -40.9,-88.3c-9.8,-9.2 -18.5,-14.2 -31.2,-17.9c-11.2,-3.3 -28.3,-4.2 -39.3,-2.1z" />
+</vector>

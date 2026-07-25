@@ -33,7 +33,7 @@
     <!-- Native Android splash screen theme (AndroidX core-splashscreen). -->
     <style name="Theme.Avoqadotpv.Splash" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/light_background</item>
-        <item name="windowSplashScreenAnimatedIcon">@drawable/isotipo</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/avoqado_splash_seed</item>
         <item name="windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
         <item name="postSplashScreenTheme">@style/Theme.Avoqadotpv</item>
     </style>

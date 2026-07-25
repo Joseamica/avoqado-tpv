@@ -49,6 +49,7 @@ import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.CategoryWithSt
 import com.jaac.avoqado_tpv.features.serialized_sale.presentation.CreateCategoryDialog
 import com.google.zxing.BarcodeFormat
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 
@@ -165,16 +166,7 @@ fun SerializedInventoryScreen(
                     )
                 }
                 uiState.isLoading -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularProgressIndicator()
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text("Procesando...")
-                        }
-                    }
+                    AvoqadoFullScreenLoading(message = "Procesando...")
                 }
                 else -> {
                     // Main inventory form

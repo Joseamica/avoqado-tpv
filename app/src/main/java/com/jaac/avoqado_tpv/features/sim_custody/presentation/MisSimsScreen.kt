@@ -63,6 +63,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.features.sim_custody.domain.model.MySim
 import com.jaac.avoqado_tpv.features.sim_custody.domain.model.SimCustodyState
@@ -340,9 +341,7 @@ private fun AcceptAllBanner(count: Int, onClick: () -> Unit, modifier: Modifier 
 
 @Composable
 private fun LoadingState() {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        CircularProgressIndicator()
-    }
+    AvoqadoFullScreenLoading(message = "Cargando SIMs...")
 }
 
 @Composable

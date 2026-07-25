@@ -88,6 +88,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.ordering.domain.Discount
@@ -708,12 +709,7 @@ private fun DiscountsSubNavScreen(
         BreadcrumbHeader(title = "Descuentos", onBack = onBack)
 
         if (isLoading) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator()
-            }
+            AvoqadoFullScreenLoading(message = "Cargando descuentos...")
         } else {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),

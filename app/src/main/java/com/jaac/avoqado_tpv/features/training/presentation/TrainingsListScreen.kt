@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.training.data.dto.TrainingModuleDto
 import com.jaac.avoqado_tpv.features.training.data.dto.TrainingProgressDto
@@ -60,14 +61,10 @@ fun TrainingsListScreen(
     ) { paddingValues ->
         when {
             state.isLoading -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator()
-                }
+                AvoqadoFullScreenLoading(
+                    modifier = Modifier.padding(paddingValues),
+                    message = "Cargando capacitaciones..."
+                )
             }
 
             state.error != null -> {

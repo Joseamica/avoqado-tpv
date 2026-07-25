@@ -64,6 +64,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
@@ -330,12 +331,7 @@ fun KioskMenuScreen(
             // Product grid
             when {
                 state.isLoading -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator()
-                    }
+                    AvoqadoFullScreenLoading(message = "Cargando productos...")
                 }
 
                 state.filteredProducts.isEmpty() -> {

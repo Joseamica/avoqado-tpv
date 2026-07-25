@@ -46,7 +46,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -76,6 +75,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.domain.events.VenueStatusEvent
 import com.jaac.avoqado_tpv.core.presentation.components.ActionButton
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoBrandLoader
 import com.jaac.avoqado_tpv.core.presentation.components.StaticActionButtonGrid
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoDialog
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
@@ -334,9 +334,9 @@ fun WelcomeScreen(
     // Shows loader while SDK initializes, blocks user from proceeding to payment
     // Progressive warnings: 0-15s normal, 15-30s slow hint, 30s+ warning + cancel
     // ═══════════════════════════════════════════════════════════════════════════
-    val shouldBlockForBlumon = isBlumonInitializing ||
-        blumonInitError != null ||
-        (BuildConfig.ENABLE_PAX_SDK && !isBlumonReady)
+    val shouldBlockForBlumon = BuildConfig.ENABLE_PAX_SDK && (
+        isBlumonInitializing || blumonInitError != null || !isBlumonReady
+    )
 
     if (shouldBlockForBlumon) {
         Box(
@@ -366,10 +366,7 @@ fun WelcomeScreen(
                 ) {
                     if (isBlumonInitializing || blumonInitError == null) {
                         // Loading state with progressive warnings
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(48.dp),
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                        AvoqadoBrandLoader(size = 72.dp)
                         Text(
                             text = "Preparando sistema de pagos...",
                             style = MaterialTheme.typography.titleMedium,

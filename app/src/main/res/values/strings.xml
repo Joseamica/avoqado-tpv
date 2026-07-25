@@ -1,5 +1,7 @@
 <resources>
     <string name="app_name">Avoqado</string>
+    <string name="splash_title">Avoqado TPV</string>
+    <string name="session_verifying">Verificando sesión...</string>
 
     <!-- Payment Screen -->
     <string name="payment_title">Procesar Pago</string>

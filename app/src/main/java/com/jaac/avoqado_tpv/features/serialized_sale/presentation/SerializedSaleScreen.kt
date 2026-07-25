@@ -42,6 +42,7 @@ import java.time.format.FormatStyle
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.CategoryWithStock
 import com.jaac.avoqado_tpv.features.serialized_sale.domain.model.ScanResult
 import com.jaac.avoqado_tpv.features.verification.presentation.components.BarcodeScannerScreen
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.AmountInputBottomSheet
 import timber.log.Timber
@@ -162,17 +163,7 @@ fun SerializedSaleScreen(
                     .padding(paddingValues)
             ) {
                 if (uiState.isLoading) {
-                    // Loading overlay
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularProgressIndicator()
-                            Spacer(modifier = Modifier.height(Spacing.Space4))
-                            Text("Procesando...")
-                        }
-                    }
+                    AvoqadoFullScreenLoading(message = "Procesando...")
                 } else {
                     Column(
                         modifier = Modifier
@@ -1109,4 +1100,3 @@ private fun StepRow(
         Column(modifier = Modifier.weight(1f)) { content() }
     }
 }
-

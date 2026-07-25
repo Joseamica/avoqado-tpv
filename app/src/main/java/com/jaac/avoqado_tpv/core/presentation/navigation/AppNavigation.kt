@@ -1,11 +1,5 @@
 package com.jaac.avoqado_tpv.core.presentation.navigation
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,7 +10,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,13 +21,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import android.content.Context
 import android.widget.Toast
 import com.blumonpay.pax.utils.AppManager
@@ -59,6 +49,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoBrandLoader
+import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.screens.FastPaymentEntryScreen
 import com.jaac.avoqado_tpv.core.presentation.screens.WelcomeScreen
 import com.jaac.avoqado_tpv.features.checkout.presentation.CheckoutScreen
@@ -2764,47 +2756,18 @@ private fun SplashScreen(
 /**
  * Splash Screen Content
  *
- * Professional animated splash screen with Avoqado branding.
+ * Signature splash screen with Avoqado branding.
  * Displayed while checking activation and authentication status.
  *
- * Design Features:
- * - Logo appears with smooth scale animation (0.5 → 1.0, 800ms)
- * - Text fades in sequentially after logo (400ms delay)
- * - Clean, centered layout with professional spacing
- * - Light gray background (not pure white/black)
- *
- * Timing:
- * - 0ms: Logo starts scaling up
- * - 400ms: Text fades in
- * - Total animation: ~1200ms
- *
- * Pattern: Square POS, Toast POS - Polished, branded splash experience
+ * The native Android splash presents the seed first; this Compose screen
+ * continues the same visual by growing the green silhouette from its tail.
  */
 @Composable
 private fun SplashScreenContent() {
-    // Animation states
-    var showLogo by remember { mutableStateOf(false) }
-    var showText by remember { mutableStateOf(false) }
-
-    // Logo scale animation (smooth ease-in-out)
-    val logoScale by animateFloatAsState(
-        targetValue = if (showLogo) 1f else 0.5f,
-        animationSpec = tween(durationMillis = 800, easing = FastOutSlowInEasing),
-        label = "logoScale"
-    )
-
-    // Launch animation sequence
-    LaunchedEffect(Unit) {
-        showLogo = true
-        delay(400)  // Wait 400ms before showing text
-        showText = true
-    }
-
-    // Splash UI with animations
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceVariant),
+            .background(MaterialTheme.colorScheme.background),
         contentAlignment = Alignment.Center
     ) {
         Column(
@@ -2814,35 +2777,12 @@ private fun SplashScreenContent() {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            // Logo with scale animation - Real Avoqado avocado logo
-            Image(
-                painter = painterResource(R.drawable.isotipo),
-                contentDescription = "Avoqado Logo",
-                modifier = Modifier
-                    .size(200.dp)  // Professional size for splash
-                    .scale(logoScale)  // Smooth scale animation (0.5 → 1.0)
-            )
-
-            Spacer(modifier = Modifier.height(32.dp))  // More spacing (was 24.dp)
-
-            // Text with fade-in animation
-            AnimatedVisibility(
-                visible = showText,
-                enter = fadeIn(animationSpec = tween(800))
-            ) {
-                Text(
-                    text = "Avoqado TPV",
-                    fontSize = 35.sp,  // Larger text (was headlineLarge)
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            Spacer(modifier = Modifier.height(48.dp))  // More spacing before loading
-
-            // Loading indicator (visible immediately)
-            CircularProgressIndicator(
-                color = MaterialTheme.colorScheme.primary
+            AvoqadoBrandLoader(size = 156.dp)
+            Spacer(modifier = Modifier.height(24.dp))
+            Text(
+                text = stringResource(R.string.splash_title),
+                style = MaterialTheme.typography.headlineLarge,
+                color = MaterialTheme.colorScheme.onBackground
             )
         }
 
@@ -2850,11 +2790,19 @@ private fun SplashScreenContent() {
         Text(
             text = "v${BuildConfig.VERSION_NAME}",
             style = MaterialTheme.typography.bodySmall,
-            color = Color.Gray,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 24.dp)
         )
+    }
+}
+
+@Preview(showBackground = true, widthDp = 360, heightDp = 640)
+@Composable
+private fun SplashScreenContentPreview() {
+    AvoqadoTheme {
+        SplashScreenContent()
     }
 }
 
@@ -2875,42 +2823,7 @@ private fun SplashScreenContent() {
  */
 @Composable
 private fun SessionExpiringOverlay() {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.6f)),  // Semi-transparent overlay
-        contentAlignment = Alignment.Center
-    ) {
-        androidx.compose.material3.Card(
-            modifier = Modifier
-                .padding(32.dp),
-            colors = androidx.compose.material3.CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
-            ),
-            elevation = androidx.compose.material3.CardDefaults.cardElevation(
-                defaultElevation = 8.dp
-            )
-        ) {
-            Column(
-                modifier = Modifier.padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                CircularProgressIndicator(
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(48.dp)
-                )
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                Text(
-                    text = "Verificando sesión...",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-        }
-    }
+    AvoqadoLoadingOverlay(message = stringResource(R.string.session_verifying))
 }
 
 

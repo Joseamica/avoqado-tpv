@@ -21,7 +21,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -42,6 +41,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoBrandLoader
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
@@ -390,7 +390,7 @@ fun AngelPayPaymentScreen(
                             textAlign = TextAlign.Center,
                         )
                     } else {
-                        CircularProgressIndicator()
+                        AvoqadoBrandLoader(size = 72.dp)
                     }
                 }
 
@@ -612,8 +612,8 @@ private fun LoadingContent(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        CircularProgressIndicator(
-            modifier = if (largeSpinner) Modifier.size(64.dp) else Modifier,
+        AvoqadoBrandLoader(
+            size = if (largeSpinner) 96.dp else 72.dp,
         )
         Spacer(modifier = Modifier.height(if (largeSpinner) 24.dp else 16.dp))
         Text(

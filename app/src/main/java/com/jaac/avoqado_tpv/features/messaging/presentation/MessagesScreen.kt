@@ -39,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
 import com.jaac.avoqado_tpv.features.messaging.presentation.components.MessageRow
 
 /**
@@ -127,16 +128,7 @@ fun MessagesScreen(
             when {
                 // Initial loading
                 uiState.isLoadingHistory && uiState.messageHistory.isEmpty() -> {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(32.dp),
-                            strokeWidth = 3.dp
-                        )
-                    }
+                    AvoqadoFullScreenLoading(message = "Cargando mensajes...")
                 }
                 // Empty state
                 filteredMessages.isEmpty() && !uiState.isLoadingHistory -> {

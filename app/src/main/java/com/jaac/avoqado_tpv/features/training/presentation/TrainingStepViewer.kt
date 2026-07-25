@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.jaac.avoqado_tpv.R
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.training.presentation.components.FullscreenMediaDialog
 import com.jaac.avoqado_tpv.features.training.presentation.components.TrainingVideoPlayer
@@ -78,14 +79,10 @@ fun TrainingStepViewer(
     ) { paddingValues ->
         when {
             state.isLoading -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CircularProgressIndicator()
-                }
+                AvoqadoFullScreenLoading(
+                    modifier = Modifier.padding(paddingValues),
+                    message = "Cargando capacitación..."
+                )
             }
 
             state.error != null -> {

@@ -13,10 +13,18 @@ import androidx.room.PrimaryKey
  *
  * **Lifecycle:**
  * 1. Payment approved by Blumon → Backend recording fails → Saved to Room DB
- * 2. PaymentSyncWorker fetches pending payments every 15 minutes
- * 3. Retry with exponential backoff (3 attempts max)
+ * 2. PaymentSyncWorker fetches pending payments every 15 minutes (or on-demand: connectivity
+ *    restored, or PaymentSyncScheduler.runNow())
+ * 3. Each payment gets exactly ONE attempt per worker run — no in-worker retry loop or
+ *    backoff; WorkManager owns the retry cadence across separate runs (F-9)
  * 4. On success → Mark as SUCCESS, delete after 7 days
- * 5. On max retries → Mark as FAILED for manual review
+ * 5. On a transient failure — including 401/403, almost always a stuck token refresh,
+ *    not the payment itself (fix round 1) — after MAX_RETRY_ATTEMPTS (10) attempts spent
+ *    across separate runs → Mark as FAILED
+ * 6. On a permanent business failure (400/404/422 ONLY — see SyncOutcome.PERMANENT_HTTP_CODES)
+ *    → Mark as FAILED immediately with `permanent = true`, so resetAllFailed() never
+ *    resurrects it automatically (F-10); a deliberate human tap still can
+ *    (resetAllFailedIncludingPermanent, fix round 1)
  *
  * **Idempotency:** referenceNumber from Blumon SDK is unique, prevents duplicates
  */
@@ -25,7 +33,8 @@ import androidx.room.PrimaryKey
     indices = [
         Index(value = ["reference_number"], unique = true), // Prevent duplicate queue entries
         Index(value = ["sync_status"]), // Fast filtering for pending payments
-        Index(value = ["created_at"]) // FIFO processing order
+        Index(value = ["created_at"]), // FIFO processing order
+        Index(value = ["claim_token"]) // claim/release del worker
     ]
 )
 data class PendingPaymentEntity(
@@ -136,7 +145,43 @@ data class PendingPaymentEntity(
     val lastError: String? = null, // Last error message for debugging
 
     @ColumnInfo(name = "sync_status")
-    val syncStatus: String = SYNC_STATUS_PENDING // PENDING, SYNCING, SUCCESS, FAILED
+    val syncStatus: String = SYNC_STATUS_PENDING, // PENDING, SYNCING, SUCCESS, FAILED
+
+    /**
+     * Token del worker que reclamó esta fila. NULL = libre.
+     * Existe para que dos workers concurrentes no tomen el mismo pago y lo
+     * registren dos veces. Ver spec §4.2 F-8.
+     */
+    @ColumnInfo(name = "claim_token")
+    val claimToken: String? = null,
+
+    /** Epoch ms del claim. Permite reclamar filas abandonadas por un worker muerto. */
+    @ColumnInfo(name = "claimed_at")
+    val claimedAt: Long? = null,
+
+    /**
+     * `true` cuando el fallo fue de negocio PERMANENTE — SOLO 400/404/422 (orden no
+     * encontrada, payload mal formado, regla de negocio violada), nunca 401/403 (eso es
+     * la SESIÓN, no el pago — ver `SyncOutcome.PERMANENT_HTTP_CODES`, fix round 1) ni
+     * transitorio (red, 5xx). `resetAllFailed()` lo respeta: reintentar uno de estos 4xx
+     * en cada reconexión no lo arregla, solo quema los 10 intentos de
+     * `MAX_RETRY_ATTEMPTS` una y otra vez en vez de dejar que la fila se asiente en un
+     * FAILED estable — hoy visible solo por el badge de `getFailedCount()`;
+     * `getAllFailed()` no tiene ningún caller todavía, así que no hay pantalla de
+     * revisión dedicada (ese es un hueco real, esto no lo resuelve). Lo marca
+     * [PendingPaymentDao.markPermanentlyFailed]. Ver spec §4.2 F-10.
+     *
+     * Filas FAILED de antes de v29 no tienen forma de saber si fueron permanentes — quedan
+     * en `false` (resucitables) por default: perder para siempre un pago que sí se podía
+     * recuperar es peor que un ciclo de retry extra. Ver `AvoqadoDatabase.MIGRATION_28_29`.
+     *
+     * El operador tiene un escape hatch aparte de `resetAllFailed()`:
+     * `PendingPaymentDao.resetAllFailedIncludingPermanent()`, disparado solo por un tap
+     * manual (`DeviceHealthViewModel.retryFailedPayments`), nunca por el reconector
+     * automático — fix round 1.
+     */
+    @ColumnInfo(name = "permanent", defaultValue = "0")
+    val permanent: Boolean = false,
 ) {
     companion object {
         const val SYNC_STATUS_PENDING = "PENDING" // Waiting to sync

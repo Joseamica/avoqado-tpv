@@ -58,7 +58,7 @@ object DatabaseModule {
      *
      * **Configuration:**
      * - Name: "avoqado_database"
-     * - Migrations: explicit chain 2→27 (see AvoqadoDatabase companion object).
+     * - Migrations: explicit chain 2→29 (see AvoqadoDatabase companion object).
      *   NO blanket destructive fallback — a missing migration crashes loudly in QA
      *   instead of silently wiping pending_payments/draft_orders in production.
      *
@@ -106,7 +106,9 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_23_24,  // 🔴 CRITICAL: Repair products/historical_periods schema drift
                 AvoqadoDatabase.MIGRATION_24_25,  // 🔶 Processor-aware offline queue (AngelPay order/SIM payments)
                 AvoqadoDatabase.MIGRATION_25_26,  // 📡 Offline queue carries the POS→TPV arbitration link
-                AvoqadoDatabase.MIGRATION_26_27   // 📒 La libreta — write-ahead ledger de cobros
+                AvoqadoDatabase.MIGRATION_26_27,  // 📒 La libreta — write-ahead ledger de cobros
+                AvoqadoDatabase.MIGRATION_27_28,  // 🔒 Claim por token en pending_payments (F-8)
+                AvoqadoDatabase.MIGRATION_28_29   // 🚫 permanent en pending_payments — resetAllFailed() respeta 4xx (F-10)
             )
 
             // 🛡️ NO blanket destructive fallback (removed 2026-06-12).

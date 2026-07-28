@@ -218,4 +218,18 @@ object NetworkModule {
     fun provideApiService(retrofit: Retrofit): ApiService {
         return retrofit.create(ApiService::class.java)
     }
+
+    /**
+     * TablesApiService — módulo Mesas (`features/tables/`, Plan C), SOLO `tpv/…`.
+     *
+     * Retrofit propio del módulo (Task 2), separado a propósito de [ApiService] —
+     * `features/tables/` no importa de `features/ordering/`/`features/checkout/` (D-3
+     * del plan), así que tampoco comparte su interfaz Retrofit aunque reutilice el
+     * mismo [Retrofit]/[OkHttpClient] subyacente.
+     */
+    @Provides
+    @Singleton
+    fun provideTablesApiService(retrofit: Retrofit): com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService {
+        return retrofit.create(com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService::class.java)
+    }
 }

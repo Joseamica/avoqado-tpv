@@ -32,7 +32,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
 /**
  * Room database for Avoqado TPV local data persistence.
  *
- * **Current Version:** 27
+ * **Current Version:** 29
  * - v1 → v2: Added blumonSerialNumber to PendingPaymentEntity for merchant account tracking
  * - v2 → v3: Added merchantAccountId to PendingPaymentEntity (provider-agnostic migration)
  * - v3 → v4: Added rating to PendingPaymentEntity (user rating feature - 2025-01-11)
@@ -61,6 +61,10 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
  * - v24 → v25: Processor-aware offline queue — pending_payments carries payment_processor/order/SIM metadata (2026-07-09)
  * - v25 → v26: pending_payments carries terminalPaymentRequestId (POS→TPV arbitration link) (2026-07-14)
  * - v26 → v27: Added payment_attempts — write-ahead ledger de cobros (la libreta) (2026-07-18)
+ * - v27 → v28: claim_token/claimed_at en pending_payments — claim atómico por token para que
+ *   dos workers concurrentes nunca tomen la misma fila (F-8) (2026-07-24)
+ * - v28 → v29: columna `permanent` en pending_payments — resetAllFailed() ya no resucita
+ *   los fallos de negocio permanentes (4xx) (F-10) (2026-07-24)
  *
  * **Entities:**
  * - PendingPaymentEntity: Offline queue for failed payment recordings
@@ -120,7 +124,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
         AngelPayMerchantCacheEntity::class, // ⭐ v22: AngelPay SDK 1.0.5 multi-merchant cache
         com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity::class // ⭐ v27: payment_attempts write-ahead ledger (la libreta)
     ],
-    version = 27, // ⭐ Version 27: payment_attempts — write-ahead ledger de cobros (la libreta) (2026-07-18)
+    version = 29, // ⭐ Version 29: columna permanent en pending_payments (F-10) (2026-07-24)
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -1656,6 +1660,44 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                 database.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_attempts_state` ON `payment_attempts` (`state`)")
                 database.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_attempts_venue_id` ON `payment_attempts` (`venue_id`)")
                 database.execSQL("CREATE INDEX IF NOT EXISTS `index_payment_attempts_created_at` ON `payment_attempts` (`created_at`)")
+            }
+        }
+
+        /**
+         * v28: claim por token en pending_payments.
+         *
+         * Sin esto, dos workers concurrentes leen las mismas filas PENDING y registran
+         * el mismo pago dos veces (la única defensa era la deduplicación del backend).
+         * Aditiva y nullable: las filas existentes quedan sin reclamar, que es correcto.
+         */
+        val MIGRATION_27_28 = object : Migration(27, 28) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE pending_payments ADD COLUMN claim_token TEXT")
+                db.execSQL("ALTER TABLE pending_payments ADD COLUMN claimed_at INTEGER")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_pending_payments_claim_token " +
+                        "ON pending_payments (claim_token)",
+                )
+            }
+        }
+
+        /**
+         * v29: columna `permanent` en pending_payments (F-10).
+         *
+         * resetAllFailed() volvía a poner en PENDING TODAS las filas FAILED, incluyendo
+         * las que fallaron por un 4xx permanente (orden no encontrada, venue inactivo) —
+         * se reintentaban en cada reconexión para siempre, quemando MAX_RETRY_ATTEMPTS de
+         * nuevo cada vez sin llegar jamás a revisión manual. `permanent` distingue ese
+         * caso: lo prende `PendingPaymentDao.markPermanentlyFailed`, lo respeta
+         * `resetAllFailed`.
+         *
+         * Aditiva con default 0: las filas FAILED existentes (de antes de v29, no hay forma
+         * de saber si eran permanentes) quedan resucitables — ver
+         * `PendingPaymentEntity.permanent` para el razonamiento de ese default.
+         */
+        val MIGRATION_28_29 = object : Migration(28, 29) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE pending_payments ADD COLUMN permanent INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

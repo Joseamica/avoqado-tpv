@@ -183,7 +183,7 @@ class AvoqadoDatabaseMigrationTest {
         val db = DatabaseModule.provideDatabase(appContext)
         try {
             val open = db.openHelper.writableDatabase
-            assertThat(open.version).isEqualTo(27) // full chain ran (…23→24→25→26→27)
+            assertThat(open.version).isEqualTo(29) // full chain ran (…23→24→25→26→27→28→29)
 
             // products: previously-missing column now exists (cache rebuilt empty)
             open.query("SELECT category_color FROM products").use { c ->
@@ -403,6 +403,94 @@ class AvoqadoDatabaseMigrationTest {
         migrated.query("SELECT COUNT(*) FROM payment_attempts").use { c ->
             assertThat(c.moveToFirst()).isTrue()
             assertThat(c.getInt(0)).isEqualTo(0)
+        }
+    }
+
+    /**
+     * v27 → v28 adds `pending_payments.claim_token` / `claimed_at` (claim por token, F-8). It is
+     * purely additive + nullable, so Room's own schema validation against 28.json is the whole
+     * contract.
+     */
+    @Test
+    fun migrate27To28_freshSchema_validatesAgainstV28() {
+        helper.createDatabase(TEST_DB, 27).close()
+        // Throws if MIGRATION_27_28 leaves the schema diverging from 28.json.
+        helper.runMigrationsAndValidate(TEST_DB, 28, true, AvoqadoDatabase.MIGRATION_27_28)
+    }
+
+    /**
+     * The money guarantee, v28 edition: a queued payment (real money not yet synced) must
+     * survive the upgrade untouched, and the new claim columns must default to NULL — i.e. the
+     * row is "unclaimed", which is the correct state for a row that predates the claim system.
+     */
+    @Test
+    fun migrate27To28_preservesQueuedPaymentsAndDefaultsClaimFieldsToNull() {
+        helper.createDatabase(TEST_DB, 27).use { db ->
+            db.execSQL(
+                "INSERT INTO pending_payments (reference_number, venue_id, staff_id, amount, tip, " +
+                    "merchant_account_id, blumon_serial_number, entry_mode, is_international, " +
+                    "created_at, idempotency_key, payment_processor, retry_count, sync_status) VALUES " +
+                    "('REF-V28-001','v1','s1','340.00','34.00','m1','SER1','CHIP',0,123,'idem-28','BLUMON',0,'PENDING')",
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 28, true, AvoqadoDatabase.MIGRATION_27_28)
+
+        migrated.query(
+            "SELECT amount, idempotency_key, claim_token, claimed_at, sync_status " +
+                "FROM pending_payments WHERE reference_number = 'REF-V28-001'",
+        ).use { c ->
+            assertThat(c.moveToFirst()).isTrue() // the queued payment (real money) must survive the migration
+            assertThat(c.getString(0)).isEqualTo("340.00") // amount intact
+            assertThat(c.getString(1)).isEqualTo("idem-28") // dedup key intact
+            assertThat(c.isNull(2)).isTrue() // claim_token defaults to NULL — unclaimed
+            assertThat(c.isNull(3)).isTrue() // claimed_at defaults to NULL
+            assertThat(c.getString(4)).isEqualTo("PENDING") // still claimable
+        }
+    }
+
+    /**
+     * v28 → v29 adds `pending_payments.permanent` (F-10 — resetAllFailed() stops
+     * resurrecting permanent 4xx business failures). Purely additive + defaulted, so
+     * Room's own schema validation against 29.json is the whole contract.
+     */
+    @Test
+    fun migrate28To29_freshSchema_validatesAgainstV29() {
+        helper.createDatabase(TEST_DB, 28).close()
+        // Throws if MIGRATION_28_29 leaves the schema diverging from 29.json.
+        helper.runMigrationsAndValidate(TEST_DB, 29, true, AvoqadoDatabase.MIGRATION_28_29)
+    }
+
+    /**
+     * The money guarantee, v29 edition: a payment already marked FAILED before the upgrade
+     * (real money the app already gave up retrying) must survive untouched, and the new
+     * `permanent` column must default to 0/false — i.e. "unknown whether this 4xx was
+     * permanent" resolves to "resurrectable", never to "silently excluded from
+     * resetAllFailed() forever". See PendingPaymentEntity.permanent for why that default
+     * (not 1/true) is the safe one.
+     */
+    @Test
+    fun migrate28To29_preservesFailedPaymentsAndDefaultsPermanentToFalse() {
+        helper.createDatabase(TEST_DB, 28).use { db ->
+            db.execSQL(
+                "INSERT INTO pending_payments (reference_number, venue_id, staff_id, amount, tip, " +
+                    "merchant_account_id, blumon_serial_number, entry_mode, is_international, " +
+                    "created_at, idempotency_key, payment_processor, retry_count, sync_status) VALUES " +
+                    "('REF-V29-001','v1','s1','410.00','41.00','m1','SER1','CHIP',0,123,'idem-29','BLUMON',10,'FAILED')",
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 29, true, AvoqadoDatabase.MIGRATION_28_29)
+
+        migrated.query(
+            "SELECT amount, sync_status, retry_count, permanent " +
+                "FROM pending_payments WHERE reference_number = 'REF-V29-001'",
+        ).use { c ->
+            assertThat(c.moveToFirst()).isTrue() // the FAILED payment must survive the migration
+            assertThat(c.getString(0)).isEqualTo("410.00") // amount intact
+            assertThat(c.getString(1)).isEqualTo("FAILED") // status untouched by the migration itself
+            assertThat(c.getInt(2)).isEqualTo(10) // retry_count untouched
+            assertThat(c.getInt(3)).isEqualTo(0) // permanent defaults to false — resurrectable
         }
     }
 

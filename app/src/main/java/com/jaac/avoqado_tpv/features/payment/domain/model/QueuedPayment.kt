@@ -82,7 +82,14 @@ data class QueuedPayment(
     val createdAt: Long, // Unix timestamp (when payment was originally processed)
     val retryCount: Int = 0,
     val lastError: String? = null,
-    val syncStatus: SyncStatus = SyncStatus.PENDING
+    val syncStatus: SyncStatus = SyncStatus.PENDING,
+
+    // 🔒 Claim token this row was reclaimed under (F-8, Fix round 1). Round-trips from
+    // claimBatch() so the worker can pass it back to release()/markSynced() as a
+    // compare-and-swap key — without it, a worker that stalls past the stale-claim
+    // threshold can stomp a row a second worker has since reclaimed and is actively
+    // recording. Null only for rows never obtained via claimBatch().
+    val claimToken: String? = null
 ) {
     /**
      * Cash payments are identified by generated references/auth markers.

@@ -55,6 +55,9 @@ object PaymentSyncScheduler {
     private const val PAYMENT_SYNC_WORK_NAME = "payment_sync_worker"
     private const val PAYMENT_SYNC_INTERVAL_MINUTES = 15L // Standard: Square=15min, Toast=15min
 
+    /** Nombre único del worker inmediato. Sin esto, cada runNow() creaba uno nuevo. */
+    const val IMMEDIATE_WORK_NAME = "payment_sync_now"
+
     /**
      * Start payment sync monitoring
      *
@@ -178,7 +181,14 @@ object PaymentSyncScheduler {
             .setConstraints(constraints)
             .build()
 
-        WorkManager.getInstance(context).enqueue(immediateWorkRequest)
+        // KEEP, no REPLACE: si ya hay un worker drenando la cola queremos que TERMINE.
+        // REPLACE lo mataria a media tanda y las filas reclamadas tendrian que esperar
+        // al umbral de stale-claim para volver a salir.
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            IMMEDIATE_WORK_NAME,
+            androidx.work.ExistingWorkPolicy.KEEP,
+            immediateWorkRequest,
+        )
 
         Timber.d("✅ Immediate payment sync requested")
     }

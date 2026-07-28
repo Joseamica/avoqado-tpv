@@ -105,6 +105,24 @@ class ActivationRepositoryImpl @Inject constructor(
      * - 401: "Invalid activation code. X attempts remaining" or "Terminal locked"
      * - 404: "Terminal not registered"
      *
+     * **Por qué esto sigue clasificando por texto (decisión explícita — Task 8 / F-5):**
+     * a diferencia de `classifySyncFailure` (retry-vs-fail de la cola offline de pagos),
+     * esta función NO decide si reintentar. El status HTTP ya llega correctamente resuelto
+     * por [Response.code] (nunca por texto) — el `when (code)` de arriba está bien. Lo que
+     * hacen los `contains()` de abajo es TRADUCIR: el backend documenta enviar estos
+     * mensajes en inglés (ver lista arriba) y el proyecto exige copy en español, así que
+     * hay que reconocer CUÁL de varios mensajes ingleses conocidos llegó para elegir la
+     * traducción — eso es intrínsecamente texto, no hay "código" que lo reemplace. El
+     * campo `errorName` que el comentario de [activateTerminal] documenta en el JSON de
+     * error nunca se parsea hoy (verificado — no hay ninguna otra referencia a
+     * `errorName` en el código), así que no hay una alternativa estable y verificada
+     * disponible sin cambiar el contrato del backend, y no se puede asumir sin probarlo
+     * contra un backend real. Si el wording cambia, el `else` de cada rama sigue
+     * mostrando un mensaje razonable (texto crudo del backend, o un fallback genérico
+     * como "No autorizado") — degrada la copy mostrada, no invierte una decisión de
+     * dinero/reintento como pasaba en `RecordPaymentUseCase`. Se deja sin tocar a
+     * propósito; ver task-8-report.md para el detalle completo.
+     *
      * **Special Handling for "Already Activated":**
      * When backend says "Terminal already activated", it means:
      * 1. Terminal exists in database and is activated

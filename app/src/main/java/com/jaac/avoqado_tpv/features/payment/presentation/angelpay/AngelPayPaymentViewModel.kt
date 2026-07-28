@@ -509,7 +509,7 @@ class AngelPayPaymentViewModel @Inject constructor(
         paymentLabel: String,
         context: PaymentContext.AngelPayPayment,
         error: Throwable,
-    ): AngelPayPaymentState.Error {
+    ): AngelPayPaymentState {
         // 📡 POS→TPV: the card WAS charged (money moved) — the backend record merely failed and is
         // being enqueued for offline sync. Report SUCCESS to the POS now (founder rule 2026-07:
         // money moved ⇒ success). No paymentId yet; the synced REST record reconciles the row later.
@@ -572,14 +572,34 @@ class AngelPayPaymentViewModel @Inject constructor(
             )
             // Best-effort immediate kick — the 15-min periodic worker is the guarantee.
             runCatching { PaymentSyncScheduler.runNow(appContext) }
-            AngelPayPaymentState.Error(
+            // 🟢 F-1 fix (spec §4.2): money moved AND it's safely queued — this is a
+            // SUCCESS with a caveat, not an Error. Was AngelPayPaymentState.Error before;
+            // the cashier saw a red screen on a charge that had already succeeded and
+            // recharged the customer out of fear. See AngelPayPaymentState.Queued kdoc.
+            AngelPayPaymentState.Queued(
                 message = "$paymentLabel fue procesado, pero Avoqado no respondió. El registro quedó " +
                     "EN COLA y se completará automáticamente al recuperar conexión. NO vuelvas a cobrar.",
-                canRetry = false,
+                authCode = context.authorizationCode.orEmpty(),
+                amount = queued.amount.toPlainString(),
+                tipAmount = queued.tip.toPlainString(),
+                referenceNumber = queued.referenceNumber,
+                orderId = queued.orderId,
+                orderNumber = queued.orderNumber,
             )
         } else {
-            Timber.e(enqueueResult.exceptionOrNull(), "❌ [AngelPay] Offline enqueue ALSO failed")
-            backendRecordFailureState(paymentLabel, error)
+            val enqueueError = enqueueResult.exceptionOrNull()
+            Timber.e(enqueueError, "❌ [AngelPay] Offline enqueue ALSO failed")
+            // Fix round 1, finding 2: thread the enqueue failure reason into the detail the
+            // supervisor sees, so an index-blocked enqueue (F-7) is distinguishable from a
+            // plain backend outage. Additive — backendRecordFailureState's signature is
+            // untouched; the original backend error is preserved as `cause` for Crashlytics.
+            val combinedError = enqueueError?.message?.let { enqueueDetail ->
+                Exception(
+                    "${error.message ?: "error desconocido"} | Encolado también falló: $enqueueDetail",
+                    error,
+                )
+            } ?: error
+            backendRecordFailureState(paymentLabel, combinedError)
         }
     }
 
@@ -670,12 +690,17 @@ class AngelPayPaymentViewModel @Inject constructor(
         // socket/BLE charge dispatcher (AppNavigation) can tell a live charge from a stale
         // RESOLVED result screen. Single funnel over our own state stream — a decline that
         // leaves the Error screen up is NOT active, so it no longer blocks the next POS charge.
-        // (Idle/Success/Error/Cancelled = resolved → not active; every other state = working.)
+        // (Idle/Success/Queued/Error/Cancelled = resolved → not active; every other state =
+        // working.) F-1 fix round 1: Queued is a RESOLVED outcome (money moved, safely queued)
+        // exactly like Success/Error/Cancelled — omitting it here reopened the exact "screen
+        // stays up, terminal rejects every subsequent POS charge" bug from 2026-07-14, because
+        // this path used to publish Error (which WAS in the list) before the F-1 fix.
         viewModelScope.launch {
             state.collect { s ->
                 paymentStateHolder.setChargeAttemptActive(
                     s !is AngelPayPaymentState.Idle &&
                         s !is AngelPayPaymentState.Success &&
+                        s !is AngelPayPaymentState.Queued &&
                         s !is AngelPayPaymentState.Error &&
                         s !is AngelPayPaymentState.Cancelled,
                 )

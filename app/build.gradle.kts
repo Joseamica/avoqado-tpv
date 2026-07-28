@@ -724,6 +724,7 @@ dependencies {
     testImplementation("com.google.truth:truth:1.1.5")  // Assertions
     testImplementation("org.robolectric:robolectric:4.11.1")  // Android testing in JVM
     testImplementation("androidx.test:core:1.5.0")  // ApplicationProvider for testing
+    testImplementation("androidx.work:work-testing:2.9.0")  // TestListenableWorkerBuilder (F-9 — PaymentSyncWorkerTest)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")

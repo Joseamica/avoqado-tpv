@@ -57,6 +57,7 @@ class VenuePlanInfoTest {
             PlanFeatureCatalog.REFERRAL_PROGRAM,
             PlanFeatureCatalog.PROMOTIONS,
             PlanFeatureCatalog.ADVANCED_REPORTS,
+            PlanFeatureCatalog.TABLE_SERVICE,
         )
         proFeatures.forEach { code ->
             assertThat(PlanFeatureCatalog.minTierFor(code)).isEqualTo(PlanTier.PRO)

@@ -116,6 +116,26 @@ sealed class AngelPayPaymentState {
         val isCash: Boolean = false,
     ) : AngelPayPaymentState()
 
+    /**
+     * La tarjeta SÍ cobró; solo el registro en Avoqado quedó pendiente de sincronizar.
+     *
+     * Es un ÉXITO con matiz, NO un error: se renderiza en verde/ámbar. Antes esto
+     * devolvía [Error] y el cajero veía pantalla roja en una operación que había
+     * salido bien — y volvía a cobrar por miedo. Ver spec §4.2 F-1.
+     *
+     * [Error] queda reservado para cuando el encolado TAMBIÉN falla, que sí requiere
+     * intervención humana.
+     */
+    data class Queued(
+        val message: String,
+        val authCode: String,
+        val amount: String,
+        val tipAmount: String? = null,
+        val referenceNumber: String? = null,
+        val orderId: String? = null,
+        val orderNumber: String? = null,
+    ) : AngelPayPaymentState()
+
     /** Payment failed with optional retry. */
     data class Error(
         val message: String,

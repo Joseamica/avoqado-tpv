@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -227,6 +228,13 @@ fun AngelPayPaymentScreen(
         }
     }
 
+    // F-1 (spec §4.2): card charged, backend record still queued for offline sync.
+    // Computed directly from `state` (not a remembered/LaunchedEffect-driven flag like
+    // the Success animation above) so the bypass below activates on the SAME
+    // composition pass `state` becomes Queued — no transient frame through the
+    // Scaffold. See AngelPayPaymentState.Queued kdoc for why this must never be Error.
+    val queuedState = state as? AngelPayPaymentState.Queued
+
     // ── Full-screen overlays (no scaffold) ───────────────────────────
     when {
         // Approved animation overlay
@@ -243,6 +251,43 @@ fun AngelPayPaymentScreen(
                 onAnimationComplete = {
                     showApprovedAnimation = false
                     showSuccessContent = true
+                },
+            )
+            return
+        }
+
+        // Queued content — a SUCCESS with a caveat, not an error. No confetti (this
+        // isn't a normal charge): straight to the same full-bleed chrome as a real
+        // Success, with an amber "don't recharge" note under the amount. Rendered
+        // pre-Scaffold like Success (AngelPaySuccessContent applies its own
+        // statusBarsPadding; nesting it inside the Scaffold's paddingValues would
+        // double the top inset AND duplicate the Home/Nuevo-Cobro header under the
+        // AvoqadoTopBar). Do NOT reuse ErrorContent here — the whole point is no red.
+        queuedState != null -> {
+            AngelPaySuccessContent(
+                state = AngelPayPaymentState.Success(
+                    authCode = queuedState.authCode,
+                    amount = queuedState.amount,
+                    tipAmount = queuedState.tipAmount,
+                    receipt = null, // Not recorded yet — QR/print/email/WhatsApp stay hidden.
+                    referenceNumber = queuedState.referenceNumber,
+                    orderId = queuedState.orderId,
+                    orderNumber = queuedState.orderNumber,
+                ),
+                showReceiptScreen = false,
+                onPrintReceipt = {},
+                pendingSyncMessage = queuedState.message,
+                onNavigateHome = {
+                    viewModel.resetPayment()
+                    onNavigateHome()
+                },
+                onStartNewPayment = {
+                    viewModel.resetPayment()
+                    if (onStartNewPaymentOverride != null) {
+                        onStartNewPaymentOverride()
+                    } else {
+                        onNavigateBack()
+                    }
                 },
             )
             return
@@ -324,8 +369,13 @@ fun AngelPayPaymentScreen(
         else -> "Cobro AngelPay"
     }
 
-    // Show top bar for pre-payment states and error/cancelled
-    val showTopBar = state !is AngelPayPaymentState.Success
+    // Show top bar for pre-payment states and error/cancelled. Queued is excluded
+    // alongside Success (fix round 1, minor finding): the overlay bypass above renders it
+    // full-bleed with no Scaffold, and the defensive in-Scaffold fallback below supplies
+    // its own exit — an AvoqadoTopBar here would show a title that falls through to
+    // "Cobro AngelPay" and a back arrow wired to nothing (`onNavigationClick`'s `when`
+    // has no Queued branch, so it silently no-ops).
+    val showTopBar = state !is AngelPayPaymentState.Success && state !is AngelPayPaymentState.Queued
 
     // ── Scaffold with AvoqadoTopBar (matching Blumon) ────────────────
     Scaffold(
@@ -577,6 +627,23 @@ fun AngelPayPaymentScreen(
                     LoadingContent(message = "Pago exitoso")
                 }
 
+                is AngelPayPaymentState.Queued -> {
+                    // Defensive only — the overlay `when` above (bypassing this Scaffold)
+                    // intercepts Queued on the same composition pass, same as it does for
+                    // Success; this should never actually render. Fix round 1: it used to be
+                    // LoadingContent — an indeterminate spinner on a FINISHED payment, with no
+                    // top bar exit (title falls through, back arrow no-ops) and no in-content
+                    // exit either — a stuck screen if the bypass regresses. QueuedFallbackContent
+                    // is a self-contained, working exit instead. NEVER ErrorContent — no red.
+                    QueuedFallbackContent(
+                        message = currentState.message,
+                        onGoHome = {
+                            viewModel.resetPayment()
+                            onNavigateHome()
+                        },
+                    )
+                }
+
                 is AngelPayPaymentState.Error -> {
                     ErrorContent(
                         state = currentState,
@@ -727,6 +794,59 @@ private fun CancelledContent(onNavigateBack: () -> Unit) {
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("Regresar")
+        }
+    }
+}
+
+/**
+ * F-1 fix round 1 (minor finding): defensive fallback ONLY — see the `Queued` branch
+ * comment in the main `when` above. If the pre-Scaffold bypass ever regresses, this is
+ * what actually shows: a self-contained, working screen (own exit button), not a stuck
+ * spinner. Same sizing idiom as [ErrorContent] (scrolls on the small PAX screen instead
+ * of clipping the ~150-char message) but success-toned — green check, no red, no retry
+ * (retrying here would double-charge).
+ */
+@Composable
+private fun QueuedFallbackContent(
+    message: String,
+    onGoHome: () -> Unit,
+) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val minContentHeight = maxHeight
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .heightIn(min = minContentHeight)
+                .padding(32.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Default.CheckCircle,
+                contentDescription = null,
+                tint = MaterialTheme.avoqadoColors.statusSuccess,
+                modifier = Modifier.size(64.dp),
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Cobro procesado",
+                style = MaterialTheme.typography.titleLarge,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            Button(
+                onClick = onGoHome,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Ir a Inicio")
+            }
         }
     }
 }

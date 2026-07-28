@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.payment.data.repository
 
+import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
 import com.jaac.avoqado_tpv.features.payment.data.dto.FastPaymentRequest
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
@@ -10,6 +11,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentRecorder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
+import java.io.IOException
 import javax.inject.Inject
 
 /**
@@ -145,8 +147,9 @@ class FastPaymentRecorder @Inject constructor(
                 response.code() == 401 -> {
                     Timber.w("⚠️ Unauthorized (401) - Token may be expired")
                     Result.failure(
-                        Exception(
-                            "Token de autenticación inválido o expirado. " +
+                        BackendHttpException(
+                            statusCode = response.code(),
+                            message = "Token de autenticación inválido o expirado. " +
                                     "Por favor, cierra sesión y vuelve a iniciar sesión."
                         )
                     )
@@ -155,8 +158,9 @@ class FastPaymentRecorder @Inject constructor(
                 response.code() == 403 -> {
                     Timber.w("⚠️ Forbidden (403) - Missing payments:create permission")
                     Result.failure(
-                        Exception(
-                            "No tienes permisos para registrar pagos. " +
+                        BackendHttpException(
+                            statusCode = response.code(),
+                            message = "No tienes permisos para registrar pagos. " +
                                     "Contacta al administrador del venue."
                         )
                     )
@@ -165,8 +169,9 @@ class FastPaymentRecorder @Inject constructor(
                 response.code() == 404 -> {
                     Timber.w("⚠️ Not Found (404) - Venue ${context.venueId} not found")
                     Result.failure(
-                        Exception(
-                            "Venue no encontrado. Verifica tu configuración."
+                        BackendHttpException(
+                            statusCode = response.code(),
+                            message = "Venue no encontrado. Verifica tu configuración."
                         )
                     )
                 }
@@ -174,8 +179,9 @@ class FastPaymentRecorder @Inject constructor(
                 response.code() == 429 -> {
                     Timber.w("⚠️ Rate Limit (429) - Too many requests")
                     Result.failure(
-                        Exception(
-                            "Demasiadas solicitudes. Por favor, espera un momento e intenta nuevamente."
+                        BackendHttpException(
+                            statusCode = response.code(),
+                            message = "Demasiadas solicitudes. Por favor, espera un momento e intenta nuevamente."
                         )
                     )
                 }
@@ -183,8 +189,9 @@ class FastPaymentRecorder @Inject constructor(
                 response.code() in 500..599 -> {
                     Timber.e("❌ Server Error (${response.code()}) - ${response.message()}")
                     Result.failure(
-                        Exception(
-                            "Error del servidor (${response.code()}). " +
+                        BackendHttpException(
+                            statusCode = response.code(),
+                            message = "Error del servidor (${response.code()}). " +
                                     "Por favor, intenta nuevamente en unos minutos."
                         )
                     )
@@ -197,12 +204,18 @@ class FastPaymentRecorder @Inject constructor(
                     )
                     Timber.e("❌ Unknown error (${response.code()}) - $errorMessage")
                     Result.failure(
-                        Exception(
-                            "Error desconocido (${response.code()}): $errorMessage"
+                        BackendHttpException(
+                            statusCode = response.code(),
+                            message = "Error desconocido (${response.code()}): $errorMessage"
                         )
                     )
                 }
             }
+        } catch (e: IOException) {
+            // NO envolver: classifySyncFailure() (SyncOutcome.kt) necesita la IOException
+            // intacta para clasificarla como Retryable. Ver BackendHttpException.kt.
+            Timber.w(e, "⚠️ Network error recording fast payment (will be retried)")
+            Result.failure(e)
         } catch (e: Exception) {
             Timber.e(e, "❌ Failed to record fast payment")
             Result.failure(

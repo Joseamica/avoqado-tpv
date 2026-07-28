@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.core.data.repository
 
+import androidx.annotation.VisibleForTesting
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.ApiService
 import com.jaac.avoqado_tpv.core.data.network.dto.AngelPayAuthDto
@@ -163,25 +164,45 @@ class TerminalConfigRepositoryImpl @Inject constructor(
 
         } catch (e: Exception) {
             Timber.e(e, "❌ [TECHNICAL] Failed to fetch terminal config")
+            Result.failure(Exception(mapNetworkErrorToUserMessage(e)))
+        }
+    }
 
-            val userMessage = when {
-                e.message?.contains("timeout", ignoreCase = true) == true -> {
-                    "Tiempo de espera agotado.\\n\\n" +
-                    "La conexión tardó demasiado.\\n" +
-                    "Verifique su internet e intente nuevamente."
-                }
-                e.message?.contains("no connection", ignoreCase = true) == true ||
-                e.message?.contains("network", ignoreCase = true) == true -> {
-                    "Sin conexión a internet.\\n\\n" +
-                    "Verifique su conexión e intente nuevamente."
-                }
-                else -> {
-                    "Error inesperado al obtener configuración.\\n\\n" +
-                    "Por favor, contacte a soporte."
-                }
-            }
-
-            Result.failure(Exception(userMessage))
+    /**
+     * Traduce un fallo de red (no un status HTTP — esos ya se resuelven arriba por
+     * [retrofit2.Response.code]) a un mensaje en español para el operador.
+     *
+     * Antes esto miraba `e.message?.contains("timeout"|"no connection"|"network")`. Dos
+     * bugs reales de esa versión (Task 8 / F-5):
+     * - `SocketTimeoutException` de OkHttp en un connect-timeout no siempre trae la
+     *   palabra "timeout" en el mensaje (p.ej. "failed to connect to ... after 10000ms")
+     *   → caía al mensaje genérico, perdiendo el mensaje accionable de timeout.
+     * - `UnknownHostException` (el caso más común de "sin internet") trae solo el
+     *   hostname como mensaje (p.ej. "api.avoqado.io") — no contiene "network" ni "no
+     *   connection" → también caía al genérico en vez de "Sin conexión a internet".
+     *
+     * Ahora clasifica por TIPO de excepción, nunca por texto — un wording distinto o un
+     * mensaje vacío no cambian el resultado.
+     *
+     * @param e La excepción real (nunca un status HTTP — esos se resuelven antes de llegar aquí)
+     * @return Mensaje en español listo para mostrar al operador
+     */
+    @VisibleForTesting
+    internal fun mapNetworkErrorToUserMessage(e: Exception): String = when (e) {
+        is java.net.SocketTimeoutException -> {
+            "Tiempo de espera agotado.\\n\\n" +
+            "La conexión tardó demasiado.\\n" +
+            "Verifique su internet e intente nuevamente."
+        }
+        is java.io.IOException -> {
+            // Subsume UnknownHostException, ConnectException, SSLException, etc. —
+            // cualquier fallo de red que no sea específicamente un timeout.
+            "Sin conexión a internet.\\n\\n" +
+            "Verifique su conexión e intente nuevamente."
+        }
+        else -> {
+            "Error inesperado al obtener configuración.\\n\\n" +
+            "Por favor, contacte a soporte."
         }
     }
 }

@@ -1,11 +1,14 @@
 package com.jaac.avoqado_tpv.features.payment.domain.usecase
 
+import androidx.annotation.VisibleForTesting
 import com.jaac.avoqado_tpv.features.payment.data.repository.FastPaymentRecorder
 import com.jaac.avoqado_tpv.features.payment.data.repository.OrderPaymentRecorder
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentRecorder
+import com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome
+import com.jaac.avoqado_tpv.features.payment.domain.sync.classifySyncFailure
 import kotlinx.coroutines.delay
 import timber.log.Timber
 import javax.inject.Inject
@@ -201,19 +204,17 @@ class RecordPaymentUseCase @Inject constructor(
      * **Estrategia de retry:**
      * - Máximo 5 intentos
      * - Exponential backoff: 500ms → 1s → 2s → 4s
-     * - Solo reintenta errores transitorios (5xx, network, timeout)
-     * - NO reintenta errores permanentes (401, 403, 404, 429)
+     * - La clasificación retry-vs-stop delega en [classifySyncFailure] (ver [isRetryable]),
+     *   por CÓDIGO HTTP — nunca por texto del mensaje.
      *
-     * **Errores con retry (transitorios):**
-     * - 500-599 (server errors)
-     * - Timeout / Network errors
-     * - Connection errors
+     * **Se reintenta (SyncOutcome.Retryable):**
+     * - 401/403/405 — casi siempre es la SESIÓN, no el pago (ver KDoc de [classifySyncFailure])
+     * - 408/429 — "reintenta", no "no"
+     * - 5xx, IOException (red/timeout), y cualquier error desconocido
      *
-     * **Errores sin retry (permanentes):**
-     * - 401 (Unauthorized - token expirado)
-     * - 403 (Forbidden - sin permisos)
-     * - 404 (Not Found - venue no existe)
-     * - 429 (Rate Limit - demasiadas requests)
+     * **NO se reintenta:**
+     * - 400/404/422 (SyncOutcome.Permanent) — error de negocio real, reintentar no cambia el resultado
+     * - 409 (SyncOutcome.Synced) — el backend YA tiene el pago; seguir reintentando es ruido
      *
      * **Ejemplo de log:**
      * ```
@@ -266,7 +267,7 @@ class RecordPaymentUseCase @Inject constructor(
             lastError = exception as? Exception
 
             // Determinar si es un error retriable
-            val isRetriable = isRetriableError(exception)
+            val isRetriable = isRetryable(exception)
 
             if (!isRetriable) {
                 Timber.w("⚠️ Non-retriable error, stopping retries: ${exception?.message}")
@@ -284,57 +285,33 @@ class RecordPaymentUseCase @Inject constructor(
     }
 
     /**
-     * Determina si un error es retriable (transitorio) o no.
+     * ¿Vale la pena reintentar este error?
      *
-     * **Retriable (transitorios):**
-     * - Server errors (500-599) - backend temporalmente caído
-     * - Network/timeout errors - problemas de conectividad
-     * - Connection errors
+     * Antes esto encadenaba ~18 `message.contains(...)`, incluido `Regex("5\\d{2}")` que
+     * hacía match contra CUALQUIER "5XX" dentro del texto — un monto de $500.00 o una
+     * referencia que contuviera "500" marcaban el error como reintentable por accidente.
+     * Un cambio de wording del backend (traducción, mensaje reescrito) podía además
+     * romper la clasificación en silencio: un error transitorio se volvía permanente o
+     * al revés. Ver spec §4.2 F-5.
      *
-     * **No retriable (permanentes):**
-     * - 401 Unauthorized - token expirado, requiere re-login
-     * - 403 Forbidden - sin permisos, requiere cambio de rol
-     * - 404 Not Found - recurso no existe, requiere corrección
-     * - 429 Rate Limit - demasiadas requests, requiere esperar más tiempo
+     * Ahora delega en el clasificador único por código HTTP ([classifySyncFailure], Task 1).
      *
-     * @param exception El error a analizar
-     * @return true si el error es retriable, false si es permanente
+     * **Cambios de comportamiento deliberados vs. la versión anterior** (no es un bug,
+     * es intencional — ver KDoc de [classifySyncFailure] / [SyncOutcome]):
+     * - 401/403 antes paraban el retry aquí. Ahora reintentan — casi siempre son la
+     *   SESIÓN, no el pago (un refresh de token atorado tras Doze puede devolver el 401
+     *   original con el token aún válido; marcarlo permanente mataba pagos ya cobrados
+     *   para siempre).
+     * - 429 antes paraba el retry aquí. Ahora reintenta — un 429 significa "espera y
+     *   reintenta", no "nunca", y esta función YA implementa backoff exponencial.
+     * - 409 (el backend ya tiene el pago) ahora también para el retry — pero a
+     *   diferencia de 400/404/422, no es un error de negocio: es la señal de que
+     *   reintentar ya no tiene caso.
+     *
+     * @param error El error a analizar (debe llegar intacto — ver BackendHttpException.kt)
+     * @return true si vale la pena reintentar
      */
-    private fun isRetriableError(exception: Throwable?): Boolean {
-        if (exception == null) return false
-
-        val message = exception.message ?: ""
-
-        return when {
-            // ✅ Server errors (5xx) - RETRIABLE
-            message.contains("Error del servidor", ignoreCase = true) -> true
-            message.contains(Regex("5\\d{2}")) -> true // Match 500, 502, 503, etc.
-
-            // ✅ Network/timeout errors - RETRIABLE
-            message.contains("conexión", ignoreCase = true) -> true
-            message.contains("timeout", ignoreCase = true) -> true
-            message.contains("network", ignoreCase = true) -> true
-            message.contains("Verifica tu conexión", ignoreCase = true) -> true
-
-            // ❌ Auth/Permission errors - NO RETRIABLE
-            message.contains("401", ignoreCase = false) -> false
-            message.contains("Unauthorized", ignoreCase = true) -> false
-            message.contains("Token", ignoreCase = true) && message.contains("expirado", ignoreCase = true) -> false
-
-            message.contains("403", ignoreCase = false) -> false
-            message.contains("Forbidden", ignoreCase = true) -> false
-            message.contains("permisos", ignoreCase = true) -> false
-
-            message.contains("404", ignoreCase = false) -> false
-            message.contains("Not Found", ignoreCase = true) -> false
-            message.contains("no encontrado", ignoreCase = true) -> false
-
-            message.contains("429", ignoreCase = false) -> false
-            message.contains("Rate Limit", ignoreCase = true) -> false
-            message.contains("Demasiadas solicitudes", ignoreCase = true) -> false
-
-            // ✅ Default: retriable para cualquier otro error
-            else -> true
-        }
-    }
+    @VisibleForTesting
+    internal fun isRetryable(error: Throwable?): Boolean =
+        classifySyncFailure(error) is SyncOutcome.Retryable
 }

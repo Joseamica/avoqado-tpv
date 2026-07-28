@@ -53,6 +53,10 @@ object PlanFeatureCatalog {
     const val REFERRAL_PROGRAM = "REFERRAL_PROGRAM"
     const val PROMOTIONS = "PROMOTIONS"
     const val ADVANCED_REPORTS = "ADVANCED_REPORTS"
+    // Mesas module (table service). Mirrors the backend's checkFeatureAccess('TABLE_SERVICE')
+    // (src/routes/tpv.routes.ts) — a Feature code, NOT in PREMIUM_ONLY_CODES, so PRO already
+    // includes it (spec 2026-07-24-tpv-mesas-offline-first-design.md D-1).
+    const val TABLE_SERVICE = "TABLE_SERVICE"
 
     // PREMIUM features
     const val SERIALIZED_INVENTORY = "SERIALIZED_INVENTORY"
@@ -63,6 +67,7 @@ object PlanFeatureCatalog {
         REFERRAL_PROGRAM to PlanTier.PRO,
         PROMOTIONS to PlanTier.PRO,
         ADVANCED_REPORTS to PlanTier.PRO,
+        TABLE_SERVICE to PlanTier.PRO,
         SERIALIZED_INVENTORY to PlanTier.PREMIUM,
         INVENTORY_TRACKING to PlanTier.PREMIUM,
         CFDI to PlanTier.PREMIUM,

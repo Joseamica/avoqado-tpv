@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.payment.presentation
 
+import androidx.annotation.VisibleForTesting
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardParams
@@ -72,6 +73,8 @@ import com.jaac.avoqado_tpv.features.payment.domain.RetryContext
 import com.jaac.avoqado_tpv.features.payment.domain.VerificationPhoto
 import com.jaac.avoqado_tpv.features.payment.domain.PhotoUploadStatus
 import com.jaac.avoqado_tpv.core.data.firebase.VerificationUploadManager
+import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
+import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
@@ -118,9 +121,34 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.NonCancellable
 import timber.log.Timber
 import javax.inject.Inject
 
+/**
+ * 🚨 Fix round 1 (nit): named wrapper so Crashlytics groups every occurrence of "card charged,
+ * backend AND local queue both failed" under ONE issue (by this class + message), instead of
+ * scattering across whatever underlying exception type the queue happened to throw (Room index
+ * collision, disk full, IOException, ...). `logCritical` → `logError` → `recordException(error)`
+ * titles the Crashlytics issue by the passed exception's own class, not by the `tag` argument —
+ * a raw `queueError` would defeat grouping. The original is preserved as `cause`, so the full
+ * original stack trace still shows in the Crashlytics detail view. See reportRecordingLost.
+ *
+ * `internal` (not `private`): PaymentViewModelTest.kt asserts the wrapping directly (same
+ * package, no import needed) so the Crashlytics-grouping fix is verified, not just asserted
+ * in a comment.
+ */
+internal class RecordingLostException(cause: Throwable) : Exception(
+    "BlumonRecordAndQueueLost: card charged, but neither the backend nor the local queue recorded it",
+    cause
+)
+
+
+/**
+ * Tag único de la traza de cobro. Sirve para filtrar en Crashlytics y en nuestra base:
+ * `SELECT * FROM "TerminalLog" WHERE tag = 'PaymentTrace' ORDER BY "createdAt" DESC`
+ */
+private const val TAG_PAYMENT_TRACE = "PaymentTrace"
 /**
  * PaymentViewModel - Handles EMV chip card payments with ONLINE authorization via Blumon Momentum
  *
@@ -224,6 +252,10 @@ class PaymentViewModel @Inject constructor(
     private val connectionEventManager: ConnectionEventManager,
     // 📒 PaymentAttemptLedger — La Libreta write-ahead: observational marks only, never blocks a charge
     private val paymentAttemptLedger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger,
+    // 🚨 ObservabilityManager — structured telemetry for money-safety gaps (mirrors the field
+    // AngelPayPaymentViewModel already carries); used by reportRecordingLost when a card charge
+    // succeeds but neither the backend NOR the local offline queue can record it.
+    private val observability: ObservabilityManager,
     // 📱 Application context - for PaymentSyncScheduler.runNow() on reconnect
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
@@ -669,7 +701,13 @@ class PaymentViewModel @Inject constructor(
                 orderNumber = getOrderNumberForFlow(),
                 orderItems = orderData?.items,
                 remainingBalance = orderData?.remainingBalance,
-                discountAmount = orderData?.discountAmount?.toPlainString()
+                discountAmount = orderData?.discountAmount?.toPlainString(),
+                // 🚨 A real recorded receipt just arrived (e.g. via listenToConnectionRestored's
+                // reconnect retry) — clear any earlier "lost record" alarm, it's resolved now.
+                recordingLostMessage = null,
+                // 🟡 Same reasoning: a queued-but-recovered payment just synced — the "pending
+                // sync" note no longer applies.
+                pendingSyncMessage = null
             )
             Timber.d("🎫 [Receipt] Updated Success state with receipt | URL=${receipt.receiptUrl}")
             Timber.d("🎫 [Receipt] Card: ${cardDetails.cardBrand} ${cardDetails.maskedPan} | Entry: ${cardDetails.entryMode}")
@@ -678,6 +716,186 @@ class PaymentViewModel @Inject constructor(
             val updatedState = _state.value
             if (updatedState is PaymentState.Success) {
                 Timber.d("🐛 [DEBUG] Confirmed state update | receipt is ${if (updatedState.receipt != null) "NOT NULL" else "NULL"}")
+            }
+        }
+    }
+
+    /**
+     * 🚨 MONEY-SAFETY: compute the alarmed [PaymentState.Success] for when a Blumon card
+     * charge succeeded but NEITHER the backend recording NOR the local offline queue could
+     * capture it (see [handlePaymentSuccess]'s queue-enqueue `onFailure` branch — the ONLY
+     * caller). Pure function: the caller supplies the CURRENT `_state.value` read fresh at
+     * the moment of failure — by the time backend recording AND the queue write both fail,
+     * the cashier may already have navigated away (Success is published optimistically the
+     * instant the card is approved, seconds before this can possibly resolve), so this must
+     * never assume the Success it originally saw is still live. Returns null when it isn't —
+     * nothing to alarm; `pendingReceiptRetry` / `listenToConnectionRestored()` remain the only
+     * backstop in that case.
+     *
+     * Never returns [PaymentState.Error] — the charge genuinely succeeded; telling the cashier
+     * it failed would invite a double charge, which is exactly what the offline-queue fallback
+     * exists to prevent. This is deliberately narrower and worse than the "queued, will
+     * self-heal" case AngelPayPaymentViewModel.handleRecordFailure renders in amber: here there
+     * is no queue row anywhere, so nothing self-heals without a supervisor acting on
+     * [referenceNumber].
+     *
+     * @param current The live `_state.value` at the moment the queue failure resolved.
+     * @param referenceNumber Blumon reference — the ONLY thread back to this sale once neither
+     *   the backend nor the local queue has a row for it. Rendered in the amber banner.
+     */
+    @VisibleForTesting
+    internal fun buildRecordingLostState(
+        current: PaymentState,
+        referenceNumber: String
+    ): PaymentState.Success? {
+        if (current !is PaymentState.Success) return null
+        return current.copy(
+            referenceNumber = referenceNumber,
+            recordingLostMessage = "El cobro con tarjeta SÍ se realizó, pero Avoqado no pudo registrarlo " +
+                "(ni en el servidor ni en la cola local de este equipo). NO vuelvas a cobrar. Avisa al " +
+                "supervisor con la referencia $referenceNumber para reconciliar el pago manualmente."
+        )
+    }
+
+    /**
+     * 🟡 MONEY-SAFETY: compute the "queued, will self-heal" [PaymentState.Success] for when a
+     * Blumon card charge succeeded, backend recording failed, but the LOCAL OFFLINE QUEUE
+     * captured it (see [handleOfflineQueueOutcome]'s `queueResult.onSuccess` branch — the ONLY
+     * caller). Pure function, same shape and same "may have navigated away" caveat as
+     * [buildRecordingLostState] — see that kdoc for why the caller always re-reads `_state.value`
+     * fresh instead of trusting a captured reference, and why this returns null (nothing to
+     * update) when the live state has already moved on.
+     *
+     * Unlike [buildRecordingLostState], this is the COMMON case (queue almost always succeeds —
+     * enqueue only fails on disk-full/DB-locked) and it self-heals: `PaymentSyncWorker` or
+     * `listenToConnectionRestored()`'s reconnect retry will record it automatically, at which
+     * point `applyRecordedReceiptToSuccessState` clears this flag back to null. See
+     * [PaymentState.Success.pendingSyncMessage] kdoc for the full state-vs-flag rationale.
+     *
+     * @param current The live `_state.value` at the moment the queue enqueue resolved.
+     * @param referenceNumber Blumon reference — what a supervisor reconciles with while the sync
+     *   is still pending. Rendered in the amber note (embedded in the message, matching
+     *   [buildRecordingLostState]'s own style — this screen has no separate "Ref:" row).
+     */
+    @VisibleForTesting
+    internal fun buildPendingSyncState(
+        current: PaymentState,
+        referenceNumber: String
+    ): PaymentState.Success? {
+        if (current !is PaymentState.Success) return null
+        return current.copy(
+            referenceNumber = referenceNumber,
+            pendingSyncMessage = "El cobro con tarjeta se realizó correctamente. Avoqado no pudo registrarlo " +
+                "de inmediato, pero quedó en cola en este equipo y se completará solo en cuanto haya " +
+                "conexión — no necesitas hacer nada. NO vuelvas a cobrar. Referencia: $referenceNumber"
+        )
+    }
+
+    /**
+     * 🚨 Structured telemetry for the same money-safety gap as [buildRecordingLostState] —
+     * mirrors AngelPayPaymentViewModel.handleRecordFailure's `observability.logWarning(...)`
+     * shape (reference, orderId, amount, error) so this failure lands on the SAME monitored
+     * channel (Crashlytics + RemoteLogger + FileLogger) instead of an unstructured `Timber.e`
+     * that reaches Crashlytics with no venue/amount context and that nobody watches.
+     *
+     * Escalated to [ObservabilityManager.logCritical] rather than AngelPay's `logWarning`:
+     * AngelPay's Queued case still has a queue row a worker will retry — this case has NONE, so
+     * nothing recovers without a human finding [QueuedPayment.referenceNumber] and acting on it.
+     */
+    @VisibleForTesting
+    internal fun reportRecordingLost(
+        queuedPayment: QueuedPayment,
+        recordError: Throwable,
+        queueError: Throwable,
+        orderIdForFlow: String?
+    ) {
+        observability.logCritical(
+            tag = "BlumonRecordAndQueueLost",
+            message = "Cobro con tarjeta procesado pero SIN registro (backend y cola local fallaron) — requiere reconciliación manual",
+            // 🔴 Fix round 1 (nit): wrapped so Crashlytics groups by THIS class, not by
+            // whatever exception type the queue happened to throw. See RecordingLostException.
+            error = RecordingLostException(queueError),
+            metadata = mapOf(
+                "reference" to queuedPayment.referenceNumber,
+                "orderId" to (orderIdForFlow ?: "none"),
+                "amount" to queuedPayment.amount.toPlainString(),
+                "venueId" to queuedPayment.venueId,
+                "recordError" to (recordError.message ?: "unknown"),
+                "queueError" to (queueError.message ?: "unknown")
+            )
+        )
+    }
+
+    /**
+     * 🔴 Fix round 1 (Critical): enqueue the payment and handle the outcome, with the WHOLE
+     * body wrapped in [NonCancellable] — not just the DB write inside `enqueue()`.
+     *
+     * [PaymentQueueRepositoryImpl.enqueue] already wraps its own `pendingPaymentDao.insert(...)`
+     * in `NonCancellable`, but that only protects the INSERT itself. `enqueue()`'s OUTER
+     * `withContext(Dispatchers.IO)` resumes CANCELLABLY, so if `viewModelScope` is cancelled
+     * (a POS charge/cancel, or the cashier tapping Home) while this coroutine is suspended
+     * inside `enqueue()` — exactly the conditions (disk full, DB locked) that make the
+     * queue-failure branch reachable in the first place — the CALLER never resumes: the whole
+     * `onSuccess`/`onFailure` handling below, including [buildRecordingLostState] and
+     * [reportRecordingLost], can be skipped entirely. Money charged, backend failed, the queue
+     * write raced a cancel, and there is no banner and no telemetry — the exact silent failure
+     * this task exists to kill, now one level deeper. Verified empirically with a throwaway
+     * probe replicating this exact inner-NonCancellable/outer-cancellable shape under a
+     * mid-flight cancel: the `Result` was built inside `enqueue()`, but the caller's
+     * `onFailure` never ran.
+     *
+     * Wrapping this WHOLE function body in [NonCancellable] closes that window.
+     * [buildRecordingLostState] still correctly no-ops if the screen is already gone (its own
+     * `current !is PaymentState.Success` guard) — this fix guarantees [reportRecordingLost]
+     * (the telemetry half, which outlives the cashier) always runs once the queue write
+     * concludes, regardless of what the UI/navigation is doing concurrently.
+     *
+     * `@VisibleForTesting` so a test can launch this in a child coroutine, cancel that job
+     * mid-`enqueue()`, and assert the telemetry still fires — see
+     * `PaymentViewModelTest.kt`'s money-safety section.
+     */
+    @VisibleForTesting
+    internal suspend fun handleOfflineQueueOutcome(
+        queuedPayment: QueuedPayment,
+        context: PaymentContext,
+        recordError: Throwable,
+        referenceNumber: String,
+        orderIdForFlow: String?
+    ) {
+        withContext(NonCancellable) {
+            val queueResult = paymentQueueRepository.enqueue(queuedPayment)
+            queueResult.onSuccess {
+                // 📒 [Libreta] ENTREGADA_A_COLA — pending_payments owns the money now.
+                context.idempotencyKey?.let { attemptIdForLedger -> paymentAttemptLedger.markDeliveredToQueue(attemptIdForLedger) }
+                Timber.i("✅ [Offline Queue] Payment queued successfully | ref=$referenceNumber")
+                Timber.i("   → PaymentSyncWorker will retry every 15 minutes")
+                Timber.i("   → Payment will sync automatically when network is available")
+
+                // 🟡 UX (2026-07): this was the previously-silent branch — the charge succeeded
+                // and the queue safely captured it, but until now the cashier's screen never said
+                // so. Note the live success screen (fresh re-read; it may have moved on) so the
+                // cashier sees a calm "queued, don't recharge" instead of a blank QR with no
+                // explanation. See buildPendingSyncState kdoc for why this is a flag on Success.
+                buildPendingSyncState(_state.value, referenceNumber)?.let { _state.value = it }
+            }.onFailure { queueError ->
+                Timber.e(queueError, "❌ [Offline Queue] Failed to queue payment - CRITICAL")
+                Timber.e("   → Payment succeeded with Blumon but NOT recorded to backend")
+                Timber.e("   → Manual intervention may be required")
+
+                // 🚨 MONEY-SAFETY: neither the backend NOR the local queue has any
+                // record of this charge — alarm the live success screen (fresh
+                // re-read; it may have moved on) and fire structured telemetry so a
+                // supervisor can find it via referenceNumber. See
+                // buildRecordingLostState/reportRecordingLost kdoc for why this is a
+                // flag on Success (never Error) and why it's escalated past
+                // AngelPay's Queued-case logWarning.
+                buildRecordingLostState(_state.value, referenceNumber)?.let { _state.value = it }
+                reportRecordingLost(
+                    queuedPayment = queuedPayment,
+                    recordError = recordError,
+                    queueError = queueError,
+                    orderIdForFlow = orderIdForFlow
+                )
             }
         }
     }
@@ -2857,6 +3075,31 @@ class PaymentViewModel @Inject constructor(
                 Timber.d("💰 [PreTrans] Amount: $amountCents cents | Tip: $tipInCents cents (from tip=${getTipForFlow()})")
                 val transType = if (sessionSnapshot.mode == PaymentMode.REFUND) TransType.REFUND else TransType.SALE
                 val preParams = PreTransParams(amountCents, tipInCents, transType, CountryConstants.MEX)
+                // 👁️ SOLO OBSERVA — no cambia ninguna decisión del cobro.
+                //
+                // Marca de entrada a PHASE 1. Existe porque un CUELGUE sólo se puede detectar
+                // por AUSENCIA: si `runInfallible` nunca regresa, ninguna línea posterior corre
+                // y hoy eso es invisible (los `Timber.d` de esta fase ni siquiera llegan a
+                // Crashlytics — `CrashReportingTree` filtra a partir de WARN).
+                //
+                // Cómo se lee, junto con la marca de 45s de `DetectingCard`:
+                //   iniciado → cobro registrado ............ todo bien
+                //   iniciado → stall de DetectingCard ...... colgado esperando tarjeta
+                //   iniciado → NADA .......................  colgado dentro de PreTrans
+                //
+                // Motivo: el apagón de Doña Simona (2026-07-26, 11:51→13:31) no dejó UN SOLO
+                // evento. Las fases 2, 3 y 4 sí reportan, así que el silencio total sólo es
+                // compatible con un cuelgue antes de ellas, o con que no hubo intentos.
+                // Esta línea distingue esos dos casos, que hoy son indistinguibles.
+                observability.logInfo(
+                    tag = TAG_PAYMENT_TRACE,
+                    message = "PHASE 1 PreTrans iniciado",
+                    metadata = mapOf(
+                        "attemptId" to sessionSnapshot.paymentAttemptId,
+                        "flowOrigin" to _flowOrigin.value.name,
+                        "amountCents" to amountCents,
+                    ),
+                )
                 preTransUseCase.runInfallible(preParams)
                 Timber.d("✅ [PHASE 1] PreTrans completed")
 
@@ -3432,6 +3675,31 @@ class PaymentViewModel @Inject constructor(
                     } catch (e: Exception) {
                         Timber.w(e, "⚠️ [Error Parsing] Failed to parse error details from failure object")
                     }
+
+                    // 👁️ SOLO OBSERVA — el MOTIVO real del fallo, a nuestra base y a Crashlytics.
+                    //
+                    // Por qué existe: el `Timber.e` de arriba escribe `failure.toString()`, y estas
+                    // clases del SDK no lo sobreescriben, así que lo que queda guardado es
+                    // `SaleIccFailure$MomentumFailure@75c4246` — el hash de identidad del objeto,
+                    // que no dice absolutamente nada.
+                    //
+                    // El problema medido (Doña Simona, 25-jul): 12 fallos de autorización guardados
+                    // en Crashlytics, todos con `blumon_sdk_status=READY`, chip leído y red sana
+                    // (~1s de latencia) — y ninguno se puede leer, porque `MomentumFailure` es la
+                    // MISMA clase para "FONDOS INSUFICIENTES" (el banco dijo que no, terminal sana)
+                    // que para un fallo de estado del SDK. Sin el cuerpo, son indistinguibles.
+                    //
+                    // La descripción ya se extrae aquí arriba por reflexión; sólo faltaba mandarla.
+                    observability.logWarning(
+                        tag = TAG_PAYMENT_TRACE,
+                        message = "Autorización rechazada: ${specificErrorDescription ?: "motivo no extraído"}",
+                        metadata = mapOf(
+                            "saleType" to saleType,
+                            "failureClass" to failure.javaClass.name,
+                            "descripcion" to specificErrorDescription,
+                            "attemptId" to sessionSnapshot.paymentAttemptId,
+                        ),
+                    )
 
                     // Translate SDK errors to user-friendly Spanish messages
                     // 💸 Use "Reembolso" for refund mode, "Pago" for sales
@@ -4490,6 +4758,18 @@ class PaymentViewModel @Inject constructor(
                         )
                     }.onFailure { queueError ->
                         Timber.e(queueError, "❌ [Offline Queue] Failed to queue CASH payment - CRITICAL")
+                        // 🔴 Fix round 1 ("worth doing while you're there"): cash already
+                        // surfaces a real Error here (not silent — the cashier sees it and can
+                        // retry safely, since a cash retry only re-attempts the RECORD, never a
+                        // re-charge). But it sent no telemetry and never surfaced the reference,
+                        // so a lost cash record had no supervisor-visible thread back to the
+                        // sale either. Reuse the card path's structured alarm.
+                        reportRecordingLost(
+                            queuedPayment = queuedPayment,
+                            recordError = error,
+                            queueError = queueError,
+                            orderIdForFlow = orderIdForFlow
+                        )
                         _state.value = PaymentState.Error(
                             message = "Error registrando pago en efectivo:\n\n${error.message ?: "Error desconocido"}",
                             context = RetryContext(
@@ -4973,6 +5253,15 @@ class PaymentViewModel @Inject constructor(
                         )
                     }.onFailure { queueError ->
                         Timber.e(queueError, "❌ [Offline Queue] Failed to queue KIOSK CASH payment - CRITICAL")
+                        // 🔴 Fix round 1: same reasoning as the non-kiosk cash sibling above —
+                        // already a real (non-silent) Error, just missing the supervisor-visible
+                        // telemetry/reference thread the card path already has.
+                        reportRecordingLost(
+                            queuedPayment = queuedPayment,
+                            recordError = error,
+                            queueError = queueError,
+                            orderIdForFlow = currentState.orderId
+                        )
                         _state.value = PaymentState.Error(
                             message = "Error registrando pago confirmado:\n\n${error.message ?: "Error desconocido"}",
                             context = RetryContext(
@@ -5966,19 +6255,17 @@ class PaymentViewModel @Inject constructor(
                         syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING
                     )
 
+                    // 🔴 Fix round 1: the entire enqueue-and-handle sequence now lives in
+                    // handleOfflineQueueOutcome, wrapped in NonCancellable — see its kdoc for
+                    // why (a cancel racing enqueue() could otherwise skip the alarm/telemetry).
                     viewModelScope.launch {
-                        val queueResult = paymentQueueRepository.enqueue(queuedPayment)
-                        queueResult.onSuccess {
-                            // 📒 [Libreta] ENTREGADA_A_COLA — pending_payments owns the money now.
-                            context.idempotencyKey?.let { attemptIdForLedger -> paymentAttemptLedger.markDeliveredToQueue(attemptIdForLedger) }
-                            Timber.i("✅ [Offline Queue] Payment queued successfully | ref=$referenceNumber")
-                            Timber.i("   → PaymentSyncWorker will retry every 15 minutes")
-                            Timber.i("   → Payment will sync automatically when network is available")
-                        }.onFailure { queueError ->
-                            Timber.e(queueError, "❌ [Offline Queue] Failed to queue payment - CRITICAL")
-                            Timber.e("   → Payment succeeded with Blumon but NOT recorded to backend")
-                            Timber.e("   → Manual intervention may be required")
-                        }
+                        handleOfflineQueueOutcome(
+                            queuedPayment = queuedPayment,
+                            context = context,
+                            recordError = error,
+                            referenceNumber = referenceNumber,
+                            orderIdForFlow = orderIdForFlow
+                        )
                     }
                 }
 

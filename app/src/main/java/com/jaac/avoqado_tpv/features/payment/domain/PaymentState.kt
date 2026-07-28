@@ -363,7 +363,63 @@ sealed class PaymentState {
         val remainingBalance: java.math.BigDecimal? = null,  // ⭐ NEW: Amount left to pay (for split payments - shows "Continuar pagando" button)
         val discountAmount: String? = null,  // 🆕 Discount applied to order (for receipt printing)
         val verificationCompleted: Boolean = false,  // 📸 Prevents verification loop after confirmation
-        val isRefund: Boolean = false  // 💸 Indicates this was a refund transaction (for UI display)
+        val isRefund: Boolean = false,  // 💸 Indicates this was a refund transaction (for UI display)
+        /**
+         * 🚨 MONEY-SAFETY (2026-07): non-null ONLY when a Blumon card charge succeeded but
+         * NEITHER the backend recording NOR the local offline queue could capture it — the
+         * charge is real money moved with genuinely no record anywhere except this screen.
+         *
+         * Deliberately a flag ON [Success], not a new [PaymentState] subtype: Success is
+         * published optimistically the instant the card is approved, BEFORE recording even
+         * starts (see PaymentViewModel's handlePaymentSuccess), so by the time this failure
+         * resolves the cashier is already looking at a Success screen with receipt/QR/print
+         * wiring live. Swapping to a different sealed subtype would require every one of the
+         * ~13 `PaymentState.Success(...)` sites and every `is/!is PaymentState.Success` check
+         * across PaymentViewModel.kt and PaymentScreen.kt to learn about it. A nullable field
+         * (default null — every existing site is unaffected) lets `.copy()` alarm the EXACT
+         * live Success in place, the same pattern [applyRecordedReceiptToSuccessState] already
+         * uses to attach a late-arriving receipt.
+         *
+         * Non-null renders an amber "don't recharge, reconcile via [referenceNumber]" banner
+         * (visually distinct from a clean success, never red — the charge did NOT fail) and is
+         * cleared back to null the moment a reconnect-triggered retry actually records the
+         * payment (see `applyRecordedReceiptToSuccessState`'s `recordingLostMessage = null`).
+         */
+        val recordingLostMessage: String? = null,
+        /**
+         * 🟡 MONEY-SAFETY (2026-07): non-null ONLY when a Blumon card charge succeeded, backend
+         * recording failed, but the LOCAL OFFLINE QUEUE captured it — the far more common sibling
+         * of [recordingLostMessage] (that one requires BOTH to fail). The charge is safe: a queue
+         * row exists and `PaymentSyncWorker` (or a reconnect retry) will record it automatically.
+         *
+         * Deliberately a flag on [Success], not a new [PaymentState] subtype — same reasoning as
+         * [recordingLostMessage]: Success publishes optimistically the instant the card is
+         * approved, seconds before backend recording is even attempted, so by the time the queue
+         * outcome is known the cashier is already on a live Success screen with receipt/QR/print
+         * wiring in place. `AngelPayPaymentViewModel` models this equivalent case as a distinct
+         * `Queued` sealed state (see `AngelPayPaymentState.Queued`), which works there because its
+         * state machine reaches `Success` and `Queued` as two DIFFERENT terminal transitions out of
+         * `RecordingPayment` — Blumon has no such fork; only one `Success` is ever published, and
+         * this outcome is learned strictly after the fact. A separate subtype here would require
+         * every one of the ~13 `PaymentState.Success(...)` construction sites and every
+         * `is/!is PaymentState.Success` check in `PaymentViewModel.kt` / `PaymentScreen.kt`
+         * (including the money-window `state.collect` guard) to learn about it; a nullable field
+         * lets `.copy()` attach the note to the EXACT live Success in place, same pattern already
+         * proven for `recordingLostMessage` and `applyRecordedReceiptToSuccessState`'s late-arriving
+         * receipt.
+         *
+         * Renders an amber "queued, don't recharge" note (never red — the charge did NOT fail) and
+         * is cleared back to null the moment a reconnect-triggered retry actually records the
+         * payment (`applyRecordedReceiptToSuccessState` clears it alongside `recordingLostMessage`).
+         * If the cashier has already navigated away by the time `PaymentSyncWorker`'s background
+         * sync succeeds, this flag is never live to clear — same accepted limitation as
+         * `recordingLostMessage` (the worker has no reference back to this ViewModel/state).
+         *
+         * Mutually exclusive with [recordingLostMessage] in practice: they are set on the two
+         * branches (`onSuccess`/`onFailure`) of the SAME queue-enqueue call in
+         * `handleOfflineQueueOutcome` — never both non-null on the same instance.
+         */
+        val pendingSyncMessage: String? = null
     ) : PaymentState()
     /**
      * Payment error with preserved context for smart retry.

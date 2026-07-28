@@ -31,6 +31,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
+import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -770,10 +771,12 @@ class AngelPayPaymentViewModelTest {
                 error = RuntimeException("HTTP 503"),
             )
 
+            // F-1: money moved AND it's safely queued — a SUCCESS with a caveat, never Error.
+            assertThat(state).isInstanceOf(AngelPayPaymentState.Queued::class.java)
+            val queued = state as AngelPayPaymentState.Queued
             // Operator sees the self-healing message, still forbidding a re-charge.
-            assertThat(state.message).contains("EN COLA")
-            assertThat(state.message).contains("NO vuelvas a cobrar")
-            assertThat(state.canRetry).isFalse()
+            assertThat(queued.message).contains("EN COLA")
+            assertThat(queued.message).contains("NO vuelvas a cobrar")
 
             coVerify(exactly = 1) {
                 paymentQueueRepository.enqueue(
@@ -793,6 +796,28 @@ class AngelPayPaymentViewModelTest {
     }
 
     @Test
+    fun `un cobro exitoso con registro encolado NO es un estado de Error`() = runTest(testDispatcher) {
+        coEvery { paymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
+
+        val vm = createViewModel()
+        try {
+            val state = vm.handleRecordFailure(
+                paymentLabel = "El pago",
+                context = angelPayContext(),
+                error = java.io.IOException("backend no respondio"),
+            )
+
+            // 🔴 El bug: era Error. El cajero veia rojo y volvia a cobrar.
+            assertThat(state).isInstanceOf(AngelPayPaymentState.Queued::class.java)
+            val queued = state as AngelPayPaymentState.Queued
+            assertThat(queued.message).contains("EN COLA")
+            assertThat(queued.message).contains("NO vuelvas a cobrar")
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
     fun `handleRecordFailure falls back to manual-review state when enqueue also fails`() = runTest(testDispatcher) {
         coEvery { paymentQueueRepository.enqueue(any()) } returns Result.failure(RuntimeException("disk full"))
 
@@ -805,8 +830,30 @@ class AngelPayPaymentViewModelTest {
             )
 
             // Legacy manual-review message — nothing got queued, supervisor must act.
-            assertThat(state.message).contains("avisa al supervisor")
-            assertThat(state.canRetry).isFalse()
+            assertThat(state).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            val errorState = state as AngelPayPaymentState.Error
+            assertThat(errorState.message).contains("avisa al supervisor")
+            assertThat(errorState.canRetry).isFalse()
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `si el encolado TAMBIEN falla si es un Error real`() = runTest(testDispatcher) {
+        coEvery { paymentQueueRepository.enqueue(any()) } returns
+            Result.failure(IllegalStateException("no entro a la cola"))
+
+        val vm = createViewModel()
+        try {
+            val state = vm.handleRecordFailure(
+                paymentLabel = "El pago",
+                context = angelPayContext(),
+                error = java.io.IOException("backend no respondio"),
+            )
+
+            assertThat(state).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            assertThat((state as AngelPayPaymentState.Error).message).contains("avisa al supervisor")
         } finally {
             vm.viewModelScope.cancel()
         }
@@ -1232,11 +1279,73 @@ class AngelPayPaymentViewModelTest {
             runCurrent()
             verify { paymentStateHolder.setChargeAttemptActive(true) }
 
-            // Decline → Error is a RESOLVED state → NOT active (terminal free again).
+            // Fix round 2: `paymentStateHolder` is relaxed with no call-clearing, and
+            // `init{}`'s `state.collect{}` guard fires synchronously on construction
+            // (UnconfinedTestDispatcher) observing the still-Idle state — that ALONE already
+            // calls setChargeAttemptActive(false) before this test drives anything. A bare
+            // `verify { setChargeAttemptActive(false) }` below would match THAT stale call and
+            // pass regardless of what the decline actually does — proven by deliberately
+            // removing `Error` from the ViewModel's guard and re-running: see "Fix round 2" in
+            // task-6-report.md. Clearing history right after the `true` checkpoint forces the
+            // next verify to be about THIS transition's call, not any earlier one.
+            clearMocks(paymentStateHolder, answers = false)
+
+            // Decline → Error is a RESOLVED state → NOT active (terminal free again). Declines
+            // resolve synchronously (no backend record/enqueue attempt — money never moved), so
+            // `runCurrent()` alone is enough; `exactly = 1` is what makes the assertion
+            // discriminate (not the `timeout`, which is defensive/harmless here).
             vm.onAngelPaySdkResult(sdkFailureResult("G500"))
             runCurrent()
+            verify(timeout = 2000, exactly = 1) { paymentStateHolder.setChargeAttemptActive(false) }
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
-            verify { paymentStateHolder.setChargeAttemptActive(false) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `charge-active flag flips false on a resolved Queued screen (terminal not stuck-busy)`() = runTest(testDispatcher) {
+        // F-1 fix round 1 (sibling of the Error case above): Queued is a RESOLVED outcome
+        // (money moved, safely queued) exactly like Success/Error/Cancelled. Before the F-1
+        // fix this path published Error, which WAS excluded from "active" — so the flag
+        // already flipped false correctly. Adding Queued as a NEW resolved state reopened
+        // the "screen stays up, terminal rejects every subsequent POS charge" bug from
+        // 2026-07-14 unless Queued is excluded here too.
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.failure(RuntimeException("HTTP 503"))
+
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00")
+            runCurrent()
+            // A working state → active.
+            vm.primeSdkLaunch() // LaunchingAngelPaySdk
+            runCurrent()
+            verify { paymentStateHolder.setChargeAttemptActive(true) }
+
+            // Fix round 2: same stale-match hole as the decline sibling above — construction
+            // already logged a `false` call from the initial Idle state, so a bare
+            // `verify(timeout = 2000) { setChargeAttemptActive(false) }` matched THAT call and
+            // returned instantly (0ms), never actually waiting on the Dispatchers.IO hop below.
+            // Confirmed two ways: (1) run this test in isolation with the old code — it failed
+            // on the NEXT line (state was still RecordingPayment); (2) remove `Queued` from the
+            // guard and re-run — the class still went green. Clearing history right after the
+            // `true` checkpoint fixes the discrimination.
+            clearMocks(paymentStateHolder, answers = false)
+
+            // Approved + record failure → Queued is a RESOLVED state → NOT active. The
+            // record→enqueue attempt genuinely hops through Dispatchers.IO (same as the sibling
+            // "approved SDK result with record failure..." test above, which waits on
+            // paymentAttemptLedger the same way) — `exactly = 1` is what makes `timeout` do real
+            // polling work now: right after the clear the count is 0 (only a same-transaction
+            // `true` from the intermediate RecordingPayment state is recorded), and MockK keeps
+            // retrying until the async Queued transition lands the `false` call or 2s elapse.
+            vm.onAngelPaySdkResult(approvedSdkResult())
+            runCurrent()
+            verify(timeout = 2000, exactly = 1) { paymentStateHolder.setChargeAttemptActive(false) }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Queued::class.java)
         } finally {
             vm.viewModelScope.cancel()
         }

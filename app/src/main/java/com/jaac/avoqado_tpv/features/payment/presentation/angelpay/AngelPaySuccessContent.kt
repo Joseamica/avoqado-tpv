@@ -21,10 +21,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.AttachMoney
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Storefront
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -47,6 +49,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.components.rememberQrBitmapPainter
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
+import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 import com.jaac.avoqado_tpv.features.payment.presentation.components.WhatsAppReceiptDialog
 import java.math.BigDecimal
@@ -93,6 +96,13 @@ fun AngelPaySuccessContent(
     proofOfSaleComplete: Boolean = false,
     onProofOfSalePhotoTaken: (photoPath: String, photoLabel: String) -> Unit = { _, _ -> },
     onRetakeProofOfSalePhoto: (photoLabel: String) -> Unit = {},
+    /**
+     * F-1 (spec §4.2): non-null ONLY for the [AngelPayPaymentState.Queued] case — the
+     * card charged, but the backend record is still pending offline sync. Renders an
+     * amber "don't recharge" note right under the amount breakdown. Null (default) for
+     * a normal recorded [AngelPayPaymentState.Success], which stays byte-identical.
+     */
+    pendingSyncMessage: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val subtotalAmount = remember(state.amount) { state.amount.toBigDecimalOrNull() ?: BigDecimal.ZERO }
@@ -188,6 +198,36 @@ fun AngelPaySuccessContent(
                     } else {
                         MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
                     },
+                )
+            }
+        }
+
+        // ── F-1: modest "done" affirmation (green), Queued-only ───────
+        // Queued deliberately skips the confetti (PaymentApprovedScreen) — without this,
+        // the screen has NO green anywhere and the amber pending-sync banner below becomes
+        // the ONLY colored element, so a cashier scanning for a verdict sees one signal and
+        // it's a warning. This is the "verde" half of the brief's "verde/ámbar" — modest on
+        // purpose (icon + one line), not the full celebration. Text is onSurface, not
+        // statusSuccess: full-strength green (#10B981) as body text on a light background is
+        // itself only ≈2.5:1 (same class of bug as the amber-text fix above) — color carries
+        // the icon, weight carries the text.
+        if (pendingSyncMessage != null) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(bottom = 12.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = null,
+                    tint = MaterialTheme.avoqadoColors.statusSuccess,
+                    modifier = Modifier.size(22.dp),
+                )
+                Text(
+                    text = "Cobro aprobado",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
             }
         }
@@ -352,6 +392,41 @@ fun AngelPaySuccessContent(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+
+        // ── F-1: pending-sync note (amber, NOT red) ───────────────────
+        // The charge succeeded; only Avoqado's record of it is still queued. Same icon
+        // language as the "pending payments" device alert (statusWarning + Icons.Default.Sync)
+        // so the cashier reads it as "handled itself", not "broken" — but the TEXT is
+        // onSurface, not statusWarning. Fix round 1: amber-on-amber-tint text was ≈1.96:1 in
+        // light theme (WCAG AA body text needs 4.5:1) — on a handheld under store lighting
+        // that made the exact "don't recharge" sentence the least readable text on screen.
+        // onSurface on the same tinted background lands at ≈16:1 in light theme, matching
+        // every other text element in this composable (Total pagado / Monto / Propina all
+        // use onSurface already). DeviceAlertBanner's statusWarning precedent uses it as a
+        // SOLID fill with white text, not as a same-hue tint+text pairing — doesn't apply here.
+        if (pendingSyncMessage != null) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.12f))
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Sync,
+                    contentDescription = null,
+                    tint = MaterialTheme.avoqadoColors.statusWarning,
+                    modifier = Modifier.size(20.dp),
+                )
+                Text(
+                    text = pendingSyncMessage,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
         }
 
         Spacer(modifier = Modifier.weight(1f))
@@ -711,6 +786,56 @@ private fun AngelPaySuccessCashPreview() {
             ),
             showReceiptScreen = false,
             onPrintReceipt = {},
+            onNavigateHome = {},
+            onStartNewPayment = {},
+        )
+    }
+}
+
+@Preview(device = PAX_A910S, showSystemUi = true)
+@Composable
+private fun AngelPaySuccessPendingSyncPreview() {
+    // F-1: card charged, backend record still queued — success chrome, green "Cobro
+    // aprobado" affirmation, amber note, NOT the red ErrorContent. Dark theme (default).
+    AvoqadoTheme(darkTheme = true) {
+        AngelPaySuccessContent(
+            state = AngelPayPaymentState.Success(
+                authCode = "AUTH77",
+                amount = "150.00",
+                tipAmount = "15.00",
+                referenceNumber = "195978383755",
+            ),
+            showReceiptScreen = false,
+            onPrintReceipt = {},
+            pendingSyncMessage = "El pago con tarjeta fue procesado, pero Avoqado no respondió. " +
+                "El registro quedó EN COLA y se completará automáticamente al recuperar conexión. " +
+                "NO vuelvas a cobrar.",
+            onNavigateHome = {},
+            onStartNewPayment = {},
+        )
+    }
+}
+
+@Preview(device = PAX_A910S, showSystemUi = true)
+@Composable
+private fun AngelPaySuccessPendingSyncLightPreview() {
+    // Fix round 1: the dark-theme-only preview above structurally could not catch the
+    // amber-text-on-amber-tint contrast failure (≈1.96:1) — AvoqadoTheme{} defaults to
+    // dark. This is the light-theme twin so the fix (onSurface text, ≈16:1) is checkable
+    // in the Android Studio preview pane without a light-mode device.
+    AvoqadoTheme(darkTheme = false) {
+        AngelPaySuccessContent(
+            state = AngelPayPaymentState.Success(
+                authCode = "AUTH77",
+                amount = "150.00",
+                tipAmount = "15.00",
+                referenceNumber = "195978383755",
+            ),
+            showReceiptScreen = false,
+            onPrintReceipt = {},
+            pendingSyncMessage = "El pago con tarjeta fue procesado, pero Avoqado no respondió. " +
+                "El registro quedó EN COLA y se completará automáticamente al recuperar conexión. " +
+                "NO vuelvas a cobrar.",
             onNavigateHome = {},
             onStartNewPayment = {},
         )

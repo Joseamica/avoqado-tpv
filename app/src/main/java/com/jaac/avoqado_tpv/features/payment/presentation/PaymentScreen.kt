@@ -19,12 +19,15 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -718,8 +721,31 @@ fun PaymentScreen(
                     // The POST-payment verification has been removed.
 
                     // Track if we should show the approved animation
+                    // 🚨 Money-safety: skip the confetti when the record was lost — the amber
+                    // alarm must be the first thing the cashier sees, not buried behind a
+                    // "success" celebration (mirrors AngelPay's Queued-state confetti skip,
+                    // escalated here since this case has no local queue fallback at all).
                     var showApprovedAnimation by remember(currentState.authCode) {
-                        mutableStateOf(true)
+                        mutableStateOf(currentState.recordingLostMessage == null && currentState.pendingSyncMessage == null)
+                    }
+                    // 🔴 Fix round 1 (Important): the check above is NEVER actually true when it
+                    // matters — Success publishes the INSTANT the card is approved, seconds
+                    // BEFORE backend recording (let alone the queue fallback) is even attempted,
+                    // so recordingLostMessage is ALWAYS null at first composition. That made the
+                    // "fast-failure edge case" framing wrong: it was the ONLY case, and every
+                    // lost-record sale got the identical confetti as a healthy one. React to the
+                    // alarm ARRIVING instead of only checking it once at first composition: force
+                    // the animation off the moment recordingLostMessage flips non-null, at any
+                    // point in the animation (not a remember-key change — authCode never changes
+                    // for this screen instance, so re-keying `remember` wouldn't fire either).
+                    // 🟡 pendingSyncMessage (queued-for-sync, the far more common case) follows the
+                    // SAME reasoning: it also arrives asynchronously after Success first publishes,
+                    // and a cashier who needs to read "don't recharge" should get there as fast as
+                    // possible — a few seconds of confetti first isn't worth delaying that note.
+                    LaunchedEffect(currentState.recordingLostMessage, currentState.pendingSyncMessage) {
+                        if (currentState.recordingLostMessage != null || currentState.pendingSyncMessage != null) {
+                            showApprovedAnimation = false
+                        }
                     }
 
                     // 🥝 KIOSK: Auto-navigate to KioskSuccessScreen when receipt is ready
@@ -767,6 +793,8 @@ fun PaymentScreen(
                                 remainingBalance = currentState.remainingBalance,
                                 showReceiptOptions = viewModel.showReceiptScreen,
                                 showPrintButton = viewModel.canPrintReceipt,
+                                recordingLostMessage = currentState.recordingLostMessage,  // 🚨 Money-safety alarm banner
+                                pendingSyncMessage = currentState.pendingSyncMessage,  // 🟡 Queued-for-sync note
                                 isRefund = currentState.isRefund,  // 💸 Show refund-specific UI
                                 wasPayLaterOrder = wasPayLaterOrder,  // 💳 Pay-later context
                                 payLaterOrdersCount = payLaterOrdersCount,  // 💳 Remaining count
@@ -1398,6 +1426,18 @@ private fun PaymentSuccessContent(
     remainingBalance: java.math.BigDecimal? = null,  // ⭐ NEW: Amount left to pay (for split payments)
     showReceiptOptions: Boolean = true,  // ⚙️ TPV Settings: Show/hide QR code & print button
     showPrintButton: Boolean = true,  // 🖨️ Hide on terminals without built-in printer (e.g., N62)
+    // 🚨 MONEY-SAFETY: non-null ONLY when the card charge succeeded but neither the backend NOR
+    // the local offline queue could record it (PaymentState.Success.recordingLostMessage).
+    // Renders an amber "don't recharge, reconcile via referenceNumber" banner. Null (default)
+    // for every normal Success, which stays byte-identical.
+    recordingLostMessage: String? = null,
+    // 🟡 MONEY-SAFETY: non-null ONLY when the card charge succeeded, backend recording failed,
+    // but the LOCAL OFFLINE QUEUE captured it — the common, self-healing sibling of
+    // recordingLostMessage (PaymentState.Success.pendingSyncMessage). Renders an amber "queued,
+    // syncs on its own, don't recharge" note in place of the QR/instructions, and disables
+    // Email/WhatsApp (server-dependent) while leaving Imprimir enabled (local, ESC/POS). Null
+    // (default) for every normal Success, which stays byte-identical.
+    pendingSyncMessage: String? = null,
     isRefund: Boolean = false,  // 💸 True = show refund-specific UI text
     wasPayLaterOrder: Boolean = false,  // 💳 True = order had customers (pay-later)
     payLaterOrdersCount: Int = 0,  // 💳 Remaining pay-later orders count
@@ -1644,6 +1684,81 @@ private fun PaymentSuccessContent(
                 .weight(1f)
                 .verticalScroll(rememberScrollState())
         ) {
+            // 🚨 MONEY-SAFETY (Fix round 1): moved to the TOP of the scrollable content — was
+            // previously the LAST element inside the ticket, below a 180dp QR box, instruction
+            // text, and the totals/breakdown, which fill essentially the whole viewport on a PAX
+            // A910S (360×640dp). A cashier would have had to scroll to see it. AngelPaySuccessContent
+            // puts its affirmation/alarm before the QR for the same reason.
+            //
+            // The green "Cobro aprobado" line only renders when alarmed/queued — a normal Success
+            // gets its celebration from PaymentApprovedScreen's confetti (Phase 1); this is needed
+            // ONLY here because that confetti now correctly aborts when recordingLostMessage OR
+            // pendingSyncMessage is set (see the LaunchedEffect above the `when` block). With no
+            // confetti and no green, the screen would read as pure warning even though the charge
+            // succeeded. Mirrors AngelPaySuccessContent.kt:205-232 exactly.
+            //
+            // 🟡 recordingLostMessage (catastrophic, nothing recovers on its own) and
+            // pendingSyncMessage (the common case — a queue row exists, this self-heals) share
+            // this ONE block rather than two near-duplicate ones: same amber-note visual language,
+            // same position, and — critically — they are set on the two mutually-exclusive
+            // branches of the SAME queue-enqueue call (see PaymentState.Success.pendingSyncMessage
+            // kdoc), so a live Success only ever carries one of the two. Only the ICON and TEXT
+            // differ: Warning for the alarm (something needs a human), Sync for the queued note
+            // (this is already working itself out) — same distinction AngelPay's own Queued state
+            // draws with its own Icons.Default.Sync, and the same "pending payments" device-alert
+            // icon language referenced in PaymentState.Success's kdoc.
+            val bannerMessage = recordingLostMessage ?: pendingSyncMessage
+            if (bannerMessage != null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 16.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = MaterialTheme.avoqadoColors.statusSuccess,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Text(
+                            text = "Cobro aprobado",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    // Same visual language as AngelPaySuccessContent's pending-sync note:
+                    // statusWarning at 12% background, but the TEXT is onSurface — full-strength
+                    // statusWarning as body text on a light background fails WCAG AA contrast
+                    // (~1.96:1, see that file's fix-round-1 note); onSurface matches every other
+                    // text element in this screen.
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.12f))
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (recordingLostMessage != null) Icons.Default.Warning else Icons.Default.Sync,
+                            contentDescription = null,
+                            tint = MaterialTheme.avoqadoColors.statusWarning,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = bannerMessage,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1691,12 +1806,50 @@ private fun PaymentSuccessContent(
                                     .align(Alignment.Center)
                             )
                         } ?: run {
-                            com.jaac.avoqado_tpv.core.presentation.components.ShimmerBox(
-                                modifier = Modifier
-                                    .size(140.dp)
-                                    .align(Alignment.Center),
-                                cornerRadius = 12.dp
-                            )
+                            // 🚨 Fix round 1: an infinitely-animating shimmer here implies "still
+                            // loading" — false when recordingLostMessage is set, since no receipt
+                            // is coming for this sale (nothing recorded it anywhere). Show nothing
+                            // instead of a shimmer that will never resolve; the alarm banner at
+                            // the top of this screen already explains why.
+                            //
+                            // 🟡 pendingSyncMessage is the THIRD case: unlike recordingLostMessage,
+                            // a receipt IS coming (once the queue syncs) — but ALSO unlike the
+                            // normal in-flight case, the shimmer's "loading any second now" promise
+                            // is wrong here (this can take until the next connectivity window). A
+                            // hole where the QR was reads as broken, so this fills the SAME 140dp
+                            // footprint with an honest, calm placeholder instead of either extreme.
+                            when {
+                                pendingSyncMessage != null -> {
+                                    Column(
+                                        modifier = Modifier
+                                            .align(Alignment.Center)
+                                            .padding(12.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Sync,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.avoqadoColors.statusWarning,
+                                            modifier = Modifier.size(40.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Text(
+                                            text = "Recibo pendiente",
+                                            textAlign = TextAlign.Center,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                recordingLostMessage == null -> {
+                                    com.jaac.avoqado_tpv.core.presentation.components.ShimmerBox(
+                                        modifier = Modifier
+                                            .size(140.dp)
+                                            .align(Alignment.Center),
+                                        cornerRadius = 12.dp
+                                    )
+                                }
+                            }
                         }
                     }
                 } else if (showProofOfSaleButton) {
@@ -1734,15 +1887,36 @@ private fun PaymentSuccessContent(
                         .padding(horizontal = 40.dp)
                         .align(Alignment.BottomCenter)
                 ) {
-                    // Instruction text - hidden in SERIALIZED_INVENTORY mode
-                    if (!isSerializedFlow) {
-                        Text(
-                            text = "Escanea el código QR para descargar el recibo y dejar una calificación",
-                            textAlign = TextAlign.Center,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                    // Instruction text - hidden in SERIALIZED_INVENTORY mode AND when the record
+                    // was lost (Fix round 1: there is no QR coming for this sale — the alarm
+                    // banner at the top already explains why; this line would contradict it).
+                    //
+                    // 🟡 pendingSyncMessage gets its OWN replacement line instead of just being
+                    // hidden like recordingLostMessage: unlike the lost case, a receipt genuinely
+                    // IS coming here, so silence would read as "still loading" with no promise of
+                    // when — the amber banner above already carries the full explanation, this is
+                    // just the short version that belongs where the QR instructions normally sit.
+                    when {
+                        isSerializedFlow -> Unit
+                        recordingLostMessage != null -> Unit
+                        pendingSyncMessage != null -> {
+                            Text(
+                                text = "El recibo estará disponible en cuanto el pago se sincronice",
+                                textAlign = TextAlign.Center,
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        else -> {
+                            Text(
+                                text = "Escanea el código QR para descargar el recibo y dejar una calificación",
+                                textAlign = TextAlign.Center,
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(if (isSerializedFlow) 4.dp else 20.dp))
@@ -1861,6 +2035,15 @@ private fun PaymentSuccessContent(
             // Segmented button group for receipt options (Print optional by device)
             val buttonShape = RoundedCornerShape(12.dp)
             val dividerColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+            // 🟡 Imprimir is local (ESC/POS straight to the printer via printerManager — already
+            // handles receipt == null with a generic receipt, see PaymentViewModel.printReceipt)
+            // so it stays enabled. Email/WhatsApp both go through the server
+            // (paymentApiService.sendReceipt / sendReceiptWhatsApp) AND both short-circuit in the
+            // ViewModel when receipt == null ("No hay recibo disponible") — which is exactly this
+            // state, since the record hasn't synced yet. Disable them here instead of letting the
+            // cashier tap into a dialog that will always fail once submitted.
+            val receiptActionsAwaitingSync = pendingSyncMessage != null
+            val disabledActionColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
 
             Row(
                 modifier = Modifier
@@ -1926,7 +2109,7 @@ private fun PaymentSuccessContent(
                         .weight(1f)
                         .fillMaxHeight()
                         .background(MaterialTheme.colorScheme.surface)
-                        .clickable { showEmailDialog = true },
+                        .clickable(enabled = !receiptActionsAwaitingSync) { showEmailDialog = true },
                     contentAlignment = Alignment.Center
                 ) {
                     Row(
@@ -1936,14 +2119,14 @@ private fun PaymentSuccessContent(
                         Icon(
                             imageVector = Icons.Default.Email,
                             contentDescription = "Email",
-                            tint = MaterialTheme.colorScheme.onSurface,
+                            tint = if (receiptActionsAwaitingSync) disabledActionColor else MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             text = "Email",
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = if (receiptActionsAwaitingSync) disabledActionColor else MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -1962,7 +2145,7 @@ private fun PaymentSuccessContent(
                         .weight(1f)
                         .fillMaxHeight()
                         .background(MaterialTheme.colorScheme.surface)
-                        .clickable { showWhatsAppDialog = true },
+                        .clickable(enabled = !receiptActionsAwaitingSync) { showWhatsAppDialog = true },
                     contentAlignment = Alignment.Center
                 ) {
                     Row(
@@ -1973,16 +2156,32 @@ private fun PaymentSuccessContent(
                             text = "WA",
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF25D366),
+                            color = if (receiptActionsAwaitingSync) disabledActionColor else Color(0xFF25D366),
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             text = "WhatsApp",
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurface
+                            color = if (receiptActionsAwaitingSync) disabledActionColor else MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
+            }
+
+            // 🟡 "brief reason rather than silence" — a greyed-out button alone can just look
+            // broken; state why, right where the cashier is looking, instead of only after they
+            // tap into a dialog that would fail on submit.
+            if (receiptActionsAwaitingSync) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Email y WhatsApp estarán disponibles cuando el pago se sincronice",
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                )
             }
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -2830,6 +3029,105 @@ private fun PaymentSuccessWithReceiptPreview() {
                 amount = java.math.BigDecimal("500.00"),
                 tipAmount = java.math.BigDecimal("50.00")
             ),
+            onPrintReceipt = {},
+            onNavigateHome = {},
+            onNewOrder = {},
+            onNewFastPayment = {}
+        )
+    }
+}
+
+// 🔴 Fix round 1 (device spec): a bare showBackground=true preview at desktop proportions
+// would never have shown the banner sitting below the fold under a QR shimmer that never
+// resolves — the finding that drove moving the banner to the top. Use the real PAX A910S
+// spec (720×1280px @320dpi) that FastPaymentEntryScreen.kt and AngelPaySuccessContent.kt
+// already preview against, not an arbitrary desktop-shaped canvas.
+private const val PAX_A910S = "spec:width=720px,height=1280px,dpi=320"
+
+// 🚨 MONEY-SAFETY: card charged but neither the backend NOR the local offline queue could
+// record it — amber banner, NOT the red ErrorContent (the charge did not fail). Dark theme
+// (AvoqadoTheme default).
+@androidx.compose.ui.tooling.preview.Preview(name = "Success - Recording Lost (PAX A910S)", device = PAX_A910S, showSystemUi = true)
+@Composable
+private fun PaymentSuccessRecordingLostPreview() {
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
+        PaymentSuccessContent(
+            authCode = "123456",
+            amount = "500.00",
+            receipt = null,  // Never recorded — no receipt, no QR
+            // Reference is embedded in the message text below — PaymentSuccessContent has no
+            // standalone referenceNumber field (unlike AngelPaySuccessContent).
+            recordingLostMessage = "El cobro con tarjeta SÍ se realizó, pero Avoqado no pudo registrarlo " +
+                "(ni en el servidor ni en la cola local de este equipo). NO vuelvas a cobrar. Avisa al " +
+                "supervisor con la referencia 195978383755 para reconciliar el pago manualmente.",
+            onPrintReceipt = {},
+            onNavigateHome = {},
+            onNewOrder = {},
+            onNewFastPayment = {}
+        )
+    }
+}
+
+// Light-theme twin — the contrast fix (onSurface text, not statusWarning) is only checkable in
+// the Android Studio preview pane against a light background; AvoqadoTheme{} defaults to dark.
+// Same rationale as AngelPaySuccessPendingSyncLightPreview.
+@androidx.compose.ui.tooling.preview.Preview(name = "Success - Recording Lost (PAX A910S, light)", device = PAX_A910S, showSystemUi = true)
+@Composable
+private fun PaymentSuccessRecordingLostLightPreview() {
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme(darkTheme = false) {
+        PaymentSuccessContent(
+            authCode = "123456",
+            amount = "500.00",
+            receipt = null,
+            recordingLostMessage = "El cobro con tarjeta SÍ se realizó, pero Avoqado no pudo registrarlo " +
+                "(ni en el servidor ni en la cola local de este equipo). NO vuelvas a cobrar. Avisa al " +
+                "supervisor con la referencia 195978383755 para reconciliar el pago manualmente.",
+            onPrintReceipt = {},
+            onNavigateHome = {},
+            onNewOrder = {},
+            onNewFastPayment = {}
+        )
+    }
+}
+
+// 🟡 Followup (2026-07-27): card charged, backend record FAILED but the LOCAL OFFLINE QUEUE
+// captured it — the common, self-healing sibling of the recording-lost case above. Amber, NOT
+// red; the QR placeholder is replaced (not just removed) with a calm "Recibo pendiente" note;
+// Email/WhatsApp are visibly disabled with a stated reason; Imprimir stays enabled. Dark theme
+// (AvoqadoTheme default).
+@androidx.compose.ui.tooling.preview.Preview(name = "Success - Pending Sync (PAX A910S)", device = PAX_A910S, showSystemUi = true)
+@Composable
+private fun PaymentSuccessPendingSyncPreview() {
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme {
+        PaymentSuccessContent(
+            authCode = "F628CL",
+            amount = "25.00",
+            receipt = null,  // Not recorded yet — queued, will sync automatically
+            pendingSyncMessage = "El cobro con tarjeta se realizó correctamente. Avoqado no pudo registrarlo " +
+                "de inmediato, pero quedó en cola en este equipo y se completará solo en cuanto haya " +
+                "conexión — no necesitas hacer nada. NO vuelvas a cobrar. Referencia: 873257481453",
+            onPrintReceipt = {},
+            onNavigateHome = {},
+            onNewOrder = {},
+            onNewFastPayment = {}
+        )
+    }
+}
+
+// Light-theme twin — same reasoning as PaymentSuccessRecordingLostLightPreview: the disabled
+// Email/WhatsApp greyed state and the onSurface banner text both need checking against a light
+// background, which AvoqadoTheme{} (dark by default) can't surface.
+@androidx.compose.ui.tooling.preview.Preview(name = "Success - Pending Sync (PAX A910S, light)", device = PAX_A910S, showSystemUi = true)
+@Composable
+private fun PaymentSuccessPendingSyncLightPreview() {
+    com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme(darkTheme = false) {
+        PaymentSuccessContent(
+            authCode = "F628CL",
+            amount = "25.00",
+            receipt = null,
+            pendingSyncMessage = "El cobro con tarjeta se realizó correctamente. Avoqado no pudo registrarlo " +
+                "de inmediato, pero quedó en cola en este equipo y se completará solo en cuanto haya " +
+                "conexión — no necesitas hacer nada. NO vuelvas a cobrar. Referencia: 873257481453",
             onPrintReceipt = {},
             onNavigateHome = {},
             onNewOrder = {},

@@ -380,19 +380,41 @@ class DeviceHealthViewModel @Inject constructor(
     // ══════════════════════════════════════════════════════════════════════
 
     /**
-     * Reset all FAILED payments back to PENDING for retry.
-     * Called when user taps the "pending payments" alert.
+     * Reset FAILED payments back to PENDING for retry — INCLUDING `permanent` rows
+     * (fix round 1). Called when the user deliberately taps the "pending payments" alert.
+     *
+     * **Why `resetAllFailedIncludingPermanent`, not `resetAllFailed`:** the automatic
+     * reconnect path ([com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel])
+     * must keep excluding `permanent = true` rows (F-10 — that's the infinite-retry loop
+     * this whole change exists to kill). But a HUMAN tap is different: the badge reads
+     * "$failedCount pagos fallidos — Toca para reintentar sincronización" counting ALL
+     * FAILED rows regardless of `permanent` ([DeviceAlert.PendingPayments], driven by
+     * [getFailedCount]), so if every failed row happened to be permanent (e.g. a stuck
+     * token refresh misfired a 401 before fix round 1 — see `SyncOutcome.kt`),
+     * `resetAllFailed()` would silently reset 0 rows: the operator taps, nothing
+     * happens, the banner keeps inviting them to tap again — a dead affordance.
+     * `resetAllFailedIncludingPermanent()` is the intended escape hatch instead.
+     *
+     * @param onResult Always invoked with the actual reset count, even 0 — so the caller
+     *   can surface real feedback instead of the previous `if (count > 0)` silence (a
+     *   genuine 0, e.g. from an underlying DB write failure, used to leave the operator
+     *   with zero indication the tap did anything at all).
      */
-    fun retryFailedPayments() {
+    fun retryFailedPayments(onResult: (resetCount: Int) -> Unit = {}) {
         viewModelScope.launch {
-            val count = paymentQueueRepository.resetAllFailed()
+            val count = paymentQueueRepository.resetAllFailedIncludingPermanent()
             if (count > 0) {
-                timber.log.Timber.i("🔄 [DeviceHealth] Reset $count failed payments back to PENDING for retry")
-                // Refresh queue state to update UI
-                val pending = paymentQueueRepository.getPendingCount()
-                val failed = paymentQueueRepository.getFailedCount()
-                paymentQueueStateManager.refreshCounts(pending, failed)
+                Timber.i("🔄 [DeviceHealth] Reset $count failed payments (incl. permanent) back to PENDING for retry")
+            } else {
+                Timber.w("⚠️ [DeviceHealth] retryFailedPayments(): nothing was reset")
             }
+            // Siempre refresca, no solo cuando count > 0 (fix round 1) — antes, un 0
+            // dejaba el badge mostrando el conteo viejo sin ninguna corroboración de que
+            // el tap se procesó de verdad.
+            val pending = paymentQueueRepository.getPendingCount()
+            val failed = paymentQueueRepository.getFailedCount()
+            paymentQueueStateManager.refreshCounts(pending, failed)
+            onResult(count)
         }
     }
 

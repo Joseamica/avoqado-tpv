@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.payment.data.repository
 
+import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
 import com.jaac.avoqado_tpv.features.payment.data.dto.OrderPaymentRequest
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
@@ -10,6 +11,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentRecorder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
+import java.io.IOException
 import javax.inject.Inject
 
 /**
@@ -147,8 +149,9 @@ class OrderPaymentRecorder @Inject constructor(
                 response.code() == 401 -> {
                     Timber.w("⚠️ Unauthorized (401) - Token may be expired")
                     Result.failure(
-                        Exception(
-                            "Token de autenticación inválido o expirado. " +
+                        BackendHttpException(
+                            statusCode = response.code(),
+                            message = "Token de autenticación inválido o expirado. " +
                                     "Por favor, cierra sesión y vuelve a iniciar sesión."
                         )
                     )
@@ -157,8 +160,9 @@ class OrderPaymentRecorder @Inject constructor(
                 response.code() == 403 -> {
                     Timber.w("⚠️ Forbidden (403) - Missing payments:create permission")
                     Result.failure(
-                        Exception(
-                            "No tienes permisos para registrar pagos. " +
+                        BackendHttpException(
+                            statusCode = response.code(),
+                            message = "No tienes permisos para registrar pagos. " +
                                     "Contacta al administrador del venue."
                         )
                     )
@@ -167,18 +171,23 @@ class OrderPaymentRecorder @Inject constructor(
                 response.code() == 404 -> {
                     Timber.w("⚠️ Not Found (404) - Venue or Order not found")
                     Result.failure(
-                        Exception(
-                            "Orden no encontrada. Verifica que la orden existe."
+                        BackendHttpException(
+                            statusCode = response.code(),
+                            message = "Orden no encontrada. Verifica que la orden existe."
                         )
                     )
                 }
 
                 response.code() == 409 -> {
-                    // 409 Conflict: Orden ya está completamente pagada
+                    // 409 Conflict: Orden ya está completamente pagada.
+                    // 🔴 Este es el caso real que SyncOutcome.classifySyncFailure() debe
+                    // reconocer como Synced — antes viajaba como Exception genérica y el
+                    // worker tenía que adivinarlo leyendo texto. Ver BackendHttpException.kt.
                     Timber.w("⚠️ Conflict (409) - Order already fully paid")
                     Result.failure(
-                        Exception(
-                            "Esta orden ya está completamente pagada."
+                        BackendHttpException(
+                            statusCode = response.code(),
+                            message = "Esta orden ya está completamente pagada."
                         )
                     )
                 }
@@ -186,8 +195,9 @@ class OrderPaymentRecorder @Inject constructor(
                 response.code() == 429 -> {
                     Timber.w("⚠️ Rate Limit (429) - Too many requests")
                     Result.failure(
-                        Exception(
-                            "Demasiadas solicitudes. Por favor, espera un momento e intenta nuevamente."
+                        BackendHttpException(
+                            statusCode = response.code(),
+                            message = "Demasiadas solicitudes. Por favor, espera un momento e intenta nuevamente."
                         )
                     )
                 }
@@ -195,8 +205,9 @@ class OrderPaymentRecorder @Inject constructor(
                 response.code() in 500..599 -> {
                     Timber.e("❌ Server Error (${response.code()}) - ${response.message()}")
                     Result.failure(
-                        Exception(
-                            "Error del servidor (${response.code()}). " +
+                        BackendHttpException(
+                            statusCode = response.code(),
+                            message = "Error del servidor (${response.code()}). " +
                                     "Por favor, intenta nuevamente en unos minutos."
                         )
                     )
@@ -209,12 +220,18 @@ class OrderPaymentRecorder @Inject constructor(
                     )
                     Timber.e("❌ Unknown error (${response.code()}) - $errorMessage")
                     Result.failure(
-                        Exception(
-                            "Error desconocido (${response.code()}): $errorMessage"
+                        BackendHttpException(
+                            statusCode = response.code(),
+                            message = "Error desconocido (${response.code()}): $errorMessage"
                         )
                     )
                 }
             }
+        } catch (e: IOException) {
+            // NO envolver: classifySyncFailure() (SyncOutcome.kt) necesita la IOException
+            // intacta para clasificarla como Retryable. Ver BackendHttpException.kt.
+            Timber.w(e, "⚠️ Network error recording order payment (will be retried)")
+            Result.failure(e)
         } catch (e: Exception) {
             Timber.e(e, "❌ Failed to record order payment")
             Result.failure(

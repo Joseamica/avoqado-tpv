@@ -158,6 +158,8 @@ class SecureStorage @Inject constructor(
         private const val KEY_TPV_CELLULAR_FAILOVER_MIN_CELL_HOLD_SECONDS = "tpv_cellular_failover_min_cell_hold_seconds"
         // La libreta (write-ahead payment ledger) rollout flag
         private const val KEY_TPV_PAYMENT_LEDGER_MODE = "tpv_payment_ledger_mode"
+        // Restaurant mode (Mesas module entry point)
+        private const val KEY_TPV_RESTAURANT_MODE = "tpv_restaurant_mode_enabled"
 
         // Module cache keys
         private const val KEY_CACHED_MODULES = "cached_modules"
@@ -1204,6 +1206,8 @@ class SecureStorage @Inject constructor(
             putInt(KEY_TPV_CELLULAR_FAILOVER_MIN_CELL_HOLD_SECONDS, settings.cellularFailoverMinCellHoldSeconds)
             // La libreta (write-ahead payment ledger) rollout flag
             putString(KEY_TPV_PAYMENT_LEDGER_MODE, settings.paymentLedgerMode.name)
+            // Restaurant mode (Mesas module entry point)
+            putBoolean(KEY_TPV_RESTAURANT_MODE, settings.restaurantModeEnabled)
         }.apply()
         Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, showVerification=${settings.showVerificationScreen}, enableShifts=${settings.enableShifts}, kioskEnabled=${settings.kioskModeEnabled}, showQuickPayment=${settings.showQuickPayment}, showOrderManagement=${settings.showOrderManagement}, showCrypto=${settings.showCryptoOption}, failoverMode=${settings.cellularFailoverMode}, ledgerMode=${settings.paymentLedgerMode}")
     }
@@ -1284,7 +1288,9 @@ class SecureStorage @Inject constructor(
             // La libreta (write-ahead payment ledger) rollout flag (default: OFF)
             paymentLedgerMode = PaymentLedgerMode.fromRaw(
                 encryptedPrefs.getString(KEY_TPV_PAYMENT_LEDGER_MODE, null)
-            )
+            ),
+            // Restaurant mode (Mesas module entry point) — default: disabled
+            restaurantModeEnabled = encryptedPrefs.getBoolean(KEY_TPV_RESTAURANT_MODE, false)
         )
     }
 
@@ -1334,6 +1340,8 @@ class SecureStorage @Inject constructor(
             remove(KEY_TPV_CELLULAR_FAILOVER_MIN_CELL_HOLD_SECONDS)
             // La libreta (write-ahead payment ledger) rollout flag
             remove(KEY_TPV_PAYMENT_LEDGER_MODE)
+            // Restaurant mode (Mesas module entry point)
+            remove(KEY_TPV_RESTAURANT_MODE)
         }.apply()
         Timber.d("TPV settings cleared")
     }

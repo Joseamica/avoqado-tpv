@@ -465,4 +465,79 @@ class DeviceHealthViewModelTest {
         assertThat(viewModel.activeAlerts.value.none { it is DeviceAlert.PendingPayments }).isTrue()
         viewModel.viewModelScope.cancel()
     }
+
+    // ========================================
+    // RETRY FAILED PAYMENTS TESTS (fix round 1 — Critical + Important)
+    // ========================================
+    // Before this fix, retryFailedPayments() called resetAllFailed() — the SAME method
+    // the automatic reconnect path uses, which (correctly) excludes permanent=true rows.
+    // If every FAILED row happened to be permanent, the human tap reset 0 rows, the
+    // `if (count > 0)` guard skipped everything (no refresh, no feedback), and the
+    // "Toca para reintentar sincronización" banner kept inviting a tap that did nothing.
+    // Forever. These tests pin the fix: the human path calls the INCLUDING-permanent
+    // method, always refreshes, and always reports its real result to the caller.
+
+    @Test
+    fun `retryFailedPayments calls resetAllFailedIncludingPermanent, never resetAllFailed`() = runTest(testDispatcher) {
+        coEvery { paymentQueueRepository.resetAllFailedIncludingPermanent() } returns 2
+        coEvery { paymentQueueRepository.getPendingCount() } returns 0
+        coEvery { paymentQueueRepository.getFailedCount() } returns 0
+        val viewModel = createViewModel()
+
+        viewModel.retryFailedPayments()
+
+        coVerify(exactly = 1) { paymentQueueRepository.resetAllFailedIncludingPermanent() }
+        coVerify(exactly = 0) { paymentQueueRepository.resetAllFailed() }
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `retryFailedPayments reports the real reset count to onResult, even zero`() = runTest(testDispatcher) {
+        // The dead-affordance scenario: everything FAILED was permanent, so even the
+        // INCLUDING-permanent reset legitimately finds nothing (or, post fix, a real
+        // write failure). Either way the caller must be told — not left to infer
+        // "probably nothing happened" from silence.
+        coEvery { paymentQueueRepository.resetAllFailedIncludingPermanent() } returns 0
+        coEvery { paymentQueueRepository.getPendingCount() } returns 0
+        coEvery { paymentQueueRepository.getFailedCount() } returns 3
+        val viewModel = createViewModel()
+        var observedResult: Int? = null
+
+        viewModel.retryFailedPayments { resetCount -> observedResult = resetCount }
+
+        assertThat(observedResult).isEqualTo(0)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `retryFailedPayments reports a positive count to onResult`() = runTest(testDispatcher) {
+        coEvery { paymentQueueRepository.resetAllFailedIncludingPermanent() } returns 2
+        coEvery { paymentQueueRepository.getPendingCount() } returns 2
+        coEvery { paymentQueueRepository.getFailedCount() } returns 0
+        val viewModel = createViewModel()
+        var observedResult: Int? = null
+
+        viewModel.retryFailedPayments { resetCount -> observedResult = resetCount }
+
+        assertThat(observedResult).isEqualTo(2)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `retryFailedPayments always refreshes queue counts, even when nothing was reset`() = runTest(testDispatcher) {
+        // Before fix round 1 this refresh lived INSIDE `if (count > 0)` — a 0-return left
+        // the badge showing stale counts with no corroboration the tap was even processed.
+        coEvery { paymentQueueRepository.resetAllFailedIncludingPermanent() } returns 0
+        coEvery { paymentQueueRepository.getPendingCount() } returns 5
+        coEvery { paymentQueueRepository.getFailedCount() } returns 1
+        val viewModel = createViewModel()
+
+        viewModel.retryFailedPayments()
+
+        coVerify(exactly = 1) { paymentQueueRepository.getPendingCount() }
+        coVerify(exactly = 1) { paymentQueueRepository.getFailedCount() }
+        assertThat(paymentQueueStateManager.queueState.value.pendingCount).isEqualTo(5)
+        assertThat(paymentQueueStateManager.queueState.value.failedCount).isEqualTo(1)
+        viewModel.viewModelScope.cancel()
+    }
 }

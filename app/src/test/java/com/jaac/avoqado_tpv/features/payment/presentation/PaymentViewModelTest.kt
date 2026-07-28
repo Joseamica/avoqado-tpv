@@ -37,9 +37,11 @@ import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import com.paxsz.module.emv.process.contact.CandidateAID
 import android.content.Context
 import io.mockk.*
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
@@ -52,6 +54,7 @@ import org.junit.Before
 import org.junit.Test
 import java.math.BigDecimal
 import com.jaac.avoqado_tpv.core.observability.CrashlyticsContext
+import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 
 /**
  * PaymentViewModelTest
@@ -106,6 +109,12 @@ class PaymentViewModelTest {
     private lateinit var mockSetSelectAppCodeUseCase: SetSelectAppCodeUseCase
     private lateinit var mockConnectionEventManager: ConnectionEventManager
     private lateinit var mockAppContext: Context
+    // 🚨 Money-safety telemetry — verified explicitly by the "RECORDING LOST" test section below
+    private lateinit var observabilityManager: ObservabilityManager
+    // 🔴 Fix round 1: promoted from an anonymous inline mock to a named field so the
+    // mid-enqueue-cancellation test can control exactly when enqueue() suspends/returns.
+    private lateinit var mockPaymentQueueRepository:
+        com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
 
     // Flows needed by init block collectors
     private val socketEventsFlow = MutableSharedFlow<SocketEvent>()
@@ -267,6 +276,8 @@ class PaymentViewModelTest {
 
         // Application context (needed by PaymentSyncScheduler.runNow — mocked at object level)
         mockAppContext = mockk(relaxed = true)
+        observabilityManager = mockk(relaxed = true)
+        mockPaymentQueueRepository = mockk(relaxed = true)
         mockkObject(com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler)
         every { com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.runNow(any()) } just runs
     }
@@ -311,7 +322,7 @@ class PaymentViewModelTest {
             recordPaymentUseCase = mockRecordPaymentUseCase,
             recordRefundUseCase = mockRecordRefundUseCase,
             authRepository = mockAuthRepository,
-            paymentQueueRepository = mockk(relaxed = true),
+            paymentQueueRepository = mockPaymentQueueRepository,
             printerManager = mockk(relaxed = true),
             socketManager = mockSocketManager,
             shiftRepository = mockShiftRepository,
@@ -332,6 +343,7 @@ class PaymentViewModelTest {
             paymentStateHolder = paymentStateHolder,
             connectionEventManager = mockConnectionEventManager,
             paymentAttemptLedger = mockPaymentAttemptLedger,
+            observability = observabilityManager,
             appContext = mockAppContext
         )
     }
@@ -1067,5 +1079,419 @@ class PaymentViewModelTest {
         coVerify(exactly = 1) { mockPaymentAttemptLedger.markDiscardedBeforeCharge(any(), "user_cancel") }
 
         viewModel.viewModelScope.cancel()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MONEY-SAFETY: card charged but NEITHER backend NOR local queue recorded it
+    // ═══════════════════════════════════════════════════════════════════════════
+    // buildRecordingLostState / reportRecordingLost are the pure/near-pure pieces extracted
+    // from the previously-silent onFailure(queueError) branch inside handlePaymentSuccess.
+    // Only these are unit-tested directly — driving the full handlePaymentSuccess flow needs
+    // the real Blumon SDK reflection dance → device drills (Task 7), same boundary as the
+    // LIBRETA section above.
+
+    @Test
+    fun `buildRecordingLostState alarms the live Success with the reference and a dont-recharge message`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            val currentSuccess = PaymentState.Success(
+                authCode = "AUTH77",
+                amount = "150.00",
+                tipAmount = "15.00",
+                receipt = null,
+                referenceNumber = "OLD-REF",
+                orderId = "order-1",
+                orderNumber = "0007"
+            )
+
+            val alarmed = viewModel.buildRecordingLostState(currentSuccess, "195978383755")
+
+            assertThat(alarmed).isNotNull()
+            assertThat(alarmed!!.recordingLostMessage).isNotNull()
+            // Must say the money moved — never "failed" (would invite a double charge).
+            assertThat(alarmed.recordingLostMessage).contains("SÍ se realizó")
+            assertThat(alarmed.recordingLostMessage).contains("NO vuelvas a cobrar")
+            // Reference is the ONLY thread back to this sale for manual reconciliation.
+            assertThat(alarmed.recordingLostMessage).contains("195978383755")
+            assertThat(alarmed.referenceNumber).isEqualTo("195978383755")
+            // A TARGETED alarm, not a reset — every other field survives untouched.
+            assertThat(alarmed.authCode).isEqualTo("AUTH77")
+            assertThat(alarmed.amount).isEqualTo("150.00")
+            assertThat(alarmed.tipAmount).isEqualTo("15.00")
+            assertThat(alarmed.orderId).isEqualTo("order-1")
+            assertThat(alarmed.orderNumber).isEqualTo("0007")
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `buildRecordingLostState updates the reference when called again on an already-alarmed Success`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            // Simulates a second queue-retry resolving after the first alarm already fired.
+            val alreadyAlarmed = PaymentState.Success(
+                authCode = "AUTH77",
+                amount = "150.00",
+                referenceNumber = "FIRST-REF",
+                recordingLostMessage = "primera alarma"
+            )
+
+            val alarmed = viewModel.buildRecordingLostState(alreadyAlarmed, "SECOND-REF")
+
+            // A supervisor reconciling later needs the CURRENT reference, not a stale first one
+            // — the alarm must refresh, not freeze on the first call.
+            assertThat(alarmed).isNotNull()
+            assertThat(alarmed!!.referenceNumber).isEqualTo("SECOND-REF")
+            assertThat(alarmed.recordingLostMessage).contains("SECOND-REF")
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `buildRecordingLostState returns null when the money window already closed`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            // The cashier can navigate away between "queue enqueue also failed" and this
+            // resolving (Success was published optimistically, seconds earlier). Nothing to
+            // alarm in that case — pendingReceiptRetry / listenToConnectionRestored remain the
+            // only backstop, and this must not resurrect a screen the cashier already left.
+            assertThat(viewModel.buildRecordingLostState(PaymentState.Idle, "REF1")).isNull()
+            assertThat(
+                viewModel.buildRecordingLostState(PaymentState.Error(message = "otro error"), "REF1")
+            ).isNull()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    // 🟡 buildPendingSyncState — same pure-function shape as buildRecordingLostState above, for
+    // the far more common "queue enqueue SUCCEEDED" sibling: the charge went through, backend
+    // recording failed, but a queue row exists and will self-heal. This is what
+    // handleOfflineQueueOutcome's previously-silent onSuccess branch is missing today.
+
+    @Test
+    fun `buildPendingSyncState notes the live Success with the reference and a dont-recharge message`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            val currentSuccess = PaymentState.Success(
+                authCode = "F628CL",
+                amount = "25.00",
+                tipAmount = "0",
+                receipt = null,
+                referenceNumber = "OLD-REF",
+                orderId = "order-1",
+                orderNumber = "0007"
+            )
+
+            val queued = viewModel.buildPendingSyncState(currentSuccess, "873257481453")
+
+            assertThat(queued).isNotNull()
+            assertThat(queued!!.pendingSyncMessage).isNotNull()
+            // Must say the money moved — never "failed" (would invite a double charge).
+            assertThat(queued.pendingSyncMessage).contains("se realizó correctamente")
+            assertThat(queued.pendingSyncMessage).contains("NO vuelvas a cobrar")
+            // Reference is what a supervisor reconciles with while the sync is still pending.
+            assertThat(queued.pendingSyncMessage).contains("873257481453")
+            assertThat(queued.referenceNumber).isEqualTo("873257481453")
+            // Never sets recordingLostMessage — this is the self-healing case, not the alarm.
+            assertThat(queued.recordingLostMessage).isNull()
+            // A TARGETED note, not a reset — every other field survives untouched.
+            assertThat(queued.authCode).isEqualTo("F628CL")
+            assertThat(queued.amount).isEqualTo("25.00")
+            assertThat(queued.orderId).isEqualTo("order-1")
+            assertThat(queued.orderNumber).isEqualTo("0007")
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `buildPendingSyncState updates the reference when called again on an already-queued Success`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            val alreadyQueued = PaymentState.Success(
+                authCode = "F628CL",
+                amount = "25.00",
+                referenceNumber = "FIRST-REF",
+                pendingSyncMessage = "primera nota"
+            )
+
+            val queued = viewModel.buildPendingSyncState(alreadyQueued, "SECOND-REF")
+
+            assertThat(queued).isNotNull()
+            assertThat(queued!!.referenceNumber).isEqualTo("SECOND-REF")
+            assertThat(queued.pendingSyncMessage).contains("SECOND-REF")
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `buildPendingSyncState returns null when the money window already closed`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            // Same "cashier may have already navigated away" caveat as buildRecordingLostState —
+            // Success publishes optimistically, seconds before the queue outcome is known.
+            assertThat(viewModel.buildPendingSyncState(PaymentState.Idle, "REF1")).isNull()
+            assertThat(
+                viewModel.buildPendingSyncState(PaymentState.Error(message = "otro error"), "REF1")
+            ).isNull()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `handleOfflineQueueOutcome notes the live Success as pending-sync when enqueue succeeds`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        try {
+            coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
+
+            // Seed the private _state to a live Success — handleOfflineQueueOutcome reads
+            // _state.value fresh at the moment the queue resolves (see buildPendingSyncState
+            // kdoc), so the test must put the ViewModel in that exact situation instead of
+            // asserting on the pure function alone.
+            val stateField = PaymentViewModel::class.java.getDeclaredField("_state")
+            stateField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val stateFlow = stateField.get(viewModel) as kotlinx.coroutines.flow.MutableStateFlow<PaymentState>
+            stateFlow.value = PaymentState.Success(
+                authCode = "F628CL",
+                amount = "25.00",
+                receipt = null
+            )
+
+            val queuedPayment = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
+                queueId = 0,
+                referenceNumber = "873257481453",
+                venueId = testVenueId,
+                staffId = testStaffId,
+                amount = BigDecimal("25.00"),
+                tip = BigDecimal.ZERO,
+                rating = null,
+                merchantAccountId = "merchant_a",
+                blumonSerialNumber = "2841548417",
+                maskedPan = "**** 4242",
+                cardBrand = "VISA",
+                entryMode = "CHIP",
+                isInternational = false,
+                authorizationNumber = "F628CL",
+                idempotencyKey = "idem-queued-1",
+                createdAt = System.currentTimeMillis(),
+                retryCount = 0,
+                lastError = "HTTP 502",
+                syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING
+            )
+            val context = PaymentContext.FastPayment(
+                venueId = testVenueId,
+                staffId = testStaffId,
+                amount = BigDecimal("25.00"),
+                merchantAccountId = "merchant_a"
+            )
+
+            viewModel.handleOfflineQueueOutcome(
+                queuedPayment = queuedPayment,
+                context = context,
+                recordError = RuntimeException("HTTP 502"),
+                referenceNumber = "873257481453",
+                orderIdForFlow = null
+            )
+
+            val updated = viewModel.state.value
+            assertThat(updated).isInstanceOf(PaymentState.Success::class.java)
+            val success = updated as PaymentState.Success
+            assertThat(success.pendingSyncMessage).isNotNull()
+            assertThat(success.pendingSyncMessage).contains("NO vuelvas a cobrar")
+            assertThat(success.referenceNumber).isEqualTo("873257481453")
+            // The lost-record alarm must NOT fire on this path — the queue captured it.
+            assertThat(success.recordingLostMessage).isNull()
+            // Never fires the money-lost telemetry — the queue succeeded, nothing lost.
+            verify(exactly = 0) { observabilityManager.logCritical(any(), any(), any(), any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `reportRecordingLost sends structured telemetry with reference orderId amount venue and both errors`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            val queuedPayment = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
+                queueId = 0,
+                referenceNumber = "195978383755",
+                venueId = testVenueId,
+                staffId = testStaffId,
+                amount = BigDecimal("150.00"),
+                tip = BigDecimal("15.00"),
+                rating = null,
+                merchantAccountId = "merchant_a",
+                blumonSerialNumber = "2841548417",
+                maskedPan = "**** 4242",
+                cardBrand = "VISA",
+                entryMode = "CHIP",
+                isInternational = false,
+                authorizationNumber = "AUTH77",
+                idempotencyKey = "idem-1",
+                createdAt = System.currentTimeMillis(),
+                retryCount = 0,
+                lastError = "HTTP 503",
+                syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING
+            )
+            val metadataSlot = slot<Map<String, Any?>>()
+            val errorSlot = slot<Throwable>()
+
+            viewModel.reportRecordingLost(
+                queuedPayment = queuedPayment,
+                recordError = RuntimeException("HTTP 503"),
+                queueError = IllegalStateException("disk full"),
+                orderIdForFlow = "order-42"
+            )
+
+            verify(exactly = 1) {
+                observabilityManager.logCritical(
+                    tag = "BlumonRecordAndQueueLost",
+                    message = any(),
+                    error = capture(errorSlot),
+                    metadata = capture(metadataSlot)
+                )
+            }
+            // 🔴 Fix round 1 (nit): the attached exception is a named RecordingLostException
+            // (not the raw queueError) so Crashlytics groups every occurrence under ONE issue
+            // instead of scattering by whatever exception type the queue happened to throw.
+            // queueError is preserved as `cause` — full original stack trace still visible.
+            assertThat(errorSlot.captured).isInstanceOf(RecordingLostException::class.java)
+            assertThat(errorSlot.captured.cause?.message).isEqualTo("disk full")
+            assertThat(metadataSlot.captured["reference"]).isEqualTo("195978383755")
+            assertThat(metadataSlot.captured["orderId"]).isEqualTo("order-42")
+            assertThat(metadataSlot.captured["amount"]).isEqualTo("150.00")
+            assertThat(metadataSlot.captured["venueId"]).isEqualTo(testVenueId)
+            assertThat(metadataSlot.captured["recordError"]).isEqualTo("HTTP 503")
+            assertThat(metadataSlot.captured["queueError"]).isEqualTo("disk full")
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `reportRecordingLost reports orderId none for a fast payment`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            val queuedPayment = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
+                queueId = 0,
+                referenceNumber = "REF1",
+                venueId = testVenueId,
+                staffId = testStaffId,
+                amount = BigDecimal("50.00"),
+                tip = BigDecimal.ZERO,
+                rating = null,
+                merchantAccountId = "merchant_a",
+                blumonSerialNumber = "2841548417",
+                maskedPan = null,
+                cardBrand = null,
+                entryMode = "CHIP",
+                isInternational = false,
+                authorizationNumber = "AUTH1",
+                idempotencyKey = "idem-2",
+                createdAt = System.currentTimeMillis(),
+                retryCount = 0,
+                lastError = "timeout",
+                syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING
+            )
+            val metadataSlot = slot<Map<String, Any?>>()
+
+            viewModel.reportRecordingLost(
+                queuedPayment = queuedPayment,
+                recordError = RuntimeException("timeout"),
+                queueError = RuntimeException("index collision"),
+                orderIdForFlow = null // Fast payment — no order
+            )
+
+            verify(exactly = 1) {
+                observabilityManager.logCritical(
+                    tag = any(),
+                    message = any(),
+                    error = any(),
+                    metadata = capture(metadataSlot)
+                )
+            }
+            assertThat(metadataSlot.captured["orderId"]).isEqualTo("none")
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    // 🔴 Fix round 1 (Critical): handleOfflineQueueOutcome must survive a scope cancellation
+    // that races paymentQueueRepository.enqueue(). PaymentQueueRepositoryImpl.enqueue's OWN
+    // NonCancellable only protects the DB INSERT — the caller's continuation resumes via
+    // enqueue()'s outer withContext(Dispatchers.IO), which is cancellable. Without wrapping the
+    // WHOLE handleOfflineQueueOutcome body in NonCancellable, a cancel landing while suspended
+    // inside enqueue() (a POS charge/cancel, or the cashier tapping Home — exactly the
+    // conditions, disk full / DB locked, that make this branch reachable) would skip
+    // buildRecordingLostState AND reportRecordingLost entirely: money charged, backend failed,
+    // queue write raced a cancel, no alarm, no telemetry.
+    @Test
+    fun `handleOfflineQueueOutcome survives a mid-enqueue scope cancellation - reportRecordingLost still fires`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        try {
+            val enqueueStarted = CompletableDeferred<Unit>()
+            val releaseEnqueue = CompletableDeferred<Unit>()
+            coEvery { mockPaymentQueueRepository.enqueue(any()) } coAnswers {
+                enqueueStarted.complete(Unit)
+                releaseEnqueue.await()
+                Result.failure(RuntimeException("disk full"))
+            }
+
+            val queuedPayment = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
+                queueId = 0,
+                referenceNumber = "REF-CANCEL-TEST",
+                venueId = testVenueId,
+                staffId = testStaffId,
+                amount = BigDecimal("150.00"),
+                tip = BigDecimal.ZERO,
+                rating = null,
+                merchantAccountId = "merchant_a",
+                blumonSerialNumber = "2841548417",
+                maskedPan = "**** 4242",
+                cardBrand = "VISA",
+                entryMode = "CHIP",
+                isInternational = false,
+                authorizationNumber = "AUTH-CANCEL",
+                idempotencyKey = "idem-cancel-1",
+                createdAt = System.currentTimeMillis(),
+                retryCount = 0,
+                lastError = "HTTP 503",
+                syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING
+            )
+            val context = PaymentContext.FastPayment(
+                venueId = testVenueId,
+                staffId = testStaffId,
+                amount = BigDecimal("150.00"),
+                merchantAccountId = "merchant_a"
+            )
+
+            val job = launch {
+                viewModel.handleOfflineQueueOutcome(
+                    queuedPayment = queuedPayment,
+                    context = context,
+                    recordError = RuntimeException("HTTP 503"),
+                    referenceNumber = "REF-CANCEL-TEST",
+                    orderIdForFlow = null
+                )
+            }
+
+            enqueueStarted.await() // the coroutine is now suspended INSIDE enqueue()
+            job.cancel() // 💥 simulate a POS charge/cancel or a Home tap racing the write
+            releaseEnqueue.complete(Unit) // let the (mocked) DB write actually conclude
+            job.join()
+
+            // Even though the launching job was cancelled WHILE suspended inside enqueue(),
+            // NonCancellable means the failure-handling — including the structured telemetry —
+            // still runs to completion.
+            verify(exactly = 1) { observabilityManager.logCritical(any(), any(), any(), any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
     }
 }

@@ -1,7 +1,7 @@
 package com.jaac.avoqado_tpv.features.referrals.domain.model
 
 /**
- * Outcome of `POST /dashboard/venues/{venueId}/referrals/validate`.
+ * Outcome of `POST /tpv/venues/{venueId}/referrals/validate`.
  *
  * Sealed class so callers can `when`-exhaust the rejection reasons. The
  * backend's `ValidationReason` enum is mirrored here to keep the contract

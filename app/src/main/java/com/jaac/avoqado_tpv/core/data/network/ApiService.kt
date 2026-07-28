@@ -493,16 +493,20 @@ interface ApiService {
     /**
      * Get all products for venue
      *
-     * GET /api/v1/dashboard/venues/{venueId}/products
+     * GET /api/v1/tpv/venues/{venueId}/products
      *
      * Returns all products with categories, modifiers, and inventory info.
      * Backend uses productService.getProducts() with includeRecipe=true.
+     *
+     * La TPV vive aislada en /tpv: no pega a /dashboard ni a /mobile. El handler de
+     * /tpv reexporta el de dashboard, asi que el shape es identico byte por byte —
+     * este cambio es solo de prefijo y ProductsResponse parsea igual que antes.
      *
      * @param venueId Venue identifier
      * @param categoryId Optional category filter
      * @return Response with list of products (with nested category and modifierGroups)
      */
-    @GET("dashboard/venues/{venueId}/products")
+    @GET("tpv/venues/{venueId}/products")
     suspend fun getProducts(
         @Path("venueId") venueId: String,
         @Query("categoryId") categoryId: String? = null
@@ -547,12 +551,21 @@ interface ApiService {
     /**
      * Get menu categories for venue
      *
-     * GET /api/v1/dashboard/venues/{venueId}/categories
+     * GET /api/v1/tpv/venues/{venueId}/categories
+     *
+     * ANTES apuntaba a dashboard/venues/{venueId}/categories, que NUNCA EXISTIO en el
+     * server (dashboard solo tiene `menucategories`, `menus/:menuId/categories` e
+     * `item-categories`). O sea que esta llamada 404eaba y fallaba en silencio dentro
+     * del .fold() de HomeViewModel/CheckoutViewModel: las categorias salian vacias.
+     *
+     * El endpoint /tpv devuelve un array plano de MenuCategory activas ordenadas por
+     * displayOrder, que casa con List<CategoryDto>. Ojo: MenuCategory no tiene `emoji`
+     * (tiene `icon`), asi que ese campo se queda null — es nullable, no truena.
      *
      * @param venueId Venue identifier
      * @return Response with list of categories
      */
-    @GET("dashboard/venues/{venueId}/categories")
+    @GET("tpv/venues/{venueId}/categories")
     suspend fun getCategories(
         @Path("venueId") venueId: String
     ): Response<List<com.jaac.avoqado_tpv.features.ordering.data.dto.CategoryDto>>

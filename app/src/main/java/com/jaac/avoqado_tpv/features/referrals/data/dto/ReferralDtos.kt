@@ -5,10 +5,10 @@ import com.google.gson.annotations.SerializedName
 /**
  * DTOs for the referrals capture flow (Plan 5A — TPV Referral Capture).
  *
- * **Backend contract:**
- * - POST /api/v1/dashboard/venues/{venueId}/referrals/validate
- * - POST /api/v1/dashboard/venues/{venueId}/referrals/capture
- * - POST /api/v1/dashboard/venues/{venueId}/referrals/force-override
+ * **Backend contract (moved to /tpv, superficie /tpv Plan B, 2026-07-27):**
+ * - POST /api/v1/tpv/venues/{venueId}/referrals/validate
+ * - POST /api/v1/tpv/venues/{venueId}/referrals/capture
+ * - POST /api/v1/tpv/venues/{venueId}/referrals/force-override
  *
  * All endpoints are venue-scoped. Auth is via Bearer token; the backend
  * derives `managerStaffVenueId` from the auth context on `force-override`.
@@ -18,7 +18,9 @@ import com.google.gson.annotations.SerializedName
  * in the same venue. The TPV must therefore have a selected Customer
  * before the operator can validate a referral code.
  *
- * See: avoqado-server/src/schemas/dashboard/referrals.schemas.ts
+ * See: avoqado-server/src/routes/tpv.routes.ts (referrals.tpv.controller.ts re-exports the
+ * handlers verbatim from dashboard/referrals; same Zod schemas in
+ * avoqado-server/src/schemas/dashboard/referrals.schemas.ts).
  */
 data class ReferralValidateRequest(
     @SerializedName("referralCode")

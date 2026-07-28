@@ -17,12 +17,25 @@ import retrofit2.http.Path
  *
  * **Auth:** Bearer token (added by AuthInterceptor).
  *
- * **Endpoints:**
- * 1. POST /dashboard/venues/{venueId}/referrals/validate — no side effects
- * 2. POST /dashboard/venues/{venueId}/referrals/capture — creates PENDING Referral
- * 3. POST /dashboard/venues/{venueId}/referrals/force-override — manager override
+ * **Endpoints (moved to /tpv, superficie /tpv Plan B, 2026-07-27):**
+ * 1. POST /tpv/venues/{venueId}/referrals/validate — no side effects
+ * 2. POST /tpv/venues/{venueId}/referrals/capture — creates PENDING Referral
+ * 3. POST /tpv/venues/{venueId}/referrals/force-override — manager override
  *
- * See backend router: avoqado-server/src/routes/dashboard/referrals.routes.ts
+ * These were the TPV's last 3 calls into the dashboard namespace; the TPV no longer calls
+ * any dashboard endpoint at all.
+ *
+ * NOTE: do NOT write a bare `/dashboard` glob with a star here. Kotlin block comments NEST
+ * (unlike Java/C), so a slash-star sequence inside this KDoc opens a nested comment and the
+ * closing delimiter below only closes THAT one — leaving this block unterminated and failing
+ * the build with "Unclosed comment" at EOF.
+ *
+ * The /tpv handler re-exports the dashboard controller VERBATIM (same service, same
+ * response shape) — this is a prefix-only change, [ReferralValidateResponse] /
+ * [ReferralCaptureResponse] parse identically.
+ *
+ * See backend router: avoqado-server/src/routes/tpv.routes.ts (referrals.tpv.controller.ts
+ * re-exports the handlers from dashboard/referrals/referrals.controller.ts).
  */
 interface ReferralsApiService {
 
@@ -38,7 +51,7 @@ interface ReferralsApiService {
      * - 403: missing `referral:read` permission
      * - 404: venue not found
      */
-    @POST("dashboard/venues/{venueId}/referrals/validate")
+    @POST("tpv/venues/{venueId}/referrals/validate")
     suspend fun validate(
         @Path("venueId") venueId: String,
         @Body request: ReferralValidateRequest,
@@ -55,7 +68,7 @@ interface ReferralsApiService {
      * - 400: validation failed (parsable via [ReferralValidateResponse]).
      * - 401/403: auth/permission.
      */
-    @POST("dashboard/venues/{venueId}/referrals/capture")
+    @POST("tpv/venues/{venueId}/referrals/capture")
     suspend fun capture(
         @Path("venueId") venueId: String,
         @Body request: ReferralCaptureRequest,
@@ -65,7 +78,7 @@ interface ReferralsApiService {
      * Manager override path for the EXISTING_CUSTOMER reject case. Requires
      * `referral:override-existing-customer` permission server-side.
      */
-    @POST("dashboard/venues/{venueId}/referrals/force-override")
+    @POST("tpv/venues/{venueId}/referrals/force-override")
     suspend fun forceOverride(
         @Path("venueId") venueId: String,
         @Body request: ReferralForceOverrideRequest,

@@ -71,6 +71,11 @@ enum class PaymentLedgerMode {
  * @param cellularFailoverCooldownSeconds Minimum seconds between network toggles.
  * @param cellularFailoverMinCellHoldSeconds Minimum seconds to stay on cellular before WiFi restore.
  * @param paymentLedgerMode La libreta (write-ahead payment ledger) rollout stage. Default OFF.
+ * @param restaurantModeEnabled Shows the "Mesas" tile on the home screen (mirrors android's
+ *                               PosMode.RESTAURANT). Default `false` and additive: a terminal on
+ *                               an old backend or a partial response never sees Mesas out of
+ *                               nowhere. Turning it ON hides the legacy "Órdenes" tile — the two
+ *                               never coexist (spec D-4).
  */
 data class TpvSettings(
     val showReviewScreen: Boolean = true,
@@ -131,7 +136,9 @@ data class TpvSettings(
     val cellularFailoverCooldownSeconds: Int = 60,
     val cellularFailoverMinCellHoldSeconds: Int = 120,
     // La libreta (write-ahead payment ledger) — OFF by default, canary rollout per venue
-    val paymentLedgerMode: PaymentLedgerMode = PaymentLedgerMode.OFF
+    val paymentLedgerMode: PaymentLedgerMode = PaymentLedgerMode.OFF,
+    // Restaurant mode (Mesas module entry point) — OFF by default, additive rollout per terminal
+    val restaurantModeEnabled: Boolean = false
 ) {
     companion object {
         /**
@@ -159,3 +166,17 @@ data class TpvSettings(
         )
     }
 }
+
+/**
+ * The "Mesas" tile appears on the home screen only when restaurant mode is ON.
+ */
+fun shouldShowTablesTile(settings: TpvSettings): Boolean = settings.restaurantModeEnabled
+
+/**
+ * The legacy "Órdenes" tile hides once restaurant mode is ON — the two tiles
+ * never both point at the same table at once (spec D-4). `showOrderManagement`
+ * itself stays `true` at the global default on purpose: terminals without
+ * Mesas keep it.
+ */
+fun shouldShowOrderManagementTile(settings: TpvSettings): Boolean =
+    settings.showOrderManagement && !settings.restaurantModeEnabled

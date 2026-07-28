@@ -85,8 +85,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.SalesGoalsPager
 import com.jaac.avoqado_tpv.core.presentation.components.LocalResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveSizes
 import com.jaac.avoqado_tpv.core.presentation.components.SettingsBottomSheet
-import com.jaac.avoqado_tpv.core.presentation.components.ShiftStatusBanner
-import com.jaac.avoqado_tpv.core.presentation.components.VenueStatusBanner
+import com.jaac.avoqado_tpv.core.presentation.components.ConnectionBannerHost
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel
@@ -987,19 +986,25 @@ private fun WelcomeScreenContent(
                             .verticalScroll(rememberScrollState())
                     ) {
 
-                        // Shift status banner (with offline state support) - FullWidth
-                        // Hidden in simplified mode when module config disables shifts
+                        // F-3: single owner of the top strip (ConnectionBannerHost) —
+                        // replaces the old pair of independent calls (ShiftStatusBanner
+                        // here in-flow + VenueStatusBanner as an absolute TopCenter
+                        // overlay further down in this same Box) that could literally
+                        // draw on top of each other. See ConnectionBannerHost kdoc.
+                        // Hidden in simplified mode when module config disables shifts —
+                        // same gate the old ShiftStatusBanner call used; VenueStatusBanner
+                        // still shows regardless (never depended on this flag).
                         val moduleEnableShifts = serializedInventoryConfig?.ui?.enableShifts ?: true
                         val shouldShowShiftBanner = isShiftSystemEnabled && moduleEnableShifts && !isSimplifiedMode
-                        if (shouldShowShiftBanner) {
-                            ShiftStatusBanner(
-                                shift = currentShift,
-                                isOffline = isOffline,
-                                cachedInfo = cachedShiftInfo,
-                                onClick = onNavigateToShifts,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
+                        ConnectionBannerHost(
+                            offline = isOffline,
+                            venueStatus = venueStatus,
+                            shift = currentShift,
+                            cachedShiftInfo = cachedShiftInfo,
+                            showShiftBanner = shouldShowShiftBanner,
+                            onShiftClick = onNavigateToShifts,
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
                         // ═══════════════════════════════════════════════════════════════
                         // TIMECLOCK STATUS CARD
@@ -1053,14 +1058,10 @@ private fun WelcomeScreenContent(
                     }
                 }
             }
-
-            // ═══════════════════════════════════════════════════════════════
-            // VENUE STATUS BANNER - Floating overlay (top, above all content)
-            // ═══════════════════════════════════════════════════════════════
-            VenueStatusBanner(
-                status = venueStatus,
-                modifier = Modifier.align(Alignment.TopCenter)
-            )
+            // VenueStatusBanner no longer floats here as a separate TopCenter overlay —
+            // ConnectionBannerHost above (top of the scrollable Column) is now the single
+            // owner of this screen's top strip and renders it when venue status wins
+            // priority. See ConnectionBannerHost kdoc for why the old overlay was a bug.
         }
     }
 

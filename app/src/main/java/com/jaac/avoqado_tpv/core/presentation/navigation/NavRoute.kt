@@ -360,4 +360,17 @@ sealed class NavRoute(val route: String) {
      * and from the "SIM no aceptado" dialog in SerializedSaleViewModel.
      */
     data object MisSims : NavRoute("mis_sims")
+
+    /**
+     * Mesas — entry point for the new table-service module (`features/tables/`).
+     *
+     * Isolated from `features/ordering/` (legacy) and `features/checkout/` (Cobrar);
+     * see `docs/superpowers/plans/2026-07-24-tpv-plan-c-modulo-mesas.md`. Only
+     * reachable when `TpvSettings.restaurantModeEnabled` is ON, which also hides
+     * the legacy "Órdenes" tile (spec D-4) — the two never coexist.
+     *
+     * Route object only for now: the destination composable is mounted by Task 6
+     * of the plan above, once `TablesScreen` exists.
+     */
+    data object Tables : NavRoute("tables")
 }

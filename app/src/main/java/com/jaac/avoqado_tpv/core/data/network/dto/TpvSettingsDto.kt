@@ -161,7 +161,11 @@ data class TpvSettingsDto(
 
     // La libreta (write-ahead payment ledger) rollout flag — null/unknown coalesces to OFF
     @SerializedName("paymentLedgerMode")
-    val paymentLedgerMode: String? = null
+    val paymentLedgerMode: String? = null,
+
+    // Restaurant mode (Mesas module entry point) — null (old server / partial response) -> false
+    @SerializedName("restaurantModeEnabled")
+    val restaurantModeEnabled: Boolean? = null
 )
 
 /**
@@ -216,7 +220,8 @@ fun TpvSettingsDto.toDomain(): TpvSettings = TpvSettings(
     cellularFailoverBadReadingsThreshold = cellularFailoverBadReadingsThreshold ?: 3,
     cellularFailoverCooldownSeconds = cellularFailoverCooldownSeconds ?: 60,
     cellularFailoverMinCellHoldSeconds = cellularFailoverMinCellHoldSeconds ?: 120,
-    paymentLedgerMode = PaymentLedgerMode.fromRaw(paymentLedgerMode)
+    paymentLedgerMode = PaymentLedgerMode.fromRaw(paymentLedgerMode),
+    restaurantModeEnabled = restaurantModeEnabled ?: false
 )
 
 /**
@@ -260,7 +265,8 @@ fun TpvSettings.toDto(): TpvSettingsDto = TpvSettingsDto(
     cellularFailoverBadReadingsThreshold = cellularFailoverBadReadingsThreshold,
     cellularFailoverCooldownSeconds = cellularFailoverCooldownSeconds,
     cellularFailoverMinCellHoldSeconds = cellularFailoverMinCellHoldSeconds,
-    paymentLedgerMode = paymentLedgerMode.name
+    paymentLedgerMode = paymentLedgerMode.name,
+    restaurantModeEnabled = restaurantModeEnabled
 )
 
 /**

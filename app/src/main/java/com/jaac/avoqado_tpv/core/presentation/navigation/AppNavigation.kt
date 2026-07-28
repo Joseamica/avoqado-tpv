@@ -798,7 +798,18 @@ fun AppNavigation(
             onDismiss = { alert -> deviceHealthViewModel.dismissAlert(alert) },
             onRetry = {
                 connectionViewModel.forceCheck()
-                deviceHealthViewModel.retryFailedPayments() // Reset FAILED→PENDING for retry
+                // Reset FAILED→PENDING for retry (incl. permanent — fix round 1). onResult
+                // ALWAYS fires, even with 0: without this, a tap that found nothing to
+                // reset left the operator with zero feedback that anything happened.
+                deviceHealthViewModel.retryFailedPayments { resetCount ->
+                    if (resetCount == 0) {
+                        Toast.makeText(
+                            context,
+                            "No hay pagos pendientes de reintentar en este momento",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
                 PaymentSyncScheduler.runNow(context) // Trigger immediate sync (don't wait 15 min)
             },
             onUpdate = {

@@ -177,6 +177,7 @@ fun SettingsScreen(
             // Track expanded state for each section
             var terminalExpanded by remember { mutableStateOf(true) }
             var shiftsExpanded by remember { mutableStateOf(false) }
+            var tablesExpanded by remember { mutableStateOf(false) }
             var paymentExpanded by remember { mutableStateOf(false) }
             var kioskExpanded by remember { mutableStateOf(false) }
             var verificationExpanded by remember { mutableStateOf(false) }
@@ -247,6 +248,27 @@ fun SettingsScreen(
                             enabled = state.isShiftSystemEnabled,
                             isSaving = false,
                             onToggle = { viewModel.toggleShiftSystem() }
+                        )
+                    }
+                }
+
+                // ═══════════════════════════════════════════════════════════════
+                // MESAS MODULE (restaurant mode)
+                // ═══════════════════════════════════════════════════════════════
+                item {
+                    CollapsibleSection(
+                        title = "Módulo Mesas",
+                        icon = Icons.Outlined.TableRestaurant,
+                        subtitle = "Servicio de mesas en el terminal",
+                        expanded = tablesExpanded,
+                        onToggle = { tablesExpanded = !tablesExpanded }
+                    ) {
+                        SettingsToggleRow(
+                            label = "Modo Restaurante",
+                            description = "Muestra Mesas en el inicio y oculta Órdenes",
+                            enabled = state.tpvSettings.restaurantModeEnabled,
+                            isSaving = state.isSaving,
+                            onToggle = { viewModel.toggleRestaurantMode() }
                         )
                     }
                 }

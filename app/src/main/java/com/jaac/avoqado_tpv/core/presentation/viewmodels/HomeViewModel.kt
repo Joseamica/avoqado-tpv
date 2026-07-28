@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.core.presentation.viewmodels
 
+import androidx.annotation.VisibleForTesting
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.BuildConfig
@@ -797,14 +798,43 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private fun isNetworkRelatedInitError(error: Throwable): Boolean {
-        return error is java.net.UnknownHostException ||
-            error.cause is java.net.UnknownHostException ||
-            error is java.net.ConnectException ||
-            error.cause is java.net.ConnectException ||
-            error is java.net.SocketTimeoutException ||
-            error.cause is java.net.SocketTimeoutException ||
-            error.message?.contains("NetworkConnectionFailure", ignoreCase = true) == true ||
+    /**
+     * ¿Este fallo de init del SDK Blumon es de red (reintentable) o no?
+     *
+     * Task 8 / F-5. Camina TODA la cadena de `cause` (antes solo miraba un nivel) — un
+     * error de red puede llegar envuelto más de una vez antes de aterrizar aquí.
+     *
+     * Los dos `message.contains(...)` que quedan NO son un descuido: verificado leyendo
+     * `InitializationManager.kt` (`executeInitialization()`, STEP 1, flavor `production`)
+     * y decompilando `lib_services-1.2.0.0-PROD.aar` — cuando `InitializerUseCase` falla,
+     * devuelve un `InitializerFailure` (tipo sellado del SDK Blumon,
+     * `com.example.clean_lib_services`, NO es `Throwable`) con exactamente dos casos
+     * confirmados en el .aar: `GenericFailure` y `NetworkConnectionFailure` (este último
+     * es un `object` sin ninguna causa envuelta adentro — no hay nada más que
+     * desenvolver). `InitializationManager` lo aplana a texto vía
+     * `Exception("InitializerUseCase failed: $failure")`, así que para cuando el error
+     * llega aquí el tipo real ya se perdió — solo sobrevive su representación en texto.
+     *
+     * Arreglo de raíz (fuera del alcance de Task 8 — NO se tocó `InitializationManager.kt`
+     * aquí, es un archivo distinto a los 4 de este task): en el `if (initResult.isLeft)`
+     * de `executeInitialization()`, distinguir
+     * `failure is InitializerFailure.NetworkConnectionFailure` ANTES de aplanar a
+     * `Exception(String)`, y envolver ese caso en un `IOException` real para que este
+     * chequeo deje de necesitar texto. El mismo patrón (`message.contains("NetworkConnectionFailure")`)
+     * vive también en `KioskViewModel.kt:272` — no tocado aquí por la misma razón.
+     * Documentado para la siguiente tarea en vez de dejarlo en silencio.
+     */
+    @VisibleForTesting
+    internal fun isNetworkRelatedInitError(error: Throwable): Boolean {
+        val causeChain = generateSequence(error) { it.cause }.take(10)
+        val matchesByType = causeChain.any {
+            it is java.net.UnknownHostException ||
+                it is java.net.ConnectException ||
+                it is java.net.SocketTimeoutException
+        }
+        if (matchesByType) return true
+
+        return error.message?.contains("NetworkConnectionFailure", ignoreCase = true) == true ||
             error.message?.contains("UnknownHostException", ignoreCase = true) == true
     }
 

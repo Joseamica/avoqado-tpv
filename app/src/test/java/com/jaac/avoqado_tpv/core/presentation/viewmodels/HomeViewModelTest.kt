@@ -330,4 +330,59 @@ class HomeViewModelTest {
         assertThat(viewModel.blumonInitElapsedSeconds.value).isEqualTo(0)
         viewModel.viewModelScope.cancel()
     }
+
+    // ========================================
+    // NETWORK ERROR CLASSIFICATION TESTS (Task 8 / F-5)
+    // ========================================
+    // isNetworkRelatedInitError is a pure Throwable -> Boolean function (no coroutines
+    // involved), so it can be called directly on the ViewModel instance without hitting
+    // the Dispatchers.IO limitation noted above for the full init flow.
+
+    @Test
+    fun `isNetworkRelatedInitError detecta UnknownHostException directo`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.isNetworkRelatedInitError(java.net.UnknownHostException("api.avoqado.io"))).isTrue()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `isNetworkRelatedInitError detecta UnknownHostException envuelto 2 niveles de profundidad`() = runTest(testDispatcher) {
+        // El check viejo (1 nivel: error.cause is UnknownHostException) no alcanzaba esto.
+        val viewModel = createViewModel()
+        val wrapped = Exception("outer", Exception("middle", java.net.UnknownHostException("api.avoqado.io")))
+
+        assertThat(viewModel.isNetworkRelatedInitError(wrapped)).isTrue()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `isNetworkRelatedInitError detecta ConnectException y SocketTimeoutException`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.isNetworkRelatedInitError(java.net.ConnectException("Connection refused"))).isTrue()
+        assertThat(viewModel.isNetworkRelatedInitError(java.net.SocketTimeoutException("timeout"))).isTrue()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `isNetworkRelatedInitError NO clasifica un error de negocio generico como red`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.isNetworkRelatedInitError(IllegalStateException("posId invalido"))).isFalse()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `isNetworkRelatedInitError sigue reconociendo el fallback de texto del SDK Blumon`() = runTest(testDispatcher) {
+        // InitializerFailure.NetworkConnectionFailure (SDK Blumon, com.example.clean_lib_services)
+        // no es Throwable - InitializationManager lo aplana a texto antes de que llegue
+        // aqui. Ver KDoc de isNetworkRelatedInitError para el detalle verificado
+        // (decompilado del .aar) y por que este fallback de texto se queda.
+        val viewModel = createViewModel()
+        val flattened = Exception("InitializerUseCase failed: NetworkConnectionFailure")
+
+        assertThat(viewModel.isNetworkRelatedInitError(flattened)).isTrue()
+        viewModel.viewModelScope.cancel()
+    }
 }

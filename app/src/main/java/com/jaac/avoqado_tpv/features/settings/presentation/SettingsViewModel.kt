@@ -549,6 +549,22 @@ class SettingsViewModel @Inject constructor(
         Timber.i("🥝 [KIOSK] Default merchant set to: ${merchantId ?: "none (show selection)"}")
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RESTAURANT MODE (Mesas module entry point)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Toggle restaurant mode setting.
+     *
+     * When enabled, the "Mesas" tile appears on the home screen and the legacy
+     * "Órdenes" tile hides — the two never coexist (spec D-4). Additive and
+     * default off; nothing else changes for terminals that don't turn it on.
+     */
+    fun toggleRestaurantMode() {
+        val newValue = !_state.value.tpvSettings.restaurantModeEnabled
+        updateSetting { it.copy(restaurantModeEnabled = newValue) }
+    }
+
     /**
      * Update default tip percentage
      */

@@ -40,12 +40,26 @@ targetSdk 34+ requires APK Signature Scheme v2. Use `apksigner`, NOT `jarsigner`
 
 ### 5. Save to iCloud (MANDATORY)
 
+**El APK se archiva bajo la carpeta del PROCESADOR de esa variante, no en una sola.**
+
+PAX / Blumon (variantes `sandbox`, `production`):
+
 ```
 /Users/amieva/Library/Mobile Documents/com~apple~CloudDocs/Avoqado/Blumon/APK/
   <version>/sandbox/avoqado-tpv-<version>-sandbox.apk
   <version>/production/avoqado-tpv-<version>-production.apk
   <version>/PAXFIRMADO/  (manually added after PAX signs)
 ```
+
+Nexgo / AngelPay (variantes `nexgo`, `nexgoProd`) — **NUNCA bajo `Blumon/`**:
+
+```
+/Users/amieva/Library/Mobile Documents/com~apple~CloudDocs/Avoqado/AngelPay/APK/
+  <version>/nexgoProd/avoqado-tpv-<version>-nexgoProd.apk
+```
+
+Nexgo no pasa por el firmado de PAX (no hay `PAXFIRMADO/`): se firma con apksigner
+y se instala directo vía `INSTALL_VERSION`.
 
 Never save APKs to Desktop.
 

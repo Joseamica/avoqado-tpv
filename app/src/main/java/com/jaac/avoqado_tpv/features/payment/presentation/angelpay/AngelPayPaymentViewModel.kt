@@ -1082,8 +1082,15 @@ class AngelPayPaymentViewModel @Inject constructor(
             // merchant has no `angelpayUserAccountId` (legacy / un-backfilled
             // rows preserve the original single-account behavior).
             val targetAccountId = merchant.angelpayUserAccountId
+            // Incidente Amaena (2026-07-29): un accountId no trackeado (null) NO es prueba
+            // de estar en el login correcto — tras un restart del proceso o una re-auth no
+            // trackeada la sesión del SDK puede pertenecer a la PRIMARIA del venue mientras
+            // la UI muestra este merchant. Deriva la cuenta real de la sesión viva; si el
+            // target sigue difiriendo (o no hay nada derivable), switchAccount establece el
+            // login del target directamente en vez de saltarse el switch en silencio.
             val currentAccountId = angelPayAuthRepository.getCurrentAngelPayAccountId()
-            if (targetAccountId != null && currentAccountId != null && targetAccountId != currentAccountId) {
+                ?: angelPayAuthRepository.deriveSessionAccountId()
+            if (targetAccountId != null && targetAccountId != currentAccountId) {
                 Timber.tag("AngelPayAuth").i(
                     "selectMerchant: switching AngelPay session $currentAccountId → $targetAccountId for merchant ${merchant.displayName}",
                 )
@@ -1328,7 +1335,19 @@ class AngelPayPaymentViewModel @Inject constructor(
         // Task 31 — delegate auth orchestration to AngelPayAuthRepository so the
         // D4 resolver (backend-preferred + BuildConfig fallback), retry/backoff,
         // state machine, and post-auth config validation all live in one place.
-        val authResult = angelPayAuthRepository.ensureAuthenticated()
+        //
+        // Incidente Amaena (2026-07-29): con la sesión SDK muerta en este punto, el
+        // `ensureAuthenticated()` genérico autenticaba la cuenta PRIMARIA del venue
+        // DESPUÉS de que waitForMerchantToSettle ya había pasado — cobrando una
+        // afiliación y registrando otra. Autentica explícitamente COMO la cuenta del
+        // merchant seleccionado; el genérico queda solo para merchants legacy sin
+        // angelpayUserAccountId.
+        val selectedAccountId = _currentMerchant.value?.angelpayUserAccountId
+        val authResult = if (selectedAccountId != null) {
+            angelPayAuthRepository.ensureAuthenticatedAs(selectedAccountId)
+        } else {
+            angelPayAuthRepository.ensureAuthenticated()
+        }
         if (authResult.isFailure) {
             val error = authResult.exceptionOrNull()
             Timber.e(error, "❌ [AngelPay SDK] Authentication failed")
@@ -1346,6 +1365,22 @@ class AngelPayPaymentViewModel @Inject constructor(
             // id set lets that success re-emit "success" to the still-open POS long-poll (~315s), avoiding a
             // stale "failed" → human double-charge. Trade-off: on ABANDONMENT the long-poll times out →
             // server watchdog marks the row UNKNOWN (false-busy) — accepted over the double-charge risk.
+            clearChargingOnTerminal()
+            return
+        }
+
+        // Gate de alineación post-auth (incidente Amaena 2026-07-29): la auth de arriba
+        // pudo re-establecer la sesión — NUNCA entregarle un cobro al SDK con su sesión
+        // en un merchant distinto al seleccionado. Fail-closed: una sesión no verificable
+        // no mueve dinero.
+        if (!sessionAlignedWithSelectedMerchant()) {
+            _state.value = AngelPayPaymentState.Error(
+                message = "La sesión de AngelPay quedó en otra cuenta. Vuelve a seleccionar el comercio e intenta de nuevo.",
+                canRetry = true,
+            )
+            // 📡 POS→TPV: TRANSIENT/retryable pre-money error (money did NOT move). Do NOT emit and do NOT
+            // clear _socketRequestId — a terminal-side retry can still succeed on THIS request (same
+            // rationale as the other pre-money sites above).
             clearChargingOnTerminal()
             return
         }
@@ -1833,8 +1868,55 @@ class AngelPayPaymentViewModel @Inject constructor(
             Timber.e(reauth.exceptionOrNull(), "❌ [AngelPay SDK] Re-auth after $reason failed")
             return false
         }
+        // Incidente Amaena (2026-07-29): handleAuthExpiry ahora vuelve a la cuenta que
+        // estaba activa, pero si aun así la sesión quedó en OTRO merchant (fallback a
+        // primaria, cuenta multi-merchant esperando pick manual), relanzar cobraría esa
+        // otra afiliación mientras el registro llevaría la seleccionada. No relanzar:
+        // el caller cae al estado de error normal y el cajero re-selecciona.
+        if (!sessionAlignedWithSelectedMerchant()) {
+            Timber.e(
+                "🔐 [AngelPay SDK] Post-expiry re-auth landed on a different merchant than selected — NOT relaunching | attemptId=%s",
+                attemptId,
+            )
+            return false
+        }
         launchSdkRequest(request = request, usedQaTipFallback = lastSdkLaunchUsedTipFallback)
         return true
+    }
+
+    /**
+     * Incidente Amaena (2026-07-29): el SDK cobra el merchant que SU SESIÓN tenga
+     * activo, mientras que el registro lleva [_currentMerchant] — si divergen, el
+     * dinero y los libros quedan en afiliaciones distintas (7 pagos, $4,344.50).
+     *
+     * True cuando no hay nada seleccionado con qué alinear (flujos single-merchant
+     * pre-selección). Fail-closed: si el merchant de la sesión es desconocido o
+     * difiere del seleccionado, NO se cobra.
+     */
+    private suspend fun sessionAlignedWithSelectedMerchant(): Boolean {
+        val merchant = _currentMerchant.value ?: return true
+        if (merchant.processorType != ProcessorType.ANGELPAY) return true
+        val targetId = runCatching { merchant.requireAngelpayMerchantId() }.getOrNull() ?: return true
+        val activeId = angelPayMerchantRepository.activeAngelPayMerchantId.value
+            ?: runCatching { sdkGateway.getUserMerchants().getOrNull() }.getOrNull()
+                ?.let { list -> list.firstOrNull { it.isActive }?.id ?: list.singleOrNull()?.id }
+        if (activeId == targetId) return true
+        Timber.e(
+            "❌ [AngelPay] Session merchant (%s) != selected merchant (%s) — blocking charge",
+            activeId ?: "unknown",
+            targetId,
+        )
+        observability.logWarning(
+            tag = "AngelPaySessionMerchantMismatch",
+            message = "Sesión SDK en merchant ${activeId ?: "desconocido"} pero el cajero seleccionó $targetId — cobro bloqueado",
+            metadata = mapOf(
+                "selectedMerchantAccountId" to (merchant.merchantAccountId ?: "unknown"),
+                "selectedAngelpayMerchantId" to targetId.toString(),
+                "sessionAngelpayMerchantId" to (activeId?.toString() ?: "unknown"),
+                "attemptId" to (currentPaymentAttemptId ?: "none"),
+            ),
+        )
+        return false
     }
 
     private suspend fun recordCardPayment(result: AngelPayResult.Success) {

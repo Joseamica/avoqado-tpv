@@ -479,11 +479,98 @@ class AngelPayAuthRepository @Inject constructor(
      * the caller (PaymentViewModel) decides whether to retry the charge.
      */
     suspend fun handleAuthExpiry(): Result<Unit> {
+        // Incidente Amaena (2026-07-29): recuerda a qué cuenta pertenecía la sesión muerta
+        // ANTES de limpiar. `ensureAuthenticated()` a secas re-autentica la cuenta PRIMARIA
+        // del venue (angelpayAccounts[0] del config) — en venues multi-cuenta eso cambiaba
+        // de afiliación en silencio a media venta: el cobro salía por la primaria y el
+        // registro llevaba el merchant seleccionado en la UI.
+        val previousAccountId = currentAngelPayAccountId
         sdkGateway.logout()
         merchantRepository.clearActive()
         currentAngelPayAccountId = null
         _state.value = AngelPayAuthState.Unauthenticated
-        return ensureAuthenticated()
+        return if (previousAccountId != null) {
+            ensureAuthenticatedAs(previousAccountId)
+        } else {
+            ensureAuthenticated()
+        }
+    }
+
+    /**
+     * Como [ensureAuthenticated], pero garantiza que la sesión resultante pertenezca a
+     * [accountId] (Avoqado `AngelPayUserAccount.id`) — no a la primaria del venue.
+     *
+     * Incidente Amaena (2026-07-29): toda re-auth "genérica" aterriza en la primaria
+     * (`angelpayAccounts[0]`). Los flujos de pago deben autenticar EXPLÍCITAMENTE la
+     * cuenta del merchant seleccionado.
+     *
+     *  - Sesión viva y ya en [accountId] → delega en el short-circuit idempotente de
+     *    [ensureAuthenticated] (validación de config incluida), sin re-credencializar.
+     *  - Sesión viva pero de OTRA cuenta (o no mapeable) → logout + auth directa como
+     *    [accountId].
+     *  - Sesión muerta → auth directa como [accountId] (resolviendo por cuenta, con el
+     *    mismo self-heal de config que [switchAccount]).
+     *  - Cuenta ya no resoluble (borrada/desactivada en el backend) → fallback RUIDOSO a
+     *    la primaria; el guard de alineación del flujo de pago impide cobrar si eso deja
+     *    la sesión en un merchant distinto al seleccionado.
+     *
+     * Sin gate de `isCharging` a propósito: sus únicos call sites son el propio flujo de
+     * pago (pre-lanzamiento y recuperación D308), donde "charging" describe ESTE intento
+     * aún no lanzado/fallido — no hay cobro ajeno en vuelo que proteger.
+     */
+    suspend fun ensureAuthenticatedAs(accountId: String): Result<Unit> {
+        if (sdkGateway.isAuthenticated()) {
+            val cachedMerchants = runCatching { sdkGateway.getUserMerchants().getOrNull() }.getOrNull()
+            if (!cachedMerchants.isNullOrEmpty()) {
+                if (currentAngelPayAccountId == null) {
+                    currentAngelPayAccountId =
+                        resolveAccountIdFromSdkMerchantIds(cachedMerchants.map { it.id }.toSet())
+                }
+                if (currentAngelPayAccountId == accountId) {
+                    return ensureAuthenticated()
+                }
+                Timber.tag(LOG_TAG).w(
+                    "ensureAuthenticatedAs($accountId): live session belongs to ${currentAngelPayAccountId ?: "unknown"} — re-authenticating as the target account",
+                )
+            }
+        }
+
+        var credsResult = credentialResolver.resolveByAccountId(accountId)
+        if (credsResult.isFailure) {
+            // Mismo self-heal que switchAccount: el cache de config puede estar frío.
+            runCatching {
+                val serial = deviceInfoManager.getSerialNumber()
+                terminalConfigRepository.fetchConfig(serial)
+            }
+            credsResult = credentialResolver.resolveByAccountId(accountId)
+        }
+        if (credsResult.isFailure) {
+            Timber.tag(LOG_TAG).e(
+                credsResult.exceptionOrNull(),
+                "ensureAuthenticatedAs($accountId): target account no longer resolves — falling back to the venue PRIMARY. " +
+                    "A session↔merchant mismatch is possible; the payment flow's alignment guard must block the charge.",
+            )
+            return ensureAuthenticated()
+        }
+
+        runCatching { sdkGateway.logout() }
+        merchantRepository.clearActive()
+        currentAngelPayAccountId = null
+        return authenticateWithCreds(credsResult.getOrThrow())
+    }
+
+    /**
+     * Mapea la sesión VIVA del SDK a su `AngelPayUserAccount.id` vía el config cacheado.
+     * Null si no hay sesión, la lista de merchants no responde, o ningún merchant del
+     * config la mapea. Actualiza [currentAngelPayAccountId] al derivarla — así un proceso
+     * recién revivido deja de reportar "cuenta desconocida" con una sesión válida.
+     */
+    suspend fun deriveSessionAccountId(): String? {
+        if (!sdkGateway.isAuthenticated()) return null
+        val merchants = runCatching { sdkGateway.getUserMerchants().getOrNull() }.getOrNull()
+        if (merchants.isNullOrEmpty()) return null
+        return resolveAccountIdFromSdkMerchantIds(merchants.map { it.id }.toSet())
+            ?.also { currentAngelPayAccountId = it }
     }
 
     /** Manual logout — clears SDK + active merchant + state flow. Idempotent. */

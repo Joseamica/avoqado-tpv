@@ -411,4 +411,132 @@ class AngelPayAuthRepositoryTest {
         assertTrue(result.isFailure)
         coVerify(atLeast = 1) { credentialResolver.resolveByAccountId("acc-cuid-2") }
     }
+
+    // ----------------------------------------------------------------------
+    // Incidente Amaena (2026-07-29): la re-auth debe volver a la cuenta ACTIVA,
+    // no a la primaria del venue (angelpayAccounts[0] = la más antigua). El
+    // swap silencioso a la primaria cobraba la afiliación A mientras el
+    // registro llevaba la B.
+    // ----------------------------------------------------------------------
+
+    private val secondAccountCreds = AngelPayCreds(
+        email = "ventas@venue.io",
+        pin = "222222",
+        environment = "QA",
+        source = "backend",
+        accountId = "acc-cuid-2",
+    )
+
+    @Test
+    fun `handleAuthExpiry re-authenticates the account that was active, not the primary`() =
+        runTest(dispatcher) {
+            coEvery { credentialResolver.resolveByAccountId("acc-cuid-2") } returns
+                Result.success(secondAccountCreds)
+            coEvery { sdkGateway.authenticateSimple(any(), any()) } returns
+                Result.success(AuthenticateSimpleResult.Success)
+            assertTrue(repo.switchAccount("acc-cuid-2").isSuccess)
+            assertEquals("acc-cuid-2", repo.getCurrentAngelPayAccountId())
+
+            val result = repo.handleAuthExpiry()
+
+            assertTrue(result.isSuccess)
+            // switch (1) + re-auth post-expiry (2) — SIEMPRE con la cuenta que estaba activa…
+            coVerify(exactly = 2) { sdkGateway.authenticateSimple("ventas@venue.io", any()) }
+            // …y NUNCA con la primaria: ese swap silencioso es el bug de Amaena.
+            coVerify(exactly = 0) { sdkGateway.authenticateSimple("ops@venue.io", any()) }
+            assertEquals("acc-cuid-2", repo.getCurrentAngelPayAccountId())
+        }
+
+    @Test
+    fun `ensureAuthenticatedAs authenticates the target account directly when the session is dead`() =
+        runTest(dispatcher) {
+            coEvery { credentialResolver.resolveByAccountId("acc-cuid-2") } returns
+                Result.success(secondAccountCreds)
+            coEvery { sdkGateway.authenticateSimple(any(), any()) } returns
+                Result.success(AuthenticateSimpleResult.Success)
+
+            val result = repo.ensureAuthenticatedAs("acc-cuid-2")
+
+            assertTrue(result.isSuccess)
+            coVerify(exactly = 1) { sdkGateway.authenticateSimple("ventas@venue.io", any()) }
+            coVerify(exactly = 0) { sdkGateway.authenticateSimple("ops@venue.io", any()) }
+            assertEquals("acc-cuid-2", repo.getCurrentAngelPayAccountId())
+        }
+
+    @Test
+    fun `ensureAuthenticatedAs falls back to the venue primary when the target account no longer resolves`() =
+        runTest(dispatcher) {
+            coEvery { credentialResolver.resolveByAccountId("acc-gone") } returns
+                Result.failure(MissingAngelPayCredsError)
+            coEvery { sdkGateway.authenticateSimple(any(), any()) } returns
+                Result.success(AuthenticateSimpleResult.Success)
+
+            val result = repo.ensureAuthenticatedAs("acc-gone")
+
+            assertTrue(result.isSuccess)
+            // Se INTENTÓ resolver la cuenta objetivo (incluido el retry post self-heal)…
+            coVerify(atLeast = 1) { credentialResolver.resolveByAccountId("acc-gone") }
+            // …y solo entonces cayó a la primaria (fallback explícito > terminal muerta).
+            coVerify(exactly = 1) { sdkGateway.authenticateSimple("ops@venue.io", any()) }
+        }
+
+    @Test
+    fun `ensureAuthenticatedAs short-circuits when already authenticated as the target account`() =
+        runTest(dispatcher) {
+            every { sdkGateway.isAuthenticated() } returns true
+            coEvery { sdkGateway.getUserMerchants() } returns Result.success(
+                listOf(mockk(relaxed = true) { every { id } returns 11 }),
+            )
+            val config = mockk<TerminalConfigData>(relaxed = true) {
+                every { merchantAccounts } returns listOf(
+                    mockk<MerchantAccountDto>(relaxed = true) {
+                        every { providerCode } returns "ANGELPAY"
+                        every { externalMerchantId } returns "11"
+                        every { angelpayUserAccountId } returns "acc-cuid-2"
+                    },
+                )
+            }
+            every { terminalConfigRepository.getCachedConfig() } returns config
+            coEvery { configValidator.validate(any(), any()) } returns ValidationResult.AllClear
+
+            val result = repo.ensureAuthenticatedAs("acc-cuid-2")
+
+            assertTrue(result.isSuccess)
+            assertEquals("acc-cuid-2", repo.getCurrentAngelPayAccountId())
+            coVerify(exactly = 0) { sdkGateway.authenticateSimple(any(), any()) }
+            verify(exactly = 0) { sdkGateway.logout() }
+        }
+
+    @Test
+    fun `ensureAuthenticatedAs re-authenticates when the live session belongs to a different account`() =
+        runTest(dispatcher) {
+            every { sdkGateway.isAuthenticated() } returns true
+            coEvery { sdkGateway.getUserMerchants() } returns Result.success(
+                listOf(mockk(relaxed = true) { every { id } returns 11 }),
+            )
+            // El merchant 11 de la sesión viva pertenece a la cuenta 1 (la primaria)…
+            val config = mockk<TerminalConfigData>(relaxed = true) {
+                every { merchantAccounts } returns listOf(
+                    mockk<MerchantAccountDto>(relaxed = true) {
+                        every { providerCode } returns "ANGELPAY"
+                        every { externalMerchantId } returns "11"
+                        every { angelpayUserAccountId } returns "acc-cuid-1"
+                    },
+                )
+            }
+            every { terminalConfigRepository.getCachedConfig() } returns config
+            coEvery { configValidator.validate(any(), any()) } returns ValidationResult.AllClear
+            // …y el flujo de pago exige la cuenta 2.
+            coEvery { credentialResolver.resolveByAccountId("acc-cuid-2") } returns
+                Result.success(secondAccountCreds)
+            coEvery { sdkGateway.authenticateSimple(any(), any()) } returns
+                Result.success(AuthenticateSimpleResult.Success)
+
+            val result = repo.ensureAuthenticatedAs("acc-cuid-2")
+
+            assertTrue(result.isSuccess)
+            verify(atLeast = 1) { sdkGateway.logout() }
+            coVerify(exactly = 1) { sdkGateway.authenticateSimple("ventas@venue.io", any()) }
+            assertEquals("acc-cuid-2", repo.getCurrentAngelPayAccountId())
+        }
 }

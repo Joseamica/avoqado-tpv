@@ -695,6 +695,90 @@ class AngelPayPaymentViewModelTest {
     }
 
     // ----------------------------------------------------------------------
+    // Incidente Amaena (2026-07-29): alineación sesión↔merchant seleccionado.
+    // La re-auth post-D308 aterrizaba en la cuenta PRIMARIA del venue y el
+    // relanzamiento cobraba ESA afiliación mientras el registro llevaba la
+    // seleccionada — dinero en A, libros en B.
+    // ----------------------------------------------------------------------
+
+    @Test
+    fun `D308 recovery does NOT relaunch when the re-authenticated session lands on a different merchant`() = runTest(testDispatcher) {
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } returns Result.success(Unit)
+        val vm = createViewModel()
+        try {
+            vm.selectMerchant(angelPayMerchantB) // externalMerchantId 22
+            runCurrent()
+            activeMerchantIdFlow.value = 22 // sesión alineada al momento de lanzar
+
+            coEvery { angelPayAuthRepository.handleAuthExpiry() } answers {
+                // La re-auth quedó en la sesión de OTRA cuenta: su merchant auto-
+                // seleccionado es el 11, no el 22 que el cajero eligió (la firma
+                // exacta del incidente Amaena).
+                activeMerchantIdFlow.value = 11
+                Result.success(Unit)
+            }
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            vm.onAngelPaySdkResult(sdkFailureResult("D308"))
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayAuthRepository.handleAuthExpiry() }
+            // NUNCA se relanza el cobro sobre una sesión en el merchant equivocado.
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            coVerify(atLeast = 1) { paymentStateHolder.setCharging(false) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `D308 recovery relaunches when the re-authenticated session matches the selected merchant`() = runTest(testDispatcher) {
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } returns Result.success(Unit)
+        val vm = createViewModel()
+        try {
+            vm.selectMerchant(angelPayMerchantB)
+            runCurrent()
+            coEvery { angelPayAuthRepository.handleAuthExpiry() } answers {
+                activeMerchantIdFlow.value = 22 // la re-auth volvió al merchant seleccionado
+                Result.success(Unit)
+            }
+            vm.primeSdkLaunch()
+            runCurrent()
+
+            vm.onAngelPaySdkResult(sdkFailureResult("D308"))
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayAuthRepository.handleAuthExpiry() }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `selectMerchant with no tracked session account switches to the target account instead of skipping`() = runTest(testDispatcher) {
+        val merchantOwnedByB = angelPayMerchantB.copy(angelpayUserAccountId = "acc-B")
+        every { angelPayAuthRepository.getCurrentAngelPayAccountId() } returns null
+        coEvery { angelPayAuthRepository.deriveSessionAccountId() } returns null
+        coEvery { angelPayAuthRepository.switchAccount("acc-B") } returns Result.success(Unit)
+        coEvery { angelPayMerchantRepository.switchActiveMerchant(22) } returns Result.success(Unit)
+
+        val vm = createViewModel()
+        try {
+            vm.selectMerchant(merchantOwnedByB)
+            runCurrent()
+
+            // Antes del fix este switch se SALTABA en silencio (currentAccountId == null):
+            // la sesión podía pertenecer a la primaria mientras la UI mostraba este merchant.
+            coVerify(exactly = 1) { angelPayAuthRepository.switchAccount("acc-B") }
+            assertThat(vm.currentMerchant.value).isEqualTo(merchantOwnedByB)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
     // skipReview (serialized SIM sales) — bypasses rating/tip, keeps verification
     // ----------------------------------------------------------------------
     @Test

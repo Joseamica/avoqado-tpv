@@ -274,7 +274,12 @@ class MainActivity : ComponentActivity() {
         AppUpdateReceiver.isActivityResumed = true
         ForegroundRecoveryGate.disarm(reason = "activity_resumed")
         applyTpvImmersiveMode(window)
-        evictStaleConnectionsOnResume()
+        // 🔴 DEBE ir fuera del hilo principal. `evictAll()` CIERRA sockets, y cerrar un
+        // socket es I/O de red: en el main thread Android lanza NetworkOnMainThreadException.
+        // El try/catch de adentro se la tragaba como warning, asi que esta defensa —escrita
+        // justamente para el sintoma de Doña Simona— NUNCA se ejecuto ni una sola vez.
+        // Verificado en logcat de una PAX real (2026-07-28): la excepcion sale en CADA resume.
+        lifecycleScope.launch(Dispatchers.IO) { evictStaleConnectionsOnResume() }
     }
 
     /**

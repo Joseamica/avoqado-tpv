@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.RestartAlt
+import androidx.compose.material.icons.outlined.TableRestaurant
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -92,6 +93,8 @@ import com.jaac.avoqado_tpv.core.presentation.viewmodels.HomeViewModel
 import com.jaac.avoqado_tpv.features.authentication.domain.models.StaffRole
 import com.jaac.avoqado_tpv.features.authentication.domain.models.VenueStatus
 import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
+import com.jaac.avoqado_tpv.features.payment.domain.model.shouldShowOrderManagementTile
+import com.jaac.avoqado_tpv.features.payment.domain.model.shouldShowTablesTile
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.permissions.di.PermissionsEntryPoint
 import com.jaac.avoqado_tpv.features.plan.domain.model.PlanFeatureCatalog
@@ -135,6 +138,7 @@ fun WelcomeScreen(
     onStartPaymentWithAmount: (String) -> Unit = {},  // ✅ Keep modal for first-time flow
     onNavigateToShifts: () -> Unit = {},
     onNavigateToOrdering: () -> Unit = {},
+    onNavigateToTables: () -> Unit = {},  // 🪑 Mesas (Plan C, Task 6) — restaurant mode entry point
     onNavigateToCheckout: () -> Unit = {},  // 🆕 Unified Checkout (Cobrar) — additive rollout
     onNavigateToReports: () -> Unit = {},
     onNavigateToPayments: () -> Unit = {},  // ⭐ NEW: Navigate to Payments screen
@@ -296,6 +300,7 @@ fun WelcomeScreen(
         onStartPaymentWithAmount = onStartPaymentWithAmount,  // ✅ Modal flow for first-time
         onNavigateToShifts = onNavigateToShifts,
         onNavigateToOrdering = onNavigateToOrdering,
+        onNavigateToTables = onNavigateToTables,  // 🪑 Pass Mesas navigation
         onNavigateToCheckout = onNavigateToCheckout,  // 🆕 Pass Checkout navigation
         onNavigateToReports = onNavigateToReports,
         onNavigateToPayments = onNavigateToPayments,  // ⭐ NEW: Pass payments navigation
@@ -519,6 +524,7 @@ private fun WelcomeScreenContent(
     onStartPaymentWithAmount: (String) -> Unit,  // ✅ Modal flow (first-time)
     onNavigateToShifts: () -> Unit,
     onNavigateToOrdering: () -> Unit,
+    onNavigateToTables: () -> Unit = {},  // 🪑 Mesas (Plan C, Task 6)
     onNavigateToCheckout: () -> Unit = {},  // 🆕 Unified Checkout (Cobrar)
     onNavigateToReports: () -> Unit,
     onNavigateToPayments: () -> Unit,  // ⭐ NEW: Navigate to Payments screen
@@ -576,6 +582,9 @@ private fun WelcomeScreenContent(
     val planInfo by planManager.planInfo.collectAsStateWithLifecycle()
     val serializedInventoryPlanLocked =
         !planInfo.allowsFeature(PlanFeatureCatalog.SERIALIZED_INVENTORY)
+    // Mesas tile — PRO+ with a visible teaser (spec D-1): a FREE venue sees
+    // the tile disabled with a "Plan Pro" badge instead of it disappearing.
+    val tablesPlanLocked = !planInfo.allowsFeature(PlanFeatureCatalog.TABLE_SERVICE)
 
     // 📱 Check for simplified order flow (telecom/serialized inventory mode)
     // Use StateFlow so changes (e.g., on logout) trigger recomposition
@@ -817,8 +826,39 @@ private fun WelcomeScreenContent(
             )
         }
 
-        // ✅ "Órdenes" - controlled by tpvSettings.showOrderManagement
-        if (tpvSettings.showOrderManagement) {
+        // 🪑 "Mesas" — restaurant mode tile (Mesas module, `features/tables/`).
+        // Takes the exact slot where "Órdenes" sits — the two never coexist
+        // (spec D-4, enforced by shouldShowTablesTile/shouldShowOrderManagementTile
+        // below, not a raw tpvSettings read). Task 6 built `TablesScreen`, so
+        // the tile now actually navigates — gated the SAME way as "Órdenes"
+        // (shift open + clocked in) since it's the same class of operational
+        // work. Plan lock (D-1: PRO+ with visible teaser) keeps the tile
+        // disabled+badged rather than navigating to an upsell screen — no
+        // client has an upsell flow yet (workspace CLAUDE.md: only the
+        // dashboard enforces tiers today), so this mirrors the existing
+        // `serializedInventoryPlanLocked` pattern above instead of inventing one.
+        if (shouldShowTablesTile(tpvSettings)) {
+            val tablesEnabled = !tablesPlanLocked && canOperate && canWork
+            val tablesBadge = when {
+                tablesPlanLocked -> "Plan Pro"
+                !canWork -> "Registra tu entrada"
+                !canOperate -> "Abre el turno primero"
+                else -> null
+            }
+            allButtons.add(
+                ActionButton(
+                    icon = Icons.Outlined.TableRestaurant,
+                    label = "Mesas",
+                    enabled = tablesEnabled,
+                    badge = tablesBadge,
+                    onClick = onNavigateToTables
+                )
+            )
+        }
+
+        // ✅ "Órdenes" - controlled by tpvSettings.showOrderManagement, hidden
+        // once restaurant mode is ON (spec D-4 — never shown alongside Mesas)
+        if (shouldShowOrderManagementTile(tpvSettings)) {
             val ordersEnabled = canOperate && canWork
             val ordersBadge = when {
                 !canWork -> "Registra tu entrada"

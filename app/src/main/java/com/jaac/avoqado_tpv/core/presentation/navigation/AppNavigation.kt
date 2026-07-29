@@ -72,6 +72,7 @@ import com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreen
 import com.jaac.avoqado_tpv.features.ordering.domain.TableRepository
 import com.jaac.avoqado_tpv.features.ordering.presentation.FloorPlanCanvasScreen
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderingWelcomeScreen
+import com.jaac.avoqado_tpv.features.tables.presentation.TablesScreen
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderListScreen
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderStatusFilter
 import com.jaac.avoqado_tpv.features.ordering.presentation.menu.MenuScreen
@@ -1071,6 +1072,13 @@ fun AppNavigation(
                         navController.navigate(NavRoute.OrderingWelcome.route)
                     }
                 },
+                onNavigateToTables = {
+                    // 🪑 Mesas (Plan C, Task 6) — plano en vivo, sin costura de
+                    // pago (no necesita esperar al SDK del PAX), a diferencia de
+                    // Órdenes/Pago rápido que sí lo hacen.
+                    Timber.d("[PERF] NAV: Welcome → Tables START")
+                    navController.navigate(NavRoute.Tables.route)
+                },
                 onNavigateToCheckout = {
                     // Phase 2: open Checkout without awaiting PAX init. The PAX
                     // gate moves to the Cobrar → PaymentScreen transition in Phase 5.
@@ -1316,6 +1324,19 @@ fun AppNavigation(
                     // Navigate to Menu screen with orderId
                     Timber.d("🪑 Table assigned - Navigating to Menu with Order ID: $orderId")
                     navController.navigate(NavRoute.Menu.createRoute(orderId))
+                }
+            )
+        }
+
+        // 🪑 Mesas — Plan C, Task 6. NEW module (`features/tables/`), isolated
+        // from the legacy `FloorPlanCanvasScreen` above: no shared imports, no
+        // shared ViewModel, no shared Room tables (D-3 of the design spec).
+        // The canvas here is READ-ONLY (no edit mode, no drag) — the legacy
+        // screen above is a plano EDITOR; this one only operates it.
+        composable(NavRoute.Tables.route) {
+            TablesScreen(
+                onNavigateBack = {
+                    navController.safePopBackStack()
                 }
             )
         }

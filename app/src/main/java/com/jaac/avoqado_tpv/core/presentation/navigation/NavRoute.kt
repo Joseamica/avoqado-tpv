@@ -369,8 +369,8 @@ sealed class NavRoute(val route: String) {
      * reachable when `TpvSettings.restaurantModeEnabled` is ON, which also hides
      * the legacy "Órdenes" tile (spec D-4) — the two never coexist.
      *
-     * Route object only for now: the destination composable is mounted by Task 6
-     * of the plan above, once `TablesScreen` exists.
+     * Mounted (Plan C, Task 6): `TablesScreen` — canvas ⇄ lista, read-only
+     * plano (editing lives in the dashboard). See `AppNavigation.kt`.
      */
     data object Tables : NavRoute("tables")
 }

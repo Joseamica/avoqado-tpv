@@ -74,4 +74,19 @@ interface SyncIntentDao {
      */
     @Query("DELETE FROM sync_intents WHERE id = :id AND venue_id = :venueId AND status = 'REJECTED'")
     suspend fun dismiss(id: String, venueId: String): Int
+
+    /**
+     * Descarta un intent PENDING que resultó innecesario — patrón write-ahead
+     * (Task 4 P1 fix): el caller escribe el intent ANTES de intentar el
+     * camino online, y si ESE intento SÍ tiene éxito (o el server lo rechaza
+     * de forma permanente), el intent nunca debe reproducirse. Acotado a
+     * `status = 'PENDING'` a propósito, igual que [dismiss]: nunca debe poder
+     * borrar un intent ya terminal (ACKED/REJECTED) por error de llamada —
+     * eso perdería el registro de lo que pasó.
+     *
+     * @return filas afectadas (0 = ya no estaba PENDING, p.ej. el replay lo
+     *   ganó de mano — no-op seguro, nunca un error).
+     */
+    @Query("DELETE FROM sync_intents WHERE id = :id AND status = 'PENDING'")
+    suspend fun discardPending(id: String): Int
 }

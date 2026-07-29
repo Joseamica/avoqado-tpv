@@ -14,6 +14,8 @@ import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
 import com.jaac.avoqado_tpv.core.data.local.dao.TableDao
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantCacheDao
+import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentDao
+import com.jaac.avoqado_tpv.features.tables.data.local.TablesDatabase
 import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueDao
 import dagger.Module
 import dagger.Provides
@@ -362,5 +364,53 @@ object DatabaseModule {
         database: AvoqadoDatabase
     ): AngelPayMerchantCacheDao {
         return database.angelPayMerchantCacheDao()
+    }
+
+    /**
+     * Provides TablesDatabase singleton — el outbox de Mesas (Plan C, Task 3).
+     *
+     * **Deliberadamente SEPARADA de [AvoqadoDatabase]** — ver el KDoc de
+     * [TablesDatabase] para el porqué (aislamiento del módulo + evitar colisión
+     * de versión de schema con la migración en curso de `pending_payments` en
+     * `codex/payment-safety-phase-0`).
+     *
+     * **Versión 1** — base nueva, sin migraciones que declarar todavía. Mismo
+     * criterio de "fallar ruidoso, nunca borrar en silencio" que
+     * [AvoqadoDatabase]: sin `fallbackToDestructiveMigration` de producción; el
+     * único fallback es para bases nunca instaladas (no aplica aquí, v1 es el
+     * piso).
+     *
+     * @param context Application context (injected by Hilt)
+     * @return TablesDatabase singleton instance
+     */
+    @Provides
+    @Singleton
+    fun provideTablesDatabase(
+        @ApplicationContext context: Context
+    ): TablesDatabase {
+        return Room.databaseBuilder(
+            context,
+            TablesDatabase::class.java,
+            TablesDatabase.DATABASE_NAME
+        )
+            // ✅ Enable Write-Ahead Logging for better concurrency (mismo patrón que AvoqadoDatabase)
+            .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
+            .build()
+    }
+
+    /**
+     * Provides SyncIntentDao from TablesDatabase.
+     *
+     * **Injected Into:**
+     * - SyncOutbox (features/tables/data/sync — el outbox de Mesas)
+     *
+     * @param database TablesDatabase instance
+     * @return SyncIntentDao for the offline tables outbox
+     */
+    @Provides
+    fun provideSyncIntentDao(
+        database: TablesDatabase
+    ): SyncIntentDao {
+        return database.syncIntentDao()
     }
 }

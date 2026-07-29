@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.tables.domain.model
 
+import java.math.BigDecimal
+
 /**
  * Mesa con su estado en vivo — espejo EXACTO por campo de `TableStatusResponse`
  * (avoqado-server `src/services/tpv/table.tpv.service.ts::getTablesWithStatus`),
@@ -49,8 +51,8 @@ data class OpenCheckSummary(
     val id: String,
     val orderNumber: String = "",
     val covers: Int? = null,
-    /** Pesos (major units) — el server serializa `Decimal` como Number. */
-    val total: Double = 0.0,
+    /** Pesos (major units), `BigDecimal` — NUNCA `Double` (ver `critical-warnings.md`). */
+    val total: BigDecimal = BigDecimal.ZERO,
     val itemCount: Int = 0,
     /** `Order.version` para CAS optimista al agregar una ronda. */
     val version: Int = 1,

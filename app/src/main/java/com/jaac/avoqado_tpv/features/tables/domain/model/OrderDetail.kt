@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.tables.domain.model
 
 import com.google.gson.annotations.SerializedName
+import java.math.BigDecimal
 
 /**
  * El detalle completo de una cuenta — espejo por campo de lo que devuelven
@@ -35,22 +36,28 @@ data class OrderDetail(
      */
     @SerializedName("type")
     val orderType: String = "DINE_IN",
-    /** Pesos (major units) — el server serializa `Decimal` como Number. */
-    val subtotal: Double = 0.0,
-    val discountAmount: Double = 0.0,
+    /**
+     * Pesos (major units), NUNCA `Double` — el server serializa `Decimal` como
+     * Number y Gson deserializa un campo `BigDecimal` leyendo el literal JSON
+     * tal cual (sin pasar por `Double`), preservando precisión exacta. Ver
+     * `avoqado-server/.claude/rules/critical-warnings.md` ("Money = Decimal,
+     * Never Float") — P1 real: con `Double`, 0.10 + 0.20 ≠ 0.30 en una cuenta.
+     */
+    val subtotal: BigDecimal = BigDecimal.ZERO,
+    val discountAmount: BigDecimal = BigDecimal.ZERO,
     /** Cobros por servicio — SUMAN al total (ingreso gravable, no propina). */
-    val serviceChargeAmount: Double = 0.0,
-    val taxAmount: Double = 0.0,
-    val tipAmount: Double = 0.0,
-    val total: Double = 0.0,
-    val paidAmount: Double = 0.0,
-    val remainingBalance: Double = 0.0,
+    val serviceChargeAmount: BigDecimal = BigDecimal.ZERO,
+    val taxAmount: BigDecimal = BigDecimal.ZERO,
+    val tipAmount: BigDecimal = BigDecimal.ZERO,
+    val total: BigDecimal = BigDecimal.ZERO,
+    val paidAmount: BigDecimal = BigDecimal.ZERO,
+    val remainingBalance: BigDecimal = BigDecimal.ZERO,
     /**
      * Restante a cobrar — solo lo calcula `getOrder` (GET), no `addItemsToOrder`
      * (PATCH). Null en la respuesta de PATCH.
      */
     @SerializedName("amount_left")
-    val amountLeft: Double? = null,
+    val amountLeft: BigDecimal? = null,
     /** Cómo se dividió el ÚLTIMO pago (o `Order.splitType` si no hay pagos aún). */
     val splitType: String? = null,
     /**
@@ -93,8 +100,8 @@ data class OrderDetailItem(
     val productId: String? = null,
     val productName: String? = null,
     val quantity: Int = 1,
-    val unitPrice: Double = 0.0,
-    val total: Double = 0.0,
+    val unitPrice: BigDecimal = BigDecimal.ZERO,
+    val total: BigDecimal = BigDecimal.ZERO,
     val notes: String? = null,
     val modifiers: List<OrderDetailModifier> = emptyList(),
     /** Curso/tiempo bajo el que se envió la línea. Null = "Inmediato". */
@@ -113,13 +120,13 @@ data class OrderDetailItem(
 data class OrderDetailModifier(
     val id: String = "",
     val name: String = "",
-    val price: Double = 0.0,
+    val price: BigDecimal = BigDecimal.ZERO,
 )
 
 data class OrderDetailPayment(
     val id: String = "",
-    val amount: Double = 0.0,
-    val tipAmount: Double = 0.0,
+    val amount: BigDecimal = BigDecimal.ZERO,
+    val tipAmount: BigDecimal = BigDecimal.ZERO,
     val method: String = "",
     val status: String = "",
     val splitType: String? = null,

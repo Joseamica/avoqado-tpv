@@ -4,9 +4,9 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import com.google.gson.JsonObject
-import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentDao
+import com.jaac.avoqado_tpv.features.tables.data.local.TablesDatabase
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
@@ -28,7 +28,7 @@ import org.junit.Test
  */
 class SyncOutboxTest {
 
-    private lateinit var db: AvoqadoDatabase
+    private lateinit var db: TablesDatabase
     private lateinit var dao: SyncIntentDao
     private lateinit var outbox: SyncOutbox
 
@@ -36,7 +36,7 @@ class SyncOutboxTest {
     fun setup() {
         db = Room.inMemoryDatabaseBuilder(
             ApplicationProvider.getApplicationContext(),
-            AvoqadoDatabase::class.java,
+            TablesDatabase::class.java,
         ).build()
         dao = db.syncIntentDao()
         outbox = SyncOutbox(
@@ -136,6 +136,56 @@ class SyncOutboxTest {
 
         assertThat(dao.pendingForVenue("venue-a")).hasSize(1)
         assertThat(outbox.rejectedIntents("venue-a")).isEmpty()
+    }
+
+    // --- write-ahead (P1 fix): enqueue() con id pre-generado + discardPending() ---
+
+    @Test
+    fun enqueue_acepta_un_id_pre_generado_para_el_patron_write_ahead() = runTest {
+        // TablesRepository.addItems genera el idempotencyKey ANTES de escribir el
+        // intent, para poder incrustar el MISMO externalId en el intento online —
+        // enqueue() debe usar TAL CUAL el id que se le pasa, no generar uno propio.
+        val preGeneratedId = "intent-fijo-123"
+
+        val returnedId = outbox.enqueue("venue-a", SyncIntentTypes.ADD_ITEMS, payload(1), id = preGeneratedId)
+
+        assertThat(returnedId).isEqualTo(preGeneratedId)
+        assertThat(dao.pendingForVenue("venue-a").single().id).isEqualTo(preGeneratedId)
+    }
+
+    @Test
+    fun discardPending_borra_un_intent_write_ahead_que_ya_no_hace_falta_reproducir() = runTest {
+        // Camino feliz del fix write-ahead: el intento online SÍ tuvo éxito (o el
+        // server lo rechazó de forma permanente) — el intent que se escribió por
+        // adelantado nunca debe reproducirse.
+        val id = outbox.enqueue("venue-a", SyncIntentTypes.ADD_ITEMS, payload(1))
+        assertThat(dao.pendingForVenue("venue-a")).hasSize(1)
+
+        outbox.discardPending(id)
+
+        assertThat(dao.pendingForVenue("venue-a")).isEmpty()
+        assertThat(dao.allForVenue("venue-a")).isEmpty() // se borró, no quedó fantasma
+    }
+
+    @Test
+    fun discardPending_nunca_toca_un_intent_ya_terminal_ACKED() = runTest {
+        // Acotado a PENDING a propósito, igual que dismiss() — nunca debe poder
+        // borrar el registro de un intent ya aplicado por error de llamada.
+        val id = outbox.enqueue("venue-a", SyncIntentTypes.ADD_ITEMS, payload(1))
+        outbox.applyAck(id, status = "ACKED", errorCode = null)
+
+        outbox.discardPending(id)
+
+        assertThat(dao.allForVenue("venue-a").map { it.id }).containsExactly(id)
+    }
+
+    @Test
+    fun discardPending_de_un_id_que_no_existe_es_no_op_seguro() = runTest {
+        // Un replay concurrente pudo haber ganado de mano (ACKED/REJECTED ya
+        // resuelto y limpiado) — descartar un id que ya no existe nunca debe tronar.
+        outbox.discardPending("id-que-nunca-existio")
+
+        assertThat(dao.allForVenue("venue-a")).isEmpty()
     }
 
     private fun payload(i: Int): JsonObject = JsonObject().apply { addProperty("seq_marker", i) }

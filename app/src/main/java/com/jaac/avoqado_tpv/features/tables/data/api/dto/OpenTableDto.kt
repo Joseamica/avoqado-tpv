@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.tables.data.api.dto
 
+import java.math.BigDecimal
+
 /**
  * `POST /tpv/venues/{venueId}/tables/{tableId}/open` (`tableController.openTable`,
  * re-export de `table.mobile.controller.ts::openTable`). Body: `{ covers?: number }`
@@ -28,5 +30,5 @@ data class OpenedOrder(
     val id: String,
     val orderNumber: String? = null,
     val version: Int = 1,
-    val total: Double? = null,
+    val total: BigDecimal? = null,
 )

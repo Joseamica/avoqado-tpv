@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.tables.data.api.dto
 
+import java.math.BigDecimal
+
 /**
  * "Separar cuenta" / "Fusionar cuentas" / "Dividir por puesto" — las 3 rutas de
  * ciclo de vida de mesa bajo `/tpv` (`order-table.tpv.controller.ts`,
@@ -55,7 +57,7 @@ data class SplitBySeatResult(
 data class OrderMoneySummary(
     val id: String,
     val orderNumber: String = "",
-    val total: Double = 0.0,
+    val total: BigDecimal = BigDecimal.ZERO,
     val version: Int? = null,
     /** Solo presente en el resultado de `split-by-seat`. */
     val seat: Int? = null,

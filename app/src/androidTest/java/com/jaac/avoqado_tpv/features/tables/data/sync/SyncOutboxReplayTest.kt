@@ -4,11 +4,11 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import com.google.gson.JsonObject
-import com.jaac.avoqado_tpv.core.data.local.AvoqadoDatabase
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentAck
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentsResponse
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentDao
+import com.jaac.avoqado_tpv.features.tables.data.local.TablesDatabase
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Before
@@ -39,7 +39,7 @@ import org.junit.Test
  */
 class SyncOutboxReplayTest {
 
-    private lateinit var db: AvoqadoDatabase
+    private lateinit var db: TablesDatabase
     private lateinit var dao: SyncIntentDao
     private lateinit var api: RecordingTablesApiService
     private lateinit var outbox: SyncOutbox
@@ -48,7 +48,7 @@ class SyncOutboxReplayTest {
     fun setup() {
         db = Room.inMemoryDatabaseBuilder(
             ApplicationProvider.getApplicationContext(),
-            AvoqadoDatabase::class.java,
+            TablesDatabase::class.java,
         ).build()
         dao = db.syncIntentDao()
         api = RecordingTablesApiService()

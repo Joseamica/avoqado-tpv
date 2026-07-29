@@ -4,6 +4,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentAck
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentInput
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentsRequest
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentDao
@@ -37,15 +38,15 @@ import javax.inject.Singleton
  *   Kotlin; un catch desnudo se la traga. Ver `PaymentSyncWorker.markSyncedChecked`.
  * - Clasificación de fallo de red vs. servidor por código, nunca por texto —
  *   aquí no aplica `classifySyncFailure` directo (esa es la Task 4,
- *   `orQueueOffline`) pero [replayNow] seguía la misma disciplina: una excepción
- *   de red o un HTTP no-exitoso deja el batch PENDING; nunca se interpreta un
- *   fallo de transporte como un rechazo de negocio.
+ *   `TablesRepository.addItems`) pero [replayNow] seguía la misma disciplina: una
+ *   excepción de red o un HTTP no-exitoso deja el batch PENDING; nunca se
+ *   interpreta un fallo de transporte como un rechazo de negocio.
  *
  * **Qué se hizo DELIBERADAMENTE distinto de `avoqado-android`:**
  * - Sin lifecycle propio (`start()`/`stop()`, timer de seguridad, listener de
  *   conectividad). El "Produces" de la Task 3 es `enqueue` · `replayNow` ·
  *   `rejectedIntents` · `dismissRejected` — CUÁNDO llamar `replayNow` es decisión
- *   de la Task 4 (`TablesRepository.orQueueOffline`) y la Task 5
+ *   de la Task 4 (`TablesRepository.addItems`) y la Task 5
  *   (`TableSyncCoordinator`), que sí conocen la señal de conectividad de Mesas.
  *   Cablear eso aquí habría sido diseñar una tarea que todavía no existe.
  * - `deviceId` NO es un UUID generado y guardado en SharedPreferences propio
@@ -60,6 +61,12 @@ import javax.inject.Singleton
  *   transiciones de ack sin levantar HTTP — y para que la Task 5
  *   (`TableSyncCoordinator`) pueda reaccionar a un ack sin duplicar la lógica de
  *   persistencia.
+ * - [replayNow] (Task 5) acepta un callback `onAck` opcional, invocado DESPUÉS
+ *   de que [applyAck] ya persistió — `TableSyncCoordinator` lo usa para
+ *   reconciliar `TableSession` (promover el UUID local de un OPEN_TABLE
+ *   ACKED, refrescar la `version` tras un ADD_ITEMS) SIN reimplementar el
+ *   batching/FIFO/HTTP de este método. Default `{ _, _ -> }` — cero cambio de
+ *   comportamiento para los callers existentes (`SyncOutboxReplayTest`).
  */
 @Singleton
 class SyncOutbox @Inject constructor(
@@ -90,10 +97,15 @@ class SyncOutbox @Inject constructor(
      * cambia entre reintentos: se asigna UNA vez aquí y de ahí en adelante viaja
      * tal cual en cada replay ([toWire]).
      *
+     * @param id idempotencyKey a usar — por default un UUID nuevo. Un caller
+     *   write-ahead (p.ej. [com.jaac.avoqado_tpv.features.tables.data.TablesRepository.addItems])
+     *   puede pasar uno YA generado para poder incrustar la MISMA llave en el
+     *   payload (`externalId` por línea) antes de escribirlo aquí — así el
+     *   intent persistido y el intento online (si lo hay) comparten
+     *   idempotencyKey byte-idéntico.
      * @return el id del intent (UUID = idempotencyKey).
      */
-    suspend fun enqueue(venueId: String, type: String, payload: JsonObject): String {
-        val id = UUID.randomUUID().toString()
+    suspend fun enqueue(venueId: String, type: String, payload: JsonObject, id: String = UUID.randomUUID().toString()): String {
         val entity = SyncIntentEntity(
             id = id,
             venueId = venueId,
@@ -106,6 +118,24 @@ class SyncOutbox @Inject constructor(
         }
         Timber.i("📥 [Tables] Encolado %s seq=%d id=%s venue=%s", type, seq, id, venueId)
         return id
+    }
+
+    /**
+     * Descarta un intent PENDING que [enqueue] escribió por adelantado
+     * (write-ahead) y que resultó innecesario — el caller ya sabe por otra vía
+     * que no hay nada que reproducir: el intento online tuvo éxito, o el
+     * server lo rechazó de forma permanente. `NonCancellable` por la misma
+     * razón que [enqueue]: esto es limpieza del registro de una acción que
+     * YA ocurrió, no trabajo opcional que se pueda perder a media cancelación.
+     *
+     * Seguro de llamar aunque el intent ya no exista o ya no esté PENDING
+     * (p.ej. un replay concurrente lo ganó de mano) — [dao]'s `discardPending`
+     * está acotado a `status = 'PENDING'`, así que nunca borra un ACKED/REJECTED.
+     */
+    suspend fun discardPending(id: String) {
+        withContext(NonCancellable + Dispatchers.IO) {
+            dao.discardPending(id)
+        }
     }
 
     /**
@@ -200,8 +230,16 @@ class SyncOutbox @Inject constructor(
      *
      * `CancellationException` se repropaga sin tocar nada — el batch se queda
      * como estaba, listo para el próximo trigger.
+     *
+     * @param onAck invocado por cada ack YA persistido (Task 5,
+     *   `TableSyncCoordinator`) — recibe el [SyncIntentEntity] original (para
+     *   su `type`) y el [SyncIntentAck] del wire. Se llama en el MISMO orden
+     *   FIFO en que el server los regresó, y NUNCA para un intent posterior a
+     *   un `RETRY` en la misma respuesta (el server ya no lo tocó). No
+     *   participa en la clasificación ACKED/REJECTED/RETRY — eso lo decide
+     *   [applyAck] arriba; este callback es solo notificación.
      */
-    suspend fun replayNow(venueId: String) {
+    suspend fun replayNow(venueId: String, onAck: suspend (SyncIntentEntity, SyncIntentAck) -> Unit = { _, _ -> }) {
         replayMutex.withLock {
             while (true) {
                 val batch = dao.pendingForVenue(venueId).take(BATCH_SIZE)
@@ -245,6 +283,7 @@ class SyncOutbox @Inject constructor(
                         message = ack.message,
                         resultJson = ack.result?.let { gson.toJson(it) },
                     )
+                    batch.find { it.id == ack.id }?.let { intent -> onAck(intent, ack) }
                     if (ack.isRetry) {
                         sawRetry = true
                         break // el server ya cortó aquí — no hay más acks después de un RETRY

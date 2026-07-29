@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.tables.data.api.dto
 
+import java.math.BigDecimal
+
 /**
  * "Aplicar cobro por servicio" — `POST /tpv/venues/{venueId}/orders/{orderId}/service-charges`
  * (`order-table.tpv.controller.ts::applyServiceCharge`, delega en
@@ -19,10 +21,10 @@ data class ApplyServiceChargeResponse(
  * y las funciones internas de split/merge.
  */
 data class OrderTotals(
-    val subtotal: Double = 0.0,
-    val discountAmount: Double = 0.0,
-    val serviceChargeAmount: Double = 0.0,
-    val total: Double = 0.0,
+    val subtotal: BigDecimal = BigDecimal.ZERO,
+    val discountAmount: BigDecimal = BigDecimal.ZERO,
+    val serviceChargeAmount: BigDecimal = BigDecimal.ZERO,
+    val total: BigDecimal = BigDecimal.ZERO,
     val version: Int = 1,
 )
 
@@ -60,6 +62,6 @@ data class ApplyDiscountResponse(
 )
 
 data class DiscountApplyResult(
-    val amount: Double = 0.0,
-    val newOrderTotal: Double = 0.0,
+    val amount: BigDecimal = BigDecimal.ZERO,
+    val newOrderTotal: BigDecimal = BigDecimal.ZERO,
 )

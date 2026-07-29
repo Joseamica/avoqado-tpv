@@ -556,13 +556,49 @@ class SettingsViewModel @Inject constructor(
     /**
      * Toggle restaurant mode setting.
      *
+     * **Local-first, NOT the generic [updateSetting] (network-only, reverts
+     * on failure):** this is a terminal-local display preference — it only
+     * decides which tile shows on Home — and must hold even with zero
+     * connectivity, same as every other offline-first guarantee this app
+     * makes. Root cause of the original bug: [updateSetting] only wrote the
+     * flag to SecureStorage/`TpvSettingsRepository` (the actual source of
+     * truth Home reads) INSIDE the HTTP-success branch; the "optimistic"
+     * update touched only this ViewModel's own `_state`, never the
+     * repository. So an offline toggle, a slow request, or the coroutine
+     * being cancelled by navigating away (this screen's ViewModel is scoped
+     * to the nav back-stack entry) left the switch showing ON while nothing
+     * was ever actually saved — the operator believed the terminal was
+     * configured and it wasn't.
+     *
+     * Now: the flag is written to SecureStorage + the settings StateFlow
+     * SYNCHRONOUSLY before this function returns, so the switch can never
+     * show a state that wasn't actually persisted. The backend sync after
+     * is best-effort and never reverts the switch on failure.
+     *
      * When enabled, the "Mesas" tile appears on the home screen and the legacy
      * "Órdenes" tile hides — the two never coexist (spec D-4). Additive and
      * default off; nothing else changes for terminals that don't turn it on.
      */
     fun toggleRestaurantMode() {
         val newValue = !_state.value.tpvSettings.restaurantModeEnabled
-        updateSetting { it.copy(restaurantModeEnabled = newValue) }
+        val updatedSettings = _state.value.tpvSettings.copy(restaurantModeEnabled = newValue)
+
+        // Durable write FIRST, synchronously — cannot be lost to a cancelled
+        // coroutine or a dead network. The switch reflects reality the
+        // instant this line runs, not "once the backend confirms."
+        tpvSettingsRepository.updateSettingLocalFirst(updatedSettings)
+        _state.update {
+            it.copy(
+                tpvSettings = updatedSettings,
+                message = if (newValue) "Modo restaurante activado" else "Modo restaurante desactivado"
+            )
+        }
+        Timber.i("✅ Restaurant mode ${if (newValue) "ENABLED" else "DISABLED"} (local-first)")
+
+        // Best-effort background sync — never reverts the local write on failure.
+        viewModelScope.launch {
+            tpvSettingsRepository.syncSettingsToBackend(updatedSettings)
+        }
     }
 
     /**

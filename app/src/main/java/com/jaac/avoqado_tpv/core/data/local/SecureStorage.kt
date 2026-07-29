@@ -160,6 +160,9 @@ class SecureStorage @Inject constructor(
         private const val KEY_TPV_PAYMENT_LEDGER_MODE = "tpv_payment_ledger_mode"
         // Restaurant mode (Mesas module entry point)
         private const val KEY_TPV_RESTAURANT_MODE = "tpv_restaurant_mode_enabled"
+        // True while a local-first restaurantModeEnabled write hasn't been
+        // confirmed synced to the backend yet — see getRestaurantModePendingSync().
+        private const val KEY_TPV_RESTAURANT_MODE_PENDING_SYNC = "tpv_restaurant_mode_pending_sync"
 
         // Module cache keys
         private const val KEY_CACHED_MODULES = "cached_modules"
@@ -1295,6 +1298,26 @@ class SecureStorage @Inject constructor(
     }
 
     /**
+     * True while a local-first `restaurantModeEnabled` write (toggled on the
+     * terminal, possibly offline) has NOT yet been confirmed synced to the
+     * backend. [TpvSettingsRepository.refreshFromTerminalConfig] MUST check
+     * this before letting a GET response's `restaurantModeEnabled` overwrite
+     * the local value — otherwise a terminal-config fetch that races an
+     * unsynced local toggle (e.g. app restarted before reconnecting) silently
+     * reverts the operator's choice. Real bug found verifying on hardware
+     * 2026-07-28: toggle ON while offline → force-stop → relaunch (now
+     * online) → the startup GET still returned the server's stale `false`
+     * → "Mesas" tile disappeared again even though the operator never
+     * touched the switch.
+     */
+    fun getRestaurantModePendingSync(): Boolean =
+        encryptedPrefs.getBoolean(KEY_TPV_RESTAURANT_MODE_PENDING_SYNC, false)
+
+    fun setRestaurantModePendingSync(pending: Boolean) {
+        encryptedPrefs.edit().putBoolean(KEY_TPV_RESTAURANT_MODE_PENDING_SYNC, pending).apply()
+    }
+
+    /**
      * Clear TPV settings (useful when switching venues)
      */
     fun clearTpvSettings() {
@@ -1342,6 +1365,7 @@ class SecureStorage @Inject constructor(
             remove(KEY_TPV_PAYMENT_LEDGER_MODE)
             // Restaurant mode (Mesas module entry point)
             remove(KEY_TPV_RESTAURANT_MODE)
+            remove(KEY_TPV_RESTAURANT_MODE_PENDING_SYNC)
         }.apply()
         Timber.d("TPV settings cleared")
     }

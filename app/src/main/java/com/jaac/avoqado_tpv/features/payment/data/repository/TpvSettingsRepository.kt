@@ -79,12 +79,25 @@ class TpvSettingsRepository @Inject constructor(
                 // Only updated on SUCCESSFUL fetches — offline keeps the cache.
                 planManager.update(configData?.plan)
 
-                val settings = if (tpvSettingsDto != null) {
+                var settings = if (tpvSettingsDto != null) {
                     tpvSettingsDto.toDomain()
                 } else {
                     // Backend returned config without tpvSettings - use defaults
                     Timber.w("⚠️ Terminal has no tpvSettings configured, using defaults")
                     TpvSettings.DEFAULT
+                }
+
+                // Don't let a stale server value clobber an unsynced local-first
+                // write. Real bug found on hardware: toggle restaurantModeEnabled
+                // ON while offline (updateSettingLocalFirst) → app restarts
+                // before the background sync ever gets a chance to run → THIS
+                // fetch succeeds (we're online again) but the server still has
+                // the OLD value → without this guard the switch silently
+                // reverts. Keep the local value and (since we're online right
+                // now) opportunistically flush it.
+                val restaurantModePending = secureStorage.getRestaurantModePendingSync()
+                if (restaurantModePending) {
+                    settings = settings.copy(restaurantModeEnabled = _settings.value.restaurantModeEnabled)
                 }
 
                 // Cache locally for offline access
@@ -97,6 +110,14 @@ class TpvSettingsRepository @Inject constructor(
                 Timber.i("✅ Synced enableShifts from backend: ${settings.enableShifts}")
 
                 Timber.i("✅ TPV settings loaded: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, enableShifts=${settings.enableShifts}, requireClockInPhoto=${settings.requireClockInPhoto}, requireClockOutPhoto=${settings.requireClockOutPhoto}")
+
+                if (restaurantModePending) {
+                    // We're online (this fetch just succeeded) — flush the
+                    // pending local-first change now instead of waiting for
+                    // the operator to toggle something else.
+                    syncSettingsToBackend(settings)
+                }
+
                 Result.success(settings)
             } else {
                 val errorCode = response.code()
@@ -203,6 +224,69 @@ class TpvSettingsRepository @Inject constructor(
             requirePinLogin = requirePinLogin ?: current.requirePinLogin
         )
         return updateSettings(updated)
+    }
+
+    /**
+     * Persist [settings] LOCALLY first — durable to [SecureStorage] AND the
+     * in-memory [settings] StateFlow that every screen (Settings, Home/
+     * WelcomeScreen) observes — and ONLY THEN does a caller sync to the
+     * backend separately via [syncSettingsToBackend].
+     *
+     * **Why this exists:** [updateSettings]/[saveSettings] are network-only —
+     * they write to SecureStorage/StateFlow ONLY inside the HTTP success
+     * branch. For a terminal-local display preference (e.g.
+     * `restaurantModeEnabled`, which just decides what tile shows on Home)
+     * that is the same defect class as the printer-config
+     * wipe-on-failed-refresh bug documented in avoqado-server
+     * `.claude/rules/offline-first-y-hub-lan.md` §4: a settings write that
+     * only "sticks" after a successful round trip fails exactly when this
+     * app's whole architecture promises it shouldn't — offline is a normal
+     * state, not an error. This app is offline-first; per-terminal display
+     * toggles must hold with zero connectivity.
+     *
+     * This function is synchronous (not `suspend`) on purpose: the caller
+     * can invoke it directly from a click handler, with zero risk of the
+     * write being lost to a cancelled coroutine (e.g. the user navigates
+     * away — and the screen's ViewModel gets cleared — the instant after
+     * tapping).
+     */
+    fun updateSettingLocalFirst(settings: TpvSettings) {
+        secureStorage.saveTpvSettings(settings)
+        // Mark unsynced BEFORE the (separate, best-effort) network attempt —
+        // refreshFromTerminalConfig must protect this value from a racing GET
+        // starting the instant this function returns, not just while the sync
+        // call is in flight.
+        secureStorage.setRestaurantModePendingSync(true)
+        _settings.value = settings
+        Timber.i("💾 [TpvSettings] Local-first write: restaurantModeEnabled=${settings.restaurantModeEnabled}")
+    }
+
+    /**
+     * Best-effort background sync of [settings] to the backend, for callers
+     * using the [updateSettingLocalFirst] pattern. Never throws and NEVER
+     * reverts the local write on failure — a failed/slow/offline sync just
+     * means the backend reconciles on the next successful
+     * [refreshFromTerminalConfig] or [updateSettings] call. The local state
+     * (already written by [updateSettingLocalFirst]) remains the terminal's
+     * truth in the meantime.
+     */
+    suspend fun syncSettingsToBackend(settings: TpvSettings) {
+        val serialNumber = secureStorage.getSerialNumber()
+        if (serialNumber == null) {
+            Timber.w("⚠️ [TpvSettings] No serial number yet — cannot sync local-first setting to backend")
+            return
+        }
+        try {
+            val response = apiService.updateTpvSettings(serialNumber, settings.toDto())
+            if (response.isSuccessful && response.body()?.success == true) {
+                secureStorage.setRestaurantModePendingSync(false)
+                Timber.i("✅ [TpvSettings] Local-first setting synced to backend")
+            } else {
+                Timber.w("⚠️ [TpvSettings] Backend rejected local-first setting sync (HTTP ${response.code()}) — will reconcile on next refresh")
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "📴 [TpvSettings] Offline: local-first setting saved locally, backend sync deferred")
+        }
     }
 
     /**

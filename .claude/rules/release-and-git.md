@@ -59,7 +59,30 @@ Nexgo / AngelPay (variantes `nexgo`, `nexgoProd`) — **NUNCA bajo `Blumon/`**:
 ```
 
 Nexgo no pasa por el firmado de PAX (no hay `PAXFIRMADO/`): se firma con apksigner
-y se instala directo vía `INSTALL_VERSION`.
+y se entrega al equipo de AngelPay.
+
+### 🔴 Dos canales de distribución distintos — no los cruces
+
+| Flota | Cómo llega el APK a la terminal |
+|---|---|
+| **PAX / Blumon** | Sistema propio de Avoqado: se sube el APK → fila `AppUpdate` (Firebase Storage) → `check-update` / comando `INSTALL_VERSION` desde el dashboard |
+| **Nexgo / AngelPay** | **Se le ENTREGA el APK firmado al equipo de AngelPay y ELLOS lo despliegan por su TMS.** El founder NO sube builds de Nexgo al sistema de Avoqado |
+
+Por eso la tabla `AppUpdate` no tiene ninguna versión `-nexgo-prod` (2.6.3, 2.6.5, 2.7.0…):
+esas nunca pasaron por ahí. Las terminales Nexgo reportan su versión por heartbeat
+igual que las PAX, pero se actualizan por el TMS de AngelPay (se ve en logcat:
+`tmsVersion`, `otaVersion=v1.4.x_Angelpay…`).
+
+**⚠️ La mina si algún día se sube un APK Nexgo al sistema de Avoqado:** `AppUpdate`
+NO tiene campo de procesador/ABI y `check-update` solo filtra por `environment` +
+`platform` — PAX y Nexgo son ambas `PRODUCTION` + `ANDROID_TPV`. Con
+`targetType=ALL` (el default y lo que usan TODOS los releases PAX), **cada PAX
+vería el APK Nexgo como actualización** → `armeabi-v7a` + `ENABLE_PAX_SDK=false`
++ SDK AngelPay = PAX sin poder cobrar. Targetear por venue tampoco basta: hay
+venues con AMBAS marcas (Amaena, Testarudo Café). El único targeting seguro sería
+`targetType=TERMINALS`, que hoy es inerte en `check-update` (ningún APK manda
+`X-Terminal-Serial`) pero sí funciona vía `INSTALL_VERSION`
+(`getSpecificVersion` no filtra por audiencia).
 
 Never save APKs to Desktop.
 

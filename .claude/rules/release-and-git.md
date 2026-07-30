@@ -73,16 +73,23 @@ esas nunca pasaron por ahí. Las terminales Nexgo reportan su versión por heart
 igual que las PAX, pero se actualizan por el TMS de AngelPay (se ve en logcat:
 `tmsVersion`, `otaVersion=v1.4.x_Angelpay…`).
 
+**Qué SÍ protege hoy a las Nexgo del sistema de updates de PAX (verificado 2026-07-29):**
+`UpdateCheckManager.getEnvironment()` decide por el **package**, no por `BLUMON_ENV`:
+`APPLICATION_ID.contains("sandbox") → "SANDBOX"`, si no `"PRODUCTION"`. Como
+`nexgoProd` corre bajo `com.jaac.avoqado_tpv.sandbox`, **las Nexgo consultan como
+SANDBOX** y la tabla `AppUpdate` solo tiene filas `PRODUCTION` → nunca les
+coincide un APK de PAX. El aislamiento es por package, no por suerte.
+
 **⚠️ La mina si algún día se sube un APK Nexgo al sistema de Avoqado:** `AppUpdate`
 NO tiene campo de procesador/ABI y `check-update` solo filtra por `environment` +
-`platform` — PAX y Nexgo son ambas `PRODUCTION` + `ANDROID_TPV`. Con
-`targetType=ALL` (el default y lo que usan TODOS los releases PAX), **cada PAX
-vería el APK Nexgo como actualización** → `armeabi-v7a` + `ENABLE_PAX_SDK=false`
-+ SDK AngelPay = PAX sin poder cobrar. Targetear por venue tampoco basta: hay
-venues con AMBAS marcas (Amaena, Testarudo Café). El único targeting seguro sería
-`targetType=TERMINALS`, que hoy es inerte en `check-update` (ningún APK manda
-`X-Terminal-Serial`) pero sí funciona vía `INSTALL_VERSION`
-(`getSpecificVersion` no filtra por audiencia).
+`platform`. Si se subiera un APK Nexgo como **`PRODUCTION`** con `targetType=ALL`
+(el default y lo que usan TODOS los releases PAX), **cada PAX lo vería como
+actualización** → `ENABLE_PAX_SDK=false` + SDK AngelPay = PAX sin poder cobrar.
+Targetear por venue tampoco basta: hay venues con AMBAS marcas (Amaena, Testarudo
+Café). El único targeting seguro sería `targetType=TERMINALS`, hoy inerte en
+`check-update` (ningún APK manda `X-Terminal-Serial`) pero funcional vía
+`INSTALL_VERSION` (`getSpecificVersion` no filtra por audiencia). En la práctica
+esto no debería ocurrir: las Nexgo se entregan a AngelPay, no se suben aquí.
 
 Never save APKs to Desktop.
 

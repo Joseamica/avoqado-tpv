@@ -470,6 +470,16 @@ sealed class DeviceAlert(
     val type: DeviceAlertType
 ) {
     /**
+     * ¿Esta alerta muestra botón "Reintentar"?
+     *
+     * Dos significados distintos detrás del MISMO botón: en las de conexión reintenta el
+     * enlace con el servidor; en PendingPayments reencola los pagos fallidos. Quien maneje
+     * el tap debe distinguirlos — el feedback al operador no es intercambiable.
+     */
+    val isRetryable: Boolean
+        get() = this is NoInternet || this is ServerDown || this is SlowConnection || this is PendingPayments
+
+    /**
      * Update available (P-1) - Highest priority, special blue color
      * Shows banner for BANNER mode, triggers blocking modal for FORCE mode
      */

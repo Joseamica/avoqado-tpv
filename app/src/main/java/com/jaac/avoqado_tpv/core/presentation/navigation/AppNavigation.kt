@@ -72,6 +72,9 @@ import com.jaac.avoqado_tpv.features.payment.presentation.PaymentScreen
 import com.jaac.avoqado_tpv.features.ordering.domain.TableRepository
 import com.jaac.avoqado_tpv.features.ordering.presentation.FloorPlanCanvasScreen
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderingWelcomeScreen
+import com.jaac.avoqado_tpv.features.tables.presentation.TableCheckoutScreen
+import com.jaac.avoqado_tpv.features.tables.presentation.TableMenuScreen
+import com.jaac.avoqado_tpv.features.tables.presentation.TableOrderScreen
 import com.jaac.avoqado_tpv.features.tables.presentation.TablesScreen
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderListScreen
 import com.jaac.avoqado_tpv.features.ordering.presentation.OrderStatusFilter
@@ -127,6 +130,16 @@ interface AppNavigationEntryPoint {
     // Resolved LAZILY inside the Nexgo-only refund branch (never on PAX flavors).
     fun merchantRepository(): com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
     fun angelPayAuthRepository(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
+
+    // 🪑 Mesas (Plan C, Task 8) — liberar la mesa tras un cobro con TARJETA
+    // completado. Card payment navega FUERA de TableCheckoutScreen hacia
+    // "Cobrar" (Payment/AngelPayPayment), así que ningún ViewModel de Mesas
+    // sigue vivo para reaccionar al éxito — esta es la única costura que sí
+    // puede, porque vive en el mismo Composable que decide a dónde ir
+    // después. Nunca se usa para EFECTIVO (ese camino nunca sale de
+    // TableCheckoutViewModel, ver su KDoc).
+    fun tablesRepository(): com.jaac.avoqado_tpv.features.tables.data.TablesRepository
+    fun tableSession(): com.jaac.avoqado_tpv.features.tables.data.TableSession
 }
 
 /**
@@ -797,21 +810,39 @@ fun AppNavigation(
             isExpanded = deviceAlertsExpanded,
             onToggleExpand = { deviceHealthViewModel.toggleExpanded() },
             onDismiss = { alert -> deviceHealthViewModel.dismissAlert(alert) },
-            onRetry = {
-                connectionViewModel.forceCheck()
-                // Reset FAILED→PENDING for retry (incl. permanent — fix round 1). onResult
-                // ALWAYS fires, even with 0: without this, a tap that found nothing to
-                // reset left the operator with zero feedback that anything happened.
-                deviceHealthViewModel.retryFailedPayments { resetCount ->
-                    if (resetCount == 0) {
+            onRetry = { tappedAlert ->
+                // 🔴 Cada botón hace SOLO lo que su banner promete.
+                //
+                // Antes los dos caminos corrían siempre: tocar "Reintentar" en el banner de
+                // CONEXIÓN también llamaba a retryFailedPayments(), que resetea pagos
+                // FAILED→PENDING incluidos los PERMANENTES. O sea que un botón que dice
+                // "reintentar conexión" manoseaba la cola de dinero sin que nadie lo pidiera,
+                // y encima soltaba un toast de pagos que el cajero no había pedido.
+                //
+                // Un intento previo gateó el TOAST pero no la ACCIÓN, así que el efecto sobre
+                // la cola seguía ahí, sólo que ya sin aviso — peor, no mejor.
+                val isPaymentAlert = tappedAlert is
+                    com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceAlert.PendingPayments
+
+                if (isPaymentAlert) {
+                    // Reset FAILED→PENDING (incl. permanent). onResult SIEMPRE dispara, aun
+                    // con 0: sin eso, un toque que no encontró nada dejaba al operador sin
+                    // ninguna señal de que algo pasó.
+                    deviceHealthViewModel.retryFailedPayments { resetCount ->
                         Toast.makeText(
                             context,
-                            "No hay pagos pendientes de reintentar en este momento",
+                            if (resetCount == 0) "No hay pagos pendientes de reintentar en este momento"
+                            else "Reintentando $resetCount pago(s)...",
                             Toast.LENGTH_SHORT
                         ).show()
                     }
+                    PaymentSyncScheduler.runNow(context) // no esperar los 15 min del worker
+                } else {
+                    // Banner de conexión: reintenta la CONEXIÓN y nada más. La cola de pagos
+                    // no se toca — el worker la drena solo cuando la red vuelve.
+                    connectionViewModel.forceCheck()
+                    Toast.makeText(context, "Reintentando conexión...", Toast.LENGTH_SHORT).show()
                 }
-                PaymentSyncScheduler.runNow(context) // Trigger immediate sync (don't wait 15 min)
             },
             onUpdate = {
                 if (BuildConfig.ENABLE_PAX_SDK) {
@@ -1337,7 +1368,84 @@ fun AppNavigation(
             TablesScreen(
                 onNavigateBack = {
                     navController.safePopBackStack()
-                }
+                },
+                onNavigateToTableOrder = {
+                    navController.navigate(NavRoute.TableOrder.route)
+                },
+            )
+        }
+
+        // 🪑 Mesas — Plan C, Task 7. TableOrderScreen/TableMenuScreen: rondas.
+        // Sin argumentos de ruta — leen la mesa activa de TableSession
+        // (singleton), igual criterio que TablesScreen arriba.
+        composable(NavRoute.TableOrder.route) {
+            TableOrderScreen(
+                onNavigateBack = {
+                    navController.safePopBackStack()
+                },
+                onAddProducts = {
+                    navController.navigate(NavRoute.TableMenu.route)
+                },
+                onNavigateToCheckout = {
+                    navController.navigate(NavRoute.TableCheckout.route)
+                },
+            )
+        }
+
+        composable(NavRoute.TableMenu.route) {
+            TableMenuScreen(
+                onNavigateBack = {
+                    navController.safePopBackStack()
+                },
+            )
+        }
+
+        // 🪑 Mesas — Plan C, Task 8. La costura hacia "Cobrar". EFECTIVO se
+        // resuelve DENTRO de TableCheckoutScreen (nunca navega). TARJETA
+        // entrega un CardChargeRequest aquí, que se traduce a las MISMAS
+        // claves de savedStateHandle que SplitByProductScreen/
+        // SplitByPersonScreen ya usan, antes de navegar a getPaymentRoute() —
+        // "Cobrar" en sí (PaymentScreen/AngelPayPaymentScreen/PaymentViewModel)
+        // NUNCA se toca desde aquí. entryPoint="tables" es lo que le permite a
+        // los dos composables de arriba (Payment/AngelPayPayment) distinguir
+        // este cobro y liberar la mesa correcta al terminar.
+        composable(NavRoute.TableCheckout.route) {
+            val tableCheckoutScope = rememberCoroutineScope()
+            TableCheckoutScreen(
+                onNavigateBack = {
+                    navController.safePopBackStack()
+                },
+                onProceedToCardPayment = { request ->
+                    tableCheckoutScope.launch {
+                        if (!awaitPaxPaymentReady(context, initializationManager, "Table checkout card payment")) {
+                            return@launch
+                        }
+                        navController.currentBackStackEntry?.savedStateHandle?.apply {
+                            set("initialAmount", request.amount.toPlainString())
+                            set("orderId", request.orderId)
+                            request.orderNumber?.let { set("orderNumber", it) }
+                            set("entryPoint", "tables")
+                            set("splitType", request.splitType.wireValue)
+                            request.equalPartsPartySize?.let { set("equalPartsPartySize", it) }
+                            request.equalPartsPayedFor?.let { set("equalPartsPayedFor", it) }
+                            if (request.paidProductIds.isNotEmpty()) {
+                                set("paidProductIds", request.paidProductIds)
+                            }
+                        }
+                        Timber.d("🪑 [Navigation] Mesas → Cobrar: orden=${request.orderId} monto=${request.amount} split=${request.splitType}")
+                        navController.navigate(getPaymentRoute())
+                    }
+                },
+                onPaymentFinished = {
+                    // 🔴 Bug real en hardware (ver KDoc de TableCheckoutScreen):
+                    // un salto ATÓMICO hasta Tables, en vez de dos
+                    // safePopBackStack() sucesivos desde dos pantallas — el
+                    // segundo se perdía por el debounce global de
+                    // SafeNavigationHelper y dejaba una pantalla en blanco
+                    // permanente tras un cobro en efectivo que saldaba la cuenta.
+                    navController.popBackStack(NavRoute.Tables.route, false)
+                    Timber.d("🪑 [Navigation] Mesas: cobro completado — de vuelta al plano en un solo salto")
+                },
             )
         }
 
@@ -1535,6 +1643,10 @@ fun AppNavigation(
             // legacy MenuScreen / FastPaymentEntry.
             val entryPoint = navController.previousBackStackEntry?.savedStateHandle?.get<String>("entryPoint")
             val cameFromCheckout = entryPoint == "checkout"
+            // 🪑 Mesas (Plan C, Task 8) — TableCheckoutScreen tagged this charge.
+            // "Nueva Orden"/"Continuar pagando" must return to the Mesas module,
+            // never the unified Cart or legacy Menu — see the two branches below.
+            val cameFromTables = entryPoint == "tables"
             // 📱 SERIALIZED SALE: Skip local order validation (order exists only on backend)
             val skipLocalOrderValidation = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("skipLocalOrderValidation") ?: false
             // 📱 PORTABILIDAD: Controls 1 vs 2 proof-of-sale photos
@@ -1588,6 +1700,17 @@ fun AppNavigation(
                     AppNavigationEntryPoint::class.java
                 )
                 entryPoint.tableRepository()
+            }
+            // 🪑 Mesas (Plan C, Task 8) — same EntryPoint pattern, separate
+            // repository/session (features/tables never shares state with the
+            // legacy features/ordering TableRepository above).
+            val tablesRepository = remember {
+                EntryPointAccessors.fromApplication(context.applicationContext, AppNavigationEntryPoint::class.java)
+                    .tablesRepository()
+            }
+            val tableSession = remember {
+                EntryPointAccessors.fromApplication(context.applicationContext, AppNavigationEntryPoint::class.java)
+                    .tableSession()
             }
             val coroutineScope = rememberCoroutineScope()
 
@@ -1678,7 +1801,31 @@ fun AppNavigation(
                     navController.navigate(NavRoute.Shifts.route)
                 },
                 onNavigateToNewOrder = {
-                    if (cameFromCheckout) {
+                    if (cameFromTables) {
+                        // 🪑 Mesas, Task 8 — the "Nueva Orden" button only shows
+                        // here when the card charge paid the FULL remaining
+                        // balance (a partial split routes through
+                        // onNavigateToOrder's "Continuar pagando" branch below,
+                        // never here — see resolveSuccessRouting's
+                        // hasRemainingBalance gate in PaymentScreen.kt). Release
+                        // the table the same way TableCheckoutViewModel does for
+                        // CASH (clearTable — server rejects if something's still
+                        // unpaid) and return to the Mesas floor plan, never the
+                        // legacy FloorPlan/unified Cart.
+                        coroutineScope.launch {
+                            val venueId = secureStorage.getVenueId()
+                            val session = tableSession.current()
+                            if (venueId != null && session != null) {
+                                tablesRepository.clearTable(venueId, session.tableId)
+                                    .onFailure { Timber.w(it, "⚠️ [Mesas] clearTable no liberó la mesa tras el cobro con tarjeta") }
+                            }
+                            tableSession.clear()
+                            navController.navigate(NavRoute.Tables.route) {
+                                popUpTo(NavRoute.Home.route) { inclusive = false }
+                            }
+                        }
+                        Timber.d("🪑 [Navigation] Mesas: cobro con tarjeta completo — liberando mesa y volviendo al plano")
+                    } else if (cameFromCheckout) {
                         // 🛒 Came from unified Cart → return there with a fresh
                         // CheckoutViewModel (popping past Home creates a new
                         // backstack entry, so the cart starts empty).
@@ -1762,12 +1909,24 @@ fun AppNavigation(
                     }
                 },
                 onNavigateToOrder = { continueOrderId, continueTableId ->
-                    // ⭐ Split Payment: Navigate back to order to continue paying remaining balance
-                    // This is called when user taps "Continuar pagando" button after partial payment
-                    Timber.i("💰 [Navigation] Continue payment - navigating back to order: $continueOrderId")
-                    navController.navigate(NavRoute.Menu.createRoute(continueOrderId)) {
-                        // Pop payment screen and return to menu with same order
-                        popUpTo(NavRoute.Payment.route) { inclusive = true }
+                    // ⭐ Split Payment: Navigate back to order to continue paying remaining balance.
+                    // ALSO fires on the plain back button before any charge (resolveBackNavigation,
+                    // PaymentScreen.kt) — same destination either way, the order isn't done.
+                    if (cameFromTables) {
+                        // 🪑 Mesas, Task 8 — TableSession already holds the order/table
+                        // context (never cleared mid-checkout), so no args needed. A
+                        // partial card payment leaves the check open — TableOrderScreen's
+                        // own loadCheck() re-fetches the fresh remaining balance.
+                        Timber.i("🪑 [Navigation] Mesas: volviendo a la cuenta de la mesa (orden %s)", continueOrderId)
+                        navController.navigate(NavRoute.TableOrder.route) {
+                            popUpTo(NavRoute.Payment.route) { inclusive = true }
+                        }
+                    } else {
+                        Timber.i("💰 [Navigation] Continue payment - navigating back to order: $continueOrderId")
+                        navController.navigate(NavRoute.Menu.createRoute(continueOrderId)) {
+                            // Pop payment screen and return to menu with same order
+                            popUpTo(NavRoute.Payment.route) { inclusive = true }
+                        }
                     }
                 },
                 onNavigateToPayLaterOrders = {
@@ -2538,6 +2697,16 @@ fun AppNavigation(
             // legacy FastPaymentEntry/MenuScreen.
             val entryPoint = navController.previousBackStackEntry?.savedStateHandle?.get<String>("entryPoint")
             val cameFromCheckout = entryPoint == "checkout"
+            // 🪑 Mesas (Plan C, Task 8) — see the Blumon Payment composable above
+            // for the full rationale. Nexgo/AngelPay has NO split-payment params
+            // (no splitType/equalParts/paidProductIds) and NO "Continuar pagando"
+            // callback — TableCheckoutScreen only offers FULLPAYMENT for card on
+            // this flavor (verified against AngelPayPaymentScreen's param list,
+            // not assumed), so a card charge here is always the whole remaining
+            // balance and "start new payment" always means "release the table".
+            val cameFromTables = entryPoint == "tables"
+            val angelPayContext = LocalContext.current
+            val angelPayCoroutineScope = rememberCoroutineScope()
 
             // 📸 Serialized inventory (SIM) sale — set by SerializedSaleScreen's
             // onNavigateToPayment. Null/false for a normal AngelPay charge.
@@ -2590,7 +2759,34 @@ fun AppNavigation(
                 onNavigateToShifts = {
                     navController.navigate(NavRoute.Shifts.route)
                 },
-                onStartNewPaymentOverride = if (cameFromCheckout) {
+                onStartNewPaymentOverride = if (cameFromTables) {
+                    {
+                        // 🪑 Mesas, Task 8 — always the full-remaining case on this
+                        // flavor (see the cameFromTables KDoc above: Nexgo has no
+                        // split params, so a card charge here is always the whole
+                        // balance). Same clearTable-then-navigate-to-Tables as the
+                        // Blumon Payment branch above.
+                        angelPayCoroutineScope.launch {
+                            val entry = EntryPointAccessors.fromApplication(
+                                angelPayContext.applicationContext,
+                                AppNavigationEntryPoint::class.java,
+                            )
+                            val tablesRepository = entry.tablesRepository()
+                            val tableSession = entry.tableSession()
+                            val venueId = secureStorage.getVenueId()
+                            val session = tableSession.current()
+                            if (venueId != null && session != null) {
+                                tablesRepository.clearTable(venueId, session.tableId)
+                                    .onFailure { Timber.w(it, "⚠️ [Mesas] clearTable no liberó la mesa tras el cobro AngelPay") }
+                            }
+                            tableSession.clear()
+                            navController.navigate(NavRoute.Tables.route) {
+                                popUpTo(NavRoute.Home.route) { inclusive = false }
+                            }
+                        }
+                        Timber.d("🪑 [AngelPay] Mesas: cobro con tarjeta completo — liberando mesa y volviendo al plano")
+                    }
+                } else if (cameFromCheckout) {
                     {
                         // 🛒 Return to unified Cobrar with a fresh CheckoutViewModel.
                         // popUpTo(Home, inclusive=false) + navigate(Checkout) gives

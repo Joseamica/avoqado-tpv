@@ -53,7 +53,7 @@ fun DeviceAlertBanner(
     isExpanded: Boolean = false,
     onToggleExpand: () -> Unit = {},
     onDismiss: (DeviceAlert) -> Unit = {},
-    onRetry: () -> Unit = {}, // For connection alerts (NoInternet, ServerDown)
+    onRetry: (DeviceAlert) -> Unit = {}, // Recibe la alerta tocada: el mismo botón sirve a conexión y a pagos
     onUpdate: () -> Unit = {}, // For update alerts (UpdateAvailable)
     modifier: Modifier = Modifier
 ) {
@@ -77,7 +77,7 @@ fun DeviceAlertBanner(
                 isExpanded = isExpanded,
                 onToggleExpand = onToggleExpand,
                 onDismiss = if (topAlert.priority > 2) {{ onDismiss(topAlert) }} else null,
-                onRetry = if (topAlert is DeviceAlert.NoInternet || topAlert is DeviceAlert.ServerDown || topAlert is DeviceAlert.SlowConnection || topAlert is DeviceAlert.PendingPayments) onRetry else null,
+                onRetry = if (topAlert.isRetryable) {{ onRetry(topAlert) }} else null,
                 onUpdate = if (topAlert is DeviceAlert.UpdateAvailable) onUpdate else null
             )
 
@@ -95,7 +95,7 @@ fun DeviceAlertBanner(
                             isExpanded = false,
                             onToggleExpand = {},
                             onDismiss = if (alert.priority > 2) {{ onDismiss(alert) }} else null,
-                            onRetry = if (alert is DeviceAlert.NoInternet || alert is DeviceAlert.ServerDown || alert is DeviceAlert.SlowConnection || alert is DeviceAlert.PendingPayments) onRetry else null,
+                            onRetry = if (alert.isRetryable) {{ onRetry(alert) }} else null,
                             onUpdate = if (alert is DeviceAlert.UpdateAvailable) onUpdate else null,
                             isSecondary = true
                         )

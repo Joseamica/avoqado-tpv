@@ -47,12 +47,13 @@ import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
 
 /**
- * Mesa sheet (Plan C, Task 6, design spec §6.2 step 4) — comensales → "Abrir
- * mesa y ordenar". Muestra info EN VIVO de la mesa; el flujo de abrir/ordenar
- * en sí (`TableOrderScreen`) es Task 7, todavía no construido — el CTA queda
- * visible pero deshabilitado con la razón ("Próxima actualización"), el
- * mismo patrón "disabled-with-explanation" que ya usa el tile "Mesas" en
- * `WelcomeScreen.kt` (Task 1) en vez de un placeholder o un botón mudo.
+ * Mesa sheet (Plan C, Task 6/7, design spec §6.2 step 4) — comensales →
+ * "Abrir mesa y ordenar". Muestra info EN VIVO de la mesa; el CTA de
+ * abrir/ver cuenta (`TableOrderScreen`) quedó `disabled-with-explanation` en
+ * Task 6 porque Task 7 no existía todavía — ahora sí, y este archivo es lo
+ * único que se toca para encenderlo: [onOpenTable]/[onViewCheck] vienen de
+ * `TablesViewModel` (Task 7 los agrega, sin nuevo constructor param — reusa
+ * lo ya inyectado).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,6 +61,10 @@ fun TableSheet(
     table: DiningTable,
     isMySession: Boolean,
     onDismiss: () -> Unit,
+    onOpenTable: (covers: Int) -> Unit = {},
+    onViewCheck: () -> Unit = {},
+    isOpening: Boolean = false,
+    openError: String? = null,
     modifier: Modifier = Modifier,
     sheetState: SheetState = rememberModalBottomSheetState(),
 ) {
@@ -109,9 +114,9 @@ fun TableSheet(
             Spacer(Modifier.height(Spacing.Space4))
 
             if (table.isAvailable) {
-                AvailableTableContent(table = table)
+                AvailableTableContent(table = table, onOpenTable = onOpenTable, isOpening = isOpening, openError = openError)
             } else {
-                OccupiedTableContent(table = table)
+                OccupiedTableContent(table = table, onViewCheck = onViewCheck)
             }
 
             Spacer(Modifier.height(Spacing.Space4))
@@ -139,7 +144,12 @@ private fun MyTableBadge() {
 }
 
 @Composable
-private fun AvailableTableContent(table: DiningTable) {
+private fun AvailableTableContent(
+    table: DiningTable,
+    onOpenTable: (covers: Int) -> Unit,
+    isOpening: Boolean,
+    openError: String?,
+) {
     var covers by rememberSaveable(table.id) {
         mutableIntStateOf(table.capacity.coerceIn(MIN_COVERS, MAX_COVERS))
     }
@@ -195,20 +205,34 @@ private fun AvailableTableContent(table: DiningTable) {
     }
 
     Spacer(Modifier.height(Spacing.Space4))
-    Button(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
-        Text("Abrir mesa y ordenar")
+    Button(
+        onClick = { onOpenTable(covers) },
+        enabled = !isOpening,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        if (isOpening) {
+            Text("Abriendo…")
+        } else {
+            Text("Abrir mesa y ordenar")
+        }
     }
-    Spacer(Modifier.height(Spacing.Space1))
-    Text(
-        text = "Disponible en la próxima actualización",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+    openError?.let {
+        Spacer(Modifier.height(Spacing.Space1))
+        Text(
+            text = it,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
 }
 
 @Composable
-private fun OccupiedTableContent(table: DiningTable) {
-    val order = table.currentOrder
+private fun OccupiedTableContent(table: DiningTable, onViewCheck: () -> Unit) {
+    // primaryCheck, NO currentOrder directo: con el puntero desincronizado
+    // (p.ej. tras cobrar una parte de un cheque dividido) la mesa se ve
+    // ocupada igual y "Ver cuenta" tiene que poder llegar a lo que falta por
+    // cobrar — ver KDoc de DiningTable.primaryCheck.
+    val order = table.primaryCheck
     if (order != null) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -225,9 +249,9 @@ private fun OccupiedTableContent(table: DiningTable) {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                order.waiter?.let {
+                order.waiterName?.let {
                     Text(
-                        text = "Atiende: ${it.name}",
+                        text = "Atiende: $it",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -248,15 +272,13 @@ private fun OccupiedTableContent(table: DiningTable) {
     }
 
     Spacer(Modifier.height(Spacing.Space4))
-    Button(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) {
+    Button(
+        onClick = onViewCheck,
+        enabled = order != null,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
         Text("Ver cuenta")
     }
-    Spacer(Modifier.height(Spacing.Space1))
-    Text(
-        text = "Disponible en la próxima actualización",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
 }
 
 /**

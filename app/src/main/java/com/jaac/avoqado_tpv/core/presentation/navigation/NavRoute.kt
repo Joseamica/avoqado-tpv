@@ -373,4 +373,33 @@ sealed class NavRoute(val route: String) {
      * plano (editing lives in the dashboard). See `AppNavigation.kt`.
      */
     data object Tables : NavRoute("tables")
+
+    /**
+     * `TableOrderScreen` (Plan C, Task 7) — lo ya enviado a cocina (por
+     * rondas) vs lo pendiente. Sin argumentos: lee la mesa activa de
+     * `TableSession` (singleton), igual patrón que `Tables` no necesita un
+     * `tableId` porque el plano entero se vuelve a pedir. Reachable SOLO tras
+     * "Abrir mesa y ordenar" / "Ver cuenta" en `TableSheet`
+     * (`TablesViewModel.openTableAndOrder`/`viewExistingCheck`).
+     */
+    data object TableOrder : NavRoute("table_order")
+
+    /**
+     * `TableMenuScreen` (Plan C, Task 7) — catálogo para armar la ronda,
+     * empujado sobre `TableOrder` en el back stack (paso a paso, no dos
+     * paneles). Escribe en `PendingRoundCart` (singleton compartido); "Listo"
+     * regresa a `TableOrder` con el back stack normal (`popBackStack`).
+     */
+    data object TableMenu : NavRoute("table_menu")
+
+    /**
+     * `TableCheckoutScreen` (Plan C, Task 8) — la costura hacia el pago. Sin
+     * argumentos: lee la mesa/orden activa de `TableSession`, mismo criterio
+     * que `TableOrder`/`TableMenu`. EFECTIVO se resuelve DENTRO de esta
+     * pantalla (nunca navega); TARJETA navega a `getPaymentRoute()` con
+     * `entryPoint=tables` en el `savedStateHandle` (ver `AppNavigation.kt`) —
+     * "Cobrar" en sí (`PaymentScreen`/`AngelPayPaymentScreen`) queda
+     * intocado, regla dura del founder.
+     */
+    data object TableCheckout : NavRoute("table_checkout")
 }

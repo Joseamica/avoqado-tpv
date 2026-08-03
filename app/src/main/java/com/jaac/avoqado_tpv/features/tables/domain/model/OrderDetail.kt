@@ -16,12 +16,17 @@ import java.math.BigDecimal
  *
  * Verificado contra el server 2026-07-28 (Plan C Task 2) — NO se copió el
  * `OrderDetail` de `avoqado-android` (que mira `/mobile` y trae `discounts`/
- * `serviceCharges` como listas). El `include` de Prisma en
- * `order.tpv.service.ts::getOrder` NO selecciona `orderDiscounts` ni
- * `serviceCharges` — solo `items`, `payments`, `createdBy`, `servedBy`, `table`.
- * Un futuro `TableCheckoutScreen` que quiera el DESGLOSE de descuentos/cargos
- * (no solo el total) necesita que el server agregue ese `include` primero; hoy
- * solo hay totales planos (`discountAmount`, `serviceChargeAmount`).
+ * `serviceCharges` como listas).
+ *
+ * 🔴 ACTUALIZADO 2026-07-29 (Task 8, commit server `a7d2f7b6`): el `include` de
+ * Prisma en `order.tpv.service.ts::getOrder` YA selecciona `orderDiscounts`
+ * (`{id, name, amount}`) y `serviceCharges` (`OrderServiceCharge` completo) —
+ * verificado directo contra el servicio, no contra el comentario viejo de este
+ * archivo (que decía lo contrario y ya estaba desactualizado). Son las listas
+ * que permiten desglosar el cheque en vez de solo mostrar los totales planos
+ * (`discountAmount`, `serviceChargeAmount`, que siguen existiendo y no
+ * cambian). Solo llegan en `getOrder` (GET) — `addItemsToOrder` (PATCH) no las
+ * trae, por eso son listas vacías por default y no un campo obligatorio.
  */
 data class OrderDetail(
     val id: String,
@@ -86,6 +91,36 @@ data class OrderDetail(
      */
     val paidItemIds: List<String> = emptyList(),
     val createdAt: String? = null,
+    /**
+     * Desglose de descuentos aplicados — solo en `getOrder` (GET), ver KDoc de
+     * la clase. `TableCheckoutScreen` (Task 8) los pinta como líneas propias
+     * ("Descuentos" NUNCA se esconde dentro del total — regla del founder:
+     * "si lo hace mal o feo puede enojar al cliente").
+     */
+    val orderDiscounts: List<OrderDiscountLine> = emptyList(),
+    /** Desglose de cobros por servicio — SUMAN, no confundir con propina. Solo en `getOrder` (GET). */
+    val serviceCharges: List<OrderServiceChargeLine> = emptyList(),
+)
+
+/** Espejo de `{id, name, amount}` — `OrderDiscount` seleccionado por `order.tpv.service.ts::getOrder`. */
+data class OrderDiscountLine(
+    val id: String = "",
+    val name: String = "",
+    val amount: BigDecimal = BigDecimal.ZERO,
+)
+
+/** Espejo del modelo Prisma `OrderServiceCharge` completo (`include: true`, ver schema.prisma:6351). */
+data class OrderServiceChargeLine(
+    val id: String = "",
+    val name: String = "",
+    /** `FIXED` | `PERCENTAGE` — ver `ServiceChargeType` en el schema del server. */
+    val type: String = "FIXED",
+    val value: BigDecimal = BigDecimal.ZERO,
+    /** Monto ya calculado sobre la base del cheque — este es el que se muestra. */
+    val amount: BigDecimal = BigDecimal.ZERO,
+    val taxable: Boolean = true,
+    /** Lo puso la regla de comensales, no una persona. */
+    val isAutomatic: Boolean = false,
 )
 
 data class OrderStaffSummary(

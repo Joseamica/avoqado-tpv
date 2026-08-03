@@ -7,8 +7,11 @@ import com.jaac.avoqado_tpv.core.presentation.components.ScreenProfile
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
+import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
 import com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator
 import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
+import com.jaac.avoqado_tpv.features.tables.domain.model.OpenCheckSummary
+import com.jaac.avoqado_tpv.features.tables.domain.model.TableOrder
 import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -25,6 +28,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import java.math.BigDecimal
 
 /**
  * `TablesScreen` view-state logic (Plan C, Task 6). Cubre lo que el plan pide
@@ -44,6 +48,7 @@ class TablesViewModelTest {
     private val coordinator = mockk<TableSyncCoordinator>()
     private val deviceInfoManager = mockk<DeviceInfoManager>()
     private val socketManager = mockk<SocketManager>()
+    private val syncOutbox = mockk<SyncOutbox>()
     private lateinit var tableSession: TableSession
     private lateinit var socketEvents: MutableSharedFlow<SocketEvent>
 
@@ -52,7 +57,7 @@ class TablesViewModelTest {
     @Before
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
-        clearMocks(repository, coordinator, deviceInfoManager, socketManager)
+        clearMocks(repository, coordinator, deviceInfoManager, socketManager, syncOutbox)
 
         tableSession = TableSession()
         socketEvents = MutableSharedFlow()
@@ -60,6 +65,8 @@ class TablesViewModelTest {
         every { deviceInfoManager.getVenueId() } returns venueId
         every { socketManager.events } returns socketEvents
         coEvery { coordinator.replay(any()) } returns Unit
+        // Sin rechazos por default (Task 9) — los tests dedicados al badge lo sobre-escriben.
+        coEvery { syncOutbox.rejectedIntents(any()) } returns emptyList()
     }
 
     @After
@@ -73,6 +80,7 @@ class TablesViewModelTest {
         tableSession = tableSession,
         deviceInfoManager = deviceInfoManager,
         socketManager = socketManager,
+        syncOutbox = syncOutbox,
     )
 
     private fun table(
@@ -146,6 +154,39 @@ class TablesViewModelTest {
         // El server agregó un status nuevo que esta TPV no conoce todavía —
         // nunca se debe esconder como si la mesa estuviera disponible.
         assertThat(tableDisplayStatus("SOME_NEW_STATUS")).isEqualTo(TableDisplayStatus.NEEDS_ATTENTION)
+    }
+
+    // endregion
+
+    // region — DiningTable.displayStatus(): el dinero manda, no el status crudo
+    // (mismo fix que avoqado-android/avoqado-ios 2026-07-28, mesa M2 $603.50)
+
+    @Test
+    fun mesa_status_AVAILABLE_con_cuenta_abierta_se_pinta_OCCUPIED_en_el_plano() {
+        val m2 = table(status = "AVAILABLE").copy(currentOrder = TableOrder(id = "o1", orderNumber = "A-1", total = BigDecimal("603.50")))
+
+        assertThat(m2.displayStatus()).isEqualTo(TableDisplayStatus.OCCUPIED)
+    }
+
+    @Test
+    fun mesa_status_OCCUPIED_sin_ninguna_cuenta_abierta_se_pinta_LIBRE_drift_inverso() {
+        val ghost = table(status = "OCCUPIED") // currentOrder/openOrders vacíos por default
+
+        assertThat(ghost.displayStatus()).isEqualTo(TableDisplayStatus.FREE)
+    }
+
+    @Test
+    fun mesa_RESERVED_sin_cuenta_sigue_pintandose_RESERVED() {
+        val reserved = table(status = "RESERVED")
+
+        assertThat(reserved.displayStatus()).isEqualTo(TableDisplayStatus.RESERVED)
+    }
+
+    @Test
+    fun mesa_CLEANING_sin_cuenta_sigue_pintandose_NEEDS_ATTENTION() {
+        val cleaning = table(status = "CLEANING")
+
+        assertThat(cleaning.displayStatus()).isEqualTo(TableDisplayStatus.NEEDS_ATTENTION)
     }
 
     // endregion
@@ -361,6 +402,94 @@ class TablesViewModelTest {
         advanceTimeBy(1000)
 
         coVerify(exactly = 1) { repository.getTables(venueId) } // solo la carga inicial
+    }
+
+    // endregion
+
+    // region — viewExistingCheck: primaryCheck, NUNCA currentOrder directo
+
+    @Test
+    fun ver_cuenta_arranca_la_sesion_con_primaryCheck_cuando_currentOrder_apunta_a_una_orden_ya_cobrada() {
+        // El caso real de un cheque dividido: currentOrder quedó apuntando a
+        // la orden que YA se pagó, pero openOrders trae la que sigue viva.
+        val vivo = OpenCheckSummary(id = "viva", orderNumber = "B-2", total = BigDecimal("144.00"), version = 5)
+        val mesa = table(id = "mesa-9").copy(
+            currentOrder = TableOrder(id = "ya-pagada", orderNumber = "B-1", total = BigDecimal("310.50")),
+            openOrders = listOf(vivo),
+        )
+        val vm = createViewModel()
+        var readyCalled = false
+
+        vm.viewExistingCheck(mesa) { readyCalled = true }
+
+        assertThat(readyCalled).isTrue()
+        val session = tableSession.current()
+        assertThat(session?.orderId).isEqualTo("viva")
+        assertThat(session?.total).isEqualTo(BigDecimal("144.00"))
+        assertThat(session?.version).isEqualTo(5)
+    }
+
+    @Test
+    fun ver_cuenta_es_un_no_op_si_la_mesa_no_tiene_ninguna_cuenta_abierta() {
+        val libre = table(id = "libre", status = "AVAILABLE")
+        val vm = createViewModel()
+        var readyCalled = false
+
+        vm.viewExistingCheck(libre) { readyCalled = true }
+
+        assertThat(readyCalled).isFalse()
+        assertThat(tableSession.current()).isNull()
+    }
+
+    // endregion
+
+    // region — quarantineCount (Plan C, Task 9): badge de acciones rechazadas
+
+    @Test
+    fun al_cargar_el_plano_tambien_refresca_el_conteo_de_cuarentena() = runTest {
+        coEvery { repository.getTables(venueId) } returns Result.success(emptyList())
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        coEvery { syncOutbox.rejectedIntents(venueId) } returns listOf(
+            SyncOutbox.RejectedIntent(id = "i1", type = "ADD_ITEMS", errorCode = "TABLE_OWNED_BY_OTHER", message = null, createdAt = 1L),
+            SyncOutbox.RejectedIntent(id = "i2", type = "PAY_CASH", errorCode = "OUTCOME_UNKNOWN", message = null, createdAt = 2L),
+        )
+        val vm = createViewModel()
+
+        vm.initialize(ScreenProfile.RegularPortrait)
+
+        assertThat(vm.uiState.value.quarantineCount).isEqualTo(2)
+    }
+
+    @Test
+    fun sin_rechazos_el_conteo_de_cuarentena_es_cero_badge_oculto() = runTest {
+        coEvery { repository.getTables(venueId) } returns Result.success(emptyList())
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        // El @Before ya deja syncOutbox.rejectedIntents(any()) -> emptyList() por default.
+
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+
+        assertThat(vm.uiState.value.quarantineCount).isEqualTo(0)
+    }
+
+    @Test
+    fun un_fallo_al_refrescar_cuarentena_conserva_el_ultimo_conteo_conocido_nunca_lo_resetea_a_cero() = runTest {
+        // Un rechazo real no debe desaparecer del badge solo porque ESTE
+        // refresco puntual del conteo falló (p.ej. un IOException aislado) —
+        // eso sería esconder algo que sigue sin resolverse.
+        coEvery { repository.getTables(venueId) } returns Result.success(emptyList())
+        coEvery { repository.getFloorElements(venueId) } returns Result.success(emptyList())
+        coEvery { syncOutbox.rejectedIntents(venueId) } returns listOf(
+            SyncOutbox.RejectedIntent(id = "i1", type = "ADD_ITEMS", errorCode = "TABLE_OWNED_BY_OTHER", message = null, createdAt = 1L),
+        )
+        val vm = createViewModel()
+        vm.initialize(ScreenProfile.RegularPortrait)
+        assertThat(vm.uiState.value.quarantineCount).isEqualTo(1)
+
+        coEvery { syncOutbox.rejectedIntents(venueId) } throws java.io.IOException("sin red")
+        vm.refresh()
+
+        assertThat(vm.uiState.value.quarantineCount).isEqualTo(1) // se conserva, no se resetea a 0
     }
 
     // endregion

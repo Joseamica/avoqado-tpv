@@ -91,17 +91,21 @@ import com.jaac.avoqado_tpv.features.tables.domain.model.FloorElement
 fun TablesScreen(
     modifier: Modifier = Modifier,
     onNavigateBack: () -> Unit = {},
+    onNavigateToTableOrder: () -> Unit = {},
     viewModel: TablesViewModel = hiltViewModel(),
 ) {
     val sizes = rememberResponsiveSizes()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val viewMode by viewModel.viewMode.collectAsStateWithLifecycle()
+    val isOpeningTable by viewModel.isOpeningTable.collectAsStateWithLifecycle()
+    val openTableError by viewModel.openTableError.collectAsStateWithLifecycle()
 
     LaunchedEffect(sizes.screenProfile) {
         viewModel.initialize(sizes.screenProfile)
     }
 
     var selectedTable by remember { mutableStateOf<DiningTable?>(null) }
+    var showQuarantineSheet by remember { mutableStateOf(false) }
 
     TablesScreenContent(
         modifier = modifier,
@@ -112,14 +116,46 @@ fun TablesScreen(
         onViewModeChange = viewModel::setViewMode,
         onAreaFilterChange = viewModel::setAreaFilter,
         onRetry = viewModel::refresh,
-        onTableClick = { selectedTable = it },
+        onTableClick = {
+            viewModel.clearOpenTableError()
+            selectedTable = it
+        },
+        onQuarantineClick = { showQuarantineSheet = true },
     )
+
+    // Cuarentena visible (Plan C, Task 9) — badge en la topbar de
+    // TablesScreenContent abre esto. Al cerrar se refresca el plano (que ya
+    // recalcula el conteo del badge, ver TablesViewModel.refreshQuarantineCount)
+    // para que descartar un rechazo lo quite del badge sin esperar al próximo
+    // socket event.
+    if (showQuarantineSheet) {
+        QuarantineSheet(
+            onDismiss = {
+                showQuarantineSheet = false
+                viewModel.refresh()
+            },
+        )
+    }
 
     selectedTable?.let { table ->
         TableSheet(
             table = table,
             isMySession = table.id == uiState.activeSessionTableId,
             onDismiss = { selectedTable = null },
+            isOpening = isOpeningTable,
+            openError = openTableError,
+            onOpenTable = { covers ->
+                viewModel.openTableAndOrder(table, covers) {
+                    selectedTable = null
+                    onNavigateToTableOrder()
+                }
+            },
+            onViewCheck = {
+                viewModel.viewExistingCheck(table) {
+                    selectedTable = null
+                    onNavigateToTableOrder()
+                }
+            },
         )
     }
 }
@@ -135,6 +171,7 @@ private fun TablesScreenContent(
     onAreaFilterChange: (String?) -> Unit,
     onRetry: () -> Unit,
     onTableClick: (DiningTable) -> Unit,
+    onQuarantineClick: () -> Unit = {},
 ) {
     Scaffold(
         modifier = modifier,
@@ -145,6 +182,9 @@ private fun TablesScreenContent(
                     subtitle = tablesSubtitle(uiState.tables),
                     onNavigationClick = onNavigateBack,
                     actions = {
+                        // Oculto con count=0 (QuarantineBadgeButton se auto-esconde) — nunca
+                        // compite por espacio en NEXGO 480×480 cuando no hay nada que revisar.
+                        QuarantineBadgeButton(count = uiState.quarantineCount, onClick = onQuarantineClick)
                         TableViewModeToggle(mode = viewMode, onChange = onViewModeChange)
                     },
                 )
@@ -521,8 +561,10 @@ private fun TableChip(
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
             )
-            val caption = if (status == TableDisplayStatus.OCCUPIED && table.currentOrder != null) {
-                table.currentOrder.totalDisplay
+            // primaryCheck, NO currentOrder directo — ver KDoc de DiningTable.primaryCheck.
+            val primaryCheck = table.primaryCheck
+            val caption = if (status == TableDisplayStatus.OCCUPIED && primaryCheck != null) {
+                primaryCheck.totalDisplay
             } else {
                 "${table.capacity}p"
             }
@@ -603,6 +645,8 @@ private fun TableListView(
 @Composable
 private fun TableListRow(table: DiningTable, isMySession: Boolean, onClick: () -> Unit) {
     val status = table.displayStatus()
+    // primaryCheck, NO currentOrder directo — ver KDoc de DiningTable.primaryCheck.
+    val primaryCheck = table.primaryCheck
 
     Card(
         onClick = onClick,
@@ -657,7 +701,7 @@ private fun TableListRow(table: DiningTable, isMySession: Boolean, onClick: () -
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    table.currentOrder?.let { order ->
+                    primaryCheck?.let { order ->
                         Text(
                             text = " · ${order.itemCount} producto${if (order.itemCount == 1) "" else "s"}",
                             style = MaterialTheme.typography.bodySmall,
@@ -675,7 +719,7 @@ private fun TableListRow(table: DiningTable, isMySession: Boolean, onClick: () -
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                table.currentOrder?.let { order ->
+                primaryCheck?.let { order ->
                     Text(
                         text = order.totalDisplay,
                         style = MaterialTheme.typography.titleMedium,

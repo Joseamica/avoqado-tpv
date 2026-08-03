@@ -2,12 +2,14 @@ package com.jaac.avoqado_tpv.features.tables.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import com.jaac.avoqado_tpv.core.presentation.components.ScreenProfile
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
+import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
 import com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator
 import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
 import com.jaac.avoqado_tpv.features.tables.domain.model.FloorElement
@@ -69,7 +71,22 @@ fun tableDisplayStatus(rawStatus: String): TableDisplayStatus = when (rawStatus)
     else -> TableDisplayStatus.NEEDS_ATTENTION
 }
 
-fun DiningTable.displayStatus(): TableDisplayStatus = tableDisplayStatus(status)
+/**
+ * El dinero manda primero — una mesa con cuenta abierta jamás se pinta libre,
+ * sin importar qué diga `status` ([DiningTable.hasOpenCheck], fix
+ * `avoqado-android`/`avoqado-ios` 2026-07-28). RESERVED sigue siendo la única
+ * ocupación legítima sin cuenta. Solo al final se usa la clasificación cruda
+ * de `status` — y ahí se corrige el drift INVERSO: `status = OCCUPIED` sin
+ * cuenta viva se ve LIBRE, nunca "ocupada fantasma" (CLEANING/desconocido
+ * siguen cayendo en [TableDisplayStatus.NEEDS_ATTENTION] como antes).
+ */
+fun DiningTable.displayStatus(): TableDisplayStatus = when {
+    hasOpenCheck -> TableDisplayStatus.OCCUPIED
+    isReserved -> TableDisplayStatus.RESERVED
+    else -> tableDisplayStatus(status).let { raw ->
+        if (raw == TableDisplayStatus.OCCUPIED) TableDisplayStatus.FREE else raw
+    }
+}
 
 /** Agrupación de mesas por área, para la lista y el filtro. */
 data class AreaSummary(
@@ -103,6 +120,16 @@ data class TablesUiState(
      * había datos, el mesero pidió refrescar".
      */
     val isRefreshing: Boolean = false,
+    /**
+     * Cuántas acciones offline el server rechazó de forma permanente
+     * (`REJECTED`, Plan C Task 9) y siguen sin que un mesero/gerente las
+     * descarte. Maneja el badge de [QuarantineBadgeButton] en la topbar —
+     * `0` = badge oculto. Se refresca en cada [loadTables] (junto con el
+     * plano), NUNCA se resetea a 0 por un fallo transitorio del refresco
+     * (ver [refreshQuarantineCount]) para que un mesero no pierda de vista
+     * un rechazo real solo porque el conteo no pudo actualizarse.
+     */
+    val quarantineCount: Int = 0,
 ) {
     val areas: List<AreaSummary>
         get() = tables
@@ -144,6 +171,7 @@ class TablesViewModel @Inject constructor(
     private val tableSession: TableSession,
     private val deviceInfoManager: DeviceInfoManager,
     private val socketManager: SocketManager,
+    private val syncOutbox: SyncOutbox,
 ) : ViewModel() {
 
     private val _viewMode = MutableStateFlow(TableViewMode.LIST)
@@ -247,6 +275,11 @@ class TablesViewModel @Inject constructor(
                 Timber.w(e, "⚠️ [Tables] replay() del outbox falló antes del refresco — se sigue de todos modos")
             }
 
+            // El replay que acaba de correr es el momento más probable para
+            // que aparezca un rechazo NUEVO — refrescar el badge aquí, no
+            // solo al abrir la pantalla.
+            refreshQuarantineCount(venueId)
+
             val tablesResult = tablesRepository.getTables(venueId)
             val elementsResult = tablesRepository.getFloorElements(venueId)
 
@@ -289,6 +322,110 @@ class TablesViewModel @Inject constructor(
                 },
             )
         }
+    }
+
+    /**
+     * Refresca [TablesUiState.quarantineCount] desde
+     * [SyncOutbox.rejectedIntents] (Plan C, Task 9). `CancellationException`
+     * se repropaga; cualquier otro fallo se traga y deja el conteo anterior
+     * intacto — un refresco fallido del badge nunca debe hacerlo desaparecer
+     * de golpe (eso sería esconder un rechazo real, exactamente lo que este
+     * badge existe para prevenir).
+     */
+    private suspend fun refreshQuarantineCount(venueId: String) {
+        val count = try {
+            syncOutbox.rejectedIntents(venueId).size
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.w(e, "⚠️ [Tables] No se pudo refrescar el conteo de cuarentena (venue=%s)", venueId)
+            return
+        }
+        _uiState.update { it.copy(quarantineCount = count) }
+    }
+
+    // MARK: - Abrir/ver cuenta (Plan C, Task 7) — enciende el CTA de TableSheet
+
+    private val _isOpeningTable = MutableStateFlow(false)
+    val isOpeningTable: StateFlow<Boolean> = _isOpeningTable.asStateFlow()
+
+    private val _openTableError = MutableStateFlow<String?>(null)
+    val openTableError: StateFlow<String?> = _openTableError.asStateFlow()
+
+    fun clearOpenTableError() {
+        _openTableError.value = null
+    }
+
+    /**
+     * "Abrir mesa y ordenar" — abre (o reusa) la orden de [table] y arranca la
+     * sesión activa; [onReady] navega a `TableOrderScreen`. Ver KDoc de
+     * [TablesRepository.openTable] para el manejo offline (sesión provisional
+     * con UUID local, promovida por [TableSyncCoordinator] al llegar el ack).
+     */
+    fun openTableAndOrder(table: DiningTable, covers: Int, onReady: () -> Unit) {
+        val venueId = deviceInfoManager.getVenueId() ?: return
+        if (_isOpeningTable.value) return
+        viewModelScope.launch {
+            _isOpeningTable.value = true
+            _openTableError.value = null
+            tablesRepository.openTable(venueId, table.id, covers).fold(
+                onSuccess = { outcome ->
+                    if (outcome.isProvisional) {
+                        tableSession.open(
+                            tableId = table.id,
+                            localOrderId = outcome.orderId,
+                            tableNumber = table.number,
+                            areaName = table.areaName,
+                        )
+                    } else {
+                        tableSession.start(
+                            TableSession.Active(
+                                tableId = table.id,
+                                tableNumber = table.number,
+                                areaName = table.areaName,
+                                orderId = outcome.orderId,
+                                orderNumber = outcome.orderNumber,
+                                version = outcome.version,
+                            ),
+                        )
+                    }
+                    _isOpeningTable.value = false
+                    onReady()
+                },
+                onFailure = { e ->
+                    if (e is CancellationException) throw e
+                    Timber.w(e, "❌ [Tables] No se pudo abrir la mesa %s", table.id)
+                    _isOpeningTable.value = false
+                    _openTableError.value = (e as? BackendHttpException)?.message ?: "No se pudo abrir la mesa"
+                },
+            )
+        }
+    }
+
+    /**
+     * "Ver cuenta" — mesa ocupada con dinero vivo. Lee `table.primaryCheck`,
+     * NUNCA `table.currentOrder` directo: una mesa con el puntero
+     * desincronizado (p.ej. tras cobrar una parte de un cheque dividido, el
+     * server nulea/deja atrás `currentOrder` — `table.tpv.service.ts:143`) se
+     * ve ocupada igual y tiene que poder abrirse (ver KDoc de
+     * `DiningTable.primaryCheck`). No hace ninguna llamada de red: arranca la
+     * sesión con lo que YA trae el plano y navega; `TableOrderScreen` recarga
+     * el detalle completo al entrar.
+     */
+    fun viewExistingCheck(table: DiningTable, onReady: () -> Unit) {
+        val order = table.primaryCheck ?: return
+        tableSession.start(
+            TableSession.Active(
+                tableId = table.id,
+                tableNumber = table.number,
+                areaName = table.areaName,
+                orderId = order.id,
+                orderNumber = order.orderNumber,
+                version = order.version,
+                total = order.total,
+            ),
+        )
+        onReady()
     }
 
     private companion object {

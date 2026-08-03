@@ -5,12 +5,14 @@ import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyServiceChargeRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyServiceChargeResponse
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.CategoryCatalogDto
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.FloorElementsResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.MergeOrdersRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.MergeOrdersResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.OpenTableRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.OpenTableResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.OrderDetailResponse
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.ProductsCatalogResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SimpleSuccessResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SplitOrderBySeatResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SplitOrderRequest
@@ -178,6 +180,24 @@ interface TablesApiService {
         @Path("orderId") orderId: String,
         @Body body: ApplyDiscountRequest,
     ): Response<ApplyDiscountResponse>
+
+    // ========== Catálogo (Plan C, Task 7 — TableMenuScreen) ==========
+
+    /**
+     * `GET /tpv/venues/{venueId}/products` → `menuTpvController.getProducts`
+     * (`tpv.routes.ts`, `checkPermission('menu:read')`, sin `checkFeatureAccess` —
+     * el menú es capacidad core). Reexport verbatim del handler de dashboard:
+     * `{ message, data, correlationId }`.
+     */
+    @GET("tpv/venues/{venueId}/products")
+    suspend fun getProducts(@Path("venueId") venueId: String): Response<ProductsCatalogResponse>
+
+    /**
+     * `GET /tpv/venues/{venueId}/categories` → `menuTpvController.getCategories`.
+     * 🔴 Arreglo PLANO, NO el sobre `{ success, data }` — ver KDoc del controller.
+     */
+    @GET("tpv/venues/{venueId}/categories")
+    suspend fun getCategories(@Path("venueId") venueId: String): Response<List<CategoryCatalogDto>>
 
     // ========== Offline-first sync ==========
 

@@ -103,6 +103,7 @@ fun TableOrderScreen(
     val isLoadingCheck by viewModel.isLoadingCheck.collectAsStateWithLifecycle()
     val checkLoadFailed by viewModel.checkLoadFailed.collectAsStateWithLifecycle()
     val isSending by viewModel.isSending.collectAsStateWithLifecycle()
+    val sendTakingLong by viewModel.sendTakingLong.collectAsStateWithLifecycle()
     val pendingLines by viewModel.pendingLines.collectAsStateWithLifecycle()
     val queuedLines by viewModel.queuedLines.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
@@ -244,6 +245,7 @@ fun TableOrderScreen(
         isLoadingCheck = isLoadingCheck,
         checkLoadFailed = checkLoadFailed,
         isSending = isSending,
+        sendTakingLong = sendTakingLong,
         pendingLines = pendingLines,
         queuedLines = queuedLines,
         readOnly = readOnly,
@@ -386,6 +388,7 @@ private fun TableOrderScreenContent(
     isLoadingCheck: Boolean,
     checkLoadFailed: Boolean,
     isSending: Boolean,
+    sendTakingLong: Boolean,
     pendingLines: List<PendingRoundCart.Line>,
     queuedLines: List<PendingRoundCart.Line>,
     readOnly: Boolean,
@@ -473,6 +476,7 @@ private fun TableOrderScreenContent(
                 pendingCount = pendingCount,
                 pendingTotal = pendingTotal,
                 isSending = isSending,
+                sendTakingLong = sendTakingLong,
                 readOnly = readOnly,
                 canCheckout = canCheckout,
                 checkTotal = checkTotal,
@@ -834,6 +838,7 @@ private fun TableOrderBottomBar(
     pendingCount: Int,
     pendingTotal: BigDecimal,
     isSending: Boolean,
+    sendTakingLong: Boolean,
     readOnly: Boolean,
     canCheckout: Boolean,
     checkTotal: BigDecimal?,
@@ -847,6 +852,23 @@ private fun TableOrderBottomBar(
             .background(MaterialTheme.colorScheme.surface),
     ) {
         HorizontalDivider()
+        // 🔴 Hallazgo real (founder, PAX en vivo) — ver KDoc de
+        // `TableOrderViewModel._sendTakingLong`: un envío lento (ngrok/red
+        // real) dejaba el spinner mudo del botón indistinguible de
+        // "se congeló" hasta 25s. Este texto SOLO aparece pasado el umbral
+        // de reafirmación — nunca reemplaza al spinner del botón, nunca toca
+        // AvoqadoButton (compartido con "Cobrar", intocable).
+        if (isSending && sendTakingLong) {
+            Text(
+                text = "Sigue enviando la ronda… no vuelvas a tocar",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.Space4, vertical = Spacing.Space1),
+            )
+        }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -960,6 +982,7 @@ private fun TableOrderScreenEmptyPreview() {
             isLoadingCheck = false,
             checkLoadFailed = false,
             isSending = false,
+            sendTakingLong = false,
             pendingLines = emptyList(),
             queuedLines = emptyList(),
             readOnly = false,
@@ -992,6 +1015,7 @@ private fun TableOrderScreenFullPreview() {
             isLoadingCheck = false,
             checkLoadFailed = false,
             isSending = false,
+            sendTakingLong = false,
             pendingLines = listOf(PendingRoundCart.Line(productId = "p1", name = "Agua mineral", unitPrice = BigDecimal("30.00"), quantity = 2)),
             queuedLines = listOf(PendingRoundCart.Line(productId = "p2", name = "Ensalada", unitPrice = BigDecimal("120.00"), quantity = 1)),
             readOnly = true,
@@ -1022,6 +1046,7 @@ private fun TableOrderScreenLoadFailedPreview() {
             isLoadingCheck = false,
             checkLoadFailed = true,
             isSending = false,
+            sendTakingLong = false,
             pendingLines = emptyList(),
             queuedLines = emptyList(),
             readOnly = false,

@@ -24,10 +24,13 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -747,6 +750,95 @@ class TableOrderViewModelTest {
 
         coVerify(exactly = 0) { repository.updateOrderDetails(any(), any(), any(), any(), any()) }
         assertThat(viewModel.error.value).contains("otro mesero")
+    }
+
+    // endregion
+
+    // region — "se quedó trabado" (founder, PAX en vivo): un envío lento
+    // debe distinguirse de uno congelado, y un doble-tap nunca debe duplicar
+    // la ronda. Ver KDoc de `TableOrderViewModel._sendTakingLong`.
+
+    @Test
+    fun ronda_lenta_enciende_la_senal_de_reafirmacion_pasado_el_umbral_y_la_apaga_al_terminar() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", version = 3))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1", version = 3))
+        val viewModel = createViewModel()
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("45.00"))
+
+        // Servidor lento (ngrok/red real) — nunca responde antes del umbral
+        // de reafirmación. classifyTablesSyncFailure ni siquiera entra en
+        // juego aquí: esto es puramente "¿el mesero puede distinguir
+        // 'sigue trabajando' de 'se congeló'?", no una falla de red.
+        coEvery { repository.addItems(venueId, "orden-1", any(), 3) } coAnswers {
+            delay(20_000)
+            Result.success(OrderDetail(id = "orden-1", items = listOf(OrderDetailItem(id = "i1", productId = "prod-1", quantity = 1))))
+        }
+
+        viewModel.sendRound()
+
+        // Justo tras el tap: sigue enviando, pero AÚN no pasó el umbral — un
+        // envío rápido normal nunca debe mostrar la señal de reafirmación.
+        assertThat(viewModel.isSending.value).isTrue()
+        assertThat(viewModel.sendTakingLong.value).isFalse()
+
+        // Pasado el umbral, la petición SIGUE en vuelo — el mesero debe ver
+        // una señal de "sigue trabajando", nunca un spinner mudo
+        // indistinguible de "se congeló".
+        advanceTimeBy(TableOrderViewModel.SEND_ROUND_REASSURANCE_DELAY_MS + 100)
+        runCurrent()
+        assertThat(viewModel.isSending.value).isTrue()
+        assertThat(viewModel.sendTakingLong.value).isTrue()
+
+        // Cuando por fin responde, la señal se apaga junto con isSending —
+        // nunca se queda pegada en pantalla.
+        advanceTimeBy(20_000)
+        runCurrent()
+        assertThat(viewModel.isSending.value).isFalse()
+        assertThat(viewModel.sendTakingLong.value).isFalse()
+        assertThat(viewModel.notice.value).isEqualTo("Ronda enviada a cocina")
+    }
+
+    @Test
+    fun ronda_rapida_nunca_enciende_la_senal_de_reafirmacion() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", version = 3))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1", version = 3))
+        val viewModel = createViewModel()
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("45.00"))
+
+        coEvery { repository.addItems(venueId, "orden-1", any(), 3) } returns Result.success(
+            OrderDetail(id = "orden-1", items = listOf(OrderDetailItem(id = "i1", productId = "prod-1", quantity = 1))),
+        )
+
+        viewModel.sendRound()
+        advanceTimeBy(TableOrderViewModel.SEND_ROUND_REASSURANCE_DELAY_MS + 100)
+        runCurrent()
+
+        assertThat(viewModel.sendTakingLong.value).isFalse()
+    }
+
+    @Test
+    fun doble_tap_en_enviar_ronda_manda_addItems_UNA_sola_vez_nunca_duplica_la_ronda() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", version = 3))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1", version = 3))
+        val viewModel = createViewModel()
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("45.00"))
+
+        // Servidor lento — es justo la ventana donde un mesero impaciente
+        // vuelve a tocar el botón mientras el primer tap sigue en vuelo.
+        coEvery { repository.addItems(venueId, "orden-1", any(), 3) } coAnswers {
+            delay(5_000)
+            Result.success(OrderDetail(id = "orden-1", items = listOf(OrderDetailItem(id = "i1", productId = "prod-1", quantity = 1))))
+        }
+
+        viewModel.sendRound() // primer tap
+        viewModel.sendRound() // segundo tap, "impaciente", mientras el primero sigue en vuelo
+        viewModel.sendRound() // por si las dudas, un tercero
+
+        advanceTimeBy(5_100)
+        runCurrent()
+
+        coVerify(exactly = 1) { repository.addItems(venueId, "orden-1", any(), 3) }
+        assertThat(viewModel.isSending.value).isFalse()
     }
 
     // endregion

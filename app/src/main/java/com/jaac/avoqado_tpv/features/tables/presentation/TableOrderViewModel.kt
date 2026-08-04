@@ -18,6 +18,7 @@ import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetailItem
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -98,6 +99,33 @@ class TableOrderViewModel @Inject constructor(
 
     private val _isSending = MutableStateFlow(false)
     val isSending: StateFlow<Boolean> = _isSending.asStateFlow()
+
+    /**
+     * 🔴 Hallazgo real (founder, PAX en vivo — reporte "se quedó trabado" /
+     * "tardó mucho" en "sincronizando orden"): [sendRound] SÍ tenía candado
+     * anti-doble-tap (`if (_isSending.value) return`, ver abajo) y el envío
+     * en sí medía ~1s en condiciones sanas — el problema no era duplicar la
+     * ronda, era la EXPERIENCIA durante la espera. El único cambio visible
+     * mientras `isSending` es `true` es un `CircularProgressIndicator` mudo
+     * ([AvoqadoButton][com.jaac.avoqado_tpv.core.presentation.components.AvoqadoButton]
+     * con `loading=true`) — sin texto, sin tiempo transcurrido, sin ninguna
+     * señal que distinga "sigue trabajando" de "se congeló". Contra el
+     * sandbox (ngrok + servidor local), o cualquier bache real de red, el
+     * `OkHttpClient` de `NetworkModule` no falla hasta su `callTimeout` de
+     * 25s — así que un envío lento puede dejar ESE spinner mudo girando
+     * hasta 25 segundos SIN que el mesero tenga forma de saber si algo va
+     * a pasar.
+     *
+     * Esta bandera NO es otro candado de negocio — [_isSending] sigue
+     * siendo la única fuente de verdad para eso. Es puramente de
+     * PRESENTACIÓN: pasado [SEND_ROUND_REASSURANCE_DELAY_MS] sin que el
+     * envío haya terminado, `TableOrderScreen` pinta un texto de
+     * reafirmación ("Sigue enviando…") junto al botón — nunca reemplaza al
+     * spinner, nunca toca [AvoqadoButton] (compartido con "Cobrar",
+     * intocable por regla dura), vive enteramente en `features/tables/`.
+     */
+    private val _sendTakingLong = MutableStateFlow(false)
+    val sendTakingLong: StateFlow<Boolean> = _sendTakingLong.asStateFlow()
 
     /** Líneas en el carrito, SIN enviar todavía — ver [PendingRoundCart]. */
     val pendingLines: StateFlow<List<PendingRoundCart.Line>> = pendingCart.lines
@@ -239,50 +267,74 @@ class TableOrderViewModel @Inject constructor(
         val items = pendingCart.toAddItemsRequests()
 
         _isSending.value = true
+        // Puramente de presentación — ver KDoc de [_sendTakingLong]. Vive en
+        // su propio job para poder cancelarlo en cuanto el envío termine
+        // (éxito, encolado o error): si el envío fue rápido, este job nunca
+        // llega a disparar y la bandera nunca se enciende.
+        val reassuranceJob = viewModelScope.launch {
+            delay(SEND_ROUND_REASSURANCE_DELAY_MS)
+            _sendTakingLong.value = true
+        }
         viewModelScope.launch {
-            if (session.isProvisional) {
-                // La orden de esta mesa AÚN no existe en el server (se abrió
-                // offline) — jamás se intenta el PATCH online, que necesita un
-                // orderId real. Ver TableSession.buildAddItemsPayload.
-                val payload = tableSession.buildAddItemsPayload(items)
-                syncOutbox.enqueue(vId, SyncIntentTypes.ADD_ITEMS, payload)
-                _queuedLines.value = _queuedLines.value + lines
-                pendingCart.clear()
-                _isSending.value = false
-                _notice.value = "Sin conexión — ronda guardada; se sincronizará sola"
-                return@launch
-            }
-
-            repository.addItems(vId, session.orderId, items, session.version).fold(
-                onSuccess = { detail ->
-                    tableSession.updateVersion(detail.version)
-                    val queuedOffline = TablesRepository.wasQueuedOffline(detail)
-                    if (queuedOffline) {
-                        // Ronda encolada por TablesRepository (sin red) — se ve
-                        // como enviada, marcada "Por sincronizar", NUNCA como error.
-                        _queuedLines.value = _queuedLines.value + lines
-                        _notice.value = "Sin conexión — ronda guardada; se sincronizará sola"
-                    } else {
-                        _notice.value = "Ronda enviada a cocina"
-                    }
+            try {
+                if (session.isProvisional) {
+                    // La orden de esta mesa AÚN no existe en el server (se abrió
+                    // offline) — jamás se intenta el PATCH online, que necesita un
+                    // orderId real. Ver TableSession.buildAddItemsPayload.
+                    val payload = tableSession.buildAddItemsPayload(items)
+                    syncOutbox.enqueue(vId, SyncIntentTypes.ADD_ITEMS, payload)
+                    _queuedLines.value = _queuedLines.value + lines
                     pendingCart.clear()
                     _isSending.value = false
-                    if (!queuedOffline) loadCheck()
-                },
-                onFailure = { e ->
-                    _isSending.value = false
-                    if (e is BackendHttpException && e.statusCode == 409) {
-                        // VERSION_CONFLICT — otro dispositivo cambió la cuenta.
-                        // El carrito NO se pierde: el mesero puede reintentar
-                        // tras ver la cuenta actualizada.
-                        _notice.value = "La cuenta cambió en otro dispositivo — se actualizó, revisa antes de reenviar"
-                        loadCheck()
-                    } else {
-                        _error.value = (e as? BackendHttpException)?.message ?: "No se pudo enviar la ronda"
-                    }
-                },
-            )
+                    _notice.value = "Sin conexión — ronda guardada; se sincronizará sola"
+                    return@launch
+                }
+
+                repository.addItems(vId, session.orderId, items, session.version).fold(
+                    onSuccess = { detail ->
+                        tableSession.updateVersion(detail.version)
+                        val queuedOffline = TablesRepository.wasQueuedOffline(detail)
+                        if (queuedOffline) {
+                            // Ronda encolada por TablesRepository (sin red) — se ve
+                            // como enviada, marcada "Por sincronizar", NUNCA como error.
+                            _queuedLines.value = _queuedLines.value + lines
+                            _notice.value = "Sin conexión — ronda guardada; se sincronizará sola"
+                        } else {
+                            _notice.value = "Ronda enviada a cocina"
+                        }
+                        pendingCart.clear()
+                        _isSending.value = false
+                        if (!queuedOffline) loadCheck()
+                    },
+                    onFailure = { e ->
+                        _isSending.value = false
+                        if (e is BackendHttpException && e.statusCode == 409) {
+                            // VERSION_CONFLICT — otro dispositivo cambió la cuenta.
+                            // El carrito NO se pierde: el mesero puede reintentar
+                            // tras ver la cuenta actualizada.
+                            _notice.value = "La cuenta cambió en otro dispositivo — se actualizó, revisa antes de reenviar"
+                            loadCheck()
+                        } else {
+                            _error.value = (e as? BackendHttpException)?.message ?: "No se pudo enviar la ronda"
+                        }
+                    },
+                )
+            } finally {
+                // SIEMPRE se apaga junto con el fin del envío — éxito, encolado
+                // o error — nunca se queda pegada en pantalla.
+                reassuranceJob.cancel()
+                _sendTakingLong.value = false
+            }
         }
+    }
+
+    companion object {
+        /**
+         * Ver KDoc de [_sendTakingLong]. No-privado a propósito — el test
+         * (`TableOrderViewModelTest`) lo referencia para no hardcodear el
+         * umbral dos veces y desincronizarse en silencio si cambia.
+         */
+        const val SEND_ROUND_REASSURANCE_DELAY_MS = 4_000L
     }
 
     fun consumeNotice() {

@@ -65,3 +65,39 @@ data class DiscountApplyResult(
     val amount: BigDecimal = BigDecimal.ZERO,
     val newOrderTotal: BigDecimal = BigDecimal.ZERO,
 )
+
+/**
+ * "Descuentos disponibles" — `GET
+ * /tpv/venues/{venueId}/orders/{orderId}/discounts/available`
+ * (`discountController.getAvailableDiscounts` → `discount.tpv.service.ts`,
+ * permiso `orders:read`). Verificado 2026-08-03 contra `tpv.routes.ts:4713` y
+ * `AvailableDiscount` (`src/services/tpv/discount.tpv.service.ts:21-31`) —
+ * espejo EXACTO de campo, no una suposición.
+ */
+data class AvailableDiscountsResponse(
+    val success: Boolean = true,
+    val data: List<AvailableDiscountDto> = emptyList(),
+    val count: Int = 0,
+)
+
+/**
+ * `requiresApproval` — el catálogo del venue puede marcar un descuento como
+ * "necesita autorización de gerente" (`Discount.requiresApproval`). Esta
+ * versión de la TPV NO tiene un flujo de autorización de gerente (PIN/login
+ * de un segundo staff) — [com.jaac.avoqado_tpv.features.tables.presentation.DiscountPickerSheet]
+ * muestra estos descuentos visibles pero deshabilitados con la razón, nunca
+ * los oculta ni los aplica sin autorización (sería una regla de negocio
+ * inventada por el cliente). Gap documentado, no un olvido silencioso.
+ */
+data class AvailableDiscountDto(
+    val id: String,
+    val name: String,
+    /** PERCENTAGE | FIXED_AMOUNT | COMP (Prisma `DiscountType`). */
+    val type: String = "FIXED_AMOUNT",
+    val value: BigDecimal = BigDecimal.ZERO,
+    val scope: String = "ORDER",
+    val description: String? = null,
+    val isAutomatic: Boolean = false,
+    val requiresApproval: Boolean = false,
+    val estimatedSavings: BigDecimal = BigDecimal.ZERO,
+)

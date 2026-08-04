@@ -6,6 +6,7 @@ import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
 import com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator
+import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableDiscount
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetailItem
 import io.mockk.clearMocks
@@ -325,6 +326,56 @@ class TableCheckoutViewModelTest {
         assertThat(viewModel.state.value.cardPaymentEnabled).isFalse()
         assertThat(viewModel.state.value.cardPaymentDisabledReason).isEqualTo("La mesa aún no se sincroniza")
         coVerify(exactly = 0) { repository.getOrder(any(), any()) } // nada que cargar todavía
+    }
+
+    // endregion
+
+    // region — Fase 1: APPLY_DISCOUNT
+
+    @Test
+    fun loadAvailableDiscounts_puebla_la_lista_desde_el_repositorio() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val viewModel = createViewModel()
+        val discounts = listOf(
+            AvailableDiscount(id = "d1", name = "Cliente frecuente", type = "PERCENTAGE", value = BigDecimal("10"), requiresApproval = false, estimatedSavings = BigDecimal("45.00")),
+        )
+        coEvery { repository.getAvailableDiscounts(venueId, "orden-1") } returns Result.success(discounts)
+
+        viewModel.loadAvailableDiscounts()
+
+        assertThat(viewModel.availableDiscounts.value).isEqualTo(discounts)
+        assertThat(viewModel.isLoadingDiscounts.value).isFalse()
+    }
+
+    @Test
+    fun applyDiscount_encolado_sin_red_se_ve_como_pendiente_NUNCA_error() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
+        coEvery { repository.applyDiscount(venueId, "orden-1", "d1") } returns
+            Result.success(TablesRepository.DiscountOutcome(queued = true, amount = null, newOrderTotal = null))
+        val viewModel = createViewModel()
+
+        viewModel.applyDiscount("d1")
+
+        assertThat(viewModel.state.value.notice).contains("Sin conexión")
+        assertThat(viewModel.state.value.errorMessage).isNull()
+        coVerify(exactly = 1) { repository.applyDiscount(venueId, "orden-1", "d1") }
+    }
+
+    @Test
+    fun applyDiscount_rechazado_marca_errorMessage() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
+        coEvery { repository.applyDiscount(venueId, "orden-1", "d1") } returns
+            Result.failure(com.jaac.avoqado_tpv.core.data.network.BackendHttpException(statusCode = 400, message = "Ese descuento ya está aplicado a la cuenta"))
+        val viewModel = createViewModel()
+
+        viewModel.applyDiscount("d1")
+
+        assertThat(viewModel.state.value.errorMessage).contains("ya está aplicado")
     }
 
     // endregion

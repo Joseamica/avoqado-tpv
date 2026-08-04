@@ -49,7 +49,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -62,11 +64,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoButton
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
+import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoSecondaryButton
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
+import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableDiscount
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetailItem
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDiscountLine
@@ -90,6 +94,7 @@ import java.math.RoundingMode
  * vive en `AppNavigation.kt`, el mismo dueño de la costura para
  * `SplitByProductScreen`/`SplitByPersonScreen`.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TableCheckoutScreen(
     onNavigateBack: () -> Unit,
@@ -100,6 +105,19 @@ fun TableCheckoutScreen(
 ) {
     val session by viewModel.tableSession.active.collectAsStateWithLifecycle()
     val state by viewModel.state.collectAsStateWithLifecycle()
+
+    // Fase 1 (2026-08-03) — APPLY_DISCOUNT.
+    val availableDiscounts by viewModel.availableDiscounts.collectAsStateWithLifecycle()
+    val isLoadingDiscounts by viewModel.isLoadingDiscounts.collectAsStateWithLifecycle()
+    val isApplyingDiscount by viewModel.isApplyingDiscount.collectAsStateWithLifecycle()
+    var showDiscountSheet by remember { mutableStateOf(false) }
+    var discountTriggered by remember { mutableStateOf(false) }
+    LaunchedEffect(isApplyingDiscount) {
+        if (discountTriggered && !isApplyingDiscount) {
+            showDiscountSheet = false
+            discountTriggered = false
+        }
+    }
 
     // 🔴 Bug real encontrado EN HARDWARE (PAX A910S, Task 8): un cobro en
     // EFECTIVO que salda la cuenta llama TableSession.clear() (dentro de
@@ -180,7 +198,24 @@ fun TableCheckoutScreen(
         onPayCard = {
             onProceedToCardPayment(viewModel.buildPaymentPayload(chargeableAmount))
         },
+        onAddDiscountClick = {
+            showDiscountSheet = true
+            viewModel.loadAvailableDiscounts()
+        },
     )
+
+    if (showDiscountSheet) {
+        DiscountPickerSheet(
+            discounts = availableDiscounts,
+            isLoading = isLoadingDiscounts,
+            isApplying = isApplyingDiscount,
+            onDismiss = { if (!isApplyingDiscount) showDiscountSheet = false },
+            onSelect = { discountId ->
+                discountTriggered = true
+                viewModel.applyDiscount(discountId)
+            },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -201,6 +236,7 @@ private fun TableCheckoutScreenContent(
     onTipChanged: (BigDecimal) -> Unit,
     onPayCash: () -> Unit,
     onPayCard: () -> Unit,
+    onAddDiscountClick: () -> Unit = {},
 ) {
     val check = state.check
 
@@ -254,6 +290,22 @@ private fun TableCheckoutScreenContent(
                 ) {
                     item(key = "summary") {
                         CheckSummaryCard(check = check, remaining = state.remaining)
+                    }
+
+                    // "Descuento" (Fase 1, APPLY_DISCOUNT) — solo con el cheque YA
+                    // cargado (el catálogo se lee del server, no hay versión
+                    // offline de "qué descuentos aplican"). No se condiciona a
+                    // `state.isOnline`: si cae la red justo después de abrir el
+                    // sheet, `DiscountPickerSheet` simplemente se queda cargando
+                    // y el error real (si lo hay) sale por el snackbar compartido.
+                    if (check != null) {
+                        item(key = "add-discount") {
+                            AvoqadoSecondaryButton(
+                                text = "+ Agregar descuento",
+                                onClick = onAddDiscountClick,
+                                fullWidth = true,
+                            )
+                        }
                     }
 
                     item(key = "split-header") {

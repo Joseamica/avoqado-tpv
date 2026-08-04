@@ -2,11 +2,13 @@ package com.jaac.avoqado_tpv.features.tables.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
 import com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator
+import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableDiscount
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
@@ -422,6 +424,85 @@ class TableCheckoutViewModel @Inject constructor(
             if (session.mode == TableSession.Mode.PAYING) {
                 tableSession.start(session.copy(mode = TableSession.Mode.ORDERING))
             }
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Fase 1 (2026-08-03) — APPLY_DISCOUNT. Vive aquí (no en TableOrderScreen)
+    // porque afecta el TOTAL que se está por cobrar — su lugar natural es
+    // "Cobrar", donde el mesero ya está viendo los números exactos.
+    // ══════════════════════════════════════════════════════════════════
+
+    private val _availableDiscounts = MutableStateFlow<List<AvailableDiscount>>(emptyList())
+    val availableDiscounts: StateFlow<List<AvailableDiscount>> = _availableDiscounts.asStateFlow()
+
+    private val _isLoadingDiscounts = MutableStateFlow(false)
+    val isLoadingDiscounts: StateFlow<Boolean> = _isLoadingDiscounts.asStateFlow()
+
+    private val _isApplyingDiscount = MutableStateFlow(false)
+    val isApplyingDiscount: StateFlow<Boolean> = _isApplyingDiscount.asStateFlow()
+
+    /**
+     * Catálogo del venue — lectura ONLINE pura, sin equivalente offline (no
+     * hay forma de saber qué descuentos aplican sin preguntarle al server).
+     * Solo alcanzable con el cheque ya cargado (`state.isProvisional` en
+     * falso) — [com.jaac.avoqado_tpv.features.tables.presentation.DiscountPickerSheet]
+     * respeta esa guarda antes de llamar esto.
+     */
+    fun loadAvailableDiscounts() {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        if (session.isProvisional) return
+        viewModelScope.launch {
+            _isLoadingDiscounts.value = true
+            repository.getAvailableDiscounts(vId, session.orderId).fold(
+                onSuccess = { discounts ->
+                    _availableDiscounts.value = discounts
+                    _isLoadingDiscounts.value = false
+                },
+                onFailure = { e ->
+                    _isLoadingDiscounts.value = false
+                    if (e is CancellationException) throw e
+                    _state.update { it.copy(errorMessage = "No se pudieron cargar los descuentos disponibles") }
+                },
+            )
+        }
+    }
+
+    /**
+     * Aplica un descuento del catálogo — online-first, se encola
+     * (`APPLY_DISCOUNT`) si no hay red (ver KDoc de
+     * [TablesRepository.applyDiscount]). Al aplicarse online refresca el
+     * cheque para que [TableCheckoutState.check]/[TableCheckoutState.remaining]
+     * reflejen el nuevo total de inmediato.
+     */
+    fun applyDiscount(discountId: String) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        if (_isApplyingDiscount.value) return
+
+        _isApplyingDiscount.value = true
+        viewModelScope.launch {
+            repository.applyDiscount(vId, session.orderId, discountId).fold(
+                onSuccess = { outcome ->
+                    _isApplyingDiscount.value = false
+                    _state.update {
+                        it.copy(
+                            notice = if (outcome.queued) {
+                                "Sin conexión — descuento guardado; se sincronizará solo"
+                            } else {
+                                "Descuento aplicado"
+                            },
+                        )
+                    }
+                    if (!outcome.queued) loadCheck()
+                },
+                onFailure = { e ->
+                    _isApplyingDiscount.value = false
+                    if (e is CancellationException) throw e
+                    _state.update { it.copy(errorMessage = (e as? BackendHttpException)?.message ?: "No se pudo aplicar el descuento") }
+                },
+            )
         }
     }
 }

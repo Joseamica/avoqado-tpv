@@ -29,6 +29,42 @@ data class OrderTotals(
 )
 
 /**
+ * "Cargos por servicio disponibles" — `GET tpv/venues/{venueId}/service-charges`.
+ *
+ * 🆕 Fase 3 (completitud del módulo Mesas): la ruta `POST .../service-charges`
+ * de arriba existía SIN caller — [com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService.applyServiceCharge]
+ * es exactamente el código muerto que `completeness-audit.md` encontró. A
+ * diferencia de [AvailableDiscountsResponse] (que YA existía server-side desde
+ * antes de Fase 1), esta ruta GET **no existía** — se agregó como companion
+ * mínimo y aditivo (`order-table.tpv.controller.ts::listServiceCharges`,
+ * verificado 2026-08-03) porque la TPV no tenía NINGUNA forma de listar el
+ * catálogo bajo `/tpv` (solo `/mobile` lo tenía, fuera de alcance). Ver KDoc
+ * de [com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService.getServiceCharges].
+ *
+ * ⚠️ A diferencia de `discounts/available`, esta lista es el catálogo COMPLETO
+ * del venue (activos) — no filtrado por elegibilidad de la cuenta. Aplicar un
+ * cargo ya presente en la cuenta es un 400 normal del server ("Ese cobro ya
+ * está aplicado a la cuenta"), propagado tal cual — el picker no necesita
+ * adivinar cuáles ya aplican.
+ */
+data class AvailableServiceChargesResponse(
+    val success: Boolean = true,
+    val data: List<AvailableServiceChargeDto> = emptyList(),
+)
+
+/** Espejo de `listServiceCharges` (`service-charge.mobile.service.ts`) — `{id, name, type, value, taxable, autoApplyMinCovers}`. */
+data class AvailableServiceChargeDto(
+    val id: String,
+    val name: String,
+    /** PERCENTAGE | FIXED_AMOUNT (Prisma `ServiceChargeType`, schema.prisma:6381). */
+    val type: String = "FIXED_AMOUNT",
+    val value: BigDecimal = BigDecimal.ZERO,
+    val taxable: Boolean = true,
+    /** Null = solo manual. No-null = el server YA lo auto-aplica a cuentas con al menos estos comensales. */
+    val autoApplyMinCovers: Int? = null,
+)
+
+/**
  * "Aplicar descuento predefinido" — `POST
  * /tpv/venues/{venueId}/orders/{orderId}/discounts/apply` (`discountController.applyPredefinedDiscount`).
  *

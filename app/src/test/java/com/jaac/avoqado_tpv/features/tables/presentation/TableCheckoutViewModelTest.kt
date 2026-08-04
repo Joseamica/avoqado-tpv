@@ -7,6 +7,7 @@ import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
 import com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator
 import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableDiscount
+import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableServiceCharge
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetailItem
 import io.mockk.clearMocks
@@ -374,6 +375,71 @@ class TableCheckoutViewModelTest {
         val viewModel = createViewModel()
 
         viewModel.applyDiscount("d1")
+
+        assertThat(viewModel.state.value.errorMessage).contains("ya está aplicado")
+    }
+
+    // endregion
+
+    // region — Fase 3: APPLY_SERVICE_CHARGE
+
+    @Test
+    fun loadAvailableServiceCharges_puebla_la_lista_desde_el_repositorio() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val viewModel = createViewModel()
+        val charges = listOf(
+            AvailableServiceCharge(id = "sc1", name = "Propina automática", type = "PERCENTAGE", value = BigDecimal("15"), taxable = true, autoApplyMinCovers = 6),
+        )
+        coEvery { repository.getAvailableServiceCharges(venueId) } returns Result.success(charges)
+
+        viewModel.loadAvailableServiceCharges()
+
+        assertThat(viewModel.availableServiceCharges.value).isEqualTo(charges)
+        assertThat(viewModel.isLoadingServiceCharges.value).isFalse()
+    }
+
+    @Test
+    fun applyServiceCharge_encolado_sin_red_se_ve_como_pendiente_NUNCA_error() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
+        coEvery { repository.applyServiceCharge(venueId, "orden-1", "sc1") } returns
+            Result.success(TablesRepository.ServiceChargeOutcome(queued = true, total = null, serviceChargeAmount = null))
+        val viewModel = createViewModel()
+
+        viewModel.applyServiceCharge("sc1")
+
+        assertThat(viewModel.state.value.notice).contains("Sin conexión")
+        assertThat(viewModel.state.value.errorMessage).isNull()
+        coVerify(exactly = 1) { repository.applyServiceCharge(venueId, "orden-1", "sc1") }
+    }
+
+    @Test
+    fun applyServiceCharge_exitoso_online_recarga_la_cuenta() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
+        coEvery { repository.applyServiceCharge(venueId, "orden-1", "sc1") } returns
+            Result.success(TablesRepository.ServiceChargeOutcome(queued = false, total = BigDecimal("115.00"), serviceChargeAmount = BigDecimal("15.00")))
+        val viewModel = createViewModel()
+
+        viewModel.applyServiceCharge("sc1")
+
+        assertThat(viewModel.state.value.notice).isEqualTo("Cargo por servicio aplicado")
+        coVerify(exactly = 2) { repository.getOrder(venueId, "orden-1") } // carga inicial + recarga tras aplicar
+    }
+
+    @Test
+    fun applyServiceCharge_rechazado_por_duplicado_marca_errorMessage() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
+        coEvery { repository.applyServiceCharge(venueId, "orden-1", "sc1") } returns
+            Result.failure(com.jaac.avoqado_tpv.core.data.network.BackendHttpException(statusCode = 400, message = "Ese cobro ya está aplicado a la cuenta"))
+        val viewModel = createViewModel()
+
+        viewModel.applyServiceCharge("sc1")
 
         assertThat(viewModel.state.value.errorMessage).contains("ya está aplicado")
     }

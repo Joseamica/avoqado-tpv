@@ -9,6 +9,7 @@ import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
 import com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator
 import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableDiscount
+import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableServiceCharge
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
@@ -501,6 +502,84 @@ class TableCheckoutViewModel @Inject constructor(
                     _isApplyingDiscount.value = false
                     if (e is CancellationException) throw e
                     _state.update { it.copy(errorMessage = (e as? BackendHttpException)?.message ?: "No se pudo aplicar el descuento") }
+                },
+            )
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Fase 3 (2026-08-03) — APPLY_SERVICE_CHARGE. Vive aquí, no en
+    // TableOrderViewModel, por el MISMO motivo que APPLY_DISCOUNT arriba:
+    // suma al TOTAL que se está por cobrar — su lugar natural es "Cobrar".
+    // Manual override del auto-apply por comensales (ServiceCharge.autoApplyMinCovers).
+    // ══════════════════════════════════════════════════════════════════
+
+    private val _availableServiceCharges = MutableStateFlow<List<AvailableServiceCharge>>(emptyList())
+    val availableServiceCharges: StateFlow<List<AvailableServiceCharge>> = _availableServiceCharges.asStateFlow()
+
+    private val _isLoadingServiceCharges = MutableStateFlow(false)
+    val isLoadingServiceCharges: StateFlow<Boolean> = _isLoadingServiceCharges.asStateFlow()
+
+    private val _isApplyingServiceCharge = MutableStateFlow(false)
+    val isApplyingServiceCharge: StateFlow<Boolean> = _isApplyingServiceCharge.asStateFlow()
+
+    /**
+     * Catálogo del venue — lectura ONLINE pura (ver KDoc de
+     * [TablesRepository.getAvailableServiceCharges]). Mismo guard que
+     * [loadAvailableDiscounts]: solo alcanzable con el cheque ya cargado.
+     */
+    fun loadAvailableServiceCharges() {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        if (session.isProvisional) return
+        viewModelScope.launch {
+            _isLoadingServiceCharges.value = true
+            repository.getAvailableServiceCharges(vId).fold(
+                onSuccess = { charges ->
+                    _availableServiceCharges.value = charges
+                    _isLoadingServiceCharges.value = false
+                },
+                onFailure = { e ->
+                    _isLoadingServiceCharges.value = false
+                    if (e is CancellationException) throw e
+                    _state.update { it.copy(errorMessage = "No se pudieron cargar los cargos por servicio disponibles") }
+                },
+            )
+        }
+    }
+
+    /**
+     * Aplica un cargo por servicio del catálogo — online-first, se encola
+     * (`APPLY_SERVICE_CHARGE`) si no hay red (ver KDoc de
+     * [TablesRepository.applyServiceCharge]). Al aplicarse online refresca el
+     * cheque para que el total/restante reflejen el cargo de inmediato — mismo
+     * patrón que [applyDiscount].
+     */
+    fun applyServiceCharge(serviceChargeId: String) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        if (_isApplyingServiceCharge.value) return
+
+        _isApplyingServiceCharge.value = true
+        viewModelScope.launch {
+            repository.applyServiceCharge(vId, session.orderId, serviceChargeId).fold(
+                onSuccess = { outcome ->
+                    _isApplyingServiceCharge.value = false
+                    _state.update {
+                        it.copy(
+                            notice = if (outcome.queued) {
+                                "Sin conexión — cargo por servicio guardado; se sincronizará solo"
+                            } else {
+                                "Cargo por servicio aplicado"
+                            },
+                        )
+                    }
+                    if (!outcome.queued) loadCheck()
+                },
+                onFailure = { e ->
+                    _isApplyingServiceCharge.value = false
+                    if (e is CancellationException) throw e
+                    _state.update { it.copy(errorMessage = (e as? BackendHttpException)?.message ?: "No se pudo aplicar el cargo por servicio") }
                 },
             )
         }

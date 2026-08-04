@@ -24,6 +24,8 @@ import androidx.compose.material.icons.filled.AssignmentInd
 import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.EventSeat
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Remove
@@ -122,17 +124,25 @@ fun TableOrderScreen(
     val activeStaff by viewModel.activeStaff.collectAsStateWithLifecycle()
     val isLoadingActiveStaff by viewModel.isLoadingActiveStaff.collectAsStateWithLifecycle()
 
+    // Fase 3 (2026-08-03) — SPLIT_BY_SEAT · UPDATE_DETAILS.
+    val isSplittingBySeat by viewModel.isSplittingBySeat.collectAsStateWithLifecycle()
+    val isUpdatingDetails by viewModel.isUpdatingDetails.collectAsStateWithLifecycle()
+
     var showSplitSheet by remember { mutableStateOf(false) }
     var showCompSheet by remember { mutableStateOf(false) }
     var showMoveSheet by remember { mutableStateOf(false) }
     var showMergeSheet by remember { mutableStateOf(false) }
     var showCancelDialog by remember { mutableStateOf(false) }
     var showAssignSheet by remember { mutableStateOf(false) }
+    var showSplitBySeatDialog by remember { mutableStateOf(false) }
+    var showEditDetailsSheet by remember { mutableStateOf(false) }
     var splitTriggered by remember { mutableStateOf(false) }
     var compTriggered by remember { mutableStateOf(false) }
     var moveTriggered by remember { mutableStateOf(false) }
     var mergeTriggered by remember { mutableStateOf(false) }
     var assignTriggered by remember { mutableStateOf(false) }
+    var splitBySeatTriggered by remember { mutableStateOf(false) }
+    var editDetailsTriggered by remember { mutableStateOf(false) }
 
     // Cada sheet se auto-cierra cuando SU acción termina (éxito o error — el
     // error ya se muestra en el snackbar compartido) — nunca antes, para que
@@ -165,6 +175,18 @@ fun TableOrderScreen(
         if (assignTriggered && !isAssigning) {
             showAssignSheet = false
             assignTriggered = false
+        }
+    }
+    LaunchedEffect(isSplittingBySeat) {
+        if (splitBySeatTriggered && !isSplittingBySeat) {
+            showSplitBySeatDialog = false
+            splitBySeatTriggered = false
+        }
+    }
+    LaunchedEffect(isUpdatingDetails) {
+        if (editDetailsTriggered && !isUpdatingDetails) {
+            showEditDetailsSheet = false
+            editDetailsTriggered = false
         }
     }
     // CANCEL_ORDER libera la mesa del lado del server — a diferencia de las
@@ -245,6 +267,8 @@ fun TableOrderScreen(
             showAssignSheet = true
             viewModel.loadActiveStaff()
         },
+        onSplitBySeatClick = { showSplitBySeatDialog = true },
+        onEditDetailsClick = { showEditDetailsSheet = true },
     )
 
     if (showSplitSheet) {
@@ -322,6 +346,30 @@ fun TableOrderScreen(
             },
         )
     }
+
+    if (showSplitBySeatDialog) {
+        SplitBySeatDialog(
+            isSplitting = isSplittingBySeat,
+            onDismiss = { if (!isSplittingBySeat) showSplitBySeatDialog = false },
+            onConfirm = {
+                splitBySeatTriggered = true
+                viewModel.splitOrderBySeat()
+            },
+        )
+    }
+
+    if (showEditDetailsSheet) {
+        EditDetailsSheet(
+            initialName = check?.customerName,
+            initialCovers = check?.covers,
+            isSaving = isUpdatingDetails,
+            onDismiss = { if (!isUpdatingDetails) showEditDetailsSheet = false },
+            onConfirm = { name, covers ->
+                editDetailsTriggered = true
+                viewModel.updateOrderDetails(name, covers)
+            },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -348,6 +396,8 @@ private fun TableOrderScreenContent(
     onMergeClick: () -> Unit = {},
     onCancelClick: () -> Unit = {},
     onAssignClick: () -> Unit = {},
+    onSplitBySeatClick: () -> Unit = {},
+    onEditDetailsClick: () -> Unit = {},
 ) {
     val rounds = check?.roundsSentToKitchen() ?: emptyList()
     val pendingCount = pendingLines.sumOf { it.quantity }
@@ -368,6 +418,14 @@ private fun TableOrderScreenContent(
     val mergeEnabled = !readOnly && !session.isProvisional
     val cancelEnabled = !readOnly
     val assignEnabled = !readOnly
+    // Dividir por puesto necesita artículos YA enviados — mismo criterio que
+    // separar cuenta (el server agrupa por `seat` sobre items reales, nunca
+    // sobre un carrito local todavía sin mandar).
+    val splitBySeatEnabled = !readOnly && hasSentItems
+    // Editar detalles funciona incluso en sesión provisional (UPDATE_DETAILS
+    // siempre viaja por intent, con localOrderId si hace falta) — mismo
+    // criterio que cancelar/reasignar.
+    val editDetailsEnabled = !readOnly
 
     Scaffold(
         modifier = modifier,
@@ -379,13 +437,17 @@ private fun TableOrderScreenContent(
                     onNavigationClick = onNavigateBack,
                     actions = {
                         TableOrderOverflowMenu(
+                            editDetailsEnabled = editDetailsEnabled,
                             splitEnabled = !readOnly && hasSentItems,
+                            splitBySeatEnabled = splitBySeatEnabled,
                             compEnabled = !readOnly && hasSentItems,
                             moveEnabled = !readOnly,
                             mergeEnabled = mergeEnabled,
                             cancelEnabled = cancelEnabled,
                             assignEnabled = assignEnabled,
+                            onEditDetailsClick = onEditDetailsClick,
                             onSplitClick = onSplitClick,
+                            onSplitBySeatClick = onSplitBySeatClick,
                             onCompClick = onCompClick,
                             onMoveClick = onMoveClick,
                             onMergeClick = onMergeClick,
@@ -622,11 +684,12 @@ private fun OwnershipLockBanner(ownerName: String?) {
 }
 
 /**
- * Menú de "más acciones" — Separar cuenta / Cortesía / Mover mesa (Fase 1) +
- * Fusionar cuentas / Reasignar mesero / Cancelar cuenta (Fase 2). Un solo
- * ícono `MoreVert` en vez de 6 íconos sueltos: en NEXGO 480×480 el topbar ya
- * carga título+subtítulo+flecha, y el propio `AvoqadoTopBar` establece este
- * patrón (ver su preview "With Actions").
+ * Menú de "más acciones" — Editar detalles / Separar cuenta / Dividir por
+ * puesto / Cortesía / Mover mesa (Fase 1 + Fase 3) + Fusionar cuentas /
+ * Reasignar mesero / Cancelar cuenta (Fase 2). Un solo ícono `MoreVert` en vez
+ * de 8 íconos sueltos: en NEXGO 480×480 el topbar ya carga
+ * título+subtítulo+flecha, y el propio `AvoqadoTopBar` establece este patrón
+ * (ver su preview "With Actions").
  *
  * "Cancelar cuenta" va AL FINAL y separada por un divisor — es la única
  * acción destructiva del menú (riesgo explícito del founder: difícil de
@@ -635,13 +698,17 @@ private fun OwnershipLockBanner(ownerName: String?) {
  */
 @Composable
 private fun TableOrderOverflowMenu(
+    editDetailsEnabled: Boolean,
     splitEnabled: Boolean,
+    splitBySeatEnabled: Boolean,
     compEnabled: Boolean,
     moveEnabled: Boolean,
     mergeEnabled: Boolean,
     cancelEnabled: Boolean,
     assignEnabled: Boolean,
+    onEditDetailsClick: () -> Unit,
     onSplitClick: () -> Unit,
+    onSplitBySeatClick: () -> Unit,
     onCompClick: () -> Unit,
     onMoveClick: () -> Unit,
     onMergeClick: () -> Unit,
@@ -654,10 +721,22 @@ private fun TableOrderOverflowMenu(
     }
     DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
         DropdownMenuItem(
+            text = { Text("Editar detalles") },
+            leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+            enabled = editDetailsEnabled,
+            onClick = { expanded = false; onEditDetailsClick() },
+        )
+        DropdownMenuItem(
             text = { Text("Separar cuenta") },
             leadingIcon = { Icon(Icons.AutoMirrored.Filled.CallSplit, contentDescription = null) },
             enabled = splitEnabled,
             onClick = { expanded = false; onSplitClick() },
+        )
+        DropdownMenuItem(
+            text = { Text("Dividir por puesto") },
+            leadingIcon = { Icon(Icons.Default.EventSeat, contentDescription = null) },
+            enabled = splitBySeatEnabled,
+            onClick = { expanded = false; onSplitBySeatClick() },
         )
         DropdownMenuItem(
             text = { Text("Cortesía") },

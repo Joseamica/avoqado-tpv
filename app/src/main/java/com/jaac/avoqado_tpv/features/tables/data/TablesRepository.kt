@@ -7,6 +7,7 @@ import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.AddItemsRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.AddOrderItemRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountRequest
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyServiceChargeRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.CompOrderRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.MergeOrdersRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.OpenTableRequest
@@ -20,6 +21,7 @@ import com.jaac.avoqado_tpv.features.tables.data.sync.TablesSyncOutcome
 import com.jaac.avoqado_tpv.features.tables.data.sync.classifyTablesSyncFailure
 import com.jaac.avoqado_tpv.features.tables.domain.model.ActiveStaffMember
 import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableDiscount
+import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableServiceCharge
 import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
 import com.jaac.avoqado_tpv.features.tables.domain.model.FloorElement
 import com.jaac.avoqado_tpv.features.tables.domain.model.MenuCategory
@@ -1123,6 +1125,238 @@ class TablesRepository @Inject constructor(
         Timber.e(e, "❌ [Tables] Fallo inesperado en getActiveStaff (venue=%s)", venueId)
         Result.failure(e)
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Fase 3 (2026-08-03) — SPLIT_BY_SEAT · APPLY_SERVICE_CHARGE · UPDATE_DETAILS
+    // Los últimos 3 intents de los 14 — cierran la auditoría de completitud
+    // original. Ver `.superpowers/sdd/2026-07-24-tpv-plan-c-modulo-mesas/fase-3-report.md`.
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * "Cargos por servicio disponibles" — `GET tpv/venues/{venueId}/service-charges`
+     * (🆕 companion de lectura agregado en esta fase — ver KDoc de
+     * [com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService.getServiceCharges]).
+     * Lectura pura, mismo criterio que [getAvailableDiscounts]: nunca se encola.
+     */
+    suspend fun getAvailableServiceCharges(venueId: String): Result<List<AvailableServiceCharge>> = try {
+        val response = api.getServiceCharges(venueId)
+        val data = response.body()?.data
+        if (response.isSuccessful && data != null) {
+            Result.success(
+                data.map {
+                    AvailableServiceCharge(
+                        id = it.id,
+                        name = it.name,
+                        type = it.type,
+                        value = it.value,
+                        taxable = it.taxable,
+                        autoApplyMinCovers = it.autoApplyMinCovers,
+                    )
+                },
+            )
+        } else {
+            Result.failure(
+                BackendHttpException(statusCode = response.code(), message = parseBackendErrorMessage(response.errorBody()?.string(), response.message())),
+            )
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: IOException) {
+        Timber.w(e, "⚠️ [Tables] Sin red en getAvailableServiceCharges (venue=%s)", venueId)
+        Result.failure(e)
+    } catch (e: Exception) {
+        Timber.e(e, "❌ [Tables] Fallo inesperado en getAvailableServiceCharges (venue=%s)", venueId)
+        Result.failure(e)
+    }
+
+    /**
+     * "Aplicar cargo por servicio" — `POST tpv/venues/{venueId}/orders/{orderId}/service-charges`.
+     * Manual override del auto-apply por comensales (`ServiceCharge.autoApplyMinCovers`)
+     * — vive en "Cobrar" ([com.jaac.avoqado_tpv.features.tables.presentation.TableCheckoutViewModel],
+     * no [TableOrderViewModel]) por el MISMO motivo que [applyDiscount]: afecta el
+     * TOTAL que se está por cobrar, y solo se alcanza con el cheque YA cargado
+     * (`orderId` siempre real, nunca un UUID local — mismo criterio que [applyDiscount]/[splitOrder]).
+     *
+     * Online-first, se encola (`APPLY_SERVICE_CHARGE`) si la falla es transitoria
+     * — mismo patrón exacto que [applyDiscount]. Sin write-ahead: la ruta online
+     * no acepta ninguna llave de idempotencia; el server rechaza (400, "Ese cobro
+     * ya está aplicado a la cuenta") un DROP_RESPONSE reproducido dos veces —
+     * cuarentena visible, nunca cobra el cargo por servicio dos veces.
+     */
+    suspend fun applyServiceCharge(venueId: String, orderId: String, serviceChargeId: String): Result<ServiceChargeOutcome> {
+        if (serviceChargeId.isBlank()) {
+            return Result.failure(IllegalArgumentException("applyServiceCharge requiere serviceChargeId"))
+        }
+        val onlineResult = try {
+            api.applyServiceCharge(venueId, orderId, ApplyServiceChargeRequest(serviceChargeId = serviceChargeId)).toApplyServiceChargeResult()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Timber.w(e, "⚠️ [Tables] Sin red en applyServiceCharge (venue=%s, order=%s) — se encolará", venueId, orderId)
+            Result.failure(e)
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Tables] Fallo inesperado en applyServiceCharge (venue=%s, order=%s)", venueId, orderId)
+            Result.failure(e)
+        }
+
+        onlineResult.onSuccess { totals ->
+            return Result.success(ServiceChargeOutcome(queued = false, total = totals.total, serviceChargeAmount = totals.serviceChargeAmount))
+        }
+
+        return when (classifyTablesSyncFailure(onlineResult.exceptionOrNull())) {
+            is TablesSyncOutcome.Retryable -> {
+                val payload = JsonObject().apply {
+                    addProperty("orderId", orderId)
+                    addProperty("serviceChargeId", serviceChargeId)
+                }
+                syncOutbox.enqueue(venueId, SyncIntentTypes.APPLY_SERVICE_CHARGE, payload)
+                Timber.i("📤 [Tables] Sin conexión — APPLY_SERVICE_CHARGE encolado (venue=%s, order=%s)", venueId, orderId)
+                Result.success(ServiceChargeOutcome(queued = true, total = null, serviceChargeAmount = null))
+            }
+
+            else -> Result.failure(onlineResult.exceptionOrNull() ?: IllegalStateException("applyServiceCharge sin causa"))
+        }
+    }
+
+    private fun Response<com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyServiceChargeResponse>.toApplyServiceChargeResult():
+        Result<com.jaac.avoqado_tpv.features.tables.data.api.dto.OrderTotals> {
+        val data = body()?.data
+        return if (isSuccessful && data != null) {
+            Result.success(data)
+        } else {
+            Result.failure(BackendHttpException(statusCode = code(), message = parseBackendErrorMessage(errorBody()?.string(), message())))
+        }
+    }
+
+    data class ServiceChargeOutcome(val queued: Boolean, val total: BigDecimal?, val serviceChargeAmount: BigDecimal?)
+
+    /**
+     * "Dividir por puesto" — `POST tpv/venues/{venueId}/orders/{orderId}/split-by-seat`.
+     * Sin body: el servicio agrupa los items YA enviados por `seat` — el asiento
+     * más bajo se queda en la cuenta original, el resto se mueve a cuentas nuevas
+     * (una por asiento), TODO dentro de una sola `prisma.$transaction` del lado
+     * del server (`orderMobileService.splitOrderBySeat`) — o se dividen TODOS los
+     * asientos, o ninguno, mismo principio todo-o-nada que [splitOrder]/[mergeOrders]
+     * (contrato rules §2.5: "SPLIT_ORDER resuelve las referencias todo-o-nada").
+     * Aquí no hay ninguna referencia (`itemIds`) que el cliente arme — la única
+     * que existe es `orderId` mismo, resuelto una sola vez por
+     * [com.jaac.avoqado_tpv.features.tables.presentation.TableOrderViewModel]
+     * ANTES de llamar, así que "todo o nada" lo garantiza la transacción del
+     * server sin que este método necesite ensamblar ni fragmentar nada — UNA
+     * sola llamada, nunca una por asiento.
+     *
+     * ⚠️ Gap real documentado (no arreglable desde este repo): `addOrderItemsSchema`
+     * del server (`avoqado-server/src/schemas/tpv.schema.ts:334`) NO acepta
+     * `seat` al mandar una ronda por `/tpv` — verificado 2026-08-03 contra el
+     * Zod real. Una cuenta que SOLO recibió rondas desde esta TPV nunca tiene
+     * items con `seat` asignado, así que el server siempre rechaza con "Se
+     * necesitan al menos dos asientos con artículos para dividir por puesto"
+     * (`order.mobile.service.ts:1320`) — un rechazo de negocio limpio, propagado
+     * tal cual, NUNCA un crash. La acción es real y queda reachable para el día
+     * en que otro cliente (Android/iOS, que SÍ soportan `seat`) sembró los
+     * asientos de esta cuenta antes de que la TPV la cobre.
+     *
+     * Sin write-ahead — mismo razonamiento que [splitOrder]/[mergeOrders]: la
+     * ruta online no acepta ninguna llave de idempotencia. Un DROP_RESPONSE
+     * reproducido encuentra los items YA movidos → mismo rechazo de "menos de
+     * dos asientos" en el segundo intento, cuarentena visible, nunca divide dos
+     * veces.
+     */
+    suspend fun splitOrderBySeat(venueId: String, orderId: String): Result<SplitBySeatOutcome> {
+        val onlineResult = try {
+            api.splitOrderBySeat(venueId, orderId).toSplitBySeatResult()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Timber.w(e, "⚠️ [Tables] Sin red en splitOrderBySeat (venue=%s, order=%s) — se encolará", venueId, orderId)
+            Result.failure(e)
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Tables] Fallo inesperado en splitOrderBySeat (venue=%s, order=%s)", venueId, orderId)
+            Result.failure(e)
+        }
+
+        onlineResult.onSuccess { result ->
+            return Result.success(
+                SplitBySeatOutcome(queued = false, createdCount = result.created.size, sourceSeat = result.source.seat),
+            )
+        }
+
+        return when (classifyTablesSyncFailure(onlineResult.exceptionOrNull())) {
+            is TablesSyncOutcome.Retryable -> {
+                val payload = JsonObject().apply { addProperty("orderId", orderId) }
+                syncOutbox.enqueue(venueId, SyncIntentTypes.SPLIT_BY_SEAT, payload)
+                Timber.i("📤 [Tables] Sin conexión — SPLIT_BY_SEAT encolado (venue=%s, order=%s)", venueId, orderId)
+                Result.success(SplitBySeatOutcome(queued = true, createdCount = null, sourceSeat = null))
+            }
+
+            else -> Result.failure(onlineResult.exceptionOrNull() ?: IllegalStateException("splitOrderBySeat sin causa"))
+        }
+    }
+
+    private fun Response<com.jaac.avoqado_tpv.features.tables.data.api.dto.SplitOrderBySeatResponse>.toSplitBySeatResult():
+        Result<com.jaac.avoqado_tpv.features.tables.data.api.dto.SplitBySeatResult> {
+        val data = body()?.data
+        return if (isSuccessful && data != null) {
+            Result.success(data)
+        } else {
+            Result.failure(BackendHttpException(statusCode = code(), message = parseBackendErrorMessage(errorBody()?.string(), message())))
+        }
+    }
+
+    data class SplitBySeatOutcome(val queued: Boolean, val createdCount: Int?, val sourceSeat: Int?)
+
+    /**
+     * "Editar detalles de la cuenta" (comensales, nombre) — SIEMPRE vía intent,
+     * mismo patrón write-ahead + replay inmediato que [moveOrder]/[cancelOrder]/
+     * [assignOrder]: **cero ruta online** bajo `/tpv` para `UPDATE_DETAILS`
+     * (verificado 2026-08-03 — `orderMobileService.updateOrderDetails` solo
+     * existe del lado del reducer de replay, sin ningún `router.*` que la llame
+     * en `tpv.routes.ts`). Funciona con sesión provisional también (mismo
+     * criterio que `moveOrder`: `resolveOrderId` del reducer acepta `localOrderId`
+     * para los 7 tipos que delegan en `applyOrderMutation`).
+     *
+     * Aditivo y parcial: solo los campos no-null cambian (`name`/`covers` en el
+     * payload) — el server (`updateOrderDetails`) trata null/ausente como "no
+     * tocar", nunca como "borrar". Al menos uno de los dos debe venir para que
+     * la llamada tenga sentido (guard abajo).
+     */
+    suspend fun updateOrderDetails(
+        venueId: String,
+        orderId: String,
+        isProvisional: Boolean,
+        name: String?,
+        covers: Int?,
+    ): Result<UpdateDetailsOutcome> {
+        if (name == null && covers == null) {
+            return Result.failure(IllegalArgumentException("updateOrderDetails requiere al menos un campo a cambiar"))
+        }
+        val intentId = UUID.randomUUID().toString()
+        val payload = JsonObject().apply {
+            if (isProvisional) addProperty("localOrderId", orderId) else addProperty("orderId", orderId)
+            if (name != null) addProperty("name", name)
+            if (covers != null) addProperty("covers", covers)
+        }
+        syncOutbox.enqueue(venueId, SyncIntentTypes.UPDATE_DETAILS, payload, id = intentId)
+
+        var capturedAck: SyncIntentAck? = null
+        syncOutbox.replayNow(venueId) { intent, ack ->
+            if (intent.id == intentId) capturedAck = ack
+        }
+
+        val ack = capturedAck
+        return when {
+            ack == null -> Result.success(UpdateDetailsOutcome(queued = true))
+            ack.isAcked -> Result.success(UpdateDetailsOutcome(queued = false))
+            ack.isRejected -> Result.failure(UpdateDetailsRejectedException(ack.message ?: "No se pudieron actualizar los detalles", ack.errorCode))
+            // RETRY (VERSION_CONFLICT u otro transitorio): SyncOutbox.applyAck ya lo dejó PENDING.
+            else -> Result.success(UpdateDetailsOutcome(queued = true))
+        }
+    }
+
+    /** Rechazo de NEGOCIO de un `UPDATE_DETAILS` (ack `REJECTED`) — viaja dentro de un 200 de `sync/intents`, no es HTTP. */
+    class UpdateDetailsRejectedException(message: String, val errorCode: String?) : Exception(message)
+
+    data class UpdateDetailsOutcome(val queued: Boolean)
 
     data class MergeOutcome(val queued: Boolean, val targetTotal: BigDecimal?, val mergedOrderNumber: String?, val tableFreed: Boolean?)
 

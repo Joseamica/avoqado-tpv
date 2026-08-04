@@ -76,7 +76,22 @@ class TablesApiServiceContractTest {
             "compOrder",
             // Fase 2 (2026-08-03) — picker de personal para ASSIGN_ORDER.
             "getActiveStaff",
+            // Fase 3 (2026-08-03) — completitud del módulo Mesas (últimos 3 de los 14 intents).
+            "getServiceCharges",
         )
+    }
+
+    @Test
+    fun `getServiceCharges apunta al venue, no a una orden en particular`() {
+        // A diferencia de discounts/available (elegibilidad de UNA cuenta),
+        // service-charges es el catálogo del VENUE — sin :orderId en la ruta.
+        // Verificado 2026-08-03 contra order-table.tpv.controller.ts::listServiceCharges
+        // (companion nuevo de applyServiceCharge, que sí existía sin caller).
+        val getServiceCharges = TablesApiService::class.java.declaredMethods.first { it.name == "getServiceCharges" }
+
+        val ruta = getServiceCharges.annotations.filterIsInstance<GET>().first().value
+
+        assertThat(ruta).isEqualTo("tpv/venues/{venueId}/service-charges")
     }
 
     @Test

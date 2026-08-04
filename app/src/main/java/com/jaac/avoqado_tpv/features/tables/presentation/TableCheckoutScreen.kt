@@ -119,6 +119,19 @@ fun TableCheckoutScreen(
         }
     }
 
+    // Fase 3 (2026-08-03) — APPLY_SERVICE_CHARGE.
+    val availableServiceCharges by viewModel.availableServiceCharges.collectAsStateWithLifecycle()
+    val isLoadingServiceCharges by viewModel.isLoadingServiceCharges.collectAsStateWithLifecycle()
+    val isApplyingServiceCharge by viewModel.isApplyingServiceCharge.collectAsStateWithLifecycle()
+    var showServiceChargeSheet by remember { mutableStateOf(false) }
+    var serviceChargeTriggered by remember { mutableStateOf(false) }
+    LaunchedEffect(isApplyingServiceCharge) {
+        if (serviceChargeTriggered && !isApplyingServiceCharge) {
+            showServiceChargeSheet = false
+            serviceChargeTriggered = false
+        }
+    }
+
     // 🔴 Bug real encontrado EN HARDWARE (PAX A910S, Task 8): un cobro en
     // EFECTIVO que salda la cuenta llama TableSession.clear() (dentro de
     // TableCheckoutViewModel.releaseTable()) mientras ESTA pantalla Y
@@ -202,6 +215,10 @@ fun TableCheckoutScreen(
             showDiscountSheet = true
             viewModel.loadAvailableDiscounts()
         },
+        onAddServiceChargeClick = {
+            showServiceChargeSheet = true
+            viewModel.loadAvailableServiceCharges()
+        },
     )
 
     if (showDiscountSheet) {
@@ -213,6 +230,19 @@ fun TableCheckoutScreen(
             onSelect = { discountId ->
                 discountTriggered = true
                 viewModel.applyDiscount(discountId)
+            },
+        )
+    }
+
+    if (showServiceChargeSheet) {
+        ServiceChargePickerSheet(
+            charges = availableServiceCharges,
+            isLoading = isLoadingServiceCharges,
+            isApplying = isApplyingServiceCharge,
+            onDismiss = { if (!isApplyingServiceCharge) showServiceChargeSheet = false },
+            onSelect = { serviceChargeId ->
+                serviceChargeTriggered = true
+                viewModel.applyServiceCharge(serviceChargeId)
             },
         )
     }
@@ -237,6 +267,7 @@ private fun TableCheckoutScreenContent(
     onPayCash: () -> Unit,
     onPayCard: () -> Unit,
     onAddDiscountClick: () -> Unit = {},
+    onAddServiceChargeClick: () -> Unit = {},
 ) {
     val check = state.check
 
@@ -303,6 +334,18 @@ private fun TableCheckoutScreenContent(
                             AvoqadoSecondaryButton(
                                 text = "+ Agregar descuento",
                                 onClick = onAddDiscountClick,
+                                fullWidth = true,
+                            )
+                        }
+                        // "Cargo por servicio" (Fase 3, APPLY_SERVICE_CHARGE) — mismo
+                        // criterio que el descuento de arriba: solo con el cheque YA
+                        // cargado (el catálogo se lee del server). Manual override del
+                        // auto-apply por comensales, así que vive junto al descuento —
+                        // ambos afectan el TOTAL antes de cobrar.
+                        item(key = "add-service-charge") {
+                            AvoqadoSecondaryButton(
+                                text = "+ Agregar cargo por servicio",
+                                onClick = onAddServiceChargeClick,
                                 fullWidth = true,
                             )
                         }

@@ -536,4 +536,147 @@ class TableOrderViewModelTest {
     }
 
     // endregion
+
+    // region — Fase 3 (2026-08-03): SPLIT_BY_SEAT · UPDATE_DETAILS
+
+    @Test
+    fun splitOrderBySeat_exitoso_recarga_la_cuenta() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.splitOrderBySeat(venueId, "orden-1") } returns
+            Result.success(TablesRepository.SplitBySeatOutcome(queued = false, createdCount = 2, sourceSeat = 1))
+        val viewModel = createViewModel()
+
+        viewModel.splitOrderBySeat()
+
+        coVerify(exactly = 1) { repository.splitOrderBySeat(venueId, "orden-1") }
+        // init() + la recarga tras éxito = 2 llamadas a getOrder.
+        coVerify(exactly = 2) { repository.getOrder(venueId, "orden-1") }
+        assertThat(viewModel.notice.value).contains("dividida")
+        assertThat(viewModel.error.value).isNull()
+    }
+
+    @Test
+    fun splitOrderBySeat_encolado_sin_red_se_ve_como_pendiente_NUNCA_error() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.splitOrderBySeat(venueId, "orden-1") } returns
+            Result.success(TablesRepository.SplitBySeatOutcome(queued = true, createdCount = null, sourceSeat = null))
+        val viewModel = createViewModel()
+
+        viewModel.splitOrderBySeat()
+
+        assertThat(viewModel.notice.value).contains("Sin conexión")
+        assertThat(viewModel.error.value).isNull()
+    }
+
+    @Test
+    fun splitOrderBySeat_sesion_provisional_marca_error_sin_llamar_al_repositorio() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-uuid-123")
+        val viewModel = createViewModel()
+
+        viewModel.splitOrderBySeat()
+
+        coVerify(exactly = 0) { repository.splitOrderBySeat(any(), any()) }
+        assertThat(viewModel.error.value).contains("sincroniza")
+    }
+
+    @Test
+    fun splitOrderBySeat_bloqueado_por_propiedad_de_mesa_no_llama_al_repositorio() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", servedBy = OrderStaffSummary(id = "otro-mesero")))
+        ownershipFlow.value = TablesRepository.TableOwnership(enforced = true, canManageAll = false, staffId = "yo")
+        val viewModel = createViewModel()
+
+        viewModel.splitOrderBySeat()
+
+        coVerify(exactly = 0) { repository.splitOrderBySeat(any(), any()) }
+        assertThat(viewModel.error.value).contains("otro mesero")
+    }
+
+    @Test
+    fun splitOrderBySeat_rechazado_por_menos_de_dos_asientos_marca_error() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.splitOrderBySeat(venueId, "orden-1") } returns
+            Result.failure(BackendHttpException(statusCode = 400, message = "Se necesitan al menos dos asientos con artículos para dividir por puesto"))
+        val viewModel = createViewModel()
+
+        viewModel.splitOrderBySeat()
+
+        assertThat(viewModel.error.value).contains("al menos dos asientos")
+    }
+
+    @Test
+    fun updateOrderDetails_exitoso_recarga_la_cuenta() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.updateOrderDetails(venueId, "orden-1", false, "Cumpleaños de Ana", 6) } returns
+            Result.success(TablesRepository.UpdateDetailsOutcome(queued = false))
+        val viewModel = createViewModel()
+
+        viewModel.updateOrderDetails("Cumpleaños de Ana", 6)
+
+        coVerify(exactly = 1) { repository.updateOrderDetails(venueId, "orden-1", false, "Cumpleaños de Ana", 6) }
+        coVerify(exactly = 2) { repository.getOrder(venueId, "orden-1") }
+        assertThat(viewModel.notice.value).isEqualTo("Detalles actualizados")
+        assertThat(viewModel.error.value).isNull()
+    }
+
+    @Test
+    fun updateOrderDetails_encolado_sin_red_se_ve_como_guardado_NUNCA_error() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.updateOrderDetails(venueId, "orden-1", false, "Ana", null) } returns
+            Result.success(TablesRepository.UpdateDetailsOutcome(queued = true))
+        val viewModel = createViewModel()
+
+        viewModel.updateOrderDetails("Ana", null)
+
+        assertThat(viewModel.notice.value).contains("Sin conexión")
+        assertThat(viewModel.error.value).isNull()
+    }
+
+    @Test
+    fun updateOrderDetails_funciona_con_sesion_provisional() = runTest {
+        tableSession.open(tableId = "mesa-1", localOrderId = "local-uuid-123")
+        coEvery { repository.updateOrderDetails(venueId, "local-uuid-123", true, "Ana", 4) } returns
+            Result.success(TablesRepository.UpdateDetailsOutcome(queued = true))
+        val viewModel = createViewModel()
+
+        viewModel.updateOrderDetails("Ana", 4)
+
+        coVerify(exactly = 1) { repository.updateOrderDetails(venueId, "local-uuid-123", true, "Ana", 4) }
+        assertThat(viewModel.error.value).isNull()
+    }
+
+    @Test
+    fun updateOrderDetails_rechazado_marca_error() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.updateOrderDetails(venueId, "orden-1", false, null, 999) } returns
+            Result.failure(TablesRepository.UpdateDetailsRejectedException("covers inválido", "INVALID_PAYLOAD"))
+        val viewModel = createViewModel()
+
+        viewModel.updateOrderDetails(null, 999)
+
+        assertThat(viewModel.error.value).contains("covers inválido")
+    }
+
+    @Test
+    fun updateOrderDetails_bloqueado_por_propiedad_de_mesa_no_llama_al_repositorio() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", servedBy = OrderStaffSummary(id = "otro-mesero")))
+        ownershipFlow.value = TablesRepository.TableOwnership(enforced = true, canManageAll = false, staffId = "yo")
+        val viewModel = createViewModel()
+
+        viewModel.updateOrderDetails("Ana", 4)
+
+        coVerify(exactly = 0) { repository.updateOrderDetails(any(), any(), any(), any(), any()) }
+        assertThat(viewModel.error.value).contains("otro mesero")
+    }
+
+    // endregion
 }

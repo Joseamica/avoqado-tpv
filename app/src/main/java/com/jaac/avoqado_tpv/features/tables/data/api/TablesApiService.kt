@@ -7,6 +7,7 @@ import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyServiceChargeRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyServiceChargeResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.AvailableDiscountsResponse
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.AvailableServiceChargesResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.CategoryCatalogDto
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.CompOrderRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.CompOrderResponse
@@ -213,6 +214,18 @@ interface TablesApiService {
         @Path("orderId") orderId: String,
         @Body body: CompOrderRequest,
     ): Response<CompOrderResponse>
+
+    /**
+     * `GET /tpv/venues/{venueId}/service-charges` → `orderTableController.listServiceCharges`
+     * (🆕 companion de lectura, Fase 3 2026-08-03 — [applyServiceCharge] arriba
+     * existía sin caller, mismo hallazgo de `completeness-audit.md`; a
+     * diferencia de [getAvailableDiscounts] esta ruta no existía server-side
+     * antes de esta fase, ver KDoc de [com.jaac.avoqado_tpv.features.tables.data.api.dto.AvailableServiceChargesResponse]).
+     * Catálogo del VENUE (activos), sin `checkFeatureAccess` — mismo criterio
+     * de lectura pura que [getAvailableDiscounts].
+     */
+    @GET("tpv/venues/{venueId}/service-charges")
+    suspend fun getServiceCharges(@Path("venueId") venueId: String): Response<AvailableServiceChargesResponse>
 
     // ========== Personal (Fase 2 — picker de ASSIGN_ORDER) ==========
 

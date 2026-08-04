@@ -665,6 +665,87 @@ class TableOrderViewModel @Inject constructor(
             )
         }
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Fase 3 (2026-08-03) — SPLIT_BY_SEAT · UPDATE_DETAILS. Los últimos 2
+    // intents que vivían aquí (APPLY_SERVICE_CHARGE quedó en
+    // TableCheckoutViewModel — afecta el total, ver su KDoc).
+    // ══════════════════════════════════════════════════════════════════
+
+    private val _isSplittingBySeat = MutableStateFlow(false)
+    val isSplittingBySeat: StateFlow<Boolean> = _isSplittingBySeat.asStateFlow()
+
+    private val _isUpdatingDetails = MutableStateFlow(false)
+    val isUpdatingDetails: StateFlow<Boolean> = _isUpdatingDetails.asStateFlow()
+
+    /**
+     * "Dividir por puesto" — todo-o-nada garantizado por el server (ver KDoc de
+     * [TablesRepository.splitOrderBySeat]). Sin selección de artículos —
+     * [com.jaac.avoqado_tpv.features.tables.presentation.SplitBySeatDialog] solo
+     * pide confirmación, el server decide los grupos por `seat`.
+     */
+    fun splitOrderBySeat() {
+        if (blockedByOwnership()) return
+        val session = tableSession.current() ?: run { _error.value = "No hay mesa activa"; return }
+        if (session.isProvisional) {
+            _error.value = "La mesa aún no se sincroniza"
+            return
+        }
+        val vId = venueId ?: run { _error.value = "No hay venue configurado en este terminal"; return }
+        if (_isSplittingBySeat.value) return
+
+        _isSplittingBySeat.value = true
+        viewModelScope.launch {
+            repository.splitOrderBySeat(vId, session.orderId).fold(
+                onSuccess = { outcome ->
+                    _isSplittingBySeat.value = false
+                    _notice.value = if (outcome.queued) {
+                        "Sin conexión — división guardada; se sincronizará sola"
+                    } else {
+                        "Cuenta dividida por puesto" + (outcome.createdCount?.let { " — $it cuenta(s) nueva(s)" } ?: "")
+                    }
+                    if (!outcome.queued) loadCheck()
+                },
+                onFailure = { e ->
+                    _isSplittingBySeat.value = false
+                    if (e is CancellationException) throw e
+                    _error.value = (e as? BackendHttpException)?.message ?: "No se pudo dividir por puesto"
+                },
+            )
+        }
+    }
+
+    /**
+     * "Editar detalles" (comensales, nombre en el cheque) — SIEMPRE vía intent
+     * (ver KDoc de [TablesRepository.updateOrderDetails]). Funciona con sesión
+     * provisional también, mismo criterio que [moveOrder]/[cancelOrder].
+     */
+    fun updateOrderDetails(name: String?, covers: Int?) {
+        if (blockedByOwnership()) return
+        val session = tableSession.current() ?: run { _error.value = "No hay mesa activa"; return }
+        val vId = venueId ?: run { _error.value = "No hay venue configurado en este terminal"; return }
+        if (_isUpdatingDetails.value) return
+
+        _isUpdatingDetails.value = true
+        viewModelScope.launch {
+            repository.updateOrderDetails(vId, session.orderId, session.isProvisional, name, covers).fold(
+                onSuccess = { outcome ->
+                    _isUpdatingDetails.value = false
+                    _notice.value = if (outcome.queued) {
+                        "Sin conexión — detalles guardados; se sincronizarán solos"
+                    } else {
+                        "Detalles actualizados"
+                    }
+                    if (!outcome.queued) loadCheck()
+                },
+                onFailure = { e ->
+                    _isUpdatingDetails.value = false
+                    if (e is CancellationException) throw e
+                    _error.value = (e as? TablesRepository.UpdateDetailsRejectedException)?.message ?: "No se pudieron actualizar los detalles"
+                },
+            )
+        }
+    }
 }
 
 /** Una ronda ya enviada — todas las líneas que comparten el mismo `sentToKitchenAt`. */

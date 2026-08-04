@@ -76,6 +76,26 @@ class TableOrderViewModel @Inject constructor(
     private val _isLoadingCheck = MutableStateFlow(false)
     val isLoadingCheck: StateFlow<Boolean> = _isLoadingCheck.asStateFlow()
 
+    /**
+     * 🔴 Bug real (Mesa M1, `cmsds40wp000cc9ixmm8u71f4`, encontrado en vivo en
+     * el PAX del founder): [loadCheck] fallando (blip de red, timeout, un
+     * 500) dejaba [_check] en `null` SIN ninguna señal — `TableOrderScreen`
+     * no tenía forma de distinguir "cuenta genuinamente vacía" de "no se pudo
+     * cargar", así que caía siempre en `EmptyOrderState`
+     * ("Todavía no hay nada en esta cuenta"), IDÉNTICO a una mesa realmente
+     * vacía. El server tenía los 3 artículos y $199.00 completos — la falla
+     * era puramente de UI, y bloqueaba al mesero de cobrar una cuenta con
+     * dinero real. `onRetryLoad` ya viajaba hasta `TableOrderScreenContent`
+     * pero nunca se usaba ahí — el candado de retry existía a medias.
+     *
+     * Solo se enciende cuando [_check] TODAVÍA es `null` (primera carga) —
+     * un refresh fallido sobre una cuenta YA visible nunca debe borrarla ni
+     * disfrazarla de "no se pudo cargar" (ver el `_error` toast existente
+     * para ese caso).
+     */
+    private val _checkLoadFailed = MutableStateFlow(false)
+    val checkLoadFailed: StateFlow<Boolean> = _checkLoadFailed.asStateFlow()
+
     private val _isSending = MutableStateFlow(false)
     val isSending: StateFlow<Boolean> = _isSending.asStateFlow()
 
@@ -140,6 +160,8 @@ class TableOrderViewModel @Inject constructor(
         val vId = venueId ?: return
         viewModelScope.launch {
             _isLoadingCheck.value = true
+            // Nueva carga en vuelo — cualquier fallo VIEJO ya no aplica.
+            _checkLoadFailed.value = false
             // Best-effort: drena el outbox antes de leer, para que el GET ya
             // vea las rondas que se mandaron sin red. Nunca lanza salvo
             // CancellationException — se blinda igual (mismo patrón que
@@ -155,6 +177,7 @@ class TableOrderViewModel @Inject constructor(
             repository.getOrder(vId, session.orderId).fold(
                 onSuccess = { detail ->
                     _check.value = detail
+                    _checkLoadFailed.value = false
                     tableSession.updateVersion(detail.version)
                     // El replay pudo haber confirmado rondas que estaban en
                     // "Por sincronizar" — el cheque fresco ya las incluye.
@@ -167,6 +190,14 @@ class TableOrderViewModel @Inject constructor(
                     // con la cuenta perfectamente bien.
                     if (!isNetworkError(e)) {
                         _error.value = "No se pudo actualizar la cuenta"
+                    }
+                    // Ver KDoc de [checkLoadFailed]: SOLO si esta es la
+                    // primera carga (todavía no hay cheque visible) — un
+                    // refresh fallido sobre una cuenta YA cargada la deja
+                    // intacta, nunca la reemplaza por la pantalla de "no se
+                    // pudo cargar".
+                    if (_check.value == null) {
+                        _checkLoadFailed.value = true
                     }
                 },
             )

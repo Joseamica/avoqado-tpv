@@ -156,6 +156,77 @@ class TableOrderViewModelTest {
 
     // endregion
 
+    // region — checkLoadFailed (Mesa M1, cmsds40wp000cc9ixmm8u71f4, bug real en vivo):
+    // la carga INICIAL de la cuenta fallando (blip de red, timeout, 500) dejaba
+    // `check == null` sin ninguna señal — la pantalla no podía distinguir
+    // "cuenta vacía" de "no se pudo cargar" y mostraba "Todavía no hay nada en
+    // esta cuenta" sobre una orden con 3 artículos y $199.00 reales en el
+    // server. Ver KDoc de TableOrderViewModel.checkLoadFailed.
+
+    @Test
+    fun getOrder_falla_por_red_en_la_carga_inicial_enciende_checkLoadFailed_sin_marcar_error() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", version = 1))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.failure(java.io.IOException("blip de red"))
+
+        val viewModel = createViewModel()
+
+        // "Sin red NO es un error" (regla de oro offline) — pero la pantalla
+        // SÍ necesita saber que la carga falló para no disfrazarlo de "cuenta
+        // vacía" (ver resolveTableOrderBodyState).
+        assertThat(viewModel.checkLoadFailed.value).isTrue()
+        assertThat(viewModel.error.value).isNull()
+        assertThat(viewModel.check.value).isNull()
+    }
+
+    @Test
+    fun getOrder_falla_por_error_de_servidor_en_la_carga_inicial_enciende_checkLoadFailed_Y_mantiene_el_error_toast() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", version = 1))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.failure(BackendHttpException(statusCode = 500, message = "boom"))
+
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.checkLoadFailed.value).isTrue()
+        assertThat(viewModel.error.value).isNotNull() // el toast de error existente se conserva
+        assertThat(viewModel.check.value).isNull()
+    }
+
+    @Test
+    fun getOrder_exitoso_apaga_checkLoadFailed_y_puebla_el_cheque_con_sus_items() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", version = 1))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(
+            OrderDetail(
+                id = "orden-1",
+                total = BigDecimal("199"),
+                items = listOf(OrderDetailItem(id = "i1", productName = "Coca-Cola 600ml", quantity = 1, total = BigDecimal("25"))),
+            ),
+        )
+
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.checkLoadFailed.value).isFalse()
+        assertThat(viewModel.check.value?.items).hasSize(1)
+    }
+
+    @Test
+    fun un_refresh_fallido_sobre_una_cuenta_YA_cargada_NO_enciende_checkLoadFailed_ni_la_borra() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", version = 1))
+        val loaded = OrderDetail(id = "orden-1", total = BigDecimal("199"), items = listOf(OrderDetailItem(id = "i1", quantity = 1)))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(loaded)
+        val viewModel = createViewModel()
+        assertThat(viewModel.check.value).isNotNull()
+
+        // Un refresco posterior (p.ej. tras un 409) falla — la cuenta YA
+        // visible no debe reemplazarse por la pantalla de "no se pudo cargar".
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.failure(java.io.IOException("blip de red"))
+        viewModel.loadCheck()
+
+        assertThat(viewModel.checkLoadFailed.value).isFalse()
+        assertThat(viewModel.check.value).isEqualTo(loaded)
+    }
+
+    // endregion
+
     // region — sesión provisional (mesa abierta offline): NUNCA llama TablesRepository.addItems
 
     @Test

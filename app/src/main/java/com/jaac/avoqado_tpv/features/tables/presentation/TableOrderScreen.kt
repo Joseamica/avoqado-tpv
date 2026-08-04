@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EventSeat
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.Card
@@ -45,6 +46,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -52,6 +54,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -98,6 +101,7 @@ fun TableOrderScreen(
     val session by viewModel.tableSession.active.collectAsStateWithLifecycle()
     val check by viewModel.check.collectAsStateWithLifecycle()
     val isLoadingCheck by viewModel.isLoadingCheck.collectAsStateWithLifecycle()
+    val checkLoadFailed by viewModel.checkLoadFailed.collectAsStateWithLifecycle()
     val isSending by viewModel.isSending.collectAsStateWithLifecycle()
     val pendingLines by viewModel.pendingLines.collectAsStateWithLifecycle()
     val queuedLines by viewModel.queuedLines.collectAsStateWithLifecycle()
@@ -238,6 +242,7 @@ fun TableOrderScreen(
         session = activeSession,
         check = check,
         isLoadingCheck = isLoadingCheck,
+        checkLoadFailed = checkLoadFailed,
         isSending = isSending,
         pendingLines = pendingLines,
         queuedLines = queuedLines,
@@ -379,6 +384,7 @@ private fun TableOrderScreenContent(
     session: TableSession.Active,
     check: OrderDetail?,
     isLoadingCheck: Boolean,
+    checkLoadFailed: Boolean,
     isSending: Boolean,
     pendingLines: List<PendingRoundCart.Line>,
     queuedLines: List<PendingRoundCart.Line>,
@@ -477,12 +483,27 @@ private fun TableOrderScreenContent(
         },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
-        when {
-            isLoadingCheck && check == null && !session.isProvisional -> {
+        // Ver KDoc de [resolveTableOrderBodyState] para el bug real (Mesa
+        // M1) que esta distinción cierra: un LOAD_FAILED nunca debe caer en
+        // la misma rama que una cuenta genuinamente vacía.
+        when (
+            resolveTableOrderBodyState(
+                isLoadingCheck = isLoadingCheck,
+                check = check,
+                checkLoadFailed = checkLoadFailed,
+                isProvisional = session.isProvisional,
+                hasPendingOrQueuedLines = pendingLines.isNotEmpty() || queuedLines.isNotEmpty(),
+            )
+        ) {
+            TableOrderBodyState.LOADING -> {
                 AvoqadoFullScreenLoading(message = "Cargando cuenta…", modifier = Modifier.padding(padding))
             }
 
-            else -> {
+            TableOrderBodyState.LOAD_FAILED -> {
+                TableOrderLoadFailedState(onRetry = onRetryLoad, modifier = Modifier.padding(padding))
+            }
+
+            TableOrderBodyState.CONTENT -> {
                 LazyColumn(
                     modifier = Modifier
                         .padding(padding)
@@ -552,6 +573,42 @@ private fun EmptyOrderState(onAddProducts: () -> Unit, readOnly: Boolean) {
         if (!readOnly) {
             Spacer(Modifier.height(Spacing.Space3))
             AvoqadoButton(text = "Agregar productos", onClick = onAddProducts, icon = Icons.Default.Add)
+        }
+    }
+}
+
+/**
+ * "No se pudo cargar la cuenta" — la carga INICIAL de [TableOrderViewModel.check]
+ * falló (blip de red, timeout, 500) y todavía no hay ningún cheque en
+ * memoria. Deliberadamente DISTINTA de [EmptyOrderState]: esta pantalla NUNCA
+ * debe verse igual que "la mesa no tiene nada", porque puede haber dinero
+ * real esperando (ver KDoc de [resolveTableOrderBodyState] — Mesa M1,
+ * $199.00 reales que esta pantalla dejaba de mostrar). Mismo patrón visual
+ * que `TablesScreen.TablesErrorState` (ícono + mensaje + "Reintentar").
+ */
+@Composable
+private fun TableOrderLoadFailedState(onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(Spacing.Space6)) {
+            Icon(
+                imageVector = Icons.Default.CloudOff,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(48.dp),
+            )
+            Spacer(Modifier.height(Spacing.Space2))
+            Text(
+                text = "No se pudo cargar la cuenta — puede que ya tenga productos.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(Spacing.Space4))
+            TextButton(onClick = onRetry) {
+                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.padding(start = Spacing.Space1))
+                Text("Reintentar")
+            }
         }
     }
 }
@@ -849,6 +906,46 @@ private fun roundLabel(sentAt: String?, roundNumber: Int): String {
     return if (time != null) "Ronda $roundNumber · $time" else "Ronda $roundNumber"
 }
 
+/**
+ * Qué debe pintar el cuerpo de [TableOrderScreenContent] — extraído a función
+ * pura (`internal`, sin Compose) para poder probarlo con un JUnit normal, ver
+ * `TableOrderScreenStateTest`.
+ *
+ * 🔴 Bug real (Mesa M1, `cmsds40wp000cc9ixmm8u71f4`): antes de esto el `when`
+ * solo distinguía LOADING vs "todo lo demás" — un [checkLoadFailed] (la
+ * carga inicial de la cuenta falló, típico blip de red en el WiFi del local)
+ * caía en el mismo "todo lo demás" que una cuenta genuinamente vacía, así
+ * que el mesero veía "Todavía no hay nada en esta cuenta" sobre una cuenta
+ * con 3 artículos y $199.00 reales en el server. `LOAD_FAILED` es su propia
+ * rama — nunca se disfraza de cuenta vacía.
+ */
+internal enum class TableOrderBodyState { LOADING, LOAD_FAILED, CONTENT }
+
+/**
+ * @param hasPendingOrQueuedLines `true` si hay algo en el carrito local
+ *   (pendiente de enviar o encolado sin red) — datos que viven INDEPENDIENTES
+ *   de si el GET de la cuenta funcionó. Sin este parámetro, LOAD_FAILED podía
+ *   tapar el carrito de un mesero que agregó productos ANTES de que la carga
+ *   inicial fallara: el peor momento posible para esconderle lo que ya
+ *   tecleó. La pantalla de "no se pudo cargar" es el último recurso — solo
+ *   cuando literalmente no hay nada más que mostrar.
+ */
+internal fun resolveTableOrderBodyState(
+    isLoadingCheck: Boolean,
+    check: OrderDetail?,
+    checkLoadFailed: Boolean,
+    isProvisional: Boolean,
+    hasPendingOrQueuedLines: Boolean,
+): TableOrderBodyState = when {
+    isLoadingCheck && check == null && !isProvisional -> TableOrderBodyState.LOADING
+    // Solo mientras no hay NINGÚN cheque cargado NI nada local que mostrar —
+    // ver KDoc de TableOrderViewModel.checkLoadFailed: un refresh fallido
+    // sobre una cuenta YA visible (o sobre un carrito con algo dentro) nunca
+    // la reemplaza por esta pantalla.
+    checkLoadFailed && check == null && !hasPendingOrQueuedLines -> TableOrderBodyState.LOAD_FAILED
+    else -> TableOrderBodyState.CONTENT
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // PREVIEWS
 // ══════════════════════════════════════════════════════════════════════
@@ -861,6 +958,7 @@ private fun TableOrderScreenEmptyPreview() {
             session = TableSession.Active(tableId = "1", tableNumber = "5", orderId = "order-1"),
             check = OrderDetail(id = "order-1"),
             isLoadingCheck = false,
+            checkLoadFailed = false,
             isSending = false,
             pendingLines = emptyList(),
             queuedLines = emptyList(),
@@ -892,11 +990,42 @@ private fun TableOrderScreenFullPreview() {
                 ),
             ),
             isLoadingCheck = false,
+            checkLoadFailed = false,
             isSending = false,
             pendingLines = listOf(PendingRoundCart.Line(productId = "p1", name = "Agua mineral", unitPrice = BigDecimal("30.00"), quantity = 2)),
             queuedLines = listOf(PendingRoundCart.Line(productId = "p2", name = "Ensalada", unitPrice = BigDecimal("120.00"), quantity = 1)),
             readOnly = true,
             lockOwnerName = "Fátima Flores",
+            snackbarHostState = remember { SnackbarHostState() },
+            onNavigateBack = {},
+            onAddProducts = {},
+            onSendRound = {},
+            onRetryLoad = {},
+            onNavigateToCheckout = {},
+        )
+    }
+}
+
+/**
+ * Repro exacta de la Mesa M1 (`cmsds40wp000cc9ixmm8u71f4`) — la carga inicial
+ * falló y NUNCA hubo un cheque en memoria. Debe verse claramente DISTINTA de
+ * [TableOrderScreenEmptyPreview] — nunca "Todavía no hay nada en esta
+ * cuenta".
+ */
+@Preview(showBackground = true, widthDp = 480, heightDp = 480, name = "NEXGO 480×480 — falló la carga inicial (Mesa M1)")
+@Composable
+private fun TableOrderScreenLoadFailedPreview() {
+    AvoqadoTheme {
+        TableOrderScreenContent(
+            session = TableSession.Active(tableId = "1", tableNumber = "1", orderId = "cmsds40wp000cc9ixmm8u71f4", total = BigDecimal("199.00")),
+            check = null,
+            isLoadingCheck = false,
+            checkLoadFailed = true,
+            isSending = false,
+            pendingLines = emptyList(),
+            queuedLines = emptyList(),
+            readOnly = false,
+            lockOwnerName = null,
             snackbarHostState = remember { SnackbarHostState() },
             onNavigateBack = {},
             onAddProducts = {},

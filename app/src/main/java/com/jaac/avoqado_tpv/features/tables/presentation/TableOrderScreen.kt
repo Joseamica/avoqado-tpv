@@ -17,16 +17,26 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.CallMerge
+import androidx.compose.material.icons.automirrored.filled.CallSplit
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AssignmentInd
+import androidx.compose.material.icons.filled.CardGiftcard
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -36,7 +46,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Modifier
@@ -53,6 +65,8 @@ import com.jaac.avoqado_tpv.core.presentation.theme.Spacing
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
+import com.jaac.avoqado_tpv.features.tables.domain.model.ActiveStaffMember
+import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetailItem
 import java.math.BigDecimal
@@ -70,6 +84,7 @@ import java.time.format.DateTimeFormatter
  * oro de `offline-first-y-hub-lan.md` §2.3, y el defecto real que ya mordió a
  * `AngelPayPaymentViewModel` en Pagos).
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TableOrderScreen(
     onNavigateBack: () -> Unit,
@@ -88,6 +103,79 @@ fun TableOrderScreen(
     val error by viewModel.error.collectAsStateWithLifecycle()
     val readOnly by viewModel.readOnly.collectAsStateWithLifecycle()
     val lockOwnerName by viewModel.lockOwnerName.collectAsStateWithLifecycle()
+
+    // Fase 1 (2026-08-03) — SPLIT_ORDER · COMP_ORDER · MOVE_ORDER.
+    val isSplitting by viewModel.isSplitting.collectAsStateWithLifecycle()
+    val isComping by viewModel.isComping.collectAsStateWithLifecycle()
+    val isMoving by viewModel.isMoving.collectAsStateWithLifecycle()
+    val isOnline by viewModel.isOnline.collectAsStateWithLifecycle()
+    val availableTargetTables by viewModel.availableTargetTables.collectAsStateWithLifecycle()
+    val isLoadingTargetTables by viewModel.isLoadingTargetTables.collectAsStateWithLifecycle()
+
+    // Fase 2 (2026-08-03) — MERGE_ORDERS · CANCEL_ORDER · ASSIGN_ORDER.
+    val isMerging by viewModel.isMerging.collectAsStateWithLifecycle()
+    val mergeCandidateTables by viewModel.mergeCandidateTables.collectAsStateWithLifecycle()
+    val isLoadingMergeCandidates by viewModel.isLoadingMergeCandidates.collectAsStateWithLifecycle()
+    val isCancelling by viewModel.isCancelling.collectAsStateWithLifecycle()
+    val cancelled by viewModel.cancelled.collectAsStateWithLifecycle()
+    val isAssigning by viewModel.isAssigning.collectAsStateWithLifecycle()
+    val activeStaff by viewModel.activeStaff.collectAsStateWithLifecycle()
+    val isLoadingActiveStaff by viewModel.isLoadingActiveStaff.collectAsStateWithLifecycle()
+
+    var showSplitSheet by remember { mutableStateOf(false) }
+    var showCompSheet by remember { mutableStateOf(false) }
+    var showMoveSheet by remember { mutableStateOf(false) }
+    var showMergeSheet by remember { mutableStateOf(false) }
+    var showCancelDialog by remember { mutableStateOf(false) }
+    var showAssignSheet by remember { mutableStateOf(false) }
+    var splitTriggered by remember { mutableStateOf(false) }
+    var compTriggered by remember { mutableStateOf(false) }
+    var moveTriggered by remember { mutableStateOf(false) }
+    var mergeTriggered by remember { mutableStateOf(false) }
+    var assignTriggered by remember { mutableStateOf(false) }
+
+    // Cada sheet se auto-cierra cuando SU acción termina (éxito o error — el
+    // error ya se muestra en el snackbar compartido) — nunca antes, para que
+    // el mesero vea el spinner del botón mientras la acción está en vuelo.
+    LaunchedEffect(isSplitting) {
+        if (splitTriggered && !isSplitting) {
+            showSplitSheet = false
+            splitTriggered = false
+        }
+    }
+    LaunchedEffect(isComping) {
+        if (compTriggered && !isComping) {
+            showCompSheet = false
+            compTriggered = false
+        }
+    }
+    LaunchedEffect(isMoving) {
+        if (moveTriggered && !isMoving) {
+            showMoveSheet = false
+            moveTriggered = false
+        }
+    }
+    LaunchedEffect(isMerging) {
+        if (mergeTriggered && !isMerging) {
+            showMergeSheet = false
+            mergeTriggered = false
+        }
+    }
+    LaunchedEffect(isAssigning) {
+        if (assignTriggered && !isAssigning) {
+            showAssignSheet = false
+            assignTriggered = false
+        }
+    }
+    // CANCEL_ORDER libera la mesa del lado del server — a diferencia de las
+    // otras 5 acciones, esta SÍ sale de la pantalla (ver KDoc de
+    // TableOrderViewModel.cancelled). El diálogo se cierra solo al disparar
+    // la salida; no hace falta un LaunchedEffect(isCancelling) separado.
+    LaunchedEffect(cancelled) {
+        if (cancelled) {
+            showCancelDialog = false
+        }
+    }
 
     val activeSession = session
     if (activeSession == null) {
@@ -142,7 +230,98 @@ fun TableOrderScreen(
         onSendRound = viewModel::sendRound,
         onRetryLoad = viewModel::loadCheck,
         onNavigateToCheckout = onNavigateToCheckout,
+        onSplitClick = { showSplitSheet = true },
+        onCompClick = { showCompSheet = true },
+        onMoveClick = {
+            showMoveSheet = true
+            viewModel.loadAvailableTargetTables()
+        },
+        onMergeClick = {
+            showMergeSheet = true
+            viewModel.loadMergeCandidateTables()
+        },
+        onCancelClick = { showCancelDialog = true },
+        onAssignClick = {
+            showAssignSheet = true
+            viewModel.loadActiveStaff()
+        },
     )
+
+    if (showSplitSheet) {
+        SplitOrderSheet(
+            check = check,
+            isSplitting = isSplitting,
+            onDismiss = { if (!isSplitting) showSplitSheet = false },
+            onConfirm = { itemIds ->
+                splitTriggered = true
+                viewModel.splitOrder(itemIds)
+            },
+        )
+    }
+
+    if (showCompSheet) {
+        CompOrderSheet(
+            check = check,
+            isComping = isComping,
+            isOnline = isOnline,
+            onDismiss = { if (!isComping) showCompSheet = false },
+            onConfirmWhole = { reason ->
+                compTriggered = true
+                viewModel.compWholeOrder(reason)
+            },
+            onConfirmItems = { itemIds, reason ->
+                compTriggered = true
+                viewModel.compItems(itemIds, reason)
+            },
+        )
+    }
+
+    if (showMoveSheet) {
+        MoveTableSheet(
+            tables = availableTargetTables,
+            isLoading = isLoadingTargetTables,
+            isMoving = isMoving,
+            onDismiss = { if (!isMoving) showMoveSheet = false },
+            onSelect = { target ->
+                moveTriggered = true
+                viewModel.moveOrder(target)
+            },
+        )
+    }
+
+    if (showMergeSheet) {
+        MergeOrdersSheet(
+            tables = mergeCandidateTables,
+            isLoading = isLoadingMergeCandidates,
+            isMerging = isMerging,
+            onDismiss = { if (!isMerging) showMergeSheet = false },
+            onSelect = { source ->
+                mergeTriggered = true
+                viewModel.mergeOrders(source)
+            },
+        )
+    }
+
+    if (showCancelDialog) {
+        CancelOrderDialog(
+            isCancelling = isCancelling,
+            onDismiss = { if (!isCancelling) showCancelDialog = false },
+            onConfirm = { reason -> viewModel.cancelOrder(reason) },
+        )
+    }
+
+    if (showAssignSheet) {
+        AssignWaiterSheet(
+            staff = activeStaff,
+            isLoading = isLoadingActiveStaff,
+            isAssigning = isAssigning,
+            onDismiss = { if (!isAssigning) showAssignSheet = false },
+            onSelect = { member ->
+                assignTriggered = true
+                viewModel.assignOrder(member)
+            },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -163,6 +342,12 @@ private fun TableOrderScreenContent(
     onSendRound: () -> Unit,
     onRetryLoad: () -> Unit,
     onNavigateToCheckout: () -> Unit,
+    onSplitClick: () -> Unit = {},
+    onCompClick: () -> Unit = {},
+    onMoveClick: () -> Unit = {},
+    onMergeClick: () -> Unit = {},
+    onCancelClick: () -> Unit = {},
+    onAssignClick: () -> Unit = {},
 ) {
     val rounds = check?.roundsSentToKitchen() ?: emptyList()
     val pendingCount = pendingLines.sumOf { it.quantity }
@@ -172,6 +357,17 @@ private fun TableOrderScreenContent(
     // no lo pendiente de enviar) — una mesa recién abierta sin nada mandado
     // a cocina no tiene cheque contra el cual cobrar.
     val canCheckout = !readOnly && !session.isProvisional && (checkTotal ?: BigDecimal.ZERO) > BigDecimal.ZERO
+    // Separar/dar cortesía necesitan artículos YA enviados; mover mesa no
+    // (una mesa provisional recién abierta offline también se puede mover).
+    val hasSentItems = !check?.items.isNullOrEmpty()
+    // Fusionar necesita un cheque REAL de destino (mismo motivo que separar:
+    // la ruta online no resuelve un orderId local), pero no items YA enviados
+    // — se puede fusionar sobre una cuenta recién abierta y vacía. Cancelar y
+    // reasignar sí funcionan sobre una sesión provisional (mismo criterio que
+    // mover mesa: viajan siempre por intent, con localOrderId si hace falta).
+    val mergeEnabled = !readOnly && !session.isProvisional
+    val cancelEnabled = !readOnly
+    val assignEnabled = !readOnly
 
     Scaffold(
         modifier = modifier,
@@ -181,6 +377,22 @@ private fun TableOrderScreenContent(
                     title = session.label,
                     subtitle = checkTotal?.let { moneyDisplay(it) } ?: if (session.isProvisional) "Sin conexión — abierta local" else null,
                     onNavigationClick = onNavigateBack,
+                    actions = {
+                        TableOrderOverflowMenu(
+                            splitEnabled = !readOnly && hasSentItems,
+                            compEnabled = !readOnly && hasSentItems,
+                            moveEnabled = !readOnly,
+                            mergeEnabled = mergeEnabled,
+                            cancelEnabled = cancelEnabled,
+                            assignEnabled = assignEnabled,
+                            onSplitClick = onSplitClick,
+                            onCompClick = onCompClick,
+                            onMoveClick = onMoveClick,
+                            onMergeClick = onMergeClick,
+                            onCancelClick = onCancelClick,
+                            onAssignClick = onAssignClick,
+                        )
+                    },
                 )
                 if (readOnly) {
                     OwnershipLockBanner(ownerName = lockOwnerName)
@@ -405,6 +617,78 @@ private fun OwnershipLockBanner(ownerName: String?) {
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+/**
+ * Menú de "más acciones" — Separar cuenta / Cortesía / Mover mesa (Fase 1) +
+ * Fusionar cuentas / Reasignar mesero / Cancelar cuenta (Fase 2). Un solo
+ * ícono `MoreVert` en vez de 6 íconos sueltos: en NEXGO 480×480 el topbar ya
+ * carga título+subtítulo+flecha, y el propio `AvoqadoTopBar` establece este
+ * patrón (ver su preview "With Actions").
+ *
+ * "Cancelar cuenta" va AL FINAL y separada por un divisor — es la única
+ * acción destructiva del menú (riesgo explícito del founder: difícil de
+ * hacer sin querer, pero encontrable bajo presión). Un tap aquí solo ABRE
+ * [CancelOrderDialog], nunca cancela directo — ver su KDoc.
+ */
+@Composable
+private fun TableOrderOverflowMenu(
+    splitEnabled: Boolean,
+    compEnabled: Boolean,
+    moveEnabled: Boolean,
+    mergeEnabled: Boolean,
+    cancelEnabled: Boolean,
+    assignEnabled: Boolean,
+    onSplitClick: () -> Unit,
+    onCompClick: () -> Unit,
+    onMoveClick: () -> Unit,
+    onMergeClick: () -> Unit,
+    onCancelClick: () -> Unit,
+    onAssignClick: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    IconButton(onClick = { expanded = true }) {
+        Icon(Icons.Default.MoreVert, contentDescription = "Más acciones")
+    }
+    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        DropdownMenuItem(
+            text = { Text("Separar cuenta") },
+            leadingIcon = { Icon(Icons.AutoMirrored.Filled.CallSplit, contentDescription = null) },
+            enabled = splitEnabled,
+            onClick = { expanded = false; onSplitClick() },
+        )
+        DropdownMenuItem(
+            text = { Text("Cortesía") },
+            leadingIcon = { Icon(Icons.Default.CardGiftcard, contentDescription = null) },
+            enabled = compEnabled,
+            onClick = { expanded = false; onCompClick() },
+        )
+        DropdownMenuItem(
+            text = { Text("Mover mesa") },
+            leadingIcon = { Icon(Icons.Default.SwapHoriz, contentDescription = null) },
+            enabled = moveEnabled,
+            onClick = { expanded = false; onMoveClick() },
+        )
+        DropdownMenuItem(
+            text = { Text("Fusionar cuentas") },
+            leadingIcon = { Icon(Icons.AutoMirrored.Filled.CallMerge, contentDescription = null) },
+            enabled = mergeEnabled,
+            onClick = { expanded = false; onMergeClick() },
+        )
+        DropdownMenuItem(
+            text = { Text("Reasignar mesero") },
+            leadingIcon = { Icon(Icons.Default.AssignmentInd, contentDescription = null) },
+            enabled = assignEnabled,
+            onClick = { expanded = false; onAssignClick() },
+        )
+        HorizontalDivider()
+        DropdownMenuItem(
+            text = { Text("Cancelar cuenta", color = MaterialTheme.colorScheme.error) },
+            leadingIcon = { Icon(Icons.Default.Cancel, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            enabled = cancelEnabled,
+            onClick = { expanded = false; onCancelClick() },
         )
     }
 }

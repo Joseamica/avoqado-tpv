@@ -71,6 +71,11 @@ class TablesApiServiceContractTest {
             "applyServiceCharge",
             "applyDiscount",
             "syncIntents",
+            // Fase 1 (2026-08-03) — completitud del módulo Mesas.
+            "getAvailableDiscounts",
+            "compOrder",
+            // Fase 2 (2026-08-03) — picker de personal para ASSIGN_ORDER.
+            "getActiveStaff",
         )
     }
 

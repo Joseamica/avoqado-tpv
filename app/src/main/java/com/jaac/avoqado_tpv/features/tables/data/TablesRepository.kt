@@ -6,14 +6,20 @@ import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.AddItemsRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.AddOrderItemRequest
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountRequest
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.CompOrderRequest
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.MergeOrdersRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.OpenTableRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.OpenedOrder
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.OrderDetailResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ProductCatalogDto
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.SplitOrderRequest
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
 import com.jaac.avoqado_tpv.features.tables.data.sync.TablesSyncOutcome
 import com.jaac.avoqado_tpv.features.tables.data.sync.classifyTablesSyncFailure
+import com.jaac.avoqado_tpv.features.tables.domain.model.ActiveStaffMember
+import com.jaac.avoqado_tpv.features.tables.domain.model.AvailableDiscount
 import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
 import com.jaac.avoqado_tpv.features.tables.domain.model.FloorElement
 import com.jaac.avoqado_tpv.features.tables.domain.model.MenuCategory
@@ -610,11 +616,545 @@ class TablesRepository @Inject constructor(
         }
     }
 
+    // ══════════════════════════════════════════════════════════════════
+    // Fase 1 (2026-08-03) — SPLIT_ORDER · APPLY_DISCOUNT · COMP_ORDER · MOVE_ORDER
+    // Los 4 intents que la auditoría de completitud encontró sin UI. Ver
+    // `.superpowers/sdd/2026-07-24-tpv-plan-c-modulo-mesas/completeness-audit.md`.
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * "Separar cuenta" — `POST tpv/venues/{venueId}/orders/{orderId}/split`.
+     * Solo alcanzable desde [com.jaac.avoqado_tpv.features.tables.presentation.TableOrderScreen]
+     * con el cheque YA cargado (nunca en sesión provisional — no hay items
+     * que mostrar todavía, ver KDoc de `TableOrderViewModel.loadCheck`), así
+     * que a diferencia de [openTable]/[payCash] este método siempre recibe un
+     * `orderId` real.
+     *
+     * 🔴 TODO-O-NADA es una garantía del SERVER (`resolveItemIds` en
+     * `sync.mobile.service.ts`: si falta una sola referencia, `REJECTED` con
+     * `ITEMS_NOT_RESOLVED` — nunca separa el subconjunto que sí resolvió). El
+     * cliente solo tiene que preservar esa garantía: manda [itemIds] completo
+     * en UNA sola llamada/intent, nunca en llamadas por artículo.
+     *
+     * Sin write-ahead — igual razonamiento que [openTable]/[clearTable]: la
+     * ruta online de split no acepta ninguna llave de idempotencia (a
+     * diferencia de `PAY_CASH`), así que escribir el intent antes no cierra
+     * ningún hueco adicional. Si la respuesta se pierde (`DROP_RESPONSE`) y
+     * el reintento offline llega a reproducirse, el server ya no encuentra
+     * los items bajo el `orderId` original (se movieron) → `REJECTED`
+     * `ITEMS_NOT_RESOLVED`, cuarentena visible — confuso pero NUNCA duplica
+     * dinero (nunca separa dos veces).
+     */
+    suspend fun splitOrder(venueId: String, orderId: String, itemIds: List<String>): Result<SplitOutcome> {
+        if (itemIds.isEmpty()) {
+            return Result.failure(IllegalArgumentException("splitOrder requiere al menos un artículo"))
+        }
+        val onlineResult = try {
+            api.splitOrder(venueId, orderId, SplitOrderRequest(itemIds)).toSplitOrderResult()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Timber.w(e, "⚠️ [Tables] Sin red en splitOrder (venue=%s, order=%s) — se encolará", venueId, orderId)
+            Result.failure(e)
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Tables] Fallo inesperado en splitOrder (venue=%s, order=%s)", venueId, orderId)
+            Result.failure(e)
+        }
+
+        onlineResult.onSuccess { result ->
+            return Result.success(
+                SplitOutcome(
+                    queued = false,
+                    createdOrderId = result.created.id,
+                    createdOrderNumber = result.created.orderNumber,
+                    sourceVersion = result.source.version,
+                ),
+            )
+        }
+
+        return when (classifyTablesSyncFailure(onlineResult.exceptionOrNull())) {
+            is TablesSyncOutcome.Retryable -> {
+                val payload = JsonObject().apply {
+                    addProperty("orderId", orderId)
+                    add("itemRefs", gson.toJsonTree(itemIds))
+                    addProperty("newLocalOrderId", UUID.randomUUID().toString())
+                }
+                syncOutbox.enqueue(venueId, SyncIntentTypes.SPLIT_ORDER, payload)
+                Timber.i("📤 [Tables] Sin conexión — SPLIT_ORDER encolado (venue=%s, order=%s)", venueId, orderId)
+                Result.success(SplitOutcome(queued = true, createdOrderId = null, createdOrderNumber = null, sourceVersion = null))
+            }
+
+            else -> Result.failure(onlineResult.exceptionOrNull() ?: IllegalStateException("splitOrder sin causa"))
+        }
+    }
+
+    private fun Response<com.jaac.avoqado_tpv.features.tables.data.api.dto.SplitOrderResponse>.toSplitOrderResult():
+        Result<com.jaac.avoqado_tpv.features.tables.data.api.dto.SplitOrderResult> {
+        val data = body()?.data
+        return if (isSuccessful && data != null) {
+            Result.success(data)
+        } else {
+            Result.failure(
+                BackendHttpException(statusCode = code(), message = parseBackendErrorMessage(errorBody()?.string(), message())),
+            )
+        }
+    }
+
+    /**
+     * "Descuentos disponibles" — `GET tpv/venues/{venueId}/orders/{orderId}/discounts/available`.
+     * Lectura pura, mismo criterio que [getTables]: nunca se encola. Solo
+     * alcanzable con el cheque cargado (no provisional) — ver
+     * [com.jaac.avoqado_tpv.features.tables.presentation.DiscountPickerSheet].
+     */
+    suspend fun getAvailableDiscounts(venueId: String, orderId: String): Result<List<AvailableDiscount>> = try {
+        val response = api.getAvailableDiscounts(venueId, orderId)
+        val data = response.body()?.data
+        if (response.isSuccessful && data != null) {
+            Result.success(
+                data.map {
+                    AvailableDiscount(
+                        id = it.id,
+                        name = it.name,
+                        type = it.type,
+                        value = it.value,
+                        requiresApproval = it.requiresApproval,
+                        estimatedSavings = it.estimatedSavings,
+                    )
+                },
+            )
+        } else {
+            Result.failure(
+                BackendHttpException(statusCode = response.code(), message = parseBackendErrorMessage(response.errorBody()?.string(), response.message())),
+            )
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: IOException) {
+        Timber.w(e, "⚠️ [Tables] Sin red en getAvailableDiscounts (venue=%s, order=%s)", venueId, orderId)
+        Result.failure(e)
+    } catch (e: Exception) {
+        Timber.e(e, "❌ [Tables] Fallo inesperado en getAvailableDiscounts (venue=%s, order=%s)", venueId, orderId)
+        Result.failure(e)
+    }
+
+    /**
+     * "Aplicar descuento" — `POST tpv/venues/{venueId}/orders/{orderId}/discounts/apply`.
+     * Aditivo y reversible desde el dashboard — no requiere confirmación de
+     * dos pasos (los números exactos ya se muestran en
+     * [com.jaac.avoqado_tpv.features.tables.presentation.DiscountPickerSheet]
+     * antes de tocar la fila, que ya funciona como el "preview" — la regla de
+     * doble-confirmación es del MCP, no de la TPV, pero el espíritu — nunca
+     * aplicar dinero a ciegas — se respeta igual).
+     *
+     * `requiresApproval=true` — sin flujo de autorización de gerente en esta
+     * versión de la TPV, la fila se deshabilita en la UI con la razón visible
+     * (ver KDoc de `AvailableDiscountDto`); este método nunca se llama para
+     * esos ids desde la UI actual, pero no los rechaza aquí tampoco — es una
+     * decisión de presentación, no de esta capa.
+     */
+    suspend fun applyDiscount(venueId: String, orderId: String, discountId: String): Result<DiscountOutcome> {
+        val onlineResult = try {
+            api.applyDiscount(venueId, orderId, ApplyDiscountRequest(discountId = discountId)).toApplyDiscountResult()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Timber.w(e, "⚠️ [Tables] Sin red en applyDiscount (venue=%s, order=%s) — se encolará", venueId, orderId)
+            Result.failure(e)
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Tables] Fallo inesperado en applyDiscount (venue=%s, order=%s)", venueId, orderId)
+            Result.failure(e)
+        }
+
+        onlineResult.onSuccess { result ->
+            return Result.success(DiscountOutcome(queued = false, amount = result.amount, newOrderTotal = result.newOrderTotal))
+        }
+
+        return when (classifyTablesSyncFailure(onlineResult.exceptionOrNull())) {
+            is TablesSyncOutcome.Retryable -> {
+                val payload = JsonObject().apply {
+                    addProperty("orderId", orderId)
+                    addProperty("discountId", discountId)
+                }
+                syncOutbox.enqueue(venueId, SyncIntentTypes.APPLY_DISCOUNT, payload)
+                Timber.i("📤 [Tables] Sin conexión — APPLY_DISCOUNT encolado (venue=%s, order=%s)", venueId, orderId)
+                Result.success(DiscountOutcome(queued = true, amount = null, newOrderTotal = null))
+            }
+
+            else -> Result.failure(onlineResult.exceptionOrNull() ?: IllegalStateException("applyDiscount sin causa"))
+        }
+    }
+
+    private fun Response<com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountResponse>.toApplyDiscountResult():
+        Result<com.jaac.avoqado_tpv.features.tables.data.api.dto.DiscountApplyResult> {
+        val body = body()
+        val data = body?.data
+        return if (isSuccessful && body?.success == true && data != null) {
+            Result.success(data)
+        } else {
+            Result.failure(
+                BackendHttpException(
+                    statusCode = code(),
+                    message = body?.error ?: parseBackendErrorMessage(errorBody()?.string(), message()),
+                ),
+            )
+        }
+    }
+
+    /**
+     * "Dar de cortesía" — `POST tpv/venues/{venueId}/orders/{orderId}/comp`.
+     *
+     * 🔴 La asimetría que manda aquí (regla dura,
+     * `avoqado-server/.claude/rules/offline-first-y-hub-lan.md` §5): cortesía
+     * de TODA la cuenta ([itemIds] vacío) tiene equivalente offline (intent
+     * `COMP_ORDER`, delega en `compWholeOrder` — ver
+     * `sync.mobile.service.ts`); cortesía de artículo(s) puntual(es) YA
+     * enviados ([itemIds] no vacío) es SIEMPRE online — el reducer de replay
+     * NUNCA lee `itemIds`, así que encolarla aplicaría cortesía a la cuenta
+     * ENTERA cuando por fin reproduzca, no solo a los artículos elegidos. Por
+     * eso la rama con [itemIds] nunca llama [SyncOutbox.enqueue] pase lo que
+     * pase — un fallo transitorio se propaga con un mensaje claro en vez de
+     * disfrazarse de "guardado offline".
+     */
+    suspend fun compOrder(venueId: String, orderId: String, itemIds: List<String>, reason: String, staffId: String): Result<CompOutcome> {
+        val onlineResult = callCompOrder(venueId, orderId, itemIds, reason, staffId)
+        onlineResult.onSuccess { result ->
+            return Result.success(CompOutcome(queued = false, total = result.total, version = result.version))
+        }
+
+        if (itemIds.isNotEmpty()) {
+            val outcome = classifyTablesSyncFailure(onlineResult.exceptionOrNull())
+            return Result.failure(
+                if (outcome is TablesSyncOutcome.Retryable) {
+                    ItemCompRequiresConnectionException()
+                } else {
+                    onlineResult.exceptionOrNull() ?: IllegalStateException("compOrder sin causa")
+                },
+            )
+        }
+
+        return when (classifyTablesSyncFailure(onlineResult.exceptionOrNull())) {
+            is TablesSyncOutcome.Retryable -> {
+                val payload = JsonObject().apply {
+                    addProperty("orderId", orderId)
+                    addProperty("reason", reason)
+                }
+                syncOutbox.enqueue(venueId, SyncIntentTypes.COMP_ORDER, payload)
+                Timber.i("📤 [Tables] Sin conexión — COMP_ORDER (toda la cuenta) encolado (venue=%s, order=%s)", venueId, orderId)
+                Result.success(CompOutcome(queued = true, total = null, version = null))
+            }
+
+            else -> Result.failure(onlineResult.exceptionOrNull() ?: IllegalStateException("compOrder sin causa"))
+        }
+    }
+
+    private suspend fun callCompOrder(
+        venueId: String,
+        orderId: String,
+        itemIds: List<String>,
+        reason: String,
+        staffId: String,
+    ): Result<com.jaac.avoqado_tpv.features.tables.data.api.dto.CompOrderResult> = try {
+        val response = api.compOrder(venueId, orderId, CompOrderRequest(itemIds = itemIds, reason = reason, staffId = staffId))
+        val data = response.body()?.data
+        if (response.isSuccessful && data != null) {
+            Result.success(data)
+        } else {
+            Result.failure(
+                BackendHttpException(statusCode = response.code(), message = parseBackendErrorMessage(response.errorBody()?.string(), response.message())),
+            )
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: IOException) {
+        Timber.w(e, "⚠️ [Tables] Sin red en compOrder (venue=%s, order=%s)", venueId, orderId)
+        Result.failure(e)
+    } catch (e: Exception) {
+        Timber.e(e, "❌ [Tables] Fallo inesperado en compOrder (venue=%s, order=%s)", venueId, orderId)
+        Result.failure(e)
+    }
+
+    /**
+     * "Mover mesa" — Fase 1. Igual que [payCash], NO hay ruta online dedicada
+     * bajo `/tpv` para mover una cuenta de mesa (`tableService.moveOrderToTable`
+     * solo existe del lado del reducer de replay, verificado 2026-08-03 contra
+     * `table.tpv.service.ts` — cero `router.post` con "move" en `tpv.routes.ts`).
+     * `MOVE_ORDER` viaja SIEMPRE como intent — write-ahead + replay inmediato,
+     * MISMO patrón que [payCash]: funciona online y offline con el mismo
+     * código, y la idempotencia de `[venueId, idempotencyKey]` a nivel de
+     * `sync/intents` (no solo la de `PAY_CASH`) hace que reproducir el mismo
+     * intent nunca mueva la cuenta dos veces.
+     */
+    suspend fun moveOrder(venueId: String, orderId: String, isProvisional: Boolean, targetTableId: String): Result<MoveOutcome> {
+        val intentId = UUID.randomUUID().toString()
+        val payload = JsonObject().apply {
+            if (isProvisional) addProperty("localOrderId", orderId) else addProperty("orderId", orderId)
+            addProperty("targetTableId", targetTableId)
+        }
+        syncOutbox.enqueue(venueId, SyncIntentTypes.MOVE_ORDER, payload, id = intentId)
+
+        var capturedAck: SyncIntentAck? = null
+        syncOutbox.replayNow(venueId) { intent, ack ->
+            if (intent.id == intentId) capturedAck = ack
+        }
+
+        val ack = capturedAck
+        return when {
+            ack == null -> Result.success(MoveOutcome(queued = true, targetTableId = targetTableId, version = null))
+            ack.isAcked -> Result.success(MoveOutcome(queued = false, targetTableId = targetTableId, version = ack.result?.intOrNull("version")))
+            ack.isRejected -> Result.failure(MoveOrderRejectedException(ack.message ?: "No se pudo mover la mesa", ack.errorCode))
+            else -> Result.success(MoveOutcome(queued = true, targetTableId = targetTableId, version = null))
+        }
+    }
+
+    /** Rechazo de NEGOCIO de un `MOVE_ORDER` (ack `REJECTED`) — viaja dentro de un 200 de `sync/intents`, no es HTTP. */
+    class MoveOrderRejectedException(message: String, val errorCode: String?) : Exception(message)
+
+    // ══════════════════════════════════════════════════════════════════
+    // Fase 2 (2026-08-03) — MERGE_ORDERS · CANCEL_ORDER · ASSIGN_ORDER
+    // Las 3 acciones que quedaban de la auditoría de completitud original
+    // (10 huecos; Fase 1 cerró 4). Ver `.superpowers/sdd/2026-07-24-tpv-plan-c-modulo-mesas/fase-2-report.md`.
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * "Fusionar cuentas" — `POST tpv/venues/{venueId}/orders/{orderId}/merge`.
+     * Body `{sourceOrderId}` — la cuenta de ESTA pantalla ([targetOrderId], el
+     * DESTINO que sobrevive) absorbe [sourceOrderId] (el ORIGEN, elegido en
+     * [com.jaac.avoqado_tpv.features.tables.presentation.MergeOrdersSheet] de
+     * una mesa OCUPADA distinta) y el origen queda `CANCELLED`.
+     *
+     * Mismo criterio que [splitOrder]: solo alcanzable con AMBAS cuentas
+     * REALES — el target porque la sesión no puede ser provisional (mismo
+     * gate que `hasSentItems`/`!session.isProvisional` en el overflow menu),
+     * el source porque siempre viene de [com.jaac.avoqado_tpv.features.tables.presentation.TableOrderViewModel.loadMergeCandidateTables]
+     * ([getTables], que solo lista cuentas que el server YA conoce — nunca un
+     * UUID local). Por eso, a diferencia de [moveOrder]/[cancelOrder]/[assignOrder],
+     * este método nunca necesita `isProvisional` ni `localOrderId`.
+     *
+     * Sin write-ahead — mismo razonamiento que [splitOrder]: la ruta online no
+     * acepta ninguna llave de idempotencia. Si la respuesta se pierde
+     * (DROP_RESPONSE) y el replay offline reproduce el intent encolado, el
+     * server revalida AMBAS cuentas DENTRO de la transacción
+     * (`orderMobileService.mergeOrders`, verificado 2026-08-03) — la de
+     * origen ya quedó `CANCELLED` por el primer intento, así que el segundo
+     * se rechaza ("La cuenta origen ya está cerrada", permanente →
+     * cuarentena). Confuso, pero NUNCA fusiona dos veces ni duplica dinero.
+     *
+     * El server también rechaza (permanente) si el origen tiene descuentos o
+     * cargos por servicio MANUALES sin quitar primero, o si cualquiera de las
+     * dos cuentas ya tiene un pago — esos mensajes se propagan tal cual, esta
+     * función no los reinterpreta.
+     */
+    suspend fun mergeOrders(venueId: String, targetOrderId: String, sourceOrderId: String): Result<MergeOutcome> {
+        if (sourceOrderId.isBlank()) {
+            return Result.failure(IllegalArgumentException("mergeOrders requiere sourceOrderId"))
+        }
+        val onlineResult = try {
+            api.mergeOrders(venueId, targetOrderId, MergeOrdersRequest(sourceOrderId)).toMergeOrdersResult()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Timber.w(e, "⚠️ [Tables] Sin red en mergeOrders (venue=%s, target=%s, source=%s) — se encolará", venueId, targetOrderId, sourceOrderId)
+            Result.failure(e)
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Tables] Fallo inesperado en mergeOrders (venue=%s, target=%s, source=%s)", venueId, targetOrderId, sourceOrderId)
+            Result.failure(e)
+        }
+
+        onlineResult.onSuccess { result ->
+            return Result.success(
+                MergeOutcome(
+                    queued = false,
+                    targetTotal = result.target.total,
+                    mergedOrderNumber = result.merged.orderNumber,
+                    tableFreed = result.tableFreed,
+                ),
+            )
+        }
+
+        return when (classifyTablesSyncFailure(onlineResult.exceptionOrNull())) {
+            is TablesSyncOutcome.Retryable -> {
+                val payload = JsonObject().apply {
+                    addProperty("orderId", targetOrderId)
+                    addProperty("sourceOrderId", sourceOrderId)
+                }
+                syncOutbox.enqueue(venueId, SyncIntentTypes.MERGE_ORDERS, payload)
+                Timber.i("📤 [Tables] Sin conexión — MERGE_ORDERS encolado (venue=%s, target=%s, source=%s)", venueId, targetOrderId, sourceOrderId)
+                Result.success(MergeOutcome(queued = true, targetTotal = null, mergedOrderNumber = null, tableFreed = null))
+            }
+
+            else -> Result.failure(onlineResult.exceptionOrNull() ?: IllegalStateException("mergeOrders sin causa"))
+        }
+    }
+
+    private fun Response<com.jaac.avoqado_tpv.features.tables.data.api.dto.MergeOrdersResponse>.toMergeOrdersResult():
+        Result<com.jaac.avoqado_tpv.features.tables.data.api.dto.MergeOrdersResult> {
+        val data = body()?.data
+        return if (isSuccessful && data != null) {
+            Result.success(data)
+        } else {
+            Result.failure(BackendHttpException(statusCode = code(), message = parseBackendErrorMessage(errorBody()?.string(), message())))
+        }
+    }
+
+    /**
+     * "Cancelar cuenta" — SIEMPRE vía intent, mismo patrón write-ahead +
+     * replay inmediato que [moveOrder]/[payCash]: no existe ninguna ruta
+     * online bajo `/tpv` para cancelar una orden (verificado 2026-08-03
+     * contra `tpv.routes.ts` — cero `router.*` con "cancel" para
+     * `orders/:orderId`; el reducer delega en `orderMobileService.cancelOrder`,
+     * que solo existe del lado de `sync.mobile.service.ts`).
+     *
+     * 🔴 El server rechaza (permanente, nunca `RETRY`) si `paymentStatus ===
+     * 'PAID'` — "no se puede cancelar una cuenta ya cobrada". Al aplicarse
+     * libera la mesa (o la re-apunta a un cheque hermano si hay multi-cheque)
+     * — el caller ([com.jaac.avoqado_tpv.features.tables.presentation.TableOrderViewModel.cancelOrder])
+     * es quien limpia [TableSession] al ver éxito; esta función solo reporta
+     * el ack, nunca toca la sesión.
+     *
+     * Requiere el permiso `orders:cancel` — NO todo rol lo tiene por default
+     * (WAITER/CASHIER no; MANAGER+ sí, ver `avoqado-server/src/lib/permissions.ts`).
+     * Reproducir sin permiso vuelve `REJECTED PERMISSION_DENIED`, visible en
+     * cuarentena — el botón nunca se oculta por rol en esta pantalla (mismo
+     * criterio que el resto de Fase 1/2: el server es el candado real, esta
+     * UI no duplica esa lógica).
+     */
+    suspend fun cancelOrder(venueId: String, orderId: String, isProvisional: Boolean, reason: String?): Result<CancelOutcome> {
+        val intentId = UUID.randomUUID().toString()
+        val payload = JsonObject().apply {
+            if (isProvisional) addProperty("localOrderId", orderId) else addProperty("orderId", orderId)
+            if (!reason.isNullOrBlank()) addProperty("reason", reason)
+        }
+        syncOutbox.enqueue(venueId, SyncIntentTypes.CANCEL_ORDER, payload, id = intentId)
+
+        var capturedAck: SyncIntentAck? = null
+        syncOutbox.replayNow(venueId) { intent, ack ->
+            if (intent.id == intentId) capturedAck = ack
+        }
+
+        val ack = capturedAck
+        return when {
+            ack == null -> Result.success(CancelOutcome(queued = true))
+            ack.isAcked -> Result.success(CancelOutcome(queued = false))
+            ack.isRejected -> Result.failure(CancelOrderRejectedException(ack.message ?: "No se pudo cancelar la cuenta", ack.errorCode))
+            // RETRY (VERSION_CONFLICT u otro transitorio): SyncOutbox.applyAck ya lo dejó PENDING.
+            else -> Result.success(CancelOutcome(queued = true))
+        }
+    }
+
+    /** Rechazo de NEGOCIO de un `CANCEL_ORDER` (ack `REJECTED`) — viaja dentro de un 200 de `sync/intents`, no es HTTP. */
+    class CancelOrderRejectedException(message: String, val errorCode: String?) : Exception(message)
+
+    /**
+     * "Reasignar mesero" — mismo patrón write-ahead + replay inmediato, mismo
+     * motivo que [cancelOrder]: sin ruta online bajo `/tpv` (la única
+     * existente, `assignOrderWaiter` vía `table.mobile.controller.ts`, vive en
+     * `/mobile` — fuera de alcance para la TPV, regla dura "la TPV habla solo
+     * con /api/v1/tpv").
+     *
+     * 🔴 Esto es lo que más importa de las 3 acciones de esta fase: la
+     * atribución de propina/comisión de la plataforma cuelga de `servedById`
+     * (`avoqado-server/src/services/tpv/table.tpv.service.ts::assignOrderWaiter`)
+     * — un [staffId] equivocado no solo "se ve mal", desvía dinero de una
+     * persona a otra. [staffId] SIEMPRE debe venir de una fila tocada en
+     * [com.jaac.avoqado_tpv.features.tables.presentation.AssignWaiterSheet]
+     * (poblada por [getActiveStaff]) — nunca tecleado a mano ni adivinado
+     * aquí; esta función solo valida que no venga vacío.
+     */
+    suspend fun assignOrder(venueId: String, orderId: String, isProvisional: Boolean, staffId: String): Result<AssignOutcome> {
+        if (staffId.isBlank()) {
+            return Result.failure(IllegalArgumentException("assignOrder requiere staffId"))
+        }
+        val intentId = UUID.randomUUID().toString()
+        val payload = JsonObject().apply {
+            if (isProvisional) addProperty("localOrderId", orderId) else addProperty("orderId", orderId)
+            addProperty("staffId", staffId)
+        }
+        syncOutbox.enqueue(venueId, SyncIntentTypes.ASSIGN_ORDER, payload, id = intentId)
+
+        var capturedAck: SyncIntentAck? = null
+        syncOutbox.replayNow(venueId) { intent, ack ->
+            if (intent.id == intentId) capturedAck = ack
+        }
+
+        val ack = capturedAck
+        return when {
+            ack == null -> Result.success(AssignOutcome(queued = true, version = null))
+            ack.isAcked -> Result.success(AssignOutcome(queued = false, version = ack.result?.intOrNull("version")))
+            ack.isRejected -> Result.failure(AssignOrderRejectedException(ack.message ?: "No se pudo reasignar la cuenta", ack.errorCode))
+            else -> Result.success(AssignOutcome(queued = true, version = null))
+        }
+    }
+
+    /** Rechazo de NEGOCIO de un `ASSIGN_ORDER` (ack `REJECTED`) — viaja dentro de un 200 de `sync/intents`, no es HTTP. */
+    class AssignOrderRejectedException(message: String, val errorCode: String?) : Exception(message)
+
+    /**
+     * "Personal en turno" — `GET tpv/venues/{venueId}/time-entries/active`.
+     * Lectura pura, mismo criterio que [getTables]: nunca se encola. Fuente
+     * del picker de [com.jaac.avoqado_tpv.features.tables.presentation.AssignWaiterSheet]
+     * — ver KDoc de [com.jaac.avoqado_tpv.features.tables.data.api.dto.ActiveStaffResponse]
+     * para el concern de permisos (MANAGER+ por default).
+     */
+    suspend fun getActiveStaff(venueId: String): Result<List<ActiveStaffMember>> = try {
+        val response = api.getActiveStaff(venueId)
+        val data = response.body()?.data
+        if (response.isSuccessful && data != null) {
+            Result.success(
+                data.filter { it.staffId.isNotBlank() }.map {
+                    ActiveStaffMember(
+                        staffId = it.staffId,
+                        name = "${it.staff.firstName} ${it.staff.lastName}".trim(),
+                        onBreak = it.status == "ON_BREAK",
+                        employeeCode = it.staff.employeeCode,
+                    )
+                },
+            )
+        } else {
+            Result.failure(
+                BackendHttpException(statusCode = response.code(), message = parseBackendErrorMessage(response.errorBody()?.string(), response.message())),
+            )
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: IOException) {
+        Timber.w(e, "⚠️ [Tables] Sin red en getActiveStaff (venue=%s)", venueId)
+        Result.failure(e)
+    } catch (e: Exception) {
+        Timber.e(e, "❌ [Tables] Fallo inesperado en getActiveStaff (venue=%s)", venueId)
+        Result.failure(e)
+    }
+
+    data class MergeOutcome(val queued: Boolean, val targetTotal: BigDecimal?, val mergedOrderNumber: String?, val tableFreed: Boolean?)
+
+    data class CancelOutcome(val queued: Boolean)
+
+    data class AssignOutcome(val queued: Boolean, val version: Int?)
+
+    /** Cortesía de un artículo puntual falló y NO es un rechazo de negocio del server — nunca se encola, ver KDoc de [compOrder]. */
+    class ItemCompRequiresConnectionException :
+        Exception("La cortesía de artículos ya enviados necesita conexión — inténtalo cuando el equipo esté en línea.")
+
+    data class SplitOutcome(
+        val queued: Boolean,
+        val createdOrderId: String?,
+        val createdOrderNumber: String?,
+        val sourceVersion: Int?,
+    )
+
+    data class DiscountOutcome(val queued: Boolean, val amount: BigDecimal?, val newOrderTotal: BigDecimal?)
+
+    data class CompOutcome(val queued: Boolean, val total: BigDecimal?, val version: Int?)
+
+    data class MoveOutcome(val queued: Boolean, val targetTableId: String, val version: Int?)
+
     /** PESOS → centavos, SOLO para el wire de [payCash] — ver su KDoc. */
     private fun BigDecimal.toCents(): Int = this.movePointRight(2).setScale(0, RoundingMode.HALF_UP).toInt()
 
     private fun JsonObject.stringOrNull(key: String): String? =
         get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
+
+    private fun JsonObject.intOrNull(key: String): Int? =
+        get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asInt
 
     /** Resultado de [payCash]. `queued=true` = escrito/sigue en el outbox, NUNCA un error para la UI. */
     data class PayCashOutcome(

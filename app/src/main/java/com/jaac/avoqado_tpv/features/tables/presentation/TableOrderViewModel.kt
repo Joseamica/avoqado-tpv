@@ -2,14 +2,18 @@ package com.jaac.avoqado_tpv.features.tables.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
 import com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator
+import com.jaac.avoqado_tpv.features.tables.domain.model.ActiveStaffMember
+import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetailItem
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -52,7 +56,19 @@ class TableOrderViewModel @Inject constructor(
     private val tableSyncCoordinator: TableSyncCoordinator,
     private val syncOutbox: SyncOutbox,
     private val deviceInfoManager: DeviceInfoManager,
+    private val secureStorage: SecureStorage,
+    private val networkMonitor: NetworkMonitor,
 ) : ViewModel() {
+
+    /**
+     * Fase 1 — solo consumido hoy por [compItems] (UI): cortesía de artículo
+     * puntual es online-only (ver KDoc de esa función) y
+     * [CompOrderSheet][com.jaac.avoqado_tpv.features.tables.presentation.CompOrderSheet]
+     * necesita saber ANTES del tap si debe deshabilitar esa mitad del sheet —
+     * mismo patrón que `TableCheckoutViewModel.networkMonitor`.
+     */
+    private val _isOnline = MutableStateFlow(networkMonitor.isConnected())
+    val isOnline: StateFlow<Boolean> = _isOnline.asStateFlow()
 
     private val _check = MutableStateFlow<OrderDetail?>(null)
     val check: StateFlow<OrderDetail?> = _check.asStateFlow()
@@ -108,6 +124,9 @@ class TableOrderViewModel @Inject constructor(
     init {
         tableSession.current()?.let { pendingCart.ensureOrder(it.orderId) }
         loadCheck()
+        viewModelScope.launch {
+            networkMonitor.networkStateFlow.collect { info -> _isOnline.value = info.isConnected }
+        }
     }
 
     /** Carga (o recarga) el cheque desde el server. Sesión provisional = nada que cargar todavía. */
@@ -246,6 +265,405 @@ class TableOrderViewModel @Inject constructor(
     fun exitToFloor() {
         pendingCart.clear()
         tableSession.clear()
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Fase 1 (2026-08-03) — SPLIT_ORDER · COMP_ORDER · MOVE_ORDER
+    // Las 3 acciones de esta pantalla que la auditoría de completitud
+    // encontró sin UI (APPLY_DISCOUNT vive en TableCheckoutViewModel —
+    // afecta el TOTAL de la cuenta, su lugar natural es "Cobrar").
+    // ══════════════════════════════════════════════════════════════════
+
+    private val _isSplitting = MutableStateFlow(false)
+    val isSplitting: StateFlow<Boolean> = _isSplitting.asStateFlow()
+
+    private val _isComping = MutableStateFlow(false)
+    val isComping: StateFlow<Boolean> = _isComping.asStateFlow()
+
+    private val _isMoving = MutableStateFlow(false)
+    val isMoving: StateFlow<Boolean> = _isMoving.asStateFlow()
+
+    private val _availableTargetTables = MutableStateFlow<List<DiningTable>>(emptyList())
+    val availableTargetTables: StateFlow<List<DiningTable>> = _availableTargetTables.asStateFlow()
+
+    private val _isLoadingTargetTables = MutableStateFlow(false)
+    val isLoadingTargetTables: StateFlow<Boolean> = _isLoadingTargetTables.asStateFlow()
+
+    /** Bloqueo compartido — mismo mensaje que [sendRound] cuando la mesa es de otro mesero. */
+    private fun blockedByOwnership(): Boolean {
+        if (!readOnly.value) return false
+        _error.value = "Mesa de ${lockOwnerName.value ?: "otro mesero"} — solo lectura"
+        return true
+    }
+
+    /**
+     * "Separar cuenta" — manda TODOS los [itemIds] seleccionados en UNA sola
+     * llamada (todo-o-nada, ver KDoc de [TablesRepository.splitOrder]). Solo
+     * alcanzable con el cheque cargado — [check] siempre trae un `orderId`
+     * real en ese momento (ver KDoc de la clase).
+     */
+    fun splitOrder(itemIds: Set<String>) {
+        if (blockedByOwnership()) return
+        val session = tableSession.current() ?: run { _error.value = "No hay mesa activa"; return }
+        if (itemIds.isEmpty()) {
+            _error.value = "Selecciona al menos un artículo para separar"
+            return
+        }
+        val vId = venueId ?: run { _error.value = "No hay venue configurado en este terminal"; return }
+        if (_isSplitting.value) return
+
+        _isSplitting.value = true
+        viewModelScope.launch {
+            repository.splitOrder(vId, session.orderId, itemIds.toList()).fold(
+                onSuccess = { outcome ->
+                    _isSplitting.value = false
+                    _notice.value = if (outcome.queued) {
+                        "Sin conexión — separación guardada; se sincronizará sola"
+                    } else {
+                        "Cuenta separada" + (outcome.createdOrderNumber?.let { " — nueva cuenta $it" } ?: "")
+                    }
+                    if (!outcome.queued) loadCheck()
+                },
+                onFailure = { e ->
+                    _isSplitting.value = false
+                    if (e is CancellationException) throw e
+                    _error.value = (e as? BackendHttpException)?.message ?: "No se pudo separar la cuenta"
+                },
+            )
+        }
+    }
+
+    /**
+     * "Cortesía de toda la cuenta" — offline-capable (intent `COMP_ORDER`).
+     * Ver KDoc de [TablesRepository.compOrder] para la asimetría con
+     * [compItems].
+     */
+    fun compWholeOrder(reason: String) {
+        compOrderInternal(itemIds = emptySet(), reason = reason)
+    }
+
+    /**
+     * "Cortesía de artículo(s) puntual(es)" — SIEMPRE online (regla dura de
+     * `offline-first-y-hub-lan.md` §5). Ver KDoc de [TablesRepository.compOrder].
+     */
+    fun compItems(itemIds: Set<String>, reason: String) {
+        if (itemIds.isEmpty()) {
+            _error.value = "Selecciona al menos un artículo para dar de cortesía"
+            return
+        }
+        compOrderInternal(itemIds = itemIds, reason = reason)
+    }
+
+    private fun compOrderInternal(itemIds: Set<String>, reason: String) {
+        if (blockedByOwnership()) return
+        val session = tableSession.current() ?: run { _error.value = "No hay mesa activa"; return }
+        if (reason.isBlank()) {
+            _error.value = "Selecciona una razón para la cortesía"
+            return
+        }
+        val vId = venueId ?: run { _error.value = "No hay venue configurado en este terminal"; return }
+        val staffId = secureStorage.getStaffId()
+        if (staffId == null) {
+            _error.value = "No se pudo identificar al mesero en este terminal"
+            return
+        }
+        if (_isComping.value) return
+
+        _isComping.value = true
+        viewModelScope.launch {
+            repository.compOrder(vId, session.orderId, itemIds.toList(), reason, staffId).fold(
+                onSuccess = { outcome ->
+                    _isComping.value = false
+                    _notice.value = if (outcome.queued) {
+                        "Sin conexión — cortesía guardada; se sincronizará sola"
+                    } else {
+                        "Cortesía aplicada"
+                    }
+                    if (!outcome.queued) loadCheck()
+                },
+                onFailure = { e ->
+                    _isComping.value = false
+                    if (e is CancellationException) throw e
+                    _error.value = when (e) {
+                        is TablesRepository.ItemCompRequiresConnectionException -> e.message
+                        is BackendHttpException -> e.message
+                        else -> "No se pudo aplicar la cortesía"
+                    }
+                },
+            )
+        }
+    }
+
+    /**
+     * Carga las mesas LIBRES del venue (excluyendo la actual) para el picker
+     * de [com.jaac.avoqado_tpv.features.tables.presentation.MoveTableSheet].
+     * Lectura pura — mismo criterio que [TablesViewModel.loadTables], sin
+     * offline-first de plano completo (esta pantalla no mantiene un caché del
+     * plano; un fallo simplemente deja la lista vacía con un error visible).
+     */
+    fun loadAvailableTargetTables() {
+        val vId = venueId ?: return
+        val currentTableId = tableSession.current()?.tableId
+        viewModelScope.launch {
+            _isLoadingTargetTables.value = true
+            repository.getTables(vId).fold(
+                onSuccess = { tables ->
+                    _availableTargetTables.value = tables.filter { it.isAvailable && it.id != currentTableId }
+                    _isLoadingTargetTables.value = false
+                },
+                onFailure = { e ->
+                    _isLoadingTargetTables.value = false
+                    if (e is CancellationException) throw e
+                    _error.value = "No se pudo cargar la lista de mesas"
+                },
+            )
+        }
+    }
+
+    /**
+     * "Mover mesa" — SIEMPRE vía intent (ver KDoc de [TablesRepository.moveOrder]).
+     * Al confirmar, la sesión activa se actualiza a la mesa DESTINO — el
+     * mesero se queda en esta pantalla (misma cuenta, mesa nueva en el título)
+     * en vez de navegar de regreso al plano, igual que Toast/Square.
+     */
+    fun moveOrder(target: DiningTable) {
+        if (blockedByOwnership()) return
+        val session = tableSession.current() ?: run { _error.value = "No hay mesa activa"; return }
+        val vId = venueId ?: run { _error.value = "No hay venue configurado en este terminal"; return }
+        if (_isMoving.value) return
+
+        _isMoving.value = true
+        viewModelScope.launch {
+            repository.moveOrder(vId, session.orderId, session.isProvisional, target.id).fold(
+                onSuccess = { outcome ->
+                    _isMoving.value = false
+                    tableSession.start(
+                        session.copy(
+                            tableId = target.id,
+                            tableNumber = target.number,
+                            areaName = target.areaName,
+                            version = outcome.version ?: session.version,
+                        ),
+                    )
+                    _notice.value = if (outcome.queued) {
+                        "Sin conexión — movimiento a Mesa ${target.number} guardado; se sincronizará solo"
+                    } else {
+                        "Cuenta movida a Mesa ${target.number}"
+                    }
+                },
+                onFailure = { e ->
+                    _isMoving.value = false
+                    if (e is CancellationException) throw e
+                    _error.value = (e as? TablesRepository.MoveOrderRejectedException)?.message ?: "No se pudo mover la mesa"
+                },
+            )
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // Fase 2 (2026-08-03) — MERGE_ORDERS · CANCEL_ORDER · ASSIGN_ORDER
+    // ══════════════════════════════════════════════════════════════════
+
+    private val _isMerging = MutableStateFlow(false)
+    val isMerging: StateFlow<Boolean> = _isMerging.asStateFlow()
+
+    private val _mergeCandidateTables = MutableStateFlow<List<DiningTable>>(emptyList())
+    val mergeCandidateTables: StateFlow<List<DiningTable>> = _mergeCandidateTables.asStateFlow()
+
+    private val _isLoadingMergeCandidates = MutableStateFlow(false)
+    val isLoadingMergeCandidates: StateFlow<Boolean> = _isLoadingMergeCandidates.asStateFlow()
+
+    private val _isCancelling = MutableStateFlow(false)
+    val isCancelling: StateFlow<Boolean> = _isCancelling.asStateFlow()
+
+    /**
+     * Señal de "la cuenta ya se canceló, sal al plano" — [cancelOrder] la
+     * enciende DESPUÉS de limpiar [tableSession]/[pendingCart]. `TableOrderScreen`
+     * ya tiene su propio guard `activeSession == null -> onNavigateBack()`
+     * (ver su KDoc), pero ese guard depende de recomposición sobre
+     * `tableSession.active` — esta señal es explícita para que el test de
+     * ViewModel pueda verificar el efecto sin depender de Compose.
+     */
+    private val _cancelled = MutableStateFlow(false)
+    val cancelled: StateFlow<Boolean> = _cancelled.asStateFlow()
+
+    private val _isAssigning = MutableStateFlow(false)
+    val isAssigning: StateFlow<Boolean> = _isAssigning.asStateFlow()
+
+    private val _activeStaff = MutableStateFlow<List<ActiveStaffMember>>(emptyList())
+    val activeStaff: StateFlow<List<ActiveStaffMember>> = _activeStaff.asStateFlow()
+
+    private val _isLoadingActiveStaff = MutableStateFlow(false)
+    val isLoadingActiveStaff: StateFlow<Boolean> = _isLoadingActiveStaff.asStateFlow()
+
+    /**
+     * Carga las mesas OCUPADAS del venue (excluyendo la actual) para el
+     * picker de [com.jaac.avoqado_tpv.features.tables.presentation.MergeOrdersSheet]
+     * — a diferencia de [loadAvailableTargetTables] (mesas LIBRES, para
+     * "Mover"), aquí se necesita lo opuesto: mesas con una cuenta abierta
+     * ([DiningTable.hasOpenCheck]) que se pueda absorber. Mismo criterio de
+     * lectura pura sin caché que `loadAvailableTargetTables`.
+     */
+    fun loadMergeCandidateTables() {
+        val vId = venueId ?: return
+        val currentTableId = tableSession.current()?.tableId
+        viewModelScope.launch {
+            _isLoadingMergeCandidates.value = true
+            repository.getTables(vId).fold(
+                onSuccess = { tables ->
+                    _mergeCandidateTables.value = tables.filter { it.hasOpenCheck && it.id != currentTableId }
+                    _isLoadingMergeCandidates.value = false
+                },
+                onFailure = { e ->
+                    _isLoadingMergeCandidates.value = false
+                    if (e is CancellationException) throw e
+                    _error.value = "No se pudo cargar la lista de mesas"
+                },
+            )
+        }
+    }
+
+    /**
+     * "Fusionar cuentas" — la cuenta de ESTA mesa absorbe la de [source].
+     * Solo alcanzable con el cheque cargado ([check] real, ver KDoc de
+     * [TablesRepository.mergeOrders]) — [source] siempre trae una cuenta real
+     * también, porque viene de [loadMergeCandidateTables].
+     */
+    fun mergeOrders(source: DiningTable) {
+        if (blockedByOwnership()) return
+        val session = tableSession.current() ?: run { _error.value = "No hay mesa activa"; return }
+        val sourceOrderId = source.primaryCheck?.id
+        if (sourceOrderId == null) {
+            _error.value = "Mesa ${source.number} ya no tiene una cuenta abierta"
+            return
+        }
+        val vId = venueId ?: run { _error.value = "No hay venue configurado en este terminal"; return }
+        if (_isMerging.value) return
+
+        _isMerging.value = true
+        viewModelScope.launch {
+            repository.mergeOrders(vId, session.orderId, sourceOrderId).fold(
+                onSuccess = { outcome ->
+                    _isMerging.value = false
+                    _notice.value = if (outcome.queued) {
+                        "Sin conexión — fusión guardada; se sincronizará sola"
+                    } else {
+                        "Cuenta de Mesa ${source.number} fusionada" + (outcome.mergedOrderNumber?.let { " ($it)" } ?: "")
+                    }
+                    if (!outcome.queued) loadCheck()
+                },
+                onFailure = { e ->
+                    _isMerging.value = false
+                    if (e is CancellationException) throw e
+                    _error.value = (e as? BackendHttpException)?.message ?: "No se pudo fusionar la cuenta"
+                },
+            )
+        }
+    }
+
+    /**
+     * "Cancelar cuenta" — destructivo, confirmado por
+     * [com.jaac.avoqado_tpv.features.tables.presentation.CancelOrderDialog]
+     * ANTES de llegar aquí (esta función ya asume que el mesero confirmó).
+     * Ver KDoc de [TablesRepository.cancelOrder] para el rechazo permanente
+     * si la cuenta ya está pagada y la liberación de mesa del server.
+     *
+     * Funciona con la sesión provisional también (una mesa recién abierta
+     * offline se puede cancelar sin haber sincronizado nunca) — mismo
+     * criterio que [moveOrder].
+     */
+    fun cancelOrder(reason: String?) {
+        if (blockedByOwnership()) return
+        val session = tableSession.current() ?: run { _error.value = "No hay mesa activa"; return }
+        val vId = venueId ?: run { _error.value = "No hay venue configurado en este terminal"; return }
+        if (_isCancelling.value) return
+
+        _isCancelling.value = true
+        viewModelScope.launch {
+            repository.cancelOrder(vId, session.orderId, session.isProvisional, reason).fold(
+                onSuccess = { outcome ->
+                    _isCancelling.value = false
+                    _notice.value = if (outcome.queued) {
+                        "Sin conexión — cancelación guardada; se sincronizará sola"
+                    } else {
+                        "Cuenta cancelada"
+                    }
+                    // La mesa ya se liberó (o se re-apuntó) del lado del server —
+                    // limpiar la sesión local es lo que dispara la salida al
+                    // plano (ver KDoc de [cancelled]).
+                    pendingCart.clear()
+                    tableSession.clear()
+                    _cancelled.value = true
+                },
+                onFailure = { e ->
+                    _isCancelling.value = false
+                    if (e is CancellationException) throw e
+                    _error.value = (e as? TablesRepository.CancelOrderRejectedException)?.message ?: "No se pudo cancelar la cuenta"
+                },
+            )
+        }
+    }
+
+    /**
+     * Carga el personal EN TURNO ahora mismo para el picker de
+     * [com.jaac.avoqado_tpv.features.tables.presentation.AssignWaiterSheet].
+     * Ver concern de permisos en KDoc de [TablesRepository.getActiveStaff]:
+     * un WAITER puede fallar aquí con 403 aunque SÍ tenga permiso para
+     * ejecutar la reasignación misma.
+     */
+    fun loadActiveStaff() {
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            _isLoadingActiveStaff.value = true
+            repository.getActiveStaff(vId).fold(
+                onSuccess = { staff ->
+                    _activeStaff.value = staff
+                    _isLoadingActiveStaff.value = false
+                },
+                onFailure = { e ->
+                    _isLoadingActiveStaff.value = false
+                    if (e is CancellationException) throw e
+                    _error.value = "No se pudo cargar el personal en turno"
+                },
+            )
+        }
+    }
+
+    /**
+     * "Reasignar mesero" — SIEMPRE vía intent (ver KDoc de
+     * [TablesRepository.assignOrder]). [staff] siempre viene de una fila
+     * tocada en [AssignWaiterSheet][com.jaac.avoqado_tpv.features.tables.presentation.AssignWaiterSheet],
+     * nunca tecleado a mano — la atribución de propina/comisión de la
+     * plataforma cuelga de este valor.
+     */
+    fun assignOrder(staff: ActiveStaffMember) {
+        if (blockedByOwnership()) return
+        val session = tableSession.current() ?: run { _error.value = "No hay mesa activa"; return }
+        val vId = venueId ?: run { _error.value = "No hay venue configurado en este terminal"; return }
+        if (_isAssigning.value) return
+
+        _isAssigning.value = true
+        viewModelScope.launch {
+            repository.assignOrder(vId, session.orderId, session.isProvisional, staff.staffId).fold(
+                onSuccess = { outcome ->
+                    _isAssigning.value = false
+                    _notice.value = if (outcome.queued) {
+                        "Sin conexión — reasignación a ${staff.name} guardada; se sincronizará sola"
+                    } else {
+                        "Cuenta reasignada a ${staff.name}"
+                    }
+                    // Refresca `check.servedBy` — si la propiedad de mesa está
+                    // encendida, quien reasignó puede quedar en solo-lectura
+                    // de inmediato (mismo criterio que splitOrder/compOrder/applyDiscount).
+                    if (!outcome.queued) loadCheck()
+                },
+                onFailure = { e ->
+                    _isAssigning.value = false
+                    if (e is CancellationException) throw e
+                    _error.value = (e as? TablesRepository.AssignOrderRejectedException)?.message ?: "No se pudo reasignar la cuenta"
+                },
+            )
+        }
     }
 }
 

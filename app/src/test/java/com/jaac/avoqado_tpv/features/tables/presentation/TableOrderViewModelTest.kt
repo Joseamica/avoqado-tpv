@@ -1,14 +1,19 @@
 package com.jaac.avoqado_tpv.features.tables.presentation
 
 import com.google.common.truth.Truth.assertThat
+import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import com.jaac.avoqado_tpv.core.util.NetworkMonitor
 import com.jaac.avoqado_tpv.features.tables.data.PendingRoundCart
 import com.jaac.avoqado_tpv.features.tables.data.TableSession
 import com.jaac.avoqado_tpv.features.tables.data.TablesRepository
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
 import com.jaac.avoqado_tpv.features.tables.data.sync.TableSyncCoordinator
+import com.jaac.avoqado_tpv.features.tables.domain.model.ActiveStaffMember
+import com.jaac.avoqado_tpv.features.tables.domain.model.DiningTable
+import com.jaac.avoqado_tpv.features.tables.domain.model.OpenCheckSummary
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetail
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderDetailItem
 import com.jaac.avoqado_tpv.features.tables.domain.model.OrderStaffSummary
@@ -20,6 +25,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -52,6 +58,8 @@ class TableOrderViewModelTest {
     private val tableSyncCoordinator = mockk<TableSyncCoordinator>()
     private val syncOutbox = mockk<SyncOutbox>()
     private val deviceInfoManager = mockk<DeviceInfoManager>()
+    private val secureStorage = mockk<SecureStorage>()
+    private val networkMonitor = mockk<NetworkMonitor>()
     private lateinit var tableSession: TableSession
     private lateinit var pendingCart: PendingRoundCart
     private lateinit var ownershipFlow: MutableStateFlow<TablesRepository.TableOwnership>
@@ -61,7 +69,7 @@ class TableOrderViewModelTest {
     @Before
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
-        clearMocks(repository, tableSyncCoordinator, syncOutbox, deviceInfoManager)
+        clearMocks(repository, tableSyncCoordinator, syncOutbox, deviceInfoManager, secureStorage, networkMonitor)
 
         tableSession = TableSession()
         pendingCart = PendingRoundCart()
@@ -71,6 +79,9 @@ class TableOrderViewModelTest {
         every { repository.ownership } returns ownershipFlow
         coEvery { tableSyncCoordinator.replay(any()) } returns Unit
         coEvery { syncOutbox.enqueue(any(), any(), any(), any()) } returns "intent-id"
+        every { secureStorage.getStaffId() } returns "staff-1"
+        every { networkMonitor.isConnected() } returns true
+        every { networkMonitor.networkStateFlow } returns emptyFlow()
     }
 
     @After
@@ -85,6 +96,8 @@ class TableOrderViewModelTest {
         tableSyncCoordinator = tableSyncCoordinator,
         syncOutbox = syncOutbox,
         deviceInfoManager = deviceInfoManager,
+        secureStorage = secureStorage,
+        networkMonitor = networkMonitor,
     )
 
     // region — enviar ronda sin red: se ve como pendiente, NUNCA error
@@ -225,6 +238,301 @@ class TableOrderViewModelTest {
 
         coVerify(exactly = 0) { repository.addItems(any(), any(), any(), any()) }
         assertThat(viewModel.error.value).isNotNull()
+    }
+
+    // endregion
+
+    // region — Fase 1: splitOrder / compWholeOrder / compItems / moveOrder
+
+    @Test
+    fun splitOrder_manda_TODOS_los_itemIds_seleccionados_en_UNA_sola_llamada() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.splitOrder(venueId, "orden-1", listOf("i1", "i2")) } returns
+            Result.success(TablesRepository.SplitOutcome(queued = false, createdOrderId = "order-2", createdOrderNumber = "A-101", sourceVersion = 2))
+        val viewModel = createViewModel()
+
+        viewModel.splitOrder(setOf("i1", "i2"))
+
+        // UNA sola invocación con la lista COMPLETA — nunca una llamada por artículo.
+        coVerify(exactly = 1) { repository.splitOrder(venueId, "orden-1", listOf("i1", "i2")) }
+        assertThat(viewModel.notice.value).contains("A-101")
+        assertThat(viewModel.error.value).isNull()
+    }
+
+    @Test
+    fun splitOrder_sin_seleccion_marca_error_sin_llamar_al_repositorio() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val viewModel = createViewModel()
+
+        viewModel.splitOrder(emptySet())
+
+        coVerify(exactly = 0) { repository.splitOrder(any(), any(), any()) }
+        assertThat(viewModel.error.value).isNotNull()
+    }
+
+    @Test
+    fun splitOrder_ownership_bloquea_a_quien_no_es_dueno() = runTest {
+        ownershipFlow.value = TablesRepository.TableOwnership(enforced = true, canManageAll = false, staffId = "yo")
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(
+            OrderDetail(id = "orden-1", servedBy = OrderStaffSummary(id = "otro-mesero", firstName = "Fátima", lastName = "Flores")),
+        )
+        val viewModel = createViewModel()
+
+        viewModel.splitOrder(setOf("i1"))
+
+        coVerify(exactly = 0) { repository.splitOrder(any(), any(), any()) }
+        assertThat(viewModel.error.value).contains("Fátima Flores")
+    }
+
+    @Test
+    fun compWholeOrder_encolado_sin_red_se_ve_como_pendiente_NUNCA_error() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.compOrder(venueId, "orden-1", emptyList(), "Reclamo del cliente", "staff-1") } returns
+            Result.success(TablesRepository.CompOutcome(queued = true, total = null, version = null))
+        val viewModel = createViewModel()
+
+        viewModel.compWholeOrder("Reclamo del cliente")
+
+        assertThat(viewModel.notice.value).contains("Sin conexión")
+        assertThat(viewModel.error.value).isNull()
+    }
+
+    /**
+     * "Comp de un artículo ya enviado se rechaza offline con una razón clara"
+     * — pedido explícito del enunciado. [TablesRepository.compOrder] es quien
+     * decide esto (ver su test dedicado); aquí se prueba que el ViewModel
+     * PROPAGA ese mensaje tal cual, nunca lo esconde ni lo reintenta como si
+     * fuera un encolado exitoso.
+     */
+    @Test
+    fun compItems_sin_red_se_rechaza_con_razon_clara_NUNCA_se_ve_como_pendiente() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.compOrder(venueId, "orden-1", listOf("i1"), "Error de entrada", "staff-1") } returns
+            Result.failure(TablesRepository.ItemCompRequiresConnectionException())
+        val viewModel = createViewModel()
+
+        viewModel.compItems(setOf("i1"), "Error de entrada")
+
+        assertThat(viewModel.error.value).contains("conexión")
+        assertThat(viewModel.notice.value).isNull()
+    }
+
+    @Test
+    fun compItems_sin_seleccion_marca_error_sin_llamar_al_repositorio() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val viewModel = createViewModel()
+
+        viewModel.compItems(emptySet(), "Error de entrada")
+
+        coVerify(exactly = 0) { repository.compOrder(any(), any(), any(), any(), any()) }
+        assertThat(viewModel.error.value).isNotNull()
+    }
+
+    @Test
+    fun moveOrder_exitoso_reparienta_la_sesion_a_la_mesa_destino() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", tableNumber = "1", orderId = "orden-1", version = 3))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val target = DiningTable(id = "mesa-9", number = "9", areaName = "Terraza", status = "AVAILABLE")
+        coEvery { repository.moveOrder(venueId, "orden-1", false, "mesa-9") } returns
+            Result.success(TablesRepository.MoveOutcome(queued = false, targetTableId = "mesa-9", version = 4))
+        val viewModel = createViewModel()
+
+        viewModel.moveOrder(target)
+
+        val session = tableSession.current()!!
+        assertThat(session.tableId).isEqualTo("mesa-9")
+        assertThat(session.tableNumber).isEqualTo("9")
+        assertThat(session.areaName).isEqualTo("Terraza")
+        assertThat(session.orderId).isEqualTo("orden-1") // MISMA cuenta, mesa nueva
+        assertThat(viewModel.notice.value).contains("9")
+        assertThat(viewModel.error.value).isNull()
+    }
+
+    @Test
+    fun moveOrder_rechazado_NO_toca_la_sesion() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", tableNumber = "1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val target = DiningTable(id = "mesa-9", number = "9", status = "AVAILABLE")
+        coEvery { repository.moveOrder(venueId, "orden-1", false, "mesa-9") } returns
+            Result.failure(TablesRepository.MoveOrderRejectedException("La mesa 9 ya tiene una cuenta abierta", "BUSINESS_RULE"))
+        val viewModel = createViewModel()
+
+        viewModel.moveOrder(target)
+
+        assertThat(tableSession.current()?.tableId).isEqualTo("mesa-1")
+        assertThat(viewModel.error.value).contains("ya tiene una cuenta")
+    }
+
+    // endregion
+
+    // region — Fase 2 (2026-08-03): MERGE_ORDERS · CANCEL_ORDER · ASSIGN_ORDER
+
+    @Test
+    fun mergeOrders_exitoso_recarga_la_cuenta() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val source = DiningTable(
+            id = "mesa-7", number = "7", status = "OCCUPIED",
+            openOrders = listOf(OpenCheckSummary(id = "orden-2", orderNumber = "A-202", total = BigDecimal("120.00"))),
+        )
+        coEvery { repository.mergeOrders(venueId, "orden-1", "orden-2") } returns
+            Result.success(TablesRepository.MergeOutcome(queued = false, targetTotal = BigDecimal("560.00"), mergedOrderNumber = "A-202", tableFreed = true))
+        val viewModel = createViewModel()
+
+        viewModel.mergeOrders(source)
+
+        coVerify(exactly = 1) { repository.mergeOrders(venueId, "orden-1", "orden-2") }
+        // init() + la recarga tras éxito = 2 llamadas a getOrder.
+        coVerify(exactly = 2) { repository.getOrder(venueId, "orden-1") }
+        assertThat(viewModel.notice.value).contains("fusionada")
+        assertThat(viewModel.error.value).isNull()
+    }
+
+    @Test
+    fun mergeOrders_mesa_origen_sin_cuenta_abierta_marca_error_sin_llamar_al_repositorio() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val source = DiningTable(id = "mesa-7", number = "7", status = "AVAILABLE") // sin openOrders
+        val viewModel = createViewModel()
+
+        viewModel.mergeOrders(source)
+
+        coVerify(exactly = 0) { repository.mergeOrders(any(), any(), any()) }
+        assertThat(viewModel.error.value).contains("Mesa 7")
+    }
+
+    @Test
+    fun mergeOrders_bloqueado_por_propiedad_de_mesa_no_llama_al_repositorio() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", servedBy = OrderStaffSummary(id = "otro-mesero")))
+        ownershipFlow.value = TablesRepository.TableOwnership(enforced = true, canManageAll = false, staffId = "yo")
+        val source = DiningTable(
+            id = "mesa-7", number = "7", status = "OCCUPIED",
+            openOrders = listOf(OpenCheckSummary(id = "orden-2", total = BigDecimal("120.00"))),
+        )
+        val viewModel = createViewModel()
+
+        viewModel.mergeOrders(source)
+
+        coVerify(exactly = 0) { repository.mergeOrders(any(), any(), any()) }
+        assertThat(viewModel.error.value).contains("otro mesero")
+    }
+
+    @Test
+    fun cancelOrder_encolado_sin_red_se_ve_como_guardado_NUNCA_error_y_dispara_la_salida() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.cancelOrder(venueId, "orden-1", false, "Cliente se fue") } returns
+            Result.success(TablesRepository.CancelOutcome(queued = true))
+        val viewModel = createViewModel()
+
+        viewModel.cancelOrder("Cliente se fue")
+
+        assertThat(viewModel.error.value).isNull() // NUNCA un error — regla de oro offline
+        assertThat(viewModel.notice.value).contains("Sin conexión")
+        assertThat(viewModel.cancelled.value).isTrue()
+        assertThat(tableSession.current()).isNull() // sesión limpiada -> TableOrderScreen sale sola al plano
+    }
+
+    @Test
+    fun cancelOrder_exitoso_online_limpia_la_sesion_y_dispara_la_salida() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.cancelOrder(venueId, "orden-1", false, null) } returns
+            Result.success(TablesRepository.CancelOutcome(queued = false))
+        val viewModel = createViewModel()
+
+        viewModel.cancelOrder(null)
+
+        assertThat(viewModel.notice.value).isEqualTo("Cuenta cancelada")
+        assertThat(viewModel.cancelled.value).isTrue()
+        assertThat(tableSession.current()).isNull()
+    }
+
+    @Test
+    fun cancelOrder_rechazado_por_cuenta_pagada_NO_limpia_la_sesion() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.cancelOrder(venueId, "orden-1", false, null) } returns
+            Result.failure(TablesRepository.CancelOrderRejectedException("Cannot cancel a paid order", "BUSINESS_RULE"))
+        val viewModel = createViewModel()
+
+        viewModel.cancelOrder(null)
+
+        assertThat(viewModel.error.value).contains("paid order")
+        assertThat(viewModel.cancelled.value).isFalse()
+        assertThat(tableSession.current()).isNotNull() // la mesa sigue activa — nada que cancelar se perdió
+    }
+
+    @Test
+    fun assignOrder_exitoso_recarga_la_cuenta_para_reflejar_el_nuevo_servedBy() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val staff = ActiveStaffMember(staffId = "staff-9", name = "Diego Ruiz")
+        coEvery { repository.assignOrder(venueId, "orden-1", false, "staff-9") } returns
+            Result.success(TablesRepository.AssignOutcome(queued = false, version = 8))
+        val viewModel = createViewModel()
+
+        viewModel.assignOrder(staff)
+
+        coVerify(exactly = 1) { repository.assignOrder(venueId, "orden-1", false, "staff-9") }
+        // init() + la recarga tras el ACKED = 2 llamadas — así el `check.servedBy`
+        // (y por tanto `readOnly`) refleja al mesero nuevo de inmediato.
+        coVerify(exactly = 2) { repository.getOrder(venueId, "orden-1") }
+        assertThat(viewModel.notice.value).contains("Diego Ruiz")
+        assertThat(viewModel.error.value).isNull()
+    }
+
+    @Test
+    fun assignOrder_encolado_sin_red_NO_recarga_y_nunca_es_error() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val staff = ActiveStaffMember(staffId = "staff-9", name = "Diego Ruiz")
+        coEvery { repository.assignOrder(venueId, "orden-1", false, "staff-9") } returns
+            Result.success(TablesRepository.AssignOutcome(queued = true, version = null))
+        val viewModel = createViewModel()
+
+        viewModel.assignOrder(staff)
+
+        // Solo la del init() — encolado no dispara recarga (nada cambió todavía en el server).
+        coVerify(exactly = 1) { repository.getOrder(venueId, "orden-1") }
+        assertThat(viewModel.error.value).isNull()
+        assertThat(viewModel.notice.value).contains("Sin conexión")
+    }
+
+    @Test
+    fun assignOrder_rechazado_por_permiso_propaga_el_mensaje_del_server() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val staff = ActiveStaffMember(staffId = "staff-9", name = "Diego Ruiz")
+        coEvery { repository.assignOrder(venueId, "orden-1", false, "staff-9") } returns
+            Result.failure(TablesRepository.AssignOrderRejectedException("No tienes permiso para reproducir ASSIGN_ORDER.", "PERMISSION_DENIED"))
+        val viewModel = createViewModel()
+
+        viewModel.assignOrder(staff)
+
+        assertThat(viewModel.error.value).contains("permiso")
+    }
+
+    @Test
+    fun loadActiveStaff_puebla_activeStaff_desde_el_repositorio() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.getActiveStaff(venueId) } returns
+            Result.success(listOf(ActiveStaffMember(staffId = "staff-9", name = "Diego Ruiz")))
+        val viewModel = createViewModel()
+
+        viewModel.loadActiveStaff()
+
+        assertThat(viewModel.activeStaff.value).hasSize(1)
+        assertThat(viewModel.activeStaff.value.first().staffId).isEqualTo("staff-9")
     }
 
     // endregion

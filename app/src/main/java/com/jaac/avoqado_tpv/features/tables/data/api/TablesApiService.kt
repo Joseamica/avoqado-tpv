@@ -1,11 +1,15 @@
 package com.jaac.avoqado_tpv.features.tables.data.api
 
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.ActiveStaffResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.AddItemsRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyServiceChargeRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyServiceChargeResponse
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.AvailableDiscountsResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.CategoryCatalogDto
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.CompOrderRequest
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.CompOrderResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.FloorElementsResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.MergeOrdersRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.MergeOrdersResponse
@@ -180,6 +184,47 @@ interface TablesApiService {
         @Path("orderId") orderId: String,
         @Body body: ApplyDiscountRequest,
     ): Response<ApplyDiscountResponse>
+
+    /**
+     * `GET /tpv/venues/{venueId}/orders/{orderId}/discounts/available` →
+     * `discountController.getAvailableDiscounts` (`tpv.routes.ts:4713`,
+     * `checkPermission('orders:read')`). Catálogo de descuentos elegibles para
+     * ESTA cuenta (ya filtra los que no aplican y los ya aplicados) — lectura
+     * pura, sin `checkFeatureAccess` (Fase 1, Task de completitud, 2026-08-03).
+     */
+    @GET("tpv/venues/{venueId}/orders/{orderId}/discounts/available")
+    suspend fun getAvailableDiscounts(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+    ): Response<AvailableDiscountsResponse>
+
+    /**
+     * `POST /tpv/venues/{venueId}/orders/{orderId}/comp` →
+     * `orderController.compItems` (`tpv.routes.ts:4266`, permiso `orders:comp`).
+     * `itemIds` vacío = cortesía de TODA la cuenta (tiene equivalente offline,
+     * intent `COMP_ORDER`); `itemIds` no vacío = solo esas líneas — SIEMPRE
+     * online, sin equivalente en el reducer de replay (ver KDoc de
+     * [com.jaac.avoqado_tpv.features.tables.data.api.dto.CompOrderRequest]).
+     * Fase 1, Task de completitud, 2026-08-03.
+     */
+    @POST("tpv/venues/{venueId}/orders/{orderId}/comp")
+    suspend fun compOrder(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body body: CompOrderRequest,
+    ): Response<CompOrderResponse>
+
+    // ========== Personal (Fase 2 — picker de ASSIGN_ORDER) ==========
+
+    /**
+     * `GET /tpv/venues/{venueId}/time-entries/active` →
+     * `timeEntryController.getCurrentlyClockedInStaff` (`tpv.routes.ts:3495`,
+     * permiso `tpv-time-entries:read`). Personal CLOCKED_IN/ON_BREAK ahora
+     * mismo — fuente de [com.jaac.avoqado_tpv.features.tables.presentation.AssignWaiterSheet].
+     * Ver KDoc de [ActiveStaffResponse] para el concern de permisos (MANAGER+).
+     */
+    @GET("tpv/venues/{venueId}/time-entries/active")
+    suspend fun getActiveStaff(@Path("venueId") venueId: String): Response<ActiveStaffResponse>
 
     // ========== Catálogo (Plan C, Task 7 — TableMenuScreen) ==========
 

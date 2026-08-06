@@ -59,8 +59,19 @@ data class PaymentData(
     @SerializedName("referenceNumber")
     val referenceNumber: String?,
 
+    // 🔴 NULLABLE A PROPÓSITO — el backend SÍ manda `digitalReceipt: null` y no es un caso raro:
+    //  (a) rama idempotente: si el pago existente no tiene fila en `DigitalReceipt`,
+    //      `mapDigitalReceiptResponse()` devuelve null (`if (!receipt) return null`);
+    //  (b) rama de cobro fresco: `generateDigitalReceipt()` está en try/catch y si falla
+    //      responde `digitalReceipt: null` sin fallar el pago.
+    // Gson NO respeta la no-nulabilidad de Kotlin: declarado como no-nulo, un `null` del JSON
+    // entra igual y revienta con NPE al primer acceso. Eso fue exactamente el bucle infinito de
+    // Testarudo Café (2,781 reintentos del MISMO pago del 23-jun en 6.3 h): la NPE se clasificaba
+    // como error transitorio → 5 reintentos internos × 10 del worker = 50 requests por ciclo,
+    // para siempre. `RefundResponse.digitalReceipt` ya era nullable por esta misma razón; a
+    // pagos nunca se le portó. El cobro SIEMPRE quedó registrado — lo único que faltaba era el QR.
     @SerializedName("digitalReceipt")
-    val digitalReceipt: DigitalReceiptData,
+    val digitalReceipt: DigitalReceiptData?,
 )
 
 /**

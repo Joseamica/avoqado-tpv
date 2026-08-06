@@ -81,11 +81,88 @@ class FastPaymentRecorderTest {
         ),
     )
 
+    /**
+     * Respuesta 200 con `digitalReceipt: null` — el cuerpo REAL que manda el backend cuando el
+     * pago existente no tiene fila en `DigitalReceipt` (rama idempotente) o cuando
+     * `generateDigitalReceipt()` falló en el cobro fresco.
+     */
+    private fun successResponseWithoutReceipt(): Response<PaymentResponse> = Response.success(
+        PaymentResponse(
+            success = true,
+            data = PaymentData(
+                id = "pmt_sin_recibo",
+                amount = BigDecimal("70.00"),
+                tipAmount = BigDecimal("7.00"),
+                authorizationNumber = "486728",
+                referenceNumber = "855502456783",
+                digitalReceipt = null,
+            ),
+        ),
+    )
+
     private fun errorResponse(body: String): Response<PaymentResponse> =
         Response.error(
             400,
             body.toResponseBody("application/json".toMediaTypeOrNull()),
         )
+
+    // endregion
+
+    // region Regresión — bucle infinito de Testarudo Café (2026-08-05)
+
+    /**
+     * 🔴 REGRESIÓN. `digitalReceipt` venía declarado NO-NULO en el DTO; Gson no respeta la
+     * no-nulabilidad de Kotlin, así que un `null` del JSON entraba igual y reventaba con NPE al
+     * primer acceso. La NPE se clasificaba como error TRANSITORIO → 5 reintentos internos × 10 del
+     * worker = 50 requests por ciclo, indefinidamente. Una terminal de Testarudo Café reintentó el
+     * MISMO pago del 23-jun 2,781 veces en 6.3 h (verificado en logs de prod + Crashlytics
+     * `FastPaymentRecorder$recordPayment$2` NPE, ref=855502456783).
+     *
+     * El cobro SIEMPRE estuvo registrado y no hubo doble cargo — la idempotencia del server hizo
+     * su trabajo las 2,781 veces. Lo único que faltaba era el QR.
+     */
+    @Test
+    fun `recordPayment succeeds when backend returns null digitalReceipt`() = runTest {
+        coEvery {
+            apiService.recordFastPayment(venueId = any(), request = any())
+        } returns successResponseWithoutReceipt()
+
+        val result = recorder.recordPayment(
+            context = cardContext(),
+            cardDetails = CardDetails.CASH,
+            authorizationNumber = "486728",
+            referenceNumber = "855502456783",
+        )
+
+        // Un recibo faltante NO invalida el cobro: tiene que resolverse OK para que la fila
+        // salga de la cola. Si esto falla, el pago se reintenta para siempre.
+        assertThat(result.isSuccess).isTrue()
+        val receipt = result.getOrThrow()
+        assertThat(receipt.paymentId).isEqualTo("pmt_sin_recibo")
+        assertThat(receipt.receiptUrl).isEmpty()
+        assertThat(receipt.accessKey).isEmpty()
+        assertThat(receipt.autofacturaAvailable).isFalse()
+    }
+
+    /** El camino normal (CON recibo) sigue intacto: el blindaje no degrada el happy path. */
+    @Test
+    fun `recordPayment still maps receiptUrl when digitalReceipt is present`() = runTest {
+        coEvery {
+            apiService.recordFastPayment(venueId = any(), request = any())
+        } returns successResponse()
+
+        val result = recorder.recordPayment(
+            context = cardContext(),
+            cardDetails = CardDetails.CASH,
+            authorizationNumber = "EFECTIVO",
+            referenceNumber = "CASH-1",
+        )
+
+        assertThat(result.isSuccess).isTrue()
+        val receipt = result.getOrThrow()
+        assertThat(receipt.receiptUrl).isEqualTo("https://api.avoqado.io/api/v1/public/receipt/key1")
+        assertThat(receipt.accessKey).isEqualTo("key1")
+    }
 
     // endregion
 

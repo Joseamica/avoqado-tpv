@@ -118,13 +118,22 @@ class OrderPaymentRecorder @Inject constructor(
             when {
                 response.isSuccessful && response.body() != null -> {
                     val body = response.body()!!
+                    // 🔴 Mismo blindaje que FastPaymentRecorder: `digitalReceipt` puede venir
+                    // null y leerlo directo tiraba NPE → reintento infinito de un cobro ya hecho.
+                    val digitalReceipt = body.data.digitalReceipt
+                    if (digitalReceipt == null) {
+                        Timber.w(
+                            "⚠️ Order payment registrado SIN recibo digital | paymentId=${body.data.id} | " +
+                                    "el cobro está guardado; sólo no habrá QR. NO se reintenta."
+                        )
+                    }
                     val receipt = PaymentReceipt(
                         paymentId = body.data.id,
-                        receiptUrl = body.data.digitalReceipt.receiptUrl,
-                        accessKey = body.data.digitalReceipt.accessKey,
+                        receiptUrl = digitalReceipt?.receiptUrl.orEmpty(),
+                        accessKey = digitalReceipt?.accessKey.orEmpty(),
                         amount = body.data.amount,
                         tipAmount = body.data.tipAmount,
-                        autofacturaAvailable = body.data.digitalReceipt.autofacturaAvailable,
+                        autofacturaAvailable = digitalReceipt?.autofacturaAvailable ?: false,
                     )
 
                     // 🔍 DEBUG: Payment success details

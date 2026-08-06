@@ -127,13 +127,24 @@ class FastPaymentRecorder @Inject constructor(
             when {
                 response.isSuccessful && response.body() != null -> {
                     val body = response.body()!!
+                    // 🔴 `digitalReceipt` PUEDE venir null (ver PaymentResponse.kt). Leerlo sin
+                    // proteger tiraba NPE, la NPE se clasificaba como transitoria y el pago —YA
+                    // COBRADO Y YA REGISTRADO— se reintentaba para siempre. Un recibo faltante
+                    // NO invalida el cobro: se acepta sin QR y la cola se cierra.
+                    val digitalReceipt = body.data.digitalReceipt
+                    if (digitalReceipt == null) {
+                        Timber.w(
+                            "⚠️ Fast payment registrado SIN recibo digital | paymentId=${body.data.id} | " +
+                                    "el cobro está guardado; sólo no habrá QR. NO se reintenta."
+                        )
+                    }
                     val receipt = PaymentReceipt(
                         paymentId = body.data.id,
-                        receiptUrl = body.data.digitalReceipt.receiptUrl,
-                        accessKey = body.data.digitalReceipt.accessKey,
+                        receiptUrl = digitalReceipt?.receiptUrl.orEmpty(),
+                        accessKey = digitalReceipt?.accessKey.orEmpty(),
                         amount = body.data.amount,
                         tipAmount = body.data.tipAmount,
-                        autofacturaAvailable = body.data.digitalReceipt.autofacturaAvailable,
+                        autofacturaAvailable = digitalReceipt?.autofacturaAvailable ?: false,
                     )
 
                     Timber.i(

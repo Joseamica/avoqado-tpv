@@ -387,7 +387,7 @@ class PaymentViewModel @Inject constructor(
     private var currentCryptoRequestId: String? = null  // B4Bit request ID (for matching webhook callback)
 
     // 📡 SOCKET PAYMENT: Track source for sending result back via Socket.IO
-    private var _paymentSource: String? = null  // "BLE" | "SOCKET" | null
+    private var _paymentSource: String? = null  // "SOCKET" | null (remote charge pushed by another POS)
     private var _socketRequestId: String? = null  // Request ID for Socket.IO result callback
 
     // 💸 REFUND SUPPORT: Refund context now stored in PaymentSession (no mutable field)
@@ -516,7 +516,7 @@ class PaymentViewModel @Inject constructor(
         // sistema de pago...", "Sincronizando orden...", "Configurando cuenta ...") that run
         // before any card exists. Gating on Processing refuses POS cancels during those
         // seconds — exactly when a cashier cancels — and the cancel event is then LOST
-        // (SharedFlow, no replay; BluetoothPaymentService already cleared its requestId),
+        // (SharedFlow, no replay; RemotePaymentCoordinator already cleared its requestId),
         // leaving the terminal stranded on "insert card" holding the server slot until the
         // 300s timeout. Money-safety must not cost a stranded terminal on the common path.
         //
@@ -524,7 +524,7 @@ class PaymentViewModel @Inject constructor(
         // resolved state means it also covers RECORDING the result — killing the screen there
         // orphans a charge just as badly as killing it mid-authorization.
         //
-        // 🚦 SECOND, WIDER signal — "is a charge attempt WORKING?" — for the socket/BLE BUSY guard
+        // 🚦 SECOND, WIDER signal — "is a charge attempt WORKING?" — for the remote-payment BUSY guard
         // in AppNavigation. Deliberately NOT the same predicate as the money window above; the two
         // answer opposite questions and must never be merged:
         //   • money window (narrow): only while an authorization can reach the host → refuse a cancel.
@@ -1481,7 +1481,8 @@ class PaymentViewModel @Inject constructor(
 
         val effectiveOrderContext = orderContextOverride ?: sessionSnapshot.orderContext
         val effectiveSplitContext = splitContextOverride ?: sessionSnapshot.splitContext
-        val isSerializedFlow = effectiveOrderContext?.skipLocalOrderValidation == true
+        // Mismo criterio que _flowOrigin: la bandera sola también viaja en cobros remotos.
+        val isSerializedFlow = effectiveOrderContext?.skipLocalOrderValidation == true && _isSerializedInventoryActive.value
         val effectiveKioskMode = kioskModeOverride ?: sessionSnapshot.isKioskPayment
         val effectiveKioskStaffId = when {
             kioskModeOverride == false -> null
@@ -2363,7 +2364,7 @@ class PaymentViewModel @Inject constructor(
     }
 
     /**
-     * 🔵 EXTERNAL PAYMENT: Submit amount with tip/rating coming from external device (BLE)
+     * 📡 EXTERNAL PAYMENT: Submit amount with tip/rating coming from a remote POS (socket-routed)
      *
      * If required screens are enabled but missing data, falls back to on-device flow.
      */
@@ -2650,7 +2651,13 @@ class PaymentViewModel @Inject constructor(
         )
         _flowOrigin.value = when {
             sessionSnapshot.isKioskPayment -> PaymentFlowOrigin.KIOSK
-            skipLocalOrderValidation -> PaymentFlowOrigin.SERIALIZED
+            // 🔴 `skipLocalOrderValidation` NO implica venta serializada: el cobro remoto por
+            // socket TAMBIÉN la manda en true ("la orden ya la validó el POS emisor",
+            // AppNavigation). Clasificar solo por la bandera disfrazaba TODO cobro remoto de
+            // orden como venta de SIM → pantalla de éxito SIN QR de recibo y botón "Nueva
+            // Venta" (flujo de SIMs) en venues que ni tienen el módulo. SERIALIZED exige
+            // además el módulo SERIALIZED_INVENTORY activo — igual que gatea el resto del app.
+            skipLocalOrderValidation && _isSerializedInventoryActive.value -> PaymentFlowOrigin.SERIALIZED
             orderId != null -> PaymentFlowOrigin.ORDER
             else -> PaymentFlowOrigin.FAST
         }

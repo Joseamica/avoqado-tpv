@@ -103,8 +103,8 @@ class HomeViewModel @Inject constructor(
     // init cost at HomeViewModel creation time.
     private val angelPaySdkGatewayProvider: javax.inject.Provider<AngelPaySdkGateway>,
     private val angelPayAuthRepositoryProvider: javax.inject.Provider<AngelPayAuthRepository>,
-    // 📡 Socket.IO Payment Bridge - Forward socket payment requests to BLE pipeline
-    private val bluetoothPaymentService: com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService,
+    // 📡 Socket.IO Payment Bridge - Forward socket payment requests to the remote-payment bus
+    private val remotePaymentCoordinator: com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator,
     private val printerManager: com.jaac.avoqado_tpv.core.printer.PrinterManager,
     // 📦 Update Check Manager - Check for app updates after login
     private val updateCheckManager: UpdateCheckManager,
@@ -1058,23 +1058,23 @@ class HomeViewModel @Inject constructor(
                     // ═══════════════════════════════════════════════════════════
                     is SocketEvent.TerminalPaymentRequest -> {
                         Timber.i("💳 [Socket] Terminal payment request: ${event.requestId} | amount=${event.amountCents} cents")
-                        val request = com.jaac.avoqado_tpv.core.bluetooth.BlePaymentRequest(
+                        val request = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequest(
                             amountCents = event.amountCents,
                             tipCents = event.tipCents,
                             rating = event.rating,
                             skipReview = event.skipReview,
                             orderId = event.orderId,
                             processedByStaffId = event.processedByStaffId,
-                            source = com.jaac.avoqado_tpv.core.bluetooth.PaymentSource.SOCKET,
+                            source = com.jaac.avoqado_tpv.core.remotepayment.PaymentSource.SOCKET,
                             socketRequestId = event.requestId
                         )
-                        bluetoothPaymentService.submitSocketPaymentRequest(request)
+                        remotePaymentCoordinator.submitSocketPaymentRequest(request)
                     }
 
                     is SocketEvent.TerminalPaymentCancel -> {
                         Timber.i("🚫 [Socket] Terminal payment cancel: requestId=${event.requestId} reason=${event.reason}")
                         // Cancel only if the requestId matches the current payment (idempotency)
-                        bluetoothPaymentService.cancelSocketPaymentRequest(event.requestId)
+                        remotePaymentCoordinator.cancelSocketPaymentRequest(event.requestId)
                     }
 
                     is SocketEvent.TerminalReceiptPrintRequest -> {

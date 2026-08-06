@@ -33,10 +33,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
-import com.jaac.avoqado_tpv.core.util.BluetoothCapabilityChecker
 import com.jaac.avoqado_tpv.core.util.WifiFailoverController
-import com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentServer
-import com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService
 import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 import com.jaac.avoqado_tpv.core.observability.ObservabilityTester
 import com.jaac.avoqado_tpv.core.data.network.ApiService
@@ -91,46 +88,6 @@ fun SuperAdminScreen(
     val deviceAlerts by deviceHealthViewModel.activeAlerts.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
-    // Bluetooth permissions required for Android 12+
-    val bluetoothPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        arrayOf(
-            Manifest.permission.BLUETOOTH_SCAN,
-            Manifest.permission.BLUETOOTH_CONNECT,
-            Manifest.permission.BLUETOOTH_ADVERTISE  // Required for BLE advertising
-        )
-    } else {
-        arrayOf(
-            Manifest.permission.BLUETOOTH,
-            Manifest.permission.BLUETOOTH_ADMIN
-        )
-    }
-
-    // Permission launcher (registered at composition time, before STARTED state)
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val allGranted = permissions.values.all { it }
-        if (allGranted) {
-            Timber.i("✅ [SuperAdmin] Bluetooth permissions granted - starting BLE server")
-            viewModel.toggleBleServer(context)
-        } else {
-            Timber.w("❌ [SuperAdmin] Bluetooth permissions denied")
-            viewModel.showError("Bluetooth permissions required to start BLE Payment Server")
-        }
-    }
-
-    // Wrapper function that requests permissions before starting BLE server
-    val handleToggleBleServer: (Context) -> Unit = { ctx ->
-        if (state.isBleServerRunning) {
-            // Stopping server doesn't need permissions
-            viewModel.toggleBleServer(ctx)
-        } else {
-            // Starting server requires permissions - request them
-            Timber.i("📱 [SuperAdmin] Requesting Bluetooth permissions...")
-            permissionLauncher.launch(bluetoothPermissions)
-        }
-    }
-
     SuperAdminScreenContent(
         modifier = modifier,
         state = state,
@@ -141,8 +98,6 @@ fun SuperAdminScreen(
         onTestPayment = onTestPayment,
         onClearCache = viewModel::clearCache,
         onTestBackend = viewModel::testBackend,
-        onTestBluetooth = viewModel::testBluetooth,
-        onToggleBleServer = handleToggleBleServer,
         onTestFirebaseCrash = viewModel::testFirebaseCrash,
         onTestFirebaseError = viewModel::testFirebaseError,
         onRefreshWifiState = viewModel::refreshWifiState,
@@ -179,8 +134,6 @@ private fun SuperAdminScreenContent(
     onTestPayment: () -> Unit,
     onClearCache: () -> Unit,
     onTestBackend: () -> Unit,
-    onTestBluetooth: (Context) -> Unit,
-    onToggleBleServer: (Context) -> Unit,
     onTestFirebaseCrash: () -> Unit = {},
     onTestFirebaseError: () -> Unit = {},
     onRefreshWifiState: () -> Unit = {},
@@ -276,29 +229,6 @@ private fun SuperAdminScreenContent(
                         title = "Test Backend Connection",
                         description = "Check API connectivity",
                         onClick = onTestBackend,
-                        enabled = !state.isLoading
-                    )
-                }
-
-                item {
-                    TestButton(
-                        icon = Icons.Default.Bluetooth,
-                        title = "Test Bluetooth Capability",
-                        description = "Check Bluetooth hardware & permissions",
-                        onClick = { onTestBluetooth(context) },
-                        enabled = !state.isLoading
-                    )
-                }
-
-                item {
-                    TestButton(
-                        icon = Icons.Default.BluetoothSearching,
-                        title = if (state.isBleServerRunning) "Stop BLE Payment Server" else "Start BLE Payment Server",
-                        description = if (state.isBleServerRunning)
-                            "Server running - iPad can connect"
-                        else
-                            "Accept payments from iPad/Tablet via BLE",
-                        onClick = { onToggleBleServer(context) },
                         enabled = !state.isLoading
                     )
                 }
@@ -1533,7 +1463,6 @@ data class SuperAdminState(
     val isLoading: Boolean = false,
     val message: String? = null,
     val isError: Boolean = false,
-    val isBleServerRunning: Boolean = false,
     val isWifiEnabled: Boolean = false,
     // 🐢 Slow Network Simulation
     val isSlowNetworkEnabled: Boolean = false,
@@ -1556,7 +1485,6 @@ class SuperAdminViewModel @Inject constructor(
     private val deviceInfoManager: DeviceInfoManager,
     private val observability: ObservabilityManager,
     private val observabilityTester: ObservabilityTester,
-    private val bluetoothPaymentService: BluetoothPaymentService,
     private val wifiFailoverController: WifiFailoverController,
     private val apiService: ApiService,
     private val modulesRepository: ModulesRepository
@@ -1567,7 +1495,6 @@ class SuperAdminViewModel @Inject constructor(
 
     init {
         loadDeviceInfo()
-        observeBleServerState()
         refreshWifiState()
         observeModulesCache()
         refreshModulesFromBackend()
@@ -1672,18 +1599,7 @@ class SuperAdminViewModel @Inject constructor(
         kotlin.system.exitProcess(0)
     }
 
-    /**
-     * Observe BLE server state changes
-     */
-    private fun observeBleServerState() {
-        viewModelScope.launch {
-            bluetoothPaymentService.isRunning.collect { isRunning ->
-                _state.value = _state.value.copy(isBleServerRunning = isRunning)
-            }
-        }
-    }
-
-    /**
+        /**
      * Load device information
      */
     private fun loadDeviceInfo() {
@@ -1787,148 +1703,7 @@ class SuperAdminViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Test Bluetooth capability
-     *
-     * Checks if PAX terminal has Bluetooth hardware and permissions.
-     * Logs detailed capability report to Logcat for analysis.
-     */
-    fun testBluetooth(context: Context) {
-        viewModelScope.launch {
-            _state.value = _state.value.copy(isLoading = true, message = null)
-
-            Timber.d("📡 [SuperAdmin] Testing Bluetooth capability...")
-
-            try {
-                val checker = BluetoothCapabilityChecker(context)
-                val report = checker.generateCapabilityReport()
-
-                // Log full report to Logcat
-                checker.logCapabilityReport()
-
-                // Determine message based on capabilities
-                val message = when {
-                    !report.hasBluetoothHardware -> {
-                        "❌ NO Bluetooth hardware\n\nThis device doesn't support Bluetooth.\nUse API/WebSockets for remote payments."
-                    }
-                    !report.isBluetoothEnabled -> {
-                        "⚠️ Bluetooth is OFF\n\nEnable in Settings → Bluetooth"
-                    }
-                    !report.canScanDevices -> {
-                        """
-                        ⚠️ Bluetooth permissions missing
-
-                        TO GRANT MANUALLY:
-                        1. Settings → Apps → Avoqado TPV
-                        2. Permissions → Nearby devices
-                        3. Toggle ON
-                        4. Run test again
-
-                        Check Logcat for full report
-                        """.trimIndent()
-                    }
-                    else -> {
-                        """
-                        ✅ Bluetooth READY!
-
-                        • Version: ${report.bluetoothVersion}
-                        • Features: ${report.supportedFeatures.size}
-                        • BLE: ${if (report.supportedFeatures.contains("BLE (Bluetooth Low Energy)")) "✅" else "❌"}
-
-                        You can now implement Bluetooth payments!
-                        Check Logcat for full details.
-                        """.trimIndent()
-                    }
-                }
-
-                Timber.i("📡 [SuperAdmin] Bluetooth test complete")
-                _state.value = _state.value.copy(
-                    isLoading = false,
-                    message = message,
-                    isError = !report.canScanDevices
-                )
-            } catch (e: Exception) {
-                Timber.e(e, "❌ [SuperAdmin] Bluetooth test failed")
-                _state.value = _state.value.copy(
-                    isLoading = false,
-                    message = "❌ Bluetooth test failed: ${e.message}",
-                    isError = true
-                )
-            }
-        }
-    }
-
-    /**
-     * Toggle BLE Payment Server
-     *
-     * Starts or stops the BLE GATT server that accepts payment requests from iPad/tablet.
-     * When running, external devices can connect via BLE and send payment amounts.
-     *
-     * Uses singleton service - persists across screen changes.
-     */
-    fun toggleBleServer(context: Context) {
-        viewModelScope.launch {
-            try {
-                if (bluetoothPaymentService.isRunning.value) {
-                    // Stop server
-                    Timber.i("🔵 [SuperAdmin] Stopping BLE Payment Server...")
-                    bluetoothPaymentService.stopServer()
-
-                    _state.value = _state.value.copy(
-                        message = "✅ BLE Payment Server stopped",
-                        isError = false
-                    )
-                    Timber.i("✅ [SuperAdmin] BLE Payment Server stopped")
-                } else {
-                    // Start server
-                    Timber.i("🔵 [SuperAdmin] Starting BLE Payment Server...")
-
-                    bluetoothPaymentService.startServer(context) { request ->
-                        Timber.i("💰 [SuperAdmin] Received payment request: ${request.amountCents} cents")
-
-                        // Update UI with received amount
-                        viewModelScope.launch {
-                            _state.value = _state.value.copy(
-                                message = "💰 Payment request received: $${request.amountCents / 100.0}\n\nAmount: ${request.amountCents} cents\nReady to process payment!",
-                                isError = false
-                            )
-                        }
-
-                        // TODO: Trigger payment flow with received amount
-                        // This would navigate to payment screen or trigger payment directly
-                    }
-
-                    _state.value = _state.value.copy(
-                        message = """
-                            ✅ BLE Payment Server RUNNING
-
-                            El servidor persiste entre pantallas.
-                            Puedes navegar a otras pantallas sin detenerlo.
-
-                            📱 FROM iOS APP:
-                            1. Open "PAX Payment" app
-                            2. Tap "Buscar Terminal PAX"
-                            3. Connect to PAX device
-                            4. Tap amount button ($10, $20, etc.)
-
-                            Server will receive payment amount!
-                        """.trimIndent(),
-                        isError = false
-                    )
-                    Timber.i("✅ [SuperAdmin] BLE Payment Server started successfully")
-                }
-            } catch (e: Exception) {
-                Timber.e(e, "❌ [SuperAdmin] BLE server toggle failed")
-                _state.value = _state.value.copy(
-                    message = "❌ BLE server failed: ${e.message}\n\nCheck if Bluetooth permissions are granted.",
-                    isError = true
-                )
-                bluetoothPaymentService.stopServer()
-            }
-        }
-    }
-
-    /**
+            /**
      * Show error message
      */
     fun showError(message: String) {
@@ -2100,8 +1875,6 @@ private fun SuperAdminScreenPreview() {
             onTestPayment = {},
             onClearCache = {},
             onTestBackend = {},
-            onTestBluetooth = {},
-            onToggleBleServer = {}
         )
     }
 }
@@ -2125,8 +1898,6 @@ private fun SuperAdminScreenWithMessagePreview() {
             onTestPayment = {},
             onClearCache = {},
             onTestBackend = {},
-            onTestBluetooth = {},
-            onToggleBleServer = {}
         )
     }
 }
@@ -2150,8 +1921,6 @@ private fun SuperAdminScreenWithErrorPreview() {
             onTestPayment = {},
             onClearCache = {},
             onTestBackend = {},
-            onTestBluetooth = {},
-            onToggleBleServer = {}
         )
     }
 }

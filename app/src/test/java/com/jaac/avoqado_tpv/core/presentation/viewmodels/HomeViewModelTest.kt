@@ -3,7 +3,7 @@ package com.jaac.avoqado_tpv.core.presentation.viewmodels
 import androidx.lifecycle.viewModelScope
 import app.cash.turbine.test
 import com.google.common.truth.Truth.assertThat
-import com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
@@ -69,7 +69,7 @@ class HomeViewModelTest {
     private lateinit var deviceInfoManager: DeviceInfoManager
     private lateinit var angelPaySdkGatewayProvider: javax.inject.Provider<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway>
     private lateinit var angelPayAuthRepositoryProvider: javax.inject.Provider<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository>
-    private lateinit var bluetoothPaymentService: BluetoothPaymentService
+    private lateinit var remotePaymentCoordinator: RemotePaymentCoordinator
     private lateinit var updateCheckManager: UpdateCheckManager
     private lateinit var sessionManager: SessionManager
     private lateinit var paymentQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
@@ -110,7 +110,7 @@ class HomeViewModelTest {
         deviceInfoManager = mockk(relaxed = true)
         angelPaySdkGatewayProvider = mockk(relaxed = true)
         angelPayAuthRepositoryProvider = mockk(relaxed = true)
-        bluetoothPaymentService = mockk(relaxed = true)
+        remotePaymentCoordinator = mockk(relaxed = true)
         updateCheckManager = mockk(relaxed = true)
         sessionManager = mockk(relaxed = true)
         paymentQueueRepository = mockk(relaxed = true)
@@ -164,7 +164,7 @@ class HomeViewModelTest {
             deviceInfoManager = deviceInfoManager,
             angelPaySdkGatewayProvider = angelPaySdkGatewayProvider,
             angelPayAuthRepositoryProvider = angelPayAuthRepositoryProvider,
-            bluetoothPaymentService = bluetoothPaymentService,
+            remotePaymentCoordinator = remotePaymentCoordinator,
             printerManager = printerManager,
             updateCheckManager = updateCheckManager,
             sessionManager = sessionManager,

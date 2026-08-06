@@ -31,21 +31,9 @@
     <!-- Required for Phase 1 spike to test OS-level WiFi toggle on PAX -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
 
-    <!-- Bluetooth Permissions (Remote Payment Initiation - Future Feature) -->
-    <!-- Required for Bluetooth Low Energy (BLE) communication with external devices -->
-    <!-- Android 12+ (API 31+) uses granular permissions, older versions use legacy BLUETOOTH/BLUETOOTH_ADMIN -->
-    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
-    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
-    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <!-- Foreground Service Permission (BLE Payment Server) -->
     <!-- Required for running BLE server as foreground service that persists across app updates -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
     <!-- Storage Permissions (Self-Update Feature) -->
     <!-- Required for downloading APK updates to external storage -->
@@ -111,15 +99,6 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
-
-        <!-- BLE Payment Server Foreground Service (Square/Toast Pattern) -->
-        <!-- Runs BLE GATT server that persists across app updates -->
-        <!-- Uses START_STICKY so Android restarts it automatically after process death -->
-        <service
-            android:name=".core.bluetooth.BluetoothPaymentForegroundService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
 
         <!-- App Update Receiver - Auto-relaunch after self-update -->
         <!-- Listens for MY_PACKAGE_REPLACED to restart app after PAX SDK installs new version -->

@@ -99,9 +99,6 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var maintenanceManager: MaintenanceManager
 
-    @Inject
-    lateinit var bluetoothPaymentService: com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService
-
     /**
      * Injected so we can evict stale HTTP/2 connections when the activity comes
      * back to foreground. After a long idle/Doze period, the OS or NAT silently
@@ -615,96 +612,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Restore BLE Payment Server if it was running before app close (Opción 2)
-     *
-     * **Design Pattern (Square/Toast):**
-     * - Server state persists across app restarts
-     * - If server was running before, auto-restore on next launch
-     * - Provides seamless UX without manual re-activation
-     * - User decides if server is always active via toggle in Settings
-     *
-     * **Flow:**
-     * 1. Check if server was running before (from SecureStorage)
-     * 2. If yes, restart server automatically
-     * 3. Server continues accepting payments from external devices (iPad, tablets)
-     *
-     * **Performance:**
-     * - Runs on IO thread to avoid blocking app startup
-     * - Silently fails if Bluetooth permissions are not granted
-     * - Does not block app functionality if restore fails
-     */
-    private suspend fun restoreBleServerIfPreviouslyRunning() {
-        // Runs on Dispatchers.IO (called from onCreate)
-        try {
-            // CRITICAL: Set Bluetooth adapter name BEFORE any BLE operations
-            // This fixes the "null" name in pairing dialogs (Android 12/13 bug)
-            // See: https://issuetracker.google.com/issues/240485116
-            setBluetoothAdapterName()
-
-            // Switch to Main thread for BluetoothPaymentService (needs Context)
-            withContext(Dispatchers.Main) {
-                bluetoothPaymentService.tryRestoreState(applicationContext) { request ->
-                    Timber.i("💰 [MainActivity] BLE Payment received: ${request.amountCents} cents (auto-restored server)")
-                    // Payment events are also published via SharedFlow for AppNavigation to handle
-                }
-            }
-        } catch (e: Exception) {
-            Timber.e(e, "❌ [MainActivity] Failed to restore BLE server state")
-            // Silently fail - doesn't block app startup
         }
-    }
-
-    /**
-     * Set Bluetooth adapter name to "Avoqado-TPV"
-     *
-     * CRITICAL: This must be called BEFORE any BLE GATT server operations.
-     * Android 12/13 has a known bug where the device name appears as "null"
-     * in pairing dialogs if not set early enough.
-     *
-     * Reference: https://issuetracker.google.com/issues/240485116
-     */
-    private fun setBluetoothAdapterName() {
-        // Check BLUETOOTH_CONNECT permission first (required on Android 12+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
-                != PackageManager.PERMISSION_GRANTED) {
-                Timber.w("⚠️ [MainActivity] BLUETOOTH_CONNECT permission not granted - cannot set name")
-                return
-            }
-        }
-
-        try {
-            val bluetoothManager = getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager
-            val bluetoothAdapter = bluetoothManager?.adapter
-
-            if (bluetoothAdapter == null) {
-                Timber.w("⚠️ [MainActivity] Bluetooth adapter not available")
-                return
-            }
-
-            if (!bluetoothAdapter.isEnabled) {
-                Timber.w("⚠️ [MainActivity] Bluetooth is disabled - cannot set name")
-                return
-            }
-
-            val currentName = bluetoothAdapter.name
-            Timber.i("📱 [MainActivity] Current Bluetooth adapter name: '$currentName'")
-
-            if (currentName != "Avoqado-TPV") {
-                val success = bluetoothAdapter.setName("Avoqado-TPV")
-                val newName = bluetoothAdapter.name
-                Timber.i("📱 [MainActivity] setName('Avoqado-TPV') success=$success, new name='$newName'")
-            } else {
-                Timber.i("📱 [MainActivity] Bluetooth name already set to 'Avoqado-TPV'")
-            }
-        } catch (e: SecurityException) {
-            Timber.e(e, "❌ [MainActivity] SecurityException setting Bluetooth name - need BLUETOOTH_CONNECT permission")
-        } catch (e: Exception) {
-            Timber.e(e, "❌ [MainActivity] Failed to set Bluetooth adapter name")
-        }
-    }
-}
 
 /**
  * Screen shown when READ_PHONE_STATE permission is denied

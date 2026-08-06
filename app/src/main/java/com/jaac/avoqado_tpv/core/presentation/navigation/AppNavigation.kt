@@ -120,7 +120,7 @@ interface AppNavigationEntryPoint {
     fun terminalConfigRepository(): com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
     fun initializationManager(): com.jaac.avoqado_tpv.features.payment.data.InitializationManager
     fun updateRequestManager(): UpdateRequestManager
-    fun bluetoothPaymentService(): com.jaac.avoqado_tpv.core.bluetooth.BluetoothPaymentService
+    fun remotePaymentCoordinator(): com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
     fun socketManager(): com.jaac.avoqado_tpv.core.data.realtime.SocketManager
     fun recordAngelPayRefundUseCase(): com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordAngelPayRefundUseCase
     fun paymentStateProvider(): com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
@@ -319,7 +319,7 @@ fun AppNavigation(
     val terminalConfigRepository = remember { kioskEntryPoint.terminalConfigRepository() }
     val initializationManager = remember { kioskEntryPoint.initializationManager() }
     val isBlumonSdkInitialized by initializationManager.isInitialized.collectAsStateWithLifecycle()
-    val bluetoothPaymentService = remember { kioskEntryPoint.bluetoothPaymentService() }
+    val remotePaymentCoordinator = remember { kioskEntryPoint.remotePaymentCoordinator() }
     val socketManager = remember { kioskEntryPoint.socketManager() }
     val recordAngelPayRefundUseCase = remember { kioskEntryPoint.recordAngelPayRefundUseCase() }
     val paymentStateProvider = remember { kioskEntryPoint.paymentStateProvider() }
@@ -347,11 +347,11 @@ fun AppNavigation(
         ?: UpdateRequestState.Idle
     val updateCoroutineScope = rememberCoroutineScope()
 
-    // 🔵 EXTERNAL DEVICES (BLE) - Start payment flow from any screen
-    LaunchedEffect(bluetoothPaymentService) {
-        bluetoothPaymentService.paymentRequests.collect { request ->
+    // 📡 REMOTE PAYMENTS (Socket.IO) - another POS asks this terminal to charge; start payment flow from any screen
+    LaunchedEffect(remotePaymentCoordinator) {
+        remotePaymentCoordinator.paymentRequests.collect { request ->
             if (request.amountCents <= 0) {
-                Timber.w("⚠️ [BLE] Ignoring non-positive amount: ${request.amountCents}")
+                Timber.w("⚠️ [Remote] Ignoring non-positive amount: ${request.amountCents}")
                 return@collect
             }
 
@@ -379,9 +379,9 @@ fun AppNavigation(
             val terminalGenuinelyBusy = (onBlumonPayment || onAngelPayPayment) &&
                 paymentStateProvider.isChargeAttemptActive()
             if (terminalGenuinelyBusy) {
-                Timber.w("⚠️ [BLE] Payment already in progress - ignoring amount: ${request.amountCents}")
+                Timber.w("⚠️ [Remote] Payment already in progress - ignoring amount: ${request.amountCents}")
                 // If this came via socket, send rejection back so iOS doesn't hang
-                if (request.source == com.jaac.avoqado_tpv.core.bluetooth.PaymentSource.SOCKET && request.socketRequestId != null) {
+                if (request.source == com.jaac.avoqado_tpv.core.remotepayment.PaymentSource.SOCKET && request.socketRequestId != null) {
                     socketManager.emitTerminalPaymentResult(
                         requestId = request.socketRequestId!!,
                         status = "failed",
@@ -407,12 +407,12 @@ fun AppNavigation(
 
             val handle = navController.currentBackStackEntry?.savedStateHandle
             if (handle == null) {
-                Timber.e("❌ [BLE] No backstack entry available - cannot start payment")
+                Timber.e("❌ [Remote] No backstack entry available - cannot start payment")
                 return@collect
             }
 
-            if (!awaitPaxPaymentReady(context, initializationManager, "BLE/SOCKET payment")) {
-                if (request.source == com.jaac.avoqado_tpv.core.bluetooth.PaymentSource.SOCKET && request.socketRequestId != null) {
+            if (!awaitPaxPaymentReady(context, initializationManager, "remote (socket) payment")) {
+                if (request.source == com.jaac.avoqado_tpv.core.remotepayment.PaymentSource.SOCKET && request.socketRequestId != null) {
                     socketManager.emitTerminalPaymentResult(
                         requestId = request.socketRequestId!!,
                         status = "failed",
@@ -436,9 +436,9 @@ fun AppNavigation(
             if (request.orderId != null) {
                 handle.set("orderId", request.orderId)
                 handle.set("skipLocalOrderValidation", true) // Order already validated by iOS
-                Timber.i("📦 [BLE] ORDER PAYMENT mode | orderId=${request.orderId}")
+                Timber.i("📦 [Remote] ORDER PAYMENT mode | orderId=${request.orderId}")
             } else {
-                Timber.i("💨 [BLE] QUICK PAYMENT mode (no orderId)")
+                Timber.i("💨 [Remote] QUICK PAYMENT mode (no orderId)")
             }
 
             // Pass payment source and socket request ID for result callback
@@ -446,7 +446,7 @@ fun AppNavigation(
             handle.set("socketRequestId", request.socketRequestId)
             handle.set("socketProcessedByStaffId", request.processedByStaffId)
 
-            val sourceLabel = if (request.source == com.jaac.avoqado_tpv.core.bluetooth.PaymentSource.SOCKET) "SOCKET" else "BLE"
+            val sourceLabel = request.source.name
             Timber.i("🔵 [$sourceLabel] Navigating to payment | amount=$formattedAmount | cents=${request.amountCents} | orderId=${request.orderId ?: "null"} | nexgo=${isAppToAppPayment()}")
             navController.navigate(getPaymentRoute()) {
                 launchSingleTop = true
@@ -455,8 +455,8 @@ fun AppNavigation(
     }
 
     // 🚫 PAYMENT CANCEL from iOS - Navigate back to Welcome
-    LaunchedEffect(bluetoothPaymentService) {
-        bluetoothPaymentService.paymentCancelRequests.collect { requestId ->
+    LaunchedEffect(remotePaymentCoordinator) {
+        remotePaymentCoordinator.paymentCancelRequests.collect { requestId ->
             val currentRoute = navController.currentBackStackEntry?.destination?.route
             if (currentRoute == NavRoute.Payment.route || currentRoute == NavRoute.AngelPayPayment.route) {
                 // 🔒 MONEY WINDOW gate (Square NOT_CANCELABLE / Stripe terminal_reader_busy
@@ -1629,7 +1629,7 @@ fun AppNavigation(
 
             // 🧪 Get skipReview flag (test payment from SuperAdmin)
             val skipReview = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("skipReview") ?: false
-            // 🔵 External device inputs (BLE)
+            // 📡 Remote payment inputs (socket-routed charge from another POS)
             val externalTipCents = navController.previousBackStackEntry?.savedStateHandle?.get<Long>("externalTipCents")
             val externalRating = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("externalRating")
             val externalSkipReview = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("externalSkipReview") ?: false

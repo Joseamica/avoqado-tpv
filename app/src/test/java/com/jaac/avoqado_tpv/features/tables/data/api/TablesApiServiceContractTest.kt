@@ -78,6 +78,9 @@ class TablesApiServiceContractTest {
             "getActiveStaff",
             // Fase 3 (2026-08-03) — completitud del módulo Mesas (últimos 3 de los 14 intents).
             "getServiceCharges",
+            // Paridad Android 2026-08-06 (paridad-android-tpv.md, Hallazgo #4) —
+            // "quitar descuento aplicado", online-only.
+            "removeDiscount",
         )
     }
 
@@ -120,5 +123,19 @@ class TablesApiServiceContractTest {
         val ruta = applyDiscount.annotations.filterIsInstance<POST>().first().value
 
         assertThat(ruta).isEqualTo("tpv/venues/{venueId}/orders/{orderId}/discounts/apply")
+    }
+
+    @Test
+    fun `removeDiscount usa DELETE sobre discounts slash discountId`() {
+        // Verificado 2026-08-06 contra tpv.routes.ts:5073
+        // (discountController.removeDiscount, permiso discounts:apply) — la
+        // MISMA familia que applyDiscount, no discounts/apply.
+        val removeDiscount = TablesApiService::class.java.declaredMethods.first { it.name == "removeDiscount" }
+
+        val isDelete = removeDiscount.annotations.any { it is DELETE }
+        val ruta = removeDiscount.annotations.filterIsInstance<DELETE>().first().value
+
+        assertThat(isDelete).isTrue()
+        assertThat(ruta).isEqualTo("tpv/venues/{venueId}/orders/{orderId}/discounts/{discountId}")
     }
 }

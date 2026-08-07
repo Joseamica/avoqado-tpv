@@ -381,6 +381,62 @@ class TableCheckoutViewModelTest {
 
     // endregion
 
+    // region — removeDiscount: paridad Android 2026-08-06 (paridad-android-tpv.md,
+    // Hallazgo #4). SIEMPRE online — a diferencia de applyDiscount arriba,
+    // aquí NUNCA hay una rama "queued".
+
+    @Test
+    fun removeDiscount_exitoso_avisa_y_recarga_el_cheque() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
+        coEvery { repository.removeDiscount(venueId, "orden-1", "d1") } returns
+            Result.success(TablesRepository.DiscountOutcome(queued = false, amount = BigDecimal("10.00"), newOrderTotal = BigDecimal("100.00")))
+        val viewModel = createViewModel()
+
+        viewModel.removeDiscount("d1")
+
+        assertThat(viewModel.state.value.notice).isEqualTo("Descuento quitado")
+        assertThat(viewModel.state.value.errorMessage).isNull()
+        coVerify(exactly = 1) { repository.removeDiscount(venueId, "orden-1", "d1") }
+        // "Recarga el cheque" = un segundo getOrder tras el de loadCheck() inicial.
+        coVerify(exactly = 2) { repository.getOrder(venueId, "orden-1") }
+    }
+
+    @Test
+    fun removeDiscount_sin_conexion_muestra_el_mensaje_explicito_NUNCA_generico() = runTest {
+        // Regla dura del gap: quitar un descuento NUNCA se encola — un
+        // fallo de red debe decir "necesita conexión", no un genérico que
+        // sugiera que se guardó para después (no se guardó nada).
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
+        coEvery { repository.removeDiscount(venueId, "orden-1", "d1") } returns
+            Result.failure(TablesRepository.RemoveDiscountRequiresConnectionException())
+        val viewModel = createViewModel()
+
+        viewModel.removeDiscount("d1")
+
+        assertThat(viewModel.state.value.errorMessage).contains("necesita conexión")
+        assertThat(viewModel.state.value.notice).isNull()
+    }
+
+    @Test
+    fun removeDiscount_rechazado_marca_errorMessage() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
+        coEvery { repository.removeDiscount(venueId, "orden-1", "d1") } returns
+            Result.failure(com.jaac.avoqado_tpv.core.data.network.BackendHttpException(statusCode = 400, message = "No se puede quitar un descuento de una orden pagada"))
+        val viewModel = createViewModel()
+
+        viewModel.removeDiscount("d1")
+
+        assertThat(viewModel.state.value.errorMessage).contains("orden pagada")
+    }
+
+    // endregion
+
     // region — Fase 3: APPLY_SERVICE_CHARGE
 
     @Test

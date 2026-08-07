@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.tables.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -30,6 +31,15 @@ data class QuarantineItem(
 data class QuarantineUiState(
     val isLoading: Boolean = false,
     val items: List<QuarantineItem> = emptyList(),
+    /**
+     * Gate de rol para [QuarantineViewModel.dismiss] — espejo de
+     * `avoqado-android`'s `QuarantineViewModel.canResolve` (`roleManager.canIssueRefund`,
+     * `payments:refund`, MANAGER+). Descartar un rechazo puede ser dinero
+     * (ej. `PAY_CASH` rechazado: el efectivo sigue en caja) — un WAITER no
+     * debe poder hacerlo desaparecer sin supervisión. Arranca en `false`
+     * (fail-closed) hasta que [PermissionsRepository.hasPermission] resuelve.
+     */
+    val canResolve: Boolean = false,
 )
 
 /**
@@ -39,8 +49,13 @@ data class QuarantineUiState(
  * deliberado de `avoqado-android/sync/presentation/QuarantineViewModel.kt`
  * (`describeType`/`resolutionHint`), recortado a lo que Mesas tiene hoy:
  * solo [SyncOutbox] — sin cola de pagos ni de reservas (no existen en este
- * módulo) — y sin gate de rol (`RoleManager` de android no tiene equivalente
- * en la TPV todavía; cualquier staff en esta terminal puede descartar).
+ * módulo). El gate de rol de [dismiss] (paridad Android, auditoría
+ * 2026-08-06 — Hallazgo #3 de `paridad-android-tpv.md`) usa
+ * [PermissionsRepository.hasPermission] con `payments:refund` en vez de un
+ * `RoleManager` propio: la TPV no tiene ese objeto, pero SÍ tiene el mismo
+ * permiso mirroreado por nombre exacto contra el backend
+ * (`checkPermission('payments:refund')`) — mismo patrón que
+ * `PaymentsViewModel.canProcessRefund` y `MenuViewModel.canApplyDiscount`.
  *
  * 🔴 NO confundir `REJECTED` con `RETRY` — ver
  * `avoqado-server/.claude/rules/offline-first-y-hub-lan.md` §2.2. Esta
@@ -58,6 +73,7 @@ data class QuarantineUiState(
 class QuarantineViewModel @Inject constructor(
     private val outbox: SyncOutbox,
     private val deviceInfoManager: DeviceInfoManager,
+    private val permissionsRepository: PermissionsRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(QuarantineUiState())
@@ -65,9 +81,30 @@ class QuarantineViewModel @Inject constructor(
 
     private var venueId: String? = null
 
+    init {
+        refreshCanResolve()
+    }
+
+    /**
+     * `payments:refund` (MANAGER+) — mismo permiso que gatea reembolsos
+     * (`PaymentsViewModel.canProcessRefund`). Se resuelve una vez al crear el
+     * ViewModel, no en cada [load]: [PermissionsRepository.hasPermission] ya
+     * cachea 5 min, y recalcularlo en cada recarga (p.ej. tras cada [dismiss])
+     * no cambiaría el resultado salvo que cambie el rol de sesión — no aplica
+     * aquí.
+     */
+    private fun refreshCanResolve() {
+        viewModelScope.launch {
+            val canResolve = permissionsRepository.hasPermission("payments:refund")
+            _state.update { it.copy(canResolve = canResolve) }
+        }
+    }
+
     /**
      * Carga explícita por venue. El id se guarda internamente para que
-     * [dismiss] no lo vuelva a necesitar como parámetro.
+     * [dismiss] no lo vuelva a necesitar como parámetro. Usa `copy` (no
+     * reconstruye [QuarantineUiState] desde cero) para no pisar
+     * [QuarantineUiState.canResolve] ya resuelto por [refreshCanResolve].
      */
     fun load(venueId: String) {
         this.venueId = venueId
@@ -75,7 +112,7 @@ class QuarantineViewModel @Inject constructor(
             _state.update { it.copy(isLoading = true) }
             val rejected = outbox.rejectedIntents(venueId)
             _state.update {
-                QuarantineUiState(
+                it.copy(
                     isLoading = false,
                     items = rejected.map { intent -> intent.toUiItem() },
                 )
@@ -94,14 +131,18 @@ class QuarantineViewModel @Inject constructor(
     }
 
     /**
-     * El mesero/gerente ya resolvió el rechazo a mano (recobró el efectivo,
-     * repitió la acción…) y lo descarta. Recarga después de descartar — la
-     * lista siempre refleja lo que Room tiene, nunca un borrado optimista
-     * que se pueda desincronizar si [SyncOutbox.dismissRejected] no
-     * encuentra la fila (p.ej. otro dispositivo ya la descartó).
+     * El gerente (o superior) ya resolvió el rechazo a mano (recobró el
+     * efectivo, repitió la acción…) y lo descarta. No-op seguro si
+     * [QuarantineUiState.canResolve] es `false` — WAITER/CASHIER ven la lista
+     * pero no pueden descartar (paridad Android, `canResolve = roleManager.canIssueRefund`).
+     * Recarga después de descartar — la lista siempre refleja lo que Room
+     * tiene, nunca un borrado optimista que se pueda desincronizar si
+     * [SyncOutbox.dismissRejected] no encuentra la fila (p.ej. otro
+     * dispositivo ya la descartó).
      */
     fun dismiss(id: String) {
         val vId = venueId ?: return
+        if (!_state.value.canResolve) return
         viewModelScope.launch {
             outbox.dismissRejected(vId, id)
             load(vId)

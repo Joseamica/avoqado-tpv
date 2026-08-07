@@ -96,7 +96,17 @@ fun QuarantineSheet(
             }
             Spacer(Modifier.height(Spacing.Space1))
             Text(
-                text = "El servidor no pudo aplicar estas acciones hechas sin conexión. Nada se perdió — revísalas y márcalas como resueltas.",
+                // NO "sin conexión": esta terminal casi siempre tiene red
+                // perfecta cuando esta pantalla se abre. Lo que pasó es que
+                // el server RECHAZÓ la acción de forma PERMANENTE al
+                // reconectar — no es un síntoma de falta de señal, es un
+                // rechazo de negocio que necesita revisión humana. El wording
+                // anterior repetía el mismo error que ya generó una queja
+                // del founder en avoqado-android (ver KDoc de su
+                // `QuarantineSheet.kt`: "el nombre confundía el síntoma...
+                // con el problema") — paridad 2026-08-06, Hallazgo #2 de
+                // `paridad-android-tpv.md`.
+                text = "El servidor rechazó estas acciones al reconectar. Nada se perdió — revísalas y márcalas como resueltas.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -127,7 +137,11 @@ fun QuarantineSheet(
                         verticalArrangement = Arrangement.spacedBy(Spacing.Space2),
                     ) {
                         items(state.items, key = { it.id }) { item ->
-                            QuarantineItemCard(item = item, onDismiss = { viewModel.dismiss(item.id) })
+                            QuarantineItemCard(
+                                item = item,
+                                canResolve = state.canResolve,
+                                onDismiss = { viewModel.dismiss(item.id) },
+                            )
                         }
                     }
                 }
@@ -137,7 +151,7 @@ fun QuarantineSheet(
 }
 
 @Composable
-private fun QuarantineItemCard(item: QuarantineItem, onDismiss: () -> Unit) {
+private fun QuarantineItemCard(item: QuarantineItem, canResolve: Boolean, onDismiss: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -169,8 +183,21 @@ private fun QuarantineItemCard(item: QuarantineItem, onDismiss: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(onClick = onDismiss) {
-                Text("Marcar resuelta")
+            if (canResolve) {
+                TextButton(onClick = onDismiss) {
+                    Text("Marcar resuelta")
+                }
+            } else {
+                // Paridad Android (`canResolve = roleManager.canIssueRefund`,
+                // MANAGER+): un WAITER/CASHIER ve el rechazo pero no puede
+                // hacerlo desaparecer — algunos son dinero (PAY_CASH
+                // rechazado). Texto en vez de botón deshabilitado silencioso:
+                // explica QUÉ hacer, no solo que no se puede.
+                Text(
+                    text = "Pide a un gerente que la marque como resuelta",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -234,6 +261,7 @@ private fun QuarantineItemCardPreview() {
                     message = "El servidor no confirmó el resultado del cobro",
                     createdAt = System.currentTimeMillis(),
                 ),
+                canResolve = true,
                 onDismiss = {},
             )
         }

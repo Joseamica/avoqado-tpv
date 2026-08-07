@@ -27,6 +27,7 @@ import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentsResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.TablesResponse
 import retrofit2.Response
 import retrofit2.http.Body
+import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.PATCH
 import retrofit2.http.POST
@@ -198,6 +199,28 @@ interface TablesApiService {
         @Path("venueId") venueId: String,
         @Path("orderId") orderId: String,
     ): Response<AvailableDiscountsResponse>
+
+    /**
+     * `DELETE /tpv/venues/{venueId}/orders/{orderId}/discounts/{discountId}` →
+     * `discountController.removeDiscount` (`tpv.routes.ts:5073`, permiso
+     * `discounts:apply`). Quita un descuento YA aplicado — SIEMPRE online, no
+     * hay intent `REMOVE_DISCOUNT` en el contrato de 14 tipos de
+     * `sync.mobile.service.ts`. Reusa [ApplyDiscountResponse]/[DiscountApplyResult]:
+     * mismo shape `{ success, data: { amount, newOrderTotal }, message, error }`
+     * que `applyDiscount` (`discount.tpv.controller.ts::removeDiscount`,
+     * verificado 2026-08-06 — paridad Android, ver KDoc de
+     * [com.jaac.avoqado_tpv.features.tables.data.TablesRepository.removeDiscount]).
+     * 🔴 A diferencia de [applyDiscount], esta ruta NO tiene equivalente para
+     * "quitar cargo por servicio" bajo `/tpv` (solo existe bajo `/mobile`,
+     * fuera del alcance de este cliente por la regla dura del plan) — ver
+     * KDoc de `TableCheckoutViewModel` sobre por qué "Quitar cargo" no existe.
+     */
+    @DELETE("tpv/venues/{venueId}/orders/{orderId}/discounts/{discountId}")
+    suspend fun removeDiscount(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Path("discountId") discountId: String,
+    ): Response<ApplyDiscountResponse>
 
     /**
      * `POST /tpv/venues/{venueId}/orders/{orderId}/comp` →

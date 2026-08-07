@@ -197,6 +197,55 @@ class TablesRepositoryPhase1ActionsTest {
     }
 
     // ══════════════════════════════════════════════════════════════════
+    // removeDiscount — paridad Android 2026-08-06 (paridad-android-tpv.md,
+    // Hallazgo #4): SIEMPRE online, un fallo de red NUNCA se encola — misma
+    // asimetría que compOrder(itemIds no vacío) de abajo, no la de
+    // applyDiscount de arriba.
+    // ══════════════════════════════════════════════════════════════════
+
+    @Test
+    fun removeDiscount_online_exitoso_no_encola_nada() = runTest {
+        coEvery { api.removeDiscount(venueId, orderId, "d1") } returns Response.success(
+            ApplyDiscountResponse(data = DiscountApplyResult(amount = BigDecimal("50.00"), newOrderTotal = BigDecimal("400.00"))),
+        )
+
+        val result = repo.removeDiscount(venueId, orderId, "d1")
+
+        assertThat(result.isSuccess).isTrue()
+        assertThat(result.getOrThrow().queued).isFalse()
+        assertThat(result.getOrThrow().newOrderTotal).isEqualTo(BigDecimal("400.00"))
+        coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun removeDiscount_sin_red_NUNCA_se_encola_se_propaga_como_necesita_conexion() = runTest {
+        // A diferencia de applyDiscount (SÍ tiene intent APPLY_DISCOUNT),
+        // "quitar" no tiene equivalente offline en el contrato de 14 tipos —
+        // encolarlo silenciosamente sería un intent que el reducer nunca
+        // sabría aplicar.
+        coEvery { api.removeDiscount(venueId, orderId, "d1") } throws IOException("sin red")
+
+        val result = repo.removeDiscount(venueId, orderId, "d1")
+
+        assertThat(result.isFailure).isTrue()
+        assertThat(result.exceptionOrNull()).isInstanceOf(TablesRepository.RemoveDiscountRequiresConnectionException::class.java)
+        coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun removeDiscount_rechazo_de_negocio_se_propaga_tal_cual_nunca_como_necesita_conexion() = runTest {
+        // Ej. orden ya pagada, o el descuento ya lo quitó otro dispositivo —
+        // esto NO es "necesita internet", es un rechazo real del server.
+        coEvery { api.removeDiscount(venueId, orderId, "d1") } returns errorResponse<ApplyDiscountResponse>(400)
+
+        val result = repo.removeDiscount(venueId, orderId, "d1")
+
+        assertThat(result.isFailure).isTrue()
+        assertThat(result.exceptionOrNull()).isInstanceOf(BackendHttpException::class.java)
+        coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any()) }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
     // compOrder — la asimetría: "toda la cuenta" SÍ encola, "artículo
     // puntual" NUNCA (el reducer de replay no acepta itemIds)
     // ══════════════════════════════════════════════════════════════════

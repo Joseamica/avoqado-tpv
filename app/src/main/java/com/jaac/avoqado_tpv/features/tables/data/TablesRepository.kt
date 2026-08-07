@@ -786,6 +786,53 @@ class TablesRepository @Inject constructor(
         }
     }
 
+    /**
+     * "Quitar descuento aplicado" — `DELETE
+     * tpv/venues/{venueId}/orders/{orderId}/discounts/{discountId}`. SIEMPRE
+     * online — paridad Android 2026-08-06 (`paridad-android-tpv.md`,
+     * Hallazgo #4): el contrato de 14 intents
+     * (`avoqado-server/.claude/rules/offline-first-y-hub-lan.md` §2.1) solo
+     * incluye `APPLY_DISCOUNT`, nunca "quitar" — Android's
+     * `TableOrderViewModel.removeDiscount` confirma la misma asimetría
+     * (`requireOnline("quitar un descuento aplicado")`, sin equivalente
+     * offline). Un fallo de red NUNCA se encola — mismo patrón ya establecido
+     * en este archivo para cortesía de artículo puntual
+     * ([ItemCompRequiresConnectionException]): se propaga como
+     * [RemoveDiscountRequiresConnectionException] para que la UI lo
+     * distinga de un rechazo de negocio real (orden pagada, descuento ya
+     * removido por otro dispositivo, etc.) — nunca un error genérico.
+     *
+     * 🔴 No existe equivalente "quitar cargo por servicio" bajo `/tpv` — la
+     * ruta `DELETE .../service-charges/{id}` SOLO existe bajo `/mobile`
+     * (`mobile.routes.ts:2073`), fuera del alcance de este cliente por la
+     * regla dura del plan ("la TPV habla solo con /api/v1/tpv"). Verificado
+     * 2026-08-06 contra `tpv.routes.ts` completo — cero rutas `service-charge`
+     * con DELETE. No se agrega esa ruta al server desde este repo; queda
+     * reportado como gap real en `paridad-fixes-report.md`.
+     */
+    suspend fun removeDiscount(venueId: String, orderId: String, discountId: String): Result<DiscountOutcome> {
+        val onlineResult = try {
+            api.removeDiscount(venueId, orderId, discountId).toApplyDiscountResult()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Timber.w(e, "⚠️ [Tables] Sin red en removeDiscount (venue=%s, order=%s)", venueId, orderId)
+            Result.failure(e)
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Tables] Fallo inesperado en removeDiscount (venue=%s, order=%s)", venueId, orderId)
+            Result.failure(e)
+        }
+
+        onlineResult.onSuccess { result ->
+            return Result.success(DiscountOutcome(queued = false, amount = result.amount, newOrderTotal = result.newOrderTotal))
+        }
+
+        return when (classifyTablesSyncFailure(onlineResult.exceptionOrNull())) {
+            is TablesSyncOutcome.Retryable -> Result.failure(RemoveDiscountRequiresConnectionException())
+            else -> Result.failure(onlineResult.exceptionOrNull() ?: IllegalStateException("removeDiscount sin causa"))
+        }
+    }
+
     private fun Response<com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountResponse>.toApplyDiscountResult():
         Result<com.jaac.avoqado_tpv.features.tables.data.api.dto.DiscountApplyResult> {
         val body = body()
@@ -1367,6 +1414,10 @@ class TablesRepository @Inject constructor(
     /** Cortesía de un artículo puntual falló y NO es un rechazo de negocio del server — nunca se encola, ver KDoc de [compOrder]. */
     class ItemCompRequiresConnectionException :
         Exception("La cortesía de artículos ya enviados necesita conexión — inténtalo cuando el equipo esté en línea.")
+
+    /** Quitar un descuento aplicado falló y NO es un rechazo de negocio del server — nunca se encola, ver KDoc de [removeDiscount]. */
+    class RemoveDiscountRequiresConnectionException :
+        Exception("Quitar un descuento aplicado necesita conexión — inténtalo cuando el equipo esté en línea.")
 
     data class SplitOutcome(
         val queued: Boolean,

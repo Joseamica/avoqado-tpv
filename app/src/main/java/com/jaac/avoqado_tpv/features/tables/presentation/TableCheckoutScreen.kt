@@ -110,6 +110,10 @@ fun TableCheckoutScreen(
     val availableDiscounts by viewModel.availableDiscounts.collectAsStateWithLifecycle()
     val isLoadingDiscounts by viewModel.isLoadingDiscounts.collectAsStateWithLifecycle()
     val isApplyingDiscount by viewModel.isApplyingDiscount.collectAsStateWithLifecycle()
+    // Paridad Android 2026-08-06 (`paridad-android-tpv.md`, Hallazgo #4) —
+    // "quitar descuento aplicado", SIEMPRE online (ver KDoc de
+    // TableCheckoutViewModel.removeDiscount).
+    val isRemovingDiscount by viewModel.isRemovingDiscount.collectAsStateWithLifecycle()
     var showDiscountSheet by remember { mutableStateOf(false) }
     var discountTriggered by remember { mutableStateOf(false) }
     LaunchedEffect(isApplyingDiscount) {
@@ -219,6 +223,8 @@ fun TableCheckoutScreen(
             showServiceChargeSheet = true
             viewModel.loadAvailableServiceCharges()
         },
+        isRemovingDiscount = isRemovingDiscount,
+        onRemoveDiscount = { discountId -> viewModel.removeDiscount(discountId) },
     )
 
     if (showDiscountSheet) {
@@ -268,6 +274,8 @@ private fun TableCheckoutScreenContent(
     onPayCard: () -> Unit,
     onAddDiscountClick: () -> Unit = {},
     onAddServiceChargeClick: () -> Unit = {},
+    isRemovingDiscount: Boolean = false,
+    onRemoveDiscount: (String) -> Unit = {},
 ) {
     val check = state.check
 
@@ -320,7 +328,12 @@ private fun TableCheckoutScreenContent(
                     verticalArrangement = Arrangement.spacedBy(Spacing.Space4),
                 ) {
                     item(key = "summary") {
-                        CheckSummaryCard(check = check, remaining = state.remaining)
+                        CheckSummaryCard(
+                            check = check,
+                            remaining = state.remaining,
+                            isRemovingDiscount = isRemovingDiscount,
+                            onRemoveDiscount = onRemoveDiscount,
+                        )
                     }
 
                     // "Descuento" (Fase 1, APPLY_DISCOUNT) — solo con el cheque YA
@@ -431,7 +444,12 @@ private fun TableCheckoutScreenContent(
 }
 
 @Composable
-private fun CheckSummaryCard(check: OrderDetail?, remaining: BigDecimal) {
+private fun CheckSummaryCard(
+    check: OrderDetail?,
+    remaining: BigDecimal,
+    isRemovingDiscount: Boolean = false,
+    onRemoveDiscount: (String) -> Unit = {},
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
@@ -448,11 +466,21 @@ private fun CheckSummaryCard(check: OrderDetail?, remaining: BigDecimal) {
 
             SummaryRow(label = "Subtotal", amount = check.subtotal)
 
+            // "Quitar" (paridad Android 2026-08-06, Hallazgo #4) solo sobre
+            // líneas con `id` real — el fallback agregado de abajo
+            // (discountAmount sin desglose) no tiene un orderDiscountId
+            // contra el cual llamar DELETE, así que no ofrece el control.
             check.orderDiscounts.forEach { discount ->
                 SummaryRow(
                     label = discount.name.ifBlank { "Descuento" },
                     amount = -discount.amount,
                     color = MaterialTheme.avoqadoColors.statusSuccess,
+                    onRemove = if (discount.id.isNotBlank()) {
+                        { onRemoveDiscount(discount.id) }
+                    } else {
+                        null
+                    },
+                    removeEnabled = !isRemovingDiscount,
                 )
             }
             if (check.orderDiscounts.isEmpty() && check.discountAmount > BigDecimal.ZERO) {
@@ -485,17 +513,40 @@ private fun SummaryRow(
     amount: BigDecimal,
     emphasized: Boolean = false,
     color: androidx.compose.ui.graphics.Color? = null,
+    /** No-null = fila removible (ej. un descuento aplicado); dispara [onRemoveDiscount]. */
+    onRemove: (() -> Unit)? = null,
+    removeEnabled: Boolean = true,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = label,
-            style = if (emphasized) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
-            fontWeight = if (emphasized) FontWeight.Bold else FontWeight.Normal,
-            color = color ?: MaterialTheme.colorScheme.onSurface,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = if (emphasized) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
+                fontWeight = if (emphasized) FontWeight.Bold else FontWeight.Normal,
+                color = color ?: MaterialTheme.colorScheme.onSurface,
+            )
+            if (onRemove != null) {
+                FilledIconButton(
+                    onClick = onRemove,
+                    enabled = removeEnabled,
+                    modifier = Modifier.size(20.dp).padding(start = Spacing.Space1),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    ),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Remove,
+                        contentDescription = "Quitar $label",
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+            }
+        }
         Text(
             text = moneyDisplay(amount),
             style = if (emphasized) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,

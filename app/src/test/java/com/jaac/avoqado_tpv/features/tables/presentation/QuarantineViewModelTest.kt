@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.tables.presentation
 
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncIntentTypes
 import com.jaac.avoqado_tpv.features.tables.data.sync.SyncOutbox
 import io.mockk.clearMocks
@@ -45,11 +46,15 @@ class QuarantineViewModelTest {
 
     private val outbox = mockk<SyncOutbox>()
     private val deviceInfoManager = mockk<DeviceInfoManager>()
+    private val permissionsRepository = mockk<PermissionsRepository>()
 
     @Before
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
-        clearMocks(outbox, deviceInfoManager)
+        clearMocks(outbox, deviceInfoManager, permissionsRepository)
+        // MANAGER+ por defecto en la mayoría de los tests existentes — solo
+        // el bloque de gate de rol (más abajo) sobre-escribe esto a `false`.
+        coEvery { permissionsRepository.hasPermission("payments:refund") } returns true
     }
 
     @After
@@ -60,6 +65,7 @@ class QuarantineViewModelTest {
     private fun createViewModel(): QuarantineViewModel = QuarantineViewModel(
         outbox = outbox,
         deviceInfoManager = deviceInfoManager,
+        permissionsRepository = permissionsRepository,
     )
 
     private fun rejected(
@@ -239,6 +245,60 @@ class QuarantineViewModelTest {
 
         coVerify(exactly = 0) { outbox.rejectedIntents(any()) }
         assertThat(viewModel.state.value.items).isEmpty()
+    }
+
+    // endregion
+
+    // region — gate de rol de dismiss (paridad Android, Hallazgo #3 2026-08-06):
+    // resolver un rechazo puede ser dinero (PAY_CASH), así que solo
+    // MANAGER+ (`payments:refund`) puede descartarlo — mismo permiso que
+    // gatea reembolsos.
+
+    @Test
+    fun canResolve_refleja_el_permiso_payments_refund_del_backend() = runTest {
+        coEvery { permissionsRepository.hasPermission("payments:refund") } returns true
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.state.value.canResolve).isTrue()
+    }
+
+    @Test
+    fun sin_permiso_payments_refund_canResolve_es_falso() = runTest {
+        coEvery { permissionsRepository.hasPermission("payments:refund") } returns false
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.state.value.canResolve).isFalse()
+    }
+
+    @Test
+    fun un_WAITER_sin_permiso_no_puede_descartar_un_rechazo() = runTest {
+        // Dinero-adyacente: PAY_CASH rechazado significa "el efectivo sigue
+        // en caja" — un mesero no debe poder hacerlo desaparecer sin que un
+        // gerente lo revise primero.
+        coEvery { permissionsRepository.hasPermission("payments:refund") } returns false
+        coEvery { outbox.rejectedIntents(any()) } returns listOf(rejected("PAY_CASH"))
+        val viewModel = createViewModel()
+        viewModel.load("venue-a")
+        assertThat(viewModel.state.value.items).hasSize(1)
+
+        viewModel.dismiss("intent-1")
+
+        coVerify(exactly = 0) { outbox.dismissRejected(any(), any()) }
+        // El item SIGUE visible — nunca desaparece sin autorización.
+        assertThat(viewModel.state.value.items).hasSize(1)
+    }
+
+    @Test
+    fun un_MANAGER_con_permiso_SI_puede_descartar_un_rechazo() = runTest {
+        coEvery { permissionsRepository.hasPermission("payments:refund") } returns true
+        coEvery { outbox.rejectedIntents(any()) } returns listOf(rejected("PAY_CASH"))
+        coEvery { outbox.dismissRejected(any(), any()) } returns Unit
+        val viewModel = createViewModel()
+        viewModel.load("venue-a")
+
+        viewModel.dismiss("intent-1")
+
+        coVerify(exactly = 1) { outbox.dismissRejected("venue-a", "intent-1") }
     }
 
     // endregion

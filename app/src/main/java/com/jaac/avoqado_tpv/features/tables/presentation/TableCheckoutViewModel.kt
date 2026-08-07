@@ -507,6 +507,49 @@ class TableCheckoutViewModel @Inject constructor(
         }
     }
 
+    private val _isRemovingDiscount = MutableStateFlow(false)
+    val isRemovingDiscount: StateFlow<Boolean> = _isRemovingDiscount.asStateFlow()
+
+    /**
+     * Quita un descuento YA aplicado — paridad Android 2026-08-06
+     * (`paridad-android-tpv.md`, Hallazgo #4). SIEMPRE online, NUNCA se
+     * encola (ver KDoc de [TablesRepository.removeDiscount]) — a diferencia
+     * de [applyDiscount], que sí tiene equivalente offline. Un intento sin
+     * red no falla en silencio ni se disfraza de "guardado": se propaga
+     * [TablesRepository.RemoveDiscountRequiresConnectionException] con un
+     * mensaje explícito por el snackbar compartido, la misma superficie que
+     * ya usa la cortesía de artículo puntual (mismo tipo de asimetría).
+     */
+    fun removeDiscount(orderDiscountId: String) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        if (_isRemovingDiscount.value) return
+
+        _isRemovingDiscount.value = true
+        viewModelScope.launch {
+            repository.removeDiscount(vId, session.orderId, orderDiscountId).fold(
+                onSuccess = {
+                    _isRemovingDiscount.value = false
+                    _state.update { it.copy(notice = "Descuento quitado") }
+                    loadCheck()
+                },
+                onFailure = { e ->
+                    _isRemovingDiscount.value = false
+                    if (e is CancellationException) throw e
+                    _state.update {
+                        it.copy(
+                            errorMessage = when (e) {
+                                is TablesRepository.RemoveDiscountRequiresConnectionException -> e.message
+                                is BackendHttpException -> e.message
+                                else -> "No se pudo quitar el descuento"
+                            },
+                        )
+                    }
+                },
+            )
+        }
+    }
+
     // ══════════════════════════════════════════════════════════════════
     // Fase 3 (2026-08-03) — APPLY_SERVICE_CHARGE. Vive aquí, no en
     // TableOrderViewModel, por el MISMO motivo que APPLY_DISCOUNT arriba:
@@ -584,4 +627,15 @@ class TableCheckoutViewModel @Inject constructor(
             )
         }
     }
+
+    // 🔴 No existe "quitar cargo por servicio" (paridad Android,
+    // `paridad-android-tpv.md` Hallazgo #4, 2026-08-06) — a diferencia de
+    // [removeDiscount] arriba, este NO se pudo cerrar en la misma pasada: el
+    // server SÍ tiene `removeServiceCharge` (`service-charge.mobile.service.ts`),
+    // pero la ruta `DELETE .../service-charges/{id}` solo existe bajo
+    // `/mobile` (`mobile.routes.ts:2073`) — `/tpv` nunca la expuso
+    // (verificado contra `tpv.routes.ts` completo, cero rutas
+    // `service-charge` con DELETE). Agregarla implica tocar
+    // `avoqado-server`, fuera del alcance de este cliente — reportado en
+    // `paridad-fixes-report.md`, no silencioso.
 }

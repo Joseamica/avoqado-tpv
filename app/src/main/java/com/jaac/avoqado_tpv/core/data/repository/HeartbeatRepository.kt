@@ -1,16 +1,29 @@
 package com.jaac.avoqado_tpv.core.data.repository
 
 import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.data.network.dto.AuthAttemptDto
 import com.jaac.avoqado_tpv.core.data.network.dto.CommandAckRequestDto
 import com.jaac.avoqado_tpv.core.data.network.dto.HeartbeatResponseDto
 import com.jaac.avoqado_tpv.core.data.network.dto.toDto
 import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Heartbeat
 import com.jaac.avoqado_tpv.core.domain.models.Result
+import com.jaac.avoqado_tpv.features.payment.data.local.AuthAttemptRecord
+import com.jaac.avoqado_tpv.features.payment.data.local.AuthAttemptTelemetryStore
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateProvider
 import com.jaac.avoqado_tpv.features.remote_command.data.model.CommandResult
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/** Wire-shape mapper — kept next to its only caller (sendHeartbeat) rather than in the
+ *  DTO file, so `core.data.network.dto` doesn't take a dependency on `features.payment`. */
+private fun AuthAttemptRecord.toDto(): AuthAttemptDto = AuthAttemptDto(
+    code = code,
+    durationMs = durationMs,
+    rail = rail,
+    timestamp = timestamp,
+)
 
 /**
  * Heartbeat Repository
@@ -42,7 +55,15 @@ import javax.inject.Singleton
  */
 @Singleton
 class HeartbeatRepository @Inject constructor(
-    private val apiService: ApiService
+    private val apiService: ApiService,
+    // 📊 Task 6 — local batch of card-authorization-attempt telemetry, attached below
+    // ONLY when no charge is in flight. Never its own network call — purely additive
+    // to the heartbeat this repository already sends.
+    private val authAttemptTelemetryStore: AuthAttemptTelemetryStore,
+    // 🔒 Same "is a charge in progress?" signal both payment rails already publish
+    // (PaymentStateHolder, via this interface) — reused here rather than inventing a
+    // second one. See PaymentStateProvider's KDoc.
+    private val paymentStateProvider: PaymentStateProvider
 ) {
 
     /**
@@ -65,7 +86,17 @@ class HeartbeatRepository @Inject constructor(
         return try {
             Timber.d("📡 Sending heartbeat for terminal ${heartbeat.terminalId}")
 
-            val request = heartbeat.toDto()
+            // 📊 Task 6 — attach the locally-batched auth-attempt telemetry, if any.
+            // batchForHeartbeat already enforces "never while a charge is active" AND
+            // "never an empty list" (null either way) — this call is the ONLY place
+            // that invariant is read, so a heartbeat that fires mid-charge goes out
+            // with authAttempts = null, same as if the buffer were empty.
+            val telemetryBatch = authAttemptTelemetryStore.batchForHeartbeat(
+                chargeInProgress = paymentStateProvider.isCharging()
+            )
+            val request = heartbeat.toDto().copy(
+                authAttempts = telemetryBatch?.map { it.toDto() }
+            )
             val response = apiService.sendHeartbeat(request)
 
             if (response.isSuccessful && response.body() != null) {

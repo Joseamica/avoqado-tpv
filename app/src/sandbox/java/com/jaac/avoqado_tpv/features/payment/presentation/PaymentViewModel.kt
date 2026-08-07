@@ -79,6 +79,8 @@ import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
+// 📊 Task 6 — local telemetry of authorization attempts (fire-and-forget, rides the heartbeat)
+import com.jaac.avoqado_tpv.features.payment.data.local.AuthAttemptTelemetryStore
 import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
 // 🔄 Connection event for receipt-on-reconnect + offline-queue sync
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
@@ -265,6 +267,10 @@ class PaymentViewModel @Inject constructor(
     // AngelPayPaymentViewModel already carries); used by reportRecordingLost when a card charge
     // succeeds but neither the backend NOR the local offline queue can record it.
     private val observability: ObservabilityManager,
+    // 📊 AuthAttemptTelemetryStore — Task 6: local (Room-backed) batch of authorization-attempt
+    // telemetry (result code + duration + rail), fire-and-forget, rides the next heartbeat.
+    // NEVER a network call of its own, NEVER card data/amounts — see the store's own KDoc.
+    private val authAttemptTelemetryStore: AuthAttemptTelemetryStore,
     // 📱 Application context - for PaymentSyncScheduler.runNow() on reconnect
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
@@ -4215,6 +4221,11 @@ class PaymentViewModel @Inject constructor(
                 if (level != AuthWatchdogLevel.NONE) publishWatchdogLevel(level)
             }
         }
+        // 📊 Task 6 — real wall-clock start (NOT the watchdog's virtual/test-driven `elapsed`
+        // accumulator above) + the outcome code set by whichever branch below resolves.
+        // Recorded fire-and-forget in the `finally` — never affects the charge.
+        val authAttemptStartedAtMs = System.currentTimeMillis()
+        var authAttemptOutcomeCode: String? = null
         return try {
         try {
             // ⚠️ This posId is NEVER sent anywhere. `SaleIccParams`/`SaleCtlsParams` have no posId
@@ -4229,6 +4240,7 @@ class PaymentViewModel @Inject constructor(
 
             if (posIdToUse == null) {
                 Timber.e("❌ [Payment] Merchant sin posId configurado - current merchant: ${currentMerchantAccount?.displayName ?: "null"}")
+                authAttemptOutcomeCode = "ERROR_NO_POS_ID"
                 return AuthorizationResult(
                     response = null,
                     userFriendlyError = "Error de configuración del merchant.\n\n" +
@@ -4309,6 +4321,9 @@ class PaymentViewModel @Inject constructor(
                 saleFailure != null -> {
                     // Handle failure - Translate SDK error to user-friendly message
                     val failure = saleFailure
+                    // 📊 Task 6 — short code only (class name), NEVER the description string
+                    // extracted below (that can carry amount/reference from the Blumon response).
+                    authAttemptOutcomeCode = failure.javaClass.simpleName
 
                     // 🔬 SDK STALENESS TELEMETRY (read-only, no control-flow change)
                     // **MUST run BEFORE Timber.e** so the keys are attached to the non-fatal
@@ -4538,6 +4553,9 @@ class PaymentViewModel @Inject constructor(
                             authCode = response.saleData.authorization
                         )
                     }
+                    // 📊 Task 6 — short outcome code only, no description strings (those can
+                    // carry amount/reference — see the entity's KDoc for the exact invariant).
+                    authAttemptOutcomeCode = if (declineMessage != null) "DECLINED" else "SUCCESS"
                     if (declineMessage != null) {
                         Timber.w("❌ [$saleType] Issuer DECLINE (authorization blank) — emv=${response.saleData.emvResponseCode} desc='${response.saleData.description}'")
                         AuthorizationResult(response = null, userFriendlyError = declineMessage)
@@ -4547,6 +4565,7 @@ class PaymentViewModel @Inject constructor(
                 }
                 else -> {
                     Timber.e("❌ [$saleType] Unexpected state: both response and failure are null")
+                    authAttemptOutcomeCode = "ERROR_UNEXPECTED_STATE"
                     AuthorizationResult(response = null, userFriendlyError = "Error inesperado procesando el pago.")
                 }
             }
@@ -4572,6 +4591,9 @@ class PaymentViewModel @Inject constructor(
             }
 
             Timber.e(e, "❌ [Sale] Exception in online authorization")
+            // 📊 Task 6 — exception class name only, never e.message (can carry a raw Blumon
+            // error string with amount/reference embedded, same rationale as the SDK failure branch).
+            authAttemptOutcomeCode = "EXCEPTION_" + e.javaClass.simpleName
 
             AuthorizationResult(
                 response = null,
@@ -4584,6 +4606,20 @@ class PaymentViewModel @Inject constructor(
             // pantalla que ya cambió.
             watchdogJob.cancel()
             publishWatchdogLevel(AuthWatchdogLevel.NONE)
+            // 📊 Task 6 — fire-and-forget local telemetry. authAttemptOutcomeCode is always
+            // non-null by this point (every branch above sets it before producing its
+            // AuthorizationResult); the null check is defensive only. A telemetry failure
+            // here must NEVER affect the charge — record() itself never throws, but this
+            // still isolates the call from the cleanup above.
+            authAttemptOutcomeCode?.let { code ->
+                runCatching {
+                    authAttemptTelemetryStore.record(
+                        code = code,
+                        durationMs = System.currentTimeMillis() - authAttemptStartedAtMs,
+                        rail = "BLUMON"
+                    )
+                }
+            }
         }
     }
 

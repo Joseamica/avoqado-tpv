@@ -46,7 +46,38 @@ data class HeartbeatRequestDto(
     val version: String?,
 
     @SerializedName("systemInfo")
-    val systemInfo: SystemInfoDto?
+    val systemInfo: SystemInfoDto?,
+
+    // 📊 Task 6 (plan `2026-08-04-event-loop-no-bloqueante-reportes`) — local telemetry
+    // of card-authorization attempts, batched on-device and attached here ONLY when no
+    // charge is in flight (see HeartbeatRepository.sendHeartbeat). Additive + defaulted
+    // to null so old callers of this constructor (and old TPV builds the backend still
+    // supports) are unaffected. NEVER card data / amounts / references — see
+    // AuthAttemptDto's own KDoc.
+    @SerializedName("authAttempts")
+    val authAttempts: List<AuthAttemptDto>? = null
+)
+
+/**
+ * ONE recorded authorization attempt, wire-shape for the heartbeat request.
+ *
+ * PRIVACY: only a short result/error [code], the call's [durationMs], the [rail]
+ * ("BLUMON" | "ANGELPAY"), and an ISO-8601 [timestamp]. Mirrors
+ * `com.jaac.avoqado_tpv.features.payment.data.local.AuthAttemptRecord` field-for-field
+ * — see that class's KDoc for why nothing else may ever be added here.
+ */
+data class AuthAttemptDto(
+    @SerializedName("code")
+    val code: String,
+
+    @SerializedName("durationMs")
+    val durationMs: Long,
+
+    @SerializedName("rail")
+    val rail: String,
+
+    @SerializedName("timestamp")
+    val timestamp: String
 )
 
 /**

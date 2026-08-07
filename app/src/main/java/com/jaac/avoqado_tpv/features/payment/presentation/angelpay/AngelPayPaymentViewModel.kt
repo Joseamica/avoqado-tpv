@@ -24,6 +24,8 @@ import com.jaac.avoqado_tpv.features.payment.data.dto.SendReceiptRequest
 import com.jaac.avoqado_tpv.features.payment.data.dto.SendWhatsAppReceiptRequest
 import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity
 import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
+// 📊 Task 6 — local telemetry of authorization attempts (fire-and-forget, rides the heartbeat)
+import com.jaac.avoqado_tpv.features.payment.data.local.AuthAttemptTelemetryStore
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthState
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayCredentials
@@ -117,6 +119,10 @@ class AngelPayPaymentViewModel @Inject constructor(
     // 📒 PaymentAttemptLedger — La Libreta write-ahead: observational marks only, never
     // blocks a charge (every ledger entry point is runCatching + venue-flag gated).
     private val paymentAttemptLedger: PaymentAttemptLedger,
+    // 📊 AuthAttemptTelemetryStore — Task 6: local (Room-backed) batch of authorization-attempt
+    // telemetry (result code + duration + rail), fire-and-forget, rides the next heartbeat.
+    // NEVER a network call of its own, NEVER card data/amounts — see the store's own KDoc.
+    private val authAttemptTelemetryStore: AuthAttemptTelemetryStore,
     // 📡 Survives process/Activity death while the AngelPay SDK Activity holds the foreground —
     // see [_paymentSource] / [_socketRequestId]. Hilt provides this automatically to @HiltViewModel.
     private val savedStateHandle: SavedStateHandle,
@@ -1324,8 +1330,16 @@ class AngelPayPaymentViewModel @Inject constructor(
     // de nuestro control.
     private var authWatchdogJob: Job? = null
 
+    // 📊 Task 6 — real wall-clock start of the CURRENT authorization attempt, captured by
+    // startAuthorizationWatchdog(). Read back in onAngelPayResult/onAngelPaySdkResult's
+    // `finally` to compute durationMs for the local telemetry batch — deliberately NOT a
+    // second System.currentTimeMillis() call there, and NOT the watchdog's own `elapsed`
+    // accumulator (that's a virtual/test-driven clock via delay(), not real elapsed time).
+    private var authWatchdogStartedAtMs: Long = 0L
+
     @VisibleForTesting
     internal fun startAuthorizationWatchdog(startedAt: Long = System.currentTimeMillis()) {
+        authWatchdogStartedAtMs = startedAt
         authWatchdogJob?.cancel()
         authWatchdogJob = viewModelScope.launch {
             // 🔴 El tiempo transcurrido se acumula sumando los delays, NO leyendo
@@ -1689,6 +1703,10 @@ class AngelPayPaymentViewModel @Inject constructor(
           // resultado (cualquiera que sea) queda resuelto. Cubre éxito, declinación,
           // cancelación y el registro subsecuente — NUNCA cancela la autorización, solo
           // deja de publicar avisos cuando ya no hay nada que observar.
+          // 📊 Task 6 — set by whichever branch below resolves; null stays null on a
+          // duplicate/stale result (consumeResultForCurrentAttempt returns false), which
+          // deliberately records nothing for an attempt already accounted for.
+          var authAttemptOutcomeCode: String? = null
           try {
             if (!consumeResultForCurrentAttempt(source = "app_to_app")) return@launch
             Timber.i("🔶 [AngelPay] onAngelPayResult | resultCode=$resultCode")
@@ -1716,8 +1734,14 @@ class AngelPayPaymentViewModel @Inject constructor(
             }
 
             when (result) {
-                is AngelPayResult.Success -> recordCardPayment(result)
+                is AngelPayResult.Success -> {
+                    // 📊 Task 6 — AngelPay's own catalog code when present (e.g. "S000"), never
+                    // result.message (human-readable, can carry amount/reference).
+                    authAttemptOutcomeCode = result.transactionCode ?: "SUCCESS"
+                    recordCardPayment(result)
+                }
                 is AngelPayResult.Failure -> {
+                    authAttemptOutcomeCode = result.code
                     logPaymentDecline(
                         source = "app_to_app",
                         sdkCode = result.code,
@@ -1739,6 +1763,7 @@ class AngelPayPaymentViewModel @Inject constructor(
                     }
                 }
                 is AngelPayResult.Cancelled -> {
+                    authAttemptOutcomeCode = "CANCELLED"
                     _state.value = AngelPayPaymentState.Cancelled
                     // 📡 POS→TPV: user cancelled at the terminal (no-op unless socket-sourced).
                     emitSocketResultIfSocketSourced(
@@ -1754,6 +1779,18 @@ class AngelPayPaymentViewModel @Inject constructor(
             // observador que no se apaga es una fuga que sigue escalando avisos sobre
             // una pantalla que ya cambió.
             stopAuthorizationWatchdog()
+            // 📊 Task 6 — fire-and-forget local telemetry; null (duplicate/stale result,
+            // or an early return before any branch set it) records nothing. Never blocks
+            // or affects the charge — record() itself never throws.
+            authAttemptOutcomeCode?.let { code ->
+                runCatching {
+                    authAttemptTelemetryStore.record(
+                        code = code,
+                        durationMs = System.currentTimeMillis() - authWatchdogStartedAtMs,
+                        rail = "ANGELPAY"
+                    )
+                }
+            }
           }
         }
     }
@@ -1763,6 +1800,9 @@ class AngelPayPaymentViewModel @Inject constructor(
           // 🔴 Mismo vigilante, mismo invariante que onAngelPayResult: observa desde
           // onIntentLaunched hasta que este resultado (incluida la relanzada por
           // expiración de sesión) queda resuelto. Nunca cancela la autorización.
+          // 📊 Task 6 — set ONLY on a terminal outcome (never on the session-expiry
+          // relaunch below, which is deliberately not a resolved attempt).
+          var authAttemptOutcomeCode: String? = null
           try {
             if (!consumeResultForCurrentAttempt(source = "sdk_contract")) return@launch
             Timber.i("🔶 [AngelPay SDK] Result received | approved=${result.approved}, status=${result.status}")
@@ -1794,6 +1834,9 @@ class AngelPayPaymentViewModel @Inject constructor(
             }
 
             if (result.approved) {
+                // 📊 Task 6 — AngelPay's own catalog code when present (e.g. "S000"), never
+                // result.message (human-readable, can carry amount/reference).
+                authAttemptOutcomeCode = result.callResult?.code ?: "SUCCESS"
                 recordCardPayment(result)
             } else {
                 val sessionExpiryShape = when {
@@ -1809,9 +1852,13 @@ class AngelPayPaymentViewModel @Inject constructor(
                 ) {
                     // Re-authenticated and relaunched — NOT a terminal outcome,
                     // so the D2 charging gate stays set for the retried attempt.
-                    // (📒 the ledger row stays AUTORIZANDO for the relaunched attempt.)
+                    // (📒 the ledger row stays AUTORIZANDO for the relaunched attempt.
+                    // 📊 authAttemptOutcomeCode deliberately stays null here too — Task 6
+                    // never records a relaunch as a resolved attempt.)
                     return@launch
                 }
+                // 📊 Task 6 — reached only on a TERMINAL decline (no relaunch above).
+                authAttemptOutcomeCode = result.callResult?.code ?: "DECLINED"
                 // 📒 [Libreta] Expiry-shaped decline that did NOT relaunch — now it IS the
                 // terminal host verdict for this attempt (deferred from the mark above).
                 if (ledgerExpiryShapedDecline) {
@@ -1867,6 +1914,18 @@ class AngelPayPaymentViewModel @Inject constructor(
             // Cubre éxito, declinación, la relanzada por expiración de sesión y el
             // registro subsecuente. Un observador que no se apaga es una fuga.
             stopAuthorizationWatchdog()
+            // 📊 Task 6 — fire-and-forget local telemetry; null (relaunch, duplicate/stale
+            // result, or an early return before any branch set it) records nothing. Never
+            // blocks or affects the charge — record() itself never throws.
+            authAttemptOutcomeCode?.let { code ->
+                runCatching {
+                    authAttemptTelemetryStore.record(
+                        code = code,
+                        durationMs = System.currentTimeMillis() - authWatchdogStartedAtMs,
+                        rail = "ANGELPAY"
+                    )
+                }
+            }
           }
         }
     }

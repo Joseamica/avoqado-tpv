@@ -13,6 +13,8 @@ import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
 import com.jaac.avoqado_tpv.core.data.local.dao.TableDao
+import com.jaac.avoqado_tpv.features.payment.data.local.AuthAttemptDao
+import com.jaac.avoqado_tpv.features.payment.data.local.AuthAttemptDatabase
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantCacheDao
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentDao
 import com.jaac.avoqado_tpv.features.tables.data.local.TablesDatabase
@@ -412,5 +414,49 @@ object DatabaseModule {
         database: TablesDatabase
     ): SyncIntentDao {
         return database.syncIntentDao()
+    }
+
+    /**
+     * Provides AuthAttemptDatabase singleton — telemetría local de intentos de
+     * autorización (Task 6, plan `2026-08-04-event-loop-no-bloqueante-reportes`).
+     *
+     * **Deliberadamente SEPARADA** de [AvoqadoDatabase] y de [TablesDatabase] — ver el
+     * KDoc de [AuthAttemptDatabase] para el porqué completo.
+     *
+     * **Versión 1** — base nueva, sin migraciones que declarar todavía.
+     *
+     * @param context Application context (injected by Hilt)
+     * @return AuthAttemptDatabase singleton instance
+     */
+    @Provides
+    @Singleton
+    fun provideAuthAttemptDatabase(
+        @ApplicationContext context: Context
+    ): AuthAttemptDatabase {
+        return Room.databaseBuilder(
+            context,
+            AuthAttemptDatabase::class.java,
+            AuthAttemptDatabase.DATABASE_NAME
+        )
+            // ✅ Enable Write-Ahead Logging for better concurrency (mismo patrón que AvoqadoDatabase/TablesDatabase)
+            .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
+            .build()
+    }
+
+    /**
+     * Provides AuthAttemptDao from AuthAttemptDatabase.
+     *
+     * **Injected Into:**
+     * - AuthAttemptTelemetryStore (features/payment/data/local — the durability
+     *   backstop for the in-memory batch that rides the heartbeat)
+     *
+     * @param database AuthAttemptDatabase instance
+     * @return AuthAttemptDao for the local auth-attempt telemetry journal
+     */
+    @Provides
+    fun provideAuthAttemptDao(
+        database: AuthAttemptDatabase
+    ): AuthAttemptDao {
+        return database.authAttemptDao()
     }
 }

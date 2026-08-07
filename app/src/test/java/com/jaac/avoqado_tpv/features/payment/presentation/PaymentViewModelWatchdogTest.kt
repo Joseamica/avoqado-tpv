@@ -17,6 +17,7 @@ import com.jaac.avoqado_tpv.features.modules.domain.repository.ModulesRepository
 import com.jaac.avoqado_tpv.features.payment.data.InitializationManager
 import com.jaac.avoqado_tpv.features.payment.data.MultiMerchantSDKManager
 import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
+import com.jaac.avoqado_tpv.features.payment.data.local.AuthAttemptTelemetryStore
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.AuthWatchdogLevel
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
@@ -90,6 +91,8 @@ class PaymentViewModelWatchdogTest {
     private lateinit var mockRecordPaymentUseCase: RecordPaymentUseCase
     private lateinit var mockRecordRefundUseCase: RecordRefundUseCase
     private lateinit var mockPaymentAttemptLedger: PaymentAttemptLedger
+    // 📊 Task 6 — relaxed: recording is fire-and-forget and observational only.
+    private lateinit var mockAuthAttemptTelemetryStore: AuthAttemptTelemetryStore
     private lateinit var mockMerchantEligibilityRepository:
         com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantEligibilityRepository
     private lateinit var mockConnectionStateManager: ConnectionStateManager
@@ -187,6 +190,7 @@ class PaymentViewModelWatchdogTest {
         mockRecordPaymentUseCase = mockk(relaxed = true)
         mockRecordRefundUseCase = mockk(relaxed = true)
         mockPaymentAttemptLedger = mockk(relaxed = true)
+        mockAuthAttemptTelemetryStore = mockk(relaxed = true)
         mockMerchantEligibilityRepository = mockk(relaxed = true) {
             coEvery { evaluate(any(), any(), any()) } returns
                 com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility.disabled()
@@ -266,6 +270,7 @@ class PaymentViewModelWatchdogTest {
             connectionEventManager = mockConnectionEventManager,
             paymentAttemptLedger = mockPaymentAttemptLedger,
             observability = observabilityManager,
+            authAttemptTelemetryStore = mockAuthAttemptTelemetryStore,
             appContext = mockAppContext
         )
     }

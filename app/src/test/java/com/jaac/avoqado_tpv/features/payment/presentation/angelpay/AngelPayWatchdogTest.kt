@@ -11,6 +11,7 @@ import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
+import com.jaac.avoqado_tpv.features.payment.data.local.AuthAttemptTelemetryStore
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthState
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayIntentBuilder
@@ -94,6 +95,8 @@ class AngelPayWatchdogTest {
     private lateinit var observabilityManager: ObservabilityManager
     private lateinit var paymentQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
     private lateinit var paymentAttemptLedger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
+    // 📊 Task 6 — relaxed: recording is fire-and-forget and observational only.
+    private lateinit var authAttemptTelemetryStore: AuthAttemptTelemetryStore
 
     private val authStateFlow = MutableStateFlow<AngelPayAuthState>(AngelPayAuthState.Authenticated)
     private val activeMerchantIdFlow = MutableStateFlow<Int?>(null)
@@ -128,6 +131,7 @@ class AngelPayWatchdogTest {
         observabilityManager = mockk(relaxed = true)
         paymentQueueRepository = mockk(relaxed = true)
         paymentAttemptLedger = mockk(relaxed = true)
+        authAttemptTelemetryStore = mockk(relaxed = true)
 
         every { angelPayAuthRepository.state } returns authStateFlow
         every { angelPayMerchantRepository.activeAngelPayMerchantId } returns activeMerchantIdFlow
@@ -168,6 +172,7 @@ class AngelPayWatchdogTest {
         observability = observabilityManager,
         paymentQueueRepository = paymentQueueRepository,
         paymentAttemptLedger = paymentAttemptLedger,
+        authAttemptTelemetryStore = authAttemptTelemetryStore,
         savedStateHandle = SavedStateHandle(),
     )
 

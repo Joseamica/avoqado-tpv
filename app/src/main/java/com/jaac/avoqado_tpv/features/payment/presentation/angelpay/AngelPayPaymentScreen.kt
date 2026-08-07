@@ -5,10 +5,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import com.angelpay.angelpaysdk.AngelPayPaymentContract
 import com.angelpay.angelpaysdk.models.PaymentResult
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
@@ -27,6 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.ui.draw.clip
 import androidx.compose.runtime.Composable
 import android.widget.Toast
 import androidx.compose.runtime.LaunchedEffect
@@ -48,12 +52,14 @@ import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.util.ForegroundRecoveryGate
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthState
+import com.jaac.avoqado_tpv.features.payment.domain.AuthWatchdogLevel
 import com.jaac.avoqado_tpv.features.payment.presentation.MerchantSelectionContent
 import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentLoadingScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentQrScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.ReviewScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.TipScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.components.PaymentApprovedScreen
+import com.jaac.avoqado_tpv.features.payment.presentation.watchdogMessage
 import timber.log.Timber
 
 private const val PAX_A910S = "spec:width=720px,height=1280px,dpi=320"
@@ -593,6 +599,9 @@ fun AngelPayPaymentScreen(
                         message = currentState.message,
                         subtitle = "No cierres esta pantalla",
                         largeSpinner = true,
+                        // 🔴 Vigilante de autorizacion (riel AngelPay/NEXGO): banda no
+                        // bloqueante, NONE en el camino feliz -> sin cambio visual.
+                        watchdogLevel = currentState.watchdogLevel,
                     )
                 }
 
@@ -674,6 +683,9 @@ private fun LoadingContent(
     message: String,
     subtitle: String? = null,
     largeSpinner: Boolean = false,
+    // 🔴 Vigilante de autorizacion: NONE por defecto -> el camino feliz no renderiza
+    // nada nuevo y queda byte-identico. Ver AuthorizationWatchdog.kt / WatchdogCopy.kt.
+    watchdogLevel: AuthWatchdogLevel = AuthWatchdogLevel.NONE,
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -696,6 +708,42 @@ private fun LoadingContent(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+        // 🔴 Vigilante de autorizacion — banda NO bloqueante bajo el indicador. NUNCA
+        // cancela la autorizacion (ver AuthorizationWatchdog.kt): solo avisa. Mismo
+        // patron de contraste que el banner ambar de AngelPaySuccessContent/PaymentScreen
+        // (statusWarning/statusError al 12% de fondo, texto SIEMPRE onSurface — full-
+        // strength sobre fondo claro quedo en ~1.96:1, subido a 16.17:1). Sin colores nuevos.
+        val watchdogText = watchdogMessage(watchdogLevel)
+        if (watchdogText != null) {
+            Spacer(modifier = Modifier.height(16.dp))
+            val watchdogColor = if (watchdogLevel == AuthWatchdogLevel.VERY_SLOW) {
+                MaterialTheme.avoqadoColors.statusError
+            } else {
+                MaterialTheme.avoqadoColors.statusWarning
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(watchdogColor.copy(alpha = 0.12f))
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    tint = watchdogColor,
+                    modifier = Modifier.size(20.dp),
+                )
+                Text(
+                    text = watchdogText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center,
+                )
+            }
         }
     }
 }

@@ -66,6 +66,7 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoLoadingOverlay
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTextField
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
+import com.jaac.avoqado_tpv.features.payment.domain.AuthWatchdogLevel
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
 import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentLoadingScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentQrScreen
@@ -708,7 +709,10 @@ fun PaymentScreen(
                         pinState = pinEntryState,  // Show asterisks when user types PIN
                         showPinSection = isPinDialogVisible,  // Keep PIN section visible even when cleared
                         showTimeoutWarning = elapsedSeconds >= 30,
-                        onCancel = if (elapsedSeconds >= 45) {{ viewModel.cancelPayment() }} else null
+                        onCancel = if (elapsedSeconds >= 45) {{ viewModel.cancelPayment() }} else null,
+                        // 🔴 Vigilante de autorizacion (riel Blumon/PAX): banda no bloqueante, NONE
+                        // en el camino feliz -> sin cambio visual. Ver AuthorizationWatchdog.kt.
+                        watchdogLevel = currentState.watchdogLevel
                     )
                 }
                 is PaymentState.Success -> {
@@ -1300,7 +1304,10 @@ private fun PaymentLoadingContent(
     pinState: String = "",  // Asterisks from SDK ("*", "**", "***", "****")
     showPinSection: Boolean = false,  // True when SDK is waiting for PIN (even if cleared)
     showTimeoutWarning: Boolean = false,
-    onCancel: (() -> Unit)? = null
+    onCancel: (() -> Unit)? = null,
+    // 🔴 Vigilante de autorizacion: NONE por defecto -> el camino feliz no renderiza
+    // nada nuevo y queda byte-identico. Ver AuthorizationWatchdog.kt / WatchdogCopy.kt.
+    watchdogLevel: AuthWatchdogLevel = AuthWatchdogLevel.NONE
 ) {
     Column(
         modifier = Modifier
@@ -1362,6 +1369,43 @@ private fun PaymentLoadingContent(
                     color = MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.Center
                 )
+
+                // 🔴 Vigilante de autorizacion — banda NO bloqueante bajo el indicador.
+                // NUNCA cancela la autorizacion (ver AuthorizationWatchdog.kt): solo avisa.
+                // Mismo patron de contraste que el banner ambar de Success (statusWarning/
+                // statusError al 12% de fondo, texto SIEMPRE onSurface) — un aviso a full-
+                // strength sobre fondo claro quedo en ~1.96:1 y hubo que subirlo a 16.17:1
+                // para que se leyera en la terminal. Sin colores nuevos.
+                val watchdogText = watchdogMessage(watchdogLevel)
+                if (watchdogText != null) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    val watchdogColor = if (watchdogLevel == AuthWatchdogLevel.VERY_SLOW) {
+                        MaterialTheme.avoqadoColors.statusError
+                    } else {
+                        MaterialTheme.avoqadoColors.statusWarning
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(watchdogColor.copy(alpha = 0.12f))
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = watchdogColor,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = watchdogText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
 
                 // Timeout warning
                 if (showTimeoutWarning) {

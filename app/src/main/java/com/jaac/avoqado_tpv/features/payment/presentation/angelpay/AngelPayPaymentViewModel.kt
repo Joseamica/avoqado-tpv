@@ -56,6 +56,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -1622,7 +1623,11 @@ class AngelPayPaymentViewModel @Inject constructor(
 
             Timber.d("🔶 [AngelPay] Recording cash payment | amount=$pendingAmount, tip=$pendingTip")
 
-            val recordResult = withContext(Dispatchers.IO) {
+            // 🔴 NonCancellable: si el proceso muere/la pantalla se abandona a media
+            // espera (recordPaymentUseCase reintenta hasta 5 veces con backoff, ~67.5s
+            // peor caso), la llamada NO debe abortarse a medio camino — sin esto el
+            // cobro puede saltarse la cola offline por completo.
+            val recordResult = withContext(NonCancellable + Dispatchers.IO) {
                 recordPaymentUseCase(
                     context = paymentContext,
                     cardDetails = CardDetails.CASH,
@@ -2045,7 +2050,11 @@ class AngelPayPaymentViewModel @Inject constructor(
             serialNumbers = pendingSerialNumbers,
         )
 
-        val recordResult = withContext(Dispatchers.IO) {
+        // 🔴 NonCancellable: si el proceso muere/la pantalla se abandona a media espera
+        // (recordPaymentUseCase reintenta hasta 5 veces con backoff, ~67.5s peor caso),
+        // la llamada NO debe abortarse a medio camino — sin esto el cobro puede
+        // saltarse la cola offline por completo.
+        val recordResult = withContext(NonCancellable + Dispatchers.IO) {
             recordPaymentUseCase(
                 context = paymentContext,
                 cardDetails = cardDetails,
@@ -2139,7 +2148,11 @@ class AngelPayPaymentViewModel @Inject constructor(
             serialNumbers = pendingSerialNumbers,
         )
 
-        val recordResult = withContext(Dispatchers.IO) {
+        // 🔴 NonCancellable: si el proceso muere/la pantalla se abandona a media espera
+        // (recordPaymentUseCase reintenta hasta 5 veces con backoff, ~67.5s peor caso),
+        // la llamada NO debe abortarse a medio camino — sin esto el cobro puede
+        // saltarse la cola offline por completo.
+        val recordResult = withContext(NonCancellable + Dispatchers.IO) {
             recordPaymentUseCase(
                 context = paymentContext,
                 cardDetails = cardDetails,

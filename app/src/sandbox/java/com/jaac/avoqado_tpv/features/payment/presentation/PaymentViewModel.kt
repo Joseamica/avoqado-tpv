@@ -669,12 +669,19 @@ class PaymentViewModel @Inject constructor(
                 if (retry != null && currentState is PaymentState.Success && currentState.receipt == null) {
                     Timber.i("🔄 [PaymentViewModel] Re-attempting backend recording for pending receipt | ref=${retry.referenceNumber}")
                     try {
-                        val result = recordPaymentUseCase(
-                            context = retry.context,
-                            cardDetails = retry.cardDetails,
-                            authorizationNumber = retry.authorizationNumber,
-                            referenceNumber = retry.referenceNumber,
-                        )
+                        // 🔴 NonCancellable: si el proceso muere/la pantalla se abandona a
+                        // media espera (recordPaymentUseCase reintenta hasta 5 veces con
+                        // backoff, ~67.5s peor caso), la llamada NO debe abortarse a medio
+                        // camino — sin esto el cobro puede saltarse la cola offline por
+                        // completo: dinero cobrado, sin registro, sin fila en la cola.
+                        val result = withContext(NonCancellable) {
+                            recordPaymentUseCase(
+                                context = retry.context,
+                                cardDetails = retry.cardDetails,
+                                authorizationNumber = retry.authorizationNumber,
+                                referenceNumber = retry.referenceNumber,
+                            )
+                        }
                         result.onSuccess { receipt ->
                             Timber.i("✅ [PaymentViewModel] Receipt recovered on reconnect | paymentId=${receipt.paymentId}")
                             applyRecordedReceiptToSuccessState(
@@ -689,6 +696,11 @@ class PaymentViewModel @Inject constructor(
                             // Leave pendingReceiptRetry intact — will retry on next reconnect event
                             // The periodic queue worker is the backstop
                         }
+                    } catch (e: CancellationException) {
+                        // CancellationException es RuntimeException en Kotlin: relanzar ANTES
+                        // del catch(Exception) general, o se traga y rompe la cancelacion
+                        // estructurada.
+                        throw e
                     } catch (e: Exception) {
                         Timber.e(e, "❌ [PaymentViewModel] Unexpected error during receipt retry on reconnect")
                     }
@@ -5399,12 +5411,17 @@ class PaymentViewModel @Inject constructor(
                 Timber.d("   📝 Reference: $cashReference")
 
                 // Record payment directly (skip Blumon SDK)
-                val result = recordPaymentUseCase(
-                    context = context,
-                    cardDetails = CardDetails.CASH,
-                    authorizationNumber = "EFECTIVO",
-                    referenceNumber = cashReference
-                )
+                // 🔴 NonCancellable: si el proceso muere/la pantalla se abandona a media
+                // espera, la llamada NO debe abortarse a medio camino — sin esto el cobro
+                // puede saltarse la cola offline por completo.
+                val result = withContext(NonCancellable) {
+                    recordPaymentUseCase(
+                        context = context,
+                        cardDetails = CardDetails.CASH,
+                        authorizationNumber = "EFECTIVO",
+                        referenceNumber = cashReference
+                    )
+                }
 
                 result.onSuccess { receipt ->
                     Timber.d("✅ [Cash Payment] Successfully recorded to backend")
@@ -5506,6 +5523,10 @@ class PaymentViewModel @Inject constructor(
                     }
                 }
 
+            } catch (e: CancellationException) {
+                // CancellationException es RuntimeException en Kotlin: relanzar ANTES de
+                // los catches de abajo, o se traga y rompe la cancelacion estructurada.
+                throw e
             } catch (e: IllegalStateException) {
                 Timber.e(e, "❌ [Cash Payment] Invalid state or missing context")
                 _state.value = PaymentState.Error(
@@ -5897,12 +5918,17 @@ class PaymentViewModel @Inject constructor(
                 val cashReference = "CASH-KIOSK-${System.currentTimeMillis()}"
 
                 // Record payment to backend
-                val result = recordPaymentUseCase(
-                    context = context,
-                    cardDetails = CardDetails.CASH,
-                    authorizationNumber = "EFECTIVO-CONFIRMADO",
-                    referenceNumber = cashReference
-                )
+                // 🔴 NonCancellable: si el proceso muere/la pantalla se abandona a media
+                // espera, la llamada NO debe abortarse a medio camino — sin esto el cobro
+                // puede saltarse la cola offline por completo.
+                val result = withContext(NonCancellable) {
+                    recordPaymentUseCase(
+                        context = context,
+                        cardDetails = CardDetails.CASH,
+                        authorizationNumber = "EFECTIVO-CONFIRMADO",
+                        referenceNumber = cashReference
+                    )
+                }
 
                 result.onSuccess { receipt ->
                     Timber.d("✅ [KIOSK CASH] Payment successfully recorded to backend")
@@ -5999,6 +6025,10 @@ class PaymentViewModel @Inject constructor(
                     }
                 }
 
+            } catch (e: CancellationException) {
+                // CancellationException es RuntimeException en Kotlin: relanzar ANTES del
+                // catch(Exception) general, o se traga y rompe la cancelacion estructurada.
+                throw e
             } catch (e: Exception) {
                 Timber.e(e, "❌ [KIOSK CASH] Unexpected error during confirmation")
                 _state.value = PaymentState.Error(
@@ -6886,12 +6916,17 @@ class PaymentViewModel @Inject constructor(
                 Timber.i("═══════════════════════════════════════════════════════════")
 
                 // 3. Call use case to record payment
-                val result = recordPaymentUseCase(
-                    context = context,
-                    cardDetails = cardDetails,
-                    authorizationNumber = authorizationNumber,
-                    referenceNumber = referenceNumber,
-                )
+                // 🔴 NonCancellable: si el proceso muere/la pantalla se abandona a media
+                // espera, la llamada NO debe abortarse a medio camino — sin esto el cobro
+                // puede saltarse la cola offline por completo.
+                val result = withContext(NonCancellable) {
+                    recordPaymentUseCase(
+                        context = context,
+                        cardDetails = cardDetails,
+                        authorizationNumber = authorizationNumber,
+                        referenceNumber = referenceNumber,
+                    )
+                }
 
                 // 4. Handle result
                 result.onSuccess { receipt ->
@@ -6996,6 +7031,11 @@ class PaymentViewModel @Inject constructor(
                     }
                 }
 
+            } catch (e: CancellationException) {
+                // CancellationException es RuntimeException en Kotlin: relanzar ANTES del
+                // catch(Exception) general, o se traga y rompe la cancelacion estructurada.
+                // El `finally` de abajo SIGUE corriendo (libera recordingInFlight/charging).
+                throw e
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Backend Recording] Unexpected error")
             } finally {

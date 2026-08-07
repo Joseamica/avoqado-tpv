@@ -104,6 +104,8 @@ class PaymentViewModelTest {
     private lateinit var mockRecordPaymentUseCase: RecordPaymentUseCase
     private lateinit var mockRecordRefundUseCase: RecordRefundUseCase
     private lateinit var mockPaymentAttemptLedger: PaymentAttemptLedger
+    private lateinit var mockMerchantEligibilityRepository:
+        com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantEligibilityRepository
     private lateinit var mockConnectionStateManager: ConnectionStateManager
     private lateinit var mockCriticalNetworkOperationManager: CriticalNetworkOperationManager
     private lateinit var mockSetSelectAppCodeUseCase: SetSelectAppCodeUseCase
@@ -260,6 +262,10 @@ class PaymentViewModelTest {
 
         // 📒 Ledger (La Libreta) — relaxed: the wiring is observational, tests verify the calls
         mockPaymentAttemptLedger = mockk(relaxed = true)
+        mockMerchantEligibilityRepository = mockk(relaxed = true) {
+            coEvery { evaluate(any(), any(), any()) } returns
+                com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility.disabled()
+        }
 
         // Configure connectivity manager
         mockConnectionStateManager = mockk(relaxed = true) {
@@ -337,7 +343,7 @@ class PaymentViewModelTest {
             modulesRepository = mockModulesRepository,
             connectionStateManager = mockConnectionStateManager,
             merchantRepository = mockk(relaxed = true),
-            merchantEligibilityRepository = mockk(relaxed = true),
+            merchantEligibilityRepository = mockMerchantEligibilityRepository,
             criticalNetworkOperationManager = mockCriticalNetworkOperationManager,
             // Real holder (tiny AtomicBoolean singleton) — lets tests observe the money window
             paymentStateHolder = paymentStateHolder,
@@ -554,6 +560,57 @@ class PaymentViewModelTest {
 
         viewModel.clearMerchantSwitchMessage()
         assertThat(viewModel.merchantSwitchMessage.value).isNull()
+
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `double skip tip starts only one merchant selection preparation`() = runTest {
+        val eligibilityRelease = CompletableDeferred<Unit>()
+        coEvery {
+            mockMerchantEligibilityRepository.evaluate(any(), any(), any())
+        } coAnswers {
+            eligibilityRelease.await()
+            com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility.disabled()
+        }
+        val viewModel = createViewModel()
+
+        viewModel.submitAmount("1.00")
+        viewModel.skipTip("1.00", rating = null)
+        assertThat(viewModel.isPreparingMerchantSelection.value).isTrue()
+        viewModel.skipTip("1.00", rating = null)
+
+        coVerify(exactly = 1) {
+            mockMerchantEligibilityRepository.evaluate(any(), any(), any())
+        }
+
+        eligibilityRelease.complete(Unit)
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertThat(viewModel.state.value).isInstanceOf(PaymentState.SelectingMerchant::class.java)
+        assertThat(viewModel.isPreparingMerchantSelection.value).isFalse()
+
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `reset cancels pending merchant selection preparation`() = runTest {
+        val eligibilityRelease = CompletableDeferred<Unit>()
+        coEvery {
+            mockMerchantEligibilityRepository.evaluate(any(), any(), any())
+        } coAnswers {
+            eligibilityRelease.await()
+            com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility.disabled()
+        }
+        val viewModel = createViewModel()
+
+        viewModel.submitAmount("1.00")
+        viewModel.skipTip("1.00", rating = null)
+        viewModel.resetPayment()
+        assertThat(viewModel.isPreparingMerchantSelection.value).isFalse()
+        eligibilityRelease.complete(Unit)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertThat(viewModel.state.value).isEqualTo(PaymentState.Idle)
 
         viewModel.viewModelScope.cancel()
     }
@@ -1490,6 +1547,142 @@ class PaymentViewModelTest {
             // NonCancellable means the failure-handling — including the structured telemetry —
             // still runs to completion.
             verify(exactly = 1) { observabilityManager.logCritical(any(), any(), any(), any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // A3. CARD ENQUEUE → ORDER LINKAGE (2026-07-28)
+    //
+    // Bug: a card payment for an ORDER that fails to record and falls into the
+    // offline queue was enqueued WITHOUT orderId/orderNumber. On replay,
+    // QueuedPayment.toPaymentContext() rebuilds every non-ANGELPAY row as
+    // PaymentContext.FastPayment — no order link — so the card gets charged, a
+    // loose fast payment lands in the backend, and the order still shows UNPAID.
+    // The cashier then charges it again: a human-induced double charge.
+    //
+    // Fix: the card enqueue site inside handlePaymentSuccess() now threads
+    // orderId = getOrderIdForFlow() / orderNumber = getOrderNumberForFlow() into
+    // the QueuedPayment it builds on a failed recording. These tests exercise
+    // that exact private construction path (via reflection — handlePaymentSuccess
+    // has no other public seam) rather than a hand-built QueuedPayment, so a
+    // regression in the constructor call itself would be caught here.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Invokes the private handlePaymentSuccess(saleData, entryMode, blumonOperationNumber)
+     * via reflection. saleData=null takes the "offline-approved contactless" branch
+     * (authorizationNumber="OFFLINE_APPROVED", referenceNumber="OFFLINE-<ts>"), which avoids
+     * having to fake the Blumon SDK's SaleData reflection-based field extraction — the branch
+     * under test (the QueuedPayment construction on record failure) is identical either way.
+     */
+    private fun invokeHandlePaymentSuccess(viewModel: PaymentViewModel) {
+        val method = PaymentViewModel::class.java.getDeclaredMethod(
+            "handlePaymentSuccess",
+            Any::class.java,
+            com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode::class.java,
+            java.lang.Integer::class.java
+        )
+        method.isAccessible = true
+        method.invoke(viewModel, null, com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode.CHIP, null)
+    }
+
+    /** handlePaymentSuccess() requires an authenticated venue/staff session before it will
+     * record or queue anything — set it directly (same reflection pattern already used above
+     * for `_state`) rather than driving the full SDK startPayment() flow just to populate two
+     * private fields. */
+    private fun seedAuthenticatedSession(viewModel: PaymentViewModel) {
+        every { mockAuthRepository.isAuthenticated() } returns true
+        val venueIdField = PaymentViewModel::class.java.getDeclaredField("currentVenueId")
+        venueIdField.isAccessible = true
+        venueIdField.set(viewModel, testVenueId)
+        val staffIdField = PaymentViewModel::class.java.getDeclaredField("currentStaffId")
+        staffIdField.isAccessible = true
+        staffIdField.set(viewModel, testStaffId)
+    }
+
+    @Test
+    fun `card enqueue attaches orderId and orderNumber when the payment belongs to an order`() = runTest(testDispatcher) {
+        coEvery {
+            mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+        } returns Result.failure(RuntimeException("HTTP 500"))
+        val querySlot = slot<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment>()
+        coEvery { mockPaymentQueueRepository.enqueue(capture(querySlot)) } returns Result.success(Unit)
+
+        val viewModel = createViewModel()
+        try {
+            seedAuthenticatedSession(viewModel)
+            // Order in scope (also auto-selects the single configured merchant).
+            viewModel.submitAmountDirectToMerchant("25.00", orderId = "order-1", orderNumber = "0007")
+
+            invokeHandlePaymentSuccess(viewModel)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            coVerify(exactly = 1) { mockPaymentQueueRepository.enqueue(any()) }
+            assertThat(querySlot.isCaptured).isTrue()
+            assertThat(querySlot.captured.orderId).isEqualTo("order-1")
+            assertThat(querySlot.captured.orderNumber).isEqualTo("0007")
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `card enqueue leaves orderId and orderNumber null for a fast payment with no order in scope`() = runTest(testDispatcher) {
+        coEvery {
+            mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+        } returns Result.failure(RuntimeException("HTTP 500"))
+        val querySlot = slot<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment>()
+        coEvery { mockPaymentQueueRepository.enqueue(capture(querySlot)) } returns Result.success(Unit)
+
+        val viewModel = createViewModel()
+        try {
+            seedAuthenticatedSession(viewModel)
+            // No orderId → fast payment (cobro). No-behavior-change guarantee: orderId/orderNumber
+            // stay null exactly as they did before the fix.
+            viewModel.submitAmountDirectToMerchant("15.00")
+
+            invokeHandlePaymentSuccess(viewModel)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            coVerify(exactly = 1) { mockPaymentQueueRepository.enqueue(any()) }
+            assertThat(querySlot.isCaptured).isTrue()
+            assertThat(querySlot.captured.orderId).isNull()
+            assertThat(querySlot.captured.orderNumber).isNull()
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `card enqueue site never tags the queued payment as ANGELPAY`() = runTest(testDispatcher) {
+        // 🔴 Pins the safety argument documented at the fix site (PaymentViewModel.kt, card
+        // enqueue block in handlePaymentSuccess): orderId is safe to thread through ONLY
+        // because the sole consumer of QueuedPayment.orderId in toPaymentContext() is the
+        // ANGELPAY branch, and this call site never sets processor=ANGELPAY (AngelPay enqueues
+        // from its own ViewModel; this row defaults to BLUMON). If a future refactor unifies
+        // the Blumon/AngelPay ViewModels and starts tagging this site ANGELPAY, replay behavior
+        // changes silently — this test is what catches it.
+        coEvery {
+            mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+        } returns Result.failure(RuntimeException("HTTP 500"))
+        val querySlot = slot<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment>()
+        coEvery { mockPaymentQueueRepository.enqueue(capture(querySlot)) } returns Result.success(Unit)
+
+        val viewModel = createViewModel()
+        try {
+            seedAuthenticatedSession(viewModel)
+            viewModel.submitAmountDirectToMerchant("15.00", orderId = "order-9", orderNumber = "0099")
+
+            invokeHandlePaymentSuccess(viewModel)
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            coVerify(exactly = 1) { mockPaymentQueueRepository.enqueue(any()) }
+            assertThat(querySlot.isCaptured).isTrue()
+            assertThat(querySlot.captured.processor).isEqualTo(
+                com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.BLUMON
+            )
         } finally {
             viewModel.viewModelScope.cancel()
         }

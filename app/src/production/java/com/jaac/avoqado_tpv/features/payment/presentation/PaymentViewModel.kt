@@ -65,6 +65,8 @@ import com.example.clean_lib_services.shared.core.domain.entity.init.InitData
 import com.example.clean_lib_services.shared.core.domain.entity.init.Contact
 import com.example.clean_lib_services.shared.core.domain.entity.init.KushkiData
 import com.jaac.avoqado_tpv.BuildConfig
+import com.jaac.avoqado_tpv.features.payment.domain.AuthWatchdogLevel
+import com.jaac.avoqado_tpv.features.payment.domain.authWatchdogLevel
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentFlowGate
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
 import com.jaac.avoqado_tpv.features.payment.domain.PrePaymentNextStep
@@ -105,6 +107,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardNature
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode
+import com.jaac.avoqado_tpv.features.payment.domain.model.IssuerCountrySource
 import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import com.pax.dal.entity.EReaderType
 import com.paxsz.module.emv.process.enums.TransResultEnum
@@ -112,13 +115,16 @@ import android.content.Context
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.NonCancellable
@@ -300,6 +306,12 @@ class PaymentViewModel @Inject constructor(
     private val _merchantSwitchingLoading = MutableStateFlow(false)
     val merchantSwitchingLoading: StateFlow<Boolean> = _merchantSwitchingLoading.asStateFlow()
 
+    // Blocks duplicate tip/continue taps while merchant routing is being evaluated.
+    // This is intentionally separate from merchantSwitchingLoading: no SDK switch or charge
+    // has started yet, and the current PaymentState must remain unchanged until preparation ends.
+    private val _isPreparingMerchantSelection = MutableStateFlow(false)
+    val isPreparingMerchantSelection: StateFlow<Boolean> = _isPreparingMerchantSelection.asStateFlow()
+
     // Success/error message after merchant switch
     private val _merchantSwitchMessage = MutableStateFlow<String?>(null)
     val merchantSwitchMessage: StateFlow<String?> = _merchantSwitchMessage.asStateFlow()
@@ -414,6 +426,8 @@ class PaymentViewModel @Inject constructor(
     // 🔒 CRITICAL: Signal when merchants are fully loaded (prevents race condition)
     // Used by skipTip()/submitTip() to await merchants before reading _merchants.value
     private var merchantsLoadingDeferred = kotlinx.coroutines.CompletableDeferred<Unit>()
+    private var merchantSelectionPreparationJob: Job? = null
+    private var merchantSelectionPreparationGeneration = 0L
 
     // ⚙️ TPV Settings: Expose showReceiptScreen for PaymentSuccessContent
     val showReceiptScreen: Boolean
@@ -2044,8 +2058,16 @@ class PaymentViewModel @Inject constructor(
      * This prevents confusing customers with merchant selection.
      */
     private fun proceedToMerchantSelection(subtotal: String, tipAmount: String, totalAmount: String, rating: Int?) {
-        viewModelScope.launch {
-            awaitMerchantsLoaded()
+        if (_isPreparingMerchantSelection.value || merchantSelectionPreparationJob?.isActive == true) {
+            Timber.d("⏳ [Payment Flow] Merchant selection preparation already running - duplicate request ignored")
+            return
+        }
+
+        _isPreparingMerchantSelection.value = true
+        val preparationGeneration = ++merchantSelectionPreparationGeneration
+        val preparationJob = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                awaitMerchantsLoaded()
 
             // 🔄 SMART RETRY: Detect fallback merchants and attempt refresh
             if (merchantRepository.isUsingFallback()) {
@@ -2125,6 +2147,7 @@ class PaymentViewModel @Inject constructor(
                         staffId = resolveAttributionStaffId(),
                     )
                 }.getOrElse {
+                    if (it is CancellationException) throw it
                     Timber.w(it, "🧭 [Eligibility] evaluate() threw — fail-open (show all)")
                     com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEligibility.disabled()
                 }
@@ -2196,7 +2219,30 @@ class PaymentViewModel @Inject constructor(
                 totalAmount = totalAmount,
                 rating = rating
             )
+            } finally {
+                if (merchantSelectionPreparationGeneration == preparationGeneration) {
+                    merchantSelectionPreparationJob = null
+                    _isPreparingMerchantSelection.value = false
+                    _merchantSwitchingLoading.value = false
+                    _merchantSwitchMessage.value = null
+                }
+            }
         }
+        merchantSelectionPreparationJob = preparationJob
+        preparationJob.start()
+    }
+
+    private fun cancelMerchantSelectionPreparation(reason: String) {
+        val pendingJob = merchantSelectionPreparationJob
+        if (pendingJob == null && !_isPreparingMerchantSelection.value) return
+
+        merchantSelectionPreparationGeneration++
+        merchantSelectionPreparationJob = null
+        _isPreparingMerchantSelection.value = false
+        _merchantSwitchingLoading.value = false
+        _merchantSwitchMessage.value = null
+        pendingJob?.cancel()
+        Timber.d("⏳ [Payment Flow] Merchant selection preparation cancelled: $reason")
     }
 
     /**
@@ -2425,6 +2471,10 @@ class PaymentViewModel @Inject constructor(
      * route to VerifyingPrePayment state BEFORE selecting merchant/processing payment.
      */
     fun submitTip(subtotal: String, tipAmount: String, rating: Int?) {
+        if (_isPreparingMerchantSelection.value) {
+            Timber.d("⏳ [Payment Flow] submitTip ignored while merchant selection is preparing")
+            return
+        }
         Timber.d("💵 [Payment Flow] submitTip called with: subtotal='$subtotal', tipAmount='$tipAmount', rating=$rating")
 
         val totalAmount = calculateTotal(subtotal, tipAmount)
@@ -2462,6 +2512,10 @@ class PaymentViewModel @Inject constructor(
      * VerifyingPrePayment state BEFORE selecting merchant/processing payment.
      */
     fun skipTip(subtotal: String, rating: Int?) {
+        if (_isPreparingMerchantSelection.value) {
+            Timber.d("⏳ [Payment Flow] skipTip ignored while merchant selection is preparing")
+            return
+        }
         Timber.d("⏭️  [Payment Flow] Tip skipped")
 
         // ⭐ Save zero tip and rating for backend recording
@@ -3488,7 +3542,10 @@ class PaymentViewModel @Inject constructor(
      * @param response The successful response from Blumon, or null if failed
      * @param userFriendlyError User-friendly error message (Spanish), or null if success
      */
-    private data class AuthorizationResult(
+    // internal (not private): performOnlineAuthorization is @VisibleForTesting internal
+    // (Task 2, vigilante de autorización) and returns this type — Kotlin forbids a
+    // less-visible return type on a more-visible function.
+    internal data class AuthorizationResult(
         val response: SaleIccResponse?,
         val userFriendlyError: String?,
         // True when a contactless failure is actually the card asking to be inserted (chip),
@@ -3496,7 +3553,8 @@ class PaymentViewModel @Inject constructor(
         val requiresChipInsertion: Boolean = false
     )
 
-    private suspend fun performOnlineAuthorization(
+    @VisibleForTesting
+    internal suspend fun performOnlineAuthorization(
         amount: String,
         track2: String,
         cardHolderName: String,
@@ -3511,7 +3569,19 @@ class PaymentViewModel @Inject constructor(
         paymentStateHolder.setCharging(true)
         // 📒 [Libreta] Barrier: AUTORIZANDO is committed BEFORE the SDK may fire (spec §4.4).
         sessionSnapshot.paymentAttemptId?.let { paymentAttemptLedger.markAuthorizing(it) }
+        // 🔴 OBSERVADOR, NO TIMEOUT. Corre en paralelo y sólo publica avisos de
+        // UI. Jamás cancela la autorización: si el procesador aprobó y
+        // abandonáramos, habría dinero movido que la app no conoce.
+        val watchdogStartedAt = System.currentTimeMillis()
+        val watchdogJob = viewModelScope.launch {
+            while (isActive) {
+                delay(1_000L)
+                val level = authWatchdogLevel(System.currentTimeMillis() - watchdogStartedAt)
+                if (level != AuthWatchdogLevel.NONE) publishWatchdogLevel(level)
+            }
+        }
         return try {
+        try {
             // ⚠️ This posId is NEVER sent anywhere. `SaleIccParams`/`SaleCtlsParams` have no posId
             // field — the SDK injects the one it reads from its own Init table
             // (`InitData.getPosId()`), written by InitializationManager. So the EFFECTIVE
@@ -3871,6 +3941,25 @@ class PaymentViewModel @Inject constructor(
                 response = null,
                 userFriendlyError = "Error inesperado procesando el pago.\n\nPor favor, intenta nuevamente."
             )
+        }
+        } finally {
+            // Cubre éxito, declinación, error y cancelación. Un observador que
+            // no se apaga es una fuga que sigue escalando avisos sobre una
+            // pantalla que ya cambió.
+            watchdogJob.cancel()
+            publishWatchdogLevel(AuthWatchdogLevel.NONE)
+        }
+    }
+
+    /**
+     * Aplica el aviso del vigilante de autorización al estado de espera actual, si sigue
+     * vigente. No-op si `_state` ya avanzó a otra cosa (éxito, error, cancelación) — evita
+     * pintar un aviso sobre una pantalla que el usuario ya dejó atrás.
+     */
+    private fun publishWatchdogLevel(level: AuthWatchdogLevel) {
+        val current = _state.value
+        if (current is PaymentState.Processing) {
+            _state.value = current.copy(watchdogLevel = level)
         }
     }
 
@@ -5327,6 +5416,7 @@ class PaymentViewModel @Inject constructor(
      * Cancel payment (remove card)
      */
     fun cancelPayment() {
+        cancelMerchantSelectionPreparation("cancelPayment")
         viewModelScope.launch {
             stopDetectCardUseCase.runInfallible(StopDetectCardParams())
             _isPaymentInProgress.value = false  // 🚦 Release guard
@@ -5352,6 +5442,7 @@ class PaymentViewModel @Inject constructor(
      * Use retryPayment() instead to preserve user's entered data.
      */
     fun resetPayment() {
+        cancelMerchantSelectionPreparation("resetPayment")
         if (_paymentSource == "SOCKET" && _socketRequestId != null) {
             val requestId = _socketRequestId!!
             socketManager.emitTerminalPaymentResult(
@@ -5755,6 +5846,7 @@ class PaymentViewModel @Inject constructor(
      * **Returns:** true if handled, false if caller should handle navigation (e.g., go to home)
      */
     fun goBackOneStep(): Boolean {
+        cancelMerchantSelectionPreparation("back navigation")
         val currentState = _state.value
 
         return when (currentState) {
@@ -6111,11 +6203,14 @@ class PaymentViewModel @Inject constructor(
                     )
                 } else {
                     // Offline-approved contactless - minimal card details
+                    val emvIssuerCountry = sessionSnapshot.emvIssuerCountry.trim().takeIf { it.isNotEmpty() }
                     CardDetails(
                         maskedPan = "****",
                         cardBrand = CardBrand.UNKNOWN,
                         entryMode = entryMode,
-                        isInternational = false
+                        isInternational = false,
+                        issuerCountryCode = emvIssuerCountry,
+                        issuerCountrySource = emvIssuerCountry?.let { IssuerCountrySource.EMV_5F28 },
                     )
                 }
 
@@ -6257,6 +6352,21 @@ class PaymentViewModel @Inject constructor(
                         // orderId, which fast payments don't have) → UNKNOWN → slot held forever.
                         terminalPaymentRequestId = _socketRequestId,
                         createdAt = System.currentTimeMillis(),
+                        // 🔗 Vínculo orden↔pago. Sin esto, el cobro con tarjeta de una ORDEN que
+                        // cae a la cola se reproduce como pago rápido suelto y la orden sigue
+                        // viéndose SIN PAGAR → el cajero la vuelve a cobrar (doble cobro humano).
+                        //
+                        // Esto es SÓLO captura de datos, no cambia el flujo: el único consumidor
+                        // de orderId es la rama ANGELPAY de QueuedPayment.toPaymentContext(), y
+                        // este sitio nunca es ANGELPAY (AngelPay encola desde su propio
+                        // ViewModel; el mapeo de vuelta cae a BLUMON por defecto). En pago
+                        // rápido ambos helpers devuelven null → fila idéntica a la de antes.
+                        //
+                        // ⚠️ Si algún día se unifican los ViewModels de Blumon y AngelPay, esta
+                        // premisa deja de valer y el replay cambiaría EN SILENCIO. Lo fija
+                        // PaymentViewModelTest → "el encolado de tarjeta nunca es ANGELPAY".
+                        orderId = getOrderIdForFlow(),
+                        orderNumber = getOrderNumberForFlow(),
                         retryCount = 0,
                         lastError = error.message,
                         syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING
@@ -6438,6 +6548,8 @@ class PaymentViewModel @Inject constructor(
                 emvIssuerCountry = sessionSnapshot.emvIssuerCountry,
                 bin = bin
             )
+            val processorCountry = issuerCountryFromBlumon.trim().takeIf { it.isNotEmpty() }
+            val emvIssuerCountry = sessionSnapshot.emvIssuerCountry.trim().takeIf { it.isNotEmpty() }
 
             CardDetails(
                 maskedPan = maskedPan,
@@ -6445,6 +6557,12 @@ class PaymentViewModel @Inject constructor(
                 entryMode = entryMode,
                 isInternational = isInternational,
                 cardNature = CardNature.fromBlumonType(cardNatureStr),
+                issuerCountryCode = processorCountry ?: emvIssuerCountry,
+                issuerCountrySource = when {
+                    processorCountry != null -> IssuerCountrySource.PROCESSOR
+                    emvIssuerCountry != null -> IssuerCountrySource.EMV_5F28
+                    else -> null
+                },
             )
         } catch (e: Exception) {
             Timber.e(e, "Failed to extract card details from Blumon response - falling back to Track2 detection")
@@ -6490,12 +6608,15 @@ class PaymentViewModel @Inject constructor(
                 emvIssuerCountry = sessionSnapshot.emvIssuerCountry,
                 bin = bin
             )
+            val emvIssuerCountry = sessionSnapshot.emvIssuerCountry.trim().takeIf { it.isNotEmpty() }
 
             CardDetails(
                 maskedPan = maskedPan,
                 cardBrand = cardBrand,
                 entryMode = entryMode,
                 isInternational = isInternational,
+                issuerCountryCode = emvIssuerCountry,
+                issuerCountrySource = emvIssuerCountry?.let { IssuerCountrySource.EMV_5F28 },
             )
         } catch (e: Exception) {
             Timber.e(e, "Failed to extract card details from Track2")

@@ -348,7 +348,13 @@ sealed class PaymentState {
     // Payment processing states (EXISTING - No changes)
     data object ConfiguringKernel : PaymentState()
     data class DetectingCard(val amount: String) : PaymentState()
-    data class Processing(val message: String = "Procesando...") : PaymentState()
+    data class Processing(
+        val message: String = "Procesando...",
+        // Aviso del vigilante de autorizacion (Task 2, riel Blumon/PAX). Por defecto
+        // NONE: en el camino feliz nadie lo ve y el comportamiento queda byte-identico.
+        // El vigilante NUNCA cancela la autorizacion, solo publica este aviso.
+        val watchdogLevel: AuthWatchdogLevel = AuthWatchdogLevel.NONE
+    ) : PaymentState()
     data class Success(
         val authCode: String,
         val amount: String,

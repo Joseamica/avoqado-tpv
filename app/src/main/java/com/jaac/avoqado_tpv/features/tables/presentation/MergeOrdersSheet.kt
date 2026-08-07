@@ -47,6 +47,12 @@ import com.jaac.avoqado_tpv.features.tables.domain.model.OpenCheckSummary
  * Un solo tap confirma — mismo lenguaje que [MoveTableSheet]: la fila YA es
  * el preview (mesa + mesero + monto exacto que se va a mover), un botón de
  * confirmación aparte solo agregaría un paso.
+ *
+ * 🔴 [unavailable] es DISTINTO de `tables.isEmpty()` — ver KDoc de
+ * [MoveTableSheet.unavailable][MoveTableSheet]. Aquí el riesgo de servir una
+ * lista caducada es TODAVÍA mayor: una fila vieja puede apuntar a una cuenta
+ * que ya se COBRÓ hace un minuto — fusionarla movería dinero contra un cheque
+ * cerrado. Por eso este picker tampoco sirve caché, nunca.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -54,8 +60,10 @@ fun MergeOrdersSheet(
     tables: List<DiningTable>,
     isLoading: Boolean,
     isMerging: Boolean,
+    unavailable: Boolean,
     onDismiss: () -> Unit,
     onSelect: (DiningTable) -> Unit,
+    onRetry: () -> Unit,
     modifier: Modifier = Modifier,
     sheetState: SheetState = rememberModalBottomSheetState(),
 ) {
@@ -75,6 +83,13 @@ fun MergeOrdersSheet(
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                         CircularProgressIndicator(modifier = Modifier.height(32.dp))
                     }
+                }
+
+                unavailable -> {
+                    PickerUnavailableState(
+                        message = "No se pudo verificar qué otras cuentas están abiertas — revisa tu conexión.",
+                        onRetry = onRetry,
+                    )
                 }
 
                 tables.isEmpty() -> {
@@ -176,8 +191,10 @@ private fun MergeOrdersSheetPreview() {
             ),
             isLoading = false,
             isMerging = false,
+            unavailable = false,
             onDismiss = {},
             onSelect = {},
+            onRetry = {},
         )
     }
 }
@@ -191,8 +208,27 @@ private fun MergeOrdersSheetEmptyPreview() {
             tables = emptyList(),
             isLoading = false,
             isMerging = false,
+            unavailable = false,
             onDismiss = {},
             onSelect = {},
+            onRetry = {},
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Preview(showBackground = true, widthDp = 720, heightDp = 1280, name = "PAX A920 — sin conexión")
+@Composable
+private fun MergeOrdersSheetUnavailablePreview() {
+    AvoqadoTheme {
+        MergeOrdersSheet(
+            tables = emptyList(),
+            isLoading = false,
+            isMerging = false,
+            unavailable = true,
+            onDismiss = {},
+            onSelect = {},
+            onRetry = {},
         )
     }
 }

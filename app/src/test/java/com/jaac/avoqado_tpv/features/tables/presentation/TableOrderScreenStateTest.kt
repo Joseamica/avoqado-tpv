@@ -175,6 +175,54 @@ class TableOrderScreenStateTest {
 
     // endregion
 
+    // region — splitBySeatEnabled: paridad Android 2026-08-06 (Hallazgo #1) —
+    // la TPV nunca manda `seat` al agregar items, así que una cuenta armada
+    // ÍNTEGRAMENTE en esta terminal debe deshabilitar "Dividir por puesto"
+    // (siempre fallaría), pero una que llegó de Android/iOS CON asientos sí
+    // debe habilitarlo — ese caso SÍ funciona.
+
+    @Test
+    fun sin_ningun_item_con_asiento_dividir_por_puesto_se_deshabilita() {
+        // El caso real que rompía: una cuenta armada solo en la TPV — todos
+        // sus items tienen seat=null porque el cliente nunca lo manda.
+        val enabled = splitBySeatEnabled(readOnly = false, hasSentItems = true, check = orderWithItems())
+
+        assertThat(enabled).isFalse()
+    }
+
+    @Test
+    fun con_al_menos_un_item_con_asiento_dividir_por_puesto_se_habilita() {
+        // Llegó de Android/iOS, que SÍ asignan seat al agregar items — ahí
+        // la acción funciona de verdad hoy.
+        val order = orderWithItems().copy(
+            items = orderWithItems().items.mapIndexed { index, item -> item.copy(seat = if (index == 0) 1 else null) },
+        )
+
+        val enabled = splitBySeatEnabled(readOnly = false, hasSentItems = true, check = order)
+
+        assertThat(enabled).isTrue()
+    }
+
+    @Test
+    fun readOnly_deshabilita_incluso_con_asientos() {
+        val order = orderWithItems().copy(
+            items = orderWithItems().items.map { it.copy(seat = 1) },
+        )
+
+        val enabled = splitBySeatEnabled(readOnly = true, hasSentItems = true, check = order)
+
+        assertThat(enabled).isFalse()
+    }
+
+    @Test
+    fun sin_items_enviados_se_deshabilita_aunque_check_sea_null() {
+        val enabled = splitBySeatEnabled(readOnly = false, hasSentItems = false, check = null)
+
+        assertThat(enabled).isFalse()
+    }
+
+    // endregion
+
     private fun orderWithItems(): OrderDetail = OrderDetail(
         id = "cmsds40wp000cc9ixmm8u71f4",
         orderNumber = "ORD-1785794792856",

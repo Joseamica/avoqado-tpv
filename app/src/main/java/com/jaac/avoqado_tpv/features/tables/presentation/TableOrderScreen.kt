@@ -118,16 +118,20 @@ fun TableOrderScreen(
     val isOnline by viewModel.isOnline.collectAsStateWithLifecycle()
     val availableTargetTables by viewModel.availableTargetTables.collectAsStateWithLifecycle()
     val isLoadingTargetTables by viewModel.isLoadingTargetTables.collectAsStateWithLifecycle()
+    val targetTablesUnavailable by viewModel.targetTablesUnavailable.collectAsStateWithLifecycle()
 
     // Fase 2 (2026-08-03) — MERGE_ORDERS · CANCEL_ORDER · ASSIGN_ORDER.
     val isMerging by viewModel.isMerging.collectAsStateWithLifecycle()
     val mergeCandidateTables by viewModel.mergeCandidateTables.collectAsStateWithLifecycle()
     val isLoadingMergeCandidates by viewModel.isLoadingMergeCandidates.collectAsStateWithLifecycle()
+    val mergeCandidatesUnavailable by viewModel.mergeCandidatesUnavailable.collectAsStateWithLifecycle()
     val isCancelling by viewModel.isCancelling.collectAsStateWithLifecycle()
     val cancelled by viewModel.cancelled.collectAsStateWithLifecycle()
     val isAssigning by viewModel.isAssigning.collectAsStateWithLifecycle()
     val activeStaff by viewModel.activeStaff.collectAsStateWithLifecycle()
     val isLoadingActiveStaff by viewModel.isLoadingActiveStaff.collectAsStateWithLifecycle()
+    val activeStaffStale by viewModel.activeStaffStale.collectAsStateWithLifecycle()
+    val activeStaffUnavailable by viewModel.activeStaffUnavailable.collectAsStateWithLifecycle()
 
     // Fase 3 (2026-08-03) — SPLIT_BY_SEAT · UPDATE_DETAILS.
     val isSplittingBySeat by viewModel.isSplittingBySeat.collectAsStateWithLifecycle()
@@ -312,11 +316,13 @@ fun TableOrderScreen(
             tables = availableTargetTables,
             isLoading = isLoadingTargetTables,
             isMoving = isMoving,
+            unavailable = targetTablesUnavailable,
             onDismiss = { if (!isMoving) showMoveSheet = false },
             onSelect = { target ->
                 moveTriggered = true
                 viewModel.moveOrder(target)
             },
+            onRetry = viewModel::loadAvailableTargetTables,
         )
     }
 
@@ -325,11 +331,13 @@ fun TableOrderScreen(
             tables = mergeCandidateTables,
             isLoading = isLoadingMergeCandidates,
             isMerging = isMerging,
+            unavailable = mergeCandidatesUnavailable,
             onDismiss = { if (!isMerging) showMergeSheet = false },
             onSelect = { source ->
                 mergeTriggered = true
                 viewModel.mergeOrders(source)
             },
+            onRetry = viewModel::loadMergeCandidateTables,
         )
     }
 
@@ -346,11 +354,14 @@ fun TableOrderScreen(
             staff = activeStaff,
             isLoading = isLoadingActiveStaff,
             isAssigning = isAssigning,
+            unavailable = activeStaffUnavailable,
+            stale = activeStaffStale,
             onDismiss = { if (!isAssigning) showAssignSheet = false },
             onSelect = { member ->
                 assignTriggered = true
                 viewModel.assignOrder(member)
             },
+            onRetry = viewModel::loadActiveStaff,
         )
     }
 
@@ -427,10 +438,10 @@ private fun TableOrderScreenContent(
     val mergeEnabled = !readOnly && !session.isProvisional
     val cancelEnabled = !readOnly
     val assignEnabled = !readOnly
-    // Dividir por puesto necesita artículos YA enviados — mismo criterio que
-    // separar cuenta (el server agrupa por `seat` sobre items reales, nunca
-    // sobre un carrito local todavía sin mandar).
-    val splitBySeatEnabled = !readOnly && hasSentItems
+    // Dividir por puesto necesita artículos YA enviados CON asiento asignado
+    // — ver KDoc de [splitBySeatEnabled] para el porqué (paridad Android
+    // 2026-08-06, Hallazgo #1).
+    val splitBySeatIsEnabled = splitBySeatEnabled(readOnly = readOnly, hasSentItems = hasSentItems, check = check)
     // Editar detalles funciona incluso en sesión provisional (UPDATE_DETAILS
     // siempre viaja por intent, con localOrderId si hace falta) — mismo
     // criterio que cancelar/reasignar.
@@ -448,7 +459,7 @@ private fun TableOrderScreenContent(
                         TableOrderOverflowMenu(
                             editDetailsEnabled = editDetailsEnabled,
                             splitEnabled = !readOnly && hasSentItems,
-                            splitBySeatEnabled = splitBySeatEnabled,
+                            splitBySeatEnabled = splitBySeatIsEnabled,
                             compEnabled = !readOnly && hasSentItems,
                             moveEnabled = !readOnly,
                             mergeEnabled = mergeEnabled,
@@ -967,6 +978,24 @@ internal fun resolveTableOrderBodyState(
     checkLoadFailed && check == null && !hasPendingOrQueuedLines -> TableOrderBodyState.LOAD_FAILED
     else -> TableOrderBodyState.CONTENT
 }
+
+/**
+ * Si "Dividir por puesto" debe estar habilitado — extraído a función pura
+ * (`internal`, sin Compose) por el mismo motivo que [resolveTableOrderBodyState],
+ * ver `TableOrderScreenStateTest`.
+ *
+ * Paridad Android 2026-08-06 (`paridad-android-tpv.md`, Hallazgo #1): la TPV
+ * NUNCA manda `seat` al agregar items (ni el cliente lo captura, ni el
+ * server lo acepta en `addOrderItemsSchema` — ver KDoc de
+ * `TablesRepository.splitOrderBySeat`), así que una cuenta armada
+ * ÍNTEGRAMENTE en esta terminal SIEMPRE tiene 0 items con `seat` y el server
+ * SIEMPRE rechazaría con "se necesitan al menos dos puestos" — un botón que
+ * siempre falla es peor que no tenerlo. Solo se habilita si el cheque YA
+ * trae asientos (típicamente porque llegó de Android/iOS, que SÍ los
+ * asignan) — ahí la acción funciona de verdad hoy.
+ */
+internal fun splitBySeatEnabled(readOnly: Boolean, hasSentItems: Boolean, check: OrderDetail?): Boolean =
+    !readOnly && hasSentItems && check?.items?.any { it.seat != null } == true
 
 // ══════════════════════════════════════════════════════════════════════
 // PREVIEWS

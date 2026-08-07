@@ -611,6 +611,193 @@ class TableOrderViewModelTest {
 
     // endregion
 
+    // region — pickers offline: "unavailable" ≠ "vacío" (mismo bug de 7df5819,
+    // aquí en Mover mesa / Fusionar cuentas / Reasignar mesero). Reproducido en
+    // hardware sin red: los 3 pickers mostraban "no hay X" en vez de señalar
+    // que no se pudo verificar.
+
+    @Test
+    fun loadAvailableTargetTables_exitoso_puebla_la_lista_de_mesas_libres() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.getTables(venueId) } returns
+            Result.success(listOf(DiningTable(id = "mesa-9", number = "9", status = "AVAILABLE")))
+        val viewModel = createViewModel()
+
+        viewModel.loadAvailableTargetTables()
+
+        assertThat(viewModel.availableTargetTables.value).hasSize(1)
+        assertThat(viewModel.targetTablesUnavailable.value).isFalse()
+    }
+
+    /**
+     * 🔴 El defecto reportado en hardware: sin red, [MoveTableSheet] pintaba
+     * "No hay mesas libres en este momento" — un hecho plausible pero FALSO
+     * (no sabemos si hay mesas libres, no pudimos preguntar). El ViewModel
+     * ahora expone [TableOrderViewModel.targetTablesUnavailable] para que la
+     * UI distinga los dos casos.
+     */
+    @Test
+    fun loadAvailableTargetTables_sin_red_marca_unavailable_NUNCA_se_ve_como_vacio() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.getTables(venueId) } returns Result.failure(java.io.IOException("sin red"))
+        val viewModel = createViewModel()
+
+        viewModel.loadAvailableTargetTables()
+
+        assertThat(viewModel.availableTargetTables.value).isEmpty()
+        assertThat(viewModel.targetTablesUnavailable.value).isTrue()
+        assertThat(viewModel.error.value).isNotNull()
+    }
+
+    /**
+     * "Mover mesa" NUNCA sirve una lista vieja — a diferencia de "Reasignar
+     * mesero" (ver `loadActiveStaff_sin_red_con_cache_previa_*` abajo), una
+     * mesa "libre" desactualizada es un choque real con otro dispositivo. Un
+     * éxito seguido de un fallo (reabrir el sheet sin red) debe BORRAR la
+     * lista, no dejar la del último éxito en pantalla disfrazada de fresca.
+     */
+    @Test
+    fun loadAvailableTargetTables_fallo_tras_exito_previo_borra_la_lista_vieja() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.getTables(venueId) } returns
+            Result.success(listOf(DiningTable(id = "mesa-9", number = "9", status = "AVAILABLE")))
+        val viewModel = createViewModel()
+        viewModel.loadAvailableTargetTables()
+        assertThat(viewModel.availableTargetTables.value).hasSize(1) // precondición: sí hubo un éxito antes
+
+        coEvery { repository.getTables(venueId) } returns Result.failure(java.io.IOException("sin red"))
+        viewModel.loadAvailableTargetTables()
+
+        assertThat(viewModel.availableTargetTables.value).isEmpty()
+        assertThat(viewModel.targetTablesUnavailable.value).isTrue()
+    }
+
+    @Test
+    fun loadMergeCandidateTables_exitoso_puebla_la_lista_de_cuentas_abiertas() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.getTables(venueId) } returns
+            Result.success(
+                listOf(
+                    DiningTable(
+                        id = "mesa-7", number = "7", status = "OCCUPIED",
+                        openOrders = listOf(OpenCheckSummary(id = "orden-2", total = BigDecimal("120.00"))),
+                    ),
+                ),
+            )
+        val viewModel = createViewModel()
+
+        viewModel.loadMergeCandidateTables()
+
+        assertThat(viewModel.mergeCandidateTables.value).hasSize(1)
+        assertThat(viewModel.mergeCandidatesUnavailable.value).isFalse()
+    }
+
+    /**
+     * Mismo defecto que Mover mesa, aquí para "Fusionar cuentas" — el riesgo
+     * es TODAVÍA mayor: una fila vieja puede apuntar a una cuenta que ya se
+     * cobró. Nunca "no hay otras mesas con cuenta abierta" cuando en realidad
+     * es "no se pudo preguntar".
+     */
+    @Test
+    fun loadMergeCandidateTables_sin_red_marca_unavailable_y_borra_lista_vieja() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.getTables(venueId) } returns
+            Result.success(
+                listOf(
+                    DiningTable(
+                        id = "mesa-7", number = "7", status = "OCCUPIED",
+                        openOrders = listOf(OpenCheckSummary(id = "orden-2", total = BigDecimal("120.00"))),
+                    ),
+                ),
+            )
+        val viewModel = createViewModel()
+        viewModel.loadMergeCandidateTables()
+        assertThat(viewModel.mergeCandidateTables.value).hasSize(1) // precondición: sí hubo un éxito antes
+
+        coEvery { repository.getTables(venueId) } returns Result.failure(java.io.IOException("sin red"))
+        viewModel.loadMergeCandidateTables()
+
+        assertThat(viewModel.mergeCandidateTables.value).isEmpty()
+        assertThat(viewModel.mergeCandidatesUnavailable.value).isTrue()
+        assertThat(viewModel.error.value).isNotNull()
+    }
+
+    /**
+     * "Reasignar mesero" primer intento sin red y SIN caché previa — no hay
+     * nada que servir, así que es "unavailable" (mismo trato que Mover/Fusionar
+     * cuando tampoco hay caché), nunca "no hay personal en turno".
+     */
+    @Test
+    fun loadActiveStaff_sin_red_y_sin_cache_previa_marca_unavailable() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.getActiveStaff(venueId) } returns Result.failure(java.io.IOException("sin red"))
+        val viewModel = createViewModel()
+
+        viewModel.loadActiveStaff()
+
+        assertThat(viewModel.activeStaff.value).isEmpty()
+        assertThat(viewModel.activeStaffUnavailable.value).isTrue()
+        assertThat(viewModel.activeStaffStale.value).isFalse()
+        assertThat(viewModel.error.value).isNotNull()
+    }
+
+    /**
+     * 🔴 A diferencia de Mover/Fusionar: "Reasignar mesero" SÍ sigue sirviendo
+     * la última lista conocida cuando el refresh falla — riesgo bajo
+     * (reasignar a alguien que ya salió es corregible, `ASSIGN_ORDER` ya es
+     * offline-capable) — marcada [TableOrderViewModel.activeStaffStale] para
+     * que la UI avise, nunca oculta las filas ni las reemplaza por "no hay
+     * personal en turno".
+     */
+    @Test
+    fun loadActiveStaff_sin_red_con_cache_previa_mantiene_la_lista_y_marca_stale() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.getActiveStaff(venueId) } returns
+            Result.success(listOf(ActiveStaffMember(staffId = "staff-9", name = "Diego Ruiz")))
+        val viewModel = createViewModel()
+        viewModel.loadActiveStaff()
+        assertThat(viewModel.activeStaff.value).hasSize(1) // precondición: sí hubo un éxito antes
+
+        coEvery { repository.getActiveStaff(venueId) } returns Result.failure(java.io.IOException("sin red"))
+        viewModel.loadActiveStaff()
+
+        // La lista de la carga anterior SIGUE ahí — nunca se borra ni se
+        // reemplaza por "no hay personal en turno".
+        assertThat(viewModel.activeStaff.value).hasSize(1)
+        assertThat(viewModel.activeStaff.value.first().staffId).isEqualTo("staff-9")
+        assertThat(viewModel.activeStaffStale.value).isTrue()
+        assertThat(viewModel.activeStaffUnavailable.value).isFalse()
+    }
+
+    @Test
+    fun loadActiveStaff_reintento_exitoso_tras_stale_limpia_la_bandera() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.getActiveStaff(venueId) } returns
+            Result.success(listOf(ActiveStaffMember(staffId = "staff-9", name = "Diego Ruiz")))
+        val viewModel = createViewModel()
+        viewModel.loadActiveStaff()
+        coEvery { repository.getActiveStaff(venueId) } returns Result.failure(java.io.IOException("sin red"))
+        viewModel.loadActiveStaff()
+        assertThat(viewModel.activeStaffStale.value).isTrue() // precondición
+
+        coEvery { repository.getActiveStaff(venueId) } returns
+            Result.success(listOf(ActiveStaffMember(staffId = "staff-9", name = "Diego Ruiz"), ActiveStaffMember(staffId = "staff-10", name = "Fátima Flores")))
+        viewModel.loadActiveStaff()
+
+        assertThat(viewModel.activeStaff.value).hasSize(2)
+        assertThat(viewModel.activeStaffStale.value).isFalse()
+    }
+
+    // endregion
+
     // region — Fase 3 (2026-08-03): SPLIT_BY_SEAT · UPDATE_DETAILS
 
     @Test

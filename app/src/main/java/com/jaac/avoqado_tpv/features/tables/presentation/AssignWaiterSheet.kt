@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -51,6 +52,14 @@ import com.jaac.avoqado_tpv.features.tables.domain.model.ActiveStaffMember
  * está usando la terminal no tiene el permiso para verla — ver concern en
  * [com.jaac.avoqado_tpv.features.tables.data.api.dto.ActiveStaffResponse]),
  * se muestra un mensaje claro en vez de una lista en blanco sin explicación.
+ *
+ * 🔴 [unavailable]/[stale] — a diferencia de [MoveTableSheet]/[MergeOrdersSheet]
+ * (que NUNCA sirven caché), este picker SÍ puede seguir mostrando la última
+ * lista de personal conocida cuando un refresh falla ([stale] = `true`): el
+ * riesgo es bajo (reasignar a alguien que ya salió de turno es corregible,
+ * `ASSIGN_ORDER` ya es offline-capable en el server). [unavailable] = `true`
+ * solo cuando NUNCA hubo una carga exitosa — ahí no hay nada que servir y el
+ * mensaje tiene que decir "no se pudo cargar", nunca "no hay personal".
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,8 +67,11 @@ fun AssignWaiterSheet(
     staff: List<ActiveStaffMember>,
     isLoading: Boolean,
     isAssigning: Boolean,
+    unavailable: Boolean,
+    stale: Boolean,
     onDismiss: () -> Unit,
     onSelect: (ActiveStaffMember) -> Unit,
+    onRetry: () -> Unit,
     modifier: Modifier = Modifier,
     sheetState: SheetState = rememberModalBottomSheetState(),
 ) {
@@ -81,6 +93,13 @@ fun AssignWaiterSheet(
                     }
                 }
 
+                unavailable -> {
+                    PickerUnavailableState(
+                        message = "No se pudo cargar el personal en turno — revisa tu conexión.",
+                        onRetry = onRetry,
+                    )
+                }
+
                 staff.isEmpty() -> {
                     Text(
                         text = "No hay personal marcado como en turno ahora mismo.",
@@ -90,6 +109,10 @@ fun AssignWaiterSheet(
                 }
 
                 else -> {
+                    if (stale) {
+                        StaleStaffBanner(onRetry = onRetry)
+                        Spacer(Modifier.height(Spacing.Space2))
+                    }
                     LazyColumn(
                         modifier = Modifier.heightIn(max = 420.dp),
                         contentPadding = PaddingValues(vertical = Spacing.Space2),
@@ -101,6 +124,39 @@ fun AssignWaiterSheet(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Banner de staleness — NUNCA oculta las filas debajo (a diferencia de
+ * [PickerUnavailableState], que reemplaza toda la lista). Ver KDoc de
+ * [AssignWaiterSheet]: mostrar personal "puede no estar actualizado" es
+ * preferible a bloquear la reasignación por un blip de red.
+ */
+@Composable
+private fun StaleStaffBanner(onRetry: () -> Unit) {
+    Card(
+        onClick = onRetry,
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = Spacing.Space3, vertical = Spacing.Space2),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Default.WifiOff,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.padding(start = Spacing.Space2))
+            Text(
+                text = "Último personal visto — puede no estar actualizado. Toca para reintentar.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -177,8 +233,11 @@ private fun AssignWaiterSheetPreview() {
             ),
             isLoading = false,
             isAssigning = false,
+            unavailable = false,
+            stale = false,
             onDismiss = {},
             onSelect = {},
+            onRetry = {},
         )
     }
 }
@@ -192,8 +251,49 @@ private fun AssignWaiterSheetEmptyPreview() {
             staff = emptyList(),
             isLoading = false,
             isAssigning = false,
+            unavailable = false,
+            stale = false,
             onDismiss = {},
             onSelect = {},
+            onRetry = {},
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Preview(showBackground = true, widthDp = 720, heightDp = 1280, name = "PAX A920 — sin conexión, sin caché")
+@Composable
+private fun AssignWaiterSheetUnavailablePreview() {
+    AvoqadoTheme {
+        AssignWaiterSheet(
+            staff = emptyList(),
+            isLoading = false,
+            isAssigning = false,
+            unavailable = true,
+            stale = false,
+            onDismiss = {},
+            onSelect = {},
+            onRetry = {},
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Preview(showBackground = true, widthDp = 720, heightDp = 1280, name = "PAX A920 — lista vieja")
+@Composable
+private fun AssignWaiterSheetStalePreview() {
+    AvoqadoTheme {
+        AssignWaiterSheet(
+            staff = listOf(
+                ActiveStaffMember(staffId = "s1", name = "Fátima Flores", employeeCode = "EMP-001"),
+            ),
+            isLoading = false,
+            isAssigning = false,
+            unavailable = false,
+            stale = true,
+            onDismiss = {},
+            onSelect = {},
+            onRetry = {},
         )
     }
 }

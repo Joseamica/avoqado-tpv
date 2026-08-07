@@ -372,6 +372,28 @@ class TableOrderViewModel @Inject constructor(
     private val _isLoadingTargetTables = MutableStateFlow(false)
     val isLoadingTargetTables: StateFlow<Boolean> = _isLoadingTargetTables.asStateFlow()
 
+    /**
+     * 🔴 Misma clase de bug que [checkLoadFailed] (Mesa M1, `7df5819`), aquí en
+     * el picker de "Mover mesa": [loadAvailableTargetTables] fallando (sin red,
+     * timeout, 500) dejaba la lista en `emptyList()` SIN ninguna señal —
+     * [MoveTableSheet][com.jaac.avoqado_tpv.features.tables.presentation.MoveTableSheet]
+     * no tenía forma de distinguir "no hay mesas libres" de "no se pudo
+     * verificar", así que un mesero sin señal veía "no hay mesas libres" y
+     * concluía que el salón estaba lleno — un hecho plausible pero falso.
+     *
+     * A propósito NO se sirve una lista vieja aquí (a diferencia de
+     * [activeStaffStale] más abajo): "mesa libre" es ocupación en tiempo real
+     * — otro mesero pudo haber sentado ahí hace un minuto. Confirmar el
+     * movimiento contra un dato caducado es el mismo riesgo de colisión que
+     * documenta `offline-first-y-hub-lan.md` §3 para el hub LAN. Por eso
+     * [loadAvailableTargetTables] BORRA la lista en cada fallo en vez de dejar
+     * la del intento anterior — sin esto, reabrir el sheet una segunda vez sin
+     * red mostraría mesas "libres" tal como estaban en el último éxito, no
+     * como están ahora.
+     */
+    private val _targetTablesUnavailable = MutableStateFlow(false)
+    val targetTablesUnavailable: StateFlow<Boolean> = _targetTablesUnavailable.asStateFlow()
+
     /** Bloqueo compartido — mismo mensaje que [sendRound] cuando la mesa es de otro mesero. */
     private fun blockedByOwnership(): Boolean {
         if (!readOnly.value) return false
@@ -489,6 +511,7 @@ class TableOrderViewModel @Inject constructor(
         val currentTableId = tableSession.current()?.tableId
         viewModelScope.launch {
             _isLoadingTargetTables.value = true
+            _targetTablesUnavailable.value = false
             repository.getTables(vId).fold(
                 onSuccess = { tables ->
                     _availableTargetTables.value = tables.filter { it.isAvailable && it.id != currentTableId }
@@ -497,6 +520,10 @@ class TableOrderViewModel @Inject constructor(
                 onFailure = { e ->
                     _isLoadingTargetTables.value = false
                     if (e is CancellationException) throw e
+                    // Ver KDoc de [targetTablesUnavailable]: nunca se deja una
+                    // lista vieja en pantalla — "libre" caduca rápido.
+                    _availableTargetTables.value = emptyList()
+                    _targetTablesUnavailable.value = true
                     _error.value = "No se pudo cargar la lista de mesas"
                 },
             )
@@ -556,6 +583,17 @@ class TableOrderViewModel @Inject constructor(
     private val _isLoadingMergeCandidates = MutableStateFlow(false)
     val isLoadingMergeCandidates: StateFlow<Boolean> = _isLoadingMergeCandidates.asStateFlow()
 
+    /**
+     * Misma clase de bug que [targetTablesUnavailable], aquí para "Fusionar
+     * cuentas". El riesgo de servir una lista vieja es TODAVÍA mayor que en
+     * "Mover mesa": una fila caducada puede apuntar a una cuenta que ya se
+     * COBRÓ hace un minuto — fusionarla movería dinero contra un cheque
+     * cerrado. Por eso [loadMergeCandidateTables] también borra la lista en
+     * cada fallo, nunca sirve la del intento anterior.
+     */
+    private val _mergeCandidatesUnavailable = MutableStateFlow(false)
+    val mergeCandidatesUnavailable: StateFlow<Boolean> = _mergeCandidatesUnavailable.asStateFlow()
+
     private val _isCancelling = MutableStateFlow(false)
     val isCancelling: StateFlow<Boolean> = _isCancelling.asStateFlow()
 
@@ -580,6 +618,32 @@ class TableOrderViewModel @Inject constructor(
     val isLoadingActiveStaff: StateFlow<Boolean> = _isLoadingActiveStaff.asStateFlow()
 
     /**
+     * A diferencia de [targetTablesUnavailable]/[mergeCandidatesUnavailable],
+     * "Reasignar mesero" SÍ sirve la última lista conocida cuando un refresh
+     * falla — el riesgo es mucho más bajo: reasignar a alguien que ya salió de
+     * turno es corregible después (nadie perdió dinero), y `ASSIGN_ORDER` ya
+     * es offline-capable en el server (KDoc de [assignOrder]). Bloquear al
+     * mesero aquí solo por un blip de red sería más dañino que dejarlo elegir
+     * de una lista con unos minutos de vida — mismo espíritu que el fix de
+     * `PrintConfigRepository` (`offline-first-y-hub-lan.md` §4): "fail-safe"
+     * NO puede significar "no muestres nada".
+     *
+     * `true` SOLO cuando ya había una lista de una carga anterior en esta
+     * sesión y el refresh falló — [MergeOrdersSheet] la pinta con un aviso de
+     * "puede no estar actualizada", nunca oculta las filas.
+     */
+    private val _activeStaffStale = MutableStateFlow(false)
+    val activeStaffStale: StateFlow<Boolean> = _activeStaffStale.asStateFlow()
+
+    /**
+     * `true` cuando NUNCA hubo una carga exitosa en esta sesión (primer
+     * intento sin red) — sin caché que servir, el picker debe decir
+     * "no se pudo cargar", nunca "no hay personal en turno".
+     */
+    private val _activeStaffUnavailable = MutableStateFlow(false)
+    val activeStaffUnavailable: StateFlow<Boolean> = _activeStaffUnavailable.asStateFlow()
+
+    /**
      * Carga las mesas OCUPADAS del venue (excluyendo la actual) para el
      * picker de [com.jaac.avoqado_tpv.features.tables.presentation.MergeOrdersSheet]
      * — a diferencia de [loadAvailableTargetTables] (mesas LIBRES, para
@@ -592,6 +656,7 @@ class TableOrderViewModel @Inject constructor(
         val currentTableId = tableSession.current()?.tableId
         viewModelScope.launch {
             _isLoadingMergeCandidates.value = true
+            _mergeCandidatesUnavailable.value = false
             repository.getTables(vId).fold(
                 onSuccess = { tables ->
                     _mergeCandidateTables.value = tables.filter { it.hasOpenCheck && it.id != currentTableId }
@@ -600,6 +665,11 @@ class TableOrderViewModel @Inject constructor(
                 onFailure = { e ->
                     _isLoadingMergeCandidates.value = false
                     if (e is CancellationException) throw e
+                    // Ver KDoc de [mergeCandidatesUnavailable]: nunca se deja
+                    // una lista vieja en pantalla — podría apuntar a una
+                    // cuenta que ya se cobró.
+                    _mergeCandidateTables.value = emptyList()
+                    _mergeCandidatesUnavailable.value = true
                     _error.value = "No se pudo cargar la lista de mesas"
                 },
             )
@@ -698,6 +768,8 @@ class TableOrderViewModel @Inject constructor(
         val vId = venueId ?: return
         viewModelScope.launch {
             _isLoadingActiveStaff.value = true
+            _activeStaffStale.value = false
+            _activeStaffUnavailable.value = false
             repository.getActiveStaff(vId).fold(
                 onSuccess = { staff ->
                     _activeStaff.value = staff
@@ -706,7 +778,16 @@ class TableOrderViewModel @Inject constructor(
                 onFailure = { e ->
                     _isLoadingActiveStaff.value = false
                     if (e is CancellationException) throw e
-                    _error.value = "No se pudo cargar el personal en turno"
+                    // Ver KDoc de [activeStaffStale]/[activeStaffUnavailable]:
+                    // con caché de una carga previa, se sigue sirviendo
+                    // marcada como posiblemente vieja; sin caché, es
+                    // "no disponible", nunca "no hay personal".
+                    if (_activeStaff.value.isNotEmpty()) {
+                        _activeStaffStale.value = true
+                    } else {
+                        _activeStaffUnavailable.value = true
+                        _error.value = "No se pudo cargar el personal en turno"
+                    }
                 },
             )
         }

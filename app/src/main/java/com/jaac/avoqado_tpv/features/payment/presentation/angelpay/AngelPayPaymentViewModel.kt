@@ -35,6 +35,8 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayRes
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
+import com.jaac.avoqado_tpv.features.payment.domain.AuthWatchdogLevel
+import com.jaac.avoqado_tpv.features.payment.domain.authWatchdogLevel
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentFlowGate
 import com.jaac.avoqado_tpv.features.payment.domain.PrePaymentNextStep
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
@@ -53,11 +55,14 @@ import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -79,6 +84,10 @@ import javax.inject.Inject
  * Uses PaymentFlowGate for screen gating (same logic as Blumon).
  * Reuses ReviewScreen, TipScreen, MerchantSelectionContent composables.
  */
+// Tick of the authorization watchdog (Task 3). Also the unit the elapsed time is
+// accumulated in — see startAuthorizationWatchdog().
+private const val WATCHDOG_TICK_MS = 1_000L
+
 @HiltViewModel
 class AngelPayPaymentViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
@@ -1302,6 +1311,56 @@ class AngelPayPaymentViewModel @Inject constructor(
         paymentStateHolder.setCharging(false)
     }
 
+    // ── Task 3 (cobro resiliente en red lenta) — vigilante de autorización, riel AngelPay ──
+
+    // 🔴 OBSERVADOR, NO TIMEOUT. En AngelPay la autorización no es una única llamada
+    // suspend como en Blumon: el SDK/app AngelPay corre fuera de nuestro proceso y el
+    // resultado vuelve async vía onAngelPayResult/onAngelPaySdkResult. Este job corre en
+    // paralelo desde que se lanza el intent (onIntentLaunched) hasta que el resultado
+    // llega, y SOLO publica avisos de UI sobre WaitingForResult. Jamás cancela la
+    // autorización: si el procesador aprobó y "canceláramos" aquí, sólo estaríamos
+    // mintiendo en pantalla sobre un cobro que sí se hizo — el dinero ya se movió fuera
+    // de nuestro control.
+    private var authWatchdogJob: Job? = null
+
+    @VisibleForTesting
+    internal fun startAuthorizationWatchdog(startedAt: Long = System.currentTimeMillis()) {
+        authWatchdogJob?.cancel()
+        authWatchdogJob = viewModelScope.launch {
+            // 🔴 El tiempo transcurrido se acumula sumando los delays, NO leyendo
+            // System.currentTimeMillis(). En un test, advanceTimeBy() mueve el reloj
+            // VIRTUAL de las corrutinas pero no el del sistema: leer el reloj real
+            // aqui hacia que el nivel nunca subiera de NONE, el bucle nunca saliera
+            // y runTest esperara para siempre — el test no fallaba, se colgaba.
+            var elapsed = 0L
+            while (isActive) {
+                delay(WATCHDOG_TICK_MS)
+                elapsed += WATCHDOG_TICK_MS
+                val level = authWatchdogLevel(elapsed)
+                if (level != AuthWatchdogLevel.NONE) publishAuthWatchdogLevel(level)
+            }
+        }
+    }
+
+    private fun stopAuthorizationWatchdog() {
+        authWatchdogJob?.cancel()
+        authWatchdogJob = null
+        publishAuthWatchdogLevel(AuthWatchdogLevel.NONE)
+    }
+
+    /**
+     * Aplica el aviso del vigilante al estado `WaitingForResult` actual, si sigue vigente.
+     * No-op sobre cualquier otro estado — en particular `RecordingPayment`, que es la
+     * espera del REGISTRO (no de la autorización) y tiene su propio diseño pendiente; el
+     * vigilante nunca debe escribir sobre ella.
+     */
+    private fun publishAuthWatchdogLevel(level: AuthWatchdogLevel) {
+        val current = _state.value
+        if (current is AngelPayPaymentState.WaitingForResult) {
+            _state.value = current.copy(watchdogLevel = level)
+        }
+    }
+
     private suspend fun startSdkCardPayment(credentials: AngelPayCredentials) {
         val sdkEnv = if (BuildConfig.BLUMON_ENV == "PROD") "PROD" else "QA"
         val initResult = sdkGateway.ensureInitialized(appContext, sdkEnv)
@@ -1612,6 +1671,7 @@ class AngelPayPaymentViewModel @Inject constructor(
      */
     fun onIntentLaunched() {
         _state.value = AngelPayPaymentState.WaitingForResult()
+        startAuthorizationWatchdog()
         Timber.d("🔶 [AngelPay] Intent launched, waiting for result...")
     }
 
@@ -1620,6 +1680,11 @@ class AngelPayPaymentViewModel @Inject constructor(
      */
     fun onAngelPayResult(resultCode: Int, data: Intent?) {
         viewModelScope.launch {
+          // 🔴 El vigilante que arrancó en onIntentLaunched observa hasta que este
+          // resultado (cualquiera que sea) queda resuelto. Cubre éxito, declinación,
+          // cancelación y el registro subsecuente — NUNCA cancela la autorización, solo
+          // deja de publicar avisos cuando ya no hay nada que observar.
+          try {
             if (!consumeResultForCurrentAttempt(source = "app_to_app")) return@launch
             Timber.i("🔶 [AngelPay] onAngelPayResult | resultCode=$resultCode")
             _state.value = AngelPayPaymentState.WaitingForResult(message = "Validando resultado del pago...")
@@ -1679,11 +1744,21 @@ class AngelPayPaymentViewModel @Inject constructor(
             }
             // Task 32 — clear D2 charging gate on any terminal outcome.
             clearChargingOnTerminal()
+          } finally {
+            // Cubre éxito, declinación, cancelación y el registro subsecuente. Un
+            // observador que no se apaga es una fuga que sigue escalando avisos sobre
+            // una pantalla que ya cambió.
+            stopAuthorizationWatchdog()
+          }
         }
     }
 
     fun onAngelPaySdkResult(result: PaymentResult) {
         viewModelScope.launch {
+          // 🔴 Mismo vigilante, mismo invariante que onAngelPayResult: observa desde
+          // onIntentLaunched hasta que este resultado (incluida la relanzada por
+          // expiración de sesión) queda resuelto. Nunca cancela la autorización.
+          try {
             if (!consumeResultForCurrentAttempt(source = "sdk_contract")) return@launch
             Timber.i("🔶 [AngelPay SDK] Result received | approved=${result.approved}, status=${result.status}")
             _state.value = AngelPayPaymentState.WaitingForResult(message = "Validando resultado del pago...")
@@ -1783,6 +1858,11 @@ class AngelPayPaymentViewModel @Inject constructor(
             }
             // Task 32 — clear D2 charging gate on any terminal outcome.
             clearChargingOnTerminal()
+          } finally {
+            // Cubre éxito, declinación, la relanzada por expiración de sesión y el
+            // registro subsecuente. Un observador que no se apaga es una fuga.
+            stopAuthorizationWatchdog()
+          }
         }
     }
 

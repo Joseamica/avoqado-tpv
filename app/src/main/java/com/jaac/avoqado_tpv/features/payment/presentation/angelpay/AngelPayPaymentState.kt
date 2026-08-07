@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 
 import android.content.Intent
 import com.angelpay.angelpaysdk.models.PaymentRequest
+import com.jaac.avoqado_tpv.features.payment.domain.AuthWatchdogLevel
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
 
 /**
@@ -64,6 +65,10 @@ sealed class AngelPayPaymentState {
     /** AngelPay app is processing the payment. */
     data class WaitingForResult(
         val message: String = "Procesando pago en AngelPay...",
+        // Aviso del vigilante de autorizacion (Task 3, riel AngelPay/NEXGO). Por defecto
+        // NONE: en el camino feliz nadie lo ve y el comportamiento queda byte-identico.
+        // El vigilante NUNCA cancela la autorizacion, solo publica este aviso.
+        val watchdogLevel: AuthWatchdogLevel = AuthWatchdogLevel.NONE,
     ) : AngelPayPaymentState()
 
     /** Cash payment being recorded to backend. */

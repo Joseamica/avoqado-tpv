@@ -154,6 +154,10 @@ internal class RecordingLostException(cause: Throwable) : Exception(
  * `SELECT * FROM "TerminalLog" WHERE tag = 'PaymentTrace' ORDER BY "createdAt" DESC`
  */
 private const val TAG_PAYMENT_TRACE = "PaymentTrace"
+
+// Tick of the authorization watchdog. Also the unit the elapsed time is accumulated
+// in — see performOnlineAuthorization()'s watchdogJob.
+private const val WATCHDOG_TICK_MS = 1_000L
 /**
  * PaymentViewModel - Handles EMV chip card payments with ONLINE authorization via Blumon Momentum
  *
@@ -4185,11 +4189,17 @@ class PaymentViewModel @Inject constructor(
         // 🔴 OBSERVADOR, NO TIMEOUT. Corre en paralelo y sólo publica avisos de
         // UI. Jamás cancela la autorización: si el procesador aprobó y
         // abandonáramos, habría dinero movido que la app no conoce.
-        val watchdogStartedAt = System.currentTimeMillis()
         val watchdogJob = viewModelScope.launch {
+            // 🔴 El tiempo transcurrido se acumula sumando los delays, NO leyendo
+            // System.currentTimeMillis(). En un test, advanceTimeBy() mueve el reloj
+            // VIRTUAL de las corrutinas pero no el del sistema: leer el reloj real
+            // aqui hacia que el nivel nunca subiera de NONE, el bucle nunca saliera
+            // y runTest esperara para siempre — el test no fallaba, se colgaba.
+            var elapsed = 0L
             while (isActive) {
-                delay(1_000L)
-                val level = authWatchdogLevel(System.currentTimeMillis() - watchdogStartedAt)
+                delay(WATCHDOG_TICK_MS)
+                elapsed += WATCHDOG_TICK_MS
+                val level = authWatchdogLevel(elapsed)
                 if (level != AuthWatchdogLevel.NONE) publishWatchdogLevel(level)
             }
         }

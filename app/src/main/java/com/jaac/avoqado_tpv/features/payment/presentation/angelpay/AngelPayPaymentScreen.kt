@@ -1,11 +1,12 @@
 package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 
 import android.app.Activity
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import com.angelpay.angelpaysdk.AngelPayPaymentContract
-import com.angelpay.angelpaysdk.models.PaymentResult
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -23,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -30,9 +32,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.ui.draw.clip
 import androidx.compose.runtime.Composable
-import android.widget.Toast
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,12 +40,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.angelpay.angelpaysdk.AngelPayPaymentContract
+import com.angelpay.angelpaysdk.models.PaymentResult
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoBrandLoader
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
@@ -54,10 +59,10 @@ import com.jaac.avoqado_tpv.core.util.ForegroundRecoveryGate
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthState
 import com.jaac.avoqado_tpv.features.payment.domain.AuthWatchdogLevel
 import com.jaac.avoqado_tpv.features.payment.presentation.MerchantSelectionContent
-import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentLoadingScreen
-import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentQrScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.ReviewScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.TipScreen
+import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentLoadingScreen
+import com.jaac.avoqado_tpv.features.payment.presentation.components.CryptoPaymentQrScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.components.PaymentApprovedScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.watchdogMessage
 import timber.log.Timber
@@ -712,36 +717,45 @@ private fun LoadingContent(
         // 🔴 Vigilante de autorizacion — banda NO bloqueante bajo el indicador. NUNCA
         // cancela la autorizacion (ver AuthorizationWatchdog.kt): solo avisa. Mismo
         // patron de contraste que el banner ambar de AngelPaySuccessContent/PaymentScreen
-        // (statusWarning/statusError al 12% de fondo, texto SIEMPRE onSurface — full-
+        // (statusWarning/statusError al 10% de fondo + borde al 35%, texto SIEMPRE onSurface — full-
         // strength sobre fondo claro quedo en ~1.96:1, subido a 16.17:1). Sin colores nuevos.
         val watchdogText = watchdogMessage(watchdogLevel)
         if (watchdogText != null) {
-            Spacer(modifier = Modifier.height(16.dp))
-            val watchdogColor = if (watchdogLevel == AuthWatchdogLevel.VERY_SLOW) {
+            Spacer(modifier = Modifier.height(20.dp))
+            // Espejo EXACTO de PaymentScreen (riel Blumon): mismo alto, mismo borde, mismo
+            // icono por nivel. El cajero no deberia notar en cual terminal esta parado.
+            val isUrgent = watchdogLevel == AuthWatchdogLevel.VERY_SLOW
+            val watchdogColor = if (isUrgent) {
                 MaterialTheme.avoqadoColors.statusError
             } else {
                 MaterialTheme.avoqadoColors.statusWarning
             }
+            val watchdogShape = RoundedCornerShape(16.dp)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(watchdogColor.copy(alpha = 0.12f))
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    .clip(watchdogShape)
+                    .background(watchdogColor.copy(alpha = 0.10f))
+                    .border(BorderStroke(1.dp, watchdogColor.copy(alpha = 0.35f)), watchdogShape)
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Icon(
-                    imageVector = Icons.Default.Warning,
+                    imageVector = if (isUrgent) Icons.Default.Warning else Icons.Default.Schedule,
                     contentDescription = null,
                     tint = watchdogColor,
-                    modifier = Modifier.size(20.dp),
+                    modifier = Modifier.size(22.dp),
                 )
                 Text(
                     text = watchdogText,
                     style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (isUrgent) FontWeight.SemiBold else FontWeight.Medium,
+                    lineHeight = 20.sp,
                     color = MaterialTheme.colorScheme.onSurface,
-                    textAlign = TextAlign.Center,
+                    textAlign = TextAlign.Start,
+                    modifier = Modifier.weight(1f),
                 )
             }
         }

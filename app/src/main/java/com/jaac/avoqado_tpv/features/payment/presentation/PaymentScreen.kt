@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
@@ -1373,42 +1374,59 @@ private fun PaymentLoadingContent(
                 // 🔴 Vigilante de autorizacion — banda NO bloqueante bajo el indicador.
                 // NUNCA cancela la autorizacion (ver AuthorizationWatchdog.kt): solo avisa.
                 // Mismo patron de contraste que el banner ambar de Success (statusWarning/
-                // statusError al 12% de fondo, texto SIEMPRE onSurface) — un aviso a full-
+                // statusError al 10% de fondo + borde al 35%, texto SIEMPRE onSurface) — un aviso a full-
                 // strength sobre fondo claro quedo en ~1.96:1 y hubo que subirlo a 16.17:1
                 // para que se leyera en la terminal. Sin colores nuevos.
                 val watchdogText = watchdogMessage(watchdogLevel)
                 if (watchdogText != null) {
-                    Spacer(modifier = Modifier.height(16.dp))
-                    val watchdogColor = if (watchdogLevel == AuthWatchdogLevel.VERY_SLOW) {
+                    Spacer(modifier = Modifier.height(20.dp))
+                    // VERY_SLOW pide una accion del cajero ("no cobres de nuevo"); SLOW solo
+                    // informa que la red va lenta. De ahi el reloj en SLOW: un triangulo de
+                    // advertencia para algo que va BIEN se lee como falla, y aqui el cobro
+                    // puede estar aprobandose en ese mismo instante.
+                    val isUrgent = watchdogLevel == AuthWatchdogLevel.VERY_SLOW
+                    val watchdogColor = if (isUrgent) {
                         MaterialTheme.avoqadoColors.statusError
                     } else {
                         MaterialTheme.avoqadoColors.statusWarning
                     }
+                    val watchdogShape = RoundedCornerShape(16.dp)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(watchdogColor.copy(alpha = 0.12f))
-                            .padding(12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            .clip(watchdogShape)
+                            .background(watchdogColor.copy(alpha = 0.10f))
+                            .border(BorderStroke(1.dp, watchdogColor.copy(alpha = 0.35f)), watchdogShape)
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Warning,
+                            imageVector = if (isUrgent) Icons.Default.Warning else Icons.Default.Schedule,
                             contentDescription = null,
                             tint = watchdogColor,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(22.dp)
                         )
+                        // weight(1f) + Start: el texto envuelve a dos renglones. Sin esto quedaba
+                        // centrado contra un icono pegado arriba — ese era el "se ve feo".
                         Text(
                             text = watchdogText,
                             style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (isUrgent) FontWeight.SemiBold else FontWeight.Medium,
+                            lineHeight = 20.sp,
                             color = MaterialTheme.colorScheme.onSurface,
-                            textAlign = TextAlign.Center
+                            textAlign = TextAlign.Start,
+                            modifier = Modifier.weight(1f)
                         )
                     }
                 }
 
                 // Timeout warning
-                if (showTimeoutWarning) {
+                // 🔴 Se calla cuando el vigilante ya esta hablando: a partir de los 30s ambos
+                // salian a la vez diciendo lo mismo, y este va en ROJO DE ERROR. Pintar de rojo
+                // una autorizacion que sigue viva contradice la regla del repo (nunca pintar como
+                // falla algo que puede estar aprobandose). El vigilante ya cubre ese caso.
+                if (showTimeoutWarning && watchdogText == null) {
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
                         text = "Esto está tomando más de lo normal. Verifica tu conexión a internet.",

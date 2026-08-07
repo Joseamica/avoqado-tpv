@@ -151,6 +151,64 @@ class TablesRepositoryPhase3ActionsTest {
     }
 
     // ══════════════════════════════════════════════════════════════════
+    // removeServiceCharge — paridad Android 2026-08-06 (paridad-android-tpv.md,
+    // Hallazgo #4, último hueco cerrado por avoqado-server commit a0470a74):
+    // SIEMPRE online, un fallo de red NUNCA se encola — misma asimetría que
+    // removeDiscount (TablesRepositoryPhase1ActionsTest), no la de
+    // applyServiceCharge de arriba.
+    // ══════════════════════════════════════════════════════════════════
+
+    @Test
+    fun removeServiceCharge_online_exitoso_no_encola_nada() = runTest {
+        coEvery { api.removeServiceCharge(venueId, orderId, "sc1") } returns Response.success(
+            ApplyServiceChargeResponse(data = OrderTotals(total = BigDecimal("200.00"), serviceChargeAmount = BigDecimal.ZERO, version = 4)),
+        )
+
+        val result = repo.removeServiceCharge(venueId, orderId, "sc1")
+
+        assertThat(result.isSuccess).isTrue()
+        val outcome = result.getOrThrow()
+        assertThat(outcome.queued).isFalse()
+        // 🔴 Aserción de dinero explícita — un sabotaje que solo revise `queued`
+        // pasaría en falso si el mapeo de `totals.total`/`serviceChargeAmount`
+        // se rompiera (p.ej. si alguien confundiera el orden de los campos).
+        assertThat(outcome.total).isEqualTo(BigDecimal("200.00"))
+        assertThat(outcome.serviceChargeAmount).isEqualTo(BigDecimal.ZERO)
+        coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun removeServiceCharge_sin_red_NUNCA_se_encola_se_propaga_como_necesita_conexion() = runTest {
+        // A diferencia de applyServiceCharge (SÍ tiene intent
+        // APPLY_SERVICE_CHARGE), "quitar" no tiene equivalente offline en el
+        // contrato de 14 tipos — encolarlo silenciosamente sería un intent que
+        // el reducer nunca sabría aplicar.
+        coEvery { api.removeServiceCharge(venueId, orderId, "sc1") } throws IOException("sin red")
+
+        val result = repo.removeServiceCharge(venueId, orderId, "sc1")
+
+        assertThat(result.isFailure).isTrue()
+        assertThat(result.exceptionOrNull()).isInstanceOf(TablesRepository.RemoveServiceChargeRequiresConnectionException::class.java)
+        assertThat(result.exceptionOrNull()?.message).contains("conexión")
+        coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun removeServiceCharge_rechazo_de_negocio_se_propaga_tal_cual_nunca_como_necesita_conexion() = runTest {
+        // Ej. orden ya pagada, o el cargo ya lo quitó otro dispositivo — esto
+        // NO es "necesita internet", es un rechazo real del server.
+        coEvery { api.removeServiceCharge(venueId, orderId, "sc1") } returns
+            errorResponse<ApplyServiceChargeResponse>(400, "{\"message\":\"No se puede modificar una orden ya pagada\"}")
+
+        val result = repo.removeServiceCharge(venueId, orderId, "sc1")
+
+        assertThat(result.isFailure).isTrue()
+        assertThat(result.exceptionOrNull()).isInstanceOf(BackendHttpException::class.java)
+        assertThat(result.exceptionOrNull()?.message).contains("ya pagada")
+        coVerify(exactly = 0) { outbox.enqueue(any(), any(), any(), any()) }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
     // splitOrderBySeat — todo-o-nada GARANTIZADO por el server (una sola
     // transacción, sin body); el cliente nunca fragmenta la llamada.
     // ══════════════════════════════════════════════════════════════════

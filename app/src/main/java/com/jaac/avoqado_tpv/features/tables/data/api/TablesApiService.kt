@@ -250,6 +250,29 @@ interface TablesApiService {
     @GET("tpv/venues/{venueId}/service-charges")
     suspend fun getServiceCharges(@Path("venueId") venueId: String): Response<AvailableServiceChargesResponse>
 
+    /**
+     * `DELETE /tpv/venues/{venueId}/orders/{orderId}/service-charges/{orderServiceChargeId}` →
+     * `orderTableController.removeServiceCharge` (`tpv.routes.ts`, permiso
+     * `orders:update` + `checkTableOwnership('order')`). Quita un cobro por
+     * servicio YA aplicado — cierra el ÚLTIMO hueco de paridad con Android
+     * (`paridad-android-tpv.md`, Hallazgo #4, 2026-08-06; avoqado-server
+     * commit `a0470a74`, espejo BYTE-IDÉNTICO de la cadena `/mobile`
+     * equivalente). SIEMPRE online — no hay intent `REMOVE_SERVICE_CHARGE` en
+     * el contrato de 14 tipos, ver KDoc de
+     * [com.jaac.avoqado_tpv.features.tables.data.TablesRepository.removeServiceCharge].
+     * Reusa [ApplyServiceChargeResponse]/[com.jaac.avoqado_tpv.features.tables.data.api.dto.OrderTotals]:
+     * el servicio (`service-charge.mobile.service.ts::removeServiceCharge`)
+     * devuelve el MISMO `recalculateOrderTotals` que `applyServiceCharge` —
+     * idéntico shape `{ success, data: { subtotal, discountAmount,
+     * serviceChargeAmount, total, version } }`.
+     */
+    @DELETE("tpv/venues/{venueId}/orders/{orderId}/service-charges/{orderServiceChargeId}")
+    suspend fun removeServiceCharge(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Path("orderServiceChargeId") orderServiceChargeId: String,
+    ): Response<ApplyServiceChargeResponse>
+
     // ========== Personal (Fase 2 — picker de ASSIGN_ORDER) ==========
 
     /**

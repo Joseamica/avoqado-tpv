@@ -802,13 +802,10 @@ class TablesRepository @Inject constructor(
      * distinga de un rechazo de negocio real (orden pagada, descuento ya
      * removido por otro dispositivo, etc.) — nunca un error genérico.
      *
-     * 🔴 No existe equivalente "quitar cargo por servicio" bajo `/tpv` — la
-     * ruta `DELETE .../service-charges/{id}` SOLO existe bajo `/mobile`
-     * (`mobile.routes.ts:2073`), fuera del alcance de este cliente por la
-     * regla dura del plan ("la TPV habla solo con /api/v1/tpv"). Verificado
-     * 2026-08-06 contra `tpv.routes.ts` completo — cero rutas `service-charge`
-     * con DELETE. No se agrega esa ruta al server desde este repo; queda
-     * reportado como gap real en `paridad-fixes-report.md`.
+     * El equivalente "quitar cargo por servicio" (`DELETE
+     * .../service-charges/{id}`) YA existe bajo `/tpv` desde el commit
+     * `a0470a74` de `avoqado-server` — ver [removeServiceCharge] abajo, mismo
+     * patrón exacto.
      */
     suspend fun removeDiscount(venueId: String, orderId: String, discountId: String): Result<DiscountOutcome> {
         val onlineResult = try {
@@ -1278,6 +1275,50 @@ class TablesRepository @Inject constructor(
     data class ServiceChargeOutcome(val queued: Boolean, val total: BigDecimal?, val serviceChargeAmount: BigDecimal?)
 
     /**
+     * "Quitar cargo por servicio YA aplicado" — `DELETE
+     * tpv/venues/{venueId}/orders/{orderId}/service-charges/{orderServiceChargeId}`.
+     * Cierra el ÚLTIMO hueco de paridad con Android
+     * (`paridad-android-tpv.md`, Hallazgo #4, 2026-08-06) — hasta el commit
+     * `a0470a74` de `avoqado-server` el servicio existía
+     * (`service-charge.mobile.service.ts::removeServiceCharge`) pero la ruta
+     * DELETE solo estaba montada bajo `/mobile`; ahora existe bajo `/tpv`,
+     * espejo BYTE-IDÉNTICO de esa cadena incluido `checkTableOwnership('order')`
+     * (deshacer un cargo en la mesa de otro mesero es exactamente el cruce
+     * que ese guard existe para impedir).
+     *
+     * SIEMPRE online — MISMO razonamiento que [removeDiscount]: no existe
+     * intent `REMOVE_SERVICE_CHARGE` en el contrato de 14 tipos
+     * (`avoqado-server/.claude/rules/offline-first-y-hub-lan.md` §2.1/§5) —
+     * aplicar un cargo se puede encolar (`APPLY_SERVICE_CHARGE`, ver
+     * [applyServiceCharge]); quitarlo no. Un fallo de red NUNCA se encola ni
+     * se disfraza de "guardado" — se propaga como
+     * [RemoveServiceChargeRequiresConnectionException] con un mensaje
+     * explícito, mismo patrón que [RemoveDiscountRequiresConnectionException].
+     */
+    suspend fun removeServiceCharge(venueId: String, orderId: String, orderServiceChargeId: String): Result<ServiceChargeOutcome> {
+        val onlineResult = try {
+            api.removeServiceCharge(venueId, orderId, orderServiceChargeId).toApplyServiceChargeResult()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Timber.w(e, "⚠️ [Tables] Sin red en removeServiceCharge (venue=%s, order=%s)", venueId, orderId)
+            Result.failure(e)
+        } catch (e: Exception) {
+            Timber.e(e, "❌ [Tables] Fallo inesperado en removeServiceCharge (venue=%s, order=%s)", venueId, orderId)
+            Result.failure(e)
+        }
+
+        onlineResult.onSuccess { totals ->
+            return Result.success(ServiceChargeOutcome(queued = false, total = totals.total, serviceChargeAmount = totals.serviceChargeAmount))
+        }
+
+        return when (classifyTablesSyncFailure(onlineResult.exceptionOrNull())) {
+            is TablesSyncOutcome.Retryable -> Result.failure(RemoveServiceChargeRequiresConnectionException())
+            else -> Result.failure(onlineResult.exceptionOrNull() ?: IllegalStateException("removeServiceCharge sin causa"))
+        }
+    }
+
+    /**
      * "Dividir por puesto" — `POST tpv/venues/{venueId}/orders/{orderId}/split-by-seat`.
      * Sin body: el servicio agrupa los items YA enviados por `seat` — el asiento
      * más bajo se queda en la cuenta original, el resto se mueve a cuentas nuevas
@@ -1418,6 +1459,10 @@ class TablesRepository @Inject constructor(
     /** Quitar un descuento aplicado falló y NO es un rechazo de negocio del server — nunca se encola, ver KDoc de [removeDiscount]. */
     class RemoveDiscountRequiresConnectionException :
         Exception("Quitar un descuento aplicado necesita conexión — inténtalo cuando el equipo esté en línea.")
+
+    /** Quitar un cargo por servicio aplicado falló y NO es un rechazo de negocio del server — nunca se encola, ver KDoc de [removeServiceCharge]. */
+    class RemoveServiceChargeRequiresConnectionException :
+        Exception("Quitar un cargo por servicio necesita conexión — inténtalo cuando el equipo esté en línea.")
 
     data class SplitOutcome(
         val queued: Boolean,

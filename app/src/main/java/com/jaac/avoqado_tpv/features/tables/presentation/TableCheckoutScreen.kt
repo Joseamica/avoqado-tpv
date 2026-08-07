@@ -127,6 +127,10 @@ fun TableCheckoutScreen(
     val availableServiceCharges by viewModel.availableServiceCharges.collectAsStateWithLifecycle()
     val isLoadingServiceCharges by viewModel.isLoadingServiceCharges.collectAsStateWithLifecycle()
     val isApplyingServiceCharge by viewModel.isApplyingServiceCharge.collectAsStateWithLifecycle()
+    // Paridad Android 2026-08-06 (`paridad-android-tpv.md`, Hallazgo #4) —
+    // "quitar cargo por servicio aplicado", SIEMPRE online (ver KDoc de
+    // TableCheckoutViewModel.removeServiceCharge).
+    val isRemovingServiceCharge by viewModel.isRemovingServiceCharge.collectAsStateWithLifecycle()
     var showServiceChargeSheet by remember { mutableStateOf(false) }
     var serviceChargeTriggered by remember { mutableStateOf(false) }
     LaunchedEffect(isApplyingServiceCharge) {
@@ -225,6 +229,8 @@ fun TableCheckoutScreen(
         },
         isRemovingDiscount = isRemovingDiscount,
         onRemoveDiscount = { discountId -> viewModel.removeDiscount(discountId) },
+        isRemovingServiceCharge = isRemovingServiceCharge,
+        onRemoveServiceCharge = { chargeId -> viewModel.removeServiceCharge(chargeId) },
     )
 
     if (showDiscountSheet) {
@@ -276,6 +282,8 @@ private fun TableCheckoutScreenContent(
     onAddServiceChargeClick: () -> Unit = {},
     isRemovingDiscount: Boolean = false,
     onRemoveDiscount: (String) -> Unit = {},
+    isRemovingServiceCharge: Boolean = false,
+    onRemoveServiceCharge: (String) -> Unit = {},
 ) {
     val check = state.check
 
@@ -333,6 +341,8 @@ private fun TableCheckoutScreenContent(
                             remaining = state.remaining,
                             isRemovingDiscount = isRemovingDiscount,
                             onRemoveDiscount = onRemoveDiscount,
+                            isRemovingServiceCharge = isRemovingServiceCharge,
+                            onRemoveServiceCharge = onRemoveServiceCharge,
                         )
                     }
 
@@ -449,6 +459,8 @@ private fun CheckSummaryCard(
     remaining: BigDecimal,
     isRemovingDiscount: Boolean = false,
     onRemoveDiscount: (String) -> Unit = {},
+    isRemovingServiceCharge: Boolean = false,
+    onRemoveServiceCharge: (String) -> Unit = {},
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -487,8 +499,24 @@ private fun CheckSummaryCard(
                 SummaryRow(label = "Descuentos", amount = -check.discountAmount, color = MaterialTheme.avoqadoColors.statusSuccess)
             }
 
+            // "Quitar" (paridad Android 2026-08-06, Hallazgo #4) — mismo
+            // criterio que los descuentos arriba: solo sobre líneas con `id`
+            // real. Un cargo AUTOMÁTICO (`isAutomatic`, puesto por la regla de
+            // comensales) no ofrece el control — quitarlo a mano solo
+            // reaparecería en el próximo `syncAutomaticServiceCharges` del
+            // server mientras los comensales sigan calificando; Android
+            // (`ServiceChargesDialog`) tiene la misma restricción.
             check.serviceCharges.forEach { charge ->
-                SummaryRow(label = charge.name.ifBlank { "Cobro por servicio" }, amount = charge.amount)
+                SummaryRow(
+                    label = charge.name.ifBlank { "Cobro por servicio" },
+                    amount = charge.amount,
+                    onRemove = if (charge.id.isNotBlank() && !charge.isAutomatic) {
+                        { onRemoveServiceCharge(charge.id) }
+                    } else {
+                        null
+                    },
+                    removeEnabled = !isRemovingServiceCharge,
+                )
             }
             if (check.serviceCharges.isEmpty() && check.serviceChargeAmount > BigDecimal.ZERO) {
                 SummaryRow(label = "Cobros por servicio", amount = check.serviceChargeAmount)

@@ -628,14 +628,48 @@ class TableCheckoutViewModel @Inject constructor(
         }
     }
 
-    // 🔴 No existe "quitar cargo por servicio" (paridad Android,
-    // `paridad-android-tpv.md` Hallazgo #4, 2026-08-06) — a diferencia de
-    // [removeDiscount] arriba, este NO se pudo cerrar en la misma pasada: el
-    // server SÍ tiene `removeServiceCharge` (`service-charge.mobile.service.ts`),
-    // pero la ruta `DELETE .../service-charges/{id}` solo existe bajo
-    // `/mobile` (`mobile.routes.ts:2073`) — `/tpv` nunca la expuso
-    // (verificado contra `tpv.routes.ts` completo, cero rutas
-    // `service-charge` con DELETE). Agregarla implica tocar
-    // `avoqado-server`, fuera del alcance de este cliente — reportado en
-    // `paridad-fixes-report.md`, no silencioso.
+    private val _isRemovingServiceCharge = MutableStateFlow(false)
+    val isRemovingServiceCharge: StateFlow<Boolean> = _isRemovingServiceCharge.asStateFlow()
+
+    /**
+     * Quita un cargo por servicio YA aplicado — cierra el ÚLTIMO hueco de
+     * paridad con Android (`paridad-android-tpv.md`, Hallazgo #4,
+     * 2026-08-06; avoqado-server commit `a0470a74` montó la ruta DELETE bajo
+     * `/tpv`). SIEMPRE online, NUNCA se encola (ver KDoc de
+     * [TablesRepository.removeServiceCharge]) — mismo patrón exacto que
+     * [removeDiscount] arriba: no hay intent `REMOVE_SERVICE_CHARGE` en el
+     * contrato de 14 tipos, así que un intento sin red no falla en silencio
+     * ni se disfraza de "guardado" — se propaga
+     * [TablesRepository.RemoveServiceChargeRequiresConnectionException] con
+     * un mensaje explícito por el snackbar compartido.
+     */
+    fun removeServiceCharge(orderServiceChargeId: String) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        if (_isRemovingServiceCharge.value) return
+
+        _isRemovingServiceCharge.value = true
+        viewModelScope.launch {
+            repository.removeServiceCharge(vId, session.orderId, orderServiceChargeId).fold(
+                onSuccess = {
+                    _isRemovingServiceCharge.value = false
+                    _state.update { it.copy(notice = "Cargo por servicio quitado") }
+                    loadCheck()
+                },
+                onFailure = { e ->
+                    _isRemovingServiceCharge.value = false
+                    if (e is CancellationException) throw e
+                    _state.update {
+                        it.copy(
+                            errorMessage = when (e) {
+                                is TablesRepository.RemoveServiceChargeRequiresConnectionException -> e.message
+                                is BackendHttpException -> e.message
+                                else -> "No se pudo quitar el cargo por servicio"
+                            },
+                        )
+                    }
+                },
+            )
+        }
+    }
 }

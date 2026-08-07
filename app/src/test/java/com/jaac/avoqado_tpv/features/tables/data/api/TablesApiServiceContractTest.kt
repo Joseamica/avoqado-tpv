@@ -81,6 +81,10 @@ class TablesApiServiceContractTest {
             // Paridad Android 2026-08-06 (paridad-android-tpv.md, Hallazgo #4) —
             // "quitar descuento aplicado", online-only.
             "removeDiscount",
+            // Paridad Android 2026-08-06 (paridad-android-tpv.md, Hallazgo #4,
+            // último hueco cerrado — avoqado-server commit a0470a74) — "quitar
+            // cargo por servicio aplicado", online-only, mismo patrón.
+            "removeServiceCharge",
         )
     }
 
@@ -137,5 +141,19 @@ class TablesApiServiceContractTest {
 
         assertThat(isDelete).isTrue()
         assertThat(ruta).isEqualTo("tpv/venues/{venueId}/orders/{orderId}/discounts/{discountId}")
+    }
+
+    @Test
+    fun `removeServiceCharge usa DELETE sobre service-charges slash orderServiceChargeId`() {
+        // Verificado 2026-08-06 contra tpv.routes.ts (orderTableController.removeServiceCharge,
+        // permiso orders:update + checkTableOwnership('order')) — avoqado-server
+        // commit a0470a74, espejo de la ruta /mobile equivalente.
+        val removeServiceCharge = TablesApiService::class.java.declaredMethods.first { it.name == "removeServiceCharge" }
+
+        val isDelete = removeServiceCharge.annotations.any { it is DELETE }
+        val ruta = removeServiceCharge.annotations.filterIsInstance<DELETE>().first().value
+
+        assertThat(isDelete).isTrue()
+        assertThat(ruta).isEqualTo("tpv/venues/{venueId}/orders/{orderId}/service-charges/{orderServiceChargeId}")
     }
 }

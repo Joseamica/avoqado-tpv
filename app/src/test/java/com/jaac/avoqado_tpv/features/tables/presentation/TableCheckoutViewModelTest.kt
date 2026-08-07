@@ -501,4 +501,62 @@ class TableCheckoutViewModelTest {
     }
 
     // endregion
+
+    // region — removeServiceCharge: paridad Android 2026-08-06 (paridad-android-tpv.md,
+    // Hallazgo #4, último hueco cerrado por avoqado-server commit a0470a74).
+    // SIEMPRE online — a diferencia de applyServiceCharge arriba, aquí NUNCA
+    // hay una rama "queued".
+
+    @Test
+    fun removeServiceCharge_exitoso_avisa_y_recarga_el_cheque() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("115.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("115.00"), amountLeft = BigDecimal("115.00")))
+        coEvery { repository.removeServiceCharge(venueId, "orden-1", "sc1") } returns
+            Result.success(TablesRepository.ServiceChargeOutcome(queued = false, total = BigDecimal("100.00"), serviceChargeAmount = BigDecimal.ZERO))
+        val viewModel = createViewModel()
+
+        viewModel.removeServiceCharge("sc1")
+
+        assertThat(viewModel.state.value.notice).isEqualTo("Cargo por servicio quitado")
+        assertThat(viewModel.state.value.errorMessage).isNull()
+        coVerify(exactly = 1) { repository.removeServiceCharge(venueId, "orden-1", "sc1") }
+        // "Recarga el cheque" = un segundo getOrder tras el de loadCheck() inicial —
+        // así es como los totales/restante en pantalla reflejan el cargo quitado.
+        coVerify(exactly = 2) { repository.getOrder(venueId, "orden-1") }
+    }
+
+    @Test
+    fun removeServiceCharge_sin_conexion_muestra_el_mensaje_explicito_NUNCA_generico() = runTest {
+        // Regla dura del gap: quitar un cargo por servicio NUNCA se encola —
+        // un fallo de red debe decir "necesita conexión", no un genérico que
+        // sugiera que se guardó para después (no se guardó nada).
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("115.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("115.00"), amountLeft = BigDecimal("115.00")))
+        coEvery { repository.removeServiceCharge(venueId, "orden-1", "sc1") } returns
+            Result.failure(TablesRepository.RemoveServiceChargeRequiresConnectionException())
+        val viewModel = createViewModel()
+
+        viewModel.removeServiceCharge("sc1")
+
+        assertThat(viewModel.state.value.errorMessage).contains("necesita conexión")
+        assertThat(viewModel.state.value.notice).isNull()
+    }
+
+    @Test
+    fun removeServiceCharge_rechazado_marca_errorMessage() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("115.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("115.00"), amountLeft = BigDecimal("115.00")))
+        coEvery { repository.removeServiceCharge(venueId, "orden-1", "sc1") } returns
+            Result.failure(com.jaac.avoqado_tpv.core.data.network.BackendHttpException(statusCode = 400, message = "No se puede modificar una orden ya pagada"))
+        val viewModel = createViewModel()
+
+        viewModel.removeServiceCharge("sc1")
+
+        assertThat(viewModel.state.value.errorMessage).contains("orden ya pagada")
+    }
+
+    // endregion
 }

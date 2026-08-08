@@ -8,6 +8,8 @@ import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyServiceChargeReque
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyServiceChargeResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.AvailableDiscountsResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.AvailableServiceChargesResponse
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.CancelOrderRequest
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.CancelOrderResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.CategoryCatalogDto
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.CompOrderRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.CompOrderResponse
@@ -159,6 +161,24 @@ interface TablesApiService {
     ): Response<MergeOrdersResponse>
 
     /**
+     * `POST /tpv/venues/{venueId}/orders/{orderId}/cancel` →
+     * `orderTableController.cancelOrder` (`tpv.routes.ts`, `checkFeatureAccess('TABLE_SERVICE')`
+     * + `checkPermission('orders:cancel')` + `checkTableOwnership('order')`,
+     * 2026-08-07). "Cancelar cuenta" — hasta esta fecha la ÚNICA acción de
+     * mesa sin ruta online bajo `/tpv` (ver KDoc de
+     * [com.jaac.avoqado_tpv.features.tables.data.TablesRepository.cancelOrder]
+     * para el patrón write-ahead + online-primero que la consume). Body:
+     * `{ reason? }`. Rechaza (400) si la cuenta ya está pagada, o (409) si hay
+     * un cobro de terminal en curso.
+     */
+    @POST("tpv/venues/{venueId}/orders/{orderId}/cancel")
+    suspend fun cancelOrder(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body body: CancelOrderRequest,
+    ): Response<CancelOrderResponse>
+
+    /**
      * `POST /tpv/venues/{venueId}/orders/{orderId}/service-charges` →
      * `orderTableController.applyServiceCharge` (`tpv.routes.ts:3790`). Aplica
      * un cobro por servicio del catálogo (propina automática por comensales,
@@ -276,13 +296,17 @@ interface TablesApiService {
     // ========== Personal (Fase 2 — picker de ASSIGN_ORDER) ==========
 
     /**
-     * `GET /tpv/venues/{venueId}/time-entries/active` →
-     * `timeEntryController.getCurrentlyClockedInStaff` (`tpv.routes.ts:3495`,
-     * permiso `tpv-time-entries:read`). Personal CLOCKED_IN/ON_BREAK ahora
-     * mismo — fuente de [com.jaac.avoqado_tpv.features.tables.presentation.AssignWaiterSheet].
-     * Ver KDoc de [ActiveStaffResponse] para el concern de permisos (MANAGER+).
+     * `GET /tpv/venues/{venueId}/staff/assignable` →
+     * `timeEntryController.getAssignableStaff` (`tpv.routes.ts`, permiso
+     * `orders:update` — el MISMO que exige `ASSIGN_ORDER`). Personal
+     * CLOCKED_IN/ON_BREAK ahora mismo — fuente de
+     * [com.jaac.avoqado_tpv.features.tables.presentation.AssignWaiterSheet].
+     *
+     * Fix 2 (2026-08-07): antes apuntaba a `time-entries/active`
+     * (`tpv-time-entries:read`, MANAGER+), que dejaba a un WAITER reasignar
+     * pero no ver a quién. Ver KDoc de [ActiveStaffResponse] para el detalle.
      */
-    @GET("tpv/venues/{venueId}/time-entries/active")
+    @GET("tpv/venues/{venueId}/staff/assignable")
     suspend fun getActiveStaff(@Path("venueId") venueId: String): Response<ActiveStaffResponse>
 
     // ========== Catálogo (Plan C, Task 7 — TableMenuScreen) ==========

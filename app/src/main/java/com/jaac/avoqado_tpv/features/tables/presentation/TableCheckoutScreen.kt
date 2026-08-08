@@ -26,7 +26,10 @@ import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.WifiOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -46,6 +49,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -54,6 +58,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -61,6 +66,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.content.Intent
 import com.jaac.avoqado_tpv.BuildConfig
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoButton
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoFullScreenLoading
@@ -161,8 +167,18 @@ fun TableCheckoutScreen(
     // clearTable; tableReleased ya es true de forma síncrona). Para cuando
     // la sesión de verdad se limpia, esta pantalla y TableOrderScreen ya
     // fueron destruidas por el popUpTo — sus guards nunca llegan a competir.
-    LaunchedEffect(state.tableReleased) {
-        if (state.tableReleased) {
+    //
+    // 🧾 Cierre de la asimetría EFECTIVO vs TARJETA (este archivo): un cobro
+    // en efectivo que SALDA la cuenta pone tableReleased=true en el MISMO
+    // tick que arma `state.cashReceipt` (ver TableCheckoutViewModel.payCash).
+    // Sin la condición `state.cashReceipt == null` de abajo, el salto atómico
+    // de arriba destruiría la pantalla ANTES de que el mesero alcance a ver
+    // el recibo — la pantalla de éxito de "Cobrar" nunca tiene ese problema
+    // porque el pago con tarjeta se queda en SU PROPIA pantalla hasta que el
+    // cajero cierra el recibo. `consumeCashReceipt()` (el botón "Cerrar" del
+    // diálogo) vuelve a disparar este efecto, y entonces sí navega.
+    LaunchedEffect(state.tableReleased, state.cashReceipt) {
+        if (state.tableReleased && state.cashReceipt == null) {
             onPaymentFinished()
         }
     }
@@ -256,6 +272,17 @@ fun TableCheckoutScreen(
                 serviceChargeTriggered = true
                 viewModel.applyServiceCharge(serviceChargeId)
             },
+        )
+    }
+
+    // 🧾 Recibo de EFECTIVO — ver KDoc del LaunchedEffect(tableReleased, cashReceipt)
+    // de arriba. Se muestra en TODO cobro (encolado o no); solo cuando
+    // [CashReceiptSummary.isSettlingPayment] es true se agrega la invitación a
+    // calificar — nunca en un split parcial.
+    state.cashReceipt?.let { receipt ->
+        CashReceiptDialog(
+            receipt = receipt,
+            onDismiss = viewModel::consumeCashReceipt,
         )
     }
 }
@@ -878,6 +905,112 @@ private fun CheckoutChargeButton(
             }
         }
     }
+}
+
+/**
+ * Confirmación de recibo tras un cobro en EFECTIVO — cierra la asimetría con
+ * TARJETA descrita en el KDoc de [TableCheckoutViewModel]: TARJETA siempre
+ * terminaba en la pantalla de éxito de "Cobrar" (con recibo); EFECTIVO se
+ * quedaba mudo. Se muestra en TODO cobro (encolado o no) — ver KDoc de
+ * [CashReceiptSummary].
+ *
+ * La invitación a calificar SOLO aparece cuando [CashReceiptSummary.isSettlingPayment]
+ * es true — pedirla en cada pago de una cuenta dividida generaría un `Review`
+ * por split para la MISMA visita y sesgaría el promedio del venue (regla dura
+ * del founder, verificada contra `avoqado-server/prisma/schema.prisma:3716`:
+ * `Review.venueId` promedia TODOS los reviews del venue). No hay picker de
+ * estrellas aquí a propósito: `applyPayCash` (server) todavía no acepta un
+ * campo `rating` en el payload de `PAY_CASH` — construir un selector que
+ * capture un número y no lo mande a ningún lado sería peor que no tener uno
+ * (el mesero/cliente creería que quedó guardado). En su lugar se apoya en el
+ * canal que YA funciona hoy: la página del recibo digital (`receiptUrl`)
+ * expone su propio formulario de review (`receiptReview.tpv.service.ts`,
+ * ruta pública), así que EXISTE una forma real de calificar — esta pantalla
+ * solo decide CUÁNDO invitar a usarla.
+ */
+@Composable
+private fun CashReceiptDialog(
+    receipt: CashReceiptSummary,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Payments, contentDescription = null) },
+        title = { Text(if (receipt.queued) "Cobro guardado" else "Cobro registrado") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.Space1)) {
+                if (!receipt.orderNumber.isNullOrBlank()) {
+                    Text("Orden: ${receipt.orderNumber}", style = MaterialTheme.typography.bodyMedium)
+                }
+                Text("Cobrado: ${moneyDisplay(receipt.amount)}", style = MaterialTheme.typography.bodyMedium)
+                if (receipt.tipAmount > BigDecimal.ZERO) {
+                    Text("Propina: ${moneyDisplay(receipt.tipAmount)}", style = MaterialTheme.typography.bodyMedium)
+                }
+                Text(
+                    "Total: ${moneyDisplay(receipt.totalAmount)}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(Modifier.height(Spacing.Space2))
+                when {
+                    receipt.queued -> Text(
+                        "Sin conexión — el recibo digital estará disponible en cuanto este cobro se sincronice.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    receipt.receiptUrl != null -> Text(
+                        if (receipt.autofacturaAvailable) "El recibo digital incluye acceso a autofactura." else "Recibo digital disponible para compartir.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    else -> Text(
+                        "Este cobro no generó recibo digital.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (receipt.isSettlingPayment && receipt.receiptUrl != null) {
+                    Spacer(Modifier.height(Spacing.Space2))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Star,
+                            contentDescription = null,
+                            tint = MaterialTheme.avoqadoColors.statusSuccess,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(Spacing.Space1))
+                        Text(
+                            "Cuenta saldada — comparte el recibo para que el cliente pueda calificar la visita.",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Cerrar") }
+        },
+        dismissButton = if (receipt.receiptUrl != null) {
+            {
+                TextButton(onClick = {
+                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, receipt.receiptUrl)
+                    }
+                    context.startActivity(Intent.createChooser(shareIntent, "Compartir recibo"))
+                }) {
+                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(Spacing.Space1))
+                    Text("Compartir")
+                }
+            }
+        } else {
+            null
+        },
+    )
 }
 
 private fun moneyDisplay(amount: BigDecimal): String {

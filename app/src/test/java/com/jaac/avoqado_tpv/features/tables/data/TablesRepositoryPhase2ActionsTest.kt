@@ -7,6 +7,9 @@ import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ActiveStaffEntryDto
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ActiveStaffPersonDto
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ActiveStaffResponse
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.CancelOrderRequest
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.CancelOrderResponse
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.CancelOrderResult
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.MergeOrdersRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.MergeOrdersResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.MergeOrdersResult
@@ -50,6 +53,7 @@ class TablesRepositoryPhase2ActionsTest {
     fun setUp() {
         clearMocks(api, outbox)
         coEvery { outbox.enqueue(any(), any(), any(), any()) } returns "intent-id"
+        coEvery { outbox.discardPending(any()) } returns Unit
         repo = TablesRepository(api, outbox)
     }
 
@@ -116,38 +120,55 @@ class TablesRepositoryPhase2ActionsTest {
     }
 
     // ══════════════════════════════════════════════════════════════════
-    // cancelOrder — SIEMPRE vía intent, mismo patrón que moveOrder/payCash
+    // cancelOrder — online-primero con write-ahead (2026-08-07, ver KDoc del
+    // repositorio), MISMO patrón que addItems. Sesión provisional sigue
+    // yendo SIEMPRE vía intent (la ruta online exige un id real en la URL).
     // ══════════════════════════════════════════════════════════════════
 
     @Test
-    fun cancelOrder_se_escribe_write_ahead_ANTES_de_intentar_el_replay() = runTest {
-        coEvery { outbox.replayNow(venueId, any()) } returns Unit
+    fun cancelOrder_se_escribe_write_ahead_ANTES_de_intentar_la_ruta_online() = runTest {
+        coEvery { api.cancelOrder(venueId, orderId, any()) } returns Response.success(
+            CancelOrderResponse(data = CancelOrderResult(tableFreed = false)),
+        )
 
         repo.cancelOrder(venueId, orderId, isProvisional = false, reason = "Cliente se fue")
 
         coVerifyOrder {
             outbox.enqueue(venueId, SyncIntentTypes.CANCEL_ORDER, any(), any())
-            outbox.replayNow(venueId, any())
+            api.cancelOrder(venueId, orderId, any())
         }
     }
 
     @Test
-    fun cancelOrder_incluye_la_razon_cuando_se_da() = runTest {
+    fun cancelOrder_el_intent_write_ahead_se_escribe_incluso_si_el_intento_online_falla() = runTest {
+        coEvery { api.cancelOrder(any(), any(), any()) } throws IOException("sin red")
+
+        repo.cancelOrder(venueId, orderId, isProvisional = false, reason = null)
+
+        coVerify(exactly = 1) { outbox.enqueue(venueId, SyncIntentTypes.CANCEL_ORDER, any(), any()) }
+    }
+
+    @Test
+    fun cancelOrder_incluye_la_razon_cuando_se_da_TANTO_en_el_intent_como_en_el_body_online() = runTest {
         val payloadSlot = slot<JsonObject>()
+        val bodySlot = slot<CancelOrderRequest>()
         coEvery { outbox.enqueue(venueId, SyncIntentTypes.CANCEL_ORDER, capture(payloadSlot), any()) } returns "intent-id"
-        coEvery { outbox.replayNow(venueId, any()) } returns Unit
+        coEvery { api.cancelOrder(venueId, orderId, capture(bodySlot)) } returns Response.success(
+            CancelOrderResponse(data = CancelOrderResult()),
+        )
 
         repo.cancelOrder(venueId, orderId, isProvisional = false, reason = "Cliente se fue")
 
         assertThat(payloadSlot.captured["orderId"].asString).isEqualTo(orderId)
         assertThat(payloadSlot.captured["reason"].asString).isEqualTo("Cliente se fue")
+        assertThat(bodySlot.captured.reason).isEqualTo("Cliente se fue")
     }
 
     @Test
-    fun cancelOrder_sin_razon_NO_manda_el_campo_reason() = runTest {
+    fun cancelOrder_sin_razon_NO_manda_el_campo_reason_en_el_intent() = runTest {
         val payloadSlot = slot<JsonObject>()
         coEvery { outbox.enqueue(venueId, SyncIntentTypes.CANCEL_ORDER, capture(payloadSlot), any()) } returns "intent-id"
-        coEvery { outbox.replayNow(venueId, any()) } returns Unit
+        coEvery { api.cancelOrder(venueId, orderId, any()) } returns Response.success(CancelOrderResponse(data = CancelOrderResult()))
 
         repo.cancelOrder(venueId, orderId, isProvisional = false, reason = null)
 
@@ -155,35 +176,59 @@ class TablesRepositoryPhase2ActionsTest {
     }
 
     @Test
-    fun cancelOrder_ack_ACKED_regresa_queued_false() = runTest {
-        val idSlot = slot<String>()
-        coEvery { outbox.enqueue(venueId, SyncIntentTypes.CANCEL_ORDER, any(), capture(idSlot)) } answers { idSlot.captured }
-        coEvery { outbox.replayNow(venueId, any()) } coAnswers {
-            val onAck = secondArg<suspend (SyncIntentEntity, SyncIntentAck) -> Unit>()
-            onAck(
-                SyncIntentEntity(id = idSlot.captured, venueId = venueId, seq = 1, type = SyncIntentTypes.CANCEL_ORDER, payloadJson = "{}"),
-                SyncIntentAck(id = idSlot.captured, status = "ACKED", result = jsonOf("orderId" to orderId)),
-            )
-        }
+    fun cancelOrder_online_exitoso_descarta_el_intent_write_ahead_y_regresa_queued_false() = runTest {
+        coEvery { api.cancelOrder(venueId, orderId, any()) } returns Response.success(
+            CancelOrderResponse(data = CancelOrderResult(tableFreed = true)),
+        )
 
         val result = repo.cancelOrder(venueId, orderId, isProvisional = false, reason = null)
 
         assertThat(result.isSuccess).isTrue()
         assertThat(result.getOrThrow().queued).isFalse()
+        coVerify(exactly = 1) { outbox.enqueue(venueId, SyncIntentTypes.CANCEL_ORDER, any(), any()) } // write-ahead
+        coVerify(exactly = 1) { outbox.discardPending(any()) } // ya no hace falta reproducirlo
     }
 
     @Test
-    fun cancelOrder_sin_ack_se_ve_como_encolado_NUNCA_error() = runTest {
-        coEvery { outbox.replayNow(venueId, any()) } returns Unit
+    fun cancelOrder_sin_red_el_intent_write_ahead_queda_PENDING_y_regresa_queued_true() = runTest {
+        coEvery { api.cancelOrder(any(), any(), any()) } throws IOException("sin red")
 
         val result = repo.cancelOrder(venueId, orderId, isProvisional = false, reason = null)
 
-        assertThat(result.isSuccess).isTrue()
+        assertThat(result.isSuccess).isTrue() // el mesero sigue trabajando
         assertThat(result.getOrThrow().queued).isTrue()
+        coVerify(exactly = 0) { outbox.discardPending(any()) } // nada que descartar — sigue PENDING
     }
 
     @Test
-    fun cancelOrder_ack_REJECTED_propaga_CancelOrderRejectedException() = runTest {
+    fun cancelOrder_rechazo_de_negocio_p_ej_cuenta_ya_pagada_descarta_el_intent_write_ahead_y_propaga_BackendHttpException() = runTest {
+        coEvery { api.cancelOrder(venueId, orderId, any()) } returns
+            errorResponse<CancelOrderResponse>(400, "{\"message\":\"Cannot cancel a paid order\"}")
+
+        val result = repo.cancelOrder(venueId, orderId, isProvisional = false, reason = null)
+
+        assertThat(result.isFailure).isTrue()
+        assertThat(result.exceptionOrNull()).isInstanceOf(BackendHttpException::class.java)
+        assertThat(result.exceptionOrNull()?.message).contains("paid order")
+        coVerify(exactly = 1) { outbox.discardPending(any()) } // rechazo permanente: nunca se deja pendiente
+    }
+
+    @Test
+    fun cancelOrder_sesion_provisional_se_salta_la_ruta_online_y_manda_localOrderId_por_intent() = runTest {
+        val payloadSlot = slot<JsonObject>()
+        coEvery { outbox.enqueue(venueId, SyncIntentTypes.CANCEL_ORDER, capture(payloadSlot), any()) } returns "intent-id"
+        coEvery { outbox.replayNow(venueId, any()) } returns Unit
+
+        repo.cancelOrder(venueId, "local-uuid-123", isProvisional = true, reason = null)
+
+        assertThat(payloadSlot.captured.has("localOrderId")).isTrue()
+        assertThat(payloadSlot.captured["localOrderId"].asString).isEqualTo("local-uuid-123")
+        assertThat(payloadSlot.captured.has("orderId")).isFalse()
+        coVerify(exactly = 0) { api.cancelOrder(any(), any(), any()) } // sin id real, la ruta online nunca aplica
+    }
+
+    @Test
+    fun cancelOrder_sesion_provisional_ack_REJECTED_propaga_CancelOrderRejectedException() = runTest {
         val idSlot = slot<String>()
         coEvery { outbox.enqueue(venueId, SyncIntentTypes.CANCEL_ORDER, any(), capture(idSlot)) } answers { idSlot.captured }
         coEvery { outbox.replayNow(venueId, any()) } coAnswers {
@@ -194,7 +239,7 @@ class TablesRepositoryPhase2ActionsTest {
             )
         }
 
-        val result = repo.cancelOrder(venueId, orderId, isProvisional = false, reason = null)
+        val result = repo.cancelOrder(venueId, "local-uuid-123", isProvisional = true, reason = null)
 
         assertThat(result.isFailure).isTrue()
         assertThat(result.exceptionOrNull()).isInstanceOf(TablesRepository.CancelOrderRejectedException::class.java)
@@ -202,16 +247,13 @@ class TablesRepositoryPhase2ActionsTest {
     }
 
     @Test
-    fun cancelOrder_sesion_provisional_manda_localOrderId_en_vez_de_orderId() = runTest {
-        val payloadSlot = slot<JsonObject>()
-        coEvery { outbox.enqueue(venueId, SyncIntentTypes.CANCEL_ORDER, capture(payloadSlot), any()) } returns "intent-id"
+    fun cancelOrder_sesion_provisional_sin_ack_se_ve_como_encolado_NUNCA_error() = runTest {
         coEvery { outbox.replayNow(venueId, any()) } returns Unit
 
-        repo.cancelOrder(venueId, "local-uuid-123", isProvisional = true, reason = null)
+        val result = repo.cancelOrder(venueId, "local-uuid-123", isProvisional = true, reason = null)
 
-        assertThat(payloadSlot.captured.has("localOrderId")).isTrue()
-        assertThat(payloadSlot.captured["localOrderId"].asString).isEqualTo("local-uuid-123")
-        assertThat(payloadSlot.captured.has("orderId")).isFalse()
+        assertThat(result.isSuccess).isTrue()
+        assertThat(result.getOrThrow().queued).isTrue()
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -322,8 +364,8 @@ class TablesRepositoryPhase2ActionsTest {
         coEvery { api.getActiveStaff(venueId) } returns Response.success(
             ActiveStaffResponse(
                 data = listOf(
-                    ActiveStaffEntryDto(id = "te1", staffId = "staff-1", status = "CLOCKED_IN", staff = ActiveStaffPersonDto(firstName = "Fátima", lastName = "Flores", employeeCode = "EMP-001")),
-                    ActiveStaffEntryDto(id = "te2", staffId = "staff-2", status = "ON_BREAK", staff = ActiveStaffPersonDto(firstName = "Diego", lastName = "Ruiz")),
+                    ActiveStaffEntryDto(staffId = "staff-1", status = "CLOCKED_IN", staff = ActiveStaffPersonDto(firstName = "Fátima", lastName = "Flores", employeeCode = "EMP-001")),
+                    ActiveStaffEntryDto(staffId = "staff-2", status = "ON_BREAK", staff = ActiveStaffPersonDto(firstName = "Diego", lastName = "Ruiz")),
                 ),
             ),
         )

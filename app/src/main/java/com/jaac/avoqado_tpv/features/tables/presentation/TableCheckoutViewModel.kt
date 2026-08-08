@@ -78,11 +78,50 @@ data class CardChargeRequest(
     val paidProductIds: List<String> = emptyList(),
 )
 
+/**
+ * Resultado a mostrar tras un cobro en EFECTIVO — cierra la asimetría con
+ * TARJETA (que hoy SÍ termina en la pantalla de éxito de "Cobrar", con
+ * recibo). Ver KDoc de [TableCheckoutViewModel.payCash].
+ *
+ * - `receiptUrl`/`autofacturaAvailable` vienen del `digitalReceipt` que
+ *   `applyPayCash` (server) YA regresaba en el ack y que este cliente
+ *   descartaba — ver KDoc de [TablesRepository.PayCashOutcome]. Nulo cuando
+ *   [queued] es true (el intent sigue PENDING, el server no ha generado
+ *   recibo todavía) — se sabe igual que el cobro se guardó por el `notice`
+ *   compartido ("Sin conexión — cobro guardado…").
+ * - `isSettlingPayment` = ESTE cobro dejó el restante en cero (mismo cálculo
+ *   que decide si la mesa se libera en [TableCheckoutViewModel.onPaymentCompleted]).
+ *   Es la ÚNICA señal que debe controlar cualquier invitación a calificar la
+ *   visita — pedirlo en cada pago de una cuenta dividida crearía un review
+ *   por split para la MISMA visita (`Review.paymentId` es único pero
+ *   `Review.venueId` promedia todos, así que 4 reviews de una sola mesa
+ *   sesgan el promedio del venue — verificado contra
+ *   `avoqado-server/prisma/schema.prisma:3716`).
+ */
+data class CashReceiptSummary(
+    val amount: BigDecimal,
+    val tipAmount: BigDecimal,
+    val totalAmount: BigDecimal,
+    val orderNumber: String?,
+    val receiptUrl: String?,
+    val autofacturaAvailable: Boolean,
+    val queued: Boolean,
+    val isSettlingPayment: Boolean,
+)
+
 data class TableCheckoutState(
     val isLoading: Boolean = true,
     val check: OrderDetail? = null,
     val errorMessage: String? = null,
     val notice: String? = null,
+
+    /**
+     * No-nulo justo después de un cobro en EFECTIVO exitoso/encolado — la UI
+     * lo muestra como confirmación con recibo antes de que la pantalla se
+     * cierre (o inmediatamente, si la cuenta sigue abierta). Se limpia con
+     * [TableCheckoutViewModel.consumeCashReceipt].
+     */
+    val cashReceipt: CashReceiptSummary? = null,
 
     val splitType: CheckoutSplitType = CheckoutSplitType.FULLPAYMENT,
     val customAmountInput: String = "",
@@ -125,20 +164,40 @@ data class TableCheckoutState(
 /**
  * `TableCheckoutScreen` (Plan C, Task 8) — la costura hacia el pago. Pantalla
  * PROPIA de Mesas: NO importa nada de `features/checkout/` ni
- * `features/payment/`. Dos caminos de cobro, deliberadamente asimétricos
- * porque así es el contrato real (verificado contra el server, no asumido):
+ * `features/payment/`. Dos caminos de cobro — distintos en la EJECUCIÓN
+ * (verificado contra el server, no asumido), pero ya NO en el resultado que
+ * ve el mesero/cliente (propina, recibo, invitación a calificar sólo al
+ * saldar — fix 2026-08-07 de la asimetría original):
  *
  * - **EFECTIVO**: [payCash] — SIEMPRE pasa por [TablesRepository.payCash],
  *   que encola un intent `PAY_CASH` (write-ahead) y lo intenta reproducir de
  *   inmediato. Funciona online Y offline; nunca crea una orden nueva; nunca
  *   se muestra como error cuando solo quedó "guardado" (regla de oro
- *   offline-first).
+ *   offline-first). Termina en [CashReceiptSummary] (recibo + invitación a
+ *   calificar sólo si salda la cuenta) — ver [TableCheckoutScreen]'s
+ *   `CashReceiptDialog`.
  * - **TARJETA**: [buildPaymentPayload] arma un [CardChargeRequest] — quien
  *   llama esta pantalla (`AppNavigation.kt`) es responsable de traducirlo a
  *   la ruta de pago EXISTENTE (`getPaymentRoute()`), este ViewModel nunca
  *   navega ni conoce esa ruta. Deshabilitado sin red — es un ESTADO
  *   ([TableCheckoutState.cardPaymentDisabledReason]), nunca un error; la
  *   cuenta se queda abierta ([TableCheckoutState.checkStaysOpen]).
+ *
+ * 🔴 **Por qué EFECTIVO NO navega literalmente a `getPaymentRoute()` como
+ * TARJETA** (evaluado y descartado a propósito, no un olvido): el botón
+ * "Efectivo" de esa pantalla (`MerchantSelectionContent.onStartCashPayment`
+ * → `PaymentViewModel.processCashPayment`, ambos flavors) SÍ ofrece
+ * propina+recibo+rating, pero graba el cobro con un mecanismo DISTINTO —
+ * intenta el HTTP primero y solo encola en `PaymentQueueRepositoryImpl` si
+ * ESE intento falla (`onFailure { paymentQueueRepository.enqueue(...) }`).
+ * Eso NO es write-ahead: un crash entre el tap y la respuesta pierde el
+ * cobro en silencio, sin fila en ningún outbox — justo lo que la regla dura
+ * del founder prohíbe ("PAY_CASH carries an idempotencyKey; the server
+ * dedupes on [venueId, idempotencyKey]... The outbox is write-ahead: the key
+ * exists before the first attempt"). Enrutar EFECTIVO de Mesas por ahí
+ * habría cambiado el mecanismo de cobro, no solo la pantalla. [payCash] se
+ * queda como la única fuente de verdad del dinero; lo que se agregó aquí es
+ * la experiencia que faltaba alrededor, sin tocar `features/payment/`.
  *
  * [onPaymentCompleted] es el único punto que mueve [TableCheckoutState.remaining]
  * y decide si la mesa se libera sola — [payCash] lo llama tras un cobro
@@ -335,6 +394,15 @@ class TableCheckoutViewModel @Inject constructor(
         }
         if (_state.value.isProcessingCash) return
 
+        // 🧾 Capturado ANTES de mutar el estado: [onPaymentCompleted] (más abajo)
+        // recalcula `remaining`, así que "¿este cobro salda la cuenta?" solo se
+        // puede leer AQUÍ contra el restante todavía vigente — es la MISMA
+        // condición que decide si la mesa se libera sola, ver KDoc de
+        // [CashReceiptSummary.isSettlingPayment].
+        val remainingBeforeThisPayment = _state.value.remaining
+        val tipAtChargeTime = _state.value.tipAmount
+        val willSettle = amount >= remainingBeforeThisPayment
+
         _state.update { it.copy(isProcessingCash = true, errorMessage = null) }
         viewModelScope.launch {
             repository.payCash(
@@ -342,7 +410,7 @@ class TableCheckoutViewModel @Inject constructor(
                 orderId = session.orderId,
                 isProvisional = session.isProvisional,
                 amount = amount,
-                tip = _state.value.tipAmount,
+                tip = tipAtChargeTime,
             ).fold(
                 onSuccess = { outcome ->
                     _state.update {
@@ -353,6 +421,20 @@ class TableCheckoutViewModel @Inject constructor(
                             } else {
                                 "Cobro registrado"
                             },
+                            // 🧾 Receipt: on EVERY cash payment (queued or not) — closes
+                            // the asymmetry with TARJETA (which already ends on
+                            // "Cobrar"'s success screen with a receipt). See KDoc of
+                            // [CashReceiptSummary].
+                            cashReceipt = CashReceiptSummary(
+                                amount = amount,
+                                tipAmount = tipAtChargeTime,
+                                totalAmount = amount + tipAtChargeTime,
+                                orderNumber = outcome.orderNumber ?: session.orderNumber,
+                                receiptUrl = outcome.receiptUrl,
+                                autofacturaAvailable = outcome.autofacturaAvailable,
+                                queued = outcome.queued,
+                                isSettlingPayment = willSettle,
+                            ),
                         )
                     }
                     onPaymentCompleted(amount)
@@ -411,6 +493,17 @@ class TableCheckoutViewModel @Inject constructor(
 
     fun consumeError() {
         _state.update { it.copy(errorMessage = null) }
+    }
+
+    /**
+     * Cierra la confirmación de recibo — la pantalla la llama tras "Cerrar"/
+     * "Compartir". Cuando el cobro SALDÓ la cuenta, [TableCheckoutScreen]
+     * retrasa el salto atómico a Tables (ver su KDoc del bug de pantalla en
+     * blanco) hasta que esto se llama, para que el mesero SIEMPRE alcance a
+     * ver/compartir el recibo antes de que la pantalla se destruya.
+     */
+    fun consumeCashReceipt() {
+        _state.update { it.copy(cashReceipt = null) }
     }
 
     /**

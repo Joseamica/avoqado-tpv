@@ -8,6 +8,7 @@ import com.jaac.avoqado_tpv.features.tables.data.api.dto.AddItemsRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.AddOrderItemRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyServiceChargeRequest
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.CancelOrderRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.CompOrderRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.MergeOrdersRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.OpenTableRequest
@@ -563,6 +564,15 @@ class TablesRepository @Inject constructor(
                     paymentId = ack.result?.stringOrNull("paymentId"),
                     orderNumber = ack.result?.stringOrNull("orderNumber"),
                     queued = false,
+                    // 🧾 `applyPayCash` (sync.mobile.service.ts) YA regresa
+                    // `digitalReceipt: { accessKey, receiptUrl, autofacturaAvailable }`
+                    // en el ack — el mismo shape que usan avoqado-android/ios. Antes de
+                    // este cambio el cliente TPV lo descartaba por completo (solo leía
+                    // paymentId/orderNumber), así que un cobro en EFECTIVO de Mesas
+                    // nunca tenía forma de mostrar/compartir su recibo digital ni el
+                    // acceso a autofactura — el hueco que este cambio cierra.
+                    receiptUrl = ack.result?.jsonObjectOrNull("digitalReceipt")?.stringOrNull("receiptUrl"),
+                    autofacturaAvailable = ack.result?.jsonObjectOrNull("digitalReceipt")?.booleanOrNull("autofacturaAvailable") ?: false,
                 ),
             )
             ack.isRejected -> Result.failure(PayCashRejectedException(ack.message ?: "El cobro fue rechazado", ack.errorCode))
@@ -1043,31 +1053,130 @@ class TablesRepository @Inject constructor(
     }
 
     /**
-     * "Cancelar cuenta" — SIEMPRE vía intent, mismo patrón write-ahead +
-     * replay inmediato que [moveOrder]/[payCash]: no existe ninguna ruta
-     * online bajo `/tpv` para cancelar una orden (verificado 2026-08-03
-     * contra `tpv.routes.ts` — cero `router.*` con "cancel" para
-     * `orders/:orderId`; el reducer delega en `orderMobileService.cancelOrder`,
-     * que solo existe del lado de `sync.mobile.service.ts`).
+     * "Cancelar cuenta" — online-primero con write-ahead (Fix "mesa fantasma"
+     * en cancelación, 2026-08-07). Hasta esta fecha viajaba SIEMPRE como
+     * intent porque no existía ninguna ruta online bajo `/tpv` para cancelar
+     * una orden (verificado 2026-08-03 contra `tpv.routes.ts` — cero
+     * `router.*` con "cancel" para `orders/:orderId`). ¿Por qué agregarla
+     * ahora? El server ya cerró la "mesa fantasma" de `mergeOrders`
+     * reconciliando por `tableId` en vez de `Table.currentOrderId` — pero
+     * `cancelOrder` tiene el MISMO hueco (una cuenta hija de SPLIT_ORDER
+     * nunca tiene `currentOrderId` apuntándole) y hasta ahora NO había
+     * superficie `/tpv` no-congelada donde reconciliar, porque cancelar
+     * SIEMPRE pasaba por el reducer congelado. `POST
+     * tpv/venues/{venueId}/orders/{orderId}/cancel` (`orderTableController.cancelOrder`)
+     * cierra ese hueco.
      *
-     * 🔴 El server rechaza (permanente, nunca `RETRY`) si `paymentStatus ===
-     * 'PAID'` — "no se puede cancelar una cuenta ya cobrada". Al aplicarse
-     * libera la mesa (o la re-apunta a un cheque hermano si hay multi-cheque)
-     * — el caller ([com.jaac.avoqado_tpv.features.tables.presentation.TableOrderViewModel.cancelOrder])
+     * Mismo patrón que [addItems] (write-ahead + online-primero, NO el de
+     * [moveOrder]/[assignOrder] que siempre pasan por `sync/intents`):
+     *
+     * 1. [SyncOutbox.enqueue] escribe el intent PRIMERO (write-ahead) — si la
+     *    respuesta online se pierde (DROP_RESPONSE), el intent ya existe y el
+     *    próximo replay lo reproduce. `cancelOrder` es idempotente del lado
+     *    del server (poner `status: CANCELLED` dos veces no duplica nada, a
+     *    diferencia de un cobro), pero write-ahead sigue siendo la regla dura
+     *    del repo para cualquier escritura online-primero.
+     * 2. Intenta la ruta online. Éxito → [SyncOutbox.discardPending]: el
+     *    intent write-ahead ya no hace falta.
+     * 3. Fallo de RED ([TablesSyncOutcome.Retryable]) → se deja el intent
+     *    PENDING tal cual, se reproduce solo al reconectar.
+     * 4. Rechazo del server ([TablesSyncOutcome.Propagate] — p.ej. cuenta ya
+     *    pagada, o cobro de terminal en curso) → se descarta el intent
+     *    write-ahead (nunca se debe reproducir un rechazo permanente) y se
+     *    propaga el [BackendHttpException] tal cual.
+     *
+     * Sesión PROVISIONAL (mesa recién abierta offline, [orderId] es un UUID
+     * local que el server nunca vio): la ruta online exige un id REAL en la
+     * URL, así que se salta directo al intent — mismo comportamiento de
+     * siempre, el reducer resuelve `localOrderId` → orderId real al
+     * reproducir.
+     *
+     * Al aplicarse libera la mesa (o la re-apunta a un cheque hermano si hay
+     * multi-cheque) — el caller ([com.jaac.avoqado_tpv.features.tables.presentation.TableOrderViewModel.cancelOrder])
      * es quien limpia [TableSession] al ver éxito; esta función solo reporta
-     * el ack, nunca toca la sesión.
+     * el resultado, nunca toca la sesión.
      *
      * Requiere el permiso `orders:cancel` — NO todo rol lo tiene por default
      * (WAITER/CASHIER no; MANAGER+ sí, ver `avoqado-server/src/lib/permissions.ts`).
-     * Reproducir sin permiso vuelve `REJECTED PERMISSION_DENIED`, visible en
-     * cuarentena — el botón nunca se oculta por rol en esta pantalla (mismo
-     * criterio que el resto de Fase 1/2: el server es el candado real, esta
-     * UI no duplica esa lógica).
+     * Sin permiso: online devuelve 403 ([BackendHttpException]); reproducido
+     * offline vuelve `REJECTED PERMISSION_DENIED` ([CancelOrderRejectedException]),
+     * visible en cuarentena — el botón nunca se oculta por rol en esta
+     * pantalla (mismo criterio que el resto de Fase 1/2: el server es el
+     * candado real, esta UI no duplica esa lógica).
      */
     suspend fun cancelOrder(venueId: String, orderId: String, isProvisional: Boolean, reason: String?): Result<CancelOutcome> {
+        if (isProvisional) {
+            return cancelOrderViaIntent(venueId, orderId, reason)
+        }
+
         val intentId = UUID.randomUUID().toString()
         val payload = JsonObject().apply {
-            if (isProvisional) addProperty("localOrderId", orderId) else addProperty("orderId", orderId)
+            addProperty("orderId", orderId)
+            if (!reason.isNullOrBlank()) addProperty("reason", reason)
+        }
+        // Write-ahead: el intent existe ANTES de intentar la ruta online.
+        syncOutbox.enqueue(venueId, SyncIntentTypes.CANCEL_ORDER, payload, id = intentId)
+
+        val onlineResult = callCancelOrder(venueId, orderId, reason)
+        if (onlineResult.isSuccess) {
+            // El intento online SÍ llegó — el intent write-ahead era solo la
+            // red de seguridad, se descarta para que el outbox no lo reproduzca.
+            syncOutbox.discardPending(intentId)
+            return Result.success(CancelOutcome(queued = false))
+        }
+
+        return when (classifyTablesSyncFailure(onlineResult.exceptionOrNull())) {
+            is TablesSyncOutcome.Retryable -> {
+                // El intent ya está escrito — nada más que hacer, el próximo
+                // replay lo reproduce solo.
+                Timber.i("📤 [Tables] Sin conexión — CANCEL_ORDER sigue encolado (venue=%s, order=%s)", venueId, orderId)
+                Result.success(CancelOutcome(queued = true))
+            }
+
+            else -> {
+                // El server rechazó (o el fallo es desconocido) — nada que
+                // reproducir: se descarta el intent write-ahead y se propaga
+                // el error tal cual, NUNCA se deja pendiente.
+                syncOutbox.discardPending(intentId)
+                Result.failure(onlineResult.exceptionOrNull() ?: IllegalStateException("cancelOrder sin causa"))
+            }
+        }
+    }
+
+    private suspend fun callCancelOrder(venueId: String, orderId: String, reason: String?): Result<Unit> = try {
+        val response = api.cancelOrder(venueId, orderId, CancelOrderRequest(reason = reason))
+        if (response.isSuccessful) {
+            Result.success(Unit)
+        } else {
+            Result.failure(
+                BackendHttpException(
+                    statusCode = response.code(),
+                    message = parseBackendErrorMessage(response.errorBody()?.string(), response.message()),
+                ),
+            )
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: IOException) {
+        Timber.w(e, "⚠️ [Tables] Sin red en cancelOrder (venue=%s, order=%s) — se encolará", venueId, orderId)
+        Result.failure(e)
+    } catch (e: Exception) {
+        Timber.e(e, "❌ [Tables] Fallo inesperado en cancelOrder (venue=%s, order=%s)", venueId, orderId)
+        Result.failure(e)
+    }
+
+    /**
+     * Sesión provisional: [orderId] es un UUID local que el server nunca vio,
+     * así que la ruta online (que exige un id real en la URL) no aplica — se
+     * salta directo al intent, mismo mecanismo write-ahead + replay inmediato
+     * que [moveOrder]/[assignOrder]. Único caller: [cancelOrder] con
+     * `isProvisional = true` — por eso el payload siempre manda `localOrderId`,
+     * nunca `orderId`.
+     */
+    private suspend fun cancelOrderViaIntent(venueId: String, orderId: String, reason: String?): Result<CancelOutcome> {
+        val intentId = UUID.randomUUID().toString()
+        val payload = JsonObject().apply {
+            addProperty("localOrderId", orderId)
             if (!reason.isNullOrBlank()) addProperty("reason", reason)
         }
         syncOutbox.enqueue(venueId, SyncIntentTypes.CANCEL_ORDER, payload, id = intentId)
@@ -1135,11 +1244,15 @@ class TablesRepository @Inject constructor(
     class AssignOrderRejectedException(message: String, val errorCode: String?) : Exception(message)
 
     /**
-     * "Personal en turno" — `GET tpv/venues/{venueId}/time-entries/active`.
+     * "Personal asignable" — `GET tpv/venues/{venueId}/staff/assignable`.
      * Lectura pura, mismo criterio que [getTables]: nunca se encola. Fuente
      * del picker de [com.jaac.avoqado_tpv.features.tables.presentation.AssignWaiterSheet]
-     * — ver KDoc de [com.jaac.avoqado_tpv.features.tables.data.api.dto.ActiveStaffResponse]
-     * para el concern de permisos (MANAGER+ por default).
+     * — gateada `orders:update` (el MISMO permiso que exige `ASSIGN_ORDER`,
+     * WAITER lo tiene por default). Ver KDoc de
+     * [com.jaac.avoqado_tpv.features.tables.data.api.dto.ActiveStaffResponse]
+     * para la historia (Fix 2, 2026-08-07): antes apuntaba a
+     * `time-entries/active`, MANAGER+, que dejaba a un mesero reasignar sin
+     * poder ver a quién.
      */
     suspend fun getActiveStaff(venueId: String): Result<List<ActiveStaffMember>> = try {
         val response = api.getActiveStaff(venueId)
@@ -1486,11 +1599,24 @@ class TablesRepository @Inject constructor(
     private fun JsonObject.intOrNull(key: String): Int? =
         get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asInt
 
-    /** Resultado de [payCash]. `queued=true` = escrito/sigue en el outbox, NUNCA un error para la UI. */
+    private fun JsonObject.booleanOrNull(key: String): Boolean? =
+        get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
+
+    private fun JsonObject.jsonObjectOrNull(key: String): JsonObject? =
+        get(key)?.takeIf { it.isJsonObject }?.asJsonObject
+
+    /**
+     * Resultado de [payCash]. `queued=true` = escrito/sigue en el outbox, NUNCA
+     * un error para la UI. `receiptUrl`/`autofacturaAvailable` solo llegan
+     * pobladas cuando `queued=false` (el server ya generó el `digitalReceipt`
+     * — un intent que sigue PENDING todavía no tiene uno).
+     */
     data class PayCashOutcome(
         val paymentId: String?,
         val orderNumber: String?,
         val queued: Boolean,
+        val receiptUrl: String? = null,
+        val autofacturaAvailable: Boolean = false,
     )
 
     /** Rechazo de NEGOCIO de un `PAY_CASH` (ack `REJECTED`) — no es HTTP, viaja dentro de un 200 de `sync/intents`. */

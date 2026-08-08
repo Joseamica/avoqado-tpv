@@ -85,6 +85,10 @@ class TablesApiServiceContractTest {
             // último hueco cerrado — avoqado-server commit a0470a74) — "quitar
             // cargo por servicio aplicado", online-only, mismo patrón.
             "removeServiceCharge",
+            // 2026-08-07 — "cancelar cuenta" ahora tiene ruta online bajo /tpv
+            // (hasta esta fecha era la ÚNICA acción de mesa que viajaba SIEMPRE
+            // como intent). Ver KDoc de TablesRepository.cancelOrder.
+            "cancelOrder",
         )
     }
 
@@ -155,5 +159,20 @@ class TablesApiServiceContractTest {
 
         assertThat(isDelete).isTrue()
         assertThat(ruta).isEqualTo("tpv/venues/{venueId}/orders/{orderId}/service-charges/{orderServiceChargeId}")
+    }
+
+    @Test
+    fun `cancelOrder usa POST sobre orders slash orderId slash cancel`() {
+        // Verificado 2026-08-07 contra tpv.routes.ts (orderTableController.cancelOrder,
+        // checkFeatureAccess('TABLE_SERVICE') + checkPermission('orders:cancel') +
+        // checkTableOwnership('order')) — la ÚNICA acción de mesa que hasta esta
+        // fecha no tenía ruta online bajo /tpv, ver KDoc de TablesRepository.cancelOrder.
+        val cancelOrder = TablesApiService::class.java.declaredMethods.first { it.name == "cancelOrder" }
+
+        val isPost = cancelOrder.annotations.any { it is POST }
+        val ruta = cancelOrder.annotations.filterIsInstance<POST>().first().value
+
+        assertThat(isPost).isTrue()
+        assertThat(ruta).isEqualTo("tpv/venues/{venueId}/orders/{orderId}/cancel")
     }
 }

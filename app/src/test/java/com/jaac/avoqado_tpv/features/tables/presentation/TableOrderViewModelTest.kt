@@ -545,6 +545,25 @@ class TableOrderViewModelTest {
         assertThat(tableSession.current()).isNotNull() // la mesa sigue activa — nada que cancelar se perdió
     }
 
+    // 🔴 Fix online-primero (2026-08-07): el rechazo ahora puede llegar como
+    // BackendHttpException directo de la ruta online (no solo como
+    // CancelOrderRejectedException de un ack offline) — ver KDoc de
+    // TablesRepository.cancelOrder. Mismo criterio que mergeOrders/splitOrder.
+    @Test
+    fun cancelOrder_rechazado_online_BackendHttpException_muestra_el_mensaje_real_y_NO_limpia_la_sesion() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        coEvery { repository.cancelOrder(venueId, "orden-1", false, null) } returns
+            Result.failure(BackendHttpException(statusCode = 409, message = "Hay un cobro en curso en la terminal para esta orden."))
+        val viewModel = createViewModel()
+
+        viewModel.cancelOrder(null)
+
+        assertThat(viewModel.error.value).contains("cobro en curso")
+        assertThat(viewModel.cancelled.value).isFalse()
+        assertThat(tableSession.current()).isNotNull()
+    }
+
     @Test
     fun assignOrder_exitoso_recarga_la_cuenta_para_reflejar_el_nuevo_servedBy() = runTest {
         tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))

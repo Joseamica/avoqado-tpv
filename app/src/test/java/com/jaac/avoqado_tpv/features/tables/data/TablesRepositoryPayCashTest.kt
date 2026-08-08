@@ -198,6 +198,71 @@ class TablesRepositoryPayCashTest {
 
     // endregion
 
+    // region — 🧾 digitalReceipt: applyPayCash (server) YA lo regresaba en el ack;
+    // antes de este cambio TablesRepository lo descartaba por completo (solo leía
+    // paymentId/orderNumber) — cierra el hueco "EFECTIVO nunca produce recibo".
+
+    @Test
+    fun un_ack_ACKED_con_digitalReceipt_puebla_receiptUrl_y_autofacturaAvailable() = runTest {
+        val idSlot = slot<String>()
+        coEvery { outbox.enqueue(venueId, SyncIntentTypes.PAY_CASH, any(), capture(idSlot)) } answers { idSlot.captured }
+        coEvery { outbox.replayNow(venueId, any()) } coAnswers {
+            val onAck = secondArg<suspend (SyncIntentEntity, SyncIntentAck) -> Unit>()
+            val result = JsonParser.parseString(
+                """{"orderId":"$orderId","paymentId":"pay-1","orderNumber":"A-100",
+                    |"digitalReceipt":{"accessKey":"key-1","receiptUrl":"https://avoqado.io/r/key-1","autofacturaAvailable":true}}
+                """.trimMargin(),
+            ).asJsonObject
+            onAck(
+                SyncIntentEntity(id = idSlot.captured, venueId = venueId, seq = 1, type = SyncIntentTypes.PAY_CASH, payloadJson = "{}"),
+                SyncIntentAck(id = idSlot.captured, status = "ACKED", result = result),
+            )
+        }
+
+        val result = repo.payCash(venueId, orderId, isProvisional = false, amount = BigDecimal("150.00"))
+
+        val outcome = result.getOrThrow()
+        assertThat(outcome.receiptUrl).isEqualTo("https://avoqado.io/r/key-1")
+        assertThat(outcome.autofacturaAvailable).isTrue()
+    }
+
+    @Test
+    fun un_ack_ACKED_sin_digitalReceipt_deja_receiptUrl_null_y_autofactura_en_false_sin_crashear() = runTest {
+        val idSlot = slot<String>()
+        coEvery { outbox.enqueue(venueId, SyncIntentTypes.PAY_CASH, any(), capture(idSlot)) } answers { idSlot.captured }
+        coEvery { outbox.replayNow(venueId, any()) } coAnswers {
+            val onAck = secondArg<suspend (SyncIntentEntity, SyncIntentAck) -> Unit>()
+            onAck(
+                SyncIntentEntity(id = idSlot.captured, venueId = venueId, seq = 1, type = SyncIntentTypes.PAY_CASH, payloadJson = "{}"),
+                SyncIntentAck(id = idSlot.captured, status = "ACKED", result = jsonOf("paymentId" to "pay-1", "orderNumber" to "A-100")),
+            )
+        }
+
+        val result = repo.payCash(venueId, orderId, isProvisional = false, amount = BigDecimal("150.00"))
+
+        val outcome = result.getOrThrow()
+        assertThat(outcome.receiptUrl).isNull()
+        assertThat(outcome.autofacturaAvailable).isFalse()
+    }
+
+    @Test
+    fun un_cobro_encolado_sin_ack_no_tiene_receiptUrl_todavia() = runTest {
+        // queued=true (sin ack) — el server ni siquiera vio el intent, así que
+        // NUNCA puede haber generado un digitalReceipt. receiptUrl=null aquí
+        // NO es un bug: la UI lo distingue con `queued` ("se sincronizará
+        // solo"), nunca lo confunde con "el pago no generó recibo".
+        coEvery { outbox.enqueue(any(), any(), any(), any()) } returns "intent-1"
+        coEvery { outbox.replayNow(venueId, any()) } returns Unit
+
+        val result = repo.payCash(venueId, orderId, isProvisional = false, amount = BigDecimal("150.00"))
+
+        val outcome = result.getOrThrow()
+        assertThat(outcome.queued).isTrue()
+        assertThat(outcome.receiptUrl).isNull()
+    }
+
+    // endregion
+
     // region — clearTable: mismo patrón idempotente-online-u-offline que openTable
 
     @Test

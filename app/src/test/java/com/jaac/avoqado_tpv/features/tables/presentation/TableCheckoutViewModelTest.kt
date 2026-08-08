@@ -177,6 +177,156 @@ class TableCheckoutViewModelTest {
 
     // endregion
 
+    // region — 🧾 recibo de EFECTIVO: cierra la asimetría con TARJETA (propina ya
+    // viajaba; lo nuevo es receiptUrl/autofactura + el gate de "invitar a
+    // calificar SOLO al saldar la cuenta"). Ver KDoc de [CashReceiptSummary].
+
+    @Test
+    fun un_cobro_en_efectivo_exitoso_arma_cashReceipt_con_monto_propina_y_total() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
+        val viewModel = createViewModel()
+        viewModel.setTip(BigDecimal("20.00"))
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), BigDecimal("20.00")) } returns
+            Result.success(
+                TablesRepository.PayCashOutcome(
+                    paymentId = "pay-1",
+                    orderNumber = "A-100",
+                    queued = false,
+                    receiptUrl = "https://avoqado.io/r/1",
+                    autofacturaAvailable = true,
+                ),
+            )
+        coEvery { repository.clearTable(venueId, "mesa-1") } returns Result.success(Unit)
+
+        viewModel.payCash(BigDecimal("150.00"))
+
+        val receipt = viewModel.state.value.cashReceipt
+        assertThat(receipt).isNotNull()
+        assertThat(receipt!!.amount).isEqualTo(BigDecimal("150.00"))
+        assertThat(receipt.tipAmount).isEqualTo(BigDecimal("20.00"))
+        assertThat(receipt.totalAmount).isEqualTo(BigDecimal("170.00"))
+        assertThat(receipt.orderNumber).isEqualTo("A-100")
+        assertThat(receipt.receiptUrl).isEqualTo("https://avoqado.io/r/1")
+        assertThat(receipt.autofacturaAvailable).isTrue()
+        assertThat(receipt.queued).isFalse()
+    }
+
+    /**
+     * Regresión explícita de "Tip: on every payment": la propina tecleada en
+     * pantalla SIEMPRE viaja al `payCash()` real — un refactor que la
+     * olvidara (p.ej. al tocar el orden de los parámetros) pasaría en verde
+     * si este test no capturara el valor EXACTO.
+     */
+    @Test
+    fun la_propina_tecleada_SIEMPRE_viaja_al_payCash_de_EFECTIVO() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("100.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("100.00"), amountLeft = BigDecimal("100.00")))
+        val viewModel = createViewModel()
+        viewModel.setTip(BigDecimal("15.50"))
+        coEvery { repository.payCash(any(), any(), any(), any(), any()) } returns
+            Result.success(TablesRepository.PayCashOutcome(paymentId = null, orderNumber = null, queued = true))
+        // El monto paga el restante COMPLETO — onPaymentCompleted libera la
+        // mesa sola, así que releaseTable() sí llama clearTable.
+        coEvery { repository.clearTable(venueId, "mesa-1") } returns Result.success(Unit)
+
+        viewModel.payCash(BigDecimal("100.00"))
+
+        coVerify(exactly = 1) { repository.payCash(venueId, "orden-1", false, BigDecimal("100.00"), BigDecimal("15.50")) }
+    }
+
+    /** Gate central del founder: solo el pago que SALDA la cuenta invita a calificar. */
+    @Test
+    fun isSettlingPayment_true_cuando_el_monto_paga_el_restante_completo() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
+        val viewModel = createViewModel()
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any()) } returns
+            Result.success(TablesRepository.PayCashOutcome(paymentId = "pay-1", orderNumber = "A-1", queued = false))
+        coEvery { repository.clearTable(venueId, "mesa-1") } returns Result.success(Unit)
+
+        viewModel.payCash(BigDecimal("150.00"))
+
+        assertThat(viewModel.state.value.cashReceipt?.isSettlingPayment).isTrue()
+    }
+
+    /**
+     * La regla dura del founder: pedir rating en CADA pago de una cuenta
+     * dividida crearía un `Review` por split para la MISMA visita y sesgaría
+     * el promedio del venue (`Review.venueId` los promedia TODOS —
+     * `avoqado-server/prisma/schema.prisma:3716`). Un pago parcial jamás
+     * debe traer `isSettlingPayment=true`.
+     */
+    @Test
+    fun isSettlingPayment_false_en_un_pago_PARCIAL_de_una_cuenta_dividida() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("200.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("200.00"), amountLeft = BigDecimal("200.00")))
+        val viewModel = createViewModel()
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("50.00"), any()) } returns
+            Result.success(TablesRepository.PayCashOutcome(paymentId = "pay-1", orderNumber = "A-1", queued = false))
+
+        viewModel.payCash(BigDecimal("50.00")) // 1 de 4 partes de $200
+
+        assertThat(viewModel.state.value.cashReceipt?.isSettlingPayment).isFalse()
+        coVerify(exactly = 0) { repository.clearTable(any(), any()) }
+    }
+
+    @Test
+    fun un_cobro_en_efectivo_encolado_offline_TAMBIEN_produce_cashReceipt_sin_receiptUrl() = runTest {
+        // "Receipt: on every payment" incluye el camino offline — sin URL
+        // digital todavía (el server no lo generó), pero la confirmación de
+        // recibo SÍ aparece; nunca se queda en silencio como antes del fix.
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
+        val viewModel = createViewModel()
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any()) } returns
+            Result.success(TablesRepository.PayCashOutcome(paymentId = null, orderNumber = null, queued = true))
+        coEvery { repository.clearTable(venueId, "mesa-1") } returns Result.success(Unit)
+
+        viewModel.payCash(BigDecimal("150.00"))
+
+        val receipt = viewModel.state.value.cashReceipt
+        assertThat(receipt).isNotNull()
+        assertThat(receipt!!.queued).isTrue()
+        assertThat(receipt.receiptUrl).isNull()
+    }
+
+    @Test
+    fun consumeCashReceipt_limpia_el_recibo_del_estado() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", total = BigDecimal("150.00")))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns
+            Result.success(OrderDetail(id = "orden-1", total = BigDecimal("150.00"), amountLeft = BigDecimal("150.00")))
+        val viewModel = createViewModel()
+        coEvery { repository.payCash(venueId, "orden-1", false, BigDecimal("150.00"), any()) } returns
+            Result.success(TablesRepository.PayCashOutcome(paymentId = "pay-1", orderNumber = "A-1", queued = false))
+        coEvery { repository.clearTable(venueId, "mesa-1") } returns Result.success(Unit)
+        viewModel.payCash(BigDecimal("150.00"))
+        assertThat(viewModel.state.value.cashReceipt).isNotNull()
+
+        viewModel.consumeCashReceipt()
+
+        assertThat(viewModel.state.value.cashReceipt).isNull()
+    }
+
+    /** Regresión: TARJETA sigue sin tocar el mecanismo de EFECTIVO ni su recibo. */
+    @Test
+    fun un_cargo_con_TARJETA_nunca_arma_cashReceipt() = runTest {
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1"))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(OrderDetail(id = "orden-1"))
+        val viewModel = createViewModel()
+
+        viewModel.buildPaymentPayload(BigDecimal("150.00"))
+
+        assertThat(viewModel.state.value.cashReceipt).isNull()
+    }
+
+    // endregion
+
     // region — pago parcial regresa con el restante; llegar a cero libera la mesa sola
 
     @Test

@@ -88,3 +88,28 @@ data class MergedOrderSummary(
     val orderNumber: String = "",
     val items: Int = 0,
 )
+
+/**
+ * `POST /tpv/venues/{venueId}/orders/{orderId}/cancel`. Body: `{ reason? }`
+ * (2026-08-07 — antes de esta fecha esta ruta NO existía, `cancelOrder` viajaba
+ * SIEMPRE como intent; ver KDoc de
+ * [com.jaac.avoqado_tpv.features.tables.data.TablesRepository.cancelOrder]).
+ */
+data class CancelOrderRequest(val reason: String? = null)
+
+/**
+ * `{ success, data: { tableFreed } }` — `orderMobileService.cancelOrder`
+ * (mismo servicio que `/mobile` y el reducer offline) seguido de
+ * `tableTpvService.reconcileTableAfterOrderRemoved` en
+ * `order-table.tpv.controller.ts::cancelOrder`. `tableFreed` = si cancelar
+ * esta cuenta liberó su mesa (sin otro cheque abierto que re-apuntar) — mismo
+ * campo que [MergeOrdersResult.tableFreed].
+ */
+data class CancelOrderResponse(
+    val success: Boolean = true,
+    val data: CancelOrderResult? = null,
+)
+
+data class CancelOrderResult(
+    val tableFreed: Boolean = false,
+)

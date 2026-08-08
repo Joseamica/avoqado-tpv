@@ -724,6 +724,13 @@ class TableOrderViewModel @Inject constructor(
      * Funciona con la sesión provisional también (una mesa recién abierta
      * offline se puede cancelar sin haber sincronizado nunca) — mismo
      * criterio que [moveOrder].
+     *
+     * El rechazo puede llegar por DOS caminos desde el fix online-primero
+     * (2026-08-07, ver KDoc del repositorio): [BackendHttpException] si la
+     * ruta online rechazó directo (mismo patrón que [mergeOrders]), o
+     * [TablesRepository.CancelOrderRejectedException] si vino de un ack
+     * `REJECTED` reproducido offline (sesión provisional, o sin red en el
+     * momento del intento).
      */
     fun cancelOrder(reason: String?) {
         if (blockedByOwnership()) return
@@ -751,7 +758,9 @@ class TableOrderViewModel @Inject constructor(
                 onFailure = { e ->
                     _isCancelling.value = false
                     if (e is CancellationException) throw e
-                    _error.value = (e as? TablesRepository.CancelOrderRejectedException)?.message ?: "No se pudo cancelar la cuenta"
+                    _error.value = (e as? TablesRepository.CancelOrderRejectedException)?.message
+                        ?: (e as? BackendHttpException)?.message
+                        ?: "No se pudo cancelar la cuenta"
                 },
             )
         }

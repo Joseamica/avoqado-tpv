@@ -71,6 +71,11 @@ class CommandExecutor @Inject constructor(
     // (where the AngelPay graph is never constructed at runtime) cheap — the
     // .get() call inside the handler is gated by BuildConfig check.
     private val angelPayAuthRepositoryProvider: Provider<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository>,
+    // Needed by [ackSelfDestructiveCommand]: RESTART / SHUTDOWN / FACTORY_RESET kill this
+    // process, so the caller's ACK after execute() is unreachable and the server never
+    // learns they ran. Provider<T> defers construction so this stays off the graph until a
+    // self-destructive command actually fires.
+    private val heartbeatRepositoryProvider: Provider<com.jaac.avoqado_tpv.core.data.repository.HeartbeatRepository>,
 ) {
     companion object {
         private const val TAG = "CommandExecutor"
@@ -157,8 +162,10 @@ class CommandExecutor @Inject constructor(
             TpvCommandType.REMOTE_ACTIVATE -> executeRemoteActivate(command.payload)
 
             // App Lifecycle Commands
-            TpvCommandType.RESTART -> executeRestart()
-            TpvCommandType.SHUTDOWN -> executeShutdown()
+            // RESTART/SHUTDOWN/FACTORY_RESET receive the command so they can acknowledge
+            // it before killing the process — see [ackSelfDestructiveCommand].
+            TpvCommandType.RESTART -> executeRestart(command)
+            TpvCommandType.SHUTDOWN -> executeShutdown(command)
             TpvCommandType.CLEAR_CACHE -> executeClearCache()
             TpvCommandType.FORCE_UPDATE -> executeForceUpdate()
             TpvCommandType.REQUEST_UPDATE -> executeRequestUpdate(command)
@@ -166,7 +173,7 @@ class CommandExecutor @Inject constructor(
 
             // Data Management Commands
             TpvCommandType.SYNC_DATA -> executeSyncData()
-            TpvCommandType.FACTORY_RESET -> executeFactoryReset()
+            TpvCommandType.FACTORY_RESET -> executeFactoryReset(command)
             TpvCommandType.EXPORT_LOGS -> executeExportLogs()
 
             // Configuration Commands
@@ -407,8 +414,43 @@ class CommandExecutor @Inject constructor(
      *
      * Uses a delayed restart to allow result emission.
      */
-    private suspend fun executeRestart(): CommandResult {
+    /**
+     * Acknowledge a self-destructive command BEFORE it destroys the process that would
+     * report it.
+     *
+     * RESTART, SHUTDOWN and FACTORY_RESET all end in `Process.killProcess(myPid())`, which
+     * makes the `return CommandResult.success(...)` beneath them unreachable — and with it
+     * the caller's `sendCommandAck(...)`. FACTORY_RESET is worse still: `clearAll()` wipes
+     * the very credentials the ACK needs. So the server never learned any of them ran:
+     * prod had 67 RESTART and 65 FACTORY_RESET frozen in SENT, and not one COMPLETED in the
+     * platform's whole history. A stuck SENT reads identically to "the command never
+     * landed", so an operator cannot tell a wiped terminal from an ignored order.
+     *
+     * Best-effort by design. The command arrived over the network milliseconds ago (it came
+     * in on a heartbeat response), so the ACK lands in practically every real case. When it
+     * does not, we still destroy: refusing would mean a wipe ordered for a stolen terminal
+     * silently does not happen, and an unrecorded wipe beats a wipe that never occurs.
+     */
+    private suspend fun ackSelfDestructiveCommand(command: TpvCommand, result: CommandResult) {
+        try {
+            val terminalId = secureStorage.getSerialNumber()
+            if (terminalId.isNullOrBlank()) {
+                Timber.e("❌ [$TAG] Cannot ACK ${command.type.name} before self-destruct — no terminal serial")
+                return
+            }
+            heartbeatRepositoryProvider.get().sendCommandAck(command.commandId, terminalId, result)
+            Timber.i("📤 [$TAG] ACK sent for ${command.type.name} BEFORE self-destruct (id=${command.commandId})")
+        } catch (e: Exception) {
+            // Never let a reporting failure stop the command the operator actually asked for.
+            Timber.w(e, "⚠️ [$TAG] ACK before self-destruct failed for ${command.type.name} — proceeding anyway")
+        }
+    }
+
+    private suspend fun executeRestart(command: TpvCommand): CommandResult {
         Timber.w("🔄 [$TAG] Executing RESTART command - app will restart in 500ms")
+
+        // Report first: everything below this line dies with the process.
+        ackSelfDestructiveCommand(command, CommandResult.success("Restarting application..."))
 
         // Delay to allow result emission before restart
         delay(500)
@@ -435,8 +477,11 @@ class CommandExecutor @Inject constructor(
      *
      * High-risk action - requires PIN verification (handled by server)
      */
-    private suspend fun executeShutdown(): CommandResult {
+    private suspend fun executeShutdown(command: TpvCommand): CommandResult {
         Timber.w("⏻ [$TAG] Executing SHUTDOWN command - app will close in 500ms")
+
+        // Report first: everything below this line dies with the process.
+        ackSelfDestructiveCommand(command, CommandResult.success("Application shutting down..."))
 
         // Delay to allow result emission
         delay(500)
@@ -1002,8 +1047,12 @@ class CommandExecutor @Inject constructor(
      * - Cache
      * - Activation status
      */
-    private suspend fun executeFactoryReset(): CommandResult {
+    private suspend fun executeFactoryReset(command: TpvCommand): CommandResult {
         Timber.e("🔥 [$TAG] Executing FACTORY_RESET command - CRITICAL OPERATION")
+
+        // Report BEFORE clearAll(): the ACK needs the serial and auth token that the very
+        // next line destroys. This is the only window in which the server can be told.
+        ackSelfDestructiveCommand(command, CommandResult.success("Factory reset completed"))
 
         try {
             // Clear all secure storage (including activation)

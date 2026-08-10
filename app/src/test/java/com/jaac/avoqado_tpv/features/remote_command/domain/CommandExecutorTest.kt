@@ -6,6 +6,8 @@ import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.manager.LockScreenManager
 import com.jaac.avoqado_tpv.core.data.manager.MaintenanceManager
+import com.jaac.avoqado_tpv.core.data.repository.HeartbeatRepository
+import com.jaac.avoqado_tpv.features.remote_command.data.model.CommandResult
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommand
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandPriority
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandResultStatus
@@ -47,6 +49,7 @@ class CommandExecutorTest {
     private lateinit var mockUpdateRequestManager: UpdateRequestManager
     private lateinit var mockAvoqadoUpdateRepository: AvoqadoUpdateRepository
     private lateinit var mockAngelPayAuthRepository: AngelPayAuthRepository
+    private lateinit var mockHeartbeatRepository: HeartbeatRepository
 
     // System under test
     private lateinit var commandExecutor: CommandExecutor
@@ -65,6 +68,7 @@ class CommandExecutorTest {
         mockUpdateRequestManager = mockk(relaxed = true)
         mockAvoqadoUpdateRepository = mockk(relaxed = true)
         mockAngelPayAuthRepository = mockk(relaxed = true)
+        mockHeartbeatRepository = mockk(relaxed = true)
 
         // Setup secure storage to return test terminal ID
         every { mockSecureStorage.getSerialNumber() } returns testTerminalId
@@ -89,6 +93,7 @@ class CommandExecutorTest {
             updateRequestManager = Provider { mockUpdateRequestManager },
             avoqadoUpdateRepository = mockAvoqadoUpdateRepository,
             angelPayAuthRepositoryProvider = Provider { mockAngelPayAuthRepository },
+            heartbeatRepositoryProvider = Provider { mockHeartbeatRepository },
         )
     }
 
@@ -117,6 +122,87 @@ class CommandExecutorTest {
             requestedBy = "test@example.com",
             requestedByName = "Test Admin"
         )
+    }
+
+    // ========================================
+    // SELF-DESTRUCTIVE COMMAND ACK TESTS
+    // ========================================
+    //
+    // RESTART / SHUTDOWN / FACTORY_RESET end in Process.killProcess(myPid()), so the
+    // `return CommandResult.success(...)` below them is unreachable and so is the caller's
+    // sendCommandAck(). FACTORY_RESET also wipes, via clearAll(), the credentials the ACK
+    // needs. Result in prod: 67 RESTART and 65 FACTORY_RESET frozen in SENT, zero
+    // COMPLETED ever — an operator could not tell a wiped terminal from an ignored order.
+    //
+    // These tests pin the ONE thing that makes the difference: the ACK goes out first.
+
+    @Test
+    fun `FACTORY_RESET acknowledges the server BEFORE wiping its own credentials`() = runTest {
+        val command = createCommand(type = TpvCommandType.FACTORY_RESET)
+
+        commandExecutor.execute(command)
+
+        // The ACK must have gone out; clearAll() destroys the serial it needs.
+        coVerify(exactly = 1) {
+            mockHeartbeatRepository.sendCommandAck(command.commandId, testTerminalId, any())
+        }
+    }
+
+    @Test
+    fun `FACTORY_RESET reports SUCCESS, not the unreachable return value`() = runTest {
+        val command = createCommand(type = TpvCommandType.FACTORY_RESET)
+        val reported = slot<CommandResult>()
+
+        commandExecutor.execute(command)
+
+        coVerify { mockHeartbeatRepository.sendCommandAck(any(), any(), capture(reported)) }
+        assertThat(reported.captured.status).isEqualTo(TpvCommandResultStatus.SUCCESS)
+    }
+
+    @Test
+    fun `RESTART acknowledges before killing the process`() = runTest {
+        val command = createCommand(type = TpvCommandType.RESTART)
+
+        commandExecutor.execute(command)
+
+        coVerify(exactly = 1) {
+            mockHeartbeatRepository.sendCommandAck(command.commandId, testTerminalId, any())
+        }
+    }
+
+    @Test
+    fun `SHUTDOWN acknowledges before killing the process`() = runTest {
+        val command = createCommand(type = TpvCommandType.SHUTDOWN)
+
+        commandExecutor.execute(command)
+
+        coVerify(exactly = 1) {
+            mockHeartbeatRepository.sendCommandAck(command.commandId, testTerminalId, any())
+        }
+    }
+
+    @Test
+    fun `a failing ACK never blocks the command the operator asked for`() = runTest {
+        // Offline, or the token is already gone. Refusing here would mean a wipe ordered
+        // for a stolen terminal silently does not happen — worse than an unrecorded wipe.
+        coEvery { mockHeartbeatRepository.sendCommandAck(any(), any(), any()) } throws
+            RuntimeException("network down")
+
+        val command = createCommand(type = TpvCommandType.FACTORY_RESET)
+
+        // Must not propagate out of execute().
+        commandExecutor.execute(command)
+
+        coVerify { mockSecureStorage.clearAll() }
+    }
+
+    @Test
+    fun `a non-destructive command is not acknowledged twice`() = runTest {
+        // Only the self-destructive ones ACK early; everything else is acknowledged by the
+        // caller after execute(), exactly as before.
+        commandExecutor.execute(createCommand(type = TpvCommandType.LOCK))
+
+        coVerify(exactly = 0) { mockHeartbeatRepository.sendCommandAck(any(), any(), any()) }
     }
 
     // ========================================

@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.shift.presentation
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -53,6 +54,9 @@ import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoTopBar
 import com.jaac.avoqado_tpv.core.presentation.components.ResponsiveScaffold
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
+import com.jaac.avoqado_tpv.core.util.CurrencyFormatter
+import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationAction
+import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationOutcome
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import java.math.BigDecimal
@@ -103,17 +107,29 @@ fun ShiftScreen(
     val isRefreshing by viewModel.isRefreshing.collectAsStateWithLifecycle()
     val canOpenShift by viewModel.canOpenShift.collectAsStateWithLifecycle()
     val canCloseShift by viewModel.canCloseShift.collectAsStateWithLifecycle()
+    val isCashReconciliationEnabled by viewModel.isCashReconciliationEnabled.collectAsStateWithLifecycle()
 
     // Dialog states
     var showOpenDialog by remember { mutableStateOf(false) }
     var showCloseDialog by remember { mutableStateOf(false) }
     var selectedShift by remember { mutableStateOf<Shift?>(null) }
+    val requiresReconciliationAcknowledgement =
+        requiresCashReconciliationAcknowledgement(state)
+
+    // A counted/skipped result is deliberately persistent: neither the system back action nor
+    // the top-bar arrow may bypass the explicit "Listo" acknowledgment. Legacy closes retain
+    // their existing navigation behavior.
+    BackHandler(enabled = requiresReconciliationAcknowledgement) { }
 
     Scaffold(
         topBar = {
             AvoqadoTopBar(
                 title = "Turnos",
-                onNavigationClick = onNavigateBack
+                onNavigationClick = if (requiresReconciliationAcknowledgement) {
+                    null
+                } else {
+                    onNavigateBack
+                }
             )
         }
     ) { paddingValues ->
@@ -124,7 +140,7 @@ fun ShiftScreen(
             AvoqadoPullToRefresh(
                 isRefreshing = isRefreshing,
                 onRefresh = { viewModel.refresh() },
-                enabled = state !is ShiftState.Loading
+                enabled = isShiftPullToRefreshEnabled(state)
             ) {
                 when (val currentState = state) {
                 is ShiftState.Loading -> {
@@ -172,7 +188,9 @@ fun ShiftScreen(
 
                 is ShiftState.ShiftClosed -> {
                     ShiftClosedContent(
-                        shift = currentState.shift
+                        shift = currentState.shift,
+                        reconciliationAction = currentState.reconciliationAction,
+                        onDone = viewModel::acknowledgeClosedShift
                     )
                 }
 
@@ -207,6 +225,18 @@ fun ShiftScreen(
                 onDismiss = { showCloseDialog = false },
                 onConfirm = {
                     viewModel.closeShift()
+                    showCloseDialog = false
+                },
+                cashReconciliationEnabled = isCashReconciliationEnabled,
+                onCounted = { countedCash ->
+                    viewModel.closeShift(
+                        reconciliationAction = CashReconciliationAction.COUNTED,
+                        countedCash = countedCash
+                    )
+                    showCloseDialog = false
+                },
+                onSkipped = {
+                    viewModel.closeShift(reconciliationAction = CashReconciliationAction.SKIPPED)
                     showCloseDialog = false
                 }
             )
@@ -396,6 +426,12 @@ private fun NoActiveShiftContent(
     }
 }
 
+internal fun requiresCashReconciliationAcknowledgement(state: ShiftState): Boolean =
+    state is ShiftState.ShiftClosed && state.reconciliationAction != null
+
+internal fun isShiftPullToRefreshEnabled(state: ShiftState): Boolean =
+    state !is ShiftState.Loading && !requiresCashReconciliationAcknowledgement(state)
+
 /**
  * Shift Closed Content
  *
@@ -403,8 +439,25 @@ private fun NoActiveShiftContent(
  */
 @Composable
 private fun ShiftClosedContent(
-    shift: Shift
+    shift: Shift,
+    reconciliationAction: CashReconciliationAction? = null,
+    onDone: () -> Unit = {}
 ) {
+    if (reconciliationAction != null) {
+        CashReconciliationClosedContent(
+            shift = shift,
+            action = reconciliationAction,
+            onDone = onDone
+        )
+        return
+    }
+
+    LegacyShiftClosedContent(shift)
+}
+
+/** Existing two-second close confirmation, retained unchanged for venues without the feature. */
+@Composable
+private fun LegacyShiftClosedContent(shift: Shift) {
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -452,6 +505,149 @@ private fun ShiftClosedContent(
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                 )
+            }
+        }
+    }
+}
+
+/** Persistent result for an explicit COUNTED or SKIPPED close attempt. */
+@Composable
+private fun CashReconciliationClosedContent(
+    shift: Shift,
+    action: CashReconciliationAction,
+    onDone: () -> Unit
+) {
+    val result = shift.reconciliation
+    val difference = result?.cashDifference
+    val countedCash = result?.cashDeclared ?: shift.cashDeclared
+    val wasApplied = result?.outcome == CashReconciliationOutcome.APPLIED
+
+    val title: String
+    val description: String
+    val statusColor: Color
+    val showDifference: Boolean
+
+    when {
+        action == CashReconciliationAction.SKIPPED -> {
+            title = "Turno cerrado sin conteo"
+            description = if (result?.outcome == CashReconciliationOutcome.SKIPPED) {
+                "El turno quedó cerrado y no se registró un resultado de caja."
+            } else {
+                "El turno quedó cerrado; no se recibió un resultado de conciliación."
+            }
+            statusColor = MaterialTheme.avoqadoColors.statusWarning
+            showDifference = false
+        }
+
+        wasApplied && difference != null && difference.compareTo(BigDecimal.ZERO) == 0 -> {
+            title = "Caja cuadrada"
+            description = "El efectivo contado coincide con el efectivo esperado."
+            statusColor = MaterialTheme.avoqadoColors.statusSuccess
+            showDifference = true
+        }
+
+        wasApplied && difference != null && difference.signum() < 0 -> {
+            title = "Faltante"
+            description = "La caja quedó por debajo del efectivo esperado."
+            statusColor = MaterialTheme.avoqadoColors.statusError
+            showDifference = true
+        }
+
+        wasApplied && difference != null -> {
+            title = "Sobrante"
+            description = "La caja quedó por encima del efectivo esperado."
+            statusColor = MaterialTheme.avoqadoColors.statusWarning
+            showDifference = true
+        }
+
+        else -> {
+            title = "Turno cerrado"
+            description = "La conciliación no está disponible. Revisa el turno en el historial."
+            statusColor = MaterialTheme.avoqadoColors.statusWarning
+            showDifference = false
+        }
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .heightIn(min = maxHeight)
+                .padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = statusColor.copy(alpha = 0.12f)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = if (title == "Caja cuadrada") {
+                            Icons.Default.CheckCircle
+                        } else {
+                            Icons.Default.Error
+                        },
+                        contentDescription = null,
+                        tint = statusColor,
+                        modifier = Modifier.size(56.dp)
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+
+                    if (action == CashReconciliationAction.COUNTED && countedCash != null) {
+                        Spacer(modifier = Modifier.height(20.dp))
+                        ShiftDetailRow(
+                            label = "Efectivo contado",
+                            value = CurrencyFormatter.format(countedCash)
+                        )
+                    }
+
+                    if (showDifference && difference != null) {
+                        ShiftDetailRow(
+                            label = "Diferencia",
+                            value = CurrencyFormatter.format(difference.abs()),
+                            highlight = true,
+                            valueColor = statusColor
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    Button(
+                        onClick = onDone,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        shape = RoundedCornerShape(28.dp)
+                    ) {
+                        Text("Listo", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
             }
         }
     }
@@ -633,8 +829,43 @@ private fun ShiftHistoryCard(
                     )
                 }
             }
+
+            shift.cashDifference?.let { difference ->
+                val differenceColor = when (difference.signum()) {
+                    -1 -> MaterialTheme.avoqadoColors.statusError
+                    0 -> MaterialTheme.avoqadoColors.statusSuccess
+                    else -> MaterialTheme.avoqadoColors.statusWarning
+                }
+
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 10.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = cashDifferenceLabel(difference),
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = differenceColor
+                    )
+                    Text(
+                        text = CurrencyFormatter.format(difference.abs()),
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                        color = differenceColor
+                    )
+                }
+            }
         }
     }
+}
+
+private fun cashDifferenceLabel(difference: BigDecimal): String = when (difference.signum()) {
+    -1 -> "Faltante"
+    0 -> "Caja cuadrada"
+    else -> "Sobrante"
 }
 
 /**
@@ -646,7 +877,8 @@ private fun ShiftHistoryCard(
 private fun ShiftDetailRow(
     label: String,
     value: String,
-    highlight: Boolean = false
+    highlight: Boolean = false,
+    valueColor: Color? = null
 ) {
     Row(
         modifier = Modifier
@@ -666,7 +898,8 @@ private fun ShiftDetailRow(
             style = MaterialTheme.typography.bodyMedium.copy(
                 fontWeight = if (highlight) FontWeight.Bold else FontWeight.Normal
             ),
-            color = if (highlight) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurface  // ✅ Verde del theme
+            color = valueColor
+                ?: if (highlight) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurface
         )
     }
 }
@@ -844,6 +1077,40 @@ private fun ShiftDetailDialog(
                     label = "Final",
                     value = shift.endingCash?.let { "$${it}" } ?: "N/A"
                 )
+
+                if (shift.cashDeclared != null || shift.cashDifference != null) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 8.dp),
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
+                    )
+
+                    Text(
+                        text = "CONCILIACIÓN DE CAJA",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+
+                    shift.cashDeclared?.let { cashDeclared ->
+                        ShiftDetailRow(
+                            label = "Efectivo contado",
+                            value = CurrencyFormatter.format(cashDeclared)
+                        )
+                    }
+
+                    shift.cashDifference?.let { difference ->
+                        val differenceColor = when (difference.signum()) {
+                            -1 -> MaterialTheme.avoqadoColors.statusError
+                            0 -> MaterialTheme.avoqadoColors.statusSuccess
+                            else -> MaterialTheme.avoqadoColors.statusWarning
+                        }
+                        ShiftDetailRow(
+                            label = cashDifferenceLabel(difference),
+                            value = CurrencyFormatter.format(difference.abs()),
+                            highlight = true,
+                            valueColor = differenceColor
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
@@ -898,7 +1165,7 @@ private fun ShiftScreenNoActivePreview() {
     }
 }
 
-@Preview(showBackground = true, widthDp = 360)
+@Preview(showBackground = true, widthDp = 360, heightDp = 640)
 @Composable
 private fun ShiftDetailDialogPreview() {
     AvoqadoTheme {
@@ -924,6 +1191,44 @@ private fun ShiftDetailDialogPreview() {
                 durationMinutes = 510  // 8h 30m
             ),
             onDismiss = {}
+        )
+    }
+}
+
+@Preview(showBackground = true, widthDp = 360, heightDp = 640, name = "PAX A910S — caja cuadrada")
+@Composable
+private fun CashReconciliationResultPreview() {
+    AvoqadoTheme {
+        ShiftClosedContent(
+            shift = Shift(
+                id = "shift-result",
+                venueId = "venue-1",
+                staffId = "staff-1",
+                staffName = "María González",
+                startTime = "2025-01-15T09:00:00Z",
+                endTime = "2025-01-15T17:30:00Z",
+                status = ShiftStatus.CLOSED,
+                startingCash = BigDecimal("1000.00"),
+                endingCash = BigDecimal("4200.00"),
+                totalSales = BigDecimal("3900.00"),
+                totalTips = BigDecimal("250.00"),
+                totalOrders = 28,
+                totalCashPayments = BigDecimal("3200.00"),
+                totalCardPayments = BigDecimal("700.00"),
+                totalVoucherPayments = BigDecimal.ZERO,
+                totalOtherPayments = BigDecimal.ZERO,
+                totalProductsSold = 45,
+                durationMinutes = 510,
+                cashDeclared = BigDecimal("4200.00"),
+                cashDifference = BigDecimal("0.00"),
+                reconciliation = com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationResult(
+                    outcome = CashReconciliationOutcome.APPLIED,
+                    cashDeclared = BigDecimal("4200.00"),
+                    cashDifference = BigDecimal("0.00")
+                )
+            ),
+            reconciliationAction = CashReconciliationAction.COUNTED,
+            onDone = {}
         )
     }
 }

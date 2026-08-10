@@ -2943,7 +2943,11 @@ class PaymentViewModel @Inject constructor(
                 return@launch
             }
 
-            val currentShift = resolveCurrentShiftForPayment(currentVenueId)
+            // ⚡ Turnos desactivados = CERO red. Este fetch corria ANTES de preguntar
+            // isShiftSystemEnabled() y un socket medio muerto congelo "iniciar pago"
+            // 22s EN SILENCIO (bug real 2026-08-08) — esta fase no tiene vigilante.
+            // AngelPay hace el gate desde 2026-05-20; paridad nunca portada a Blumon.
+            val currentShift = if (shiftRepository.isShiftSystemEnabled()) resolveCurrentShiftForPayment(currentVenueId) else null
 
             // ⭐ CRITICAL: Shift System Validation
             // - If enabled (default): Block payment if no shift is open
@@ -4717,7 +4721,11 @@ class PaymentViewModel @Inject constructor(
 
                 // ⭐ CRITICAL: Validate shift is open before processing payment (Square/Toast pattern)
                 // Without an open shift, cash reconciliation is impossible
-                val currentShift = resolveCurrentShiftForPayment(currentVenueId!!)
+                // ⚡ Turnos desactivados = CERO red. Este fetch corria ANTES de preguntar
+                // isShiftSystemEnabled() y un socket medio muerto congelo "iniciar pago"
+                // 22s EN SILENCIO (bug real 2026-08-08) — esta fase no tiene vigilante.
+                // AngelPay hace el gate desde 2026-05-20; paridad nunca portada a Blumon.
+                val currentShift = if (shiftRepository.isShiftSystemEnabled()) resolveCurrentShiftForPayment(currentVenueId!!) else null
 
                 if (shiftRepository.isShiftSystemEnabled()) {
                     if (currentShift == null || currentShift.status != com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN) {
@@ -5040,7 +5048,11 @@ class PaymentViewModel @Inject constructor(
                 currentStaffId = staffId
 
                 // ⭐ CRITICAL: Validate shift is open before processing payment
-                val currentShift = resolveCurrentShiftForPayment(currentVenueId!!)
+                // ⚡ Turnos desactivados = CERO red. Este fetch corria ANTES de preguntar
+                // isShiftSystemEnabled() y un socket medio muerto congelo "iniciar pago"
+                // 22s EN SILENCIO (bug real 2026-08-08) — esta fase no tiene vigilante.
+                // AngelPay hace el gate desde 2026-05-20; paridad nunca portada a Blumon.
+                val currentShift = if (shiftRepository.isShiftSystemEnabled()) resolveCurrentShiftForPayment(currentVenueId!!) else null
 
                 if (shiftRepository.isShiftSystemEnabled()) {
                     if (currentShift == null || currentShift.status != com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.OPEN) {

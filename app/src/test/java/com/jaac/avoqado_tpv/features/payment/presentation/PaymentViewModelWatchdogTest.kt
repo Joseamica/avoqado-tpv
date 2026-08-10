@@ -31,6 +31,7 @@ import com.paxsz.module.emv.process.contact.CandidateAID
 import android.content.Context
 import io.mockk.Runs
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.just
 import io.mockk.mockk
@@ -386,6 +387,47 @@ class PaymentViewModelWatchdogTest {
         advanceTimeBy(60_000L)
         // Sin fuga: ya no debe seguir escalando despues de terminar.
         assertEquals(AuthWatchdogLevel.NONE, vm.currentWatchdogLevel())
+
+        vm.viewModelScope.cancel()
+    }
+
+    // ------------------------------------------------------------------
+    // Turnos desactivados NO deben costar una vuelta de red (bug real 2026-08-08:
+    // el fetch del turno corria ANTES de preguntar isShiftSystemEnabled() y un
+    // socket medio muerto congelo "iniciar pago" 22.4s EN SILENCIO — la fase no
+    // tiene vigilante. AngelPay ya lo hacia bien desde 2026-05-20; esto es la
+    // paridad que nunca se porto al riel Blumon.)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `turnos desactivados - iniciar pago no consulta el turno por red`() = runTest(scheduler) {
+        every { mockShiftRepository.isShiftSystemEnabled() } returns false
+
+        val vm = createViewModel()
+        vm.startPayment("100.00")
+        scheduler.advanceUntilIdle()
+
+        coVerify(exactly = 0) { mockShiftRepository.getCurrentShift(any()) }
+
+        vm.viewModelScope.cancel()
+    }
+
+    /**
+     * REGRESION y anti-vacuidad: con turnos ACTIVADOS el fetch SI debe ocurrir.
+     * Si este test falla, el arnes no esta llegando al codigo del turno y el
+     * test de arriba pasaria en vacio — los dos se leen JUNTOS.
+     */
+    @Test
+    fun `turnos activados - el turno se consulta como siempre`() = runTest(scheduler) {
+        every { mockShiftRepository.isShiftSystemEnabled() } returns true
+        coEvery { mockShiftRepository.getCurrentShift(any()) } returns
+            com.jaac.avoqado_tpv.core.domain.models.Result.Success(null)
+
+        val vm = createViewModel()
+        vm.startPayment("100.00")
+        scheduler.advanceUntilIdle()
+
+        coVerify(atLeast = 1) { mockShiftRepository.getCurrentShift(any()) }
 
         vm.viewModelScope.cancel()
     }

@@ -558,6 +558,31 @@ public class EmvProcess extends EmvBase {
         @Override
         public void certVerify() {
 //            Cardholder credential verify(PBOC)
+            // 🔴 DEADLOCK si no respondemos. Verificado en bytecode de EMV_v106.jar:
+            //   cCertVerify()  →  new ConditionVariable()  →  certVerify()  →  cv.block()
+            // `block():()V` es la variante SIN timeout: el hilo del kernel EMV espera para
+            // SIEMPRE, y lo único que abre ese CV es `setCallBackResult` (hace cv.open()).
+            // Con el cuerpo vacío que había aquí, el hilo quedaba bloqueado el resto de la
+            // vida del proceso y sólo matar la app lo liberaba.
+            //
+            // De los 5 callbacks bloqueantes del kernel, 3 ya respondían bien
+            // (emvWaitAppSel, emvInputAmount, emvGetHolderPwd); éste y emvVerifyPINfailed
+            // eran los únicos dos sin respuesta.
+            //
+            // ⚠️ Esto NO implementa la verificación: es sólo la respuesta que evita el
+            // bloqueo. La ruta es de PBOC/UnionPay, que no se usa en México. Si algún día
+            // se habilitan esas tarjetas, hay que implementarla de verdad ANTES de operar.
+            //
+            // 🔴 P1 fix: la respuesta ERA RetCode.EMV_OK — "sin bloqueo" se logró
+            // aprobando en silencio una verificación que NUNCA se hizo. Sin
+            // implementación real, la única respuesta honesta es un RECHAZO: el
+            // kernel debe tratar esto como credencial NO verificada (CVM fallida ⇒
+            // el kernel decide declinar o, si el CVM list de la tarjeta lo permite,
+            // caer a otro método), nunca como "verificado, adelante". Fail-closed,
+            // NUNCA fail-silent — silencio total es el deadlock de arriba; EMV_OK es
+            // el bug que esto corrige.
+            LogUtils.w(TAG, "certVerify (PBOC) no implementado - RECHAZO explícito (no aprobado en silencio) para no bloquear el kernel EMV");
+            emvCallback.setCallBackResult(RetCode.EMV_DENIAL);
         }
 
         @Override
@@ -579,7 +604,20 @@ public class EmvProcess extends EmvBase {
 
         @Override
         public int emvVerifyPINfailed(byte[] reserved) {
-            return 0;
+            // 🔴 DEADLOCK si no respondemos, igual que certVerify. En el bytecode:
+            //   cEMVVerifyPINfailed(byte[])  →  new ConditionVariable()
+            //                                →  emvVerifyPINfailed(reserved)
+            //                                →  cv.block()      ← SIN timeout
+            //
+            // Y el `return` de este método **se descarta** del lado nativo: el kernel lee
+            // el valor que dejó `setCallBackResult`, no lo que retornamos. Por eso el
+            // `return 0` que había aquí no llegaba a ningún lado y el hilo se quedaba
+            // colgado para siempre.
+            //
+            // Se conserva la intención original (0 == EMV_OK) — lo único que cambia es que
+            // ahora sí llega al kernel.
+            emvCallback.setCallBackResult(RetCode.EMV_OK);
+            return RetCode.EMV_OK;
         }
 
         @Override

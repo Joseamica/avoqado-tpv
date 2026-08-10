@@ -9,6 +9,7 @@ import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
 import com.jaac.avoqado_tpv.features.payment.data.repository.PaymentQueueRepositoryImpl
 import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment
 import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
@@ -287,6 +288,55 @@ class PaymentSyncWorkerTest {
     }
 
     // ------------------------------------------------------------------
+    // El banner debe enterarse cuando el worker termina (bug real 2026-08-07)
+    // ------------------------------------------------------------------
+
+    /**
+     * Bug real: los 2 pagos atorados sincronizaron (success=2) pero el banner
+     * siguio diciendo "2 pagos pendientes" hasta reiniciar la app. El contador
+     * (PaymentQueueStateManager) es un StateFlow de push manual: el boton de
+     * reintentar lo refresca al RESETEAR, pero nadie lo refrescaba cuando el
+     * worker TERMINABA. El worker debe empujar los conteos reales al acabar.
+     */
+    @Test
+    fun `al terminar la tanda el worker refresca los conteos del banner`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val stateManager = PaymentQueueStateManager()
+        // Estado viejo sembrado: el banner cree que hay 2 pendientes.
+        stateManager.refreshCounts(pendingCount = 2, failedCount = 0)
+
+        val payment = queuedPayment(reference = "ref-sync-ok")
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any()) } returns Result.success(mockk(relaxed = true))
+        // Tras sincronizar, la verdad en Room es 0 pendientes / 0 fallidos.
+        coEvery { repo.getPendingCount() } returns 0
+        coEvery { repo.getFailedCount() } returns 0
+
+        buildWorker(repo, useCase, stateManager).doWork()
+
+        // Sin el fix, el estado se queda en el 2 sembrado y el banner miente.
+        assertThat(stateManager.queueState.value.pendingCount).isEqualTo(0)
+        assertThat(stateManager.queueState.value.failedCount).isEqualTo(0)
+        assertThat(stateManager.queueState.value.hasAnyPayments).isFalse()
+    }
+
+    /** Un fallo al CONTAR jamas debe tirar el worker: los pagos ya se procesaron. */
+    @Test
+    fun `si contar falla el worker igual termina en success`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-count-boom")
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any()) } returns Result.success(mockk(relaxed = true))
+        coEvery { repo.getPendingCount() } throws IllegalStateException("db cerrada")
+
+        val result = buildWorker(repo, useCase).doWork()
+
+        assertThat(result).isEqualTo(ListenableWorker.Result.success())
+    }
+
+    // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
 
@@ -294,6 +344,7 @@ class PaymentSyncWorkerTest {
     private fun buildWorker(
         repo: PaymentQueueRepository,
         useCase: RecordPaymentUseCase,
+        stateManager: PaymentQueueStateManager = PaymentQueueStateManager(),
     ): PaymentSyncWorker {
         val context = mockk<Context>(relaxed = true)
         return TestListenableWorkerBuilder<PaymentSyncWorker>(context)
@@ -302,7 +353,7 @@ class PaymentSyncWorkerTest {
                     appContext: Context,
                     workerClassName: String,
                     workerParameters: WorkerParameters,
-                ): ListenableWorker = PaymentSyncWorker(appContext, workerParameters, repo, useCase)
+                ): ListenableWorker = PaymentSyncWorker(appContext, workerParameters, repo, useCase, stateManager)
             })
             .build()
     }

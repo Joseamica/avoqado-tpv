@@ -23,3 +23,6 @@ app/google-services.json
 
 # graphify knowledge graph output
 graphify-out/
+
+# git worktrees created inside the repo (each is a full duplicate checkout)
+.claude/worktrees/

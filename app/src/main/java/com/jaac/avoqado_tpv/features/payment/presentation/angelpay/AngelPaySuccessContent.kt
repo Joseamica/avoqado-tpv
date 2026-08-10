@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -25,9 +26,9 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Print
-import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -51,7 +52,10 @@ import com.jaac.avoqado_tpv.core.presentation.components.rememberQrBitmapPainter
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt
+import com.jaac.avoqado_tpv.features.payment.presentation.components.ReceiptPerforation
+import com.jaac.avoqado_tpv.features.payment.presentation.components.ReceiptTicketBackground
 import com.jaac.avoqado_tpv.features.payment.presentation.components.WhatsAppReceiptDialog
+import com.jaac.avoqado_tpv.features.payment.presentation.components.receiptChromeFill
 import java.math.BigDecimal
 import java.util.Locale
 
@@ -87,6 +91,16 @@ fun AngelPaySuccessContent(
      */
     onViewInPayments: (paymentId: String) -> Unit = {},
     onStartNewPayment: () -> Unit,
+    /**
+     * Texto del boton principal. Espeja `resolveSuccessRouting` del riel Blumon
+     * (PaymentScreen): la etiqueta debe decir a donde te lleva. Quien conoce el origen es
+     * la capa de navegacion (`cameFromTables` / `cameFromCheckout`), asi que lo inyecta;
+     * el caso serializado si lo sabe esta pantalla y lo resuelve abajo.
+     *
+     * Antes estaba FIJO en "Nuevo Cobro": al cobrar una mesa decia eso y te mandaba al
+     * plano de mesas. El texto mentia sobre lo que iba a hacer.
+     */
+    newPaymentLabel: String = "Nuevo Pago",
     // 📸 Serialized (SIM) sale — post-payment proof-of-sale, mirrors Blumon's own
     // "Vinculación" flow exactly. Default off/false for a normal AngelPay payment, so
     // the success screen stays byte-identical (QR always shown) unless this is a SIM sale.
@@ -154,22 +168,37 @@ fun AngelPaySuccessContent(
                 )
             }
 
-            // "Nuevo Cobro" button (center)
+            // Boton principal (centro) — mismo tratamiento que el riel Blumon
+            // (PaymentScreen, el boton de successRouting): `surface` como fondo, sin icono,
+            // y el texto "Nuevo Pago". Sin `colors` caia al `primary` del tema y salia una
+            // pastilla clara donde en la PAX es negra; y el icono de tienda no existe alla.
+            // Los dos rieles deben verse igual: el cajero no deberia notar en cual terminal
+            // esta parado.
             Button(
                 onClick = onStartNewPayment,
                 shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = receiptChromeFill(),
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                ),
+                // 🔴 El borde NO es adorno: sin el, el boton desaparece. Medido en la N86 a
+                // lo ancho del encabezado: `surface` es (42,42,42) y esta pantalla YA se
+                // asienta sobre `surface`, asi que el boton tenia CERO extension visible —
+                // solo flotaba el texto. En Blumon se ve porque esa pantalla va sobre
+                // `background` (#1C1C1C) y ahi si hay escalon de color. Mismo borde que sus
+                // dos vecinos (los IconButton de Home y Pagos), que miden (56,56,56).
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 modifier = Modifier
                     .weight(1f)
                     .padding(horizontal = 12.dp)
                     .height(48.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Default.Storefront,
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp),
+                // "Nueva Venta" lo decide esta pantalla porque `isSerializedFlow` vive aqui;
+                // el resto (mesa / carrito / cobro rapido) lo inyecta la navegacion.
+                Text(
+                    text = if (isSerializedFlow) "Nueva Venta" else newPaymentLabel,
+                    style = MaterialTheme.typography.labelLarge,
                 )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Nuevo Cobro", style = MaterialTheme.typography.labelLarge)
             }
 
             // "Ver en Pagos" button (right) — opens the unified Pagos list
@@ -232,204 +261,243 @@ fun AngelPaySuccessContent(
             }
         }
 
-        // ── QR Code Receipt (normal) OR proof-of-sale photo (serialized SIM sale) ──
-        if (!isSerializedFlow) {
-            if (showReceiptScreen && state.receipt?.receiptUrl != null) {
-                Box(
-                    modifier = Modifier
-                        .size(160.dp)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(Color.White)
-                        .border(
-                            width = 8.dp,
-                            color = MaterialTheme.colorScheme.outline,
-                            shape = RoundedCornerShape(24.dp),
-                        ),
-                ) {
-                    Image(
-                        painter = rememberQrBitmapPainter(
-                            content = state.receipt.receiptUrl,
-                            size = 120.dp,
-                            padding = 0.dp,
-                        ),
-                        contentDescription = "Codigo QR del recibo",
+        // 🧾 La nota. Antes estos elementos iban sueltos uno tras otro y se acababan a
+        // media pantalla: sin borde inferior el ojo no sabia donde terminaba la nota, y el
+        // hueco de abajo se leia como algo faltante. El ticket cierra el bloque.
+        // Mismo asset y mismo encimado del QR que el riel Blumon (PaymentScreen).
+        Spacer(modifier = Modifier.weight(1f))
+
+        Box(modifier = Modifier.fillMaxWidth()) {
+            ReceiptTicketBackground(
+                modifier = Modifier.matchParentSize(),
+                // El QR mide 160dp: la mitad sobresale del borde de arriba.
+                topOverlap = if (isSerializedFlow) 16.dp else 80.dp,
+            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                // ── QR Code Receipt (normal) OR proof-of-sale photo (serialized SIM sale) ──
+                if (!isSerializedFlow) {
+                    if (showReceiptScreen && state.receipt?.receiptUrl != null) {
+                        Box(
+                            modifier = Modifier
+                                .size(160.dp)
+                                .clip(RoundedCornerShape(24.dp))
+                                .background(Color.White)
+                                .border(
+                                    width = 8.dp,
+                                    color = MaterialTheme.colorScheme.outline,
+                                    shape = RoundedCornerShape(24.dp),
+                                ),
+                        ) {
+                            Image(
+                                painter = rememberQrBitmapPainter(
+                                    content = state.receipt.receiptUrl,
+                                    size = 120.dp,
+                                    padding = 0.dp,
+                                ),
+                                contentDescription = "Codigo QR del recibo",
+                                modifier = Modifier
+                                    .size(120.dp)
+                                    .align(Alignment.Center),
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text(
+                            text = "Escanea el codigo QR para descargar el recibo",
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp),
+                        )
+
+                        Spacer(modifier = Modifier.height(16.dp))
+                    }
+                } else {
+                    com.jaac.avoqado_tpv.features.payment.presentation.components.ProofOfSalePhotoSection(
+                        isPortabilidad = isPortabilidad,
+                        lineaPhotoPath = lineaPhotoPath,
+                        portabilidadPhotoPath = portabilidadPhotoPath,
+                        isUploading = isUploadingProofOfSale,
+                        isComplete = proofOfSaleComplete,
+                        onTapLinea = {
+                            if (lineaPhotoPath != null) {
+                                viewingPhotoLabel = "linea"
+                            } else {
+                                currentPhotoLabel = "linea"
+                                showProofOfSaleCamera = true
+                            }
+                        },
+                        onTapPortabilidad = {
+                            if (portabilidadPhotoPath != null) {
+                                viewingPhotoLabel = "portabilidad"
+                            } else {
+                                currentPhotoLabel = "portabilidad"
+                                showProofOfSaleCamera = true
+                            }
+                        },
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+
+                // ── Cash indicator ───────────────────────────────────────────
+                if (state.isCash) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
                         modifier = Modifier
-                            .size(120.dp)
-                            .align(Alignment.Center),
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.tertiaryContainer)
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AttachMoney,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Pago en efectivo",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+
+                // Perforacion: es lo que convierte el bloque en "nota que se corta".
+                // El flujo serializado la omite — ahi arriba va la foto, no el QR (igual que Blumon).
+                if (!isSerializedFlow) {
+                    ReceiptPerforation()
+                    Spacer(modifier = Modifier.height(20.dp))
+                }
+
+                // ── Total pagado ─────────────────────────────────────────────
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = "Total pagado",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "$${String.format(Locale.US, "%.2f", totalAmount)}",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
                     )
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                Text(
-                    text = "Escanea el codigo QR para descargar el recibo",
-                    textAlign = TextAlign.Center,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp),
-                )
+                // Medido en la N86: `outlineVariant` es #2A2A2A, EXACTAMENTE el mismo valor que
+                // `surface` — sobre el ticket aclarado se leia como una raya NEGRA. Igual que
+                // el tinte del ticket, el token asumia otro fondo. onSurface a alfa bajo se
+                // separa hacia el lado correcto en ambos temas.
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f))
 
-                Spacer(modifier = Modifier.height(16.dp))
-            }
-        } else {
-            com.jaac.avoqado_tpv.features.payment.presentation.components.ProofOfSalePhotoSection(
-                isPortabilidad = isPortabilidad,
-                lineaPhotoPath = lineaPhotoPath,
-                portabilidadPhotoPath = portabilidadPhotoPath,
-                isUploading = isUploadingProofOfSale,
-                isComplete = proofOfSaleComplete,
-                onTapLinea = {
-                    if (lineaPhotoPath != null) {
-                        viewingPhotoLabel = "linea"
-                    } else {
-                        currentPhotoLabel = "linea"
-                        showProofOfSaleCamera = true
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // ── Breakdown: Monto ─────────────────────────────────────────
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = "Monto",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "$${String.format(Locale.US, "%.2f", subtotalAmount)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                // ── Breakdown: Propina ───────────────────────────────────────
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = "Propina",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "$${String.format(Locale.US, "%.2f", tipAmount)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                // ── Reference ────────────────────────────────────────────────
+                if (state.referenceNumber != null && !state.isCash) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Ref: ${state.referenceNumber}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                // ── F-1: pending-sync note (amber, NOT red) ───────────────────
+                // The charge succeeded; only Avoqado's record of it is still queued. Same icon
+                // language as the "pending payments" device alert (statusWarning + Icons.Default.Sync)
+                // so the cashier reads it as "handled itself", not "broken" — but the TEXT is
+                // onSurface, not statusWarning. Fix round 1: amber-on-amber-tint text was ≈1.96:1 in
+                // light theme (WCAG AA body text needs 4.5:1) — on a handheld under store lighting
+                // that made the exact "don't recharge" sentence the least readable text on screen.
+                // onSurface on the same tinted background lands at ≈16:1 in light theme, matching
+                // every other text element in this composable (Total pagado / Monto / Propina all
+                // use onSurface already). DeviceAlertBanner's statusWarning precedent uses it as a
+                // SOLID fill with white text, not as a same-hue tint+text pairing — doesn't apply here.
+                if (pendingSyncMessage != null) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.12f))
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Sync,
+                            contentDescription = null,
+                            tint = MaterialTheme.avoqadoColors.statusWarning,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Text(
+                            text = pendingSyncMessage,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
                     }
-                },
-                onTapPortabilidad = {
-                    if (portabilidadPhotoPath != null) {
-                        viewingPhotoLabel = "portabilidad"
-                    } else {
-                        currentPhotoLabel = "portabilidad"
-                        showProofOfSaleCamera = true
-                    }
-                },
-            )
+                }
 
-            Spacer(modifier = Modifier.height(16.dp))
-        }
-
-        // ── Cash indicator ───────────────────────────────────────────
-        if (state.isCash) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.tertiaryContainer)
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Default.AttachMoney,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text(
-                    text = "Pago en efectivo",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onTertiaryContainer,
-                )
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-        }
-
-        // ── Total pagado ─────────────────────────────────────────────
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                text = "Total pagado",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                text = "$${String.format(Locale.US, "%.2f", totalAmount)}",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // ── Breakdown: Monto ─────────────────────────────────────────
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                text = "Monto",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = "$${String.format(Locale.US, "%.2f", subtotalAmount)}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        // ── Breakdown: Propina ───────────────────────────────────────
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                text = "Propina",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = "$${String.format(Locale.US, "%.2f", tipAmount)}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        // ── Reference ────────────────────────────────────────────────
-        if (state.referenceNumber != null && !state.isCash) {
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "Ref: ${state.referenceNumber}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        // ── F-1: pending-sync note (amber, NOT red) ───────────────────
-        // The charge succeeded; only Avoqado's record of it is still queued. Same icon
-        // language as the "pending payments" device alert (statusWarning + Icons.Default.Sync)
-        // so the cashier reads it as "handled itself", not "broken" — but the TEXT is
-        // onSurface, not statusWarning. Fix round 1: amber-on-amber-tint text was ≈1.96:1 in
-        // light theme (WCAG AA body text needs 4.5:1) — on a handheld under store lighting
-        // that made the exact "don't recharge" sentence the least readable text on screen.
-        // onSurface on the same tinted background lands at ≈16:1 in light theme, matching
-        // every other text element in this composable (Total pagado / Monto / Propina all
-        // use onSurface already). DeviceAlertBanner's statusWarning precedent uses it as a
-        // SOLID fill with white text, not as a same-hue tint+text pairing — doesn't apply here.
-        if (pendingSyncMessage != null) {
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(MaterialTheme.avoqadoColors.statusWarning.copy(alpha = 0.12f))
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Sync,
-                    contentDescription = null,
-                    tint = MaterialTheme.avoqadoColors.statusWarning,
-                    modifier = Modifier.size(20.dp),
-                )
-                Text(
-                    text = pendingSyncMessage,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+                // Aire entre los totales y el borde de abajo del ticket.
+                Spacer(modifier = Modifier.height(24.dp))
             }
         }
 
+        // El ticket se mide por su contenido A PROPOSITO: el vector trae las muescas al
+        // 58% de su alto (213.5/368) y con FillBounds estirarlo las desalinea del
+        // punteado. Asi que la holgura se reparte AFUERA, con un weight a cada lado —
+        // medido en la N86 quedaban 380px muertos arriba contra 20px abajo.
         Spacer(modifier = Modifier.weight(1f))
+
 
         // ── Receipt actions (Print optional per device) ──────────────
         if (state.receipt != null) {
@@ -453,7 +521,7 @@ fun AngelPaySuccessContent(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight()
-                            .background(MaterialTheme.colorScheme.surface)
+                            .background(receiptChromeFill())
                             .clickable(enabled = !isPrinting) {
                                 isPrinting = true
                                 onPrintReceipt()
@@ -502,7 +570,7 @@ fun AngelPaySuccessContent(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .background(MaterialTheme.colorScheme.surface)
+                        .background(receiptChromeFill())
                         .clickable { showEmailDialog = true },
                     contentAlignment = Alignment.Center,
                 ) {
@@ -538,7 +606,7 @@ fun AngelPaySuccessContent(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .background(MaterialTheme.colorScheme.surface)
+                        .background(receiptChromeFill())
                         .clickable { showWhatsAppDialog = true },
                     contentAlignment = Alignment.Center,
                 ) {

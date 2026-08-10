@@ -6,8 +6,12 @@ import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.features.shift.data.dto.CloseShiftRequest
 import com.jaac.avoqado_tpv.features.shift.data.dto.OpenShiftRequest
 import com.jaac.avoqado_tpv.features.shift.data.dto.toDomain
+import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationAction
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
+import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import timber.log.Timber
+import java.math.BigDecimal
+import java.math.RoundingMode
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -127,29 +131,65 @@ class ShiftRepository @Inject constructor(
      *
      * @param venueId Venue identifier for tenant isolation
      * @param shiftId Shift identifier to close
+     * @param action Explicit additive reconciliation action; null preserves the legacy request
+     * @param countedCash Physical cash total for COUNTED, represented and validated as BigDecimal
      * @return Result with updated shift (including calculations) or error
      */
     suspend fun closeShift(
         venueId: String,
-        shiftId: String
+        shiftId: String,
+        action: CashReconciliationAction? = null,
+        countedCash: BigDecimal? = null
     ): Result<Shift> {
+        val canonicalCount = when {
+            action == null && countedCash != null -> {
+                return Result.Error(ApiException.ValidationError("El conteo requiere una acción de conciliación."))
+            }
+            action == CashReconciliationAction.COUNTED && countedCash == null -> {
+                return Result.Error(ApiException.ValidationError("Ingresa el efectivo total contado."))
+            }
+            action == CashReconciliationAction.SKIPPED && countedCash != null -> {
+                return Result.Error(ApiException.ValidationError("Cerrar sin conteo no acepta un monto."))
+            }
+            action == CashReconciliationAction.COUNTED -> canonicalCashCount(countedCash!!)
+                ?: return Result.Error(ApiException.ValidationError("El conteo de efectivo no es válido."))
+            else -> null
+        }
+
         return try {
             Timber.d("🔴 Closing shift: $shiftId for venue: $venueId")
 
             val request = CloseShiftRequest(
                 venueId = venueId,
                 shiftId = shiftId,
-                closeData = null  // MVP: Backend auto-calculates everything
+                closeData = null,
+                cashReconciliationAction = action,
+                countedCash = canonicalCount
             )
 
             val response = apiService.closeShift(venueId, shiftId, request)
 
             if (response.isSuccessful && response.body() != null) {
                 // Extract shift from wrapper response: {"success": true, "data": ShiftDto}
-                val shiftDto = response.body()!!.data
-                val shift = shiftDto.toDomain()
+                val body = response.body()!!
+                val shift = body.data.toDomain().copy(
+                    reconciliation = body.reconciliation?.toDomain()
+                )
                 Timber.i("✅ Shift closed successfully. Sales: $${shift.totalSales}, Products: ${shift.totalProductsSold}")
                 Result.Success(shift)
+            } else if (response.code() == 400 || response.code() == 409) {
+                // A close POST is never safe to replay. One bounded read resolves the common case
+                // where the original request committed but its response was lost, or another caller
+                // won the close claim first. The backend uses 409 while a claim is in progress and
+                // its existing 400 contract once that competing close is already committed.
+                val alreadyClosed = findRecentlyClosedShift(venueId, shiftId)
+                if (alreadyClosed != null) {
+                    Timber.i("✅ Shift was already closed: $shiftId")
+                    Result.Success(alreadyClosed)
+                } else {
+                    Timber.w("⚠️ Shift close HTTP ${response.code()} remains unresolved: $shiftId")
+                    Result.Error(ApiException.HttpError(response.code(), response.message()))
+                }
             } else {
                 Timber.w("⚠️ Failed to close shift: HTTP ${response.code()}")
                 Result.Error(ApiException.HttpError(response.code(), response.message()))
@@ -157,6 +197,30 @@ class ShiftRepository @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ Network error closing shift")
             Result.Error(ApiException.NetworkError(e))
+        }
+    }
+
+    private fun canonicalCashCount(value: BigDecimal): String? {
+        if (value.signum() < 0 || value > MAX_CASH_COUNT) return null
+        return try {
+            value.setScale(2, RoundingMode.UNNECESSARY).toPlainString()
+        } catch (_: ArithmeticException) {
+            null
+        }
+    }
+
+    private suspend fun findRecentlyClosedShift(venueId: String, shiftId: String): Shift? {
+        return try {
+            val response = apiService.getShiftHistory(venueId, pageSize = CLOSE_RECOVERY_LIMIT, pageNumber = 1)
+            if (!response.isSuccessful) return null
+
+            response.body()?.data
+                ?.asSequence()
+                ?.map { it.toDomain() }
+                ?.firstOrNull { it.id == shiftId && it.status == ShiftStatus.CLOSED }
+        } catch (error: Exception) {
+            Timber.w(error, "⚠️ Bounded shift close recovery read failed")
+            null
         }
     }
 
@@ -266,5 +330,10 @@ class ShiftRepository @Inject constructor(
         } else {
             null
         }
+    }
+
+    private companion object {
+        val MAX_CASH_COUNT: BigDecimal = BigDecimal("99999999.99")
+        const val CLOSE_RECOVERY_LIMIT = 10
     }
 }

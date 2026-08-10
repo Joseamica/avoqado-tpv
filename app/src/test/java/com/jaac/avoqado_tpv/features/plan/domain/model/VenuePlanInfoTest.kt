@@ -58,6 +58,7 @@ class VenuePlanInfoTest {
             PlanFeatureCatalog.PROMOTIONS,
             PlanFeatureCatalog.ADVANCED_REPORTS,
             PlanFeatureCatalog.TABLE_SERVICE,
+            PlanFeatureCatalog.CASH_RECONCILIATION,
         )
         proFeatures.forEach { code ->
             assertThat(PlanFeatureCatalog.minTierFor(code)).isEqualTo(PlanTier.PRO)
@@ -66,6 +67,14 @@ class VenuePlanInfoTest {
             assertThat(plan(PlanTier.PREMIUM).allowsFeature(code)).isTrue()
             assertThat(plan(PlanTier.ENTERPRISE).allowsFeature(code)).isTrue()
         }
+    }
+
+    @Test
+    fun `cash reconciliation uses exact backend code and requires PRO`() {
+        assertThat(PlanFeatureCatalog.minTierFor("CASH_RECONCILIATION"))
+            .isEqualTo(PlanTier.PRO)
+        assertThat(plan(PlanTier.FREE).allowsFeature("CASH_RECONCILIATION")).isFalse()
+        assertThat(plan(PlanTier.PRO).allowsFeature("CASH_RECONCILIATION")).isTrue()
     }
 
     @Test

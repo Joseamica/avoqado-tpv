@@ -87,6 +87,13 @@ class TpvSettingsRepository @Inject constructor(
                     TpvSettings.DEFAULT
                 }
 
+                // Server-owned capability lives at terminal-config data root,
+                // never inside the mutable TpvSettingsDto. A successful old-
+                // server response (field absent) is authoritative OFF.
+                settings = settings.copy(
+                    cashReconciliationEnabled = configData?.cashReconciliationEnabled == true,
+                )
+
                 // Don't let a stale server value clobber an unsynced local-first
                 // write. Real bug found on hardware: toggle restaurantModeEnabled
                 // ON while offline (updateSettingLocalFirst) → app restarts
@@ -161,7 +168,13 @@ class TpvSettingsRepository @Inject constructor(
             val response = apiService.updateTpvSettings(serialNumber, settings.toDto())
 
             if (response.isSuccessful && response.body()?.success == true) {
-                val savedSettings = response.body()?.data?.toDomain() ?: settings
+                // The PUT response contains only mutable terminal settings and
+                // therefore cannot echo this venue-level capability. Preserve
+                // the last backend-resolved/cached value instead of resetting
+                // it to the domain default false.
+                val savedSettings = (response.body()?.data?.toDomain() ?: settings).copy(
+                    cashReconciliationEnabled = _settings.value.cashReconciliationEnabled,
+                )
 
                 // Update local cache
                 secureStorage.saveTpvSettings(savedSettings)

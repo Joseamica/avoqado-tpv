@@ -16,7 +16,7 @@ import java.math.BigDecimal
  * @property staffName Staff member's full name (for UI display)
  * @property startTime Shift start timestamp (ISO 8601)
  * @property endTime Shift end timestamp (null if currently open)
- * @property status Shift status (OPEN, CLOSED)
+ * @property status Shift status (OPEN, CLOSING, CLOSED)
  * @property startingCash Initial cash amount in drawer
  * @property endingCash Final cash amount after close (null if open)
  * @property totalSales Total sales amount (automatic calculation)
@@ -47,7 +47,42 @@ data class Shift(
     val totalVoucherPayments: BigDecimal,
     val totalOtherPayments: BigDecimal,
     val totalProductsSold: Int,
-    val durationMinutes: Int?
+    val durationMinutes: Int?,
+    /** Physical cash declared at close. Absent on old/open shift payloads. */
+    val cashDeclared: BigDecimal? = null,
+    /** Physical count minus expected cash. Exact zero is a valid balanced result. */
+    val cashDifference: BigDecimal? = null,
+    /**
+     * Outcome returned by the close request that produced this instance.
+     *
+     * This is deliberately not inferred from persisted nullable shift columns: history and old
+     * server responses leave it null because skip/ignore intent is request-scoped.
+     */
+    val reconciliation: CashReconciliationResult? = null
+)
+
+/** Explicit additive close action. Null means the unchanged legacy close contract. */
+enum class CashReconciliationAction {
+    COUNTED,
+    SKIPPED
+}
+
+/** Every outcome documented by the additive H0.6 backend close contract. */
+enum class CashReconciliationOutcome {
+    APPLIED,
+    SKIPPED,
+    LEGACY_APPLIED,
+    IGNORED_DISABLED,
+    IGNORED_INVALID,
+    IGNORED_OVERFLOW,
+    NOT_REQUESTED
+}
+
+/** Request-scoped result returned at the root of a successful close response. */
+data class CashReconciliationResult(
+    val outcome: CashReconciliationOutcome,
+    val cashDeclared: BigDecimal? = null,
+    val cashDifference: BigDecimal? = null
 )
 
 /**

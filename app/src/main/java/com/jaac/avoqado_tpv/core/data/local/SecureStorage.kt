@@ -160,6 +160,8 @@ class SecureStorage @Inject constructor(
         private const val KEY_TPV_PAYMENT_LEDGER_MODE = "tpv_payment_ledger_mode"
         // Restaurant mode (Mesas module entry point)
         private const val KEY_TPV_RESTAURANT_MODE = "tpv_restaurant_mode_enabled"
+        // Server-owned effective cash-reconciliation capability
+        private const val KEY_TPV_CASH_RECONCILIATION = "tpv_cash_reconciliation_enabled"
         // True while a local-first restaurantModeEnabled write hasn't been
         // confirmed synced to the backend yet — see getRestaurantModePendingSync().
         private const val KEY_TPV_RESTAURANT_MODE_PENDING_SYNC = "tpv_restaurant_mode_pending_sync"
@@ -1207,6 +1209,8 @@ class SecureStorage @Inject constructor(
             putString(KEY_TPV_PAYMENT_LEDGER_MODE, settings.paymentLedgerMode.name)
             // Restaurant mode (Mesas module entry point)
             putBoolean(KEY_TPV_RESTAURANT_MODE, settings.restaurantModeEnabled)
+            // Server-owned effective cash-reconciliation capability
+            putBoolean(KEY_TPV_CASH_RECONCILIATION, settings.cashReconciliationEnabled)
         }.apply()
         Timber.d("💾 TPV settings saved: showReview=${settings.showReviewScreen}, showTip=${settings.showTipScreen}, showReceipt=${settings.showReceiptScreen}, showVerification=${settings.showVerificationScreen}, enableShifts=${settings.enableShifts}, kioskEnabled=${settings.kioskModeEnabled}, showQuickPayment=${settings.showQuickPayment}, showOrderManagement=${settings.showOrderManagement}, showCrypto=${settings.showCryptoOption}, failoverMode=${settings.cellularFailoverMode}, ledgerMode=${settings.paymentLedgerMode}")
     }
@@ -1289,9 +1293,19 @@ class SecureStorage @Inject constructor(
                 encryptedPrefs.getString(KEY_TPV_PAYMENT_LEDGER_MODE, null)
             ),
             // Restaurant mode (Mesas module entry point) — default: disabled
-            restaurantModeEnabled = encryptedPrefs.getBoolean(KEY_TPV_RESTAURANT_MODE, false)
+            restaurantModeEnabled = encryptedPrefs.getBoolean(KEY_TPV_RESTAURANT_MODE, false),
+            // Server-owned capability — old installs / missing cache stay disabled
+            cashReconciliationEnabled = isCashReconciliationEnabled(),
         )
     }
+
+    /**
+     * Whether the backend-resolved cash-reconciliation capability is enabled.
+     * Missing cache keys (old APK/server, first launch, cleared venue) fail
+     * closed for this additive feature without affecting shift closing.
+     */
+    fun isCashReconciliationEnabled(): Boolean =
+        encryptedPrefs.getBoolean(KEY_TPV_CASH_RECONCILIATION, false)
 
     /**
      * True while a local-first `restaurantModeEnabled` write (toggled on the
@@ -1361,6 +1375,8 @@ class SecureStorage @Inject constructor(
             remove(KEY_TPV_PAYMENT_LEDGER_MODE)
             // Restaurant mode (Mesas module entry point)
             remove(KEY_TPV_RESTAURANT_MODE)
+            // Server-owned cash-reconciliation capability
+            remove(KEY_TPV_CASH_RECONCILIATION)
             remove(KEY_TPV_RESTAURANT_MODE_PENDING_SYNC)
         }.apply()
         Timber.d("TPV settings cleared")

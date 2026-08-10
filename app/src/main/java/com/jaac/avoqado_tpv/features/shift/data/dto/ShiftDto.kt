@@ -1,6 +1,9 @@
 package com.jaac.avoqado_tpv.features.shift.data.dto
 
 import com.google.gson.annotations.SerializedName
+import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationAction
+import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationOutcome
+import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationResult
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import java.math.BigDecimal
@@ -37,7 +40,22 @@ data class ShiftResponse(
     val success: Boolean,
 
     @SerializedName("data")
-    val data: ShiftDto
+    val data: ShiftDto,
+
+    /** Additive, request-scoped close result. Missing on open/old-server responses. */
+    @SerializedName("reconciliation")
+    val reconciliation: CashReconciliationDto? = null
+)
+
+data class CashReconciliationDto(
+    @SerializedName("outcome")
+    val outcome: CashReconciliationOutcome,
+
+    @SerializedName("countedCash")
+    val countedCash: String? = null,
+
+    @SerializedName("cashDifference")
+    val cashDifference: String? = null
 )
 
 /**
@@ -101,7 +119,9 @@ data class OpenShiftRequest(
  *
  * @param venueId Venue identifier
  * @param shiftId Shift identifier to close
- * @param closeData Optional manual cash reconciliation data (not used in MVP)
+ * @param closeData Legacy declaration payload retained for old callers and integrations
+ * @param cashReconciliationAction Explicit additive COUNTED/SKIPPED action; null is legacy
+ * @param countedCash Canonical physical drawer total, present only for COUNTED
  */
 data class CloseShiftRequest(
     @SerializedName("venueId")
@@ -111,14 +131,19 @@ data class CloseShiftRequest(
     val shiftId: String,
 
     @SerializedName("closeData")
-    val closeData: CloseShiftData? = null
+    val closeData: CloseShiftData? = null,
+
+    /** Null keeps the exact legacy/kiosk wire shape. */
+    @SerializedName("cashReconciliationAction")
+    val cashReconciliationAction: CashReconciliationAction? = null,
+
+    /** Canonical Decimal(10,2) plain string; present only with COUNTED. */
+    @SerializedName("countedCash")
+    val countedCash: String? = null
 )
 
 /**
- * Optional close data for manual cash reconciliation
- *
- * NOT USED IN MVP - Backend automatically calculates everything.
- * Reserved for future FASE 2 implementation.
+ * Legacy close declaration shape. Do not reinterpret these amounts as the new physical count.
  */
 data class CloseShiftData(
     @SerializedName("cashDeclared")
@@ -195,7 +220,14 @@ data class ShiftDto(
 
     // Staff relationship (for display)
     @SerializedName("staff")
-    val staff: StaffDto?
+    val staff: StaffDto?,
+
+    /** Additive fields: absent on open shifts and old backend versions. */
+    @SerializedName("cashDeclared")
+    val cashDeclared: String? = null,
+
+    @SerializedName("cashDifference")
+    val cashDifference: String? = null
 )
 
 /**
@@ -239,9 +271,17 @@ fun ShiftDto.toDomain(): Shift {
         totalVoucherPayments = BigDecimal(totalVoucherPayments),
         totalOtherPayments = BigDecimal(totalOtherPayments),
         totalProductsSold = totalProductsSold,
-        durationMinutes = calculateDurationMinutes(startTime, endTime)
+        durationMinutes = calculateDurationMinutes(startTime, endTime),
+        cashDeclared = cashDeclared?.let(::BigDecimal),
+        cashDifference = cashDifference?.let(::BigDecimal)
     )
 }
+
+fun CashReconciliationDto.toDomain(): CashReconciliationResult = CashReconciliationResult(
+    outcome = outcome,
+    cashDeclared = countedCash?.let(::BigDecimal),
+    cashDifference = cashDifference?.let(::BigDecimal)
+)
 
 /**
  * Calculate shift duration in minutes

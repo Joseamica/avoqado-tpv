@@ -115,6 +115,12 @@ fun AngelPayPaymentScreen(
      * `CheckoutViewModel` instead of the legacy entry points.
      */
     onStartNewPaymentOverride: (() -> Unit)? = null,
+    /**
+     * Texto del boton principal de la pantalla de exito. Lo decide la navegacion, que es
+     * quien sabe el origen del cobro (mesa / carrito / cobro rapido) — igual que
+     * `resolveSuccessRouting` en el riel Blumon.
+     */
+    newPaymentLabel: String = "Nuevo Pago",
     viewModel: AngelPayPaymentViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -292,6 +298,7 @@ fun AngelPayPaymentScreen(
                     viewModel.resetPayment()
                     onNavigateHome()
                 },
+                newPaymentLabel = newPaymentLabel,
                 onStartNewPayment = {
                     viewModel.resetPayment()
                     if (onStartNewPaymentOverride != null) {
@@ -345,19 +352,22 @@ fun AngelPayPaymentScreen(
                     onViewInPayments = { paymentId ->
                         onViewInPayments(paymentId)
                     },
+                    newPaymentLabel = newPaymentLabel,
                     onStartNewPayment = {
-                        viewModel.resetPayment()
-                        showSuccessContent = false
-                        showApprovedAnimation = false
-                        // If the caller provided an override (Cobrar flow), use
-                        // it so we navigate to the unified Checkout with a
-                        // fresh ViewModel. Otherwise fall back to popping the
-                        // backstack (legacy behavior).
+                        // 🔴 NAVEGAR PRIMERO, resetear despues. Al reves se veia un destello:
+                        // `showSuccessContent = false` apagaba el bypass del overlay mientras
+                        // el state seguia en Success, la composicion caia a la rama Success de
+                        // este Scaffold —`LoadingContent("Pago exitoso")`— y salia un SPINNER
+                        // sobre un pago YA TERMINADO. La rama vecina de Queued dice
+                        // "defensive only, esto nunca deberia renderizar": si renderizaba.
+                        // Tampoco se apagan las banderas a mano: viven en `remember` de esta
+                        // pantalla y mueren cuando la navegacion la desmonta.
                         if (onStartNewPaymentOverride != null) {
                             onStartNewPaymentOverride()
                         } else {
                             onNavigateBack()
                         }
+                        viewModel.resetPayment()
                     },
                 )
             }

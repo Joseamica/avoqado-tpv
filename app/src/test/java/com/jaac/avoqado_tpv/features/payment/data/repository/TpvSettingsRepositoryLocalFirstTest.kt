@@ -68,7 +68,10 @@ class TpvSettingsRepositoryLocalFirstTest {
         repo = TpvSettingsRepository(apiService, secureStorage, planManager)
     }
 
-    private fun terminalConfigResponse(settings: TpvSettings): TerminalConfigResponse =
+    private fun terminalConfigResponse(
+        settings: TpvSettings,
+        cashReconciliationEnabled: Boolean? = null,
+    ): TerminalConfigResponse =
         TerminalConfigResponse(
             success = true,
             data = TerminalConfigData(
@@ -82,9 +85,101 @@ class TpvSettingsRepositoryLocalFirstTest {
                     venue = null
                 ),
                 merchantAccounts = emptyList(),
-                tpvSettings = settings.toDto()
+                tpvSettings = settings.toDto(),
+                cashReconciliationEnabled = cashReconciliationEnabled,
             )
         )
+
+    // region — server-owned cash-reconciliation capability
+
+    @Test
+    fun `refresh maps explicit root cash reconciliation capability to local settings`() = runTest {
+        coEvery { apiService.getTerminalConfig("SN-001") } returns
+            Response.success(
+                terminalConfigResponse(
+                    settings = TpvSettings.DEFAULT,
+                    cashReconciliationEnabled = true,
+                )
+            )
+
+        val refreshed = repo.refreshFromTerminalConfig("SN-001").getOrThrow()
+
+        assertThat(refreshed.cashReconciliationEnabled).isTrue()
+        assertThat(repo.getCurrentSettings().cashReconciliationEnabled).isTrue()
+    }
+
+    @Test
+    fun `successful old-server refresh disables a stale cached capability`() = runTest {
+        every { secureStorage.getTpvSettings() } returns
+            TpvSettings(cashReconciliationEnabled = true)
+        repo = TpvSettingsRepository(apiService, secureStorage, planManager)
+        coEvery { apiService.getTerminalConfig("SN-001") } returns
+            Response.success(terminalConfigResponse(TpvSettings.DEFAULT))
+
+        val refreshed = repo.refreshFromTerminalConfig("SN-001").getOrThrow()
+
+        assertThat(refreshed.cashReconciliationEnabled).isFalse()
+    }
+
+    @Test
+    fun `failed initial refresh stays disabled from the false-safe cache`() = runTest {
+        coEvery { apiService.getTerminalConfig("SN-001") } throws IOException("sin red")
+
+        val refreshed = repo.refreshFromTerminalConfig("SN-001").getOrThrow()
+
+        assertThat(refreshed.cashReconciliationEnabled).isFalse()
+    }
+
+    @Test
+    fun `successful capability refresh survives repository restart`() = runTest {
+        var persisted = TpvSettings.DEFAULT
+        every { secureStorage.getTpvSettings() } answers { persisted }
+        every { secureStorage.saveTpvSettings(any()) } answers {
+            persisted = it.invocation.args[0] as TpvSettings
+        }
+        repo = TpvSettingsRepository(apiService, secureStorage, planManager)
+        coEvery { apiService.getTerminalConfig("SN-001") } returns
+            Response.success(
+                terminalConfigResponse(
+                    settings = TpvSettings.DEFAULT,
+                    cashReconciliationEnabled = true,
+                )
+            )
+
+        repo.refreshFromTerminalConfig("SN-001")
+        val afterRestart = TpvSettingsRepository(apiService, secureStorage, planManager)
+
+        assertThat(afterRestart.getCurrentSettings().cashReconciliationEnabled).isTrue()
+    }
+
+    @Test
+    fun `saveSettings preserves cached server-owned capability when PUT response omits it`() = runTest {
+        coEvery { apiService.getTerminalConfig("SN-001") } returns
+            Response.success(
+                terminalConfigResponse(
+                    settings = TpvSettings.DEFAULT,
+                    cashReconciliationEnabled = true,
+                )
+            )
+        repo.refreshFromTerminalConfig("SN-001")
+        coEvery { apiService.updateTpvSettings("SN-001", any()) } returns
+            Response.success(
+                TpvSettingsUpdateResponse(
+                    success = true,
+                    data = TpvSettings(showTipScreen = false).toDto(),
+                )
+            )
+
+        val saved = repo.saveSettings(
+            serialNumber = "SN-001",
+            settings = TpvSettings(showTipScreen = false),
+        ).getOrThrow()
+
+        assertThat(saved.cashReconciliationEnabled).isTrue()
+        assertThat(repo.getCurrentSettings().cashReconciliationEnabled).isTrue()
+    }
+
+    // endregion
 
     // region — updateSettingLocalFirst: durable, synchronous, network-independent
 

@@ -76,6 +76,10 @@ enum class PaymentLedgerMode {
  *                               an old backend or a partial response never sees Mesas out of
  *                               nowhere. Turning it ON hides the legacy "Órdenes" tile — the two
  *                               never coexist (spec D-4).
+ * @param cashReconciliationEnabled Server-owned effective capability used by
+ *                                  the local shift-close read model. Defaults
+ *                                  to false and is never serialized by the
+ *                                  mutable TpvSettingsDto.
  */
 data class TpvSettings(
     val showReviewScreen: Boolean = true,
@@ -138,7 +142,9 @@ data class TpvSettings(
     // La libreta (write-ahead payment ledger) — OFF by default, canary rollout per venue
     val paymentLedgerMode: PaymentLedgerMode = PaymentLedgerMode.OFF,
     // Restaurant mode (Mesas module entry point) — OFF by default, additive rollout per terminal
-    val restaurantModeEnabled: Boolean = false
+    val restaurantModeEnabled: Boolean = false,
+    // Server-owned cash reconciliation capability — OFF for old/absent config
+    val cashReconciliationEnabled: Boolean = false,
 ) {
     companion object {
         /**

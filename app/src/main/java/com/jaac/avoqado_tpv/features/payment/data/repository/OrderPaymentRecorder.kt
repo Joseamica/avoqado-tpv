@@ -299,6 +299,8 @@ class OrderPaymentRecorder @Inject constructor(
             // Currency and international
             currency = "MXN",
             isInternational = cardDetails.isInternational,
+            issuerCountryCode = cardDetails.issuerCountryCode,
+            issuerCountrySource = cardDetails.issuerCountrySource?.apiValue,
 
             // Optional rating: Send numeric rating as string (1-5 stars)
             reviewRating = context.rating?.toString(),
@@ -354,6 +356,8 @@ class OrderPaymentRecorder @Inject constructor(
             entryMode = cardDetails.entryMode.toBackendString(),
             currency = "MXN",
             isInternational = cardDetails.isInternational,
+            issuerCountryCode = cardDetails.issuerCountryCode,
+            issuerCountrySource = cardDetails.issuerCountrySource?.apiValue,
             reviewRating = context.rating?.toString(),
             merchantAccountId = context.merchantAccountId,
             deviceSerialNumber = context.deviceSerialNumber,

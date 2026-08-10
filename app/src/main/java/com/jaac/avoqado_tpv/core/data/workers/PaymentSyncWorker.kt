@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
 import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
 import com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome
 import com.jaac.avoqado_tpv.features.payment.domain.sync.classifySyncFailure
@@ -85,7 +86,8 @@ class PaymentSyncWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted workerParams: WorkerParameters,
     private val paymentQueueRepository: PaymentQueueRepository,
-    private val recordPaymentUseCase: RecordPaymentUseCase
+    private val recordPaymentUseCase: RecordPaymentUseCase,
+    private val paymentQueueStateManager: PaymentQueueStateManager,
 ) : CoroutineWorker(appContext, workerParams) {
 
     companion object {
@@ -167,6 +169,25 @@ class PaymentSyncWorker @AssistedInject constructor(
                 "✅ [Payment Sync] Worker completed | " +
                         "success=$successCount | failed=$failedCount | batch=${batch.size}"
             )
+
+            // 🔴 Avisar al banner (bug real 2026-08-07): el contador de
+            // "pagos pendientes" es un StateFlow de push manual
+            // (PaymentQueueStateManager) — el boton de reintentar lo refresca al
+            // RESETEAR, pero nadie lo refrescaba cuando la tanda TERMINABA. Los 2
+            // pagos atorados sincronizaron (success=2) y el banner siguio diciendo
+            // "2 pagos pendientes" hasta reiniciar la app: el cajero reintenta un
+            // trabajo ya hecho. Refrescar aqui cierra el ciclo con la verdad de Room.
+            // En try/catch propio: un fallo al CONTAR jamas puede tirar el worker —
+            // los pagos de esta tanda YA se procesaron.
+            try {
+                val pending = paymentQueueRepository.getPendingCount()
+                val failed = paymentQueueRepository.getFailedCount()
+                paymentQueueStateManager.refreshCounts(pending, failed)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.w(e, "⚠️ [Payment Sync] No se pudieron refrescar los conteos del banner")
+            }
 
             // ALWAYS return success to continue periodic runs
             // Even if some payments failed, we want the worker to run again in 15 minutes

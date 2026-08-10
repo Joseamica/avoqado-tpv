@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.ordering.presentation.menu
 
+import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
@@ -204,6 +205,12 @@ class MenuViewModel @Inject constructor(
      */
     private val _isPreparingPayment = MutableStateFlow(false)
     val isPreparingPayment: StateFlow<Boolean> = _isPreparingPayment.asStateFlow()
+
+    /**
+     * Instante (ms) en que arrancó la preparación en vuelo. Sostiene el límite de
+     * tiempo del candado de reentrada de [onPaymentRequested] — ver ahí el por qué.
+     */
+    private var paymentPrepStartedAt: Long = 0L
 
     // ============================================================================
     // 🎯 UX Events (Snackbar, Navigation)
@@ -703,8 +710,42 @@ class MenuViewModel @Inject constructor(
      * @param onError Called with error message if preparation fails
      */
     fun onPaymentRequested(onReady: (Order) -> Unit, onError: (String) -> Unit) {
+        // 🔒 CANDADO DE REENTRADA — bug real (Mindform, 17-18 jul 2026).
+        //
+        // El cajero picó `Pagar` varias veces porque el cobro se sentía congelado
+        // (12 segundos sin respuesta visible). Medido en hardware el 2026-07-29 sobre
+        // una PAX A910S: 5 toques => 5 invocaciones COMPLETAS de prepareForPayment en
+        // 1.3 s, todas sobre la misma orden. Cada invocación lanza su propia pasada de
+        // descuento de inventario; las pasadas se pisaron entre ellas y Postgres las
+        // abortó con P2034 => la venta terminó cancelada. Los tres cobros de
+        // ORD-1784305133392 (22:19:37 / :42 / :45) salieron de aquí.
+        //
+        // Va en el ViewModel y NO en los botones: MenuScreen tiene 4 entradas
+        // distintas que llaman a esta función, así se cubren las cuatro de un golpe y
+        // la próxima que alguien agregue nace protegida.
+        //
+        // Con LÍMITE DE TIEMPO a propósito: si la bandera se quedara pegada en true por
+        // algún camino que no previmos, el botón vuelve a responder pasados
+        // PAYMENT_PREP_GUARD_MS. Regla del proyecto: DEGRADAR, NUNCA BLOQUEAR — un
+        // candado de cobro capaz de dejar un local sin poder cobrar es peor que el bug
+        // que arregla. Por lo mismo tampoco deshabilitamos el botón visualmente: se ve
+        // normal y sólo ignora el arranque duplicado.
+        // elapsedRealtime (monotónico), NO currentTimeMillis: un ajuste de hora en la
+        // terminal haría la resta negativa y el candado bloquearía el cobro por hasta
+        // decenas de segundos. Con reloj monotónico eso no puede pasar.
+        val now = SystemClock.elapsedRealtime()
+        if (shouldIgnoreDuplicatePaymentRequest(_isPreparingPayment.value, now, paymentPrepStartedAt)) {
+            Timber.w("🔒 [Payment Prep] Toque duplicado ignorado — ya hay una preparación en vuelo (${now - paymentPrepStartedAt} ms)")
+            return
+        }
+
+        // Síncrono y ANTES del launch: si se marcara dentro de la corrutina, el dispatch
+        // deja una ventana en la que un segundo toque pasa el guard de arriba. Es el
+        // mismo cierre de carrera que `selectionInProgress` en AngelPayPaymentScreen.
+        paymentPrepStartedAt = now
+        _isPreparingPayment.value = true
+
         viewModelScope.launch {
-            _isPreparingPayment.value = true
             try {
                 prepareForPayment().fold(
                     onSuccess = { order ->
@@ -3669,4 +3710,40 @@ sealed interface MenuState {
         val isCreatingProduct: Boolean = false
     ) : MenuState
     data class Error(val message: String) : MenuState
+}
+
+/**
+ * Ventana del candado de reentrada de `MenuViewModel.onPaymentRequested`.
+ *
+ * 15 s cubre con holgura una preparación de pago lenta (la de Mindform del 17-jul-2026
+ * tardó ~12 s antes de fallar) y a la vez garantiza que el botón se auto-cure si la
+ * bandera `_isPreparingPayment` se quedara pegada: pasado este tiempo el cobro se
+ * vuelve a permitir. Degradar, nunca bloquear.
+ */
+private const val PAYMENT_PREP_GUARD_MS = 15_000L
+
+/**
+ * ¿Se debe ignorar este toque a `Pagar` porque ya hay una preparación de pago en vuelo?
+ *
+ * Función PURA con el reloj por parámetro — misma convención que el núcleo del hub LAN
+ * (`TableLease` / `ArbiterElection`): toda la corrección vive aquí y se puede probar sin
+ * red, sin corrutinas y sin las 18 dependencias del ViewModel.
+ *
+ * Reglas:
+ *  - Nada en vuelo -> siempre se permite.
+ *  - En vuelo y RECIENTE (< [PAYMENT_PREP_GUARD_MS]) -> se ignora. Este es el caso de
+ *    Mindform: 5 toques en 1.3 s producían 5 pasadas de inventario encimadas.
+ *  - En vuelo pero VIEJO (>= la ventana) -> se permite de nuevo. Válvula de escape: si la
+ *    bandera se quedara pegada, el cobro nunca queda bloqueado para siempre.
+ */
+internal fun shouldIgnoreDuplicatePaymentRequest(
+    isPreparingPayment: Boolean,
+    nowMs: Long,
+    startedAtMs: Long,
+): Boolean {
+    if (!isPreparingPayment) return false
+    val transcurrido = nowMs - startedAtMs
+    // Un delta negativo sólo puede venir de un reloj raro. Nunca bloquear por eso.
+    if (transcurrido < 0) return false
+    return transcurrido < PAYMENT_PREP_GUARD_MS
 }

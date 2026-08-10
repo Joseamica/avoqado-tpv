@@ -10,6 +10,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardNature
+import com.jaac.avoqado_tpv.features.payment.domain.model.IssuerCountrySource
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import io.mockk.coEvery
@@ -147,6 +148,33 @@ class OrderPaymentRecorderTest {
         // Card flow must NOT be touched by the shim.
         assertThat(captured.captured.method).isEqualTo("CREDIT_CARD")
         assertThat(captured.captured.merchantAccountId).isEqualTo(merchantCuid)
+    }
+
+    @Test
+    fun `recordPayment sends processor country evidence without changing legacy flag`() = runTest {
+        val captured = slot<OrderPaymentRequest>()
+        coEvery { apiService.recordOrderPayment(any(), any(), capture(captured)) } returns successResponse()
+
+        val cardDetails = CardDetails(
+            maskedPan = "411111******1111",
+            cardBrand = CardBrand.VISA,
+            entryMode = CardEntryMode.CHIP,
+            isInternational = false,
+            cardNature = CardNature.CREDIT,
+            issuerCountryCode = "US",
+            issuerCountrySource = IssuerCountrySource.PROCESSOR,
+        )
+
+        recorder.recordPayment(
+            context = cardContext(),
+            cardDetails = cardDetails,
+            authorizationNumber = "067718",
+            referenceNumber = "000000067718",
+        )
+
+        assertThat(captured.captured.isInternational).isFalse()
+        assertThat(captured.captured.issuerCountryCode).isEqualTo("US")
+        assertThat(captured.captured.issuerCountrySource).isEqualTo("PROCESSOR")
     }
 
     @Test

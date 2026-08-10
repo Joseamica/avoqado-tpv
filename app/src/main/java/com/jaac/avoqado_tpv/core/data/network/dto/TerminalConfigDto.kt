@@ -88,7 +88,16 @@ data class TerminalConfigData(
      * offline. `exempt == true` (grandfathered/demo venues) disables ALL gates.
      */
     @SerializedName("plan")
-    val plan: com.jaac.avoqado_tpv.features.plan.data.dto.PlanInfoDto? = null
+    val plan: com.jaac.avoqado_tpv.features.plan.data.dto.PlanInfoDto? = null,
+
+    /**
+     * Effective venue capability resolved by the backend (plan/grant AND
+     * explicit venue opt-in). This is intentionally outside [tpvSettings]:
+     * terminal settings PUTs must never be able to edit a venue entitlement.
+     * Old servers omit it, so callers must coalesce null to disabled.
+     */
+    @SerializedName("cashReconciliationEnabled")
+    val cashReconciliationEnabled: Boolean? = null,
 )
 
 /**

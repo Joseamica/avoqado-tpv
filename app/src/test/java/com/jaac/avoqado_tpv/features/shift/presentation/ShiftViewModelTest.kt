@@ -12,6 +12,9 @@ import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
+import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationAction
+import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationOutcome
+import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationResult
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
 import io.mockk.*
@@ -88,6 +91,7 @@ class ShiftViewModelTest {
         every { secureStorage.getVenueId() } returns "venue-123"
         every { secureStorage.getStaffId() } returns "staff-123"
         every { secureStorage.isShiftSystemEnabled() } returns true
+        every { secureStorage.isCashReconciliationEnabled() } returns false
         every { connectionEventManager.connectionRestoredEvents } returns fakeConnectionRestoredEvents
         every { connectivityObserver.observe() } returns fakeNetworkStatus
 
@@ -241,6 +245,8 @@ class ShiftViewModelTest {
 
         // Then
         coVerify { shiftRepository.closeShift("venue-123", "shift-123") }
+        assertThat(viewModel.state.value).isInstanceOf(ShiftState.ShiftActive::class.java)
+        coVerify(exactly = 2) { shiftRepository.getCurrentShift("venue-123") }
     }
 
     @Test
@@ -260,6 +266,208 @@ class ShiftViewModelTest {
         coVerify(exactly = 0) { shiftRepository.closeShift(any(), any()) }
     }
 
+    @Test
+    fun `closeShift explains concurrent closing without retrying the post`() = runTest {
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns Result.Success(testShift)
+        coEvery { shiftRepository.closeShift("venue-123", "shift-123") } returns Result.Error(
+            ApiException.HttpError(409, "Shift is currently being closed")
+        )
+
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.closeShift()
+        advanceUntilIdle()
+
+        val error = viewModel.state.value as ShiftState.Error
+        assertThat(error.message).isEqualTo(
+            "El turno se está cerrando en otra terminal.\n\nEspera unos segundos y actualiza."
+        )
+        coVerify(exactly = 1) { shiftRepository.closeShift("venue-123", "shift-123") }
+    }
+
+    @Test
+    fun `counted close forwards canonical amount and keeps exact zero result until acknowledged`() = runTest {
+        val closedShift = testShift.copy(
+            status = ShiftStatus.CLOSED,
+            endTime = "2025-01-15T16:00:00Z",
+            cashDeclared = BigDecimal("1300.00"),
+            cashDifference = BigDecimal.ZERO,
+            reconciliation = CashReconciliationResult(
+                outcome = CashReconciliationOutcome.APPLIED,
+                cashDeclared = BigDecimal("1300.00"),
+                cashDifference = BigDecimal.ZERO
+            )
+        )
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns Result.Success(testShift) andThen Result.Success(null)
+        coEvery {
+            shiftRepository.closeShift(
+                "venue-123",
+                "shift-123",
+                CashReconciliationAction.COUNTED,
+                BigDecimal("1300.00")
+            )
+        } returns Result.Success(closedShift)
+
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.closeShift(CashReconciliationAction.COUNTED, BigDecimal("1300.00"))
+        advanceUntilIdle()
+
+        val closedState = viewModel.state.value as ShiftState.ShiftClosed
+        assertThat(closedState.reconciliationAction).isEqualTo(CashReconciliationAction.COUNTED)
+        assertThat(closedState.shift.cashDifference).isEqualTo(BigDecimal.ZERO)
+        coVerify(exactly = 1) {
+            shiftRepository.closeShift(
+                "venue-123",
+                "shift-123",
+                CashReconciliationAction.COUNTED,
+                BigDecimal("1300.00")
+            )
+        }
+
+        viewModel.refresh()
+        advanceUntilIdle()
+        assertThat(viewModel.state.value).isEqualTo(closedState)
+
+        viewModel.acknowledgeClosedShift()
+        advanceUntilIdle()
+        assertThat(viewModel.state.value).isInstanceOf(ShiftState.NoActiveShift::class.java)
+    }
+
+    @Test
+    fun `only explicit reconciliation results require navigation acknowledgment`() {
+        val legacyResult = ShiftState.ShiftClosed(
+            shift = testShift.copy(status = ShiftStatus.CLOSED)
+        )
+        val countedResult = legacyResult.copy(
+            reconciliationAction = CashReconciliationAction.COUNTED
+        )
+        val skippedResult = legacyResult.copy(
+            reconciliationAction = CashReconciliationAction.SKIPPED
+        )
+
+        assertThat(requiresCashReconciliationAcknowledgement(legacyResult)).isFalse()
+        assertThat(requiresCashReconciliationAcknowledgement(countedResult)).isTrue()
+        assertThat(requiresCashReconciliationAcknowledgement(skippedResult)).isTrue()
+        assertThat(requiresCashReconciliationAcknowledgement(ShiftState.Loading)).isFalse()
+    }
+
+    @Test
+    fun `pull refresh stays available for legacy results but not unacknowledged reconciliation`() {
+        val legacyResult = ShiftState.ShiftClosed(
+            shift = testShift.copy(status = ShiftStatus.CLOSED)
+        )
+        val countedResult = legacyResult.copy(
+            reconciliationAction = CashReconciliationAction.COUNTED
+        )
+        val skippedResult = legacyResult.copy(
+            reconciliationAction = CashReconciliationAction.SKIPPED
+        )
+
+        assertThat(isShiftPullToRefreshEnabled(legacyResult)).isTrue()
+        assertThat(isShiftPullToRefreshEnabled(ShiftState.NoActiveShift())).isTrue()
+        assertThat(isShiftPullToRefreshEnabled(countedResult)).isFalse()
+        assertThat(isShiftPullToRefreshEnabled(skippedResult)).isFalse()
+        assertThat(isShiftPullToRefreshEnabled(ShiftState.Loading)).isFalse()
+    }
+
+    @Test
+    fun `skipped close sends no amount and remains visible until acknowledged`() = runTest {
+        val closedShift = testShift.copy(
+            status = ShiftStatus.CLOSED,
+            endTime = "2025-01-15T16:00:00Z",
+            reconciliation = CashReconciliationResult(
+                outcome = CashReconciliationOutcome.SKIPPED,
+                cashDeclared = null,
+                cashDifference = null
+            )
+        )
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns Result.Success(testShift) andThen Result.Success(null)
+        coEvery {
+            shiftRepository.closeShift(
+                "venue-123",
+                "shift-123",
+                CashReconciliationAction.SKIPPED,
+                null
+            )
+        } returns Result.Success(closedShift)
+
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.closeShift(CashReconciliationAction.SKIPPED)
+        advanceUntilIdle()
+
+        val closedState = viewModel.state.value as ShiftState.ShiftClosed
+        assertThat(closedState.reconciliationAction).isEqualTo(CashReconciliationAction.SKIPPED)
+        coVerify(exactly = 1) {
+            shiftRepository.closeShift(
+                "venue-123",
+                "shift-123",
+                CashReconciliationAction.SKIPPED,
+                null
+            )
+        }
+
+        fakeConnectionRestoredEvents.emit(
+            ConnectionRestoredEvent(
+                timestamp = "2026-08-08T08:00:00Z",
+                attemptsBeforeReconnection = 1
+            )
+        )
+        advanceUntilIdle()
+        assertThat(viewModel.state.value).isEqualTo(closedState)
+
+        viewModel.acknowledgeClosedShift()
+        advanceUntilIdle()
+        assertThat(viewModel.state.value).isInstanceOf(ShiftState.NoActiveShift::class.java)
+    }
+
+    @Test
+    fun `counted close preserves negative positive and null differences`() = runTest {
+        val differences = listOf(BigDecimal("-25.50"), BigDecimal("18.75"), null)
+
+        differences.forEach { difference ->
+            clearMocks(shiftRepository, answers = false, recordedCalls = true)
+            coEvery { shiftRepository.getCurrentShift("venue-123") } returns Result.Success(testShift)
+            coEvery { shiftRepository.getShiftHistory(any(), any()) } returns Result.Success(emptyList())
+            coEvery {
+                shiftRepository.closeShift(
+                    "venue-123",
+                    "shift-123",
+                    CashReconciliationAction.COUNTED,
+                    BigDecimal("1274.50")
+                )
+            } returns Result.Success(
+                testShift.copy(
+                    status = ShiftStatus.CLOSED,
+                    endTime = "2025-01-15T16:00:00Z",
+                    cashDeclared = BigDecimal("1274.50"),
+                    cashDifference = difference,
+                    reconciliation = CashReconciliationResult(
+                        outcome = if (difference == null) {
+                            CashReconciliationOutcome.IGNORED_OVERFLOW
+                        } else {
+                            CashReconciliationOutcome.APPLIED
+                        },
+                        cashDeclared = BigDecimal("1274.50"),
+                        cashDifference = difference
+                    )
+                )
+            )
+
+            val viewModel = createViewModel()
+            advanceUntilIdle()
+            viewModel.closeShift(CashReconciliationAction.COUNTED, BigDecimal("1274.50"))
+            advanceUntilIdle()
+
+            val closedState = viewModel.state.value as ShiftState.ShiftClosed
+            assertThat(closedState.shift.cashDifference).isEqualTo(difference)
+        }
+    }
+
     // ========================================
     // SETTINGS TESTS
     // ========================================
@@ -275,6 +483,16 @@ class ShiftViewModelTest {
 
         // Then
         assertThat(viewModel.isShiftSystemEnabled.value).isFalse()
+    }
+
+    @Test
+    fun `cash reconciliation effective flag reflects secure server-owned setting`() = runTest {
+        every { secureStorage.isCashReconciliationEnabled() } returns true
+
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        assertThat(viewModel.isCashReconciliationEnabled.value).isTrue()
     }
 
     // ========================================

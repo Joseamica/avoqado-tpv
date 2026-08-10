@@ -174,6 +174,7 @@ fun PaymentScreen(
     val proofOfSaleComplete by viewModel.proofOfSaleComplete.collectAsStateWithLifecycle()
     val currentMerchant by viewModel.currentMerchant.collectAsStateWithLifecycle()
     val merchantSwitchingLoading by viewModel.merchantSwitchingLoading.collectAsStateWithLifecycle()
+    val isPreparingMerchantSelection by viewModel.isPreparingMerchantSelection.collectAsStateWithLifecycle()
     val merchantSwitchMessage by viewModel.merchantSwitchMessage.collectAsStateWithLifecycle()
     val hideKioskMerchantSelector by viewModel.hideKioskMerchantSelector.collectAsStateWithLifecycle()  // 🥝 Hide merchant list in kiosk mode
     val tpvSettings by viewModel.tpvSettings.collectAsStateWithLifecycle()
@@ -496,7 +497,7 @@ fun PaymentScreen(
                         rating = currentState.rating,
                         merchants = visibleMerchants,
                         currentMerchant = currentMerchant,
-                        merchantSwitchingLoading = merchantSwitchingLoading,
+                        merchantSwitchingLoading = merchantSwitchingLoading || isPreparingMerchantSelection,
                         merchantSwitchMessage = merchantSwitchMessage,
                         onSelectMerchant = { merchant ->
                             // ✅ FIX: Use updateSelectedMerchant for immediate visual selection
@@ -1026,6 +1027,17 @@ fun PaymentScreen(
                         navigateBack()
                     }
                 }
+            }
+
+            // Keep the current step visible while merchant accounts/routing are prepared.
+            // No PaymentState is advanced early and the pointer guard prevents duplicate taps.
+            if (isPreparingMerchantSelection && state !is PaymentState.SelectingMerchant) {
+                AvoqadoLoadingOverlay(
+                    message = "Verificando cuentas de pago...",
+                    modifier = Modifier.pointerInput(Unit) {
+                        detectTapGestures(onTap = { })
+                    }
+                )
             }
         }
     }

@@ -22,6 +22,8 @@ package com.jaac.avoqado_tpv.features.payment.domain.model
  * @param entryMode Método de entrada (CHIP, CONTACTLESS, SWIPE)
  * @param isInternational true si es tarjeta internacional (BIN extranjero)
  * @param isCash true si es pago en efectivo (sin tarjeta física)
+ * @param issuerCountryCode Evidencia cruda de país emisor; no cambia el cálculo legacy
+ * @param issuerCountrySource Origen explícito de la evidencia de país
  */
 data class CardDetails(
     val maskedPan: String,
@@ -30,7 +32,10 @@ data class CardDetails(
     val isInternational: Boolean = false,
     val isCash: Boolean = false,
     /** Real card nature from Blumon binInformation.type (CREDITO/DEBITO) */
-    val cardNature: CardNature = CardNature.UNKNOWN
+    val cardNature: CardNature = CardNature.UNKNOWN,
+    /** Shadow-only evidence. Null when the processor/card did not expose a country. */
+    val issuerCountryCode: String? = null,
+    val issuerCountrySource: IssuerCountrySource? = null,
 ) {
     /** Maps to backend payment method using REAL card nature from processor */
     fun toPaymentMethod(): String = when {
@@ -57,6 +62,16 @@ data class CardDetails(
             isCash = true
         )
     }
+}
+
+/**
+ * Origin of issuer-country evidence sent to the backend shadow classifier.
+ * This is intentionally independent from [CardDetails.isInternational]: the
+ * existing boolean remains untouched until the new classifier is validated.
+ */
+enum class IssuerCountrySource(val apiValue: String) {
+    EMV_5F28("EMV_5F28"),
+    PROCESSOR("PROCESSOR"),
 }
 
 /**

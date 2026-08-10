@@ -12,6 +12,7 @@ import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
+import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationAction
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,6 +20,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import timber.log.Timber
+import java.math.BigDecimal
 import javax.inject.Inject
 
 /**
@@ -92,6 +94,10 @@ class ShiftViewModel @Inject constructor(
     private val _isShiftSystemEnabled = MutableStateFlow(true)
     val isShiftSystemEnabled: StateFlow<Boolean> = _isShiftSystemEnabled.asStateFlow()
 
+    // Effective server-owned capability (PRO entitlement AND explicit venue opt-in).
+    private val _isCashReconciliationEnabled = MutableStateFlow(false)
+    val isCashReconciliationEnabled: StateFlow<Boolean> = _isCashReconciliationEnabled.asStateFlow()
+
     // Permission states
     private val _canOpenShift = MutableStateFlow(true)
     val canOpenShift: StateFlow<Boolean> = _canOpenShift.asStateFlow()
@@ -118,6 +124,7 @@ class ShiftViewModel @Inject constructor(
      */
     fun refreshSettings() {
         _isShiftSystemEnabled.value = secureStorage.isShiftSystemEnabled()
+        _isCashReconciliationEnabled.value = secureStorage.isCashReconciliationEnabled()
     }
 
     /**
@@ -248,6 +255,11 @@ class ShiftViewModel @Inject constructor(
      */
     fun loadCurrentShift() {
         viewModelScope.launch {
+            if (hasUnacknowledgedCashReconciliationResult()) {
+                Timber.d("⏸️ Keeping cash reconciliation result visible until acknowledgment")
+                return@launch
+            }
+
             // ✅ Anti-flash fix: Only show Loading if we don't already have a shift
             // This prevents the "flash of inactive shift" when navigating back to WelcomeScreen
             val currentState = _state.value
@@ -276,6 +288,10 @@ class ShiftViewModel @Inject constructor(
                     emptyList()
                 }
             }
+
+            // A close may have completed while this reload was in flight. Never let stale reload
+            // data replace the counted/skipped result before the cashier acknowledges it.
+            if (hasUnacknowledgedCashReconciliationResult()) return@launch
 
             // Update state based on current shift result
             when (currentShiftResult) {
@@ -314,6 +330,8 @@ class ShiftViewModel @Inject constructor(
      */
     fun refresh() {
         viewModelScope.launch {
+            if (hasUnacknowledgedCashReconciliationResult()) return@launch
+
             _isRefreshing.value = true
             try {
                 val venueId = secureStorage.getVenueId() ?: return@launch
@@ -326,6 +344,9 @@ class ShiftViewModel @Inject constructor(
                     is Result.Success -> historyResult.data
                     is Result.Error -> emptyList()
                 }
+
+                // Preserve a result that arrived while the refresh requests were in flight.
+                if (hasUnacknowledgedCashReconciliationResult()) return@launch
 
                 when (currentShiftResult) {
                     is Result.Success -> {
@@ -399,7 +420,10 @@ class ShiftViewModel @Inject constructor(
      * - Inventory consumed (FIFO batches)
      * - Total sales, tips, orders
      */
-    fun closeShift() {
+    fun closeShift(
+        reconciliationAction: CashReconciliationAction? = null,
+        countedCash: BigDecimal? = null
+    ) {
         viewModelScope.launch {
             if (!_canCloseShift.value) {
                 _state.value = ShiftState.Error("No tienes permiso para cerrar turnos.\n\nContacta a tu administrador.")
@@ -422,9 +446,16 @@ class ShiftViewModel @Inject constructor(
             }
 
             val shiftId = currentState.shift.id
-            Timber.i("🔴 Closing shift: $shiftId")
+            Timber.i("🔴 Closing shift: $shiftId, reconciliation=${reconciliationAction?.name ?: "LEGACY"}")
 
-            when (val result = shiftRepository.closeShift(venueId, shiftId)) {
+            when (
+                val result = shiftRepository.closeShift(
+                    venueId = venueId,
+                    shiftId = shiftId,
+                    action = reconciliationAction,
+                    countedCash = countedCash
+                )
+            ) {
                 is Result.Success -> {
                     val closedShift = result.data
                     Timber.i("✅ Shift closed. Sales: $${closedShift.totalSales}, Products: ${closedShift.totalProductsSold}")
@@ -437,11 +468,18 @@ class ShiftViewModel @Inject constructor(
                     }
 
                     // Show closed shift briefly with updated history
-                    _state.value = ShiftState.ShiftClosed(closedShift, shiftHistory)
+                    _state.value = ShiftState.ShiftClosed(
+                        shift = closedShift,
+                        shiftHistory = shiftHistory,
+                        reconciliationAction = reconciliationAction
+                    )
 
-                    // After 2 seconds, reload to show "no active shift" state
-                    kotlinx.coroutines.delay(2000)
-                    loadCurrentShift()
+                    // Preserve the legacy behavior exactly. A reconciliation attempt remains until
+                    // explicit acknowledgment so the cashier can read the result.
+                    if (reconciliationAction == null) {
+                        kotlinx.coroutines.delay(2000)
+                        loadCurrentShift()
+                    }
                 }
                 is Result.Error -> {
                     val errorMessage = translateError(result.exception)
@@ -461,9 +499,21 @@ class ShiftViewModel @Inject constructor(
         loadCurrentShift()
     }
 
+    /** Acknowledge a COUNTED/SKIPPED result and return to the no-active-shift screen. */
+    fun acknowledgeClosedShift() {
+        if (_state.value is ShiftState.ShiftClosed) {
+            // Clear the guarded result first so the authoritative reload is allowed to proceed.
+            _state.value = ShiftState.Loading
+            loadCurrentShift()
+        }
+    }
+
     // ══════════════════════════════════════════════════════════════════════
     // PRIVATE HELPERS
     // ══════════════════════════════════════════════════════════════════════
+
+    private fun hasUnacknowledgedCashReconciliationResult(): Boolean =
+        requiresCashReconciliationAcknowledgement(_state.value)
 
     /**
      * Translate API errors to user-friendly messages
@@ -476,6 +526,7 @@ class ShiftViewModel @Inject constructor(
                 400 -> "Ya existe un turno abierto.\n\nCierra el turno actual antes de abrir uno nuevo."
                 403 -> "No tienes permiso para esta acción.\n\nContacta a tu administrador."
                 404 -> "No se encontró el turno.\n\nEs posible que ya haya sido cerrado."
+                409 -> "El turno se está cerrando en otra terminal.\n\nEspera unos segundos y actualiza."
                 in 500..599 -> "Error en el servidor.\n\nIntenta nuevamente."
                 else -> exception.userMessage
             }
@@ -545,7 +596,8 @@ sealed class ShiftState {
      */
     data class ShiftClosed(
         val shift: Shift,
-        val shiftHistory: List<Shift> = emptyList()
+        val shiftHistory: List<Shift> = emptyList(),
+        val reconciliationAction: CashReconciliationAction? = null
     ) : ShiftState()
 
     /**

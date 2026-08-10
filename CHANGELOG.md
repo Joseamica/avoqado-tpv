@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### **Added**
+
+- **Arqueo ciego de caja al cerrar turno (PRO + opt-in por venue)**: la terminal consume el capability efectivo resuelto por el backend y, solo cuando está activo, pide el efectivo físico total sin revelar antes ventas, fondo ni efectivo esperado. Permite cerrar con conteo o, tras confirmación, sin conteo; normaliza montos con `BigDecimal`, muestra el resultado cuadrado/faltante/sobrante hasta que el cajero pulse “Listo” y añade la diferencia al historial/detalle. Con el capability ausente o apagado, el diálogo y payload legacy permanecen sin cambios; kiosco y servidores antiguos degradan a OFF de forma segura.
+
 ### **Removed**
 
 - **Pagos por Bluetooth (BLE) eliminados por completo — 0 usos en prod, solo causaban confusión**: se retiró todo el transporte BLE de pagos: el GATT server (`BluetoothPaymentServer`), el Foreground Service (`BluetoothPaymentForegroundService`, con su declaración en el manifest y los permisos `BLUETOOTH*`/`FOREGROUND_SERVICE*` — verificado que NADA más en la app usa Bluetooth), el pairing/aprobación de dispositivos (funciones `*KnownBleDevice*` y sus 3 llaves en `SecureStorage`), las dos tarjetas de SuperAdmin ("Test Bluetooth Capability" y "Start/Stop BLE Payment Server" con su `toggleBleServer`/`testBluetooth`/launcher de permisos), la restauración al arranque en `MainActivity` (`restoreBleServerIfPreviouslyRunning`/`setBluetoothAdapterName` — ya no tenía caller), `BluetoothCapabilityChecker`, `BluetoothPermissionHelper` y los docs `BLE_PAYMENT_IOS_APP.md`/`BLE_PAYMENT_QUEUE.md`. **Lo que SÍ se conservó** (porque el flujo vivo SOCKET lo reutilizaba): el bus de requests remotos, renombrado sin rastro de BLE → `core/remotepayment/RemotePaymentCoordinator` + `RemotePaymentRequest` (antes `BluetoothPaymentService`/`BlePaymentRequest` en `core/bluetooth`). El camino iOS/Android POS → backend → Socket.IO → esta terminal queda IDÉNTICO en comportamiento: mismo SharedFlow, misma cancelación idempotente por `requestId`, mismos guards de busy en `AppNavigation`. Suite completa sandbox + `compileProductionDebugKotlin` en verde.

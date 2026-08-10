@@ -1,15 +1,21 @@
 package com.jaac.avoqado_tpv.features.shift.presentation
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material3.Button
@@ -31,19 +37,25 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoButton
 import com.jaac.avoqado_tpv.core.presentation.components.AvoqadoSecondaryButton
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
 import com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus
+import com.jaac.avoqado_tpv.features.shift.domain.CashCountParseError
+import com.jaac.avoqado_tpv.features.shift.domain.CashCountParseResult
+import com.jaac.avoqado_tpv.features.shift.domain.parseCashCount
 import java.math.BigDecimal
 
 /**
@@ -266,8 +278,21 @@ fun OpenShiftDialog(
 fun CloseShiftDialog(
     shift: Shift,
     onDismiss: () -> Unit,
-    onConfirm: () -> Unit
+    onConfirm: () -> Unit,
+    cashReconciliationEnabled: Boolean = false,
+    onCounted: (BigDecimal) -> Unit = {},
+    onSkipped: () -> Unit = {}
 ) {
+    if (cashReconciliationEnabled) {
+        CashReconciliationCloseDialog(
+            staffName = shift.staffName,
+            onDismiss = onDismiss,
+            onCounted = onCounted,
+            onSkipped = onSkipped
+        )
+        return
+    }
+
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(16.dp),
@@ -400,6 +425,180 @@ fun CloseShiftDialog(
 }
 
 /**
+ * Blind cash count used only when the server-owned effective capability is true.
+ * No shift money or expected drawer values are rendered before COUNTED is submitted.
+ */
+@Composable
+private fun CashReconciliationCloseDialog(
+    staffName: String,
+    onDismiss: () -> Unit,
+    onCounted: (BigDecimal) -> Unit,
+    onSkipped: () -> Unit
+) {
+    var countedCashText by remember { mutableStateOf("") }
+    var showSkipConfirmation by remember { mutableStateOf(false) }
+    val parsedCount = remember(countedCashText) { parseCashCount(countedCashText) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        val focusManager = LocalFocusManager.current
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .heightIn(max = 560.dp)
+                .imePadding(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    if (showSkipConfirmation) {
+                        Text(
+                            text = "¿Cerrar sin conteo?",
+                            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = "El turno se cerrará, pero no quedará un resultado de caja para revisar.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Button(
+                            onClick = {
+                                focusManager.clearFocus()
+                                onSkipped()
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            shape = RoundedCornerShape(28.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.avoqadoColors.statusWarning,
+                                contentColor = Color.Black
+                            )
+                        ) {
+                            Text("Sí, cerrar sin conteo", style = MaterialTheme.typography.labelLarge)
+                        }
+                        AvoqadoSecondaryButton(
+                            text = "Volver al conteo",
+                            onClick = { showSkipConfirmation = false },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        Text(
+                            text = "Arqueo de caja",
+                            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = staffName,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "Cuenta todo el efectivo físico antes de cerrar el turno.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+
+                        OutlinedTextField(
+                            value = countedCashText,
+                            onValueChange = { countedCashText = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Efectivo total contado") },
+                            supportingText = {
+                                Text(
+                                    text = cashCountSupportingText(parsedCount),
+                                    color = if (parsedCount is CashCountParseResult.Error && parsedCount.reason != CashCountParseError.BLANK) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(imageVector = Icons.Default.AttachMoney, contentDescription = null)
+                            },
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Decimal,
+                                imeAction = ImeAction.Done
+                            ),
+                            keyboardActions = KeyboardActions(
+                                onDone = { focusManager.clearFocus() }
+                            ),
+                            isError = parsedCount is CashCountParseResult.Error && parsedCount.reason != CashCountParseError.BLANK,
+                            singleLine = true
+                        )
+
+                        AvoqadoButton(
+                            text = "Cerrar y conciliar",
+                            onClick = {
+                                val valid = parsedCount as? CashCountParseResult.Success
+                                if (valid != null) {
+                                    focusManager.clearFocus()
+                                    onCounted(valid.value)
+                                }
+                            },
+                            enabled = parsedCount is CashCountParseResult.Success,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        AvoqadoSecondaryButton(
+                            text = "Cerrar sin conteo",
+                            onClick = {
+                                focusManager.clearFocus()
+                                showSkipConfirmation = true
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    TextButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            onDismiss()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Cancelar")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun cashCountSupportingText(result: CashCountParseResult): String {
+    return when (result) {
+        is CashCountParseResult.Success -> "Incluye el fondo inicial"
+        is CashCountParseResult.Error -> when (result.reason) {
+            CashCountParseError.BLANK -> "Incluye el fondo inicial"
+            CashCountParseError.NEGATIVE -> "El monto no puede ser negativo"
+            CashCountParseError.INVALID_FORMAT -> "Ingresa un monto válido"
+            CashCountParseError.TOO_MANY_DECIMALS -> "Usa máximo dos decimales"
+            CashCountParseError.OVERFLOW -> "El monto máximo es \$99,999,999.99"
+        }
+    }
+}
+
+/**
  * Summary Row Component
  *
  * Reusable row for displaying label-value pairs in dialogs.
@@ -445,7 +644,7 @@ private fun OpenShiftDialogPreview() {
     }
 }
 
-@Preview(showBackground = true)
+@Preview(showBackground = true, widthDp = 360, heightDp = 640, name = "PAX A910S — cierre legacy")
 @Composable
 private fun CloseShiftDialogPreview() {
     AvoqadoTheme {
@@ -472,6 +671,40 @@ private fun CloseShiftDialogPreview() {
             ),
             onDismiss = {},
             onConfirm = {}
+        )
+    }
+}
+
+@Preview(showBackground = true, widthDp = 360, heightDp = 640, name = "PAX A910S — arqueo ciego")
+@Composable
+private fun CashReconciliationCloseDialogPreview() {
+    AvoqadoTheme {
+        CloseShiftDialog(
+            shift = Shift(
+                id = "shift-123",
+                venueId = "venue-1",
+                staffId = "staff-1",
+                staffName = "Juan Pérez",
+                startTime = "2025-01-15T14:30:00Z",
+                endTime = null,
+                status = ShiftStatus.OPEN,
+                startingCash = BigDecimal("500.00"),
+                endingCash = null,
+                totalSales = BigDecimal("1250.50"),
+                totalTips = BigDecimal("125.00"),
+                totalOrders = 15,
+                totalCashPayments = BigDecimal("600.00"),
+                totalCardPayments = BigDecimal("650.50"),
+                totalVoucherPayments = BigDecimal.ZERO,
+                totalOtherPayments = BigDecimal.ZERO,
+                totalProductsSold = 23,
+                durationMinutes = 150
+            ),
+            onDismiss = {},
+            onConfirm = {},
+            cashReconciliationEnabled = true,
+            onCounted = {},
+            onSkipped = {}
         )
     }
 }

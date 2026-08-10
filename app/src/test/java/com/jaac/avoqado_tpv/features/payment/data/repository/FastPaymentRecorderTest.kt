@@ -10,6 +10,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardNature
+import com.jaac.avoqado_tpv.features.payment.domain.model.IssuerCountrySource
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
 import io.mockk.coEvery
 import io.mockk.mockk
@@ -214,6 +215,33 @@ class FastPaymentRecorderTest {
 
         assertThat(captured.captured.method).isEqualTo("CREDIT_CARD")
         assertThat(captured.captured.merchantAccountId).isEqualTo(merchantCuid)
+    }
+
+    @Test
+    fun `recordPayment sends issuer evidence without changing legacy international flag`() = runTest {
+        val captured = slot<FastPaymentRequest>()
+        coEvery { apiService.recordFastPayment(any(), capture(captured)) } returns successResponse()
+
+        val cardDetails = CardDetails(
+            maskedPan = "477291******5280",
+            cardBrand = CardBrand.VISA,
+            entryMode = CardEntryMode.CONTACTLESS,
+            isInternational = true,
+            cardNature = CardNature.CREDIT,
+            issuerCountryCode = "0484",
+            issuerCountrySource = IssuerCountrySource.EMV_5F28,
+        )
+
+        recorder.recordPayment(
+            context = cardContext(),
+            cardDetails = cardDetails,
+            authorizationNumber = "623288",
+            referenceNumber = "297648987740",
+        )
+
+        assertThat(captured.captured.isInternational).isTrue()
+        assertThat(captured.captured.issuerCountryCode).isEqualTo("0484")
+        assertThat(captured.captured.issuerCountrySource).isEqualTo("EMV_5F28")
     }
 
     @Test

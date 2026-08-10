@@ -123,4 +123,11 @@ data class OrderPaymentRequest(
     // TerminalPaymentRequest row (single-flight terminal arbitration). Additive/optional.
     @SerializedName("terminalPaymentRequestId")
     val terminalPaymentRequestId: String? = null,
+
+    // 🌍 Shadow-only issuer evidence. Optional so old/backend-offline flows remain compatible.
+    @SerializedName("issuerCountryCode")
+    val issuerCountryCode: String? = null,
+
+    @SerializedName("issuerCountrySource")
+    val issuerCountrySource: String? = null,
 )

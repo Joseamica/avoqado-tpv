@@ -2795,9 +2795,27 @@ fun AppNavigation(
                         navController.navigate(NavRoute.Checkout.route) {
                             popUpTo(NavRoute.Home.route) { inclusive = false }
                         }
-                        Timber.d("🛒 [AngelPay] Nuevo Cobro: returning to unified Checkout")
+                        Timber.d("🛒 [AngelPay] Nuevo Pago: returning to unified Checkout")
                     }
-                } else null,
+                } else {
+                    {
+                        // 🔄 Cobro rapido: pantalla NUEVA de captura de monto, igual que el
+                        // riel Blumon (onNavigateToNewFastPayment mas arriba en este archivo).
+                        // Antes este caso quedaba en null y el boton caia al onNavigateBack()
+                        // del AngelPayPaymentScreen: un pop que regresaba a donde fuera que
+                        // vinieras, no a un cobro nuevo. Por eso no se sentia como "Nuevo Pago".
+                        navController.navigate(NavRoute.FastPaymentEntry.route) {
+                            popUpTo(NavRoute.Home.route) { inclusive = false }
+                        }
+                        Timber.d("🔄 [AngelPay] Nuevo Pago: a FastPaymentEntryScreen")
+                    }
+                },
+                // La etiqueta tiene que decir a donde te lleva, igual que
+                // `resolveSuccessRouting` en el riel Blumon. Con "Nuevo Pago" fijo, cobrar una
+                // mesa decia eso y te mandaba al PLANO DE MESAS. ("Nueva Venta" del caso
+                // serializado la resuelve la pantalla, que es quien conoce isSerializedFlow;
+                // el carrito se queda en "Nuevo Pago", igual que Blumon.)
+                newPaymentLabel = if (cameFromTables) "Nueva Orden" else "Nuevo Pago",
             )
         }
 

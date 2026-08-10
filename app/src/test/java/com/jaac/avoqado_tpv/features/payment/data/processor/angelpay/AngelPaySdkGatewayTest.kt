@@ -166,13 +166,26 @@ class AngelPaySdkGatewayTest {
     }
 
     @Test
-    fun `buildPaymentRequest conserva la propina como desglose`() {
+    fun `la propina NUNCA viaja en tipCents — va sumada dentro del monto`() {
         val req = gateway.buildPaymentRequest(subtotal, tip, waiter = "Ana", reference = "ref-2")
 
-        // AngelPay resta tipCents de amountCents para mostrar el importe:
-        // 379.50 - 49.50 = 330.00, que es la venta real.
-        assertEquals(4950L, req.tipCents)
-        assertEquals(33000L, req.amountCents - req.tipCents)
+        // 🔴 Para AngelPay `tipCents` NO se suma: se RESTA de `amountCents`. Mandar ahí el
+        // desglose real sólo lo ejercitan los comercios tipo restaurante (los retail lo
+        // rechazan con C208), o sea que era una ruta imposible de probar que se estrenaba
+        // en producción con dinero real. Se manda 0 siempre: un solo camino, el probado.
+        assertEquals(0L, req.tipCents)
+        // Y el cobro sigue siendo el total completo.
+        assertEquals(37950L, req.amountCents)
+    }
+
+    @Test
+    fun `tipCents es 0 con cualquier propina — barrido`() {
+        listOf("0.00", "0.01", "49.50", "175.00", "999.99").forEach { propina ->
+            val req = gateway.buildPaymentRequest(
+                subtotal, java.math.BigDecimal(propina), "Ana", "ref-sweep",
+            )
+            assertEquals("propina=$propina", 0L, req.tipCents)
+        }
     }
 
     @Test
@@ -192,6 +205,9 @@ class AngelPaySdkGatewayTest {
         val fallback = gateway.buildQaTipFallbackRequest(subtotal, tip, "Ana", "ref-4")
 
         assertEquals(fallback.amountCents, normal.amountCents)
+        // Desde 2026-08-10 son idénticos también en el desglose: la ruta normal ya no
+        // manda propina, así que ningún comercio puede tomar un camino distinto al probado.
+        assertEquals(fallback.tipCents, normal.tipCents)
     }
 
     @Test
@@ -214,5 +230,74 @@ class AngelPaySdkGatewayTest {
             assertEquals("subtotal=$s propina=$t debe cobrar ${sub.add(prop)}", esperado, req.amountCents)
             assertTrue("el cobro no puede ser menor al total", req.amountCents >= esperado)
         }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// CONTRATO: se manda EXACTAMENTE LO MISMO sin importar el tipo de comercio.
+//
+// AngelPay documenta TRES tipos (`MerchantInfo.type`, DevHub / SDK Android):
+//     "Venta" (retail) · "Venta con propina" (restaurante) · "Check In" (hotel)
+//
+// La garantía de que los tres reciben lo mismo NO es un acuerdo ni una prueba
+// caso por caso: es estructural. `buildPaymentRequest` recibe (subtotal, tip,
+// waiter, reference) — **el tipo de comercio no es un parámetro**, así que la
+// función no puede ramificar por él ni aunque quisiera.
+//
+// Este test fija el request COMPLETO para que ningún cambio futuro meta esa
+// dependencia por la puerta de atrás (p.ej. un `if (esRestaurante)` en el
+// ViewModel que pase otros valores). Si alguien toca un solo campo, truena aquí.
+// ══════════════════════════════════════════════════════════════════════════
+
+class AngelPaySdkGatewayContratoDeCobroTest {
+
+    private val gateway = AngelPaySdkGateway()
+
+    @Test
+    fun `el request es identico campo por campo — el tipo de comercio no lo altera`() {
+        val req = gateway.buildPaymentRequest(
+            subtotal = java.math.BigDecimal("330.00"),
+            tip = java.math.BigDecimal("49.50"),
+            waiter = "Ana",
+            reference = "attempt-123",
+        )
+
+        // 💰 Lo que se le cobra al cliente: SIEMPRE el total.
+        assertEquals(37_950L, req.amountCents)
+        // 🔴 La propina va dentro del monto, nunca como campo aparte.
+        assertEquals(0L, req.tipCents)
+
+        // El resto del contrato, fijado para que nadie lo mueva sin darse cuenta.
+        assertEquals("Ana", req.waiter)
+        assertEquals("attempt-123", req.reference)
+        assertEquals("attempt-123", req.integratorReference)
+        assertEquals(null, req.msi)
+        assertEquals(false, req.isCheckIn)   // nunca pre-autorización de hotel
+        assertEquals(null, req.checkInId)
+        assertTrue(req.allowSwipe && req.allowChip && req.allowContactless)
+        assertEquals(0.0, req.latitude, 0.0)
+        assertEquals(0.0, req.longitude, 0.0)
+        assertEquals(3000L, req.approvedResultDisplayMillis)
+        assertEquals(5000L, req.errorResultDisplayMillis)
+    }
+
+    @Test
+    fun `los dos caminos posibles producen requests equivalentes`() {
+        // Sólo existen dos rutas hacia el SDK: la normal y el fallback de C208.
+        // Si producen lo mismo, ningún comercio —de ningún tipo— puede recibir
+        // algo distinto, porque no hay una tercera ruta que tomar.
+        val subtotal = java.math.BigDecimal("838.00")
+        val tip = java.math.BigDecimal("83.80")
+
+        val normal = gateway.buildPaymentRequest(subtotal, tip, "Ana", "ref-x")
+        val fallback = gateway.buildQaTipFallbackRequest(subtotal, tip, "Ana", "ref-x")
+
+        assertEquals(normal.amountCents, fallback.amountCents)
+        assertEquals(normal.tipCents, fallback.tipCents)
+        assertEquals(normal.waiter, fallback.waiter)
+        assertEquals(normal.reference, fallback.reference)
+        assertEquals(normal.integratorReference, fallback.integratorReference)
+        assertEquals(normal.isCheckIn, fallback.isCheckIn)
+        assertEquals(normal.msi, fallback.msi)
     }
 }

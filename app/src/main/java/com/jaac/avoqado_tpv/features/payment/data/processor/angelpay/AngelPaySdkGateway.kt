@@ -7,6 +7,7 @@ import com.angelpay.angelpaysdk.models.MerchantOption
 import com.angelpay.angelpaysdk.models.MerchantSummary
 import com.angelpay.angelpaysdk.models.PaymentRequest
 import com.angelpay.angelpaysdk.models.SessionInfo
+import timber.log.Timber
 import java.math.BigDecimal
 import java.math.RoundingMode
 import javax.inject.Inject
@@ -95,26 +96,69 @@ class AngelPaySdkGateway @Inject constructor() {
     }
 
     /**
-     * 💰 `amountCents` es el TOTAL A COBRAR (venta + propina), NO el subtotal.
+     * Deja constancia del TIPO del comercio activo antes de cobrar.
      *
-     * `tipCents` es el DESGLOSE: cuánto de ese total es propina. AngelPay lo
-     * RESTA de `amountCents` para mostrar el importe de la venta. Probado con
-     * su recibo (Restbar, 2026-08-09):
+     * AngelPay define tres (`MerchantInfo.type`, su DevHub): `"Venta"` (retail),
+     * `"Venta con propina"` (restaurante) y `"Check In"` (hotel). Nosotros mandamos lo
+     * MISMO a los tres — el tipo ni siquiera es parámetro de [buildPaymentRequest] — pero
+     * sí necesitamos saber contra cuál se cobró:
+     *
+     * 1. El bug de propinas (Rest MX, 2026-08-09/10, $1,225.65) **sólo se manifestaba en
+     *    comercios tipo restaurante**, y tardamos días en descubrirlo justamente porque el
+     *    tipo no aparecía en ningún lado. Con esta línea, el primer log de cualquier
+     *    terminal dice de qué tipo es su comercio.
+     * 2. Desde que mandamos `tipCents = 0` ya **no hay forma de inferir el tipo** por el
+     *    comportamiento: antes un retail se delataba rechazando la propina con `C208`; hoy
+     *    ninguno rechaza nada. Esta es la única fuente que queda.
+     *
+     * Nivel `w` a propósito: ProGuard borra `d/v/i` en release (`-assumenosideeffects`),
+     * así que un `Timber.i` no existiría en las terminales — que es donde hace falta.
+     */
+    fun logTipoDeComercio(contexto: String) {
+        val info = runCatching { AngelPaySDK.getMerchantInfo() }.getOrNull()
+        if (info == null) {
+            Timber.w("🏪 [AngelPay] Tipo de comercio no disponible | contexto=$contexto")
+            return
+        }
+        Timber.w(
+            "🏪 [AngelPay] Comercio activo | nombre=${info.name}, tipo=\"${info.type}\", " +
+                "afiliacion=${info.affiliation}, id=${info.commerceId}, contexto=$contexto"
+        )
+    }
+
+    /**
+     * 💰 Se manda **SIEMPRE el TOTAL A COBRAR** (venta + propina) en `amountCents`,
+     * y **`tipCents` SIEMPRE en 0** — sin importar el tipo de comercio.
+     *
+     * 🔴 NO "arregles" esto mandando la propina en `tipCents`. Para AngelPay la propina
+     * NO es un extra que se suma: es un DESGLOSE que se RESTA de `amountCents`. Su propio
+     * recibo lo dice (Restbar, 2026-08-09):
      *
      *     Pago con tarjeta $330.00 = Importe $280.50 + Propina $49.50
      *
-     * Ahí mandamos `amountCents = 330.00` (la venta SIN propina) y AngelPay
-     * cobró 330.00 tratándolo como total, restándole la propina al importe.
-     * Resultado: 11 ventas cobradas de menos por $1,225.65 — el cliente pagó
-     * MENOS de lo que aceptó y el restaurante perdió las propinas.
+     * Ahí mandábamos `amountCents = 330.00` (la venta SIN propina) y AngelPay cobró 330.00
+     * tratándolo como total. Resultado: **11 ventas cobradas de menos por $1,225.65** — el
+     * cliente pagó MENOS de lo que aceptó y el restaurante nunca recibió esas propinas.
+     * Pérdida asumida por Avoqado.
      *
-     * 🔴 El cobro NUNCA puede ser menor al total registrado en Avoqado.
+     * **Por qué `tipCents = 0` y no el desglose real** (decisión 2026-08-10): mandar el
+     * desglose obliga a confiar en cómo AngelPay interpreta la resta, y esa ruta **sólo
+     * la ejercitan los comercios tipo restaurante** — los retail la rechazan con `C208` y
+     * caen al fallback. O sea que era una ruta que no podíamos probar en ningún banco de
+     * pruebas y que se estrenaba en producción con dinero real, justo como pasó. Mandando
+     * el total con `tipCents = 0` hay **un solo camino, y es el que está probado en
+     * hardware** (cobros reales verificados el 2026-08-10, incluido uno en producción:
+     * venta $1.00 + propina $0.20 → cobrado $1.20, auth 904174). Un comercio nuevo dado de
+     * alta como restaurante queda protegido desde el primer cobro, sin depender de que
+     * alguien le cambie el perfil.
      *
-     * Sólo se manifestaba en comercios tipo RESTAURANTE: los retail rechazan
-     * la propina con C208 y caen a [buildQaTipFallbackRequest], que ya mandaba
-     * el total — por eso esos venues nunca fallaron. Blumon/PAX también manda
-     * siempre el total (`calculateTotal(amount, tip)` → SaleIcc); esto alinea
-     * AngelPay con el resto de la plataforma.
+     * Es además el mismo contrato que Blumon/PAX (`calculateTotal(amount, tip)` → SaleIcc)
+     * y el que ya usan todos los comercios de AngelPay hoy. Avoqado conserva el desglose
+     * venta/propina de su lado; lo único que se pierde es que la propina aparezca en la
+     * columna de propina de los reportes de AngelPay en vez de dentro del importe.
+     *
+     * 🔴 El invariante: **el cobro NUNCA puede ser menor al total registrado en Avoqado.**
+     * Guardado por `AngelPaySdkGatewayTest`.
      */
     fun buildPaymentRequest(
         subtotal: BigDecimal,
@@ -127,7 +171,8 @@ class AngelPaySdkGateway @Inject constructor() {
             latitude = 0.0,
             longitude = 0.0,
             reference = reference,
-            tipCents = toCents(tip),
+            // 🔴 SIEMPRE 0 — ver el KDoc. La propina ya va dentro de `amountCents`.
+            tipCents = 0L,
             waiter = waiter,
             msi = null,
             isCheckIn = false,

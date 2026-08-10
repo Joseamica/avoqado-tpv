@@ -66,6 +66,45 @@ class AngelPayIntentBuilder @Inject constructor() {
      * @param waiter Optional waiter identifier
      * @return Intent ready to be launched via startActivityForResult
      */
+    /**
+     * Arma el JSON de la venta que viaja dentro del Intent.
+     *
+     * 🔴 **El monto que sale de aquí es el TOTAL A COBRAR (venta + propina). NO LO CAMBIES
+     * A `amount` PELÓN.** Avoqado guarda el desglose venta/propina de su lado; al procesador
+     * siempre le va el total. Es el mismo contrato que Blumon/PAX (`calculateTotal(amount, tip)`)
+     * y que el fallback del SDK.
+     *
+     * La propina va **sumada dentro de `subtotal`** y no como campo aparte: para AngelPay la
+     * propina es un DESGLOSE que se RESTA del monto, no un extra que se suma. Mandar aquí la
+     * venta sin la propina haría que el cliente PAGUE DE MENOS — ese error exacto, en el
+     * camino del SDK, costó 11 ventas cobradas de menos por $1,225.65 en Rest MX el
+     * 2026-08-09/10.
+     *
+     * Vive separado de `buildSaleIntent` para poder probarlo sin Android de por medio.
+     * Guardado por `AngelPayIntentBuilderTest`.
+     */
+    internal fun buildSaleTransactionJson(
+        amount: BigDecimal,
+        tip: BigDecimal = BigDecimal.ZERO,
+        waiter: String? = null,
+        integratorReference: String? = null,
+    ): String {
+        val totalForProcessor = amount.add(tip)
+        val fields = linkedMapOf<String, Any>(
+            "operationType" to "SALE",
+            "subtotal" to toCentavos(totalForProcessor),
+        )
+        // La propina NO se manda por separado — ya va dentro de `subtotal`.
+        if (waiter != null) {
+            fields["waiter"] = waiter
+        }
+        // installments: null/0 = no MSI
+        if (!integratorReference.isNullOrBlank()) {
+            fields["integratorReference"] = integratorReference
+        }
+        return JSONObject(fields).toString()
+    }
+
     fun buildSaleIntent(
         amount: BigDecimal,
         tip: BigDecimal = BigDecimal.ZERO,
@@ -73,23 +112,13 @@ class AngelPayIntentBuilder @Inject constructor() {
         waiter: String? = null,
         integratorReference: String? = null,
     ): Intent {
-        // Workaround: AngelPay QA merchant returns C208 "Propina no soportada"
-        // when tip > 0. Send total as subtotal with tip=0 to AngelPay.
-        // Our backend records the real tip/subtotal split correctly.
-        // TODO: Revert when AngelPay enables tip for our merchant
         val totalForProcessor = amount.add(tip)
-        val transactionRequest = JSONObject().apply {
-            put("operationType", "SALE")
-            put("subtotal", toCentavos(totalForProcessor))
-            // tip intentionally omitted — sent as part of subtotal
-            if (waiter != null) {
-                put("waiter", waiter)
-            }
-            // installments: null/0 = no MSI
-            if (!integratorReference.isNullOrBlank()) {
-                put("integratorReference", integratorReference)
-            }
-        }
+        val transactionRequest = buildSaleTransactionJson(
+            amount = amount,
+            tip = tip,
+            waiter = waiter,
+            integratorReference = integratorReference,
+        )
 
         val authExternal = buildAuthJson(credentials)
 

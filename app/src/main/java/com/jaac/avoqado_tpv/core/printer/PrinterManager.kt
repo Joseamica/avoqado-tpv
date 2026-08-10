@@ -60,25 +60,55 @@ class PrinterManager @Inject constructor(
         private const val LOGO_WIDTH = 220
     }
 
+    /**
+     * 🔴 Esta clase habla con la impresora **de PAX** (Neptune / `com.pax.dal`). En una Nexgo
+     * ese SDK no existe: tocarlo tumbaba la app.
+     *
+     * Crash real (Crashlytics `271f0dd…`, 31 eventos / 3 terminales, desde 2.4.2-nexgo-prod):
+     * un cajero de una Nexgo tocaba "Imprimir" en Reportes y la app se cerraba con
+     * `UnsatisfiedLinkError: couldn't find "libDeviceConfig.so"` — la librería nativa de PAX,
+     * que en ese hardware no está.
+     *
+     * Los `try/catch` de abajo existían justo para eso y **no servían**: `UnsatisfiedLinkError`
+     * es un `Error`, no una `Exception`, así que `catch (e: Exception)` no lo atrapa y el
+     * fallo escapaba del `lazy` hasta matar el proceso. Por eso se atrapa `Throwable`.
+     *
+     * Y antes de eso, el corte de raíz: en las Nexgo ni siquiera se intenta. La impresión ahí
+     * va por otro camino (`AngelPaySDK.printTicket`, ver `AngelPaySdkPostOperationsAdapter`),
+     * nunca por aquí. Devolver `null` es seguro: cada llamador ya lo maneja
+     * (`val printerInstance = printer ?: return Result.failure(...)`).
+     *
+     * Mismo criterio que `UpdateCheckManager`: el corte va por **procesador**
+     * (`ENABLE_PAX_SDK`), no por modelo de dispositivo ni por package.
+     */
+    private val esHardwarePax: Boolean = BuildConfig.ENABLE_PAX_SDK
+
     private val dal: IDAL? by lazy {
+        if (!esHardwarePax) {
+            Timber.i("🖨️ [Printer] Terminal sin hardware PAX — impresora nativa no disponible")
+            return@lazy null
+        }
         try {
             val instance = NeptuneLiteUser.getInstance().getDal(context)
             Timber.d("✅ IDAL instance obtained successfully")
             instance
-        } catch (e: Exception) {
-            Timber.e(e, "❌ Failed to get IDAL from Neptune SDK")
+        } catch (t: Throwable) {
+            // Throwable, no Exception: un SDK nativo ausente tira Error (UnsatisfiedLinkError).
+            Timber.e(t, "❌ Failed to get IDAL from Neptune SDK")
             null
         }
     }
 
     private val printer: IPrinter? by lazy {
+        if (!esHardwarePax) return@lazy null
         try {
             dal?.getPrinter()?.also {
                 it.init()
                 Timber.d("✅ Printer initialized successfully")
             }
-        } catch (e: Exception) {
-            Timber.e(e, "❌ Failed to initialize printer")
+        } catch (t: Throwable) {
+            // Ver `dal`: `it.init()` es la línea que tumbaba la app en Nexgo.
+            Timber.e(t, "❌ Failed to initialize printer")
             null
         }
     }

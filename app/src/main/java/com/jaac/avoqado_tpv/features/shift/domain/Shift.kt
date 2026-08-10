@@ -62,6 +62,11 @@ enum class ShiftStatus {
     OPEN,
 
     /**
+     * Server owns an in-flight close claim; sale and close actions stay disabled.
+     */
+    CLOSING,
+
+    /**
      * Shift has been closed
      */
     CLOSED

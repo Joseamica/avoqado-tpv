@@ -1,6 +1,8 @@
 package com.jaac.avoqado_tpv.features.ordering.data.repository
 
+import com.google.gson.Gson
 import com.jaac.avoqado_tpv.core.data.network.ApiService
+import com.jaac.avoqado_tpv.core.data.network.ApiErrorResponse
 import com.jaac.avoqado_tpv.features.ordering.data.mappers.toDomain
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductCategory
@@ -205,13 +207,29 @@ class ProductRepositoryImpl @Inject constructor(
                 Timber.i("✅ [BarcodeQuickAdd] Product created successfully: ${product.name} (ID: ${product.id})")
                 Result.success(product)
             } else {
-                val error = "Failed to create product: HTTP ${response.code()} - ${response.message()}"
+                val error = productWriteErrorMessage(
+                    rawBody = response.errorBody()?.string(),
+                    fallback = "No se pudo crear el producto (${response.code()}).",
+                )
                 Timber.e("❌ [BarcodeQuickAdd] $error")
                 Result.failure(Exception(error))
             }
         } catch (e: Exception) {
             Timber.e(e, "❌ [BarcodeQuickAdd] Error creating product")
             Result.failure(e)
+        }
+    }
+
+    private fun productWriteErrorMessage(rawBody: String?, fallback: String): String {
+        val parsed = runCatching {
+            rawBody?.takeIf { it.isNotBlank() }?.let { Gson().fromJson(it, ApiErrorResponse::class.java) }
+        }.getOrNull()
+        val message = parsed?.message?.takeIf { it.isNotBlank() }
+            ?: parsed?.error?.takeIf { it.isNotBlank() }
+        return if (parsed?.code == "CATALOG_GOVERNANCE_REQUIRED") {
+            message ?: "Este producto debe crearse o activarse desde el Catálogo maestro."
+        } else {
+            message ?: fallback
         }
     }
 }

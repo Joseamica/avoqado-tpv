@@ -225,8 +225,9 @@ fun ShiftDto.toDomain(): Shift {
         endTime = endTime,
         status = when (status.uppercase()) {
             "OPEN" -> ShiftStatus.OPEN
+            "CLOSING" -> ShiftStatus.CLOSING
             "CLOSED" -> ShiftStatus.CLOSED
-            else -> ShiftStatus.OPEN
+            else -> ShiftStatus.CLOSED
         },
         startingCash = BigDecimal(startingCash),
         endingCash = endingCash?.let { BigDecimal(it) },

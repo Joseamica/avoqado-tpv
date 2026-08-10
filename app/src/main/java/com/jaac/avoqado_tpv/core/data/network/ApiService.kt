@@ -1793,7 +1793,8 @@ data class TpvFeedbackResponse(
 data class ApiErrorResponse(
     val error: String?,
     val message: String?,
-    val statusCode: Int?
+    val statusCode: Int?,
+    val code: String? = null,
 )
 
 // ========== Proof-of-Sale DTOs ==========

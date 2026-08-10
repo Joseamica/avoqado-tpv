@@ -110,6 +110,30 @@ val user = request.user
 
 EVERY database query MUST filter by `venueId`. No exceptions.
 
+## 🔴 El cobro al cliente NUNCA puede ser menor al total registrado
+
+Lo que se le manda al procesador es **SIEMPRE el TOTAL (venta + propina)**. Los dos
+procesadores funcionan igual y Avoqado guarda el desglose de su lado:
+
+| Procesador | Qué se manda | Dónde |
+|---|---|---|
+| **Blumon TPV** | `calculateTotal(amount, tip)` → `SaleIcc` | `PaymentViewModel` (ambas variantes) |
+| **AngelPay** | `amountCents = subtotal + propina`; `tipCents` = **desglose** | `AngelPaySdkGateway.buildPaymentRequest` |
+
+⚠️ **`tipCents` de AngelPay NO se suma: se RESTA.** Es cuánto del total es propina, y
+AngelPay lo descuenta de `amountCents` para mostrar el importe de la venta. Su recibo lo
+dice explícito: `Pago con tarjeta $330.00 = Importe $280.50 + Propina $49.50`.
+
+Mandar el subtotal ahí costó **11 ventas cobradas de menos por $1,225.65** en un
+restaurante (Rest MX, 2026-08-09/10): el cliente pagó menos de lo que aceptó y el local
+nunca recibió las propinas. **Sólo se ve en comercios tipo restaurante** — los retail
+rechazan la propina con `C208` y caen al fallback, que ya mandaba el total, así que el
+bug puede vivir meses sin manifestarse.
+
+Al tocar cualquier ruta de cobro, el invariante es uno: **monto enviado al procesador ==
+monto registrado en Avoqado**. Tests guardianes: `AngelPaySdkGatewayTest` → "el cobro
+NUNCA es menor al total registrado".
+
 ## Money = BigDecimal, Never Float
 
 ```kotlin

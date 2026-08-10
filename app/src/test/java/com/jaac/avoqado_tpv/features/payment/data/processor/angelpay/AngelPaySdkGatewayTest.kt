@@ -129,4 +129,90 @@ class AngelPaySdkGatewayTest {
         assertTrue("should not be categorized", err !is AngelPayAuthExpiredError)
         assertTrue("should not be categorized", err !is AngelPayNetworkError)
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // 💰 EL COBRO NUNCA PUEDE SER MENOR AL TOTAL REGISTRADO
+    //
+    // Incidente Rest MX / Restbar (2026-08-09/10): 11 ventas cobradas de menos
+    // por $1,225.65 — exactamente la propina de cada una.
+    //
+    // CAUSA: `amountCents` de AngelPay es el TOTAL A COBRAR, y `tipCents` es
+    // cuánto de ese total es propina (AngelPay lo RESTA para mostrar el
+    // importe). Probado con su recibo:
+    //
+    //     Pago con tarjeta $330.00 = Importe $280.50 + Propina $49.50
+    //                ↑ nuestro amountCents (la venta sin propina)
+    //
+    // Mandábamos el SUBTOTAL en amountCents, así que AngelPay cobraba la venta
+    // sin propina Y encima le restaba la propina al importe.
+    //
+    // Sólo se veía en comercios tipo RESTAURANTE: los retail (p.ej. un salón)
+    // rechazan la propina con C208 y caen al fallback, que ya mandaba el total
+    // — por eso ese venue nunca falló.
+    //
+    // Blumon/PAX siempre mandó el total (`calculateTotal(amount, tip)` →
+    // SaleIcc). Esto alinea AngelPay con el resto de la plataforma.
+    // ══════════════════════════════════════════════════════════════════════
+
+    private val subtotal = java.math.BigDecimal("330.00")
+    private val tip = java.math.BigDecimal("49.50")
+
+    @Test
+    fun `buildPaymentRequest cobra el TOTAL, no el subtotal`() {
+        val req = gateway.buildPaymentRequest(subtotal, tip, waiter = "Ana", reference = "ref-1")
+
+        // 379.50 en centavos — el cliente paga la venta MÁS la propina.
+        assertEquals(37950L, req.amountCents)
+    }
+
+    @Test
+    fun `buildPaymentRequest conserva la propina como desglose`() {
+        val req = gateway.buildPaymentRequest(subtotal, tip, waiter = "Ana", reference = "ref-2")
+
+        // AngelPay resta tipCents de amountCents para mostrar el importe:
+        // 379.50 - 49.50 = 330.00, que es la venta real.
+        assertEquals(4950L, req.tipCents)
+        assertEquals(33000L, req.amountCents - req.tipCents)
+    }
+
+    @Test
+    fun `sin propina el cobro es exactamente el subtotal`() {
+        val req = gateway.buildPaymentRequest(subtotal, java.math.BigDecimal.ZERO, null, "ref-3")
+
+        assertEquals(33000L, req.amountCents)
+        assertEquals(0L, req.tipCents)
+    }
+
+    @Test
+    fun `el fallback y la ruta normal cobran EXACTAMENTE lo mismo`() {
+        // El fallback (comercios que rechazan propina) ya cobraba bien. Las dos
+        // rutas deben cobrar idéntico — si divergen, un tipo de comercio vuelve
+        // a cobrar de menos.
+        val normal = gateway.buildPaymentRequest(subtotal, tip, "Ana", "ref-4")
+        val fallback = gateway.buildQaTipFallbackRequest(subtotal, tip, "Ana", "ref-4")
+
+        assertEquals(fallback.amountCents, normal.amountCents)
+    }
+
+    @Test
+    fun `el cobro NUNCA es menor al total registrado — barrido de montos`() {
+        // El invariante en una línea. Cualquier cambio futuro que vuelva a
+        // mandar el subtotal truena aquí.
+        val casos = listOf(
+            "100.00" to "0.00",
+            "330.00" to "49.50",   // el caso real de Restbar
+            "838.00" to "83.80",
+            "1837.00" to "183.70",
+            "725.00" to "175.00",  // propina no-porcentual
+            "0.01" to "0.01",      // centavos
+        )
+        casos.forEach { (s, t) ->
+            val sub = java.math.BigDecimal(s)
+            val prop = java.math.BigDecimal(t)
+            val esperado = sub.add(prop).movePointRight(2).toLong()
+            val req = gateway.buildPaymentRequest(sub, prop, "Ana", "ref")
+            assertEquals("subtotal=$s propina=$t debe cobrar ${sub.add(prop)}", esperado, req.amountCents)
+            assertTrue("el cobro no puede ser menor al total", req.amountCents >= esperado)
+        }
+    }
 }

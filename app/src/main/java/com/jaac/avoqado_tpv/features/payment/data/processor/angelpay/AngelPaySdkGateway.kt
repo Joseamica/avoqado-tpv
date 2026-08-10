@@ -94,6 +94,28 @@ class AngelPaySdkGateway @Inject constructor() {
             .map { Unit }
     }
 
+    /**
+     * 💰 `amountCents` es el TOTAL A COBRAR (venta + propina), NO el subtotal.
+     *
+     * `tipCents` es el DESGLOSE: cuánto de ese total es propina. AngelPay lo
+     * RESTA de `amountCents` para mostrar el importe de la venta. Probado con
+     * su recibo (Restbar, 2026-08-09):
+     *
+     *     Pago con tarjeta $330.00 = Importe $280.50 + Propina $49.50
+     *
+     * Ahí mandamos `amountCents = 330.00` (la venta SIN propina) y AngelPay
+     * cobró 330.00 tratándolo como total, restándole la propina al importe.
+     * Resultado: 11 ventas cobradas de menos por $1,225.65 — el cliente pagó
+     * MENOS de lo que aceptó y el restaurante perdió las propinas.
+     *
+     * 🔴 El cobro NUNCA puede ser menor al total registrado en Avoqado.
+     *
+     * Sólo se manifestaba en comercios tipo RESTAURANTE: los retail rechazan
+     * la propina con C208 y caen a [buildQaTipFallbackRequest], que ya mandaba
+     * el total — por eso esos venues nunca fallaron. Blumon/PAX también manda
+     * siempre el total (`calculateTotal(amount, tip)` → SaleIcc); esto alinea
+     * AngelPay con el resto de la plataforma.
+     */
     fun buildPaymentRequest(
         subtotal: BigDecimal,
         tip: BigDecimal,
@@ -101,7 +123,7 @@ class AngelPaySdkGateway @Inject constructor() {
         reference: String?,
     ): PaymentRequest {
         return PaymentRequest(
-            amountCents = toCents(subtotal),
+            amountCents = toCents(subtotal.add(tip)),
             latitude = 0.0,
             longitude = 0.0,
             reference = reference,

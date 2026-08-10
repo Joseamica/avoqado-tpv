@@ -1459,6 +1459,11 @@ class AngelPayPaymentViewModel @Inject constructor(
             return
         }
 
+        // Deja en el log CONTRA QUÉ TIPO de comercio se va a cobrar. Desde que mandamos
+        // `tipCents = 0` ningún comercio rechaza la propina, así que ésta es la única forma
+        // de saberlo — y era el dato que faltó para diagnosticar el incidente de Rest MX.
+        sdkGateway.logTipoDeComercio(contexto = "antes de cobrar")
+
         val primaryRequest = sdkGateway.buildPaymentRequest(
             subtotal = pendingAmount,
             tip = pendingTip,
@@ -1548,9 +1553,23 @@ class AngelPayPaymentViewModel @Inject constructor(
             usedQaTipFallback = usedQaTipFallback,
         )
         val totalAmount = pendingAmount.add(pendingTip)
+        // 💰 Se loguea el monto REALMENTE enviado al procesador, no sólo lo que creemos cobrar.
+        // El bug de propinas (2026-08-09/10, $1,225.65 cobrados de menos en Rest MX) vivió meses
+        // invisible porque este log decía "total=379.50" mientras el request llevaba 33000 centavos.
+        // Con `enviadoAngelPay` cualquier divergencia se ve en logcat/Better Stack sin abrir el portal.
+        val enviadoAngelPay = BigDecimal.valueOf(request.amountCents).movePointLeft(2)
         Timber.i(
-            "🔶 [AngelPay SDK] Payment request ready | subtotal=$pendingAmount, tip=$pendingTip, total=$totalAmount, qaTipFallback=$usedQaTipFallback"
+            "🔶 [AngelPay SDK] Payment request ready | subtotal=$pendingAmount, tip=$pendingTip, " +
+                "total=$totalAmount, enviadoAngelPay=$enviadoAngelPay, qaTipFallback=$usedQaTipFallback"
         )
+        // 🔴 Invariante de dinero: el cobro NUNCA puede ser menor al total registrado en Avoqado.
+        // Alarma ruidosa y grepeable — si esto aparece, el cliente está pagando de menos.
+        if (enviadoAngelPay.compareTo(totalAmount) != 0) {
+            Timber.e(
+                "🚨 [AngelPay SDK] MONTO DIVERGENTE — se cobra $enviadoAngelPay pero el total registrado " +
+                    "es $totalAmount (subtotal=$pendingAmount + propina=$pendingTip)"
+            )
+        }
     }
 
     // 📒 [Libreta] `suspend` since 2026-07-18: the write-ahead row must be COMMITTED before
@@ -1795,6 +1814,41 @@ class AngelPayPaymentViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 🔴 Verifica lo que AngelPay REALMENTE cobró contra lo que Avoqado registró.
+     *
+     * Todo lo demás en esta app verifica lo que *mandamos*. Esto verifica lo que *pasó*, que
+     * es lo único que no depende de suposiciones sobre el procesador: da igual el tipo de
+     * comercio, cómo interprete `tipCents`, o si mañana cambian el SDK.
+     *
+     * Existe por el incidente de Rest MX (2026-08-09/10): 11 ventas cobradas de menos por
+     * $1,225.65 que **nadie detectó durante días** porque el cobro se aprobaba y la app
+     * mostraba éxito. El daño no fue el bug: fue el silencio. Esta comprobación convierte
+     * ese silencio en una alarma inmediata en Crashlytics.
+     *
+     * `Timber.e` a propósito: ProGuard borra `d/v/i` en release (`-assumenosideeffects`),
+     * así que un log informativo NO existiría en las terminales. El nivel error sobrevive
+     * y llega a Crashlytics.
+     *
+     * No bloquea ni revierte nada: cuando esto corre el dinero YA se movió y mentir en
+     * pantalla sobre un cobro hecho sería peor. Su trabajo es que te enteres el mismo día.
+     */
+    internal fun verificarMontoCobrado(result: PaymentResult) {
+        if (!result.approved) return
+
+        val alarma = describirDivergenciaDeCobro(
+            cobradoCents = result.amount,
+            venta = pendingAmount,
+            propina = pendingTip,
+        ) ?: return
+
+        Timber.e(
+            "$alarma | auth=${result.authCode}, ref=${result.reference}, " +
+                "merchant=${_currentMerchant.value?.displayName}"
+        )
+    }
+
+
     fun onAngelPaySdkResult(result: PaymentResult) {
         viewModelScope.launch {
           // 🔴 Mismo vigilante, mismo invariante que onAngelPayResult: observa desde
@@ -1805,7 +1859,8 @@ class AngelPayPaymentViewModel @Inject constructor(
           var authAttemptOutcomeCode: String? = null
           try {
             if (!consumeResultForCurrentAttempt(source = "sdk_contract")) return@launch
-            Timber.i("🔶 [AngelPay SDK] Result received | approved=${result.approved}, status=${result.status}")
+            Timber.i("🔶 [AngelPay SDK] Result received | approved=${result.approved}, status=${result.status}, montoCobrado=${result.amount}")
+            verificarMontoCobrado(result)
             _state.value = AngelPayPaymentState.WaitingForResult(message = "Validando resultado del pago...")
 
             // 📒 [Libreta] AngelPay's single return IS the host verdict (no separate
@@ -2941,4 +2996,40 @@ class AngelPayPaymentViewModel @Inject constructor(
          */
         val NEXGO_MODELS_WITH_PRINTER = listOf("N86")
     }
+}
+
+/**
+ * Compara lo que AngelPay REALMENTE cobró contra lo que Avoqado registró, y devuelve el
+ * mensaje de alarma — o `null` si cuadran.
+ *
+ * Puro y de nivel superior a propósito: la comparación es lógica de dinero y tiene que poder
+ * probarse sin levantar el ViewModel entero. Ver `AngelPayPaymentViewModel.verificarMontoCobrado`.
+ *
+ * `cobradoCents` viene de `PaymentResult.amount`, que el manual del SDK de AngelPay (v1.13,
+ * sección PaymentResult) define como **"Monto en centavos"** — la misma unidad que
+ * `PaymentRequest.amountCents`. Si algún día cambiaran esa unidad, la alarma se dispararía en
+ * TODOS los cobros, que es exactamente la señal que querríamos recibir.
+ */
+@VisibleForTesting
+internal fun describirDivergenciaDeCobro(
+    cobradoCents: Long,
+    venta: BigDecimal,
+    propina: BigDecimal,
+): String? {
+    val totalRegistrado = venta.add(propina)
+    val esperadoCents = totalRegistrado
+        .setScale(2, RoundingMode.HALF_UP)
+        .movePointRight(2)
+        .toLong()
+
+    // `<= 0` = el SDK no reportó monto en esta respuesta; no hay nada que comparar.
+    if (cobradoCents <= 0L || cobradoCents == esperadoCents) return null
+
+    val cobrado = BigDecimal.valueOf(cobradoCents).movePointLeft(2)
+    val diferencia = cobrado.subtract(totalRegistrado)
+    val sentido = if (diferencia.signum() < 0) "DE MENOS" else "DE MÁS"
+
+    return "🚨 [AngelPay] COBRO NO COINCIDE — el cliente pagó $sentido | " +
+        "cobrado=$cobrado, registrado=$totalRegistrado " +
+        "(venta=$venta + propina=$propina), diferencia=$diferencia"
 }

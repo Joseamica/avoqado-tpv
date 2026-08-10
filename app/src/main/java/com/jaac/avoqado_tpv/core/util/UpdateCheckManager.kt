@@ -36,12 +36,41 @@ class UpdateCheckManager @Inject constructor(
     val isChecking: StateFlow<Boolean> = _isChecking.asStateFlow()
 
     /**
+     * 🔴 Las terminales Nexgo NO se actualizan por el sistema de Avoqado: su APK firmado se le
+     * entrega al equipo de AngelPay y ellos lo despliegan por su TMS. Aceptar una actualización
+     * de aquí no les sirve de nada y sí es peligroso.
+     *
+     * `nexgoProd` NO lleva `applicationIdSuffix`, así que su `APPLICATION_ID` es
+     * `com.jaac.avoqado_tpv` — el **mismo package** que las builds de PAX — y por eso
+     * `getEnvironment()` las reporta como `PRODUCTION`, el mismo público que TODOS los APK de
+     * PAX en `AppUpdate` (publicados con `targetType=ALL`). Hoy no truena sólo porque el
+     * `versionCode` más alto publicado empata con el que traen las Nexgo y la comparación es
+     * mayor estricto; en cuanto se suba un APK de PAX con versionCode mayor, CADA Nexgo lo
+     * vería como actualización y lo instalaría **encima** (mismo package). Una build de PAX en
+     * una Nexgo trae `ENABLE_PAX_SDK=true` y sin SDK de AngelPay: terminal que no puede cobrar.
+     *
+     * El corte va por **procesador** (`ENABLE_PAX_SDK`), no por package —que hoy colisiona— ni
+     * por versionCode —que era casualidad—. Y se aplica a las TRES puertas por las que puede
+     * entrar una actualización (`checkForUpdates`, el 426 de `VersionGateInterceptor` y el
+     * force-update del heartbeat), porque las dos últimas son BLOQUEANTES: dejarlas abiertas
+     * significaría una Nexgo atorada en una pantalla de actualización obligatoria apuntando a
+     * un APK de PAX.
+     */
+    private val updatesManagedByAvoqado: Boolean = BuildConfig.ENABLE_PAX_SDK
+
+    /**
      * Check for available updates from Avoqado backend.
      *
      * @param environment "SANDBOX" or "PRODUCTION" based on build variant
      * @return The update info if available, null otherwise
      */
     suspend fun checkForUpdates(environment: String = getEnvironment()): AvoqadoUpdateInfo? {
+        // Ver `updatesManagedByAvoqado`: las Nexgo se actualizan por el TMS de AngelPay.
+        if (!updatesManagedByAvoqado) {
+            Timber.i("⏭️ [UpdateCheck] Terminal Nexgo/AngelPay — se actualiza por el TMS de AngelPay, no por Avoqado")
+            return null
+        }
+
         if (_isChecking.value) {
             Timber.d("🔄 [UpdateCheck] Already checking, skipping...")
             return _pendingUpdate.value
@@ -100,6 +129,13 @@ class UpdateCheckManager @Inject constructor(
      * @param forceUpdate The update info from heartbeat response
      */
     fun setForceUpdateFromHeartbeat(forceUpdate: ForceUpdateDto) {
+        // Ver `updatesManagedByAvoqado`: en una Nexgo esto apuntaría a un APK de PAX y la
+        // dejaría atorada en una pantalla de actualización obligatoria.
+        if (!updatesManagedByAvoqado) {
+            Timber.i("⏭️ [UpdateCheck] Force update del heartbeat ignorado — terminal Nexgo/AngelPay")
+            return
+        }
+
         // Only set if we don't already have a pending update or if this is a newer version
         val current = _pendingUpdate.value
         if (current == null || forceUpdate.versionCode > current.versionCode) {
@@ -144,6 +180,13 @@ class UpdateCheckManager @Inject constructor(
      * @param update The update info from 426 response
      */
     fun setForceUpdate(update: AvoqadoUpdateInfo) {
+        // Ver `updatesManagedByAvoqado`: en una Nexgo esto apuntaría a un APK de PAX y la
+        // dejaría atorada en una pantalla de actualización obligatoria.
+        if (!updatesManagedByAvoqado) {
+            Timber.i("⏭️ [UpdateCheck] Force update del 426 ignorado — terminal Nexgo/AngelPay")
+            return
+        }
+
         Timber.i("🚨 [UpdateCheck] Force update set from API 426: v${update.versionCode}")
         _pendingUpdate.value = update
     }

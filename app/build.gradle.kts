@@ -16,8 +16,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv"
         minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
         targetSdk = 34
-        versionCode = 94
-        versionName = "2.7.2"
+        versionCode = 97
+        versionName = "2.8.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -723,6 +723,7 @@ dependencies {
     testImplementation("app.cash.turbine:turbine:1.0.0")  // Flow testing
     testImplementation("com.google.truth:truth:1.1.5")  // Assertions
     testImplementation("org.robolectric:robolectric:4.11.1")  // Android testing in JVM
+    testImplementation("org.json:json:20231013")  // org.json real (el de android.jar es un stub que tira "Stub!")
     testImplementation("androidx.test:core:1.5.0")  // ApplicationProvider for testing
     testImplementation("androidx.work:work-testing:2.9.0")  // TestListenableWorkerBuilder (F-9 — PaymentSyncWorkerTest)
     androidTestImplementation(libs.androidx.junit)

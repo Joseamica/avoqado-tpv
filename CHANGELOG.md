@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+---
+
+## [2.8.1] - 2026-08-10
+
+> Nota histórica: la 2.8.0 se distribuyó (sólo `nexgoProd`) desde este mismo bloque sin
+> renombrarlo ni etiquetarlo, así que estas entradas cubren 2.8.0 **y** 2.8.1. Lo exclusivo
+> de 2.8.1 son los cuatro fixes de cancelación Nexgo/AngelPay marcados abajo.
+
 ### **Added**
 
 - **Arqueo ciego de caja al cerrar turno (PRO + opt-in por venue)**: la terminal consume el capability efectivo resuelto por el backend y, solo cuando está activo, pide el efectivo físico total sin revelar antes ventas, fondo ni efectivo esperado. Permite cerrar con conteo o, tras confirmación, sin conteo; normaliza montos con `BigDecimal`, muestra el resultado cuadrado/faltante/sobrante hasta que el cajero pulse “Listo” y añade la diferencia al historial/detalle. Con el capability ausente o apagado, el diálogo y payload legacy permanecen sin cambios; kiosco y servidores antiguos degradan a OFF de forma segura.

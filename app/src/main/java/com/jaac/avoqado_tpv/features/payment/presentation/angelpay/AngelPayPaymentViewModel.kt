@@ -223,7 +223,18 @@ class AngelPayPaymentViewModel @Inject constructor(
         // request already in flight: after a VM death the savedStateHandle may already hold the
         // right values, and re-tagging with the SAME id must not reset the emitted-flag (that
         // would allow a second emit for one request).
-        if (requestId != null && requestId == _socketRequestId && source == _paymentSource) return
+        //
+        // 🔴 UN TAG NULO NUNCA BORRA UNO EXISTENTE. La pantalla lee paymentSource/socketRequestId
+        // del `previousBackStackEntry`, que CAMBIA durante el pop: al desmontarse, el
+        // LaunchedEffect vuelve a correr con (null, null) y este método borraba el enlace justo
+        // antes de que [onCleared] lo necesitara → la red de seguridad no avisaba, la fila del
+        // server quedaba UNKNOWN y la terminal empezaba a rechazar cobros con "ocupada" hasta que
+        // alguien la reconciliara a mano. Verificado en hardware el 2026-08-10 (N86, a9e7503e).
+        // Sólo [resetPayment] limpia el enlace, y lo hace DESPUÉS de avisar.
+        // Esto no afecta un cobro iniciado en la terminal: ese llega con (null, null) sobre un VM
+        // nuevo cuyos campos ya son null, así que salir temprano deja el mismo estado.
+        if (source == null || requestId == null) return
+        if (requestId == _socketRequestId && source == _paymentSource) return
         _paymentSource = source
         _socketRequestId = requestId
         _socketResultEmitted = false
@@ -405,6 +416,15 @@ class AngelPayPaymentViewModel @Inject constructor(
     // byte-identical to before. Cleared in resetPayment().
     private var pendingSerialNumbers: List<String> = emptyList()
     private var pendingIsPortabilidad: Boolean = false
+    // ⬅️ ¿Este cobro se saltó calificación/propina en la IDA? Lo pide quien lo lanza:
+    // el POS por socket (`skipReview` del terminal:payment_request) o una venta serializada.
+    // [goBackOneStep] lo consulta para NO retroceder a pantallas que nunca se mostraron —
+    // sin esto lee la config CRUDA del venue y mete al operador a Propina y Calificación,
+    // dejando al POS colgado mientras sale de un wizard que no existió (caso real N86
+    // 2026-08-10: 34 s hasta que llegó la cancelación). Espejo de `isSkipReviewFlow` del
+    // riel Blumon. Campo simple a propósito: si el proceso muere, la pantalla vuelve a
+    // llamar initPayment con el mismo skipReview y el flag se recompone solo.
+    private var isSkipReviewFlow: Boolean = false
     private var cachedShiftId: String? = null
     private var cachedVenueId: String? = null
     private var cachedStaffId: String? = null
@@ -842,12 +862,16 @@ class AngelPayPaymentViewModel @Inject constructor(
             val venueId = authRepository.getVenueId()
             if (venueId == null) {
                 _state.value = AngelPayPaymentState.Error("Error: No hay venue activo")
+                // 📡 POS→TPV: gate pre-cobro — no se movió dinero (no-op salvo socket-sourced).
+                emitSocketResultIfSocketSourced(status = "failed", errorMessage = "No hay venue activo")
                 return@launch
             }
 
             val staffId = authRepository.getStaffId()
             if (staffId == null) {
                 _state.value = AngelPayPaymentState.Error("Error: No hay staff activo")
+                // 📡 POS→TPV: gate pre-cobro — no se movió dinero (no-op salvo socket-sourced).
+                emitSocketResultIfSocketSourced(status = "failed", errorMessage = "No hay staff activo")
                 return@launch
             }
 
@@ -918,6 +942,9 @@ class AngelPayPaymentViewModel @Inject constructor(
             // skipReview (serialized SIM sales) suppresses rating/tip but KEEPS
             // pre-payment verification — mirror of Blumon's skipReview semantics.
             val settings = tpvSettingsRepository.getCurrentSettings()
+            // ⬅️ Recordarlo para el back: sin esto, [goBackOneStep] usaría la config cruda y
+            // retrocedería a las pantallas que esta misma línea acaba de suprimir.
+            isSkipReviewFlow = skipReview
             val effectiveSettings = if (skipReview) {
                 settings.copy(showReviewScreen = false, showTipScreen = false)
             } else {
@@ -2321,6 +2348,21 @@ class AngelPayPaymentViewModel @Inject constructor(
      * @return true if navigated back one step, false if at first step (caller should navigate away)
      */
     fun goBackOneStep(): Boolean {
+        // ⬅️ El cobro se saltó calificación/propina en la ida (POS con skipReview=true, o venta
+        // serializada): no hay wizard al cual retroceder, así que atrás = salir, y
+        // `resetPayment()` es lo que le avisa al POS. Acotado a los pasos del wizard: en
+        // cualquier otro estado se cae al `when` de abajo, cuyo `else` devuelve false SIN
+        // resetear — nunca hay que tirar el estado con un cobro en vuelo.
+        // Espejo de Blumon (`if (isSkipReviewFlow) return false` en su back handler).
+        val enPasoDelWizard = _state.value is AngelPayPaymentState.CollectingRating ||
+            _state.value is AngelPayPaymentState.CollectingTip ||
+            _state.value is AngelPayPaymentState.SelectingMerchant
+        if (isSkipReviewFlow && enPasoDelWizard) {
+            Timber.d("⬅️ [AngelPay] Back con skipReview → salir directo (no se mostró wizard)")
+            resetPayment()
+            return false
+        }
+
         val settings = tpvSettingsRepository.getCurrentSettings()
         val amount = pendingAmount.toPlainString()
 
@@ -2883,9 +2925,70 @@ class AngelPayPaymentViewModel @Inject constructor(
     @androidx.annotation.VisibleForTesting
     internal fun socketRequestIdForTest(): String? = _socketRequestId
 
+    /**
+     * 📡 Red de seguridad: la pantalla murió sin que nadie reportara el desenlace al POS.
+     *
+     * La llaman [resetPayment] (flecha atrás, `goBackOneStep` en el primer paso) y [onCleared]
+     * (botón atrás del sistema, o cualquier navegación que haga pop del destino — ninguno de esos
+     * dos pasa por código de la pantalla). Sin esto, el POS que pidió el cobro se queda en
+     * "Esperando respuesta de la terminal" hasta agotar su propio timeout: es el caso reportado en
+     * hardware el 2026-08-10 (Sunmi D3 → Nexgo N86).
+     *
+     * Gateada por [sinDineroEnVuelo]: si hay una autorización en curso NO se avisa nada y se deja
+     * que el watchdog del server resuelva la fila. Mentirle al POS ahí provoca doble cobro.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal fun emitCancelledIfAbandoned() {
+        // 🔍 Cada salida se LOGUEA. Tres `return` mudos dejaron un incidente sin diagnosticar
+        // (N86 2026-08-10: el pop ocurrió, la red no avisó, y no había forma de saber cuál guard
+        // la cortó). Un guard que decide si el POS se entera o se cuelga no puede ser invisible.
+        val source = _paymentSource
+        val requestId = _socketRequestId
+        if (source != "SOCKET") {
+            Timber.d("📡 [AngelPay Socket] Abandono sin avisar: cobro no viene del POS (source=$source)")
+            return
+        }
+        if (requestId == null) {
+            Timber.w("📡 [AngelPay Socket] Abandono sin avisar: source=SOCKET pero SIN requestId — el POS se va a colgar")
+            return
+        }
+        if (_socketResultEmitted) {
+            Timber.d("📡 [AngelPay Socket] Abandono sin avisar: ya se reportó el desenlace de $requestId")
+            return
+        }
+
+        val state = _state.value
+        if (!sinDineroEnVuelo(state)) {
+            Timber.w(
+                "📡 [AngelPay Socket] Pantalla abandonada en %s — NO se avisa cancelación " +
+                    "(puede haber dinero en vuelo); la fila la resuelve el watchdog del server",
+                state::class.simpleName,
+            )
+            return
+        }
+
+        emitSocketResultIfSocketSourced(
+            status = "cancelled",
+            errorMessage = "Pago cancelado en la terminal",
+        )
+    }
+
+    override fun onCleared() {
+        // Antes de super: el emit es síncrono (SocketManager.emitTerminalPaymentResult no suspende
+        // ni lanza) y no depende del viewModelScope, que para cuando corre esto ya está cancelado.
+        Timber.d("♻️ [AngelPay] onCleared — la pantalla murió, evaluando si hay que avisarle al POS")
+        emitCancelledIfAbandoned()
+        super.onCleared()
+    }
+
     // ── Reset ────────────────────────────────────────────────────────
 
     fun resetPayment() {
+        // 📡 POS→TPV: si salimos sin haber reportado desenlace, el POS se queda colgado esperando.
+        // Espejo del riel Blumon (PaymentViewModel.resetPayment). Va ANTES de la limpieza de abajo
+        // a propósito: al dejar _paymentSource en null, esa limpieza es lo que deduplica contra la
+        // red de onCleared() — sin bandera extra.
+        emitCancelledIfAbandoned()
         pendingAmount = BigDecimal.ZERO
         pendingTip = BigDecimal.ZERO
         pendingRating = null
@@ -2893,6 +2996,9 @@ class AngelPayPaymentViewModel @Inject constructor(
         pendingOrderNumber = null
         pendingSerialNumbers = emptyList()
         pendingIsPortabilidad = false
+        // ⬅️ Sin esto, un cobro empujado por el POS dejaría el flag encendido y el SIGUIENTE
+        // cobro iniciado en la terminal saldría al primer back sin mostrar su wizard.
+        isSkipReviewFlow = false
         cleanupOrphanedProofOfSalePhotos()
         _isUploadingProofOfSale.value = false
         _proofOfSaleComplete.value = false
@@ -3032,4 +3138,48 @@ internal fun describirDivergenciaDeCobro(
     return "🚨 [AngelPay] COBRO NO COINCIDE — el cliente pagó $sentido | " +
         "cobrado=$cobrado, registrado=$totalRegistrado " +
         "(venta=$venta + propina=$propina), diferencia=$diferencia"
+}
+
+/**
+ * ¿Este estado garantiza que NO hay una autorización en vuelo ni dinero ya movido?
+ *
+ * Sólo desde estos estados es seguro avisarle al POS "cancelado" cuando el operador abandona la
+ * pantalla. Si hay un cobro en curso —o ya terminó y capturó— mentirle al POS hace que el operador
+ * recobre: doble cobro. Es el mismo incidente de device-QA 2026-07-14 que ya obligó a dejar de
+ * emitir "failed" en los avisos EMV recuperables.
+ *
+ * 🔴 El `when` es EXHAUSTIVO A PROPÓSITO: **no tiene `else`, y no debe tenerlo**. Un estado nuevo
+ * rompe la compilación y obliga a clasificarlo aquí, que es justo lo que queremos. Con `else` el
+ * default sería "avisar", y un estado nuevo con dinero en vuelo se colaría en silencio hasta que
+ * alguien cobrara dos veces. La dirección de esta lista es la decisión de diseño: un estado sin
+ * clasificar debe caer en silencio (el POS agota su timeout — molesto y barato), nunca en mentira.
+ *
+ * Ver `docs/superpowers/specs/2026-08-10-angelpay-socket-cancel-result-design.md` §4.3.
+ */
+@VisibleForTesting
+internal fun sinDineroEnVuelo(state: AngelPayPaymentState): Boolean = when (state) {
+    // Pre-dinero: nada se ha lanzado al procesador todavía.
+    // `Switching` espera a que asiente el cambio de merchant (con su propio timeout de 8s a Error);
+    // `GeneratingCryptoQR` ni siquiera ha mostrado el QR al cliente.
+    is AngelPayPaymentState.Idle,
+    is AngelPayPaymentState.Cancelled,
+    is AngelPayPaymentState.CollectingRating,
+    is AngelPayPaymentState.CollectingTip,
+    is AngelPayPaymentState.SelectingMerchant,
+    is AngelPayPaymentState.Switching,
+    is AngelPayPaymentState.GeneratingCryptoQR,
+    is AngelPayPaymentState.Error -> true
+
+    // Dinero en vuelo, o ya movido: JAMÁS avisar cancelación.
+    // `AwaitingCryptoPayment` está aquí porque el cliente puede estar transfiriendo en este
+    // instante; esa ruta ya tiene su propio `cancelCryptoPayment()` que notifica al backend.
+    is AngelPayPaymentState.LaunchingAngelPaySdk,
+    is AngelPayPaymentState.LaunchingAngelPay,
+    is AngelPayPaymentState.WaitingForResult,
+    is AngelPayPaymentState.Charging,
+    is AngelPayPaymentState.RecordingPayment,
+    is AngelPayPaymentState.ProcessingCash,
+    is AngelPayPaymentState.AwaitingCryptoPayment,
+    is AngelPayPaymentState.Success,
+    is AngelPayPaymentState.Queued -> false
 }

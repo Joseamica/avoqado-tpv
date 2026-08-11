@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 
 import android.content.Context
+import android.content.Intent
 import androidx.lifecycle.viewModelScope
 import com.angelpay.angelpaysdk.models.CallResult
 import com.angelpay.angelpaysdk.models.MerchantOption
@@ -1802,6 +1803,359 @@ class AngelPayPaymentViewModelTest {
                     requestId = "req-decline-reg", status = "failed", paymentId = any(),
                     transactionId = any(), cardDetails = any(), errorMessage = any(),
                     receiptUrl = any(), receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Predicado de dinero-en-vuelo — la lista blanca que impide el doble cobro
+    // ----------------------------------------------------------------------
+
+    @Test
+    fun `estados pre-dinero permiten avisar cancelacion`() {
+        val preDinero = listOf(
+            AngelPayPaymentState.Idle,
+            AngelPayPaymentState.Cancelled,
+            AngelPayPaymentState.CollectingRating(amount = "100.00"),
+            AngelPayPaymentState.CollectingTip(amount = "100.00", rating = 5),
+            AngelPayPaymentState.SelectingMerchant(
+                subtotal = "100.00", tipAmount = "0", totalAmount = "100.00", rating = null,
+            ),
+            AngelPayPaymentState.Switching(targetMerchantId = 22, previousMerchantId = 11),
+            AngelPayPaymentState.GeneratingCryptoQR(
+                subtotal = "100.00", tipAmount = "0", totalAmount = "100.00", rating = null,
+            ),
+            AngelPayPaymentState.Error(message = "Pago rechazado"),
+        )
+
+        preDinero.forEach { state ->
+            assertThat(sinDineroEnVuelo(state)).isTrue()
+        }
+    }
+
+    @Test
+    fun `estados con dinero en vuelo o ya movido JAMAS permiten avisar cancelacion`() {
+        // 🔴 Este es el test que impide el doble cobro. Si alguno de estos pasa a `true`, el POS
+        // recibe "cancelado" sobre un cobro que puede haber capturado dinero, el operador recobra,
+        // y el cliente paga dos veces.
+        val dineroEnJuego = listOf(
+            AngelPayPaymentState.LaunchingAngelPaySdk(
+                request = mockk<PaymentRequest>(), amount = "100.00", tip = "0",
+            ),
+            AngelPayPaymentState.LaunchingAngelPay(
+                intent = mockk<Intent>(), amount = "100.00", tip = "0",
+            ),
+            AngelPayPaymentState.WaitingForResult(),
+            AngelPayPaymentState.Charging(merchantId = 11, startedAt = 0L),
+            AngelPayPaymentState.RecordingPayment(),
+            AngelPayPaymentState.ProcessingCash(),
+            AngelPayPaymentState.AwaitingCryptoPayment(
+                requestId = "req", paymentId = "pay", paymentUrl = "https://x",
+                subtotal = "100.00", tipAmount = "0", totalAmount = "100.00", rating = null,
+                expiresAt = "2026-08-10T18:00:00Z", expiresInSeconds = 600,
+            ),
+            AngelPayPaymentState.Success(authCode = "123456", amount = "100.00"),
+            AngelPayPaymentState.Queued(
+                message = "En cola", authCode = "123456", amount = "100.00",
+            ),
+        )
+
+        dineroEnJuego.forEach { state ->
+            assertThat(sinDineroEnVuelo(state)).isFalse()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Disparadores de cancelación — resetPayment() y la red de onCleared()
+    // ----------------------------------------------------------------------
+
+    @Test
+    fun `resetPayment con fuente SOCKET en estado pre-dinero emite cancelled`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-reset")
+
+            vm.resetPayment()
+
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-reset",
+                    status = "cancelled",
+                    paymentId = any(),
+                    transactionId = any(),
+                    cardDetails = any(),
+                    errorMessage = any(),
+                    receiptUrl = any(),
+                    receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `resetPayment tras un desenlace ya emitido no emite un segundo resultado`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-ya-emitido")
+            vm.emitSocketResultForTest(status = "failed", errorMessage = "Pago rechazado")
+            clearMocks(socketManager, answers = false)
+
+            vm.resetPayment()
+
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = any(), status = any(), paymentId = any(), transactionId = any(),
+                    cardDetails = any(), errorMessage = any(), receiptUrl = any(), receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `resetPayment sin fuente socket (cobro iniciado en la terminal) no emite nada`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            // Sin setSocketPaymentSource → _paymentSource queda null.
+            vm.resetPayment()
+
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = any(), status = any(), paymentId = any(), transactionId = any(),
+                    cardDetails = any(), errorMessage = any(), receiptUrl = any(), receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `la red de onCleared avisa cancelacion cuando la pantalla muere en estado pre-dinero`() = runTest(testDispatcher) {
+        // El caso reportado 2026-08-10: el operador da atrás con el botón del sistema, el
+        // NavController hace pop y la pantalla muere sin pasar por resetPayment().
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-abandonado")
+
+            vm.emitCancelledIfAbandoned()
+
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-abandonado",
+                    status = "cancelled",
+                    paymentId = any(),
+                    transactionId = any(),
+                    cardDetails = any(),
+                    errorMessage = any(),
+                    receiptUrl = any(),
+                    receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `la red de onCleared NUNCA avisa cancelacion con una autorizacion en vuelo`() = runTest(testDispatcher) {
+        // 🔴 El test que impide el doble cobro. Android puede destruir MainActivity mientras la
+        // Activity del SDK de AngelPay tiene el foreground; si emitiéramos aquí, el POS vería
+        // "cancelado" sobre un cobro que puede haber capturado dinero y el operador recobraría.
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-en-vuelo")
+            vm.onIntentLaunched() // → AngelPayPaymentState.WaitingForResult
+            runCurrent()
+
+            vm.emitCancelledIfAbandoned()
+
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = any(), status = any(), paymentId = any(), transactionId = any(),
+                    cardDetails = any(), errorMessage = any(), receiptUrl = any(), receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `la red de onCleared no avisa cancelacion si ya se reporto el desenlace`() = runTest(testDispatcher) {
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-exitoso")
+            vm.emitSocketResultForTest(status = "success", paymentId = "pay-1")
+            clearMocks(socketManager, answers = false)
+
+            vm.emitCancelledIfAbandoned()
+
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = any(), status = any(), paymentId = any(), transactionId = any(),
+                    cardDetails = any(), errorMessage = any(), receiptUrl = any(), receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `el barrido de nulls al desmontar la pantalla no borra el enlace de arbitracion`() = runTest(testDispatcher) {
+        // 🔴 Verificado en hardware 2026-08-10 (N86, requestId a9e7503e): al hacer pop, el
+        // `previousBackStackEntry` del que la pantalla lee paymentSource/socketRequestId cambia,
+        // el LaunchedEffect vuelve a correr con (null, null) y ESTO borraba el enlace justo antes
+        // de que onCleared lo necesitara → la red no avisaba y la fila del server quedaba UNKNOWN,
+        // dejando la terminal rechazando cobros con "ocupada".
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-teardown")
+
+            vm.setSocketPaymentSource(null, null) // el barrido del desmontaje
+
+            assertThat(vm.socketRequestIdForTest()).isEqualTo("req-teardown")
+            vm.emitCancelledIfAbandoned()
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-teardown", status = "cancelled", paymentId = any(),
+                    transactionId = any(), cardDetails = any(), errorMessage = any(),
+                    receiptUrl = any(), receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Gates pre-cobro que eran mudos
+    // ----------------------------------------------------------------------
+
+    @Test
+    fun `el gate de venue nulo avisa failed al POS con el motivo`() = runTest(testDispatcher) {
+        // Los vecinos del mismo bloque (monto inválido, sin turno, merchant inválido) ya emitían;
+        // estos dos eran los únicos mudos del pre-cobro.
+        every { authRepository.getVenueId() } returns null
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-sin-venue")
+
+            vm.initPayment(amount = "100.00")
+            runCurrent()
+
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-sin-venue",
+                    status = "failed",
+                    paymentId = any(),
+                    transactionId = any(),
+                    cardDetails = any(),
+                    errorMessage = "No hay venue activo",
+                    receiptUrl = any(),
+                    receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Back con skipReview — no retroceder a pantallas que la ida se saltó
+    // ----------------------------------------------------------------------
+
+    @Test
+    fun `con skipReview el back sale de una vez en lugar de entrar a propina y calificacion`() = runTest(testDispatcher) {
+        // Caso real 2026-08-10 (N86, requestId 9c76fa0a): el POS mandó skipReview=true, la ida
+        // aterrizó DIRECTO en "Método de Pago"... y el back metía al operador a Propina y luego a
+        // Calificación, dos pantallas que nunca se le mostraron. 34 s con el POS colgado.
+        // El venue SÍ tiene propina y calificación encendidas: skipReview debe ganarles.
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = true, showReviewScreen = true,
+        )
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-skipreview")
+            vm.initPayment(amount = "100.00", skipReview = true)
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.SelectingMerchant::class.java)
+
+            val consumed = vm.goBackOneStep()
+            runCurrent()
+
+            // false = "no me quedé en el wizard, sácame de aquí" → la pantalla navega a Home.
+            assertThat(consumed).isFalse()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Idle::class.java)
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-skipreview", status = "cancelled", paymentId = any(),
+                    transactionId = any(), cardDetails = any(), errorMessage = any(),
+                    receiptUrl = any(), receiptAccessKey = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `sin skipReview el back sigue recorriendo el wizard paso a paso`() = runTest(testDispatcher) {
+        // Guardia de regresión: el cobro normal iniciado en la terminal NO cambia — el cajero
+        // sigue pudiendo retroceder a corregir la propina.
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(
+            enableShifts = false, showTipScreen = true, showReviewScreen = true,
+        )
+        val vm = createViewModel()
+        try {
+            // Sin skipReview el wizard ARRANCA en Calificación; avanzamos un paso para tener
+            // de dónde retroceder.
+            vm.initPayment(amount = "100.00", skipReview = false)
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.CollectingRating::class.java)
+
+            vm.selectRatingAndProceed(amount = "100.00", rating = 5)
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.CollectingTip::class.java)
+
+            val consumed = vm.goBackOneStep()
+            runCurrent()
+
+            assertThat(consumed).isTrue()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.CollectingRating::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `el gate de staff nulo avisa failed al POS con el motivo`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "venue-1"
+        every { authRepository.getStaffId() } returns null
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-sin-staff")
+
+            vm.initPayment(amount = "100.00")
+            runCurrent()
+
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-sin-staff",
+                    status = "failed",
+                    paymentId = any(),
+                    transactionId = any(),
+                    cardDetails = any(),
+                    errorMessage = "No hay staff activo",
+                    receiptUrl = any(),
+                    receiptAccessKey = any(),
                 )
             }
         } finally {

@@ -676,7 +676,14 @@ fun AngelPayPaymentScreen(
                         // at rating/tip. Pre-flight errors fall back to the
                         // payment-method step. (User feedback 2026-05-30.)
                         onRetry = { viewModel.retryAfterError() },
-                        onGoBack = onNavigateBack,
+                        // 🔴 resetPayment() ANTES de navegar — igual que la flecha del top bar
+                        // (ver `onNavigationClick`, rama Error). Este botón sólo navegaba, así que
+                        // un cobro empujado por el POS se abandonaba sin avisarle: el POS seguía
+                        // colgado esperando. Verificado en hardware el 2026-08-10 (N86, E699).
+                        onGoBack = {
+                            viewModel.resetPayment()
+                            onNavigateBack()
+                        },
                         onOpenShift = onNavigateToShifts,
                     )
                 }

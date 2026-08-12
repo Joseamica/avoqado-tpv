@@ -228,6 +228,25 @@ sealed interface SocketEvent {
         val timestamp: String
     ) : SocketEvent
 
+    /**
+     * Un POS pidió abrir en ESTA terminal la devolución de un cobro con tarjeta.
+     *
+     * 🔴 No es una orden de devolver: es "abre la pantalla de ese cobro". El
+     * dinero se mueve sólo cuando alguien lo confirma en el aparato, y el
+     * registro en Avoqado lo hace el flujo de reembolso de siempre.
+     *
+     * @param maxRefundableCents informativo para la pantalla; quien valida el
+     *   monto de verdad es el servicio de reembolsos del server.
+     */
+    data class TerminalRefundRequest(
+        val requestId: String,
+        val paymentId: String,
+        val maxRefundableCents: Long,
+        val reason: String?,
+        val venueId: String,
+        val timestamp: String
+    ) : SocketEvent
+
     // ========================================
     // Order Events
     // ========================================

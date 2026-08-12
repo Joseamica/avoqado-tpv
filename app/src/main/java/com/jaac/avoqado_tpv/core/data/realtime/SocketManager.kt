@@ -505,6 +505,7 @@ class SocketManager @Inject constructor(
         on("terminal:payment_request", onTerminalPaymentRequest)
         on("terminal:payment_cancel", onTerminalPaymentCancel)
         on("terminal:print_receipt_request", onTerminalReceiptPrintRequest)
+        on("terminal:refund_request", onTerminalRefundRequest)
 
         // ========================================
         // Hardware Events (NEW)
@@ -1568,6 +1569,32 @@ class SocketManager @Inject constructor(
         }
     }
 
+    private val onTerminalRefundRequest = Emitter.Listener { args ->
+        try {
+            val data = args.getOrNull(0) as? JSONObject ?: return@Listener
+            val paymentId = data.optString("paymentId", "")
+            if (paymentId.isBlank()) {
+                // Sin pago no hay pantalla que abrir; no se inventa un destino.
+                Timber.w("⚠️ [Socket] terminal:refund_request sin paymentId — ignorado")
+                return@Listener
+            }
+
+            Timber.i("↩️ [Socket] Terminal refund request received: ${data.optString("requestId")} | payment=$paymentId")
+            _events.tryEmit(
+                SocketEvent.TerminalRefundRequest(
+                    requestId = data.optString("requestId", ""),
+                    paymentId = paymentId,
+                    maxRefundableCents = data.optLong("maxRefundableCents", 0),
+                    reason = data.optString("reason").takeIf { it.isNotEmpty() },
+                    venueId = data.optString("venueId", ""),
+                    timestamp = data.optString("timestamp", "")
+                )
+            )
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error parsing terminal:refund_request")
+        }
+    }
+
     // ========================================
     // Event Handlers - TPV Messages
     // ========================================
@@ -1934,6 +1961,31 @@ class SocketManager @Inject constructor(
             Timber.i("📡 [Socket] Emitted terminal:print_receipt_result | requestId=$requestId | status=$status")
         } catch (e: Exception) {
             Timber.e(e, "❌ Failed to emit terminal:print_receipt_result")
+        }
+    }
+
+    /**
+     * ACK de una devolución pedida desde el POS.
+     *
+     * 🔴 `status` contesta "¿abrí la pantalla?" — `opened` o `rejected` —, NUNCA
+     * "¿devolví el dinero?". Mandar aquí un éxito de dinero movido le diría al
+     * cajero del POS que ya se devolvió algo que sigue sin devolverse.
+     */
+    fun emitTerminalRefundResult(
+        requestId: String,
+        status: String,
+        errorMessage: String? = null
+    ) {
+        try {
+            socket?.emit("terminal:refund_result", JSONObject().apply {
+                put("requestId", requestId)
+                put("status", status)
+                put("errorMessage", errorMessage ?: JSONObject.NULL)
+                put("completedAt", java.time.Instant.now().toString())
+            })
+            Timber.i("📡 [Socket] Emitted terminal:refund_result | requestId=$requestId | status=$status")
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Failed to emit terminal:refund_result")
         }
     }
 

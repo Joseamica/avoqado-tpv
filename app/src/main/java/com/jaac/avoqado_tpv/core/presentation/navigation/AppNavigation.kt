@@ -495,6 +495,26 @@ fun AppNavigation(
         }
     }
 
+    // ↩️ DEVOLUCIÓN pedida desde el POS — abre el pago con sus opciones de reembolso.
+    //
+    // 🔴 Abrir la pantalla NO devuelve nada: el operador confirma en el aparato
+    // (en Blumon hay que volver a pasar la tarjeta). Por eso se navega al detalle
+    // del pago y NO se dispara la devolución sola.
+    LaunchedEffect(remotePaymentCoordinator) {
+        remotePaymentCoordinator.refundRequests.collect { request ->
+            // Nunca se le quita la pantalla a un cobro en curso: el cliente que
+            // está pagando manda sobre una devolución que puede esperar.
+            if (paymentStateProvider.isCharging()) {
+                Timber.w("↩️ [Refund] Ignorada — hay un cobro en curso (paymentId=${request.paymentId})")
+                return@collect
+            }
+            Timber.i("↩️ [Refund] Abriendo pago ${request.paymentId} para devolución")
+            navController.navigate(NavRoute.Payments.createRoute(autoOpenPaymentId = request.paymentId)) {
+                launchSingleTop = true
+            }
+        }
+    }
+
     // 🔐 GLOBAL SESSION EXPIRATION LISTENER
     // Observes session events from TokenAuthenticator and navigates accordingly
     // NOTE: Placed AFTER kiosk mode observation so we can exit kiosk mode if needed
@@ -805,8 +825,11 @@ fun AppNavigation(
             deviceAlerts
         }
 
+        val connectionRetry by deviceHealthViewModel.connectionRetry.collectAsStateWithLifecycle()
+
         com.jaac.avoqado_tpv.core.presentation.components.DeviceAlertBanner(
             alerts = alertsToShow,
+            retryState = connectionRetry,
             isExpanded = deviceAlertsExpanded,
             onToggleExpand = { deviceHealthViewModel.toggleExpanded() },
             onDismiss = { alert -> deviceHealthViewModel.dismissAlert(alert) },
@@ -841,7 +864,10 @@ fun AppNavigation(
                     // Banner de conexión: reintenta la CONEXIÓN y nada más. La cola de pagos
                     // no se toca — el worker la drena solo cuando la red vuelve.
                     connectionViewModel.forceCheck()
-                    Toast.makeText(context, "Reintentando conexión...", Toast.LENGTH_SHORT).show()
+                    // El desenlace se ve EN EL BANNER (spinner en el boton, y "No se pudo
+                    // conectar" si se agota la ventana), no en un Toast abajo que anunciaba
+                    // el intento y nunca contaba como termino.
+                    deviceHealthViewModel.markConnectionRetryStarted()
                 }
             },
             onUpdate = {

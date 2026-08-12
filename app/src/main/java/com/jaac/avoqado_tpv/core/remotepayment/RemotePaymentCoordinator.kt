@@ -44,6 +44,23 @@ data class RemotePaymentRequest(
 )
 
 /**
+ * Remote Refund Request — otro dispositivo le pide a ESTA terminal que abra la
+ * devolución de un cobro con tarjeta.
+ *
+ * 🔴 Esto NO devuelve dinero: sólo abre la pantalla con ese cobro cargado. La
+ * devolución la confirma una persona en el aparato (en Blumon hay que volver a
+ * pasar la tarjeta) y el registro en Avoqado lo hace el flujo de reembolso de
+ * siempre. Por eso el ACK que se le contesta al server es "abrí la pantalla",
+ * nunca "devolví el dinero".
+ */
+data class RemoteRefundRequest(
+    val socketRequestId: String,
+    val paymentId: String,
+    val maxRefundableCents: Long,
+    val reason: String? = null
+)
+
+/**
  * RemotePaymentCoordinator
  *
  * Bus singleton entre el listener de Socket.IO (HomeViewModel) y la navegación/pantalla de
@@ -106,5 +123,24 @@ class RemotePaymentCoordinator @Inject constructor() {
      */
     fun clearCurrentSocketRequest() {
         currentSocketRequestId = null
+    }
+
+    // ========================================
+    // Devoluciones pedidas desde otro dispositivo
+    // ========================================
+
+    private val _refundRequests = MutableSharedFlow<RemoteRefundRequest>(extraBufferCapacity = 1)
+    val refundRequests: SharedFlow<RemoteRefundRequest> = _refundRequests.asSharedFlow()
+
+    /**
+     * Un POS pidió abrir aquí la devolución de un cobro.
+     *
+     * A diferencia del cobro, esto NO lleva estado de "en curso" ni cancelación:
+     * abrir una pantalla es idempotente —si el evento llega dos veces, se abre
+     * el mismo pago— y nadie devuelve nada sin confirmarlo en el aparato.
+     */
+    fun submitSocketRefundRequest(request: RemoteRefundRequest) {
+        Timber.i("↩️ [RemoteRefund] Abriendo devolución del pago ${request.paymentId} (requestId=${request.socketRequestId})")
+        _refundRequests.tryEmit(request)
     }
 }

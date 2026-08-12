@@ -1082,6 +1082,11 @@ class HomeViewModel @Inject constructor(
                         printRemoteReceipt(event)
                     }
 
+                    is SocketEvent.TerminalRefundRequest -> {
+                        Timber.i("↩️ [Socket] Terminal refund request: requestId=${event.requestId} payment=${event.paymentId}")
+                        openRemoteRefund(event)
+                    }
+
                     // Other events handled by other ViewModels (PaymentViewModel, OrderViewModel, etc.)
                     else -> {
                         // Ignore events not relevant to HomeViewModel
@@ -1089,6 +1094,25 @@ class HomeViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Un POS pidió abrir aquí la devolución de un cobro.
+     *
+     * Se contesta el ACK de inmediato —"abrí la pantalla"— y se publica en el
+     * bus para que la navegación lleve al operador al pago. El ACK NO afirma
+     * que se haya devuelto nada: eso lo confirma una persona en el aparato.
+     */
+    private fun openRemoteRefund(event: SocketEvent.TerminalRefundRequest) {
+        remotePaymentCoordinator.submitSocketRefundRequest(
+            com.jaac.avoqado_tpv.core.remotepayment.RemoteRefundRequest(
+                socketRequestId = event.requestId,
+                paymentId = event.paymentId,
+                maxRefundableCents = event.maxRefundableCents,
+                reason = event.reason
+            )
+        )
+        socketManager.emitTerminalRefundResult(requestId = event.requestId, status = "opened")
     }
 
     private fun printRemoteReceipt(event: SocketEvent.TerminalReceiptPrintRequest) {

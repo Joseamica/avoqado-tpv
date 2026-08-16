@@ -9,9 +9,14 @@ import java.net.SocketTimeoutException
 class SyncOutcomeTest {
 
     @Test
-    fun `409 real se considera sincronizado`() {
-        val outcome = classifySyncFailure(BackendHttpException(409, "Duplicate payment"))
-        assertThat(outcome).isInstanceOf(SyncOutcome.Synced::class.java)
+    fun `un 409 NO se considera sincronizado — se reintenta`() {
+        // 🔴 Regresión: este test afirmaba lo contrario y blindaba el bug.
+        // El reintento idempotente real del server responde 200 con el pago existente,
+        // nunca 409; los 409 de ese endpoint significan "no lo registré, vuelve a
+        // intentar". Cerrarlo como SUCCESS dejaba de reintentar y borraba la fila a los
+        // 7 días: venta perdida con la tarjeta ya cobrada.
+        val outcome = classifySyncFailure(BackendHttpException(409, "La cuenta cambió mientras se cobraba"))
+        assertThat(outcome).isInstanceOf(SyncOutcome.Retryable::class.java)
     }
 
     @Test

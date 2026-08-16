@@ -5,7 +5,13 @@ import java.io.IOException
 
 /** Resultado de clasificar un fallo al registrar un pago en el backend. */
 sealed class SyncOutcome {
-    /** El backend ya tiene el pago (409). La fila se cierra como SUCCESS. */
+    /**
+     * El backend confirma que YA tiene el pago. La fila se cierra como SUCCESS.
+     *
+     * 🔴 Un 409 NO llega aquí (ver [classifySyncFailure]): el reintento idempotente real
+     * responde **200** con el pago existente, nunca 409. Este caso queda para cuando el
+     * backend afirme explícitamente el registro.
+     */
     data object Synced : SyncOutcome()
 
     /** Fallo transitorio (red, 5xx, desconocido, o un 4xx no listado en [PERMANENT_HTTP_CODES]). Se reintenta. */
@@ -50,7 +56,23 @@ private val PERMANENT_HTTP_CODES = setOf(400, 404, 422)
  * [PERMANENT_HTTP_CODES] — todo lo demás, incluido 401/403, es Retryable.
  */
 fun classifySyncFailure(error: Throwable?): SyncOutcome = when {
-    error is BackendHttpException && error.statusCode == 409 -> SyncOutcome.Synced
+    // 🔴 Un 409 NO afirma que el cobro haya quedado registrado — por eso NO es Synced.
+    //
+    // Se asumía que 409 == "duplicado, ya lo tengo" y la fila se cerraba como SUCCESS,
+    // o sea que dejaba de reintentarse y se borraba a los 7 días. Verificado en el
+    // server (`payment.tpv.service.ts`, rama "Idempotent retry detected by
+    // idempotencyKey"): el reintento idempotente devuelve **200 con el pago existente**,
+    // y hasta la red de seguridad de P2002 resuelve al ganador y lo devuelve — NUNCA 409.
+    // O sea que esta rama se apoyaba en una premisa que el backend no cumple.
+    //
+    // Cae a Retryable, que es lo que este mismo archivo manda: "ante la duda → Retryable;
+    // marcar como sincronizada una venta que no lo está es irreversible". Y no añade
+    // riesgo nuevo: 5xx, 408/429 y los fallos de red ya se reintentan con el mismo
+    // `idempotencyKey` (nullable) — el 409 era el único outlier que se cerraba solo.
+    //
+    // Mismo bug, mismo fix, en las colas de avoqado-android (73b7f40) y avoqado-ios
+    // (d336599). Lección compartida: nunca concluir un desenlace desde una respuesta
+    // que no lo afirma.
 
     // 408 y 429 son 4xx que significan "reintenta", no "no". Square los clasifica en
     // su propia categoria (RATE_LIMIT_ERROR) justo por esto, y el conjunto transitorio

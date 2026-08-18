@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.tables.data
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.AddItemsRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.AddOrderItemRequest
@@ -72,6 +73,17 @@ import javax.inject.Singleton
 class TablesRepository @Inject constructor(
     private val api: TablesApiService,
     private val syncOutbox: SyncOutbox,
+    /**
+     * Sólo para `tables:pay-any`: quién puede LIQUIDAR un cheque ajeno.
+     *
+     * Es el camino real de permisos de ESTA app — `GET /tpv/auth/permissions`,
+     * que a diferencia del que consumen android/iOS **expande los comodines**
+     * antes de mandar (`tpv.routes.ts` → `expandWildcards`). Consultado por
+     * NOMBRE da igual: `tables:pay-any` llega literal. Aquí no hay `RoleManager`
+     * y no se inventa uno: un gate por rol sería una SEGUNDA fuente de verdad
+     * que se desincroniza sola en cuanto el venue use un Permission Set.
+     */
+    private val permissionsRepository: PermissionsRepository,
 ) {
     private val gson = Gson()
 
@@ -83,14 +95,50 @@ class TablesRepository @Inject constructor(
      * traen esos campos. Default `enforced = false` = "no aplica la regla",
      * NUNCA "bloqueado": un fallo de red o un server viejo sin estos campos no
      * debe dejar la pantalla en read-only por accidente.
+     *
+     * 🔴 Son DOS candados, no uno: [TableOwnership.isLockedForMe] rige EDITAR y
+     * [TableOwnership.isLockedForPayment] rige COBRAR. El sobre del server sólo
+     * alcanza para el primero; el segundo necesita `tables:pay-any`, que sale de
+     * [PermissionsRepository] (ver el KDoc del campo `canPayAny`).
      */
     data class TableOwnership(
         val enforced: Boolean = false,
         val canManageAll: Boolean = true,
         val staffId: String? = null,
+        /**
+         * `tables:pay-any` — puedo LIQUIDAR el cheque de otro sin poder editarlo.
+         *
+         * NO viene del sobre del server: `viewer` sólo trae `canManageAllTables`,
+         * que el server calcula con `DEFAULT_OWNERSHIP_OVERRIDES =
+         * ['tables:manage-all']`, o sea el booleano de EDITAR. Sale de la lista
+         * efectiva de permisos del login, vía [PermissionsRepository].
+         */
+        val canPayAny: Boolean = false,
     ) {
-        /** Espejo EXACTO de `isLockedForMe` en android — mismo orden de condiciones. */
+        /**
+         * ¿Esta cuenta es intocable para mí? (la regla la refuerza el server;
+         * esto pinta la UI). Rige EDITAR: rondas, descuentos, cortesías,
+         * cancelar, mover, fusionar, separar, reasignar.
+         */
         fun isLockedForMe(ownerId: String?): Boolean = enforced && !canManageAll && ownerId != null && ownerId != staffId
+
+        /**
+         * ¿No puedo ni COBRARLA?
+         *
+         * 🔴 Editar y cobrar dejaron de ser la misma pregunta — este archivo
+         * decía "espejo EXACTO de `isLockedForMe` en android" y ya NO era cierto:
+         * android partió el candado en dos y la TPV se quedó atrás. El server
+         * exime la ruta de cobro de la propiedad de mesa con `tables:pay-any`
+         * (`PAYMENT_OWNERSHIP_OVERRIDES`, y el reducer de `PAY_CASH` lo aplica en
+         * `sync.mobile.service.ts`), así que la caja liquida cualquier cheque sin
+         * ganar el derecho a tocarlo. Mientras "Pagar" colgó de [isLockedForMe],
+         * el botón **ni se pintaba** para un CASHIER: la llamada nunca salía, el
+         * 403 nunca llegaba y no quedaba rastro en el log del server.
+         *
+         * Espejo EXACTO de `isLockedForPayment` en android
+         * (`TableServiceRepository.kt`) y iOS (`TableServiceRepository.swift`).
+         */
+        fun isLockedForPayment(ownerId: String?): Boolean = isLockedForMe(ownerId) && !canPayAny
     }
 
     private val _ownership = MutableStateFlow(TableOwnership())
@@ -118,6 +166,12 @@ class TablesRepository @Inject constructor(
                 enforced = body.settings?.enforceTableOwnership ?: false,
                 canManageAll = body.viewer?.canManageAllTables ?: true,
                 staffId = body.viewer?.staffId,
+                // Se recalcula en cada refresco en vez de cachearse: la lista de
+                // permisos ya tiene su propio cache (5 min) y su propio
+                // stale-while-revalidate. Si no se puede resolver, `false` deja
+                // EXACTAMENTE el comportamiento anterior (sólo `tables:manage-all`
+                // se salta el candado) — degradar, jamás abrir de más.
+                canPayAny = permissionsRepository.hasPermission(PERMISSION_PAY_ANY),
             )
             Result.success(data)
         } else {
@@ -1656,6 +1710,14 @@ class TablesRepository @Inject constructor(
     )
 
     companion object {
+        /**
+         * Espejo por nombre EXACTO del permiso del server (`src/lib/permissions.ts`).
+         * Un nombre mal escrito NO truena: `hasPermission` devuelve `false` en
+         * silencio y el cajero se queda otra vez sin poder cobrar — por eso vive
+         * en una constante y no suelto en la línea de la llamada.
+         */
+        const val PERMISSION_PAY_ANY = "tables:pay-any"
+
         private const val OPTIMISTIC_ITEM_ID_PREFIX = "pending-"
 
         /**

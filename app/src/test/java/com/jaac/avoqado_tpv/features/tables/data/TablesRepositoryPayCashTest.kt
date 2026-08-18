@@ -4,6 +4,7 @@ import com.google.common.truth.Truth.assertThat
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SimpleSuccessResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentAck
@@ -48,6 +49,8 @@ class TablesRepositoryPayCashTest {
 
     private val api = mockk<TablesApiService>()
     private val outbox = mockk<SyncOutbox>()
+    /** `tables:pay-any` — irrelevante para estos tests; el default niega el override. */
+    private val permissions = mockk<PermissionsRepository>(relaxed = true)  // relaxed → hasPermission = false
     private lateinit var repo: TablesRepository
 
     private val venueId = "venue-1"
@@ -56,7 +59,7 @@ class TablesRepositoryPayCashTest {
     @Before
     fun setUp() {
         clearMocks(api, outbox)
-        repo = TablesRepository(api, outbox)
+        repo = TablesRepository(api, outbox, permissions)
     }
 
     // region — write-ahead + idempotencyKey

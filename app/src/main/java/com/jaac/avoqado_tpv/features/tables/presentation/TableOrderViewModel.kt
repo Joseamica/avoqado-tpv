@@ -160,6 +160,25 @@ class TableOrderViewModel @Inject constructor(
         ownership.isLockedForMe(check?.servedBy?.id)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    /**
+     * ¿Ni siquiera puedo COBRARLA?
+     *
+     * 🔴 Distinto de [readOnly] A PROPÓSITO. El server exime la ruta de cobro de
+     * la propiedad de mesa con `tables:pay-any` (`PAYMENT_OWNERSHIP_OVERRIDES`,
+     * aplicado también por el reducer de `PAY_CASH`), así que el CAJERO liquida
+     * el cheque de un mesero sin poder editarlo. Mientras "Pagar" colgó de
+     * [readOnly], el botón **ni se pintaba** para un cajero — la llamada nunca
+     * salía, el 403 nunca llegaba, y el gate del cliente era lo ÚNICO que
+     * bloqueaba (la forma cara del bug: no deja rastro en el log del server).
+     *
+     * Sólo gobierna el botón "Pagar". Todo lo que EDITA —enviar ronda,
+     * descontar, cortesiar, cancelar, mover, fusionar, separar, reasignar—
+     * sigue colgando de [readOnly] y de [blockedByOwnership].
+     */
+    val readOnlyForPayment: StateFlow<Boolean> = combine(_check, repository.ownership) { check, ownership ->
+        ownership.isLockedForPayment(check?.servedBy?.id)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     /** Nombre del dueño para el banner "Mesa de {mesero} — solo lectura". */
     val lockOwnerName: StateFlow<String?> = combine(_check, repository.ownership) { check, ownership ->
         if (!ownership.isLockedForMe(check?.servedBy?.id)) return@combine null

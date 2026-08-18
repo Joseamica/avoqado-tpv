@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.tables.data
 import com.google.common.truth.Truth.assertThat
 import com.google.gson.JsonObject
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.AvailableDiscountDto
@@ -45,6 +46,8 @@ class TablesRepositoryPhase1ActionsTest {
 
     private val api = mockk<TablesApiService>()
     private val outbox = mockk<SyncOutbox>()
+    /** `tables:pay-any` — irrelevante para estos tests; el default niega el override. */
+    private val permissions = mockk<PermissionsRepository>(relaxed = true)  // relaxed → hasPermission = false
     private lateinit var repo: TablesRepository
 
     private val venueId = "venue-1"
@@ -54,7 +57,7 @@ class TablesRepositoryPhase1ActionsTest {
     fun setUp() {
         clearMocks(api, outbox)
         coEvery { outbox.enqueue(any(), any(), any(), any()) } returns "intent-id"
-        repo = TablesRepository(api, outbox)
+        repo = TablesRepository(api, outbox, permissions)
     }
 
     // ══════════════════════════════════════════════════════════════════

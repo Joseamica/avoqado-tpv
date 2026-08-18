@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.tables.data
 
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.tables.data.api.TablesApiService
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.FloorElementsResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.TablesResponse
@@ -30,7 +31,9 @@ class TablesRepositoryReadsTest {
 
     private val api = mockk<TablesApiService>()
     private val outbox = mockk<SyncOutbox>() // nunca se toca en lecturas
-    private val repo = TablesRepository(api, outbox)
+    /** `tables:pay-any` — irrelevante para estos tests; el default niega el override. */
+    private val permissions = mockk<PermissionsRepository>(relaxed = true)  // relaxed → hasPermission = false
+    private val repo = TablesRepository(api, outbox, permissions)
 
     private val venueId = "venue-1"
 

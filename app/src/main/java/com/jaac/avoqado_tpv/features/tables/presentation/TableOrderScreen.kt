@@ -109,6 +109,7 @@ fun TableOrderScreen(
     val notice by viewModel.notice.collectAsStateWithLifecycle()
     val error by viewModel.error.collectAsStateWithLifecycle()
     val readOnly by viewModel.readOnly.collectAsStateWithLifecycle()
+    val readOnlyForPayment by viewModel.readOnlyForPayment.collectAsStateWithLifecycle()
     val lockOwnerName by viewModel.lockOwnerName.collectAsStateWithLifecycle()
 
     // Fase 1 (2026-08-03) — SPLIT_ORDER · COMP_ORDER · MOVE_ORDER.
@@ -253,6 +254,7 @@ fun TableOrderScreen(
         pendingLines = pendingLines,
         queuedLines = queuedLines,
         readOnly = readOnly,
+        readOnlyForPayment = readOnlyForPayment,
         lockOwnerName = lockOwnerName,
         snackbarHostState = snackbarHostState,
         onNavigateBack = {
@@ -403,6 +405,12 @@ private fun TableOrderScreenContent(
     pendingLines: List<PendingRoundCart.Line>,
     queuedLines: List<PendingRoundCart.Line>,
     readOnly: Boolean,
+    /**
+     * 🔴 NO es `readOnly`. Rige SÓLO el botón "Pagar" — ver KDoc de
+     * [TableOrderViewModel.readOnlyForPayment]: el cajero cobra el cheque del
+     * mesero (`tables:pay-any`) sin ganar el derecho a editarlo.
+     */
+    readOnlyForPayment: Boolean,
     lockOwnerName: String?,
     snackbarHostState: SnackbarHostState,
     onNavigateBack: () -> Unit,
@@ -425,8 +433,13 @@ private fun TableOrderScreenContent(
     val checkTotal = check?.total
     // "Pagar" solo tiene sentido con algo YA en la cuenta (rondas enviadas,
     // no lo pendiente de enviar) — una mesa recién abierta sin nada mandado
-    // a cocina no tiene cheque contra el cual cobrar.
-    val canCheckout = !readOnly && !session.isProvisional && (checkTotal ?: BigDecimal.ZERO) > BigDecimal.ZERO
+    // a cocina no tiene cheque contra el cual cobrar. 🔴 Y cuelga de
+    // [readOnlyForPayment], NUNCA de `readOnly` — ver [checkoutButtonVisible].
+    val canCheckout = checkoutButtonVisible(
+        readOnlyForPayment = readOnlyForPayment,
+        isProvisional = session.isProvisional,
+        checkTotal = checkTotal,
+    )
     // Separar/dar cortesía necesitan artículos YA enviados; mover mesa no
     // (una mesa provisional recién abierta offline también se puede mover).
     val hasSentItems = !check?.items.isNullOrEmpty()
@@ -997,6 +1010,30 @@ internal fun resolveTableOrderBodyState(
 internal fun splitBySeatEnabled(readOnly: Boolean, hasSentItems: Boolean, check: OrderDetail?): Boolean =
     !readOnly && hasSentItems && check?.items?.any { it.seat != null } == true
 
+/**
+ * ¿Se PINTA el botón "Pagar"? — la condición literal del `if (canCheckout)` de
+ * [TableOrderBottomBar], extraída a función pura (`internal`, sin Compose) para
+ * poder atarla a un JUnit normal, mismo criterio que [splitBySeatEnabled].
+ *
+ * 🔴 DINERO, y el bug era exactamente esto: el primer parámetro tiene que ser
+ * el candado de COBRO ([TableOrderViewModel.readOnlyForPayment]), no el de
+ * editar. Con la propiedad de mesa encendida, un CASHIER —que el server SÍ
+ * autoriza vía `tables:pay-any`— abría la mesa de un mesero y el botón no
+ * existía. La llamada nunca salía, así que no había 403 ni rastro en el log del
+ * server: sólo un cajero parado frente a un cliente.
+ *
+ * Las otras dos razones para esconderlo NO cambian: una sesión provisional
+ * (mesa recién abierta offline, sin orden real todavía) y una cuenta sin nada
+ * enviado a cocina no tienen cheque contra el cual cobrar.
+ *
+ * Probado por `CobrarMesaAjenaTest`.
+ */
+internal fun checkoutButtonVisible(
+    readOnlyForPayment: Boolean,
+    isProvisional: Boolean,
+    checkTotal: BigDecimal?,
+): Boolean = !readOnlyForPayment && !isProvisional && (checkTotal ?: BigDecimal.ZERO) > BigDecimal.ZERO
+
 // ══════════════════════════════════════════════════════════════════════
 // PREVIEWS
 // ══════════════════════════════════════════════════════════════════════
@@ -1015,6 +1052,7 @@ private fun TableOrderScreenEmptyPreview() {
             pendingLines = emptyList(),
             queuedLines = emptyList(),
             readOnly = false,
+            readOnlyForPayment = false,
             lockOwnerName = null,
             snackbarHostState = remember { SnackbarHostState() },
             onNavigateBack = {},
@@ -1048,6 +1086,47 @@ private fun TableOrderScreenFullPreview() {
             pendingLines = listOf(PendingRoundCart.Line(productId = "p1", name = "Agua mineral", unitPrice = BigDecimal("30.00"), quantity = 2)),
             queuedLines = listOf(PendingRoundCart.Line(productId = "p2", name = "Ensalada", unitPrice = BigDecimal("120.00"), quantity = 1)),
             readOnly = true,
+            readOnlyForPayment = true,
+            lockOwnerName = "Fátima Flores",
+            snackbarHostState = remember { SnackbarHostState() },
+            onNavigateBack = {},
+            onAddProducts = {},
+            onSendRound = {},
+            onRetryLoad = {},
+            onNavigateToCheckout = {},
+        )
+    }
+}
+
+/**
+ * 🔴 El caso que estaba roto: el CAJERO en la mesa de un mesero. La propiedad
+ * de mesa está ENCENDIDA (banner "solo lectura", nada de editar) **y aun así
+ * el botón "Pagar" tiene que verse** — el server ya lo autoriza con
+ * `tables:pay-any`. Compárese con [TableOrderScreenFullPreview], que es el
+ * MISMO estado para un mesero sin ese permiso y ahí sí lo esconde.
+ */
+@Preview(showBackground = true, widthDp = 720, heightDp = 1280, name = "PAX A920 — CAJERO en mesa ajena: solo lectura PERO cobra")
+@Composable
+private fun TableOrderScreenCashierCanPayPreview() {
+    AvoqadoTheme {
+        TableOrderScreenContent(
+            session = TableSession.Active(tableId = "1", tableNumber = "12", orderId = "order-1", total = BigDecimal("845.50")),
+            check = OrderDetail(
+                id = "order-1",
+                total = BigDecimal("845.50"),
+                servedBy = com.jaac.avoqado_tpv.features.tables.domain.model.OrderStaffSummary(id = "w1", firstName = "Fátima", lastName = "Flores"),
+                items = listOf(
+                    OrderDetailItem(id = "i1", productName = "Café americano", quantity = 2, unitPrice = BigDecimal("45.00"), total = BigDecimal("90.00"), sentToKitchenAt = "2026-07-29T10:00:00Z"),
+                ),
+            ),
+            isLoadingCheck = false,
+            checkLoadFailed = false,
+            isSending = false,
+            sendTakingLong = false,
+            pendingLines = emptyList(),
+            queuedLines = emptyList(),
+            readOnly = true,
+            readOnlyForPayment = false,
             lockOwnerName = "Fátima Flores",
             snackbarHostState = remember { SnackbarHostState() },
             onNavigateBack = {},
@@ -1079,6 +1158,7 @@ private fun TableOrderScreenLoadFailedPreview() {
             pendingLines = emptyList(),
             queuedLines = emptyList(),
             readOnly = false,
+            readOnlyForPayment = false,
             lockOwnerName = null,
             snackbarHostState = remember { SnackbarHostState() },
             onNavigateBack = {},

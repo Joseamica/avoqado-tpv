@@ -284,6 +284,68 @@ class TableOrderViewModelTest {
         assertThat(viewModel.pendingLines.value).hasSize(1)
     }
 
+    // MARK: - El CAJERO cobra la mesa ajena (`tables:pay-any`)
+
+    @Test
+    fun el_CAJERO_no_edita_pero_SI_cobra_readOnly_true_readOnlyForPayment_false() = runTest {
+        // 🔴 DINERO. Mismo estado exacto que `ownership_bloquea_a_quien_no_es_dueno_readOnly_true`
+        // — la única diferencia es `canPayAny`, que sale de `tables:pay-any`.
+        // Los DOS flujos tienen que divergir aquí: si `readOnlyForPayment` copiara
+        // a `readOnly`, el botón "Pagar" seguiría escondido y el cajero seguiría
+        // sin poder hacer su trabajo.
+        ownershipFlow.value = TablesRepository.TableOwnership(
+            enforced = true, canManageAll = false, staffId = "yo", canPayAny = true,
+        )
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", version = 1))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(
+            OrderDetail(id = "orden-1", servedBy = OrderStaffSummary(id = "otro-mesero", firstName = "Fátima", lastName = "Flores")),
+        )
+
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.readOnly.value).isTrue()
+        assertThat(viewModel.readOnlyForPayment.value).isFalse()
+        // El banner "Mesa de {mesero}" sigue: no puede editarla, y hay que decírselo.
+        assertThat(viewModel.lockOwnerName.value).isEqualTo("Fátima Flores")
+    }
+
+    @Test
+    fun el_CAJERO_con_pay_any_sigue_sin_poder_enviar_ronda() = runTest {
+        // Contención: el arreglo abre COBRAR y nada más. Si abriera editar sería
+        // peor que el defecto — le regalaría descuentos, cortesías y cancelaciones
+        // sobre CUALQUIER mesa.
+        ownershipFlow.value = TablesRepository.TableOwnership(
+            enforced = true, canManageAll = false, staffId = "yo", canPayAny = true,
+        )
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", version = 1))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(
+            OrderDetail(id = "orden-1", servedBy = OrderStaffSummary(id = "otro-mesero", firstName = "Fátima", lastName = "Flores")),
+        )
+        val viewModel = createViewModel()
+        pendingCart.addSimple(productId = "prod-1", name = "Café", unitPrice = BigDecimal("45.00"))
+
+        viewModel.sendRound()
+
+        coVerify(exactly = 0) { repository.addItems(any(), any(), any(), any()) }
+        assertThat(viewModel.error.value).contains("Fátima Flores")
+    }
+
+    @Test
+    fun el_MESERO_en_mesa_ajena_sigue_bloqueado_para_cobrar() = runTest {
+        ownershipFlow.value = TablesRepository.TableOwnership(
+            enforced = true, canManageAll = false, staffId = "yo", canPayAny = false,
+        )
+        tableSession.start(TableSession.Active(tableId = "mesa-1", orderId = "orden-1", version = 1))
+        coEvery { repository.getOrder(venueId, "orden-1") } returns Result.success(
+            OrderDetail(id = "orden-1", servedBy = OrderStaffSummary(id = "otro-mesero", firstName = "Fátima", lastName = "Flores")),
+        )
+
+        val viewModel = createViewModel()
+
+        assertThat(viewModel.readOnly.value).isTrue()
+        assertThat(viewModel.readOnlyForPayment.value).isTrue()
+    }
+
     @Test
     fun sin_ownership_habilitado_el_dueño_de_otra_mesa_no_bloquea_read_only() = runTest {
         // enforced = false (switch del venue apagado) — nunca debe bloquear,

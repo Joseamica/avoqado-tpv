@@ -466,18 +466,6 @@ interface ApiService {
     ): Response<Order>
 
     /**
-     * Add items to order
-     *
-     * POST /tpv/venues/{venueId}/orders/{orderId}/items
-     */
-    @POST("tpv/venues/{venueId}/orders/{orderId}/items")
-    suspend fun addOrderItems(
-        @Path("venueId") venueId: String,
-        @Path("orderId") orderId: String,
-        @Body items: List<OrderItemRequest>
-    ): Response<Order>
-
-    /**
      * Close order (send to kitchen)
      *
      * POST /tpv/venues/{venueId}/orders/{orderId}/close

@@ -95,9 +95,12 @@ class ShiftViewModelTest {
         every { connectionEventManager.connectionRestoredEvents } returns fakeConnectionRestoredEvents
         every { connectivityObserver.observe() } returns fakeNetworkStatus
 
-        // Default permissions: all allowed
-        coEvery { permissionsRepository.hasPermission("shifts:create") } returns true
-        coEvery { permissionsRepository.hasPermission("shifts:close") } returns true
+        // Default permissions: all allowed.
+        // 🔴 Nombres EXACTOS del server (`tpv-shifts:*` = operar el turno de ESTA caja).
+        // Espejo de `avoqado-server/src/lib/permissions.ts`; ver el test
+        // `los permisos del turno se piden con los nombres EXACTOS del server`.
+        coEvery { permissionsRepository.hasPermission("tpv-shifts:create") } returns true
+        coEvery { permissionsRepository.hasPermission("tpv-shifts:close") } returns true
 
         // Default: no active shift
         coEvery { shiftRepository.getCurrentShift(any()) } returns Result.Success(null)
@@ -118,6 +121,44 @@ class ShiftViewModelTest {
             connectivityObserver = connectivityObserver,
             permissionsRepository = permissionsRepository
         )
+    }
+
+    // ========================================
+    // PERMISSION NAME MIRRORING (server ↔ TPV)
+    // ========================================
+
+    /**
+     * 🔴 El desajuste de nombre falla MUDO: el server dice que sí, la app pregunta por
+     * otra llave, recibe `false` y esconde el botón sin un solo error en pantalla ni en
+     * logcat. Por eso el guard no puede ser "el flujo funciona" (funciona igual con el
+     * nombre equivocado, porque el mock es `relaxed`) sino la llave literal preguntada.
+     */
+    @Test
+    fun `los permisos del turno se piden con los nombres EXACTOS del server`() = runTest {
+        // When
+        createViewModel()
+        advanceUntilIdle()
+
+        // Then — `tpv-shifts:*` = OPERAR el turno de esta caja (CASHIER+ lo tiene)
+        coVerify(exactly = 1) { permissionsRepository.hasPermission("tpv-shifts:create") }
+        coVerify(exactly = 1) { permissionsRepository.hasPermission("tpv-shifts:close") }
+    }
+
+    /**
+     * `shifts:create` / `shifts:close` son el BACK-OFFICE de turnos (corregir turnos
+     * ajenos) y se quedan en MANAGER+. Preguntar por ellos dejaba al cajero sin poder
+     * abrir su turno; hoy sólo sobreviviría por el alias bidireccional del server, que
+     * existe para los APK ya instalados en la calle — no para este código.
+     */
+    @Test
+    fun `el turno NO se pide con los nombres viejos de back-office`() = runTest {
+        // When
+        createViewModel()
+        advanceUntilIdle()
+
+        // Then
+        coVerify(exactly = 0) { permissionsRepository.hasPermission("shifts:create") }
+        coVerify(exactly = 0) { permissionsRepository.hasPermission("shifts:close") }
     }
 
     // ========================================

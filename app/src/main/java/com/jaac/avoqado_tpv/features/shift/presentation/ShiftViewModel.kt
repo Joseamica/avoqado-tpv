@@ -536,11 +536,25 @@ class ShiftViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Permisos del turno DE LA TERMINAL — `tpv-shifts:*`, no `shifts:*`.
+     *
+     * `shifts:create` / `shifts:close` son el back-office (corregir turnos AJENOS) y
+     * se quedan en MANAGER+. Operar el turno de esta caja es `tpv-shifts:create` /
+     * `tpv-shifts:close`, que el CASHIER sí tiene desde 2026-08-16.
+     *
+     * 🔴 Estos nombres se espejan por nombre EXACTO con
+     * `avoqado-server/src/lib/permissions.ts`; un desajuste falla MUDO (el botón se
+     * esconde y nadie ve un error). Antes se pedían los nombres viejos y funcionaba
+     * sólo por el alias bidireccional del server
+     * (`'tpv-shifts:create': ['tpv-shifts:create', 'shifts:create', ...]`), pensado
+     * para los APK ya instalados en la calle — no para el código nuevo.
+     */
     private fun refreshShiftPermissions() {
         viewModelScope.launch {
-            val canOpen = permissionsRepository.hasPermission("shifts:create")
+            val canOpen = permissionsRepository.hasPermission("tpv-shifts:create")
             _canOpenShift.value = canOpen
-            val canClose = permissionsRepository.hasPermission("shifts:close")
+            val canClose = permissionsRepository.hasPermission("tpv-shifts:close")
             _canCloseShift.value = canClose
             Timber.d("🔐 Shift permissions: open=$canOpen, close=$canClose")
         }

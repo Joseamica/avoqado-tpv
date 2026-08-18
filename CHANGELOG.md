@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### **Fixed**
+
+- **Abrir/cerrar turno se pide por su nombre real (`tpv-shifts:*`), no por el del back-office**: `ShiftViewModel` gateaba sus botones con `shifts:create`/`shifts:close`, que en el servidor son ADMINISTRAR turnos AJENOS (MANAGER+). Operar el turno de ESTA caja es `tpv-shifts:create`/`tpv-shifts:close`, que el CASHIER sí tiene desde 2026-08-16. Hoy funcionaba por un alias bidireccional del servidor (`'tpv-shifts:create': ['tpv-shifts:create', 'shifts:create', ...]`) puesto para los APK ya instalados en la calle; quitarlo — algo que nadie notaría — habría dejado otra vez al cajero sin poder abrir su turno, con el botón escondido y **sin un solo error** en pantalla ni en logcat. Cambio inerte hoy (medido: los mismos 6 roles resuelven ambos nombres), protege el mañana. Tests: 2 nuevos en `ShiftViewModelTest` que fijan la llave literal preguntada (`coVerify`), porque el mock es `relaxed` y el flujo pasaba igual con el nombre equivocado.
+
 ---
 
 ## [2.8.1] - 2026-08-10

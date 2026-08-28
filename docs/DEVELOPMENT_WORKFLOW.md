@@ -105,6 +105,54 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 23)
 | 401 "Usuario no encontrado" | Wrong variant - use sandbox for testing |
 | `Unsupported class file major version 68` | Set Java 23: `export JAVA_HOME=$(/usr/libexec/java_home -v 23)` |
 | Hilt/NoSuchFile errors | Clean: `rm -rf app/build .gradle build && ./gradlew clean` |
+| `NoClassDefFoundError: ..._GeneratedInjector` al arrancar (build VERDE) | APK incompleto -> ver "APK verde que crashea al arrancar" abajo |
+
+### APK verde que crashea al arrancar (Hilt incompleto)
+
+Sintoma exacto en logcat, justo al abrir la app:
+
+```
+FATAL EXCEPTION: main
+java.lang.NoClassDefFoundError: Failed resolution of:
+  Lcom/jaac/avoqado_tpv/AvoqadoTPVApplication_GeneratedInjector;
+  at com.jaac.avoqado_tpv.Hilt_AvoqadoTPVApplication.<init>
+Caused by: java.lang.ClassNotFoundException: Didn't find class
+  "...AvoqadoTPVApplication_GeneratedInjector" on path: DexPathList[[zip file "base.apk"]]
+```
+
+**No es un bug de codigo ni de configuracion de Hilt.** `Hilt_AvoqadoTPVApplication` y
+`AvoqadoTPVApplication_GeneratedInjector` los genera KSP en la MISMA ronda y al MISMO
+directorio (`app/build/generated/ksp/<variant>/java/com/jaac/avoqado_tpv/`). Que una este
+en el dex y la otra no es imposible en un build limpio: significa que el APK empaqueto
+salidas intermedias de builds distintos. Gradle vio las tareas UP-TO-DATE y el build salio
+verde igual.
+
+Causas tipicas: un build interrumpido (Ctrl-C, OOM — esta maquina vive cerca del limite),
+dos builds pesados en paralelo, o `app/build/intermediates` sucio tras cambiar de variante.
+
+**Fix:**
+
+```bash
+./gradlew --stop
+./gradlew clean
+adb uninstall com.jaac.avoqado_tpv.sandbox   # opcional, descarta dex viejo en la terminal
+./gradlew installSandboxDebug
+./scripts/verify-apk-hilt.sh                 # confirma que el grafo Hilt SI quedo dentro
+```
+
+Si reincide, borra tambien el estado incremental de KSP:
+`rm -rf app/build/generated/ksp app/build/kspCaches app/build/intermediates`
+
+**Verificar ANTES de instalar** (barato, 1s — vale doble antes de mandar un APK a firmar,
+que cuesta 3-5 dias):
+
+```bash
+./scripts/verify-apk-hilt.sh                     # sandboxDebug por defecto
+./scripts/verify-apk-hilt.sh --variant nexgoDebug
+```
+
+Sale 0 si el grafo Hilt esta completo, 1 si falta alguna clase (no instalar). En builds
+`release` R8 ofusca los nombres generados, asi que el check solo aplica a APKs debug.
 
 ---
 

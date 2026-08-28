@@ -9,6 +9,8 @@
 
 ### **Added**
 
+- **`scripts/verify-apk-hilt.sh` — atrapa el APK "verde" que crashea al arrancar**: un build incremental sucio puede empaquetar solo una parte de las clases que KSP genera para Hilt (`Hilt_AvoqadoTPVApplication` sí, `AvoqadoTPVApplication_GeneratedInjector` no) y salir verde de todas formas; la app truena en el constructor de la `Application` con `NoClassDefFoundError: ..._GeneratedInjector` antes de pintar un solo pixel. El script escanea los `classes*.dex` del APK y falla (exit 1) si falta cualquiera de las cuatro clases del grafo, así que el fallo se ve **antes** de instalar en la terminal — y antes de mandar un APK a firmar, que cuesta 3-5 días. `./scripts/verify-apk-hilt.sh` usa sandboxDebug por defecto y acepta `--variant nexgoDebug` o una ruta. Los `release` se saltan (R8 ofusca los nombres generados). Diagnóstico y receta de recuperación documentados en `docs/DEVELOPMENT_WORKFLOW.md` §4.
+
 - **Arqueo ciego de caja al cerrar turno (PRO + opt-in por venue)**: la terminal consume el capability efectivo resuelto por el backend y, solo cuando está activo, pide el efectivo físico total sin revelar antes ventas, fondo ni efectivo esperado. Permite cerrar con conteo o, tras confirmación, sin conteo; normaliza montos con `BigDecimal`, muestra el resultado cuadrado/faltante/sobrante hasta que el cajero pulse “Listo” y añade la diferencia al historial/detalle. Con el capability ausente o apagado, el diálogo y payload legacy permanecen sin cambios; kiosco y servidores antiguos degradan a OFF de forma segura.
 
 ### **Removed**

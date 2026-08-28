@@ -13,14 +13,16 @@ import com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
 import com.jaac.avoqado_tpv.core.util.SimulatedAlertsManager
 import com.jaac.avoqado_tpv.core.util.UpdateCheckManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
-import javax.inject.Inject
 
 /**
  * Device Health ViewModel
@@ -77,6 +79,56 @@ class DeviceHealthViewModel @Inject constructor(
 
     private val _isExpanded = MutableStateFlow(false)
     val isExpanded: StateFlow<Boolean> = _isExpanded.asStateFlow()
+
+    // ══════════════════════════════════════════════════════════════════
+    // CICLO DE VIDA DEL REINTENTO DE CONEXION
+    // ══════════════════════════════════════════════════════════════════
+    //
+    // 🔴 Vive AQUI y no en ConnectionViewModel a proposito. El banner se alimenta de
+    // `ConnectionStateManager` (el data class con hasInternet/hasServer), NO de la clase
+    // sellada `ConnectionState` de ConnectionViewModel — esa casi nadie la lee, y su
+    // estado `Reconnecting` solo lo consume ConnectionBanner.kt, que esta MUERTO (sus
+    // unicas referencias son sus propios @Preview). Poner el ciclo alla habria sido
+    // escribir en una capa que el banner no observa.
+    //
+    // Y el fallo tiene que ser un estado PROPIO: la maquina anterior iba
+    // Reconnecting -> Disconnected*, o sea de vuelta al MISMO estado de reposo. Por eso
+    // no salia error — no habia NADA que renderizar, no es que se nos olvidara pintarlo.
+    private val _connectionRetry = MutableStateFlow<ConnectionRetryState>(ConnectionRetryState.Idle)
+    val connectionRetry: StateFlow<ConnectionRetryState> = _connectionRetry.asStateFlow()
+
+    private var connectionRetryJob: Job? = null
+
+    /**
+     * Arranca el ciclo VISIBLE del reintento. Quien dispara el sondeo real es
+     * `ConnectionViewModel.forceCheck()`; esto solo observa el desenlace, asi que
+     * funciona sin importar quien reconecte (incluso el sondeo periodico).
+     *
+     * 🔴 NO toca la cola de pagos. Ese fue un bug real: el mismo boton llamaba a
+     * retryFailedPayments() y reseteaba pagos FAILED->PENDING, permanentes incluidos —
+     * un boton que decia "reintentar conexion" manoseando dinero. Siguen separados.
+     */
+    fun markConnectionRetryStarted() {
+        connectionRetryJob?.cancel()
+        _connectionRetry.value = ConnectionRetryState.Retrying
+        connectionRetryJob = viewModelScope.launch {
+            // Exito = el servidor responde. Si no lo hace dentro de la ventana, es fallo
+            // VISIBLE. Sin este limite el spinner giraria para siempre, que es la version
+            // elegante de mentir.
+            val reconnected = withTimeoutOrNull(CONNECTION_RETRY_TIMEOUT_MS) {
+                connectionStateManager.connectionState.first { it.hasServer }
+                true
+            } ?: false
+            _connectionRetry.value =
+                if (reconnected) ConnectionRetryState.Idle else ConnectionRetryState.Failed
+        }
+    }
+
+    /** Vuelve a reposo: al reconectar por cualquier via, o al descartar el aviso. */
+    fun clearConnectionRetry() {
+        connectionRetryJob?.cancel()
+        _connectionRetry.value = ConnectionRetryState.Idle
+    }
 
     private var monitoringJob: Job? = null
     private var networkObserverJob: Job? = null
@@ -227,6 +279,10 @@ class DeviceHealthViewModel @Inject constructor(
         connectionStateObserverJob = viewModelScope.launch {
             connectionStateManager.connectionState.collect { state ->
                 Timber.d("🌐 [DeviceHealth] Connection state changed: internet=${state.hasInternet}, server=${state.hasServer}")
+                // Al volver el servidor, el ciclo del reintento vuelve a reposo — por
+                // cualquier via, no solo por el boton. Sin esto, `Failed` se quedaba pegado
+                // y reaparecia en la siguiente alerta de conexion aunque ya hubiera red.
+                if (state.hasServer) clearConnectionRetry()
                 updateAlerts()
             }
         }
@@ -436,6 +492,30 @@ class DeviceHealthViewModel @Inject constructor(
 /**
  * Device Alert Types (for tracking dismissed alerts)
  */
+/**
+ * Cuanto esperamos a que el servidor responda tras un reintento MANUAL antes de
+ * declararlo fallido en pantalla. 12s: arriba de una reconexion normal de WiFi/LTE
+ * (medido 1-2s) y abajo de la paciencia de un cajero con fila.
+ */
+private const val CONNECTION_RETRY_TIMEOUT_MS = 12_000L
+
+/**
+ * Estado del reintento de conexion, tal como lo VE el cajero.
+ *
+ * [Failed] existe porque sin el no hay error posible: la maquina anterior volvia al
+ * mismo estado de reposo tras fallar, asi que "no se pudo conectar" no tenia donde vivir.
+ */
+sealed interface ConnectionRetryState {
+    /** En reposo, o ya reconectado. */
+    data object Idle : ConnectionRetryState
+
+    /** Sondeo en curso — el boton muestra spinner y el banner dice "Reconectando...". */
+    data object Retrying : ConnectionRetryState
+
+    /** Se agoto la ventana sin respuesta del servidor. El banner LO DICE. */
+    data object Failed : ConnectionRetryState
+}
+
 enum class DeviceAlertType {
     UPDATE_AVAILABLE,  // P-1 - Highest priority (special - blue color)
     NO_INTERNET,       // P0 - Most critical

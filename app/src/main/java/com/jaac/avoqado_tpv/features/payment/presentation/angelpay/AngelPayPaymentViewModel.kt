@@ -1969,6 +1969,16 @@ class AngelPayPaymentViewModel @Inject constructor(
                     sdkMessage = result.callResult?.message ?: result.message,
                     displayMessage = displayMessage,
                 )
+
+                // 🖨️ Ticket de RECHAZO — el papel que Blumon sí entrega y nosotros no.
+                // Sin esto el rechazo sólo vive en pantalla y se va al cerrar el diálogo: el
+                // cliente se queda sin nada y el comerciante sin evidencia de por qué no pasó.
+                //
+                // 🔴 NO puede tumbar el flujo. Esta rama YA va a terminar en Error; si la
+                // impresora falla, el cajero debe ver igual el motivo en pantalla. Por eso
+                // va con su propio try/catch y NUNCA propaga: un fallo de papel no puede
+                // convertirse en una pantalla distinta de la que el cajero espera.
+                imprimirTicketDeRechazo(displayMessage, result.callResult?.code)
                 _state.value = AngelPayPaymentState.Error(
                     message = displayMessage,
                     canRetry = true,
@@ -2487,6 +2497,48 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     // ── Printing ─────────────────────────────────────────────────────
+
+    /**
+     * Imprime el ticket de PAGO RECHAZADO. Nunca lanza.
+     *
+     * 🔴 El invariante: esta función se llama desde la rama que YA va a terminar en Error, y
+     * NO puede cambiar ese desenlace. Si la impresora está ausente, sin papel o falla, el
+     * cajero tiene que seguir viendo el motivo del rechazo en pantalla — que es lo que de
+     * verdad necesita para pedir otra forma de pago. Un fallo de papel no puede disfrazarse
+     * de otra cosa ni tumbar el flujo. Por eso: `runCatching`, log, y seguir.
+     *
+     * Sólo aplica al riel Nexgo/AngelPay. En PAX el rechazo vive dentro de la máquina de
+     * estados EMV y se atenderá aparte — ahí el archivo tiene la advertencia de que 8
+     * funcionalidades comparten el mismo flujo.
+     */
+    private fun imprimirTicketDeRechazo(motivo: String?, codigoSdk: String?) {
+        if (BuildConfig.ENABLE_PAX_SDK) return
+        if (!canPrintReceipt) {
+            Timber.i("🔶 [AngelPay] Ticket de rechazo omitido: la terminal no tiene impresora")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val venueZone = com.jaac.avoqado_tpv.core.util.VenueTimeZone.get(secureStorage)
+                val ticket = angelPayTicketBuilder.buildDeclineTicket(
+                    amount = pendingAmount ?: java.math.BigDecimal.ZERO,
+                    reason = motivo,
+                    sdkCode = codigoSdk,
+                    venueName = secureStorage.getVenueName(),
+                    staffName = secureStorage.getStaffName(),
+                    venueTimeZone = java.util.TimeZone.getTimeZone(venueZone),
+                )
+                // Igual que la impresión de recibo: el SDK 1.0.16 DEVUELVE `Result` en vez
+                // de lanzar, así que hay que abrirlo o un fallo pasa por éxito.
+                com.angelpay.angelpaysdk.AngelPaySDK.printTicket(ticket).getOrThrow()
+            }.onFailure {
+                // Se registra y se sigue. El cajero ya está viendo el motivo en pantalla.
+                Timber.w(it, "🔶 [AngelPay] No se pudo imprimir el ticket de rechazo")
+            }.onSuccess {
+                Timber.i("🖨️ [AngelPay] Ticket de rechazo impreso")
+            }
+        }
+    }
 
     fun printReceipt(receipt: PaymentReceipt?) {
         viewModelScope.launch {

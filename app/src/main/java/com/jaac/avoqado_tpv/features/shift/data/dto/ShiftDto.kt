@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.shift.data.dto
 
 import com.google.gson.annotations.SerializedName
+import com.jaac.avoqado_tpv.features.shift.domain.CashDrawerSummary
 import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationAction
 import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationOutcome
 import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationResult
@@ -55,7 +56,22 @@ data class CashReconciliationDto(
     val countedCash: String? = null,
 
     @SerializedName("cashDifference")
-    val cashDifference: String? = null
+    val cashDifference: String? = null,
+    /** Fase 5: arqueo del cajón físico que cubrió el turno. Opcional — el server lo omite si no hay caja. */
+    @SerializedName("cashDrawer")
+    val cashDrawer: CashDrawerSummaryDto? = null
+)
+
+data class CashDrawerSummaryDto(
+    @SerializedName("sessionId") val sessionId: String,
+    @SerializedName("status") val status: String? = null,
+    @SerializedName("deviceName") val deviceName: String? = null,
+    @SerializedName("openedAt") val openedAt: String? = null,
+    @SerializedName("closedAt") val closedAt: String? = null,
+    @SerializedName("expectedAmount") val expectedAmount: Double,
+    @SerializedName("counted") val counted: Boolean,
+    @SerializedName("actualAmount") val actualAmount: Double? = null,
+    @SerializedName("overShort") val overShort: Double? = null
 )
 
 /**
@@ -280,7 +296,20 @@ fun ShiftDto.toDomain(): Shift {
 fun CashReconciliationDto.toDomain(): CashReconciliationResult = CashReconciliationResult(
     outcome = outcome,
     cashDeclared = countedCash?.let(::BigDecimal),
-    cashDifference = cashDifference?.let(::BigDecimal)
+    cashDifference = cashDifference?.let(::BigDecimal),
+    cashDrawer = cashDrawer?.let {
+        CashDrawerSummary(
+            sessionId = it.sessionId,
+            status = it.status,
+            deviceName = it.deviceName,
+            openedAt = it.openedAt,
+            closedAt = it.closedAt,
+            expectedAmount = BigDecimal.valueOf(it.expectedAmount),
+            counted = it.counted,
+            actualAmount = it.actualAmount?.let(BigDecimal::valueOf),
+            overShort = it.overShort?.let(BigDecimal::valueOf)
+        )
+    }
 )
 
 /**

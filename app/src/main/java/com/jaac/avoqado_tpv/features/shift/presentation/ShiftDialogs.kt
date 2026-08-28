@@ -110,7 +110,7 @@ fun OpenShiftDialog(
             ) {
                 // Title
                 Text(
-                    text = "Abrir Turno",
+                    text = "Abrir caja",
                     style = MaterialTheme.typography.headlineSmall.copy(
                         fontWeight = FontWeight.Bold
                     ),
@@ -222,7 +222,7 @@ fun OpenShiftDialog(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     AvoqadoButton(
-                        text = "Abrir Turno",
+                        text = "Abrir caja",
                         onClick = {
                             val amount = startingCashText.toDoubleOrNull()
                             if (amount != null && amount >= 0) {
@@ -309,7 +309,7 @@ fun CloseShiftDialog(
             ) {
                 // Title
                 Text(
-                    text = "Cerrar Turno",
+                    text = "Cerrar caja",
                     style = MaterialTheme.typography.headlineSmall.copy(
                         fontWeight = FontWeight.Bold
                     ),
@@ -381,7 +381,7 @@ fun CloseShiftDialog(
 
                 // Warning message
                 Text(
-                    text = "¿Estás seguro de cerrar este turno?",
+                    text = "¿Estás seguro de cerrar la caja?",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                     textAlign = TextAlign.Center
@@ -408,7 +408,7 @@ fun CloseShiftDialog(
                         )
                     ) {
                         Text(
-                            text = "Cerrar Turno",
+                            text = "Cerrar caja",
                             style = MaterialTheme.typography.labelLarge
                         )
                     }
@@ -474,7 +474,7 @@ private fun CashReconciliationCloseDialog(
                             textAlign = TextAlign.Center
                         )
                         Text(
-                            text = "El turno se cerrará, pero no quedará un resultado de caja para revisar.",
+                            text = "El turno de caja se cerrará, pero no quedará un conteo para revisar.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center
@@ -513,7 +513,7 @@ private fun CashReconciliationCloseDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "Cuenta todo el efectivo físico antes de cerrar el turno.",
+                            text = "Cuenta todo el efectivo físico antes de cerrar la caja.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center

@@ -166,7 +166,7 @@ class ShiftViewModel @Inject constructor(
      *
      * Loads last known shift state from Room database when offline.
      * Used to display "Último estado conocido (hace X min)" instead of
-     * misleading "Sin turno activo".
+     * misleading "Sin caja abierta".
      */
     private fun loadCachedShiftInfo() {
         viewModelScope.launch {
@@ -219,7 +219,7 @@ class ShiftViewModel @Inject constructor(
      * - Reload: Shift status, orders, config, etc.
      *
      * **Critical for:**
-     * - Fixing "Sin turno activo" bug when shift was opened during offline mode
+     * - Fixing "Sin caja abierta" bug when shift was opened during offline mode
      * - Syncing shift closures made by other terminals
      * - Updating shift totals (sales, cash drawer)
      */
@@ -378,7 +378,7 @@ class ShiftViewModel @Inject constructor(
     fun openShift(startingCash: Double) {
         viewModelScope.launch {
             if (!_canOpenShift.value) {
-                _state.value = ShiftState.Error("No tienes permiso para abrir turnos.\n\nContacta a tu administrador.")
+                _state.value = ShiftState.Error("No tienes permiso para abrir la caja.\n\nContacta a tu administrador.")
                 return@launch
             }
 
@@ -426,7 +426,7 @@ class ShiftViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             if (!_canCloseShift.value) {
-                _state.value = ShiftState.Error("No tienes permiso para cerrar turnos.\n\nContacta a tu administrador.")
+                _state.value = ShiftState.Error("No tienes permiso para cerrar la caja.\n\nContacta a tu administrador.")
                 return@launch
             }
 
@@ -523,10 +523,10 @@ class ShiftViewModel @Inject constructor(
     private fun translateError(exception: ApiException): String {
         return when (exception) {
             is ApiException.HttpError -> when (exception.code) {
-                400 -> "Ya existe un turno abierto.\n\nCierra el turno actual antes de abrir uno nuevo."
+                400 -> "Ya existe una caja abierta.\n\nCierra la caja actual antes de abrir una nueva."
                 403 -> "No tienes permiso para esta acción.\n\nContacta a tu administrador."
-                404 -> "No se encontró el turno.\n\nEs posible que ya haya sido cerrado."
-                409 -> "El turno se está cerrando en otra terminal.\n\nEspera unos segundos y actualiza."
+                404 -> "No se encontró la caja abierta.\n\nEs posible que ya haya sido cerrada."
+                409 -> "La caja se está cerrando en otra terminal.\n\nEspera unos segundos y actualiza."
                 in 500..599 -> "Error en el servidor.\n\nIntenta nuevamente."
                 else -> exception.userMessage
             }

@@ -209,12 +209,12 @@ class RecordPaymentUseCase @Inject constructor(
      *
      * **Se reintenta (SyncOutcome.Retryable):**
      * - 401/403/405 — casi siempre es la SESIÓN, no el pago (ver KDoc de [classifySyncFailure])
+     * - 409 — NO afirma que el pago se registró; el reintento idempotente real da 200
      * - 408/429 — "reintenta", no "no"
      * - 5xx, IOException (red/timeout), y cualquier error desconocido
      *
      * **NO se reintenta:**
      * - 400/404/422 (SyncOutcome.Permanent) — error de negocio real, reintentar no cambia el resultado
-     * - 409 (SyncOutcome.Synced) — el backend YA tiene el pago; seguir reintentando es ruido
      *
      * **Ejemplo de log:**
      * ```

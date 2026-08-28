@@ -394,6 +394,12 @@ class CheckoutViewModel @Inject constructor(
         _cartState.update { it.copy(orderTaxPercent = null) }
     }
 
+    // Llave de idempotencia del intento de creación de orden EN CURSO (retry-safety).
+    // Vive de un intento fallido a su reintento IDÉNTICO; se limpia al crear la
+    // orden y al limpiar el carrito. Ver createOrderWithCurrentItems.
+    private var orderAttemptExternalId: String? = null
+    private var orderAttemptFingerprint: String? = null
+
     fun clearCart() {
         _cartState.value = CartState()
         // Also reset the referral capture state — the cart is a per-order
@@ -403,6 +409,9 @@ class CheckoutViewModel @Inject constructor(
         _referralCode.value = ""
         _referralValidation.value = ReferralCaptureUiState.Idle
         // ActiveCartState is updated by the collector in init.
+        // Venta nueva = llave nueva (la huella ya lo garantizaría; esto es higiene).
+        orderAttemptExternalId = null
+        orderAttemptFingerprint = null
     }
 
     fun selectStaff(staffId: String, staffName: String) {
@@ -887,23 +896,42 @@ class CheckoutViewModel @Inject constructor(
             else -> current.manualDiscountCents
         }
 
+        val baseRequest = TpvCreateOrderWithItemsRequest(
+            items = requestItems,
+            staffId = staffId,
+            orderType = OrderType.TAKEOUT,
+            source = "TPV",
+            customerId = _selectedCustomer.value?.id,
+            discount = discountForWire.centsToPesos(),
+            orderDiscountId = current.orderDiscount?.id,
+            taxAmount = BigDecimal.ZERO,
+            tip = BigDecimal.ZERO,
+            subtotal = grossSubtotalCents.centsToPesos(),
+            total = current.totalCents.centsToPesos(),
+            note = current.orderNote,
+        )
+
+        // Idempotencia por venta (retry-safety): si el request es IDÉNTICO al del
+        // intento anterior (la respuesta se perdió y el cajero volvió a picar), se
+        // reusa la misma llave y el backend devuelve la orden original en vez de
+        // crear otra — que en free-cart ($0) significaba segunda deducción de stock.
+        // Si el carrito CAMBIÓ, la huella difiere y nace llave nueva: jamás se puede
+        // recibir de vuelta una orden con los items viejos. Al CREARSE la orden la
+        // llave se limpia — reusar llave entre dos ventas devolvería la anterior.
+        val fingerprint = baseRequest.toString()
+        val externalId = orderAttemptExternalId.takeIf { orderAttemptFingerprint == fingerprint }
+            ?: java.util.UUID.randomUUID().toString().also {
+                orderAttemptExternalId = it
+                orderAttemptFingerprint = fingerprint
+            }
+
         return orderRepository.createOrderWithItems(
             venueId = venueId,
-            request = TpvCreateOrderWithItemsRequest(
-                items = requestItems,
-                staffId = staffId,
-                orderType = OrderType.TAKEOUT,
-                source = "TPV",
-                customerId = _selectedCustomer.value?.id,
-                discount = discountForWire.centsToPesos(),
-                orderDiscountId = current.orderDiscount?.id,
-                taxAmount = BigDecimal.ZERO,
-                tip = BigDecimal.ZERO,
-                subtotal = grossSubtotalCents.centsToPesos(),
-                total = current.totalCents.centsToPesos(),
-                note = current.orderNote,
-            ),
-        )
+            request = baseRequest.copy(externalId = externalId),
+        ).onSuccess {
+            orderAttemptExternalId = null
+            orderAttemptFingerprint = null
+        }
     }
 }
 

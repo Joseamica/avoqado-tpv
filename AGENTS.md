@@ -1,5 +1,26 @@
 # AGENTS.md - Avoqado TPV Agent Roles
 
+## 🔴 Verificación pesada: por `avq-verify`, nunca a mano
+
+**Van SIEMPRE por el script, sin importar cuánto tarden:** `./gradlew` (cualquier tarea que
+compile), `xcodebuild`, `tsc` / `npm run build`, y cualquier corrida de jest/vitest de más de un
+archivo. **Van a pelo:** lint, formato, UN archivo de test, y lo que no reserve memoria en serio.
+
+Esto NO contradice "un compile de un solo proyecto se corre siempre, aunque la máquina esté
+saturada": aquello decide **si** verificas (siempre sí), esto decide **cómo** lo lanzas —
+haciendo fila en vez de encimarte. Se lanza desde el root del workspace:
+
+```bash
+cd /Users/amieva/Documents/Programming/Avoqado
+./scripts/avq-verify.sh avoqado-tpv <comando>
+```
+
+Hace fila: un trabajo pesado a la vez en esta Mac, que corre con ~20 sesiones de IA encima y vive
+con el swap al límite. En ESTE repo el remoto no aplica (el Alienware no tiene Java ni Xcode): el script hace la **fila local**, que es justo lo que evita dos builds de Gradle/Xcode al mismo tiempo.
+
+Detalle completo: `Avoqado/CLAUDE.md`, sección "Verificación repartida".
+
+
 Specialized agent roles for the Avoqado TPV Android POS app. Each agent loads different context.
 
 ## 🔴 Antes de construir: tier + activación (dos decisiones, no una)
@@ -118,6 +139,19 @@ Un "listo" que esconde lo que no se corrió es un reporte falso.
 - Backend deploys first, TPV takes 3-5 days
 - Version bump: "Can user do something new?" -> MINOR, otherwise PATCH
 
+## 🔴 Emoji en nombres de test: NO (rompen la caché de build de Gradle)
+
+En logs, KDoc y comentarios el emoji está bien. Pero un `fun \`🔴 no se confunde con un pago\`()`
+hace que Kotlin bautice las clases anónimas de ese test con ese nombre — genera el ARCHIVO
+`…Test$🔴 no se confunde con un pago$1.class`, que el packer de la caché no puede leer. La tarea de
+transform revienta con «Could not get file mode for …», un fallo que NO es de tu código y que no
+menciona la causa. Acentos y em-dash (—) sí funcionan; sólo los emoji rompen.
+
+Para marcar criticidad en el nombre, la convención es **`P1` / `P2` / `P3`** (antes `🔴` / `🟠` /
+`🟡`). Lo vigila `:app:checkNoEmojiInTestNames`, que corre solo antes de cualquier tarea de test —
+y nombra archivo y línea del culpable. Mismo guardia en `avoqado-android`. Caso que lo originó:
+2026-08-20, dos tests de `DeclineTicketTest` aquí y 35 en Android.
+
 ## QA / Testing Engineer
 
 **Scope**: ADB monitoring, log capture, regression testing, migration testing, permissions verification.
@@ -144,3 +178,17 @@ Un "listo" que esconde lo que no se corrió es un reporte falso.
 - Permission name consistency across repos
 - `resetPayment()` clears all new state variables
 - BigDecimal for money, pagination for queries, venueId on all DB calls
+
+## 🔴 Cómo hablarle al founder
+
+Regla completa en `~/.claude/CLAUDE.md` (aplica a todos sus proyectos) y en
+`Avoqado/.claude/rules/como-hablarle-al-founder.md`.
+
+- **Cuando le pidas una opinión o le hagas una pregunta: explícale FÁCIL.** Analogías antes que
+  jerga, y **diagrama** (`mcp__visualize__show_widget`) siempre que sean dos caminos, dos
+  mecanismos, un flujo o un antes/después. Una pregunta a la vez, opciones cortas, la consecuencia
+  de cada una en una línea.
+- **Las respuestas largas están bien** — le sirve que razones y no adivines.
+- 🔴 **SIEMPRE cierra con 2-3 líneas en lenguaje llano**: qué pasó, qué significa para él, y qué
+  necesitas de él. Sin ese cierre, el contenido puede ser correcto y aun así no llegarle.
+

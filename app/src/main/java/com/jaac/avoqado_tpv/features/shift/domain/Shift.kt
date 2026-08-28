@@ -82,7 +82,23 @@ enum class CashReconciliationOutcome {
 data class CashReconciliationResult(
     val outcome: CashReconciliationOutcome,
     val cashDeclared: BigDecimal? = null,
-    val cashDifference: BigDecimal? = null
+    val cashDifference: BigDecimal? = null,
+    /** Fase 5 de la unificación de caja: el arqueo del cajón físico (Android + esta TPV al cobrar). */
+    val cashDrawer: CashDrawerSummary? = null
+)
+
+/** Lo que el cajón físico registró para este turno. `counted=false` ⇒ se cerró sin contar. */
+data class CashDrawerSummary(
+    /** P1 Codex: la PAX debe poder decir DE QUÉ cajón es el número — id, aparato y horario. */
+    val sessionId: String? = null,
+    val status: String? = null,
+    val deviceName: String? = null,
+    val openedAt: String? = null,
+    val closedAt: String? = null,
+    val expectedAmount: BigDecimal,
+    val counted: Boolean,
+    val actualAmount: BigDecimal? = null,
+    val overShort: BigDecimal? = null
 )
 
 /**

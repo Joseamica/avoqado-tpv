@@ -124,7 +124,7 @@ fun ShiftScreen(
     Scaffold(
         topBar = {
             AvoqadoTopBar(
-                title = "Turnos",
+                title = "Turnos de caja",
                 onNavigationClick = if (requiresReconciliationAcknowledgement) {
                     null
                 } else {
@@ -144,7 +144,7 @@ fun ShiftScreen(
             ) {
                 when (val currentState = state) {
                 is ShiftState.Loading -> {
-                    AvoqadoLoadingOverlay(message = "Cargando turno...")
+                    AvoqadoLoadingOverlay(message = "Cargando turno de caja...")
                 }
 
                 is ShiftState.ShiftActive -> {
@@ -270,7 +270,7 @@ private fun ActiveShiftContent(
         // Section title
         Spacer(modifier = Modifier.height(1.dp))
         Text(
-            text = "TURNO ACTUAL",
+            text = "TURNO DE CAJA",
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
         )
@@ -295,7 +295,7 @@ private fun ActiveShiftContent(
                 ) {
                     Icon(
                         imageVector = Icons.Default.CheckCircle,
-                        contentDescription = "Turno abierto",
+                        contentDescription = "Turno de caja abierto",
                         tint = MaterialTheme.colorScheme.tertiary,  // ✅ Verde Avoqado del theme
                         modifier = Modifier.size(24.dp)
                     )
@@ -329,12 +329,12 @@ private fun ActiveShiftContent(
                         containerColor = MaterialTheme.colorScheme.error  // ✅ Rojo del theme
                     )
                 ) {
-                    Text("Cerrar Turno", style = MaterialTheme.typography.bodyLarge)
+                    Text("Cerrar caja", style = MaterialTheme.typography.bodyLarge)
                 }
 
                 if (!canCloseShift) {
                     Text(
-                        text = "No tienes permiso para cerrar turnos",
+                        text = "No tienes permiso para cerrar la caja",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.fillMaxWidth(),
@@ -376,7 +376,7 @@ private fun NoActiveShiftContent(
             ) {
                 Icon(
                     imageVector = Icons.Default.Error,
-                    contentDescription = "Sin turno activo",
+                    contentDescription = "Sin turno de caja",
                     tint = MaterialTheme.colorScheme.error,  // ✅ Rojo del theme
                     modifier = Modifier.size(48.dp)
                 )
@@ -384,7 +384,7 @@ private fun NoActiveShiftContent(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Text(
-                    text = "Sin Turno Activo",
+                    text = "Sin turno de caja",
                     style = MaterialTheme.typography.titleLarge.copy(
                         fontWeight = FontWeight.Bold
                     ),
@@ -394,7 +394,7 @@ private fun NoActiveShiftContent(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = "Abre un turno para comenzar a registrar ventas",
+                    text = "Abre la caja para comenzar a registrar ventas",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                     textAlign = TextAlign.Center
@@ -409,13 +409,13 @@ private fun NoActiveShiftContent(
                         containerColor = MaterialTheme.colorScheme.tertiary  // ✅ Verde Avoqado
                     )
                 ) {
-                    Text("Abrir Turno", style = MaterialTheme.typography.bodyLarge)
+                    Text("Abrir caja", style = MaterialTheme.typography.bodyLarge)
                 }
 
                 if (!canOpenShift) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "No tienes permiso para abrir turnos",
+                        text = "No tienes permiso para abrir la caja",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                         textAlign = TextAlign.Center
@@ -478,7 +478,7 @@ private fun LegacyShiftClosedContent(shift: Shift) {
             ) {
                 Icon(
                     imageVector = Icons.Default.CheckCircle,
-                    contentDescription = "Turno cerrado",
+                    contentDescription = "Turno de caja cerrado",
                     tint = MaterialTheme.colorScheme.tertiary,  // ✅ Verde Avoqado
                     modifier = Modifier.size(64.dp)
                 )
@@ -486,7 +486,7 @@ private fun LegacyShiftClosedContent(shift: Shift) {
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Text(
-                    text = "Turno Cerrado Exitosamente",
+                    text = "Turno de caja cerrado",
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.Center
@@ -531,16 +531,16 @@ private fun CashReconciliationClosedContent(
         action == CashReconciliationAction.SKIPPED -> {
             title = "Turno cerrado sin conteo"
             description = if (result?.outcome == CashReconciliationOutcome.SKIPPED) {
-                "El turno quedó cerrado y no se registró un resultado de caja."
+                "El turno de caja quedó cerrado y no se registró un conteo."
             } else {
-                "El turno quedó cerrado; no se recibió un resultado de conciliación."
+                "El turno de caja quedó cerrado; no se recibió un resultado de conciliación."
             }
             statusColor = MaterialTheme.avoqadoColors.statusWarning
             showDifference = false
         }
 
         wasApplied && difference != null && difference.compareTo(BigDecimal.ZERO) == 0 -> {
-            title = "Caja cuadrada"
+            title = "Turno cuadrado"
             description = "El efectivo contado coincide con el efectivo esperado."
             statusColor = MaterialTheme.avoqadoColors.statusSuccess
             showDifference = true
@@ -561,8 +561,8 @@ private fun CashReconciliationClosedContent(
         }
 
         else -> {
-            title = "Turno cerrado"
-            description = "La conciliación no está disponible. Revisa el turno en el historial."
+            title = "Turno de caja cerrado"
+            description = "La conciliación no está disponible. Revisa el turno de caja en el historial."
             statusColor = MaterialTheme.avoqadoColors.statusWarning
             showDifference = false
         }
@@ -591,7 +591,7 @@ private fun CashReconciliationClosedContent(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Icon(
-                        imageVector = if (title == "Caja cuadrada") {
+                        imageVector = if (title == "Turno cuadrado") {
                             Icons.Default.CheckCircle
                         } else {
                             Icons.Default.Error
@@ -634,6 +634,45 @@ private fun CashReconciliationClosedContent(
                             highlight = true,
                             valueColor = statusColor
                         )
+                    }
+
+                    // Fase 5 de la unificación de caja: la PAX LEE el cajón físico (el mismo que
+                    // alimenta Android y el dashboard). Si el server lo manda, se enseña junto a la
+                    // conciliación propia: son las dos verdades del mismo dinero, lado a lado.
+                    result?.cashDrawer?.let { drawer ->
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Cajón físico (Android / iPad)",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        // De qué cajón es el número: aparato y horario (P1 Codex 27-ago).
+                        val procedencia = listOfNotNull(
+                            drawer.deviceName?.takeIf { it.isNotBlank() },
+                            drawer.openedAt?.let { "abierto ${formatDrawerTime(it)}" },
+                            when (drawer.status) { "OPEN" -> "sigue abierto"; "CLOSED" -> drawer.closedAt?.let { "cerrado ${formatDrawerTime(it)}" }; else -> null }
+                        ).joinToString(" · ")
+                        if (procedencia.isNotEmpty()) {
+                            Text(
+                                text = procedencia,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        ShiftDetailRow(label = "Esperado en el cajón", value = CurrencyFormatter.format(drawer.expectedAmount))
+                        ShiftDetailRow(
+                            label = "Contado en el cajón",
+                            value = if (drawer.counted && drawer.actualAmount != null) CurrencyFormatter.format(drawer.actualAmount) else "Sin conteo"
+                        )
+                        drawer.overShort?.let { os ->
+                            val sign = os.signum()
+                            ShiftDetailRow(
+                                label = when { sign < 0 -> "Faltante en el cajón"; sign > 0 -> "Sobrante en el cajón"; else -> "Cajón cuadrado" },
+                                value = CurrencyFormatter.format(os.abs()),
+                                highlight = true,
+                                valueColor = when { sign < 0 -> MaterialTheme.avoqadoColors.statusError; sign > 0 -> MaterialTheme.avoqadoColors.statusWarning; else -> MaterialTheme.avoqadoColors.statusSuccess }
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(24.dp))
@@ -864,7 +903,7 @@ private fun ShiftHistoryCard(
 
 private fun cashDifferenceLabel(difference: BigDecimal): String = when (difference.signum()) {
     -1 -> "Faltante"
-    0 -> "Caja cuadrada"
+    0 -> "Turno cuadrado"
     else -> "Sobrante"
 }
 
@@ -984,7 +1023,7 @@ private fun ShiftDetailDialog(
         title = {
             Column {
                 Text(
-                    text = "Detalles del Turno",
+                    text = "Detalles del turno de caja",
                     style = MaterialTheme.typography.titleLarge.copy(
                         fontWeight = FontWeight.Bold
                     )
@@ -1232,3 +1271,9 @@ private fun CashReconciliationResultPreview() {
         )
     }
 }
+
+/** "2026-08-27T21:29:08.326Z" → "21:29" en la zona del aparato; si no se puede leer, se devuelve tal cual. */
+private fun formatDrawerTime(iso: String): String = try {
+    val instant = java.time.Instant.parse(iso)
+    java.time.format.DateTimeFormatter.ofPattern("HH:mm").withZone(java.time.ZoneId.systemDefault()).format(instant)
+} catch (_: Exception) { iso }

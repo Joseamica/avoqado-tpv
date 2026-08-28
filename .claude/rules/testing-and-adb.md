@@ -1,5 +1,18 @@
 # Testing & ADB Policy
 
+## 🔴 Emoji en nombres de test: NO (rompen la caché de build de Gradle)
+
+En logs, KDoc y comentarios el emoji está bien. Pero un `fun \`🔴 no se confunde con un pago\`()`
+hace que Kotlin bautice las clases anónimas de ese test con ese nombre — genera el ARCHIVO
+`…Test$🔴 no se confunde con un pago$1.class`, que el packer de la caché no puede leer. La tarea de
+transform revienta con «Could not get file mode for …», un fallo que NO es de tu código y que no
+menciona la causa. Acentos y em-dash (—) sí funcionan; sólo los emoji rompen.
+
+Para marcar criticidad en el nombre, la convención es **`P1` / `P2` / `P3`** (antes `🔴` / `🟠` /
+`🟡`). Lo vigila `:app:checkNoEmojiInTestNames`, que corre solo antes de cualquier tarea de test —
+y nombra archivo y línea del culpable. Mismo guardia en `avoqado-android`. Caso que lo originó:
+2026-08-20, dos tests de `DeclineTicketTest` aquí y 35 en Android.
+
 ## The Golden Rule: No Regressions
 
 When you fix or implement something, you MUST NOT break something else. Before committing: (1) new feature works, (2) existing features still work, (3) related features unaffected.

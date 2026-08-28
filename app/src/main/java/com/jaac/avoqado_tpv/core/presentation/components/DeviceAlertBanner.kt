@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -19,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.AlertColor
+import com.jaac.avoqado_tpv.core.presentation.viewmodels.ConnectionRetryState
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceAlert
 import com.jaac.avoqado_tpv.core.presentation.viewmodels.getAlertColor
 import com.jaac.avoqado_tpv.core.util.NetworkType
@@ -55,6 +57,11 @@ fun DeviceAlertBanner(
     onDismiss: (DeviceAlert) -> Unit = {},
     onRetry: (DeviceAlert) -> Unit = {}, // Recibe la alerta tocada: el mismo botón sirve a conexión y a pagos
     onUpdate: () -> Unit = {}, // For update alerts (UpdateAvailable)
+    /**
+     * Ciclo del reintento de conexion. Idle por defecto, para que cualquier otro
+     * llamador (y los @Preview) sigan viendo el banner de siempre.
+     */
+    retryState: ConnectionRetryState = ConnectionRetryState.Idle,
     modifier: Modifier = Modifier
 ) {
     // Don't show if no alerts
@@ -78,7 +85,8 @@ fun DeviceAlertBanner(
                 onToggleExpand = onToggleExpand,
                 onDismiss = if (topAlert.priority > 2) {{ onDismiss(topAlert) }} else null,
                 onRetry = if (topAlert.isRetryable) {{ onRetry(topAlert) }} else null,
-                onUpdate = if (topAlert is DeviceAlert.UpdateAvailable) onUpdate else null
+                onUpdate = if (topAlert is DeviceAlert.UpdateAvailable) onUpdate else null,
+                retryState = retryState
             )
 
             // Expanded list of additional alerts
@@ -118,7 +126,8 @@ private fun AlertBannerRow(
     onDismiss: (() -> Unit)?,
     onRetry: (() -> Unit)? = null, // For connection alerts
     onUpdate: (() -> Unit)? = null, // For update alerts
-    isSecondary: Boolean = false
+    isSecondary: Boolean = false,
+    retryState: ConnectionRetryState = ConnectionRetryState.Idle
 ) {
     val avoqadoColors = MaterialTheme.avoqadoColors
     val backgroundColor = when (alert.getAlertColor()) {
@@ -141,7 +150,7 @@ private fun AlertBannerRow(
         is DeviceAlert.MemoryLow -> Icons.Default.Memory
     }
 
-    val message = when (alert) {
+    val baseMessage = when (alert) {
         is DeviceAlert.UpdateAvailable -> alert.message
         is DeviceAlert.NoInternet -> alert.message
         is DeviceAlert.BatteryCritical -> alert.message
@@ -154,7 +163,7 @@ private fun AlertBannerRow(
         is DeviceAlert.MemoryLow -> alert.message
     }
 
-    val description = when (alert) {
+    val baseDescription = when (alert) {
         is DeviceAlert.UpdateAvailable -> alert.description
         is DeviceAlert.NoInternet -> alert.description
         is DeviceAlert.BatteryCritical -> alert.description
@@ -165,6 +174,28 @@ private fun AlertBannerRow(
         is DeviceAlert.StorageLow -> alert.description
         is DeviceAlert.WeakWifi -> alert.description
         is DeviceAlert.MemoryLow -> alert.description
+    }
+
+    // 🔴 Mientras hay un reintento en curso, el banner CUENTA como va. Antes el unico
+    // aviso era un Toast abajo que anunciaba el intento y jamas decia como termino: si
+    // fallaba, la pantalla quedaba exactamente igual que antes de tocar el boton.
+    // Acotado a las alertas de CONEXION: `onRetry` tambien existe en el banner de pagos
+    // pendientes, asi que sin este filtro un fallo de conexion dejaba "No se pudo
+    // conectar" pegado sobre un banner que hablaba de dinero.
+    val isConnectionAlert = alert is DeviceAlert.NoInternet || alert is DeviceAlert.ServerDown
+    val isRetrying = retryState is ConnectionRetryState.Retrying && isConnectionAlert
+    val retryFailed = retryState is ConnectionRetryState.Failed && isConnectionAlert
+    val message = when {
+        isRetrying -> "Reconectando..."
+        retryFailed -> "No se pudo conectar"
+        else -> baseMessage
+    }
+    val description = when {
+        isRetrying -> "Verificando la conexion con el servidor"
+        // Decir explicitamente que los cobros NO se pierden: es lo que el cajero
+        // necesita saber en ese segundo, y es verdad — la cola los guarda.
+        retryFailed -> "Los cobros se guardan y se envian al reconectar"
+        else -> baseDescription
     }
 
     Row(
@@ -243,6 +274,9 @@ private fun AlertBannerRow(
             // Retry button (for connection alerts)
             if (onRetry != null) {
                 Surface(
+                    // enabled=false mientras sondea: sin esto, cada toque arranca otro
+                    // ciclo y el ultimo gana — el mismo doble-toque que ya nos costo un bug.
+                    enabled = !isRetrying,
                     onClick = onRetry,
                     shape = RoundedCornerShape(12.dp),
                     color = Color.White.copy(alpha = 0.2f),
@@ -252,15 +286,23 @@ private fun AlertBannerRow(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Reintentar",
-                            tint = Color.White,
-                            modifier = Modifier.size(12.dp)
-                        )
+                        if (isRetrying) {
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                strokeWidth = 1.5.dp,
+                                modifier = Modifier.size(12.dp)
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Reintentar",
+                                tint = Color.White,
+                                modifier = Modifier.size(12.dp)
+                            )
+                        }
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "Reintentar",
+                            text = if (isRetrying) "Reconectando" else "Reintentar",
                             style = MaterialTheme.typography.labelSmall,
                             color = Color.White,
                             fontWeight = FontWeight.Medium

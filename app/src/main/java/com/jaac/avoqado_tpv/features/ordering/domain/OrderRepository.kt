@@ -543,6 +543,10 @@ data class TpvCreateOrderWithItemsRequest(
     val subtotal: BigDecimal,
     val total: BigDecimal,
     val note: String? = null,
+    /** Llave de idempotencia por venta (retry-safety): repetir venueId+externalId
+     *  hace que el backend devuelva la orden original en vez de crear otra.
+     *  null = comportamiento previo (sin dedup). */
+    val externalId: String? = null,
 )
 
 data class TpvCreateOrderWithItemsItem(

@@ -1,5 +1,24 @@
 # CLAUDE.md - Avoqado TPV (Android POS)
 
+## 🔴 Los builds pesados van por `avq-verify` (hacen fila)
+
+Esta Mac corre con ~20 sesiones de IA encima y el swap al límite; **dos daemons de Kotlin a `-Xmx6g`
+la tumban**. Cualquier `./gradlew` que compile (y `xcodebuild`) se lanza así, para que sólo haya uno
+a la vez:
+
+```bash
+cd /Users/amieva/Documents/Programming/Avoqado
+./scripts/avq-verify.sh avoqado-tpv ./gradlew assembleDebug
+```
+
+Esto **no** cambia la regla de "un compile de un solo proyecto se corre siempre, aunque la máquina
+esté saturada": eso decide **si** compilas (siempre sí), esto decide **cómo** — esperando turno en
+vez de encimarte. Van a pelo: lint, formato, un test suelto, `--version`.
+
+En ESTE repo el trabajo NO se manda al Alienware (no tiene Java ni Xcode): el script sólo hace la
+fila local, que es justo lo que hace falta aquí. Detalle: `Avoqado/CLAUDE.md` → "Verificación repartida".
+
+
 > **Reglas de entorno** — sesiones de IA en paralelo, y cuándo verificar según la carga de la
 > máquina — están en el `CLAUDE.md` del workspace (`../CLAUDE.md`), que auto-carga junto con este
 > archivo. Léelas antes de correr builds/tests o de tocar git.

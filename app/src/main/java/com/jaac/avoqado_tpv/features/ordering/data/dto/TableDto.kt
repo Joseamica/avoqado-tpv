@@ -177,6 +177,7 @@ data class TpvCreateOrderWithItemsRequest(
     @SerializedName("subtotal") val subtotal: Double,
     @SerializedName("total") val total: Double,
     @SerializedName("note") val note: String? = null,
+    @SerializedName("externalId") val externalId: String? = null,
 )
 
 data class TpvCreateOrderWithItemsItemDto(

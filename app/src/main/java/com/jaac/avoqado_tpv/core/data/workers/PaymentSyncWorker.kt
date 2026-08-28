@@ -52,7 +52,8 @@ import timber.log.Timber
  * 9. Worker returns Result.success() to schedule next run
  *
  * **Error Handling** (classifySyncFailure — by HTTP status code, never by message text):
- * - HTTP 409 (duplicate) → Mark as synced (idempotency success)
+ * - HTTP 409 → Retryable. NO afirma que el pago quedara registrado: el reintento
+ *   idempotente real responde 200 con el pago existente, nunca 409 (ver classifySyncFailure)
  * - HTTP 4xx, except 408/429 (client error) → markPermanentlyFailed(): FAILED immediately
  *   with `permanent = true` — won't fix itself, and resetAllFailed() excludes it (F-10)
  * - HTTP 5xx / 408 / 429 / network / unknown → Retryable: release back to PENDING;

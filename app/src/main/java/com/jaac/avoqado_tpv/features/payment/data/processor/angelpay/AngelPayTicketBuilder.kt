@@ -453,6 +453,98 @@ class AngelPayTicketBuilder @Inject constructor() {
         )
     }
 
+    /**
+     * Ticket de PAGO RECHAZADO — el papel que se entrega cuando el banco NO autoriza.
+     *
+     * Hoy un rechazo sólo se ve en pantalla y se va al cerrar el diálogo: el cliente se queda
+     * sin nada en la mano y el comerciante sin evidencia de por qué no pasó. Si el cliente
+     * reclama ("sí tengo fondos"), no hay a qué apelar. Se copió de Blumon, que sí imprime sus
+     * rechazos — verificado decompilando su app oficial `app_pax_1.8.0.0_SANDBOX`, que arma un
+     * ticket con marca, últimos 4, comercio, fecha, hora y motivo. Es la única práctica suya
+     * que valía la pena adoptar: su SDK no tiene reintentos ni cola offline, nosotros sí.
+     *
+     * 🔴 DOS INVARIANTES, los dos con test que los fija:
+     *
+     *  1. NO se puede confundir con un comprobante de pago. Encabezado "PAGO RECHAZADO",
+     *     cierre "NO SE REALIZO EL CARGO", y JAMÁS un código de autorización — en un rechazo
+     *     viene vacío, que es precisamente cómo se detecta. Si los dos papeles se parecen,
+     *     alguien se va sin pagar creyendo que pagó.
+     *  2. NUNCA el número de tarjeta completo. Sólo los últimos 4.
+     */
+    fun buildDeclineTicket(
+        amount: BigDecimal,
+        reason: String?,
+        sdkCode: String? = null,
+        last4: String? = null,
+        cardBrand: String? = null,
+        venueName: String? = null,
+        staffName: String? = null,
+        terminalSerial: String? = null,
+        venueTimeZone: java.util.TimeZone = java.util.TimeZone.getDefault(),
+    ): PrintTicketRequest {
+        val centerBold = PrintStyleRequest(
+            alignment = PrintAlignmentRequest.CENTER,
+            isBold = true,
+            fontSize = PrintFontSizeRequest.LARGE,
+        )
+        val center = PrintStyleRequest(alignment = PrintAlignmentRequest.CENTER)
+        val fecha = java.text.SimpleDateFormat("dd/MM/yyyy HH:mm:ss", java.util.Locale("es", "MX"))
+            .apply { timeZone = venueTimeZone }
+            .format(java.util.Date())
+
+        val tarjeta = listOfNotNull(
+            cardBrand?.takeIf { it.isNotBlank() },
+            last4?.takeIf { it.isNotBlank() }?.let { "****$it" },
+        ).joinToString(" ")
+
+        return PrintTicketRequest(
+            header = listOf(
+                PrintTicketItemRequest(type = PrintTicketItemType.TEXT, text = "PAGO RECHAZADO", style = centerBold),
+                venueName?.takeIf { it.isNotBlank() }?.let {
+                    PrintTicketItemRequest(type = PrintTicketItemType.TEXT, text = it, style = center)
+                },
+                PrintTicketItemRequest(type = PrintTicketItemType.DIVIDER),
+            ).filterNotNull(),
+            body = listOfNotNull(
+                PrintTicketItemRequest(type = PrintTicketItemType.TWO_COLUMNS, left = "Fecha", right = fecha),
+                staffName?.takeIf { it.isNotBlank() }?.let {
+                    PrintTicketItemRequest(type = PrintTicketItemType.TWO_COLUMNS, left = "Cajero", right = it)
+                },
+                terminalSerial?.takeIf { it.isNotBlank() }?.let {
+                    PrintTicketItemRequest(type = PrintTicketItemType.TWO_COLUMNS, left = "Terminal", right = it)
+                },
+                PrintTicketItemRequest(
+                    type = PrintTicketItemType.TWO_COLUMNS,
+                    left = "Monto intentado",
+                    right = formatMoney(amount),
+                ),
+                // Si no hay datos de tarjeta se OMITE la línea; imprimir "Tarjeta: -" no le
+                // sirve a nadie y ensucia el papel.
+                tarjeta.takeIf { it.isNotBlank() }?.let {
+                    PrintTicketItemRequest(type = PrintTicketItemType.TWO_COLUMNS, left = "Tarjeta", right = it)
+                },
+                PrintTicketItemRequest(type = PrintTicketItemType.DIVIDER),
+                PrintTicketItemRequest(type = PrintTicketItemType.TEXT, text = "MOTIVO"),
+                PrintTicketItemRequest(
+                    type = PrintTicketItemType.TEXT,
+                    // Sin motivo se imprime igual: un ticket sin razón sigue siendo mejor que
+                    // ningún ticket, porque al menos deja constancia del intento.
+                    text = reason?.takeIf { it.isNotBlank() } ?: "El banco no autorizó la transacción",
+                ),
+                sdkCode?.takeIf { it.isNotBlank() }?.let {
+                    PrintTicketItemRequest(type = PrintTicketItemType.TWO_COLUMNS, left = "Código", right = it)
+                },
+            ),
+            footer = listOf(
+                PrintTicketItemRequest(type = PrintTicketItemType.DIVIDER),
+                // 🔴 La línea que evita el malentendido caro.
+                PrintTicketItemRequest(type = PrintTicketItemType.TEXT, text = "NO SE REALIZO EL CARGO", style = centerBold),
+                PrintTicketItemRequest(type = PrintTicketItemType.TEXT, text = "Solicita otra forma de pago", style = center),
+                PrintTicketItemRequest(type = PrintTicketItemType.SPACER, lines = 3),
+            ),
+        )
+    }
+
     private fun formatMoney(value: BigDecimal): String =
         "$" + String.format(Locale.US, "%.2f", value)
 

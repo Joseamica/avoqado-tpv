@@ -322,7 +322,7 @@ class ShiftViewModelTest {
 
         val error = viewModel.state.value as ShiftState.Error
         assertThat(error.message).isEqualTo(
-            "El turno se está cerrando en otra terminal.\n\nEspera unos segundos y actualiza."
+            "La caja se está cerrando en otra terminal.\n\nEspera unos segundos y actualiza."
         )
         coVerify(exactly = 1) { shiftRepository.closeShift("venue-123", "shift-123") }
     }

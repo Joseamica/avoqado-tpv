@@ -533,6 +533,30 @@ dependencies {
     implementation(project(":emv"))  // EMV kernel logic
 
     // ⭐ SANDBOX FLAVOR: Blumon SDK AAR files (Sandbox environment)
+    // ⚠️ La librería de sandbox está DESACTUALIZADA y por eso el cobro con tarjeta no
+    // funciona en esta variante: es de JULIO 2025 y el backend de Blumon ya no le entrega
+    // llaves — `InitializerUseCase` muere con `409 RQ_004 "RESPUESTA VACÍA"` en el paso de
+    // DUKPT, y el modal de "Error de Inicialización" bloquea la terminal entera.
+    //
+    // MEDIDO en una PAX A910S real (serie 2841548417, 2026-08-18): con la librería de
+    // PRODUCCIÓN el MISMO paso responde "✅ OAuth + DUKPT keys downloaded successfully".
+    // Mismo aparato, mismo código, misma llamada. La única variable es la librería.
+    //
+    // La actualización EXISTE —`lib_services-1.6.1.2-SANDBOX.aar`, publicada por Blumon el
+    // 24-nov-2025, ya está en `app/libs/`— pero NO se puede cablear todavía: cambió la API y
+    // `SaleIccParams`/`SaleCtlsParams` ahora exigen dos campos nuevos.
+    //   · `entryMode` — resuelto: el código ya sabe el modo (CHIP vs CONTACTLESS), sólo hay
+    //     que hacerlo explícito donde la librería vieja lo asumía.
+    //   · `reference` — BLOQUEANTE: `String` obligatorio y NO-nulo (el constructor trae
+    //     `checkNotNullParameter`, y no hay constructor con defaults). La librería no
+    //     documenta qué espera y no hay implementación de referencia: producción usa la
+    //     1.2.0.0, que no lo pide, y la demo de Blumon es de octubre. Poner un valor
+    //     inventado en el camino del dinero no es aceptable.
+    //
+    // PARA DESBLOQUEARLO: preguntarle a Blumon qué va en `reference` para SaleIccParams /
+    // SaleCtlsParams en la 1.6.1.2. Con esa respuesta, el cambio son 3 líneas.
+    // (En `InitData` el `reference` sí quedó resuelto: es un boolean, interruptor de función
+    // nuevo, y va en `false` = comportarse igual que hoy.)
     "sandboxImplementation"(files("libs/blumon_sdk-debug.aar"))
     "sandboxImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
 
@@ -736,3 +760,61 @@ dependencies {
     androidTestImplementation("androidx.room:room-testing:2.7.0")  // MigrationTestHelper (DB upgrade validation)
     kspAndroidTest("com.google.dagger:hilt-compiler:2.57")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Guardia: un emoji en el NOMBRE de un test rompe la caché de build de Gradle
+// ─────────────────────────────────────────────────────────────────────────────
+// Kotlin bautiza las clases anónimas de un test con el nombre del test, así que
+// `fun \`🔴 no se confunde con un pago\`() { ... }` genera un ARCHIVO llamado
+// `…Test$🔴 no se confunde con un pago$1.class`. El packer de la caché no puede
+// hacer stat de ese archivo en este filesystem y la tarea de transform revienta
+// con «Could not get file mode for …» — un fallo que NO es del código, que no
+// trae mensaje útil, y que ya costó una investigación completa (2026-08-20, en
+// avoqado-android; aquí había 2 casos latentes en DeclineTicketTest).
+//
+// Verificado ese mismo día: acentos y em-dash (—) SÍ funcionan; conviven cientos
+// de .class con ellos. Sólo los emoji rompen. En el KDoc o comentario de arriba
+// el emoji es inofensivo: sólo el nombre entre backticks genera nombre de archivo.
+val checkNoEmojiInTestNames by tasks.registering {
+    group = "verification"
+    description = "Falla si un nombre de test entre backticks trae emoji (rompe la caché de Gradle)"
+
+    val testSources = fileTree("src/test") { include("**/*.kt") }
+    val marker = layout.buildDirectory.file("tmp/checkNoEmojiInTestNames.ok")
+    val root = projectDir
+    inputs.files(testSources)
+    outputs.file(marker)
+
+    doLast {
+        val funName = Regex("""fun\s+`([^`]*)`""")
+        // Rangos por CODE POINT, no por char: el regex de Java trabaja por code point, así que
+        // un par suplente (🔴) NUNCA casa escrito como dos elementos de clase.
+        // \x{10000}+ = todo el plano astral (🔴 🟠 🟡 🟢 …); el resto, pictográficos del BMP
+        // (✅ ❌ ⚠ ⚪) y el selector de variación. Acentos, em-dash, flechas y «» quedan fuera.
+        val emoji = Regex("""[\x{10000}-\x{10FFFF}\x{2600}-\x{27BF}\x{2B00}-\x{2BFF}\x{FE0F}]""")
+        val offenders = mutableListOf<String>()
+        testSources.files.sorted().forEach { file ->
+            file.readLines().forEachIndexed { idx, line ->
+                val name = funName.find(line)?.groupValues?.get(1) ?: return@forEachIndexed
+                if (emoji.containsMatchIn(name)) {
+                    offenders += "${file.relativeTo(root)}:${idx + 1}  $name"
+                }
+            }
+        }
+        if (offenders.isNotEmpty()) {
+            throw GradleException(buildString {
+                appendLine("Emoji en nombres de test — rompen la caché de build de Gradle:")
+                offenders.forEach { appendLine("    $it") }
+                appendLine()
+                appendLine("Kotlin nombra las clases anónimas con el nombre del test, y el packer de la caché")
+                appendLine("no puede leer un archivo con emoji: la tarea de transform falla con")
+                appendLine("«Could not get file mode for …», sin decir que la causa es el nombre.")
+                appendLine("Quita el emoji del nombre (la convención aquí es P1/P2/P3);")
+                appendLine("en el KDoc o comentario de arriba sí puede quedarse.")
+            })
+        }
+        marker.get().asFile.apply { parentFile.mkdirs(); writeText("ok\n") }
+    }
+}
+
+tasks.withType<Test>().configureEach { dependsOn(checkNoEmojiInTestNames) }

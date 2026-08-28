@@ -23,6 +23,7 @@ import com.jaac.avoqado_tpv.features.ordering.domain.OrderType
 import com.jaac.avoqado_tpv.features.ordering.domain.PaymentStatus
 import com.jaac.avoqado_tpv.features.ordering.domain.Product
 import com.jaac.avoqado_tpv.features.ordering.domain.ProductRepository
+import com.jaac.avoqado_tpv.features.ordering.domain.TpvCreateOrderWithItemsRequest
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
@@ -37,6 +38,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -798,6 +800,77 @@ class CheckoutViewModelTest {
 
         assertTrue(viewModel.cartState.value.isEmpty)
 
+        viewModel.viewModelScope.cancel()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Idempotencia de createOrderWithItems (externalId por venta)
+    //
+    // Contexto (auditoría de inventario 2026-08-12, C6): un retry tras perder
+    // la respuesta creaba una SEGUNDA orden (y en free-cart $0, segunda
+    // deducción). El server ya deduplica por venueId+externalId; estos tests
+    // fijan el ciclo de vida de la llave del lado del cliente:
+    //   · MISMO carrito → misma llave (el retry recupera SU orden)
+    //   · carrito EDITADO → llave nueva (jamás regresar una orden con items viejos)
+    //   · venta CREADA → llave nueva para la siguiente venta
+    // ─────────────────────────────────────────────────────────────────────
+
+    @Test
+    fun `reintento con el mismo carrito manda el MISMO externalId`() = runTest {
+        val captured = mutableListOf<TpvCreateOrderWithItemsRequest>()
+        coEvery { orderRepository.createOrderWithItems("venue-1", capture(captured)) } returnsMany listOf(
+            Result.failure(java.io.IOException("respuesta perdida")),
+            Result.success(fakeOrder(id = "ord-r1", orderNumber = "T-R1", version = 1)),
+        )
+        val viewModel = createViewModel()
+        viewModel.addProduct(fakeProduct(id = "p-1", priceCents = 5000))
+
+        viewModel.prepareForPayment() // primer intento: la respuesta se pierde
+        viewModel.prepareForPayment() // retry idéntico
+
+        assertEquals(2, captured.size)
+        assertNotNull(captured[0].externalId)
+        assertEquals(captured[0].externalId, captured[1].externalId)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `carrito editado genera externalId NUEVO`() = runTest {
+        val captured = mutableListOf<TpvCreateOrderWithItemsRequest>()
+        coEvery { orderRepository.createOrderWithItems("venue-1", capture(captured)) } returnsMany listOf(
+            Result.failure(java.io.IOException("respuesta perdida")),
+            Result.success(fakeOrder(id = "ord-r2", orderNumber = "T-R2", version = 1)),
+        )
+        val viewModel = createViewModel()
+        viewModel.addProduct(fakeProduct(id = "p-1", priceCents = 5000))
+
+        viewModel.prepareForPayment() // falla
+        viewModel.addProduct(fakeProduct(id = "p-2", priceCents = 3000)) // el cajero edita
+        viewModel.prepareForPayment()
+
+        assertEquals(2, captured.size)
+        assertNotNull(captured[1].externalId)
+        assertNotEquals(captured[0].externalId, captured[1].externalId)
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `tras crear con exito, la siguiente venta lleva externalId nuevo`() = runTest {
+        val captured = mutableListOf<TpvCreateOrderWithItemsRequest>()
+        coEvery { orderRepository.createOrderWithItems("venue-1", capture(captured)) } returnsMany listOf(
+            Result.success(fakeOrder(id = "ord-a", orderNumber = "T-A", version = 1)),
+            Result.success(fakeOrder(id = "ord-b", orderNumber = "T-B", version = 1)),
+        )
+        val viewModel = createViewModel()
+        viewModel.addProduct(fakeProduct(id = "p-1", priceCents = 5000))
+        viewModel.prepareForPayment() // venta 1 creada
+
+        viewModel.clearCart()
+        viewModel.addProduct(fakeProduct(id = "p-1", priceCents = 5000)) // venta 2, MISMO contenido
+        viewModel.prepareForPayment()
+
+        assertEquals(2, captured.size)
+        assertNotEquals(captured[0].externalId, captured[1].externalId)
         viewModel.viewModelScope.cancel()
     }
 }

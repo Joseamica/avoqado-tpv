@@ -42,11 +42,14 @@ class RecordPaymentUseCaseTest {
     }
 
     @Test
-    fun `409 (ya sincronizado) tampoco reintenta`() {
-        // No es un error de negocio como 400/404/422, pero seguir reintentando cuando
-        // el backend YA tiene el pago es ruido — classifySyncFailure lo marca Synced (no
-        // Retryable), y esta función solo distingue retry-o-no.
-        assertThat(useCase.isRetryable(BackendHttpException(409, "Duplicate payment"))).isFalse()
+    fun `un 409 SI se reintenta — no afirma que el pago quedo registrado`() {
+        // Semántica nueva (fix de la cola, mismo que android 73b7f40 / ios d336599):
+        // el reintento idempotente REAL del backend responde 200 con el pago existente,
+        // nunca 409 (payment.tpv.service.ts, "Idempotent retry detected"). Cerrar la
+        // fila con un 409 marcaba como sincronizada una venta que quizá no lo está —
+        // irreversible: dejaba de reintentarse y se borraba a los 7 días. Ver el KDoc
+        // del 409 en classifySyncFailure. NO revertir a isFalse.
+        assertThat(useCase.isRetryable(BackendHttpException(409, "Duplicate payment"))).isTrue()
     }
 
     @Test
@@ -82,10 +85,13 @@ class RecordPaymentUseCaseTest {
     // --- El bug que esto reemplaza: digitos enganosos y wording -------------------------
 
     @Test
-    fun `una referencia con 500 en un 409 NO se clasifica como servidor caido`() {
+    fun `una referencia con 500 en un 400 NO se clasifica como servidor caido`() {
         // El Regex("5\\d{2}") viejo hacia match con "500" dentro de CUALQUIER texto.
-        // Con classifySyncFailure, solo importa el codigo HTTP real (409 aqui -> Synced).
-        val error = BackendHttpException(409, "Duplicate payment ref=000000500231")
+        // Con classifySyncFailure solo importa el codigo HTTP real: un 400 (permanente)
+        // sigue siendo permanente aunque la referencia traiga "500" adentro. (Antes este
+        // caso usaba un 409, pero el 409 hoy es Retryable por diseño — con o sin dígitos
+        // engañosos — así que ya no discrimina texto-vs-código; el 400 sí.)
+        val error = BackendHttpException(400, "Bad request ref=000000500231")
         assertThat(useCase.isRetryable(error)).isFalse()
     }
 

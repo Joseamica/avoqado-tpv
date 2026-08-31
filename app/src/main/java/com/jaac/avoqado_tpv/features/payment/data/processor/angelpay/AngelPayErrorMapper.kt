@@ -83,10 +83,10 @@ object AngelPayErrorMapper {
      */
     fun accionSugerida(bankMessage: String?, gatewayCode: String?): String? {
         if (gatewayCode?.trim()?.uppercase() == CODIGO_AUTENTICACION_ADICIONAL) {
-            return null // SABOTAJE
+            return ACCION_INSERTAR_CHIP
         }
         val normalizado = bankMessage?.let { normalizar(it) } ?: return null
-        return null // SABOTAJE
+        return if (normalizado.contains("AUTENTICACION ADICIONAL")) ACCION_INSERTAR_CHIP else null
     }
 
     /** Mayúsculas y sin acentos, para que "autenticación" y "AUTENTICACION" sean lo mismo. */

@@ -9,6 +9,20 @@
 
 ---
 
+## [2.8.3] - 2026-08-31
+
+### **Changed**
+
+- **El rechazo por «autenticación adicional» ahora dice QUÉ hacer: insertar el chip**: cuando el emisor responde `1A "SE REQUIERE AUTENTICACION ADICIONAL DEL TITULAR DE LA TARJETA"` no está rechazando la venta — pide un **step-up**, y como AngelPay no soporta PIN online (vendor 2026-07-29) el step-up real es el chip. El texto del banco ya se mostraba en pantalla; lo que faltaba era la acción. Ahora la pantalla añade una línea: «Pide al cliente que inserte la tarjeta en el chip.»
+
+  **De dónde sale**: incidente Amaena 2026-08-31, terminal `AVQD-N860W173570`. Dos cobros ($740 VISA y $552 MASTERCARD) murieron con ese `1A` envuelto en un `G500`; el cajero reintentó **a ciegas** y en los dos casos el segundo intento **aprobó** (`ProviderEventLog`: tx `260831135507` rechazada → `260831135529` aprobada, mismo `integratorReference`). No se perdió dinero ni hubo doble cobro — el costo fue fricción en el mostrador y dos alertas 🚨 de "cobro tras cancelación" en el servidor.
+
+  🔴 **Aditivo por diseño**: `AngelPayErrorMapper.accionSugerida()` devuelve `null` para cualquier otro rechazo, así que el mensaje queda **byte a byte igual** que antes. Sugerir de más sería peor que no sugerir — convertir un "fondos insuficientes" en "usa el chip" mandaría al cajero a reintentar delante del cliente un cobro que nunca va a pasar; hay una prueba que lo fija. Se matchea por MENSAJE además de por código porque `PaymentResult.code` no siempre trae el del emisor (en el incidente el `1A` sólo viajó dentro del texto — mismo motivo ya documentado en `isPreChargeRegisterFailure`), ignorando acentos y mayúsculas.
+
+  **Alcance**: sólo el camino vivo `sdk_contract` (SDK embebido). El camino legacy `app_to_app` NO se tocó a propósito — está obsoleto y tocarlo añadía superficie sin beneficio medido. **No toca la decisión de aprobar/rechazar, ni el cobro, ni `resetPayment()`**: sólo el texto que se pinta cuando el resultado ya está decidido. 2 pruebas nuevas en `AngelPayErrorMapperTest` (7 en la clase, 0 fallos), verificadas **rompiendo el arreglo a propósito** — saboteado falla exactamente la que lo guarda, restaurado vuelve a verde.
+
+---
+
 ## [2.8.2] - 2026-08-31
 
 ### **Changed**

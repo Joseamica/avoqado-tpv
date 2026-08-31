@@ -133,7 +133,12 @@ class PaymentSyncWorkerTest {
     }
 
     @Test
-    fun `409 del backend se marca sincronizado (idempotencia), no reintentable`() = runTest {
+    fun `409 del backend se REINTENTA — jamas se marca sincronizado`() = runTest {
+        // Semántica nueva (mismo fix que android 73b7f40 / ios d336599): un 409 NO
+        // afirma que el cobro quedó registrado — el reintento idempotente real responde
+        // 200 con el pago existente, nunca 409. Cerrarlo como SUCCESS dejaba de
+        // reintentar una venta quizá no registrada (la fila se borraba a los 7 días).
+        // Ahora: release() de vuelta a PENDING, jamás markSynced(). NO revertir.
         val repo = mockk<PaymentQueueRepository>(relaxed = true)
         val useCase = mockk<RecordPaymentUseCase>()
         val payment = queuedPayment(reference = "ref-4")
@@ -143,8 +148,8 @@ class PaymentSyncWorkerTest {
 
         buildWorker(repo, useCase).doWork()
 
-        coVerify(exactly = 1) { repo.markSynced(payment.queueId, payment.claimToken.orEmpty()) }
-        coVerify(exactly = 0) { repo.release(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { repo.markSynced(any(), any()) }
+        coVerify(exactly = 1) { repo.release(payment.queueId, payment.claimToken.orEmpty(), any(), any()) }
     }
 
     @Test

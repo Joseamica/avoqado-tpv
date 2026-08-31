@@ -397,7 +397,11 @@ class InitializationManager @Inject constructor(
                 partialCancellation = false,
                 ticketPromotions = false,
                 initializeKeys = true,
-                kushki = KushkiData(isKsk = false)
+                kushki = KushkiData(isKsk = false),
+                // Nuevo en lib_services 1.6.1.2: bandera del perfil del comercio. Sólo se
+                // persiste (Room `InitEntity`) y se parsea del DTO remoto; nada del flujo de
+                // venta ramifica sobre ella. `false` = comportarse igual que hasta hoy.
+                reference = false
             )
 
             val postInsertParams = InsertInitParams(postInitData)

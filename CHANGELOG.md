@@ -7,7 +7,23 @@
 
 ## [Unreleased]
 
+---
+
+## [2.8.2] - 2026-08-31
+
+### **Changed**
+
+- **«Turnos» pasa a llamarse «Turnos de caja», y el cierre de turno enseña el cajón físico de Android/iPad**: ~30 textos renombrados en el menú y el flujo de turno (decisión del founder, 27-ago; con Square es «turno de caja» — botones «Abrir caja» / «Cerrar caja»), y la conciliación del cierre pinta **«Cajón físico (Android / iPad)»** — aparato, horario, esperado, contado y diferencia — junto al arqueo del turno: las dos verdades del mismo efectivo lado a lado. La hora del cajón usa la zona del NEGOCIO (`VenueTimeZone`), no el reloj del aparato (una PAX en otra zona horaria la pintaba corrida). De paso, el menú deja de recortar botones comparando su TEXTO (`label == "Turnos"` — renombrar lo dejaba visible en venues con los turnos apagados) y filtra por `ActionButton.id`, con prueba estática (`BotonDeTurnosSeFiltraPorIdTest`). QA en la PAX física el 28-ago: cajón de la Samsung ($500 esperado / $480 contado) pintado en la PAX con su faltante de $20.
+
 ### **Fixed**
+
+- **El cobro con tarjeta vuelve a funcionar en `sandbox`: se cablea `lib_services` 1.6.1.2**: la pareja anterior (`blumon_sdk-debug.aar` + `lib-services-BP-SAND_1601.aar`) ya no recibía llaves del backend de Blumon — `InitializerUseCase` moría con `409 RQ_004 "RESPUESTA VACÍA"` en el paso de DUKPT y el modal de "Error de Inicialización" bloqueaba la terminal entera (medido en una PAX A910S real, serie 2841548417: el MISMO paso con la librería de producción responde "OAuth + DUKPT keys downloaded successfully").
+
+  **Lo que bloqueaba la actualización y cómo se resolvió**: la 1.6.1.2 exige un `reference` `String` no-nulo en `SaleIccParams`/`SaleCtlsParams`, sin constructor con defaults. Ni la doc (`SDK-PAX-1.11.0.2-DocV4.docx` es del `blumon_sdk` EMV, no de `lib_services`) ni la app demo de Blumon (`app_pax_1.8.0.0_SANDBOX` trae la librería VIEJA, constructor de 9 parámetros) lo explican. La respuesta estaba en el bytecode del propio `.aar`: **`reference` no es un campo nuevo de la API** — `SaleParams`, el objeto que viaja al servidor, ya lo tenía; lo nuevo es quién lo llena. La versión vieja lo generaba dentro del UseCase con `SimpleDateFormat("yyyyMMddHHmmss", Locale.getDefault()).format(Calendar.getInstance().time)`, y la 1.6.1.2 conserva ese respaldo como `params.reference.ifEmpty { …esa misma línea… }` — verificado en las **seis** rutas de venta (icc, ctls, mag y sus tres `restaurant`). Por eso se manda **cadena vacía**: reproduce el comportamiento actual byte por byte, sin inventar un valor en el camino del dinero.
+
+  **`entryMode` sí hay que pasarlo**: es un enum, no tiene respaldo, y la librería vieja lo fijaba en `EntryMode.CONTACTLESS` dentro de `SaleCtlsUseCase`. `InitData` gana un `reference` **boolean** del perfil del comercio que sólo se persiste y se parsea del DTO remoto (nada del flujo de venta ramifica sobre él) → `false`.
+
+  **Alcance medido, no supuesto**: se comparó la API de las 45 clases de `clean_lib_services` y las 32 de `com.blumonpay` que importamos — sólo cambian `SaleIccParams`, `SaleCtlsParams` e `InitData`; `blumon_sdk` no cambia nada de lo que usamos. **Producción NO se toca** (sigue en `lib_services-1.2.0.0-PROD.aar`, su `PaymentViewModel` intacto). Las 5 variantes que comparten `src/sandbox/java` (sandbox, gymDemo, tutorialEmu, nexgo, nexgoProd) se mueven juntas por fuerza: un mismo fuente no puede compilar contra dos APIs. Tests: 3 nuevos en `BlumonSaleReferenceTest` que capturan los params reales en la llamada al SDK y fijan `reference` vacío y `entryMode = CONTACTLESS` — probados rompiendo el arreglo a propósito.
 
 - **Se borra `ApiService.addOrderItems`, que apuntaba al verbo equivocado y nadie llamaba**: declaraba `@POST("tpv/venues/{venueId}/orders/{orderId}/items")`, pero el servidor sólo registra `router.patch` para esa ruta bajo `/tpv` (el POST existe únicamente bajo `/mobile`). Si alguien lo hubiera usado habría recibido 404/405; el camino vivo es `TablesApiService.addItems`, que sí usa `@PATCH`. Medido antes de borrar: cero llamadas reales en todo `app/src` (las coincidencias del grep eran comentarios que mencionan `addOrderItemsSchema`, otra cadena). Salió al cerrar el gate de permisos del PATCH en el servidor.
 

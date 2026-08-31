@@ -190,6 +190,7 @@ fun ShiftScreen(
                     ShiftClosedContent(
                         shift = currentState.shift,
                         reconciliationAction = currentState.reconciliationAction,
+                        zonaDelNegocio = viewModel.zonaDelNegocio,
                         onDone = viewModel::acknowledgeClosedShift
                     )
                 }
@@ -441,12 +442,15 @@ internal fun isShiftPullToRefreshEnabled(state: ShiftState): Boolean =
 private fun ShiftClosedContent(
     shift: Shift,
     reconciliationAction: CashReconciliationAction? = null,
+    /** Zona del NEGOCIO para las horas del cajón (nunca la del aparato). */
+    zonaDelNegocio: java.time.ZoneId = java.time.ZoneId.of("America/Mexico_City"),
     onDone: () -> Unit = {}
 ) {
     if (reconciliationAction != null) {
         CashReconciliationClosedContent(
             shift = shift,
             action = reconciliationAction,
+            zonaDelNegocio = zonaDelNegocio,
             onDone = onDone
         )
         return
@@ -515,6 +519,8 @@ private fun LegacyShiftClosedContent(shift: Shift) {
 private fun CashReconciliationClosedContent(
     shift: Shift,
     action: CashReconciliationAction,
+    /** Zona del NEGOCIO para pintar las horas del cajón — nunca la del aparato. */
+    zonaDelNegocio: java.time.ZoneId,
     onDone: () -> Unit
 ) {
     val result = shift.reconciliation
@@ -649,8 +655,8 @@ private fun CashReconciliationClosedContent(
                         // De qué cajón es el número: aparato y horario (P1 Codex 27-ago).
                         val procedencia = listOfNotNull(
                             drawer.deviceName?.takeIf { it.isNotBlank() },
-                            drawer.openedAt?.let { "abierto ${formatDrawerTime(it)}" },
-                            when (drawer.status) { "OPEN" -> "sigue abierto"; "CLOSED" -> drawer.closedAt?.let { "cerrado ${formatDrawerTime(it)}" }; else -> null }
+                            drawer.openedAt?.let { "abierto ${formatDrawerTime(it, zonaDelNegocio)}" },
+                            when (drawer.status) { "OPEN" -> "sigue abierto"; "CLOSED" -> drawer.closedAt?.let { "cerrado ${formatDrawerTime(it, zonaDelNegocio)}" }; else -> null }
                         ).joinToString(" · ")
                         if (procedencia.isNotEmpty()) {
                             Text(
@@ -749,7 +755,7 @@ private fun ShiftHistoryList(
     ) {
         // Section title
         Text(
-            text = "HISTORIAL DE TURNOS",
+            text = "HISTORIAL DE TURNOS DE CAJA",
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
         )
@@ -1273,7 +1279,12 @@ private fun CashReconciliationResultPreview() {
 }
 
 /** "2026-08-27T21:29:08.326Z" → "21:29" en la zona del aparato; si no se puede leer, se devuelve tal cual. */
-private fun formatDrawerTime(iso: String): String = try {
+/**
+ * Hora del cajón EN LA ZONA DEL NEGOCIO. 🔴 Nunca `ZoneId.systemDefault()`: una PAX configurada en otra
+ * zona que su venue pintaría el horario del cajón corrido (P3 de Codex; lo notó el founder el 28-ago
+ * viendo las horas). Ver `core/util/VenueTimeZone` y la regla de horas del workspace.
+ */
+private fun formatDrawerTime(iso: String, zona: java.time.ZoneId): String = try {
     val instant = java.time.Instant.parse(iso)
-    java.time.format.DateTimeFormatter.ofPattern("HH:mm").withZone(java.time.ZoneId.systemDefault()).format(instant)
+    java.time.format.DateTimeFormatter.ofPattern("HH:mm").withZone(zona).format(instant)
 } catch (_: Exception) { iso }

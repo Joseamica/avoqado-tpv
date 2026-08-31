@@ -134,6 +134,25 @@ Al tocar cualquier ruta de cobro, el invariante es uno: **monto enviado al proce
 monto registrado en Avoqado**. Tests guardianes: `AngelPaySdkGatewayTest` → "el cobro
 NUNCA es menor al total registrado".
 
+## 🔴 Sin red es el estado NORMAL — nada se entrega sin responder qué pasa offline
+
+La PAX cobra en tiendas con WiFi malo: la red se cae a media venta. Antes de dar por terminado
+cualquier cambio de esta app, responde las cuatro preguntas de
+`../.claude/rules/todo-funciona-sin-red.md` (regla del workspace, carga en toda sesión):
+
+1. **Qué VE el cajero sin red** — offline se dice con todas sus letras, nunca es un error genérico.
+2. **Qué se pierde si el proceso muere entre el toque y el POST** — lo que el usuario ya hizo se
+   persiste ANTES de tocar la red (`PaymentSyncWorker`, Room), no en el `catch`.
+3. **En qué ORDEN se reproduce lo encolado** — lo que CIERRA una etapa (cierre de turno, corte) es
+   barrera: no se manda hasta que lo anterior esté confirmado. Al revés se firman números que mienten.
+4. **Qué pasa cuando vuelve la red y el servidor ya cambió** — lo tardío no se descarta en silencio ni
+   se aplica a lo que esté abierto ahora; viaja con su id.
+
+Casos medidos en Android que aplican igual aquí: un cierre offline que se perdía y un retiro que
+inventaba un faltante de $50 por reproducirse después del cierre. **Ninguno lo vieron los tests: sólo
+salieron apagando el WiFi de un aparato real** (recetas de adb en la regla del workspace).
+Detalle del mecanismo de esta app: `docs/OFFLINE_SYNC_ARCHITECTURE.md` y `docs/ORDERING_OFFLINE.md`.
+
 ## Money = BigDecimal, Never Float
 
 ```kotlin

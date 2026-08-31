@@ -113,6 +113,9 @@ import com.jaac.avoqado_tpv.features.timeclock.domain.model.TimeEntryStatus
 import dagger.hilt.android.EntryPointAccessors
 import java.math.BigDecimal
 
+/** Llave del botón de turnos de caja: la lógica filtra por esto, nunca por su texto. */
+private const val BOTON_TURNOS_DE_CAJA = "shifts"
+
 /**
  * Home Screen (Welcome Screen)
  *
@@ -812,7 +815,7 @@ private fun WelcomeScreenContent(
             val quickPayEnabled = canOperate && canWork
             val quickPayBadge = when {
                 !canWork -> "Registra tu entrada"
-                !canOperate -> "Abre el turno primero"
+                !canOperate -> "Abre la caja primero"
                 else -> null
             }
             allButtons.add(
@@ -842,7 +845,7 @@ private fun WelcomeScreenContent(
             val tablesBadge = when {
                 tablesPlanLocked -> "Plan Pro"
                 !canWork -> "Registra tu entrada"
-                !canOperate -> "Abre el turno primero"
+                !canOperate -> "Abre la caja primero"
                 else -> null
             }
             allButtons.add(
@@ -862,7 +865,7 @@ private fun WelcomeScreenContent(
             val ordersEnabled = canOperate && canWork
             val ordersBadge = when {
                 !canWork -> "Registra tu entrada"
-                !canOperate -> "Abre el turno primero"
+                !canOperate -> "Abre la caja primero"
                 else -> null
             }
             allButtons.add(
@@ -883,7 +886,7 @@ private fun WelcomeScreenContent(
             val checkoutEnabled = canOperate && canWork
             val checkoutBadge = when {
                 !canWork -> "Registra tu entrada"
-                !canOperate -> "Abre el turno primero"
+                !canOperate -> "Abre la caja primero"
                 else -> null
             }
             allButtons.add(
@@ -913,7 +916,9 @@ private fun WelcomeScreenContent(
         allButtons.add(
             ActionButton(
                 icon = Icons.Default.Schedule,
-                label = "Turnos",
+                // El sustantivo lo decidió el founder (27-ago; en Square es «turno de caja»).
+                label = "Turnos de caja",
+                id = BOTON_TURNOS_DE_CAJA,
                 enabled = true,
                 onClick = onNavigateToShifts
             )
@@ -982,9 +987,10 @@ private fun WelcomeScreenContent(
             )
         }
 
-        // Filter out "Turnos" button if shift system is disabled
+        // Se recorta por ID, no por el texto: renombrar el botón no puede dejarlo colado en un
+        // venue con los turnos APAGADOS (ver ActionButton.id).
         if (!isShiftSystemEnabled) {
-            allButtons.removeAll { it.label == "Turnos" }
+            allButtons.removeAll { it.id == BOTON_TURNOS_DE_CAJA }
         }
 
         allButtons

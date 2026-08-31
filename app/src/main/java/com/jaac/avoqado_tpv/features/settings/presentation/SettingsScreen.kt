@@ -71,23 +71,23 @@ fun SettingsScreen(
                 )
             },
             title = {
-                Text("Turno Activo")
+                Text("Turno de caja activo")
             },
             text = {
                 Column {
                     Text(
-                        text = "No puedes desactivar el sistema de turnos mientras hay un turno abierto.",
+                        text = "No puedes apagar los turnos de caja mientras haya una caja abierta.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Turno actual: ${state.activeShiftStaffName ?: "Desconocido"}",
+                        text = "Turno de caja: ${state.activeShiftStaffName ?: "Desconocido"}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Primero cierra el turno desde la pantalla de Turnos.",
+                        text = "Primero cierra la caja desde la pantalla de Turnos de caja.",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium
                     )
@@ -100,7 +100,7 @@ fun SettingsScreen(
                         onNavigateToShifts()
                     }
                 ) {
-                    Text("Ir a Turnos")
+                    Text("Ir a Turnos de caja")
                 }
             },
             dismissButton = {
@@ -123,17 +123,17 @@ fun SettingsScreen(
                 )
             },
             title = {
-                Text("Abre un Turno Primero")
+                Text("Abre la caja primero")
             },
             text = {
                 Column {
                     Text(
-                        text = "Para activar el modo kiosko, primero debes abrir un turno.",
+                        text = "Para activar el modo kiosko, primero debes abrir la caja.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "El kiosko necesita un turno abierto para procesar pedidos correctamente.",
+                        text = "El kiosko necesita un turno de caja abierto para procesar pedidos correctamente.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -146,7 +146,7 @@ fun SettingsScreen(
                         onNavigateToShifts()
                     }
                 ) {
-                    Text("Ir a Turnos")
+                    Text("Ir a Turnos de caja")
                 }
             },
             dismissButton = {
@@ -236,15 +236,15 @@ fun SettingsScreen(
                 // ═══════════════════════════════════════════════════════════════
                 item {
                     CollapsibleSection(
-                        title = "Sistema de Turnos",
+                        title = "Turnos de caja",
                         icon = Icons.Filled.Schedule,
                         subtitle = "Gestión de caja y personal",
                         expanded = shiftsExpanded,
                         onToggle = { shiftsExpanded = !shiftsExpanded }
                     ) {
                         SettingsToggleRow(
-                            label = "Habilitar Turnos",
-                            description = "Requiere abrir/cerrar turno para operar",
+                            label = "Usar turnos de caja",
+                            description = "Hay que abrir la caja para poder cobrar",
                             enabled = state.isShiftSystemEnabled,
                             isSaving = false,
                             onToggle = { viewModel.toggleShiftSystem() }

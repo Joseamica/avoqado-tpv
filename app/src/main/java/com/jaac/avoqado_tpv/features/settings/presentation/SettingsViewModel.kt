@@ -236,7 +236,7 @@ class SettingsViewModel @Inject constructor(
                         it.copy(
                             tpvSettings = savedSettings,
                             isSaving = false,
-                            message = if (newValue) "Sistema de turnos habilitado" else "Sistema de turnos deshabilitado"
+                            message = if (newValue) "Turnos de caja activados" else "Turnos de caja desactivados"
                         )
                     }
                     Timber.i("✅ Shift system ${if (newValue) "ENABLED" else "DISABLED"} - synced to backend")
@@ -324,7 +324,7 @@ class SettingsViewModel @Inject constructor(
                             _state.update {
                                 it.copy(
                                     isSaving = false,
-                                    message = "Error al verificar turno. Intenta de nuevo."
+                                    message = "Error al verificar el turno de caja. Intenta de nuevo."
                                 )
                             }
                             Timber.e(shiftResult.exception, "🥝 [KIOSK] Error checking shift before kiosk activation")

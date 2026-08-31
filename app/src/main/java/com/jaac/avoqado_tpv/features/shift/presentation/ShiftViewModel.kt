@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.shift.presentation
 
+import com.jaac.avoqado_tpv.core.util.VenueTimeZone
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
@@ -65,6 +66,14 @@ class ShiftViewModel @Inject constructor(
     private val connectivityObserver: ConnectivityObserver,
     private val permissionsRepository: PermissionsRepository
 ) : ViewModel() {
+
+    /**
+     * Zona del NEGOCIO para pintar horas (nunca el reloj del aparato: una PAX configurada en otra
+     * zona mostraría la hora del cajón corrida — regla del workspace, y el founder lo notó el 28-ago).
+     */
+    val zonaDelNegocio: java.time.ZoneId
+        get() = VenueTimeZone.get(secureStorage)
+
 
     // ══════════════════════════════════════════════════════════════════════
     // STATE

@@ -35,6 +35,7 @@ import com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.
 import com.blumonpay.pax.shared_tools.manager.CountryConstants
 import com.example.clean_lib_services.shared.core.domain.entity.sale_data.AuthenticationCard
 import com.example.clean_lib_services.shared.core.domain.entity.sale_data.CipherType
+import com.example.clean_lib_services.shared.core.domain.entity.sale_data.EntryMode
 import com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccParams
 import com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccResponse
 import com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccUseCase
@@ -4272,8 +4273,9 @@ class PaymentViewModel @Inject constructor(
             val cipherType = CipherType.DUKPT  // ✅ ALWAYS DUKPT (NEVER KUSHKY due to SDK bug)
 
             // ⭐ CRITICAL: Use SaleCtlsUseCase for contactless, SaleIccUseCase for chip
-            // SaleIccUseCase hardcodes entryMode = EntryMode.CHIP
-            // SaleCtlsUseCase hardcodes entryMode = EntryMode.CONTACTLESS
+            // SaleIccUseCase sigue fijando entryMode = EntryMode.CHIP internamente.
+            // SaleCtlsUseCase YA NO lo fija desde lib_services 1.6.1.2: ahora lo lee del
+            // parámetro, y no tiene respaldo — hay que pasarlo explícito (abajo).
             // Using the wrong one causes Blumon's platform to misidentify the entry mode
             var saleResponse: SaleIccResponse? = null
             var saleFailure: Any? = null
@@ -4289,7 +4291,17 @@ class PaymentViewModel @Inject constructor(
                     authenticationCard = AuthenticationCard.SIGNATURE,
                     emvTagList = emvTagList,
                     cipherType = cipherType,
-                    msi = selectedMsiMonths
+                    msi = selectedMsiMonths,
+                    // 🔴 VACÍO A PROPÓSITO — no es un olvido. lib_services 1.6.1.2 hace
+                    // `params.reference.ifEmpty { SimpleDateFormat("yyyyMMddHHmmss")… }`,
+                    // que es EXACTAMENTE lo que generaba la librería anterior por su cuenta.
+                    // Mandar un valor inventado cambiaría la referencia que Blumon registra
+                    // para la transacción. Guardado por BlumonSaleReferenceTest; detalle en
+                    // la memoria `blumon-1612-reference-vacio`.
+                    reference = "",
+                    // La librería vieja lo fijaba aquí dentro; la 1.6.1.2 lo exige y no
+                    // tiene respaldo (es un enum, no puede caer a "vacío").
+                    entryMode = EntryMode.CONTACTLESS
                 )
                 val ctlsResult = saleCtlsUseCase.run(ctlsParams)
                 if (ctlsResult.isLeft) {
@@ -4310,7 +4322,14 @@ class PaymentViewModel @Inject constructor(
                     authenticationCard = AuthenticationCard.SIGNATURE,
                     emvTagList = emvTagList,
                     cipherType = cipherType,
-                    msi = selectedMsiMonths
+                    msi = selectedMsiMonths,
+                    // 🔴 VACÍO A PROPÓSITO — no es un olvido. lib_services 1.6.1.2 hace
+                    // `params.reference.ifEmpty { SimpleDateFormat("yyyyMMddHHmmss")… }`,
+                    // que es EXACTAMENTE lo que generaba la librería anterior por su cuenta.
+                    // Mandar un valor inventado cambiaría la referencia que Blumon registra
+                    // para la transacción. Guardado por BlumonSaleReferenceTest; detalle en
+                    // la memoria `blumon-1612-reference-vacio`.
+                    reference = ""
                 )
                 val iccResult = saleIccUseCase.run(iccParams)
                 if (iccResult.isLeft) {

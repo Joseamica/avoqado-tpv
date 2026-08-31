@@ -252,7 +252,7 @@ private fun ActionButtonGridPreview() {
                 ),
                 ActionButton(
                     icon = Icons.Default.Schedule,
-                    label = "Turnos",
+                    label = "Turnos de caja",
                     enabled = false,
                     badge = "Próximamente",
                     onClick = {}
@@ -319,7 +319,7 @@ private fun ActionButtonGridPreviewSmall() {
                 ),
                 ActionButton(
                     icon = Icons.Default.Schedule,
-                    label = "Turnos",
+                    label = "Turnos de caja",
                     enabled = false,
                     badge = "Próximamente",
                     onClick = {}

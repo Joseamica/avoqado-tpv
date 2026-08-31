@@ -227,7 +227,7 @@ private fun AvoqadoTopBarWithSettingsPreview() {
     AvoqadoTheme {
         AvoqadoTopBar(
             title = "Hola, Juan Pérez",
-            subtitle = "Sin turno activo",
+            subtitle = "Sin turno de caja",
             onSettingsClick = { /* Open settings */ }
         )
     }

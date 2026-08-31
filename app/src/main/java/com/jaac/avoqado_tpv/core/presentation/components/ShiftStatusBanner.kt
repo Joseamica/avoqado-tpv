@@ -151,7 +151,7 @@ private fun OnlineShiftBanner(
                 // Status icon
                 Icon(
                     imageVector = if (isShiftOpen) Icons.Default.CheckCircle else Icons.Default.Error,
-                    contentDescription = if (isShiftOpen) "Turno abierto" else "Sin turno activo",
+                    contentDescription = if (isShiftOpen) "Turno de caja abierto" else "Sin turno de caja",
                     tint = if (isShiftOpen) MaterialTheme.colorScheme.tertiary else MaterialTheme.avoqadoColors.statusError,
                     modifier = Modifier.size(24.dp)
                 )
@@ -163,7 +163,7 @@ private fun OnlineShiftBanner(
                     if (isShiftOpen && shift != null) {
                         // Turno Abierto
                         Text(
-                            text = "Turno Abierto",
+                            text = "Turno de caja abierto",
                             style = MaterialTheme.typography.bodyMedium.copy(
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 14.sp
@@ -180,7 +180,7 @@ private fun OnlineShiftBanner(
                     } else {
                         // No shift active
                         Text(
-                            text = "Sin turno activo",
+                            text = "Sin turno de caja",
                             style = MaterialTheme.typography.bodyMedium.copy(
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 14.sp
@@ -189,7 +189,7 @@ private fun OnlineShiftBanner(
                         )
 
                         Text(
-                            text = "Toca para abrir un turno",
+                            text = "Toca para abrir la caja",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                         )
@@ -274,9 +274,9 @@ private fun OfflineCachedBanner(
                 Column {
                     Text(
                         text = if (cachedInfo.isOpen) {
-                            "Turno Abierto"
+                            "Turno de caja abierto"
                         } else {
-                            "Sin turno activo"
+                            "Sin turno de caja"
                         },
                         style = MaterialTheme.typography.bodyMedium.copy(
                             fontWeight = FontWeight.SemiBold,

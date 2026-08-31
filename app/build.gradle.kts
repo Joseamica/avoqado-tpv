@@ -16,8 +16,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv"
         minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
         targetSdk = 34
-        versionCode = 98
-        versionName = "2.8.1"
+        versionCode = 99
+        versionName = "2.8.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -533,40 +533,45 @@ dependencies {
     implementation(project(":emv"))  // EMV kernel logic
 
     // ⭐ SANDBOX FLAVOR: Blumon SDK AAR files (Sandbox environment)
-    // ⚠️ La librería de sandbox está DESACTUALIZADA y por eso el cobro con tarjeta no
-    // funciona en esta variante: es de JULIO 2025 y el backend de Blumon ya no le entrega
-    // llaves — `InitializerUseCase` muere con `409 RQ_004 "RESPUESTA VACÍA"` en el paso de
-    // DUKPT, y el modal de "Error de Inicialización" bloquea la terminal entera.
+    // 🔴 SDK de sandbox actualizado a la 1.6.1.2 (2026-08-28). La pareja anterior
+    // (`blumon_sdk-debug.aar` + `lib-services-BP-SAND_1601.aar`) ya no recibe llaves del
+    // backend de Blumon: `InitializerUseCase` moría con `409 RQ_004 "RESPUESTA VACÍA"` en el
+    // paso de DUKPT y el modal de "Error de Inicialización" bloqueaba la terminal entera.
     //
     // MEDIDO en una PAX A910S real (serie 2841548417, 2026-08-18): con la librería de
     // PRODUCCIÓN el MISMO paso responde "✅ OAuth + DUKPT keys downloaded successfully".
-    // Mismo aparato, mismo código, misma llamada. La única variable es la librería.
+    // Mismo aparato, mismo código, misma llamada. La única variable era la librería.
     //
-    // La actualización EXISTE —`lib_services-1.6.1.2-SANDBOX.aar`, publicada por Blumon el
-    // 24-nov-2025, ya está en `app/libs/`— pero NO se puede cablear todavía: cambió la API y
-    // `SaleIccParams`/`SaleCtlsParams` ahora exigen dos campos nuevos.
-    //   · `entryMode` — resuelto: el código ya sabe el modo (CHIP vs CONTACTLESS), sólo hay
-    //     que hacerlo explícito donde la librería vieja lo asumía.
-    //   · `reference` — BLOQUEANTE: `String` obligatorio y NO-nulo (el constructor trae
-    //     `checkNotNullParameter`, y no hay constructor con defaults). La librería no
-    //     documenta qué espera y no hay implementación de referencia: producción usa la
-    //     1.2.0.0, que no lo pide, y la demo de Blumon es de octubre. Poner un valor
-    //     inventado en el camino del dinero no es aceptable.
+    // 🔑 Lo que bloqueaba el cambio y cómo se resolvió — leyendo el BYTECODE de los dos
+    // .aar, no la documentación (la doc `SDK-PAX-1.11.0.2-DocV4.docx` es del `blumon_sdk`
+    // EMV, no de `lib_services`, y la app demo `app_pax_1.8.0.0_SANDBOX` trae la librería
+    // VIEJA, así que ninguna de las dos contesta):
+    //   · `reference` en `SaleIccParams`/`SaleCtlsParams` — NO es un campo nuevo de la API:
+    //     `SaleParams` (el que viaja al servidor) ya lo tenía. Lo nuevo es quién lo llena.
+    //     La vieja lo generaba dentro del UseCase con
+    //     `SimpleDateFormat("yyyyMMddHHmmss", Locale.getDefault()).format(Calendar…time)`;
+    //     la 1.6.1.2 hace `params.reference.ifEmpty { …esa misma línea… }`, verificado en
+    //     las SEIS rutas de venta. ⇒ mandamos "" y el comportamiento es idéntico al de hoy.
+    //   · `entryMode` en `SaleCtlsParams` — ese SÍ hay que pasarlo: es un enum, no tiene
+    //     respaldo, y la vieja lo fijaba en `EntryMode.CONTACTLESS`.
+    //   · `InitData.reference` — boolean del perfil del comercio; sólo se persiste y se
+    //     parsea del DTO remoto, nada del flujo de venta ramifica sobre él. `false` = hoy.
+    // Detalle y recetas: memoria `blumon-1612-reference-vacio`.
     //
-    // PARA DESBLOQUEARLO: preguntarle a Blumon qué va en `reference` para SaleIccParams /
-    // SaleCtlsParams en la 1.6.1.2. Con esa respuesta, el cambio son 3 líneas.
-    // (En `InitData` el `reference` sí quedó resuelto: es un boolean, interruptor de función
-    // nuevo, y va en `false` = comportarse igual que hoy.)
-    "sandboxImplementation"(files("libs/blumon_sdk-debug.aar"))
-    "sandboxImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
+    // Alcance: se comparó la API de las 45 clases de `clean_lib_services` y las 32 de
+    // `com.blumonpay` que importamos — sólo cambian esas tres. Producción sigue en la
+    // 1.2.0.0 y NO se toca. Las 5 variantes de abajo comparten `src/sandbox/java`, así que
+    // se mueven juntas por fuerza (si no, el mismo fuente no compila contra dos APIs).
+    "sandboxImplementation"(files("libs/blumon_sdk-1.6.1.2-sandbox.aar"))
+    "sandboxImplementation"(files("libs/lib_services-1.6.1.2-SANDBOX.aar"))
 
     // gymDemo ("Avoqado Demo") reuses the sandbox Blumon SDK + lib-services (sandbox aar)
-    "gymDemoImplementation"(files("libs/blumon_sdk-debug.aar"))
-    "gymDemoImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
+    "gymDemoImplementation"(files("libs/blumon_sdk-1.6.1.2-sandbox.aar"))
+    "gymDemoImplementation"(files("libs/lib_services-1.6.1.2-SANDBOX.aar"))
 
     // ⭐ TUTORIAL EMULATOR FLAVOR: reuse sandbox SDK API surface for compilation.
-    "tutorialEmuImplementation"(files("libs/blumon_sdk-debug.aar"))
-    "tutorialEmuImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
+    "tutorialEmuImplementation"(files("libs/blumon_sdk-1.6.1.2-sandbox.aar"))
+    "tutorialEmuImplementation"(files("libs/lib_services-1.6.1.2-SANDBOX.aar"))
 
     // ⭐ NEXGO FLAVOR: reuse sandbox SDK API surface for Hilt compilation.
     // These AARs provide Java class stubs — native .so libs are NOT invoked on Nexgo.
@@ -578,14 +583,14 @@ dependencies {
     // below. PAX native .so live under sdk/src/main/jniLibs/armeabi/ which Nexgo
     // ABIs (armeabi-v7a + arm64-v8a) already exclude by abiFilters mismatch; the
     // packagingOptions block above adds defense-in-depth.
-    "nexgoImplementation"(files("libs/blumon_sdk-debug.aar"))
-    "nexgoImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
+    "nexgoImplementation"(files("libs/blumon_sdk-1.6.1.2-sandbox.aar"))
+    "nexgoImplementation"(files("libs/lib_services-1.6.1.2-SANDBOX.aar"))
 
     // ⭐ NEXGO PROD FLAVOR: same SDK API surface as nexgo (so Hilt can resolve
     // TokenServer / *UseCase types). Native libs never run on Nexgo. See
     // STUB ONLY note above (spec §17.5).
-    "nexgoProdImplementation"(files("libs/blumon_sdk-debug.aar"))
-    "nexgoProdImplementation"(files("libs/lib-services-BP-SAND_1601.aar"))
+    "nexgoProdImplementation"(files("libs/blumon_sdk-1.6.1.2-sandbox.aar"))
+    "nexgoProdImplementation"(files("libs/lib_services-1.6.1.2-SANDBOX.aar"))
 
     // ⭐ PRODUCTION FLAVOR: Blumon SDK AAR files (Production environment)
     "productionImplementation"(files("libs/blumon_sdk-prod.aar"))

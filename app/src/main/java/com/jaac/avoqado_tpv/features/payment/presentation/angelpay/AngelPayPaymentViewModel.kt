@@ -1956,6 +1956,16 @@ class AngelPayPaymentViewModel @Inject constructor(
                 }
                 val displayMessage = buildString {
                     append(result.message ?: "Pago rechazado")
+                    // El emisor que exige autenticación adicional (1A) NO rechazó la venta:
+                    // pide step-up, y con AngelPay el step-up es el chip. Su texto ya va
+                    // arriba; esto añade la ACCIÓN, que es lo que le faltaba al cajero
+                    // (incidente Amaena 2026-08-31: reintentó a ciegas y aprobó al segundo).
+                    // Aditivo: para cualquier otro rechazo devuelve null y el mensaje queda
+                    // exactamente igual que antes.
+                    AngelPayErrorMapper.accionSugerida(result.message, result.code)?.let { accion ->
+                        append("\n\n")
+                        append(accion)
+                    }
                     result.callResult?.let { call ->
                         if (!call.code.isNullOrBlank()) {
                             append("\n\nSDK ${call.code}: ${call.message ?: "Sin detalle"}")

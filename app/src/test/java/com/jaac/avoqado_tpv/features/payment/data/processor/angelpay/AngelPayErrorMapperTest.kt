@@ -2,6 +2,7 @@ package com.jaac.avoqado_tpv.features.payment.data.processor.angelpay
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -145,6 +146,56 @@ class AngelPayErrorMapperTest {
         assertFalse(AngelPayErrorMapper.isPreChargeRegisterFailure("Pago rechazado"))
         assertFalse(AngelPayErrorMapper.isPreChargeRegisterFailure(null))
         assertFalse(AngelPayErrorMapper.isPreChargeRegisterFailure(""))
+    }
+
+    /**
+     * El emisor que pide autenticación adicional (código `1A`) está pidiendo un STEP-UP,
+     * no rechazando la venta: con AngelPay el PIN online no existe, así que el step-up
+     * real es insertar el chip (vendor 2026-07-29).
+     *
+     * Incidente Amaena 2026-08-31: dos cobros ($740 y $552) murieron así y el cajero
+     * reintentó a ciegas — los dos aprobaron al segundo intento. El texto del banco ya
+     * llegaba a pantalla; lo que faltaba era decir QUÉ hacer con él.
+     */
+    @Test
+    fun `accionSugerida pide el chip cuando el emisor exige autenticacion adicional`() {
+        // El texto EXACTO que AngelPay entregó en el incidente (mayúsculas, sin acentos).
+        assertEquals(
+            AngelPayErrorMapper.ACCION_INSERTAR_CHIP,
+            AngelPayErrorMapper.accionSugerida(
+                "SE REQUIERE AUTENTICACION ADICIONAL DEL TITULAR DE LA TARJETA",
+                null,
+            ),
+        )
+        // Con acentos y minúsculas — el gateway puede reformatear su propio texto.
+        assertEquals(
+            AngelPayErrorMapper.ACCION_INSERTAR_CHIP,
+            AngelPayErrorMapper.accionSugerida(
+                "Se requiere autenticación adicional del titular",
+                null,
+            ),
+        )
+        // Por CÓDIGO del gateway, aunque el mensaje no lo mencione.
+        assertEquals(
+            AngelPayErrorMapper.ACCION_INSERTAR_CHIP,
+            AngelPayErrorMapper.accionSugerida("Transaccion rechazada", "1a"),
+        )
+    }
+
+    /**
+     * 🔴 Aditivo por diseño: ningún otro rechazo puede cambiar de texto.
+     *
+     * Sugerir de más es peor que no sugerir: convertiría un "fondos insuficientes" en
+     * "usa el chip" y mandaría al cajero a reintentar un cobro que nunca va a pasar,
+     * delante del cliente.
+     */
+    @Test
+    fun `accionSugerida no inventa acciones para otros rechazos`() {
+        assertNull(AngelPayErrorMapper.accionSugerida("Fondos insuficientes", "51"))
+        assertNull(AngelPayErrorMapper.accionSugerida("Transaccion rechazada por el gateway", "05"))
+        assertNull(AngelPayErrorMapper.accionSugerida("Tarjeta vencida", null))
+        assertNull(AngelPayErrorMapper.accionSugerida(null, null))
+        assertNull(AngelPayErrorMapper.accionSugerida("", ""))
     }
 
     private fun makeCallResult(

@@ -52,6 +52,49 @@ object AngelPayErrorMapper {
         else -> callResult?.message ?: "Error desconocido"
     }
 
+    /** Acción concreta que resuelve el step-up del emisor. Ver [accionSugerida]. */
+    const val ACCION_INSERTAR_CHIP = "Pide al cliente que inserte la tarjeta en el chip."
+
+    /** Código del emisor para "se requiere autenticación adicional del titular". */
+    private const val CODIGO_AUTENTICACION_ADICIONAL = "1A"
+
+    /**
+     * Traduce un rechazo del EMISOR a la acción que resuelve la venta, o `null` si no
+     * hay ninguna que sugerir.
+     *
+     * Hoy cubre un solo caso, el `1A` "SE REQUIERE AUTENTICACION ADICIONAL DEL TITULAR":
+     * no es un rechazo definitivo sino un **step-up**, y como AngelPay no soporta PIN
+     * online (vendor 2026-07-29) el step-up real es **insertar el chip**. El mensaje del
+     * banco ya se muestra en pantalla; lo que faltaba era decir qué hacer con él —
+     * incidente Amaena 2026-08-31, donde el cajero reintentó a ciegas dos veces y las
+     * dos aprobaron al segundo intento.
+     *
+     * 🔴 **Devolver `null` es el default y no se toca sin evidencia.** Sugerir de más es
+     * peor que no sugerir: convertir un "fondos insuficientes" en "usa el chip" manda al
+     * cajero a reintentar delante del cliente un cobro que nunca va a pasar.
+     *
+     * Se matchea por MENSAJE además de por código porque `PaymentResult.code` no siempre
+     * trae el código del emisor — en el incidente el `1A` sólo viajó dentro del texto
+     * (mismo motivo documentado en [isPreChargeRegisterFailure]). La comparación ignora
+     * acentos y mayúsculas: el gateway ha entregado el texto en las dos formas.
+     *
+     * @param bankMessage `PaymentResult.message` — el texto del emisor, tal cual llega.
+     * @param gatewayCode `PaymentResult.code` — código del emisor ("00" = aprobada).
+     */
+    fun accionSugerida(bankMessage: String?, gatewayCode: String?): String? {
+        if (gatewayCode?.trim()?.uppercase() == CODIGO_AUTENTICACION_ADICIONAL) {
+            return ACCION_INSERTAR_CHIP
+        }
+        val normalizado = bankMessage?.let { normalizar(it) } ?: return null
+        return if (normalizado.contains("AUTENTICACION ADICIONAL")) ACCION_INSERTAR_CHIP else null
+    }
+
+    /** Mayúsculas y sin acentos, para que "autenticación" y "AUTENTICACION" sean lo mismo. */
+    private fun normalizar(texto: String): String =
+        java.text.Normalizer.normalize(texto, java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{Mn}+"), "")
+            .uppercase()
+
     /**
      * Returns true if the SDK code means the AngelPay session expired and a logout +
      * re-auth ([AngelPayAuthRepository.handleAuthExpiry]) can recover the payment.

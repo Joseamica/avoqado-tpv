@@ -22,9 +22,23 @@ Los 12 archivos de `baseline/artefactos/antes` (deps + manifest + BuildConfig de
 ya están generados y verificados. **Los `apk-*.txt` (listado de contenido del APK release de cada
 variant) NO se capturaron todavía** — se pospusieron a la comprobación final por saturación de la
 máquina (varios builds de R8 pesados de otras sesiones corriendo a la vez agotaban el swap y hacían
-fallar `assembleRelease` con errores genéricos, no por código). Se generan así:
+fallar `assembleRelease` con errores genéricos, no por código). Se generan así, primero compilando
+el release de cada variant —**siempre por `avq-verify`, nunca `./gradlew` a pelo**, es la regla dura
+del workspace para cualquier compile pesado— y luego listando el contenido del APK:
 
+    cd /Users/amieva/Documents/Programming/Avoqado
+    for T in Production Sandbox Nexgo NexgoProd; do
+      ./scripts/avq-verify.sh avoqado-tpv ./gradlew ":app:assemble${T}Release"
+    done
+
+    cd avoqado-tpv
     for V in production sandbox nexgo nexgoProd; do
       unzip -l app/build/outputs/apk/$V/release/*.apk | awk '{print $4}' | sort \
         > baseline/artefactos/antes/apk-$V.txt
     done
+
+Si el build falla por saturación de la máquina (swap libre <2 GB, load muy por encima de 2× los
+núcleos), reintentar con menos paralelismo propio — está medido que esto sí pasa:
+
+    ./scripts/avq-verify.sh avoqado-tpv ./gradlew ":app:assemble${T}Release" \
+      "-Dorg.gradle.workers.max=2" "--no-parallel"

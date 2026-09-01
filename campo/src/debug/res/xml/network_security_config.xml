@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sin lista de dominios A PROPÓSITO: si la IP viviera aquí Y en BuildConfig, cambiar
+     una y olvidar la otra bloquea el QA con un error que no se parece a la causa.
+     Esto sólo existe en src/debug; el APK de release nunca permite tráfico en claro. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

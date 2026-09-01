@@ -23,15 +23,24 @@ android {
             abiFilters.add("arm64-v8a")
             abiFilters.add("armeabi-v7a")
         }
+        buildConfigField("String", "API_BASE_URL", "\"https://api.avoqado.io/api/v1/\"")
     }
 
-    buildTypes { release { isMinifyEnabled = false } }
+    buildTypes {
+        debug {
+            buildConfigField("String", "API_BASE_URL", "\"http://10.55.1.234:3000/api/v1/\"")
+        }
+        release { isMinifyEnabled = false }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 }
 
 dependencies {
@@ -45,6 +54,11 @@ dependencies {
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
     implementation("com.google.dagger:hilt-android:2.57")
     ksp("com.google.dagger:hilt-compiler:2.57")
+
+    implementation("com.squareup.retrofit2:retrofit:2.9.0")
+    implementation("com.squareup.retrofit2:converter-gson:2.9.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
     testImplementation(libs.junit)
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")

@@ -63,4 +63,7 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     testImplementation("io.mockk:mockk:1.13.12")
+    // Reproduce de verdad lo que Retrofit+Gson lanzan ante un cuerpo que no es el JSON
+    // esperado (portal cautivo de WiFi) — un fake no puede ejercitar el parseo real.
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

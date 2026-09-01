@@ -8,10 +8,14 @@ import com.jaac.avoqado_campo.red.VenueDto
 import kotlinx.coroutines.test.runTest
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import retrofit2.Response
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
 import java.io.IOException
 
 private class ApiFalsa(private val respuesta: Response<LoginRespuesta>) : CampoApi {
@@ -102,5 +106,51 @@ class RepositorioAuthCampoImplTest {
         assertTrue(
             (resultado as ResultadoLogin.Falla).mensaje.contains("Sin conexión"),
         )
+    }
+
+    @Test
+    fun `200 con un cuerpo que no tiene forma de objeto es una Falla, nunca un crash`() = runTest {
+        // 🔴 Reproducido con MockWebServer + Retrofit/Gson REALES, no con un fake: el fake
+        // `ApiFalsa` recibe un Response ya construido y nunca pasa por el parseo de Retrofit,
+        // así que no puede ejercitar este defecto.
+        //
+        // 🔑 Medido en este repo (Gson 2.8.5, la versión real que resuelve `converter-gson
+        // 2.9.0`): una página HTML cruda de portal cautivo SÍ revienta el parseo, pero Gson
+        // la tokeniza mal y lanza `MalformedJsonException` — que ES una `IOException` y el
+        // catch de arriba YA la atrapaba (falla asertada primero con ese cuerpo, verificado
+        // antes de escribir esto). El caso que de verdad escapa como el `catch (IOException)`
+        // no ve es cuando el cuerpo ES JSON válido pero de la forma equivocada — un arreglo
+        // en vez de un objeto — algo que un proxy/gateway que intercepta la conexión (el de
+        // una red WiFi corporativa o pública, no sólo un portal cautivo con HTML) puede
+        // devolver con Content-Type application/json. Ahí Gson sí abre el objeto
+        // (`beginObject()`), encuentra `BEGIN_ARRAY` y lanza `IllegalStateException`, que
+        // `ReflectiveTypeAdapterFactory` envuelve en `JsonSyntaxException` — una
+        // `RuntimeException`, no una `IOException`.
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("[]"),
+        )
+        server.start()
+        try {
+            val api = Retrofit.Builder()
+                .baseUrl(server.url("/"))
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+                .create(CampoApi::class.java)
+            val repo = RepositorioAuthCampoImpl(api)
+
+            val resultado = repo.entrar("promotor@ejemplo.com", "buena")
+
+            assertTrue("esperaba Falla, fue $resultado", resultado is ResultadoLogin.Falla)
+            assertEquals(
+                "No se pudo conectar con Avoqado. Si estás en un WiFi público, revisa que tengas internet.",
+                (resultado as ResultadoLogin.Falla).mensaje,
+            )
+        } finally {
+            server.shutdown()
+        }
     }
 }

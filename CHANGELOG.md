@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### **Fixed**
+
+- **`:campo` — un WiFi que intercepta la conexión (portal cautivo, proxy corporativo) ya no tumba la app en el login**: `RepositorioAuthCampoImpl.entrar()` sólo atrapaba `IOException`, pero Retrofit parsea el cuerpo de la respuesta CON Gson dentro de `api.login()` — si el servidor responde 200 con un cuerpo que no tiene la forma de `LoginRespuesta` (ej. un array en vez de un objeto), Gson lanza `JsonSyntaxException`/`JsonIOException` (`RuntimeException`, no `IOException`), que escapaba del `try`, salía del `viewModelScope.launch` y cerraba la app entera (`CampoApplication` no tiene manejador). Reproducido con MockWebServer + Retrofit/Gson reales (no un fake) para no adivinar la excepción exacta: medido en este repo con Gson 2.8.5 (la que resuelve `converter-gson 2.9.0`), un HTML crudo de portal cautivo SÍ es una `IOException` (`MalformedJsonException`) que el catch ya atrapaba; el caso que de verdad escapaba es un cuerpo JSON válido pero de forma equivocada. Nuevo catch de `JsonParseException` con mensaje honesto: «No se pudo conectar con Avoqado. Si estás en un WiFi público, revisa que tengas internet.» 6 pruebas en `RepositorioAuthCampoImplTest` (1 nueva), verificada rompiendo el arreglo a propósito.
+
 ---
 
 ## [2.8.3] - 2026-08-31

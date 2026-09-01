@@ -4,6 +4,7 @@ import com.jaac.avoqado_campo.red.CampoApi
 import com.jaac.avoqado_campo.red.LoginBody
 import com.jaac.avoqado_campo.red.LoginRespuesta
 import com.google.gson.Gson
+import com.google.gson.JsonParseException
 import com.google.gson.JsonSyntaxException
 import java.io.IOException
 import javax.inject.Inject
@@ -28,6 +29,17 @@ class RepositorioAuthCampoImpl @Inject constructor(
         }
     } catch (e: IOException) {
         ResultadoLogin.Falla("Sin conexión. Revisa tu internet e intenta de nuevo.")
+    } catch (e: JsonParseException) {
+        // 🔴 Retrofit parsea el cuerpo DENTRO de api.login(): si el servidor respondió 200
+        // pero el cuerpo no tiene la forma de LoginRespuesta (un proxy o portal cautivo de
+        // WiFi que intercepta la conexión y devuelve otra cosa), Gson lanza
+        // JsonSyntaxException/JsonIOException — RuntimeExceptions, no IOException — y sin
+        // este catch escapaban del try, salían del viewModelScope y tumbaban la app entera
+        // (CampoApplication no tiene manejador). El usuario SÍ tiene señal (hubo 200): el
+        // problema es que algo entre él y Avoqado está interceptando la conexión.
+        ResultadoLogin.Falla(
+            "No se pudo conectar con Avoqado. Si estás en un WiFi público, revisa que tengas internet.",
+        )
     }
 
     /** Saca el CAMPO `message` del JSON de error; nunca busca palabras dentro del texto. */

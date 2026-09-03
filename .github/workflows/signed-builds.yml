@@ -86,8 +86,16 @@ jobs:
 
       # Puerta antes de firmar nada: si un test truena, no se produce NINGÚN
       # artefacto — ni el de PAX ni el de Nexgo.
+      #
+      # sandbox, NO production: verificado en vivo (2026-09-03) que
+      # testProductionDebugUnitTest FALLA por compilar el mismo src/test contra
+      # el .aar VIEJO (lib_services-1.2.0.0-PROD) que production declara —
+      # BlumonSaleReferenceTest usa campos que sólo existen en el SDK 1.6.1.2 que
+      # trae sandbox. CLAUDE.md de este repo documenta testSandboxDebugUnitTest
+      # como el comando canónico (220 tests) — no fue elección, fue corregir un
+      # error propio de este CI, nunca del código de pagos.
       - name: Tests unitarios (puerta)
-        run: ./gradlew testProductionDebugUnitTest
+        run: ./gradlew testSandboxDebugUnitTest
 
       - name: Compilar PAX (production) y Nexgo (nexgoProd), sin firmar
         run: ./gradlew assembleProductionRelease assembleNexgoProdRelease

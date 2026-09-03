@@ -72,8 +72,13 @@ jobs:
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
 
+      # sandbox, NO production: es el que este repo documenta como el estándar
+      # (CLAUDE.md → Commands / Pre-Commit Checklist: "testSandboxDebugUnitTest,
+      # 220 tests"). Además compila contra lib_services-1.6.1.2-SANDBOX.aar; el
+      # flavor production usa el .aar VIEJO (1.2.0.0-PROD), con menos superficie
+      # — probarlo ahí habría dado falsos negativos en código que sí es correcto.
       - name: Tests unitarios
-        run: ./gradlew testProductionDebugUnitTest
+        run: ./gradlew testSandboxDebugUnitTest
 
       - name: Comprobar que SÍ corrieron tests
         run: |
@@ -86,8 +91,10 @@ jobs:
             exit 1
           fi
 
-      - name: Compilar (debug, PAX)
-        run: ./gradlew assembleProductionDebug
+      # sandbox: "el 90% del tiempo" según la tabla de Build Variants del propio
+      # CLAUDE.md — la compilación más representativa del día a día.
+      - name: Compilar (debug)
+        run: ./gradlew assembleSandboxDebug
 
       - name: Reporte de tests (sólo si algo falló)
         if: failure()

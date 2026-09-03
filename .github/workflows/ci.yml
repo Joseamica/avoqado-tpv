@@ -1,0 +1,98 @@
+name: CI
+
+# Verificación en cada push/PR: tests + compilación de depuración. Sin firma,
+# sin release, sin un solo secreto de dinero. Existe para quitarle a la Mac del
+# founder la compilación de este repo (~20 sesiones de IA compiten por RAM ahí).
+#
+# La firma y el APK listo para compartir viven en signed-builds.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verificar:
+    name: Tests + compilación
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # El repo lo documenta así: la ceremonia de release usa JDK 23
+      # (`.claude/plugins/.../release-production.md`, Fase 3). Se replica aquí
+      # para que CI compile con el mismo toolchain que usa el founder a mano.
+      - name: JDK 23
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '23'
+
+      # El plugin de Firebase (com.google.gms.google-services) exige este
+      # archivo para CUALQUIER variante, incluida debug — no es opcional.
+      # No es un secreto de alto riesgo (las api keys de Firebase client-side
+      # están hechas para ir embebidas en la app), pero está gitignored y se
+      # trata igual: base64 en un secreto del repo.
+      - name: Reconstruir google-services.json
+        run: |
+          mkdir -p app
+          echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > app/google-services.json
+          test -s app/google-services.json || { echo "::error::google-services.json quedó vacío — revisa el secreto."; exit 1; }
+
+      # El runner tiene 7 GB; gradle.properties del repo pide 4g sólo para
+      # Gradle, y el daemon de Kotlin arranca aparte. Se acota desde
+      # GRADLE_USER_HOME (gana sobre el del proyecto) para no repetir el
+      # patrón que ya reventó un build en avoqado-android.
+      - name: Acotar memoria al tamaño del runner
+        run: |
+          mkdir -p ~/.gradle
+          cat >> ~/.gradle/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
+          kotlin.daemon.jvmargs=-Xmx2g
+          org.gradle.workers.max=2
+          org.gradle.daemon=false
+          org.gradle.parallel=false
+          EOF
+
+      - name: SDK de Android
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36 build-tools;35.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      - name: Tests unitarios
+        run: ./gradlew testProductionDebugUnitTest
+
+      - name: Comprobar que SÍ corrieron tests
+        run: |
+          total=$(find app/build/test-results -name '*.xml' 2>/dev/null \
+            | xargs grep -ho 'tests="[0-9]*"' 2>/dev/null \
+            | tr -dc '0-9\n' | paste -sd+ - | bc)
+          echo "Tests ejecutados: ${total:-0}"
+          if [ "${total:-0}" -lt 1 ]; then
+            echo "::error::Gradle salió en 0 pero NO corrió un solo test. Verde falso."
+            exit 1
+          fi
+
+      - name: Compilar (debug, PAX)
+        run: ./gradlew assembleProductionDebug
+
+      - name: Reporte de tests (sólo si algo falló)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-tests
+          path: app/build/reports/tests/
+          retention-days: 7

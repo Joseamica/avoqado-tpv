@@ -1,0 +1,165 @@
+name: Signed builds (PAX + Nexgo)
+
+# Compila y firma los dos APK release en cada push a main que toque código:
+#   - production  (PAX / Blumon)   → firmado, pero AÚN necesita que Blumon lo
+#     reenvíe a PAX para el re-firmado real de la terminal. "Listo para
+#     compartir" aquí significa "listo para mandar a Blumon", no "instalable
+#     en un PAX físico" — ese sello no lo puede dar ningún CI, es de Blumon.
+#   - nexgoProd   (Nexgo / AngelPay) → firmado y YA ESTÁ. Nexgo no pasa por el
+#     re-firmado de PAX (confirmado en .claude/rules/release-and-git.md): esto
+#     es lo que se le entrega al equipo de AngelPay tal cual.
+#
+# 🔴 Esto es DISTINTO de la ceremonia /avoqado:release-production (bump +
+# CHANGELOG + tag + push manual). Esta CI no toca versionCode/versionName, no
+# hace commit, no hace push, no sube nada al sistema AppUpdate de Avoqado ni
+# contacta a Blumon/AngelPay — sólo deja los dos APK firmados, descargables,
+# uno por cada push. La ceremonia sigue siendo el camino para EL release
+# oficial y versionado; esto es "el binario de hoy, ya firmado, por si hace
+# falta mandarlo o probarlo en un aparato ya".
+#
+# La firma usa la debug.keystore ESTÁNDAR de Android (misma en cualquier SDK
+# del mundo: CN=Android Debug, password "android") — así lo hace hoy la
+# ceremonia manual. No es un secreto: nada de esto protege el binario contra
+# nadie: PAX y AngelPay hacen su propia verificación por fuera.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'gradle/**'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/signed-builds.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: signed-builds-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # sólo para crear el GitHub Release; nunca empuja un commit
+
+jobs:
+  compilar_y_firmar:
+    name: Compilar y firmar (PAX + Nexgo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 23
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '23'
+
+      - name: Reconstruir google-services.json
+        run: |
+          mkdir -p app
+          echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > app/google-services.json
+          test -s app/google-services.json || { echo "::error::google-services.json quedó vacío."; exit 1; }
+
+      - name: Acotar memoria al tamaño del runner
+        run: |
+          mkdir -p ~/.gradle
+          cat >> ~/.gradle/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
+          kotlin.daemon.jvmargs=-Xmx2g
+          org.gradle.workers.max=2
+          org.gradle.daemon=false
+          org.gradle.parallel=false
+          EOF
+
+      - name: SDK de Android + build-tools con apksigner
+        uses: android-actions/setup-android@v3
+        with:
+          # 35.0.0: la última versión estable con el binario real de apksigner
+          # (la propia ceremonia lo documenta — algunas carpetas más nuevas
+          # vienen vacías).
+          packages: 'platforms;android-36 build-tools;35.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      # Puerta antes de firmar nada: si un test truena, no se produce NINGÚN
+      # artefacto — ni el de PAX ni el de Nexgo.
+      - name: Tests unitarios (puerta)
+        run: ./gradlew testProductionDebugUnitTest
+
+      - name: Compilar PAX (production) y Nexgo (nexgoProd), sin firmar
+        run: ./gradlew assembleProductionRelease assembleNexgoProdRelease
+
+      # La debug.keystore estándar: keytool la genera con los MISMOS valores
+      # que trae cualquier instalación del SDK (Android Studio la crea sola
+      # la primera vez). No hay secreto que guardar — es pública por diseño.
+      - name: Generar la debug.keystore estándar
+        run: |
+          mkdir -p ~/.android
+          keytool -genkeypair -v \
+            -keystore ~/.android/debug.keystore \
+            -storepass android -keypass android \
+            -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 10950 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      - name: Firmar los dos APK con apksigner (v2 requerido, targetSdk 34+)
+        id: firma
+        run: |
+          # No confiar en una sola variable: distintas imágenes de runner exportan
+          # ANDROID_SDK_ROOT o ANDROID_HOME, y a veces sólo una de las dos.
+          RAIZ_SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          APKSIGNER=$(find "$RAIZ_SDK/build-tools" -maxdepth 2 -name apksigner -type f 2>/dev/null | sort -V | tail -1)
+          [ -x "$APKSIGNER" ] || { echo "::error::No encontré apksigner bajo $RAIZ_SDK/build-tools"; exit 1; }
+          echo "apksigner: $APKSIGNER"
+          SHA=$(git rev-parse --short HEAD)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+          firmar() {
+            local flavor_dir="$1" nombre="$2"
+            local unsigned="app/build/outputs/apk/${flavor_dir}/release/app-${flavor_dir}-release-unsigned.apk"
+            local out="app-${nombre}-${SHA}-signed.apk"
+            test -s "$unsigned" || { echo "::error::No se generó $unsigned"; exit 1; }
+            "$APKSIGNER" sign --ks ~/.android/debug.keystore \
+              --ks-pass pass:android --key-pass pass:android \
+              --out "$out" "$unsigned"
+            "$APKSIGNER" verify --verbose "$out" | tee /tmp/verify-$nombre.txt
+            grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" /tmp/verify-$nombre.txt \
+              || { echo "::error::$nombre — NO quedó firmado con v2 scheme."; exit 1; }
+            echo "✓ $nombre firmado y verificado: $out"
+          }
+
+          firmar production pax
+          firmar nexgoProd nexgo
+
+      # ── GitHub Releases ─────────────────────────────────────────────────────
+      - name: Publicar los dos APK en GitHub Releases
+        id: gh_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA="${{ steps.firma.outputs.sha }}"
+          TAG="build-$SHA"
+          NOTAS=$(git log -1 --pretty=%s)
+          URL=$(gh release create "$TAG" \
+            app-pax-${SHA}-signed.apk \
+            app-nexgo-${SHA}-signed.apk \
+            --title "Signed build $SHA" \
+            --notes "$(printf '%s\n\n🔴 PAX (app-pax-%s-signed.apk): firmado con apksigner, listo para mandar a Blumon — TODAVÍA necesita que PAX lo re-firme antes de instalarse en una terminal real.\n\n🟢 Nexgo (app-nexgo-%s-signed.apk): firmado y listo para entregar al equipo de AngelPay, sin pasos pendientes de nuestro lado.' "$NOTAS" "$SHA" "$SHA")" \
+            --target "${{ github.sha }}")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Release: $URL"
+
+      - name: Resumen
+        if: success()
+        run: |
+          {
+            echo "### ✅ Build ${{ steps.firma.outputs.sha }} — PAX y Nexgo firmados"
+            echo ""
+            echo "📦 ${{ steps.gh_release.outputs.url }}"
+            echo ""
+            echo "🔴 PAX: enviar a Blumon para el re-firmado — sigue sin ser el binario final de terminal."
+            echo "🟢 Nexgo: listo, entregar directo al equipo de AngelPay."
+          } >> "$GITHUB_STEP_SUMMARY"

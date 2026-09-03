@@ -13,6 +13,19 @@
 
 ---
 
+## [2.9.0] - 2026-09-03
+
+> Release exclusivo de Nexgo/AngelPay (`nexgoProd`, versionCode 101). Las variantes PAX
+> conservan 2.8.3 / versionCode 100.
+
+### **Fixed**
+
+- **[Nexgo] POS → TPV ahora confirma recepción sólo después de guardarla y deduplica reentregas**: las builds nuevas anuncian `terminalPaymentAckVersion=1`, persisten en Room el contrato completo (`requestId`, base, propina, calificación, orden y vendedor) antes del ACK y no vuelven a abrir el SDK para una solicitud ya en proceso. Si el resultado ya quedó guardado, una reconexión lo reproduce; un `requestId` repetido con cifras distintas se rechaza. La migración 29→30 es aditiva y conserva intactos los pagos pendientes. Los cobros iniciados directamente en la TPV no pasan por este inbox y mantienen su flujo normal.
+
+- **[Nexgo] Ya no mezcla un cobro remoto cancelado con el siguiente Pago rápido**: al cancelar en la terminal, `skipReview`, la propina/calificación externas y el `socketRequestId` podían quedarse en el `SavedStateHandle` de Inicio; el siguiente cobro manual heredaba `skipReview=true` y ocultaba tanto Propina como Calificación. Ahora cada entrada manual crea un contexto limpio y todas las salidas de AngelPay eliminan el contexto anterior. Además, el flujo AngelPay ya consume la propina y calificación que el POS envió: omitir las pantallas significa “ya fueron contestadas”, no “descartar sus valores”. Se conserva el contrato contable: AngelPay recibe el total a cobrar y Avoqado registra base, propina y calificación por separado. Es una corrección del flujo existente, sin tier ni switch nuevos.
+
+---
+
 ## [2.8.3] - 2026-08-31
 
 ### **Changed**

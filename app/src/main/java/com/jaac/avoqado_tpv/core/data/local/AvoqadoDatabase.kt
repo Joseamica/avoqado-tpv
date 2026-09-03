@@ -28,6 +28,8 @@ import com.jaac.avoqado_tpv.core.data.local.entities.TableEntity
 import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantCacheDao
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantCacheEntity
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestDao
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
 
 /**
  * Room database for Avoqado TPV local data persistence.
@@ -122,9 +124,10 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
         VerificationQueueEntity::class,
         com.jaac.avoqado_tpv.core.data.local.entities.MosaicShortcutEntity::class, // ⭐ v21
         AngelPayMerchantCacheEntity::class, // ⭐ v22: AngelPay SDK 1.0.5 multi-merchant cache
-        com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity::class // ⭐ v27: payment_attempts write-ahead ledger (la libreta)
+        com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity::class, // ⭐ v27: payment_attempts write-ahead ledger (la libreta)
+        RemotePaymentRequestEntity::class,
     ],
-    version = 29, // ⭐ Version 29: columna permanent en pending_payments (F-10) (2026-07-24)
+    version = 30, // v30: inbox durable de cobros POS → TPV
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -273,6 +276,9 @@ abstract class AvoqadoDatabase : RoomDatabase() {
      * - Sweep/quarantine of stuck attempts (never feeds reports)
      */
     abstract fun paymentAttemptDao(): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao
+
+    /** Inbox durable: el request queda en disco antes del ACK y de abrir el SDK. */
+    abstract fun remotePaymentRequestDao(): RemotePaymentRequestDao
 
     companion object {
         const val DATABASE_NAME = "avoqado_database"
@@ -1698,6 +1704,46 @@ abstract class AvoqadoDatabase : RoomDatabase() {
         val MIGRATION_28_29 = object : Migration(28, 29) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE pending_payments ADD COLUMN permanent INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v30: inbox durable para cobros delegados por POS.
+         *
+         * Aditiva: no toca pending_payments ni payment_attempts, que pueden contener
+         * dinero aprobado pendiente de registrar. El PK request_id hace idempotente
+         * toda reentrega del servidor.
+         */
+        val MIGRATION_29_30 = object : Migration(29, 30) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS remote_payment_requests (
+                        request_id TEXT PRIMARY KEY NOT NULL,
+                        venue_id TEXT NOT NULL,
+                        amount_cents INTEGER NOT NULL,
+                        tip_cents INTEGER NOT NULL,
+                        rating INTEGER,
+                        skip_review INTEGER NOT NULL,
+                        order_id TEXT,
+                        processed_by_staff_id TEXT,
+                        sender_device_name TEXT,
+                        source_timestamp TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        final_result_json TEXT,
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_remote_payment_requests_venue_id_status " +
+                        "ON remote_payment_requests (venue_id, status)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_remote_payment_requests_created_at " +
+                        "ON remote_payment_requests (created_at)",
+                )
             }
         }
     }

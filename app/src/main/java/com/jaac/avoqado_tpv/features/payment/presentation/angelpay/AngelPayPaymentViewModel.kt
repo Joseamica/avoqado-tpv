@@ -838,14 +838,20 @@ class AngelPayPaymentViewModel @Inject constructor(
      * @param amount Payment amount as string (e.g., "150.00")
      * @param orderId Optional order ID (null = fast payment)
      * @param orderNumber Optional order number for display
-     * @param skipReview When true, bypass the rating/tip screens (serialized SIM sales).
-     *   Pre-payment verification is still honored via `showVerificationScreen`.
+     * @param skipReview When true, bypass the rating/tip screens (serialized SIM sales or
+     *   POS-initiated payments). Any valid external tip/rating is still retained; this flag only
+     *   controls which screens are shown. Pre-payment verification is still honored via
+     *   `showVerificationScreen`.
+     * @param externalTipCents Tip already chosen by the POS, in cents. Null for terminal-led flows.
+     * @param externalRating Rating already chosen by the POS (1-5). Null when it was not provided.
      */
     fun initPayment(
         amount: String,
         orderId: String? = null,
         orderNumber: String? = null,
         skipReview: Boolean = false,
+        externalTipCents: Long? = null,
+        externalRating: Int? = null,
     ) {
         viewModelScope.launch {
             Timber.i("🔶 [AngelPay] initPayment | amount=$amount, orderId=$orderId")
@@ -855,6 +861,11 @@ class AngelPayPaymentViewModel @Inject constructor(
                 _state.value = AngelPayPaymentState.Error("Monto invalido")
                 // 📡 POS→TPV: pre-charge validation error — no money moved (no-op unless socket-sourced).
                 emitSocketResultIfSocketSourced(status = "failed", errorMessage = "Monto invalido")
+                return@launch
+            }
+            if (externalTipCents != null && externalTipCents < 0L) {
+                _state.value = AngelPayPaymentState.Error("Propina invalida")
+                emitSocketResultIfSocketSourced(status = "failed", errorMessage = "Propina invalida")
                 return@launch
             }
 
@@ -926,8 +937,13 @@ class AngelPayPaymentViewModel @Inject constructor(
 
             // 3. Cache context
             pendingAmount = amountDecimal
-            pendingTip = BigDecimal.ZERO
-            pendingRating = null
+            pendingTip = externalTipCents
+                ?.let { BigDecimal.valueOf(it, 2) }
+                ?: BigDecimal.ZERO
+            pendingRating = externalRating?.takeIf { it in 1..5 }
+            if (externalRating != null && pendingRating == null) {
+                Timber.w("🔶 [AngelPay] Ignoring invalid external rating=$externalRating")
+            }
             pendingOrderId = orderId
             pendingOrderNumber = orderNumber
             cachedShiftId = shift?.id
@@ -3036,8 +3052,8 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     override fun onCleared() {
-        // Antes de super: el emit es síncrono (SocketManager.emitTerminalPaymentResult no suspende
-        // ni lanza) y no depende del viewModelScope, que para cuando corre esto ya está cancelado.
+        // Antes de super: SocketManager persiste y emite en su scope de aplicación, no en
+        // viewModelScope; por eso sobrevive a la cancelación de este ViewModel.
         Timber.d("♻️ [AngelPay] onCleared — la pantalla murió, evaluando si hay que avisarle al POS")
         emitCancelledIfAbandoned()
         super.onCleared()

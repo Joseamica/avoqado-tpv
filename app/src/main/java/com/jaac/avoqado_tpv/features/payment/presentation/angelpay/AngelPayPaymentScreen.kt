@@ -91,6 +91,10 @@ fun AngelPayPaymentScreen(
     serialNumber: String? = null,
     isPortabilidad: Boolean = false,
     skipReview: Boolean = false,
+    // 📡 Values already selected in the POS. Skipping the local screens must not discard them.
+    externalTipCents: Long? = null,
+    externalRating: Int? = null,
+    externalSkipReview: Boolean = false,
     // 📡 POS→TPV terminal arbitration: set only when this charge was initiated by the POS over
     // Socket.IO (source "SOCKET" + the request id the caller long-polls on). Null for a normal
     // device-initiated charge. Passed straight to the VM so the terminal outcome reports back.
@@ -191,7 +195,15 @@ fun AngelPayPaymentScreen(
     }
 
     // Auto-start payment when screen opens with amount
-    LaunchedEffect(initialAmount) {
+    LaunchedEffect(
+        initialAmount,
+        orderId,
+        orderNumber,
+        skipReview,
+        externalTipCents,
+        externalRating,
+        externalSkipReview,
+    ) {
         if (initialAmount != null && state is AngelPayPaymentState.Idle) {
             // 📸 Serialized inventory (SIM) proof-of-sale — no-op for a normal payment
             // (all args default off), so this doesn't change the normal charge flow.
@@ -203,7 +215,9 @@ fun AngelPayPaymentScreen(
                 amount = initialAmount,
                 orderId = orderId,
                 orderNumber = orderNumber,
-                skipReview = skipReview,
+                skipReview = externalSkipReview || skipReview,
+                externalTipCents = externalTipCents,
+                externalRating = externalRating,
             )
         }
     }

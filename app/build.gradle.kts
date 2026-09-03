@@ -223,6 +223,10 @@ android {
 
         create("nexgoProd") {
             dimension = "environment"
+            // Nexgo/AngelPay has its own TMS release cadence. Keep this override in the
+            // Nexgo production flavor so a Nexgo-only release never rebadges PAX builds.
+            versionCode = 101
+            versionName = "2.9.0"
             // Productive Nexgo build (Avoqado backend prod + AngelPay prod).
             // Reuses the production package id `com.jaac.avoqado_tpv` (no
             // suffix) because `.nexgo` is not yet registered in Firebase

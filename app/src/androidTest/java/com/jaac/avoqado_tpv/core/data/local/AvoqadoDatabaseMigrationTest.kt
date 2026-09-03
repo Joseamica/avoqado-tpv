@@ -494,6 +494,53 @@ class AvoqadoDatabaseMigrationTest {
         }
     }
 
+    /**
+     * v29 → v30 creates the durable POS→TPV inbox without touching money already
+     * queued for backend reconciliation. The new table must also accept the full
+     * immutable remote-payment contract used for duplicate detection.
+     */
+    @Test
+    fun migrate29To30_preservesPendingMoneyAndCreatesDurableRemoteInbox() {
+        helper.createDatabase(TEST_DB, 29).use { db ->
+            db.execSQL(
+                "INSERT INTO pending_payments (reference_number, venue_id, staff_id, amount, tip, " +
+                    "merchant_account_id, blumon_serial_number, entry_mode, is_international, " +
+                    "created_at, idempotency_key, payment_processor, retry_count, sync_status) VALUES " +
+                    "('REF-V30-001','v1','s1','475.00','47.50','m1','SER1','CHIP',0,123,'idem-30','BLUMON',0,'PENDING')",
+            )
+        }
+
+        val migrated = helper.runMigrationsAndValidate(TEST_DB, 30, true, AvoqadoDatabase.MIGRATION_29_30)
+
+        migrated.query(
+            "SELECT amount, tip, sync_status FROM pending_payments WHERE reference_number = 'REF-V30-001'",
+        ).use { c ->
+            assertThat(c.moveToFirst()).isTrue()
+            assertThat(c.getString(0)).isEqualTo("475.00")
+            assertThat(c.getString(1)).isEqualTo("47.50")
+            assertThat(c.getString(2)).isEqualTo("PENDING")
+        }
+
+        migrated.execSQL(
+            "INSERT INTO remote_payment_requests " +
+                "(request_id, venue_id, amount_cents, tip_cents, rating, skip_review, order_id, " +
+                "processed_by_staff_id, sender_device_name, source_timestamp, status, final_result_json, created_at, updated_at) " +
+                "VALUES ('req-v30','v1',47500,4750,5,0,NULL,'staff-pos','Android POS','2026-09-03T14:00:00Z','RECEIVED',NULL,123,123)",
+        )
+        migrated.query(
+            "SELECT amount_cents, tip_cents, rating, skip_review, processed_by_staff_id, status " +
+                "FROM remote_payment_requests WHERE request_id = 'req-v30'",
+        ).use { c ->
+            assertThat(c.moveToFirst()).isTrue()
+            assertThat(c.getLong(0)).isEqualTo(47_500L)
+            assertThat(c.getLong(1)).isEqualTo(4_750L)
+            assertThat(c.getInt(2)).isEqualTo(5)
+            assertThat(c.getInt(3)).isEqualTo(0)
+            assertThat(c.getString(4)).isEqualTo("staff-pos")
+            assertThat(c.getString(5)).isEqualTo("RECEIVED")
+        }
+    }
+
     companion object {
         private const val TEST_DB = "migration-test-avoqado"
         // database.identityHash from app/schemas/.../23.json

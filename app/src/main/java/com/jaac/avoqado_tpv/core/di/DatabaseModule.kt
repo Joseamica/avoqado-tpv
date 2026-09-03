@@ -19,6 +19,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentDao
 import com.jaac.avoqado_tpv.features.tables.data.local.TablesDatabase
 import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueDao
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -112,7 +113,8 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_25_26,  // 📡 Offline queue carries the POS→TPV arbitration link
                 AvoqadoDatabase.MIGRATION_26_27,  // 📒 La libreta — write-ahead ledger de cobros
                 AvoqadoDatabase.MIGRATION_27_28,  // 🔒 Claim por token en pending_payments (F-8)
-                AvoqadoDatabase.MIGRATION_28_29   // 🚫 permanent en pending_payments — resetAllFailed() respeta 4xx (F-10)
+                AvoqadoDatabase.MIGRATION_28_29,  // 🚫 permanent en pending_payments — resetAllFailed() respeta 4xx (F-10)
+                AvoqadoDatabase.MIGRATION_29_30   // 📡 inbox durable POS → TPV
             )
 
             // 🛡️ NO blanket destructive fallback (removed 2026-06-12).
@@ -183,6 +185,10 @@ object DatabaseModule {
     @Provides
     fun providePaymentAttemptDao(database: AvoqadoDatabase): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao =
         database.paymentAttemptDao()
+
+    @Provides
+    fun provideRemotePaymentRequestDao(database: AvoqadoDatabase): RemotePaymentRequestDao =
+        database.remotePaymentRequestDao()
 
     /**
      * Provides MosaicShortcutDao for unified Checkout shortcut tiles.

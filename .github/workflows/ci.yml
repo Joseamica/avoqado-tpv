@@ -48,16 +48,19 @@ jobs:
           echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > app/google-services.json
           test -s app/google-services.json || { echo "::error::google-services.json quedó vacío — revisa el secreto."; exit 1; }
 
-      # El runner tiene 7 GB; gradle.properties del repo pide 4g sólo para
-      # Gradle, y el daemon de Kotlin arranca aparte. Se acota desde
-      # GRADLE_USER_HOME (gana sobre el del proyecto) para no repetir el
-      # patrón que ya reventó un build en avoqado-android.
+      # 🔴 Repo PRIVADO: GitHub da la MITAD de recursos que a uno público — 2
+      # núcleos / 8 GB, no los 4/16 que tiene avoqado-android (público, OTRA
+      # máquina). Confirmado contra la doc oficial, no supuesto — un OOM real
+      # en signed-builds.yml (compilando 2 release seguidos) lo destapó.
+      # gradle.properties del repo pide 4g sólo para Gradle; el daemon de
+      # Kotlin arranca aparte. Se acota desde GRADLE_USER_HOME (gana sobre el
+      # del proyecto) para no tocar lo que usa el founder en su Mac.
       - name: Acotar memoria al tamaño del runner
         run: |
           mkdir -p ~/.gradle
           cat >> ~/.gradle/gradle.properties <<'EOF'
           org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
-          kotlin.daemon.jvmargs=-Xmx2g
+          kotlin.daemon.jvmargs=-Xmx3g
           org.gradle.workers.max=2
           org.gradle.daemon=false
           org.gradle.parallel=false

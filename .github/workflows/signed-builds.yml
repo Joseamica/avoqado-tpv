@@ -61,12 +61,18 @@ jobs:
           echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > app/google-services.json
           test -s app/google-services.json || { echo "::error::google-services.json quedó vacío."; exit 1; }
 
+      # 🔴 Repo PRIVADO: GitHub da la MITAD de recursos que a uno público — 2
+      # núcleos / 8 GB, no los 4/16 que tiene avoqado-android (público, OTRA
+      # máquina). La primera corrida real reventó por memoria compilando
+      # PRODUCTION + NEXGOPROD seguidos (OutOfMemoryError en
+      # compileNexgoProdReleaseKotlin) — se acota desde GRADLE_USER_HOME (gana
+      # sobre el del proyecto) para no tocar lo que usa el founder en su Mac.
       - name: Acotar memoria al tamaño del runner
         run: |
           mkdir -p ~/.gradle
           cat >> ~/.gradle/gradle.properties <<'EOF'
           org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
-          kotlin.daemon.jvmargs=-Xmx2g
+          kotlin.daemon.jvmargs=-Xmx3g
           org.gradle.workers.max=2
           org.gradle.daemon=false
           org.gradle.parallel=false
@@ -97,8 +103,16 @@ jobs:
       - name: Tests unitarios (puerta)
         run: ./gradlew testSandboxDebugUnitTest
 
-      - name: Compilar PAX (production) y Nexgo (nexgoProd), sin firmar
-        run: ./gradlew assembleProductionRelease assembleNexgoProdRelease
+      # Dos pasos separados, NO una sola invocación con los dos targets: el
+      # OOM real (compileNexgoProdReleaseKotlin) fue el compilador de Kotlin
+      # acumulando la presión de DOS compilaciones release+R8 en el mismo
+      # proceso, en un runner de sólo 8 GB. Cada `./gradlew` aparte arranca
+      # con el heap libre.
+      - name: Compilar PAX (production), sin firmar
+        run: ./gradlew assembleProductionRelease
+
+      - name: Compilar Nexgo (nexgoProd), sin firmar
+        run: ./gradlew assembleNexgoProdRelease
 
       # La debug.keystore estándar: keytool la genera con los MISMOS valores
       # que trae cualquier instalación del SDK (Android Studio la crea sola

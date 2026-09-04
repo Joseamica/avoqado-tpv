@@ -77,6 +77,26 @@ class ReportsViewModel @Inject constructor(
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
+    /**
+     * Aviso puntual de impresión para el cajero. `null` = nada que decir.
+     *
+     * 🔴 Antes un fallo al imprimir sólo dejaba un `Timber.e`: el cajero tocaba
+     * "Imprimir", no salía papel y **la pantalla no decía nada**. En una Nexgo eso pasa
+     * SIEMPRE —el reporte no tiene camino de impresión ahí— así que el cajero repetía
+     * el gesto con el cliente enfrente sin saber por qué no pasaba nada.
+     *
+     * Es la regla del workspace: lo que degrada tiene que DECIRLO. Se muestra como
+     * `Toast`, que es el idioma que ya usan PaymentScreen y AngelPayPaymentScreen para
+     * un aviso puntual — no se estrena un mecanismo nuevo para esto.
+     */
+    private val _avisoDeImpresion = MutableStateFlow<String?>(null)
+    val avisoDeImpresion: StateFlow<String?> = _avisoDeImpresion.asStateFlow()
+
+    /** Lo llama la pantalla cuando ya lo mostró, para que no vuelva a salir al rotar. */
+    fun avisoDeImpresionMostrado() {
+        _avisoDeImpresion.value = null
+    }
+
     private val _isComparisonEnabled = MutableStateFlow(false)
     val isComparisonEnabled: StateFlow<Boolean> = _isComparisonEnabled.asStateFlow()
 
@@ -711,19 +731,25 @@ class ReportsViewModel @Inject constructor(
                 }
 
                 // Format amounts without dollar sign (PrinterManager adds it)
-                val totalSales = currentState.summary.totalSales.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()
                 val avgOrderValue = currentState.summary.averageOrderValue.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()
-                val avgProductsPerOrder = currentState.summary.averageProductsPerOrder.setScale(1, java.math.RoundingMode.HALF_UP).toPlainString()
 
-                val cashAmount = currentState.paymentBreakdown.cashAmount.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()
-                val cardAmount = currentState.paymentBreakdown.cardAmount.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()
-                val voucherAmount = currentState.paymentBreakdown.voucherAmount.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()
-
-                val cashPercentage = currentState.paymentBreakdown.cashPercentage.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()
-                val cardPercentage = currentState.paymentBreakdown.cardPercentage.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()
-                val voucherPercentage = currentState.paymentBreakdown.voucherPercentage.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()
-
-                val totalTips = currentState.summary.totalTips.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()
+                // 🔴 El desglose por metodo se pide al MISMO endpoint que usa el corte de
+                // caja de la tablet (`cash-drawer/tender-breakdown`), porque es el unico
+                // que trae la PROPINA POR METODO. `shifts-summary` —que alimenta el resto
+                // del reporte— solo manda `payment.amount`, y sin la propina no se puede
+                // armar el "Venta / Propina / Total" que pidio el cliente.
+                //
+                // Compartir el endpoint es lo que homologa los dos tickets POR
+                // CONSTRUCCION: no pueden divergir aunque nadie se acuerde de cuidarlo.
+                // Si no se puede consultar, el ticket imprime la venta por metodo desde
+                // `shifts-summary` y DICE que le falta la propina — nunca calla el hueco.
+                val venueId = secureStorage.getVenueId() ?: ""
+                val tenderBreakdown = if (venueId.isNotEmpty()) {
+                    reportsRepository.getTenderBreakdown(venueId, currentState.period)
+                } else {
+                    Timber.w("⚠️ Sin venueId: el desglose con propina no se puede pedir")
+                    com.jaac.avoqado_tpv.features.reports.domain.models.TenderBreakdownResult.Unavailable
+                }
 
                 // Waiter tips (optional)
                 val waiterTipsPrint = if (includeWaiterTips && currentState.summary.waiterTips.isNotEmpty()) {
@@ -774,20 +800,12 @@ class ReportsViewModel @Inject constructor(
                 val result = printerManager.printReport(
                     periodLabel = currentState.period.getLabel(venueZoneId),
                     dateRange = dateRange,
-                    totalSales = totalSales,
                     totalOrders = currentState.summary.totalOrders,
-                    totalProducts = currentState.summary.totalProductsSold,
                     avgOrderValue = avgOrderValue,
-                    avgProductsPerOrder = avgProductsPerOrder,
-                    cashAmount = cashAmount,
-                    cardAmount = cardAmount,
-                    voucherAmount = voucherAmount,
-                    cashPercentage = cashPercentage,
-                    cardPercentage = cardPercentage,
-                    voucherPercentage = voucherPercentage,
+                    tenderBreakdown = tenderBreakdown,
+                    paymentBreakdown = currentState.paymentBreakdown,
                     comparisonText = comparisonText,
                     venueName = venueName,
-                    totalTips = totalTips,
                     averageTipPercentage = avgTipPct,
                     waiterTips = waiterTipsPrint,
                     ratingsCount = ratings,
@@ -800,10 +818,16 @@ class ReportsViewModel @Inject constructor(
                     result.isFailure -> {
                         val error = result.exceptionOrNull()
                         Timber.e(error, "❌ Failed to print report")
+                        // El motivo lo pone `PrinterManager.motivoSinImpresora`, que dice la
+                        // verdad de ESTA terminal. El respaldo cubre un fallo sin mensaje.
+                        _avisoDeImpresion.value = error?.message?.takeIf { it.isNotBlank() }
+                            ?: "No se pudo imprimir el reporte."
                     }
                 }
             } catch (e: Exception) {
                 Timber.e(e, "❌ Failed to print report")
+                _avisoDeImpresion.value = e.message?.takeIf { it.isNotBlank() }
+                    ?: "No se pudo imprimir el reporte."
             }
         }
     }

@@ -4,6 +4,8 @@ import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.features.reports.data.aggregators.ComparisonCalculator
 import com.jaac.avoqado_tpv.features.reports.data.aggregators.ShiftAggregator
+import com.jaac.avoqado_tpv.features.reports.data.dto.toTenderRows
+import com.jaac.avoqado_tpv.features.reports.domain.models.TenderBreakdownResult
 import com.jaac.avoqado_tpv.features.reports.data.dto.toDomain
 import com.jaac.avoqado_tpv.features.reports.data.dto.toPaymentBreakdown
 import com.jaac.avoqado_tpv.features.reports.data.dto.toSalesSummary
@@ -124,6 +126,47 @@ class ReportsRepositoryImpl @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "❌ Error calculating payment breakdown")
             Result.Error(ApiException.Unknown(e))
+        }
+    }
+
+    /**
+     * Desglose por metodo CON propina — el MISMO endpoint que el corte de la tablet.
+     *
+     * 🔴 Tres estados, no dos: `Available(vacia)` = el servidor contesto y no hubo
+     * cobros; `Unavailable` = no se pudo preguntar. Confundirlos hace que el ticket
+     * impreso —que se queda en el cajon como comprobante— mienta sobre por que falta
+     * un numero. Es la leccion que ya costo un defecto visible en avoqado-android.
+     */
+    override suspend fun getTenderBreakdown(
+        venueId: String,
+        period: ReportPeriod
+    ): TenderBreakdownResult = withContext(Dispatchers.IO) {
+        try {
+            Timber.d("💳 Fetching tender breakdown (con propina) for period: ${period.getLabel()}")
+
+            val response = apiService.getTenderBreakdown(
+                venueId = venueId,
+                from = period.startDate.toString(),
+                to = period.endDate.toString()
+            )
+
+            val body = response.body()
+            if (!response.isSuccessful || body == null) {
+                Timber.w("⚠️ tender-breakdown failed (${response.code()}) — el ticket lo dira")
+                return@withContext TenderBreakdownResult.Unavailable
+            }
+
+            val rows = body.data.toTenderRows()
+            if (rows == null) {
+                Timber.e("❌ tender-breakdown con renglones ilegibles: se reporta como NO consultado")
+                return@withContext TenderBreakdownResult.Unavailable
+            }
+
+            Timber.i("✅ Tender breakdown: ${rows.size} metodo(s) con propina desglosada")
+            TenderBreakdownResult.Available(rows)
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error fetching tender breakdown")
+            TenderBreakdownResult.Unavailable
         }
     }
 

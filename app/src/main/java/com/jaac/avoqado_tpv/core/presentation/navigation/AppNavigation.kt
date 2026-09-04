@@ -1112,7 +1112,9 @@ fun AppNavigation(
                             return@launch
                         }
                         Timber.d("[PERF] NAV: Welcome → PaymentScreen START (nexgo=${isAppToAppPayment()})")
-                        navController.currentBackStackEntry?.savedStateHandle?.set("initialAmount", amount)
+                        navController.currentBackStackEntry?.savedStateHandle?.let { handle ->
+                            prepareManualPaymentArgs(handle, amount)
+                        }
                         navController.navigate(getPaymentRoute())
                     }
                 },
@@ -1286,7 +1288,9 @@ fun AppNavigation(
                         if (!awaitPaxPaymentReady(context, initializationManager, "Fast payment entry")) {
                             return@launch
                         }
-                        navController.currentBackStackEntry?.savedStateHandle?.set("initialAmount", amount)
+                        navController.currentBackStackEntry?.savedStateHandle?.let { handle ->
+                            prepareManualPaymentArgs(handle, amount)
+                        }
                         navController.navigate(getPaymentRoute())
                     }
                 }
@@ -2739,6 +2743,10 @@ fun AppNavigation(
             val serialNumber = navController.previousBackStackEntry?.savedStateHandle?.get<String>("serialNumber")
             val isPortabilidad = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("isPortabilidad") ?: false
             val skipReview = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("skipReview") ?: false
+            val externalTipCents = navController.previousBackStackEntry?.savedStateHandle?.get<Long>("externalTipCents")
+            val externalRating = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("externalRating")
+            val externalSkipReview = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("externalSkipReview") ?: false
+            val paymentArgsHandle = navController.previousBackStackEntry?.savedStateHandle
 
             // 📡 POS→TPV terminal arbitration: a socket-initiated charge (the socket handler routes
             // to BOTH the Blumon Payment route and this AngelPay route) stashes these keys. The
@@ -2754,15 +2762,20 @@ fun AppNavigation(
                 serialNumber = serialNumber,
                 isPortabilidad = isPortabilidad,
                 skipReview = skipReview,
+                externalTipCents = externalTipCents,
+                externalRating = externalRating,
+                externalSkipReview = externalSkipReview,
                 paymentSource = paymentSource,
                 socketRequestId = socketRequestId,
                 onNavigateBack = {
+                    paymentArgsHandle?.let(::clearPaymentArgs)
                     val popped = navController.safePopBackStack()
                     if (!popped) {
                         navController.safePopBackStack(NavRoute.Home.route, inclusive = false)
                     }
                 },
                 onNavigateHome = {
+                    paymentArgsHandle?.let(::clearPaymentArgs)
                     val popped = navController.safePopBackStack(NavRoute.Home.route, inclusive = false)
                     if (!popped) {
                         navController.navigate(NavRoute.Home.route) {
@@ -2772,6 +2785,7 @@ fun AppNavigation(
                     }
                 },
                 onViewInPayments = { paymentId ->
+                    paymentArgsHandle?.let(::clearPaymentArgs)
                     // Deep-link: open Pagos with this payment's detail
                     // bottom sheet auto-opened. Pops to Home first so the
                     // backstack stays shallow (otherwise: Cobrar →
@@ -2787,6 +2801,7 @@ fun AppNavigation(
                 },
                 onStartNewPaymentOverride = if (cameFromTables) {
                     {
+                        paymentArgsHandle?.let(::clearPaymentArgs)
                         // 🪑 Mesas, Task 8 — always the full-remaining case on this
                         // flavor (see the cameFromTables KDoc above: Nexgo has no
                         // split params, so a card charge here is always the whole
@@ -2814,6 +2829,7 @@ fun AppNavigation(
                     }
                 } else if (cameFromCheckout) {
                     {
+                        paymentArgsHandle?.let(::clearPaymentArgs)
                         // 🛒 Return to unified Cobrar with a fresh CheckoutViewModel.
                         // popUpTo(Home, inclusive=false) + navigate(Checkout) gives
                         // us a brand new backstack entry → fresh VM → empty cart,
@@ -2825,6 +2841,7 @@ fun AppNavigation(
                     }
                 } else {
                     {
+                        paymentArgsHandle?.let(::clearPaymentArgs)
                         // 🔄 Cobro rapido: pantalla NUEVA de captura de monto, igual que el
                         // riel Blumon (onNavigateToNewFastPayment mas arriba en este archivo).
                         // Antes este caso quedaba en null y el boton caia al onNavigateBack()
@@ -3140,6 +3157,19 @@ private fun clearPaymentArgs(handle: SavedStateHandle) {
     handle.remove<Boolean>("skipReview")
 }
 
+/**
+ * Starts a terminal-led payment with a fresh navigation context.
+ *
+ * A cancelled POS→TPV request leaves its arguments in the previous destination's
+ * [SavedStateHandle]. Reusing that handle without clearing it makes the next manual payment
+ * inherit `skipReview=true`, the external tip/rating, and the socket request id.
+ */
+internal fun prepareManualPaymentArgs(handle: SavedStateHandle, amount: String) {
+    clearPaymentArgs(handle)
+    handle["initialAmount"] = amount
+    handle["skipReview"] = false
+}
+
 private fun formatAmountFromCents(amountCents: Long): String {
     return BigDecimal(amountCents)
         .movePointLeft(2)
@@ -3206,4 +3236,3 @@ private fun isAppToAppPayment(): Boolean = !com.jaac.avoqado_tpv.BuildConfig.ENA
 private fun getPaymentRoute(): String {
     return if (isAppToAppPayment()) NavRoute.AngelPayPayment.route else NavRoute.Payment.route
 }
-

@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+---
+
+## [2.8.4] - 2026-09-04
+
 ### **Fixed**
 
 - **Nexgo ya no mezcla un cobro remoto cancelado con el siguiente Pago rápido**: al cancelar en la terminal, `skipReview`, la propina/calificación externas y el `socketRequestId` podían quedarse en el `SavedStateHandle` de Inicio; el siguiente cobro manual heredaba `skipReview=true` y ocultaba tanto Propina como Calificación. Ahora cada entrada manual crea un contexto limpio y todas las salidas de AngelPay eliminan el contexto anterior. Además, el flujo AngelPay ya consume la propina y calificación que el POS envió: omitir las pantallas significa “ya fueron contestadas”, no “descartar sus valores”. Se conserva el contrato contable: AngelPay recibe el total a cobrar y Avoqado registra base, propina y calificación por separado. Es una corrección del flujo existente, sin tier ni switch nuevos. 🔴 **Medido en producción (Amaena, NEXGO N860W173570, 2.8.3-nexgo-prod, 2-4 sep):** cada cobro que el POS mandaba a la terminal llegaba con `skipReview=true`, la terminal **descartaba la propina elegida en el POS** (`pendingTip` nacía en cero y el SDK cobraba sólo la base) y, además, dejaba `skipReview=true` pegado en el `SavedStateHandle` de Inicio, así que el siguiente «Pago rápido» hecho a mano en la terminal tampoco mostraba Calificación ni Propina. El personal lo rodeó cancelando en la terminal y tecleando el total con la propina adentro: 4 cobros con propina registrada en $0 ($210). Nada de esto vive en la base de datos: el estado pegado está en la memoria de la app y se limpia reiniciándola — hasta el siguiente cobro remoto, que lo vuelve a pegar. Esta corrección cierra las dos cosas.

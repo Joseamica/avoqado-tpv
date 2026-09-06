@@ -6,6 +6,8 @@ import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyDiscountResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyServiceChargeRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.ApplyServiceChargeResponse
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.CancelOrderRequest
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.CancelOrderResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.FloorElementsResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.MergeOrdersRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.MergeOrdersResponse
@@ -19,6 +21,13 @@ import com.jaac.avoqado_tpv.features.tables.data.api.dto.SplitOrderResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentsRequest
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.SyncIntentsResponse
 import com.jaac.avoqado_tpv.features.tables.data.api.dto.TablesResponse
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.ActiveStaffResponse
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.AvailableDiscountsResponse
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.AvailableServiceChargesResponse
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.CompOrderRequest
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.CompOrderResponse
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.ProductsCatalogResponse
+import com.jaac.avoqado_tpv.features.tables.data.api.dto.CategoryCatalogDto
 import retrofit2.Response
 
 /**
@@ -49,6 +58,15 @@ object UnimplementedTablesApiService : TablesApiService {
     override suspend fun splitOrder(venueId: String, orderId: String, body: SplitOrderRequest): Response<SplitOrderResponse> = boom()
     override suspend fun splitOrderBySeat(venueId: String, orderId: String): Response<SplitOrderBySeatResponse> = boom()
     override suspend fun mergeOrders(venueId: String, orderId: String, body: MergeOrdersRequest): Response<MergeOrdersResponse> = boom()
+    override suspend fun cancelOrder(venueId: String, orderId: String, body: CancelOrderRequest): Response<CancelOrderResponse> = boom()
+    override suspend fun compOrder(venueId: String, orderId: String, body: CompOrderRequest): Response<CompOrderResponse> = boom()
+    override suspend fun getActiveStaff(venueId: String): Response<ActiveStaffResponse> = boom()
+    override suspend fun getAvailableDiscounts(venueId: String, orderId: String): Response<AvailableDiscountsResponse> = boom()
+    override suspend fun getCategories(venueId: String): Response<List<CategoryCatalogDto>> = boom()
+    override suspend fun getProducts(venueId: String): Response<ProductsCatalogResponse> = boom()
+    override suspend fun getServiceCharges(venueId: String): Response<AvailableServiceChargesResponse> = boom()
+    override suspend fun removeDiscount(venueId: String, orderId: String, discountId: String): Response<ApplyDiscountResponse> = boom()
+    override suspend fun removeServiceCharge(venueId: String, orderId: String, orderServiceChargeId: String): Response<ApplyServiceChargeResponse> = boom()
     override suspend fun applyServiceCharge(
         venueId: String,
         orderId: String,

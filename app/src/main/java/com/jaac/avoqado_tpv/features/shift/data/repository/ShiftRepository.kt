@@ -64,7 +64,9 @@ import javax.inject.Singleton
 class ShiftRepository @Inject constructor(
     private val apiService: ApiService,
     private val secureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage,
-    private val cachedShiftDao: com.jaac.avoqado_tpv.core.data.local.dao.CachedShiftDao
+    private val cachedShiftDao: com.jaac.avoqado_tpv.core.data.local.dao.CachedShiftDao,
+    /** 💸 La cola de reembolsos: BARRERA del cierre por debajo de TODAS las pantallas (auditoría de Codex F8). */
+    private val refundQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository,
 ) {
 
     /**
@@ -156,6 +158,29 @@ class ShiftRepository @Inject constructor(
             else -> null
         }
 
+        // 💸 BARRERA (auditoría de Codex F8, 4-sep-2026): `ShiftViewModel` ya la aplica con su pantalla,
+        // pero el kiosco (`KioskAdminBottomSheet`) llama a este repositorio DIRECTO. La regla vive aquí,
+        // debajo de todas las UI: con una devolución sin registrar (o rechazada sin reconocer) no se
+        // cierra — cerrar firmaría un corte que cuadra de más por dinero que sí salió del cajón. Y si la
+        // cola no se puede leer, tampoco (fail-closed): no saber si hay dinero sin anotar no es «no hay».
+        val bloqueantes = try {
+            refundQueueRepository.blockingForVenue(venueId)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "💸 [Shift] No se pudo leer la cola de reembolsos antes de cerrar")
+            return Result.Error(ApiException.ValidationError("No se pudo verificar si hay devoluciones sin registrar. Vuelve a intentar cerrar la caja."))
+        }
+        if (bloqueantes.isNotEmpty()) {
+            Timber.w("💸 [Shift] Cierre BLOQUEADO en el repositorio: ${bloqueantes.size} devolución(es) sin registrar o sin reconocer")
+            return Result.Error(
+                ApiException.ValidationError(
+                    "Hay ${bloqueantes.size} devolución(es) hechas en la terminal y sin registrar en Avoqado. " +
+                        "La caja no puede cerrarse hasta que se registren o un gerente las revise en Caja."
+                )
+            )
+        }
+
         return try {
             Timber.d("🔴 Closing shift: $shiftId for venue: $venueId")
 
@@ -232,36 +257,105 @@ class ShiftRepository @Inject constructor(
      *
      * **NOTE**: Backend returns all shifts (OPEN + CLOSED), so we filter for CLOSED on Android side.
      *
+     * 🔴 **PAGINA (5-sep-2026).** Antes pedía `pageSize = limit` en UNA sola llamada y leía sólo
+     * `body.data`. El servidor **recorta** el `pageSize` a 50 (`TOPE_DE_TURNOS_POR_PAGINA` en
+     * `shift.tpv.service.ts`) y lo dice en `meta`, que nadie leía: los reportes pedían 200 turnos,
+     * recibían 50, y **comparaban periodos con una tercera parte de los datos sin avisar de nada**.
+     * Un número más chico que el real se lee como una caída de ventas, no como un error.
+     *
+     * Ahora pide de 50 en 50 y sigue mientras el servidor diga que quedan páginas Y siga haciendo
+     * falta. Tres frenos, y los tres son necesarios:
+     *   • [limit] — lo que el llamador pidió.
+     *   • [desde] — cuando el turno más viejo recibido ya es anterior al periodo, seguir es gastar
+     *     red por turnos que se van a descartar en el filtro de arriba.
+     *   • [TOPE_DE_PAGINAS] — tope duro. Un `meta` mentiroso (o un servidor que siempre diga que
+     *     hay más) no puede volverse un bucle infinito contra la API en una terminal de 1 GB.
+     *
+     * Si `meta` viene nulo (servidor viejo) se queda en UNA página: el comportamiento de hoy.
+     *
      * @param venueId Venue identifier for tenant isolation
      * @param limit Maximum number of shifts to return (default: 10)
+     * @param desde Instante mínimo de interés. Los turnos se piden del más nuevo al más viejo, así
+     *   que en cuanto llega uno anterior a esta marca, ya no hacen falta más páginas. `null` =
+     *   sin corte por fecha.
      * @return Result with list of closed shifts or error
      */
     suspend fun getShiftHistory(
         venueId: String,
-        limit: Int = 10
+        limit: Int = 10,
+        desde: java.time.Instant? = null
     ): Result<List<Shift>> {
         return try {
-            Timber.d("📋 Fetching shift history for venue: $venueId (limit: $limit)")
+            Timber.d("📋 Fetching shift history for venue: $venueId (limit: $limit, desde: $desde)")
 
-            // Backend returns paginated response: {success, data: [...], meta: {...}}
-            val response = apiService.getShiftHistory(venueId, pageSize = limit, pageNumber = 1)
+            val cerrados = mutableListOf<Shift>()
+            var pagina = 1
+            var recibidos = 0
+            var paginasPedidas = 0
 
-            if (response.isSuccessful && response.body() != null) {
-                // Extract shifts from wrapper and filter for CLOSED status
-                val allShifts = response.body()!!.data.map { it.toDomain() }
-                val closedShifts = allShifts.filter { it.status == com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.CLOSED }
+            // 🔴 Nunca MÁS de lo que el servidor va a dar (50) ni MÁS de lo que se pidió. Ese
+            // segundo tope importa: la pantalla de Turnos pide 10, y subirla a 50 por página le
+            // quintuplicaría el payload a una terminal de 1 GB para enseñar los mismos 10 renglones.
+            val tamanoDePagina = minOf(PAGE_SIZE_TURNOS, limit.coerceAtLeast(1))
 
-                Timber.d("✅ Fetched ${closedShifts.size} closed shifts (out of ${allShifts.size} total)")
-                Result.Success(closedShifts)
-            } else {
-                Timber.w("⚠️ Failed to fetch shift history: HTTP ${response.code()}")
-                Result.Error(ApiException.HttpError(response.code(), response.message()))
+            while (true) {
+                // Backend returns paginated response: {success, data: [...], meta: {...}}
+                val response = apiService.getShiftHistory(
+                    venueId,
+                    pageSize = tamanoDePagina,
+                    pageNumber = pagina
+                )
+                paginasPedidas++
+
+                if (!response.isSuccessful || response.body() == null) {
+                    Timber.w("⚠️ Failed to fetch shift history: HTTP ${response.code()} (página $pagina)")
+                    // 🔴 Un fallo a media paginación es un ERROR, no «lo que alcancé a traer».
+                    // Devolver la lista parcial como éxito produciría exactamente el defecto que este
+                    // arreglo mata: totales más chicos que la realidad, presentados como buenos.
+                    return Result.Error(ApiException.HttpError(response.code(), response.message()))
+                }
+
+                val body = response.body()!!
+                val enEstaPagina = body.data.map { it.toDomain() }
+                recibidos += enEstaPagina.size
+                cerrados += enEstaPagina.filter {
+                    it.status == com.jaac.avoqado_tpv.features.shift.domain.ShiftStatus.CLOSED
+                }
+
+                val hayMas = body.meta?.hayOtraPagina() == true
+                val alcanzaElCorte = desde != null && enEstaPagina.any { esAnteriorA(it, desde) }
+                val faltan = cerrados.size < limit
+
+                if (!hayMas || !faltan || alcanzaElCorte || enEstaPagina.isEmpty()) {
+                    Timber.d(
+                        "✅ Fetched ${cerrados.size} closed shifts (out of $recibidos total) " +
+                            "en $paginasPedidas página(s) | hayMas=$hayMas | corteFecha=$alcanzaElCorte"
+                    )
+                    break
+                }
+
+                if (paginasPedidas >= TOPE_DE_PAGINAS) {
+                    // Se dice en voz alta: el resultado está truncado y quien lo lea tiene que saberlo.
+                    Timber.w(
+                        "⚠️ Tope de $TOPE_DE_PAGINAS páginas alcanzado con el servidor diciendo que hay más " +
+                            "— la historia de turnos va TRUNCADA en ${cerrados.size} turnos"
+                    )
+                    break
+                }
+
+                pagina++
             }
+
+            Result.Success(cerrados.take(limit))
         } catch (e: Exception) {
             Timber.e(e, "❌ Network error fetching shift history")
             Result.Error(ApiException.NetworkError(e))
         }
     }
+
+    /** `startTime` es ISO-8601; un turno con fecha ilegible NO corta la paginación (se ignora). */
+    private fun esAnteriorA(shift: Shift, marca: java.time.Instant): Boolean =
+        runCatching { java.time.Instant.parse(shift.startTime).isBefore(marca) }.getOrDefault(false)
 
     /**
      * Get current active shift for venue
@@ -335,5 +429,19 @@ class ShiftRepository @Inject constructor(
     private companion object {
         val MAX_CASH_COUNT: BigDecimal = BigDecimal("99999999.99")
         const val CLOSE_RECOVERY_LIMIT = 10
+
+        /**
+         * El techo REAL del servidor (`TOPE_DE_TURNOS_POR_PAGINA` en `shift.tpv.service.ts`). Pedir
+         * más no trae más: el servidor lo recorta en silencio y lo devuelve recortado en
+         * `meta.pageSize`. Pedirlo ya recortado deja explícito lo que de todas formas va a pasar.
+         */
+        const val PAGE_SIZE_TURNOS = 50
+
+        /**
+         * Tope duro de páginas por consulta (50 × 10 = 500 turnos, ~16 meses de un negocio diario).
+         * Existe para que un `meta` mentiroso no se convierta en un bucle de red en una terminal de
+         * 1 GB. Al llegar aquí se AVISA en el log: el resultado va truncado.
+         */
+        const val TOPE_DE_PAGINAS = 10
     }
 }

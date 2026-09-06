@@ -189,7 +189,7 @@ sealed class PaymentContext {
         override val merchantAccountId: String?, // ⚠️ CRITICAL: MUST match original payment!
         override val blumonSerialNumber: String, // ⚠️ REQUIRED: For SDK merchant switch
         override val deviceSerialNumber: String? = null, // ⭐ Terminal attribution (2026-01-08)
-        override val idempotencyKey: String? = null, // 🛡️ Refunds dedupe via type=REFUND, key optional
+        override val idempotencyKey: String? = null, // 🛡️ El servidor la mete en su huella de idempotencia (Fase 0, 3-sep-2026): con ella un reintento NO duplica; sin ella no hay deduplicación
         override val terminalPaymentRequestId: String? = null, // 📡 POS→TPV arbitration link
 
         // Refund-specific fields

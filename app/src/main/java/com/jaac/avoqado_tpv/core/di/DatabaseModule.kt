@@ -10,6 +10,7 @@ import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderItemDao
 import com.jaac.avoqado_tpv.core.data.local.dao.FloorElementDao
 import com.jaac.avoqado_tpv.core.data.local.dao.HistoricalPeriodDao
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
+import com.jaac.avoqado_tpv.core.data.local.dao.PendingRefundDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
 import com.jaac.avoqado_tpv.core.data.local.dao.TableDao
@@ -112,7 +113,14 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_25_26,  // 📡 Offline queue carries the POS→TPV arbitration link
                 AvoqadoDatabase.MIGRATION_26_27,  // 📒 La libreta — write-ahead ledger de cobros
                 AvoqadoDatabase.MIGRATION_27_28,  // 🔒 Claim por token en pending_payments (F-8)
-                AvoqadoDatabase.MIGRATION_28_29   // 🚫 permanent en pending_payments — resetAllFailed() respeta 4xx (F-10)
+                AvoqadoDatabase.MIGRATION_28_29,  // 🚫 permanent en pending_payments — resetAllFailed() respeta 4xx (F-10)
+                // 💸 pending_refunds — el reembolso que el SDK ya hizo no se pierde.
+                // 🔴 DOS caminos y los dos hacen falta: `develop` (nexgo-v2.9.0) se llevó el número
+                // 30 con otra tabla, así que esta tabla es v31. 29→31 es para quien nunca vio un
+                // v30; 30→31 para quien ya tiene UNO de los dos (el de `develop`, o el de este
+                // árbol que viajó en el APK Nexgo 2.8.5). Detalle en `AvoqadoDatabase`.
+                AvoqadoDatabase.MIGRATION_29_31,
+                AvoqadoDatabase.MIGRATION_30_31
             )
 
             // 🛡️ NO blanket destructive fallback (removed 2026-06-12).
@@ -172,6 +180,14 @@ object DatabaseModule {
         database: AvoqadoDatabase
     ): PendingPaymentDao {
         return database.pendingPaymentDao()
+    }
+
+    /** 💸 La cola durable de REEMBOLSOS (Fase 1). Hermano de [providePendingPaymentDao]. */
+    @Provides
+    fun providePendingRefundDao(
+        database: AvoqadoDatabase
+    ): PendingRefundDao {
+        return database.pendingRefundDao()
     }
 
     /**

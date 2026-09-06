@@ -350,6 +350,10 @@ class PaymentSyncWorkerTest {
         repo: PaymentQueueRepository,
         useCase: RecordPaymentUseCase,
         stateManager: PaymentQueueStateManager = PaymentQueueStateManager(),
+        refundRepo: com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository =
+            mockk<com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository>(relaxed = true).also {
+                coEvery { it.claimBatch(any()) } returns emptyList()
+            },
     ): PaymentSyncWorker {
         val context = mockk<Context>(relaxed = true)
         return TestListenableWorkerBuilder<PaymentSyncWorker>(context)
@@ -358,7 +362,7 @@ class PaymentSyncWorkerTest {
                     appContext: Context,
                     workerClassName: String,
                     workerParameters: WorkerParameters,
-                ): ListenableWorker = PaymentSyncWorker(appContext, workerParameters, repo, useCase, stateManager)
+                ): ListenableWorker = PaymentSyncWorker(appContext, workerParameters, repo, useCase, stateManager, refundRepo)
             })
             .build()
     }

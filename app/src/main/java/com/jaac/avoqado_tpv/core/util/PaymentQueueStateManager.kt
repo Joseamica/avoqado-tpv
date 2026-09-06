@@ -28,10 +28,15 @@ class PaymentQueueStateManager @Inject constructor() {
      * Refresh queue counts from repository.
      * Called after enqueue, sync, reset, or reconnection.
      */
-    suspend fun refreshCounts(pendingCount: Int, failedCount: Int) {
-        val newState = QueueState(pendingCount = pendingCount, failedCount = failedCount)
+    suspend fun refreshCounts(pendingCount: Int, failedCount: Int, pendingRefundCount: Int = 0, failedRefundCount: Int = 0) {
+        val newState = QueueState(
+            pendingCount = pendingCount,
+            failedCount = failedCount,
+            pendingRefundCount = pendingRefundCount,
+            failedRefundCount = failedRefundCount,
+        )
         if (_queueState.value != newState) {
-            Timber.d("📊 [PaymentQueue] State updated: pending=$pendingCount, failed=$failedCount")
+            Timber.d("📊 [PaymentQueue] State updated: pending=$pendingCount, failed=$failedCount, refundsPending=$pendingRefundCount, refundsFailed=$failedRefundCount")
             _queueState.value = newState
         }
     }
@@ -49,8 +54,11 @@ class PaymentQueueStateManager @Inject constructor() {
  */
 data class QueueState(
     val pendingCount: Int = 0,
-    val failedCount: Int = 0
+    val failedCount: Int = 0,
+    /** 💸 Devoluciones sin registrar / rechazadas (auditoría de Codex F10): antes eran invisibles hasta cerrar el turno. */
+    val pendingRefundCount: Int = 0,
+    val failedRefundCount: Int = 0,
 ) {
-    val hasAnyPayments: Boolean get() = pendingCount > 0 || failedCount > 0
-    val totalCount: Int get() = pendingCount + failedCount
+    val hasAnyPayments: Boolean get() = pendingCount > 0 || failedCount > 0 || pendingRefundCount > 0 || failedRefundCount > 0
+    val totalCount: Int get() = pendingCount + failedCount + pendingRefundCount + failedRefundCount
 }

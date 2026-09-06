@@ -462,6 +462,129 @@ class AvoqadoDatabaseMigrationTest {
     }
 
     /**
+     * v29 → v31 crea `pending_refunds`, la cola durable de REEMBOLSOS.
+     *
+     * Es una tabla NUEVA, así que el contrato entero es que el DDL escrito a mano en
+     * `MIGRATION_29_31` coincida byte a byte con el que Room genera en `31.json`. Esa comparación
+     * la hace `runMigrationsAndValidate` y es exactamente lo que faltó en la v23→v24, donde un
+     * `color` contra `category_color` escrito a mano dejó en crash-loop a los aparatos que
+     * actualizaban.
+     *
+     * 🔴 Salta el 30 a propósito: `develop` (nexgo-v2.9.0) se llevó ese número con otra tabla.
+     * Ver la nota de la colisión en `AvoqadoDatabase`.
+     */
+    @Test
+    fun migrate29To31_freshSchema_validatesAgainstV31() {
+        helper.createDatabase(TEST_DB, 29).close()
+        helper.runMigrationsAndValidate(TEST_DB, 31, true, AvoqadoDatabase.MIGRATION_29_31)
+    }
+
+    /**
+     * La garantía de dinero, edición v31: la cola de COBROS que ya existía no se toca al crear la
+     * de reembolsos. Son dos tablas hermanas y la nueva no puede llevarse por delante a la vieja
+     * — que es justo lo que hacía el `fallbackToDestructiveMigration` que se quitó en junio.
+     */
+    @Test
+    fun migrate29To31_preservesPendingPaymentsAndCreatesEmptyRefundQueue() {
+        helper.createDatabase(TEST_DB, 29).use { db ->
+            db.execSQL(
+                "INSERT INTO pending_payments (reference_number, venue_id, staff_id, amount, tip, " +
+                    "merchant_account_id, blumon_serial_number, entry_mode, is_international, " +
+                    "created_at, idempotency_key, payment_processor, retry_count, sync_status, permanent) VALUES " +
+                    "('REF-V31-001','v1','s1','410.00','41.00','m1','SER1','CHIP',0,123,'idem-31','BLUMON',10,'FAILED',0)",
+            )
+        }
+
+        val open = helper.runMigrationsAndValidate(TEST_DB, 31, true, AvoqadoDatabase.MIGRATION_29_31)
+        try {
+            open.query("SELECT COUNT(*) FROM pending_payments").use { c ->
+                c.moveToFirst()
+                assertThat(c.getInt(0)).isEqualTo(1)
+            }
+            // La cola de reembolsos nace vacía y consultable — si el CREATE TABLE fallara, esto
+            // reventaría con "no such table" en vez de pasar silenciosamente.
+            open.query("SELECT COUNT(*) FROM pending_refunds").use { c ->
+                c.moveToFirst()
+                assertThat(c.getInt(0)).isEqualTo(0)
+            }
+        } finally {
+            open.close()
+        }
+    }
+
+    /**
+     * v30 → v31 sobre el v30 de ESTE árbol: el que ya viajó en el APK Nexgo 2.8.5 y por tanto YA
+     * tiene `pending_refunds`, con filas dentro.
+     *
+     * 🔴 Es el caso que obliga a que la 30→31 sea `IF NOT EXISTS`: un `CREATE TABLE` pelón la
+     * tumbaría con «table already exists» en el arranque — el crash-loop que la renumeración viene
+     * a evitar. Y una devolución encolada (dinero que YA salió del cajón y todavía no está anotado
+     * en el servidor) tiene que sobrevivir la actualización.
+     */
+    @Test
+    fun migrate30To31_sobreElV30DeEsteArbol_esNoOpYConservaLosReembolsosEncolados() {
+        // `createDatabase(TEST_DB, 30)` levanta el esquema de `app/schemas/…/30.json`, que es
+        // exactamente el v30 de ESTE árbol: `pending_refunds` ya viene creada.
+        helper.createDatabase(TEST_DB, 30).use { db ->
+            db.execSQL(
+                "INSERT INTO pending_refunds (idempotency_key, venue_id, staff_id, processor, " +
+                    "original_payment_id, amount, original_total_amount, is_partial_refund, " +
+                    "refund_reason, merchant_account_id, blumon_serial_number, " +
+                    "original_operation_number, authorization_number, reference_number, entry_mode, " +
+                    "created_at, retry_count, sync_status, permanent, acknowledged) VALUES " +
+                    "('idem-r31','v1','s1','BLUMON','pay-1','50.00','100.00',1,'CUSTOMER_REQUEST'," +
+                    "'m1','SER1',75656,'502511','000000188231','CHIP',123,0,'PENDING',0,0)",
+            )
+        }
+
+        val open = helper.runMigrationsAndValidate(TEST_DB, 31, true, AvoqadoDatabase.MIGRATION_30_31)
+        try {
+            open.query("SELECT idempotency_key FROM pending_refunds").use { c ->
+                assertThat(c.count).isEqualTo(1)
+                c.moveToFirst()
+                assertThat(c.getString(0)).isEqualTo("idem-r31")
+            }
+        } finally {
+            open.close()
+        }
+    }
+
+    /**
+     * v30 → v31 sobre el v30 de `develop` (nexgo-v2.9.0): ahí NO existe `pending_refunds` — existe
+     * `remote_payment_requests`, que este árbol ni conoce. La migración tiene que crear la tabla
+     * que falta y dejar en paz la que sobra.
+     *
+     * 🔴 Que la tabla huérfana sobreviva no es un descuido: Room sólo valida las tablas de sus
+     * `@Entity`, así que una tabla de más no rompe la apertura — y borrarla sí destruiría la cola
+     * de cobros POS→TPV de quien venga por ese camino.
+     */
+    @Test
+    fun migrate30To31_sobreElV30DeDevelop_creaLaTablaQueFaltaYNoTocaLaAjena() {
+        helper.createDatabase(TEST_DB, 30).use { db ->
+            // Imitación del v30 de `develop`: su tabla existe, la nuestra NO. Hay que quitar la que
+            // `30.json` (el v30 de este árbol) acaba de crear — si no, la prueba no ejercitaría el
+            // caso que importa: llegar a la 30→31 SIN `pending_refunds`.
+            db.execSQL("DROP TABLE IF EXISTS pending_refunds")
+            db.execSQL("CREATE TABLE IF NOT EXISTS remote_payment_requests (id TEXT NOT NULL PRIMARY KEY, venue_id TEXT NOT NULL)")
+            db.execSQL("INSERT INTO remote_payment_requests (id, venue_id) VALUES ('req-1','v1')")
+        }
+
+        val open = helper.runMigrationsAndValidate(TEST_DB, 31, true, AvoqadoDatabase.MIGRATION_30_31)
+        try {
+            open.query("SELECT COUNT(*) FROM pending_refunds").use { c ->
+                c.moveToFirst()
+                assertThat(c.getInt(0)).isEqualTo(0)
+            }
+            open.query("SELECT COUNT(*) FROM remote_payment_requests").use { c ->
+                c.moveToFirst()
+                assertThat(c.getInt(0)).isEqualTo(1)
+            }
+        } finally {
+            open.close()
+        }
+    }
+
+    /**
      * The money guarantee, v29 edition: a payment already marked FAILED before the upgrade
      * (real money the app already gave up retrying) must survive untouched, and the new
      * `permanent` column must default to 0/false — i.e. "unknown whether this 4xx was

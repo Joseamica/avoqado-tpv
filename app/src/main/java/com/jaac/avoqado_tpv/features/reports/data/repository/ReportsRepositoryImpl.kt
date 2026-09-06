@@ -223,7 +223,16 @@ class ReportsRepositoryImpl @Inject constructor(
 
             // Fetch all shifts (need both current and previous periods)
             // Use larger limit to cover both periods
-            val shiftsResult = shiftRepository.getShiftHistory(venueId, limit = 200)
+            //
+            // 🔴 `desde` = el inicio del periodo ANTERIOR (5-sep-2026). Es el turno más viejo que la
+            // comparación puede necesitar; en cuanto la paginación pasa esa marca, seguir pidiendo
+            // páginas es gastar red por turnos que `ComparisonCalculator` va a descartar. Sin este
+            // corte, el `limit = 200` recorrería 4 páginas siempre, incluso comparando dos días.
+            val shiftsResult = shiftRepository.getShiftHistory(
+                venueId,
+                limit = 200,
+                desde = period.previousPeriodStart
+            )
 
             when (shiftsResult) {
                 is Result.Success -> {
@@ -402,6 +411,11 @@ class ReportsRepositoryImpl @Inject constructor(
      * Fetches a large batch of shifts and filters by period client-side.
      * Uses limit = 200 to cover most reporting periods (max ~6 months).
      *
+     * 🔴 El `limit = 200` era una MENTIRA hasta el 5-sep-2026: el servidor recorta el `pageSize` a
+     * 50 y sólo llegaban 50 turnos, así que este reporte se calculaba con la cuarta parte de los
+     * datos y sin decirlo. `getShiftHistory` ya pagina; aquí sólo hay que decirle hasta dónde
+     * retroceder para no pedir páginas que el filtro de abajo va a tirar.
+     *
      * @param venueId Venue ID for tenant isolation
      * @param period Report period filter
      * @return Result with filtered list of shifts
@@ -412,7 +426,11 @@ class ReportsRepositoryImpl @Inject constructor(
     ): Result<List<Shift>> {
         // Fetch large batch of shifts (backend returns paginated)
         // TODO: Optimize with backend filtering by date range
-        val shiftsResult = shiftRepository.getShiftHistory(venueId, limit = 200)
+        val shiftsResult = shiftRepository.getShiftHistory(
+            venueId,
+            limit = 200,
+            desde = period.startDate
+        )
 
         return when (shiftsResult) {
             is Result.Success -> {

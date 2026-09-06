@@ -10,6 +10,10 @@ import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.ConnectionRestoredEvent
 import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
+import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund
+import com.jaac.avoqado_tpv.features.payment.domain.model.RefundReason
+import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
+import com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationAction
@@ -52,6 +56,7 @@ class ShiftViewModelTest {
     private lateinit var cachedShiftDao: CachedShiftDao
     private lateinit var connectivityObserver: ConnectivityObserver
     private lateinit var permissionsRepository: PermissionsRepository
+    private lateinit var refundQueueRepository: RefundQueueRepository
 
     // Flows we control
     private val fakeConnectionRestoredEvents = MutableSharedFlow<ConnectionRestoredEvent>()
@@ -86,6 +91,9 @@ class ShiftViewModelTest {
         cachedShiftDao = mockk(relaxed = true)
         connectivityObserver = mockk(relaxed = true)
         permissionsRepository = mockk(relaxed = true)
+        refundQueueRepository = mockk(relaxed = true)
+        // Default: la cola de reembolsos no bloquea nada (Fase 2).
+        coEvery { refundQueueRepository.blockingForVenue(any()) } returns emptyList()
 
         // Default returns
         every { secureStorage.getVenueId() } returns "venue-123"
@@ -119,7 +127,8 @@ class ShiftViewModelTest {
             connectionEventManager = connectionEventManager,
             cachedShiftDao = cachedShiftDao,
             connectivityObserver = connectivityObserver,
-            permissionsRepository = permissionsRepository
+            permissionsRepository = permissionsRepository,
+            refundQueueRepository = refundQueueRepository
         )
     }
 
@@ -578,5 +587,115 @@ class ShiftViewModelTest {
 
         // Then
         assertThat(viewModel.isOffline.value).isFalse()
+    }
+
+    // ========================================
+    // 💸 BARRERA DE REEMBOLSOS (Fase 2, Task 9)
+    // ========================================
+
+    private fun reembolso(key: String, permanent: Boolean = false) = QueuedRefund(
+        idempotencyKey = key,
+        venueId = "venue-123",
+        staffId = "staff-123",
+        processor = ProcessorType.BLUMON,
+        originalPaymentId = "pay-orig",
+        originalOrderId = null,
+        amount = BigDecimal("50.00"),
+        originalTotalAmount = BigDecimal("100.00"),
+        tipRefundCents = null,
+        isPartialRefund = true,
+        refundReason = RefundReason.CUSTOMER_REQUEST,
+        merchantAccountId = "m1",
+        blumonSerialNumber = "SER1",
+        originalOperationNumber = 1,
+        authorizationNumber = "502511",
+        referenceNumber = "000000188231",
+        maskedPan = null,
+        cardBrand = null,
+        entryMode = "CHIP",
+        createdAt = 1_000L,
+        permanent = permanent,
+        lastError = if (permanent) "422: monto excede" else null,
+    )
+
+    private suspend fun kotlinx.coroutines.test.TestScope.viewModelConTurnoActivo(): ShiftViewModel {
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns Result.Success(testShift)
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+        assertThat(viewModel.state.value).isInstanceOf(ShiftState.ShiftActive::class.java)
+        return viewModel
+    }
+
+    @Test
+    fun `P1 closeShift se BLOQUEA con un reembolso sin registrar y NO toca el servidor`() = runTest {
+        coEvery { refundQueueRepository.blockingForVenue("venue-123") } returns listOf(reembolso("k-1"))
+        val viewModel = viewModelConTurnoActivo()
+
+        viewModel.closeShift()
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertThat(state).isInstanceOf(ShiftState.CloseBlockedByRefunds::class.java)
+        assertThat((state as ShiftState.CloseBlockedByRefunds).refunds.map { it.idempotencyKey }).containsExactly("k-1")
+        coVerify(exactly = 0) { shiftRepository.closeShift(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 si la cola de reembolsos no se puede leer, se BLOQUEA - nunca se cierra a ciegas`() = runTest {
+        coEvery { refundQueueRepository.blockingForVenue("venue-123") } throws IllegalStateException("db cerrada")
+        val viewModel = viewModelConTurnoActivo()
+
+        viewModel.closeShift()
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertThat(state).isInstanceOf(ShiftState.Error::class.java)
+        assertThat((state as ShiftState.Error).message).contains("devoluciones")
+        coVerify(exactly = 0) { shiftRepository.closeShift(any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `reconocer un rechazo PERMANENTE libera el cierre cuando ya no queda nada bloqueante`() = runTest {
+        coEvery { refundQueueRepository.blockingForVenue("venue-123") } returnsMany listOf(
+            listOf(reembolso("k-1", permanent = true)),
+            emptyList(),
+        )
+        val viewModel = viewModelConTurnoActivo()
+        viewModel.closeShift()
+        advanceUntilIdle()
+        assertThat(viewModel.state.value).isInstanceOf(ShiftState.CloseBlockedByRefunds::class.java)
+
+        coEvery { refundQueueRepository.acknowledge("k-1", any()) } returns 1
+        viewModel.acknowledgeRefund("k-1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { refundQueueRepository.acknowledge("k-1", "staff-123") }
+        assertThat(viewModel.state.value).isInstanceOf(ShiftState.ShiftActive::class.java)
+    }
+
+    @Test
+    fun `P1 un reembolso PENDIENTE no se puede reconocer - se registrara solo y no se le saca de la barrera`() = runTest {
+        coEvery { refundQueueRepository.blockingForVenue("venue-123") } returns listOf(reembolso("k-1", permanent = false))
+        val viewModel = viewModelConTurnoActivo()
+        viewModel.closeShift()
+        advanceUntilIdle()
+
+        viewModel.acknowledgeRefund("k-1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { refundQueueRepository.acknowledge(any(), any()) }
+        assertThat(viewModel.state.value).isInstanceOf(ShiftState.CloseBlockedByRefunds::class.java)
+    }
+
+    @Test
+    fun `sin permiso de cerrar tampoco se puede reconocer un rechazo`() = runTest {
+        coEvery { permissionsRepository.hasPermission("tpv-shifts:close") } returns false
+        coEvery { refundQueueRepository.blockingForVenue("venue-123") } returns listOf(reembolso("k-1", permanent = true))
+        val viewModel = viewModelConTurnoActivo()
+
+        viewModel.acknowledgeRefund("k-1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { refundQueueRepository.acknowledge(any(), any()) }
     }
 }

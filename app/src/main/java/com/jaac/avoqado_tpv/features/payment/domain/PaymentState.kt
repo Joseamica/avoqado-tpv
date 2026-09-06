@@ -439,21 +439,21 @@ sealed class PaymentState {
      * Error state preserves RetryContext($50, $5, 5★, merchant_id)
      * User taps "Reintentar" → Goes back to DetectingCard (NOT EnteringAmount)
      *
-     * **Shift Validation (NEW):**
-     * When no shift is open, showOpenShiftButton = true displays "Abrir Turno" button
-     * This enforces Square/Toast pattern of requiring shift for cash reconciliation
+     * **Shift Validation:**
+     * When no shift (turno de caja) is open, showOpenShiftButton = true displays "Abrir caja" button
+     * This enforces Square/Toast pattern of requiring a shift for cash reconciliation
      *
      * @param message User-friendly error message (translated from SDK errors)
      * @param context Preserved payment data (amount, tip, rating, merchant)
      * @param canRetry true if user can retry with same context
-     * @param showOpenShiftButton true if error is "no shift open" - shows "Abrir Turno" button
+     * @param showOpenShiftButton true if error is "no shift open" - shows "Abrir caja" button
      * @param showCashFallback true if error should offer "Cobrar en Efectivo" fallback action
      */
     data class Error(
         val message: String,
         val context: RetryContext? = null,  // Preserved context for smart retry
         val canRetry: Boolean = true,
-        val showOpenShiftButton: Boolean = false,  // ⭐ NEW: Show "Abrir Turno" button for shift validation errors
+        val showOpenShiftButton: Boolean = false,  // Show "Abrir caja" button for shift validation errors
         val showCashFallback: Boolean = false
     ) : PaymentState()
     data object Cancelled : PaymentState()

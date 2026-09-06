@@ -5,7 +5,9 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
+import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund
 import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
+import com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository
 import com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome
 import com.jaac.avoqado_tpv.features.payment.domain.sync.classifySyncFailure
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
@@ -77,6 +79,11 @@ import timber.log.Timber
  * 5. Payment now visible in dashboard
  * ```
  *
+ * **💸 Reembolsos (Fase 1, Task 8 — 2026-09-04):** la MISMA corrida drena después la cola de
+ * reembolsos (`pending_refunds`), con el mismo contrato: reclamar con token, UN intento por
+ * fila, y compare-and-swap al escribir. Van DESPUÉS de los cobros y aunque no haya cobros:
+ * el `return` temprano de «no hay pagos» dejaba los reembolsos sin reproducir NUNCA.
+ *
  * **World-Class References:**
  * - Square Terminal: OfflineSyncWorker with 3 retries
  * - Toast POS: PaymentQueueWorker with 15-min periodic sync
@@ -89,6 +96,7 @@ class PaymentSyncWorker @AssistedInject constructor(
     private val paymentQueueRepository: PaymentQueueRepository,
     private val recordPaymentUseCase: RecordPaymentUseCase,
     private val paymentQueueStateManager: PaymentQueueStateManager,
+    private val refundQueueRepository: RefundQueueRepository,
 ) : CoroutineWorker(appContext, workerParams) {
 
     companion object {
@@ -112,6 +120,9 @@ class PaymentSyncWorker @AssistedInject constructor(
          * Remaining payments will be processed in the next periodic run (15 min).
          */
         private const val MAX_PAYMENTS_PER_RUN = 10
+
+        /** Tope de reembolsos por corrida, por la misma razón que [MAX_PAYMENTS_PER_RUN]. */
+        private const val MAX_REFUNDS_PER_RUN = 10
     }
 
     /**
@@ -146,30 +157,36 @@ class PaymentSyncWorker @AssistedInject constructor(
             val batch = paymentQueueRepository.claimBatch(MAX_PAYMENTS_PER_RUN)
 
             if (batch.isEmpty()) {
+                // 🔴 Ya NO se hace `return` aquí: los reembolsos se drenan abajo aunque no haya
+                // cobros pendientes. Con el `return` temprano, una cola con sólo reembolsos no se
+                // reproducía nunca.
                 Timber.d("✅ [Payment Sync] No hay pagos pendientes por sincronizar")
-                return Result.success()
-            }
+            } else {
+                Timber.i("🔄 [Payment Sync] ${batch.size} pagos reclamados para sincronizar")
 
-            Timber.i("🔄 [Payment Sync] ${batch.size} pagos reclamados para sincronizar")
+                // Process each payment independently (one failure doesn't block others)
+                var successCount = 0
+                var failedCount = 0
 
-            // Process each payment independently (one failure doesn't block others)
-            var successCount = 0
-            var failedCount = 0
-
-            for (payment in batch) {
-                val success = syncPayment(payment)
-                if (success) {
-                    successCount++
-                } else {
-                    failedCount++
+                for (payment in batch) {
+                    val success = syncPayment(payment)
+                    if (success) {
+                        successCount++
+                    } else {
+                        failedCount++
+                    }
                 }
+
+                // Log summary
+                Timber.i(
+                    "✅ [Payment Sync] Worker completed | " +
+                            "success=$successCount | failed=$failedCount | batch=${batch.size}"
+                )
             }
 
-            // Log summary
-            Timber.i(
-                "✅ [Payment Sync] Worker completed | " +
-                        "success=$successCount | failed=$failedCount | batch=${batch.size}"
-            )
+            // 💸 Los reembolsos van DESPUÉS de los cobros: un reembolso apunta al pago original
+            // por su id de servidor, así que primero tiene que existir el pago allá.
+            drainRefunds()
 
             // 🔴 Avisar al banner (bug real 2026-08-07): el contador de
             // "pagos pendientes" es un StateFlow de push manual
@@ -180,10 +197,14 @@ class PaymentSyncWorker @AssistedInject constructor(
             // trabajo ya hecho. Refrescar aqui cierra el ciclo con la verdad de Room.
             // En try/catch propio: un fallo al CONTAR jamas puede tirar el worker —
             // los pagos de esta tanda YA se procesaron.
+            // 💸 Se refresca SIEMPRE, también cuando sólo hubo reembolsos (auditoría de Codex F10): un
+            // reembolso atorado era invisible hasta intentar cerrar el turno.
             try {
                 val pending = paymentQueueRepository.getPendingCount()
                 val failed = paymentQueueRepository.getFailedCount()
-                paymentQueueStateManager.refreshCounts(pending, failed)
+                val pendingRefunds = refundQueueRepository.getPendingCount()
+                val failedRefunds = refundQueueRepository.getFailedCount()
+                paymentQueueStateManager.refreshCounts(pending, failed, pendingRefunds, failedRefunds)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -373,6 +394,87 @@ class PaymentSyncWorker @AssistedInject constructor(
                 payment.referenceNumber,
                 payment.queueId,
             )
+        }
+    }
+
+    // ─── 💸 Reembolsos (Fase 1, Task 8) ──────────────────────────────────────────
+
+    /**
+     * Drena la cola de REEMBOLSOS con el mismo contrato que los cobros: reclamar con token, UN
+     * intento por fila por corrida, y compare-and-swap con ese token al escribir.
+     *
+     * 🔴 Un fallo al reclamar o al escribir una fila NUNCA se propaga: tumbar el worker aquí
+     * dejaría el resto de una tanda ya reclamada —dinero que YA se devolvió— esperando a que
+     * caduque su lease. Cada fila se aísla en su propio try/catch (salvo cancelación).
+     */
+    private suspend fun drainRefunds() {
+        val refunds = try {
+            refundQueueRepository.claimBatch(MAX_REFUNDS_PER_RUN)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "💸 [Refund Sync] No se pudo reclamar la cola de reembolsos")
+            return
+        }
+        if (refunds.isEmpty()) {
+            Timber.d("💸 [Refund Sync] Sin reembolsos pendientes")
+            return
+        }
+        Timber.i("💸 [Refund Sync] ${refunds.size} reembolsos reclamados para registrar")
+
+        var successCount = 0
+        var failedCount = 0
+        for (refund in refunds) {
+            val ok = try {
+                syncRefund(refund)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.e(e, "💸 [Refund Sync] Fallo inesperado en una fila | key=${refund.idempotencyKey}")
+                false
+            }
+            if (ok) successCount++ else failedCount++
+        }
+        Timber.i("💸 [Refund Sync] Worker completed | success=$successCount | failed=$failedCount | batch=${refunds.size}")
+    }
+
+    /**
+     * Reproduce UN reembolso, UNA vez. El repositorio manda la MISMA llave, monto y datos del SDK
+     * que se guardaron, y clasifica con `classifySyncFailure` (nunca por texto).
+     *
+     * `Retryable` vuelve a PENDING con `retry_count + 1` (la DAO lo pasa a FAILED al llegar a
+     * `MAX_RETRY_ATTEMPTS`); `Permanent` va directo a FAILED + `permanent = true` y bloquea el
+     * cierre de turno hasta que alguien lo reconozca. Cero filas afectadas = otro worker se
+     * quedó con el claim: no se reintenta el write.
+     */
+    private suspend fun syncRefund(refund: QueuedRefund): Boolean {
+        val token = refund.claimToken.orEmpty()
+        Timber.d("💸 [Refund Sync] Reproduciendo | key=${refund.idempotencyKey} | intento=${refund.retryCount + 1}")
+        return when (val outcome = refundQueueRepository.replay(refund)) {
+            is SyncOutcome.Synced -> {
+                val affected = refundQueueRepository.markSuccess(refund.idempotencyKey, token)
+                if (affected == 0) Timber.w("💸 [Refund Sync] markSuccess() no afectó filas (otro worker tiene el claim) | key=${refund.idempotencyKey}")
+                true
+            }
+
+            is SyncOutcome.Permanent -> {
+                Timber.e("💸 [Refund Sync] Rechazo PERMANENTE del servidor | key=${refund.idempotencyKey} | ${outcome.reason}")
+                val affected = refundQueueRepository.markPermanentlyFailed(refund.idempotencyKey, token, outcome.reason)
+                if (affected == 0) Timber.w("💸 [Refund Sync] markPermanentlyFailed() no afectó filas | key=${refund.idempotencyKey}")
+                false
+            }
+
+            is SyncOutcome.Retryable -> {
+                // ⚠️ `replay` sólo devuelve la clasificación; el detalle del fallo queda en su log.
+                val affected = refundQueueRepository.release(
+                    refund.idempotencyKey,
+                    token,
+                    retryCount = refund.retryCount + 1,
+                    error = "error transitorio (intento ${refund.retryCount + 1})",
+                )
+                if (affected == 0) Timber.w("💸 [Refund Sync] release() no afectó filas | key=${refund.idempotencyKey}")
+                false
+            }
         }
     }
 }

@@ -26,6 +26,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.features.payment.domain.model.RefundReason
+import com.jaac.avoqado_tpv.features.refund.domain.canKeepStaffTip
+import com.jaac.avoqado_tpv.features.refund.domain.resolveRefundTipSelection
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.text.NumberFormat
@@ -61,6 +63,8 @@ import java.util.Locale
  *   FULL refund can be requested. Nexgo/AngelPay passes false: the AngelPay SDK
  *   post-operations always return the ORIGINAL sale amount, so a partial request
  *   would over-refund the cardholder (P0 fix 2026-07-09).
+ * @param supportsSaleOnlyRefund Whether this processor can return only the sale while
+ *   leaving the staff tip untouched. False for Nexgo/AngelPay full-only refunds.
  * @param onNavigateBack Called when user cancels/goes back
  * @param onConfirmRefund Called when user confirms refund (amount, reason)
  */
@@ -78,6 +82,7 @@ fun RefundConfirmationScreen(
     refundedAmount: BigDecimal = BigDecimal.ZERO,
     isProcessing: Boolean = false,
     allowPartialRefund: Boolean = true,
+    supportsSaleOnlyRefund: Boolean = true,
     onNavigateBack: () -> Unit,
     onConfirmRefund: (
         amount: BigDecimal,
@@ -88,6 +93,12 @@ fun RefundConfirmationScreen(
     // Calculate refundable amount
     val maxRefundable = (originalAmount - refundedAmount).coerceAtLeast(BigDecimal.ZERO)
     val hasPartialRefund = refundedAmount > BigDecimal.ZERO
+    val canKeepTip = canKeepStaffTip(
+        originalTotalAmount = originalAmount,
+        originalTipAmount = originalTipAmount,
+        alreadyRefundedAmount = refundedAmount,
+        supportsSaleOnlyRefund = supportsSaleOnlyRefund,
+    )
 
     // State
     var refundAmountText by remember { mutableStateOf(maxRefundable.setScale(2, RoundingMode.HALF_UP).toString()) }
@@ -325,11 +336,10 @@ fun RefundConfirmationScreen(
             }
 
             // ═══════════════════════════════════════════════════════════════
-            // TIP INCLUDE TOGGLE — only when the original payment had a tip.
-            // Does NOT change what Blumon SDK returns to the cardholder;
-            // only affects internal sale/tip booking.
+            // TIP INCLUDE TOGGLE — only when the processor can return the sale alone and
+            // no prior refund has made the remaining sale/tip split ambiguous.
             // ═══════════════════════════════════════════════════════════════
-            if (originalTipAmount > BigDecimal.ZERO) {
+            if (canKeepTip) {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.medium,
@@ -343,7 +353,23 @@ fun RefundConfirmationScreen(
                     ) {
                         Checkbox(
                             checked = includeTip,
-                            onCheckedChange = { includeTip = it },
+                            onCheckedChange = { checked ->
+                                includeTip = checked
+                                if (!checked) {
+                                    val selection = resolveRefundTipSelection(
+                                        requestedAmount = refundAmount,
+                                        originalTotalAmount = originalAmount,
+                                        originalTipAmount = originalTipAmount,
+                                        alreadyRefundedAmount = refundedAmount,
+                                        includeTip = false,
+                                        supportsSaleOnlyRefund = supportsSaleOnlyRefund,
+                                    )
+                                    refundAmountText = selection.amount
+                                        .setScale(2, RoundingMode.HALF_UP)
+                                        .toString()
+                                    isPartialRefund = selection.amount < maxRefundable
+                                }
+                            },
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Column(modifier = Modifier.weight(1f)) {
@@ -464,11 +490,15 @@ fun RefundConfirmationScreen(
                         }
 
                         showError = false
-                        // Tip-split override: null when original had no tip OR user
-                        // left checkbox ON (proportional default). Send 0 when the
-                        // user unchecks it so the refund books 100% against sale.
-                        val tipOverrideCents: Int? = if (originalTipAmount > BigDecimal.ZERO && !includeTip) 0 else null
-                        onConfirmRefund(refundAmount, selectedReason, tipOverrideCents)
+                        val selection = resolveRefundTipSelection(
+                            requestedAmount = refundAmount,
+                            originalTotalAmount = originalAmount,
+                            originalTipAmount = originalTipAmount,
+                            alreadyRefundedAmount = refundedAmount,
+                            includeTip = includeTip,
+                            supportsSaleOnlyRefund = supportsSaleOnlyRefund,
+                        )
+                        onConfirmRefund(selection.amount, selectedReason, selection.tipRefundCents)
                     },
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(

@@ -7,6 +7,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.RefundReceipt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import timber.log.Timber
 import java.math.BigDecimal
 import javax.inject.Inject
@@ -124,6 +125,9 @@ class RefundRecorder @Inject constructor(
             )
 
             // 4. Process response
+            // 🔴 Todo HTTP no-2xx sale como `BackendHttpException(código, mensaje amigable)`: el mensaje
+            // es lo que ve el cajero; el código es lo que `classifySyncFailure` necesita para decidir si
+            // un reembolso encolado se reintenta (401/408/429/5xx) o es rechazo definitivo (400/404/422).
             when {
                 response.isSuccessful && response.body() != null -> {
                     val body = response.body()!!
@@ -148,7 +152,8 @@ class RefundRecorder @Inject constructor(
                 response.code() == 400 -> {
                     Timber.w("⚠️ Bad Request (400) - Invalid refund data")
                     Result.failure(
-                        Exception(
+                        BackendHttpException(
+                            response.code(),
                             "Datos de reembolso inválidos. Verifica el monto y la información del pago original."
                         )
                     )
@@ -157,7 +162,8 @@ class RefundRecorder @Inject constructor(
                 response.code() == 401 -> {
                     Timber.w("⚠️ Unauthorized (401) - Token may be expired")
                     Result.failure(
-                        Exception(
+                        BackendHttpException(
+                            response.code(),
                             "Token de autenticación inválido o expirado. " +
                             "Por favor, cierra sesión y vuelve a iniciar sesión."
                         )
@@ -167,7 +173,8 @@ class RefundRecorder @Inject constructor(
                 response.code() == 403 -> {
                     Timber.w("⚠️ Forbidden (403) - Missing refunds:create permission or role not authorized")
                     Result.failure(
-                        Exception(
+                        BackendHttpException(
+                            response.code(),
                             "No tienes permisos para procesar reembolsos. " +
                             "Solo administradores y gerentes pueden realizar reembolsos."
                         )
@@ -177,7 +184,8 @@ class RefundRecorder @Inject constructor(
                 response.code() == 404 -> {
                     Timber.w("⚠️ Not Found (404) - Payment ${context.originalPaymentId} not found")
                     Result.failure(
-                        Exception(
+                        BackendHttpException(
+                            response.code(),
                             "Pago no encontrado. El pago original puede haber sido eliminado."
                         )
                     )
@@ -186,7 +194,8 @@ class RefundRecorder @Inject constructor(
                 response.code() == 409 -> {
                     Timber.w("⚠️ Conflict (409) - Payment already fully refunded or concurrent refund")
                     Result.failure(
-                        Exception(
+                        BackendHttpException(
+                            response.code(),
                             "Este pago ya fue reembolsado completamente o hay otro reembolso en proceso."
                         )
                     )
@@ -195,7 +204,8 @@ class RefundRecorder @Inject constructor(
                 response.code() == 429 -> {
                     Timber.w("⚠️ Rate Limit (429) - Too many requests")
                     Result.failure(
-                        Exception(
+                        BackendHttpException(
+                            response.code(),
                             "Demasiadas solicitudes. Por favor, espera un momento e intenta nuevamente."
                         )
                     )
@@ -204,7 +214,8 @@ class RefundRecorder @Inject constructor(
                 response.code() in 500..599 -> {
                     Timber.e("❌ Server Error (${response.code()}) - ${response.message()}")
                     Result.failure(
-                        Exception(
+                        BackendHttpException(
+                            response.code(),
                             "Error del servidor (${response.code()}). " +
                             "Por favor, intenta nuevamente en unos minutos."
                         )
@@ -214,18 +225,29 @@ class RefundRecorder @Inject constructor(
                 else -> {
                     Timber.e("❌ Unknown error (${response.code()}) - ${response.message()}")
                     Result.failure(
-                        Exception(
+                        BackendHttpException(
+                            response.code(),
                             "Error desconocido (${response.code()}): ${response.message()}"
                         )
                     )
                 }
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: java.io.IOException) {
+            // 🔴 Se devuelve TAL CUAL (auditoría de Codex F3, 4-sep-2026): `classifySyncFailure` lo
+            // reconoce como fallo de red → Retryable. Envolverlo en una `Exception` pelona —como se
+            // hacía— lo volvía inclasificable, igual que los 4xx de arriba: con este recorder la rama
+            // «permanente» (400/404/422) de la cola de reembolsos era INALCANZABLE.
+            Timber.e(e, "❌ Failed to record refund (red)")
+            Result.failure(e)
         } catch (e: Exception) {
             Timber.e(e, "❌ Failed to record refund")
             Result.failure(
                 Exception(
                     "Error registrando el reembolso: ${e.message ?: "Error desconocido"}. " +
-                    "Verifica tu conexión a internet."
+                    "Verifica tu conexión a internet.",
+                    e,
                 )
             )
         }

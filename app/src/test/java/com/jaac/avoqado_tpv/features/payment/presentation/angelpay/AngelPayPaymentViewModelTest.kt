@@ -2252,4 +2252,39 @@ class AngelPayPaymentViewModelTest {
             vm.viewModelScope.cancel()
         }
     }
+
+    // ── Candado de «cobro en efectivo en vuelo» (2026-09-07) ───────────────────────────────
+    // Simétrico al del riel Blumon. Aquí el registro es lo primero que espera; sin candado, un
+    // segundo toque mientras el POST viaja registra su propio cobro.
+
+    @Test
+    fun `dos toques en Efectivo con el registro en vuelo registran UN solo cobro`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v-1"
+        every { authRepository.getStaffId() } returns "s-1"
+        val compuerta = kotlinx.coroutines.CompletableDeferred<Unit>()
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } coAnswers {
+            compuerta.await()
+            Result.success(
+                PaymentReceipt(
+                    paymentId = "pay-1",
+                    receiptUrl = "https://r/pay-1",
+                    accessKey = "k",
+                    amount = java.math.BigDecimal.ZERO,
+                    tipAmount = java.math.BigDecimal.ZERO,
+                )
+            )
+        }
+        val vm = createViewModel()
+        try {
+            vm.startCashPayment()
+            vm.startCashPayment()
+            runCurrent()
+            compuerta.complete(Unit)
+            runCurrent()
+
+            coVerify(exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
 }

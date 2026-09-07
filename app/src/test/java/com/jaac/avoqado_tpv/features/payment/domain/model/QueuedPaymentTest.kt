@@ -133,6 +133,109 @@ class QueuedPaymentTest {
         assertThat(angelPay.cardDetails?.entryMode).isEqualTo(CardEntryMode.OTHER)
     }
 
+    // ------------------------------------------------------------------
+    // Una fila Blumon de un cobro de ORDEN vuelve a SU orden (2026-09-07).
+    // Antes toda fila que no fuera AngelPay se reproducía como FastPayment:
+    // el servidor creaba una venta FAST nueva, sin artículos y sin
+    // SaleVerification («venta sin SIM» en el dashboard de PlayTelecom,
+    // 8 casos medidos jul–sep 2026) y la orden original quedaba SIN cobro.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `una fila Blumon con orderId se reproduce como cobro de ORDEN, no como venta FAST`() {
+        val queued = QueuedPayment(
+            referenceNumber = "CASH-9f3a2c1e5b7d4a60",
+            venueId = "venue-1",
+            staffId = "staff-1",
+            amount = BigDecimal("0.00"),
+            tip = BigDecimal.ZERO,
+            rating = null,
+            merchantAccountId = "",
+            blumonSerialNumber = "",
+            deviceSerialNumber = "AVQD-2840744206",
+            maskedPan = null,
+            cardBrand = null,
+            entryMode = "MANUAL",
+            isInternational = false,
+            authorizationNumber = "EFECTIVO",
+            idempotencyKey = "k-1",
+            orderId = "order-9",
+            orderNumber = "SN00396",
+            shiftId = "shift-1",
+            serialNumbers = listOf("8952140064479453293F"),
+            createdAt = 1L,
+        )
+
+        val context = queued.toPaymentContext()
+
+        assertThat(context).isInstanceOf(PaymentContext.OrderPayment::class.java)
+        val order = context as PaymentContext.OrderPayment
+        assertThat(order.orderId).isEqualTo("order-9")
+        assertThat(order.idempotencyKey).isEqualTo("k-1")
+        assertThat(order.merchantAccountId).isNull()          // efectivo: sin procesador
+        assertThat(order.shiftId).isEqualTo("shift-1")
+        assertThat(order.deviceSerialNumber).isEqualTo("AVQD-2840744206")
+        assertThat(order.serialNumbers).containsExactly("8952140064479453293F")
+    }
+
+    @Test
+    fun `una fila Blumon SIN orderId sigue siendo FAST (venta rapida encolada)`() {
+        val queued = QueuedPayment(
+            referenceNumber = "CASH-9f3a2c1e5b7d4a60",
+            venueId = "venue-1",
+            staffId = "staff-1",
+            amount = BigDecimal("10.00"),
+            tip = BigDecimal.ZERO,
+            rating = null,
+            merchantAccountId = "",
+            blumonSerialNumber = "",
+            maskedPan = null,
+            cardBrand = null,
+            entryMode = "MANUAL",
+            isInternational = false,
+            authorizationNumber = "EFECTIVO",
+            idempotencyKey = "k-2",
+            createdAt = 1L,
+        )
+
+        assertThat(queued.toPaymentContext()).isInstanceOf(PaymentContext.FastPayment::class.java)
+    }
+
+    @Test
+    fun `una fila Blumon de TARJETA con orderId tambien vuelve a su orden, con su merchant`() {
+        val queued = QueuedPayment(
+            referenceNumber = "000000188231",
+            venueId = "venue-1",
+            staffId = "staff-1",
+            amount = BigDecimal("250.00"),
+            tip = BigDecimal("25.00"),
+            rating = null,
+            merchantAccountId = "merchant_cuid_123",
+            blumonSerialNumber = "2841548417",
+            deviceSerialNumber = "AVQD-2840744206",
+            maskedPan = "411111******1111",
+            cardBrand = "VISA",
+            entryMode = "CHIP",
+            isInternational = false,
+            authorizationNumber = "502511",
+            idempotencyKey = "k-3",
+            orderId = "order-77",
+            orderNumber = "0077",
+            shiftId = "shift-1",
+            createdAt = 1L,
+        )
+
+        val context = queued.toPaymentContext()
+
+        assertThat(context).isInstanceOf(PaymentContext.OrderPayment::class.java)
+        val order = context as PaymentContext.OrderPayment
+        assertThat(order.orderId).isEqualTo("order-77")
+        assertThat(order.merchantAccountId).isEqualTo("merchant_cuid_123")
+        assertThat(order.blumonSerialNumber).isEqualTo("2841548417")
+        // Limitación declarada: la fila no guarda el split; se reproduce como FULLPAYMENT.
+        assertThat(order.splitType).isEqualTo(SplitType.FULLPAYMENT)
+    }
+
     @Test
     fun `toPaymentContext keeps FastPayment shape for legacy rows without processor`() {
         val queued = QueuedPayment(

@@ -429,6 +429,16 @@ class AngelPayPaymentViewModel @Inject constructor(
     private var cachedVenueId: String? = null
     private var cachedStaffId: String? = null
 
+    /**
+     * 🔴 Candado simétrico al del riel Blumon ([com.jaac.avoqado_tpv.features.payment.presentation.PaymentViewModel],
+     * 2026-09-07). Este riel HOY no tiene el defecto —fija `ProcessingCash` en la primera línea
+     * del `launch` y no espera red antes del POST—, pero eso lo garantiza el ORDEN de dos líneas:
+     * basta meter un `await` (leer el turno, refrescar credenciales) antes de esa primera línea
+     * para heredar la ráfaga de N toques = N cobros. Cuesta una línea; en Blumon el mismo hueco
+     * costó 5 cobros COMPLETED sobre la misma orden en 1.7 s (SN00396, 2026-09-04).
+     */
+    private val cobroEnEfectivoEnVuelo = java.util.concurrent.atomic.AtomicBoolean(false)
+
     // 📡 POS→TPV terminal arbitration: a charge initiated by the POS over Socket.IO carries a
     // request id the caller long-polls on. Set from the navigation layer via [setSocketPaymentSource];
     // stays null for device-initiated charges (which therefore never emit).
@@ -1651,97 +1661,109 @@ class AngelPayPaymentViewModel @Inject constructor(
     // ── Cash Payment ─────────────────────────────────────────────────
 
     fun startCashPayment() {
+        // 🔴 Se toma SÍNCRONO, antes de lanzar: un candado DENTRO del `launch` no protegería de
+        // un segundo toque que entre mientras el primero está suspendido. Ver [cobroEnEfectivoEnVuelo].
+        if (!cobroEnEfectivoEnVuelo.compareAndSet(false, true)) {
+            Timber.w("🔶 [AngelPay] Toque ignorado: ya hay un cobro en efectivo en vuelo")
+            return
+        }
         viewModelScope.launch {
-            _state.value = AngelPayPaymentState.ProcessingCash()
+            try {
+                _state.value = AngelPayPaymentState.ProcessingCash()
 
-            com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentContext(
-                processor = "ANGELPAY",
-                method = "CASH",
-                merchantId = _currentMerchant.value?.merchantAccountId,
-                amount = pendingAmount.add(pendingTip).toPlainString(),
-                orderId = pendingOrderId,
-                attemptId = currentPaymentAttemptId,
-            )
-
-            // 💰 Money moved (cash collected). Recover venue/staff from the most reliable source so
-            // this sale is ALWAYS recorded or enqueued — never dropped (cached → auth → secureStorage).
-            val venueId = cachedVenueId ?: authRepository.getVenueId() ?: secureStorage.getVenueId()
-            val staffId = cachedStaffId ?: authRepository.getStaffId() ?: secureStorage.getStaffId()
-            if (venueId == null || staffId == null) {
-                _state.value = reportChargedButUnrecordable(
-                    paymentLabel = "El pago en efectivo",
-                    error = IllegalStateException("venue/staff no recuperable tras cobro en efectivo"),
+                com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentContext(
+                    processor = "ANGELPAY",
+                    method = "CASH",
+                    merchantId = _currentMerchant.value?.merchantAccountId,
+                    amount = pendingAmount.add(pendingTip).toPlainString(),
+                    orderId = pendingOrderId,
+                    attemptId = currentPaymentAttemptId,
                 )
-                return@launch
-            }
 
-            val timestamp = System.currentTimeMillis()
-            val paymentContext = PaymentContext.AngelPayPayment(
-                venueId = venueId,
-                staffId = staffId,
-                shiftId = cachedShiftId,
-                amount = pendingAmount,
-                tip = pendingTip,
-                rating = pendingRating,
-                merchantAccountId = null, // Cash = no processor
-                deviceSerialNumber = TerminalConfig.serialNumber,
-                idempotencyKey = ensurePaymentAttemptId(), // 🛡️ Idempotency key (2026-04-08)
-                terminalPaymentRequestId = _socketRequestId, // 📡 POS→TPV arbitration link (null unless socket-sourced)
-                cardDetails = CardDetails.CASH,
-                authorizationCode = "EFECTIVO",
-                referenceNumber = "CASH-$timestamp",
-                orderId = pendingOrderId,
-                orderNumber = pendingOrderNumber,
-                // 📸 Serialized inventory (SIM) proof-of-sale — empty for a normal payment
-                isPortabilidad = pendingIsPortabilidad,
-                serialNumbers = pendingSerialNumbers,
-            )
-
-            Timber.d("🔶 [AngelPay] Recording cash payment | amount=$pendingAmount, tip=$pendingTip")
-
-            // 🔴 NonCancellable: si el proceso muere/la pantalla se abandona a media
-            // espera (recordPaymentUseCase reintenta hasta 5 veces con backoff, ~67.5s
-            // peor caso), la llamada NO debe abortarse a medio camino — sin esto el
-            // cobro puede saltarse la cola offline por completo.
-            val recordResult = withContext(NonCancellable + Dispatchers.IO) {
-                recordPaymentUseCase(
-                    context = paymentContext,
-                    cardDetails = CardDetails.CASH,
-                    authorizationNumber = "EFECTIVO",
-                    referenceNumber = "CASH-$timestamp",
-                )
-            }
-
-            val successState = AngelPayPaymentState.Success(
-                authCode = "EFECTIVO",
-                amount = pendingAmount.toPlainString(),
-                tipAmount = if (pendingTip > BigDecimal.ZERO) pendingTip.toPlainString() else null,
-                referenceNumber = "CASH-$timestamp",
-                orderId = pendingOrderId,
-                orderNumber = pendingOrderNumber,
-                isCash = true,
-            )
-
-            recordResult.fold(
-                onSuccess = { receipt ->
-                    Timber.i("🔶 [AngelPay] Cash payment recorded | receipt=${receipt.receiptUrl}")
-                    _state.value = successState.copy(receipt = receipt)
-                    // 📡 POS→TPV: report success to the caller (no-op unless socket-sourced).
-                    emitSocketResultIfSocketSourced(
-                        status = "success",
-                        paymentId = receipt.paymentId,
-                        transactionId = receipt.paymentId,
-                        receiptUrl = receipt.receiptUrl,
-                        receiptAccessKey = receipt.accessKey,
+                // 💰 Money moved (cash collected). Recover venue/staff from the most reliable source so
+                // this sale is ALWAYS recorded or enqueued — never dropped (cached → auth → secureStorage).
+                val venueId = cachedVenueId ?: authRepository.getVenueId() ?: secureStorage.getVenueId()
+                val staffId = cachedStaffId ?: authRepository.getStaffId() ?: secureStorage.getStaffId()
+                if (venueId == null || staffId == null) {
+                    _state.value = reportChargedButUnrecordable(
+                        paymentLabel = "El pago en efectivo",
+                        error = IllegalStateException("venue/staff no recuperable tras cobro en efectivo"),
                     )
-                },
-                onFailure = { error ->
-                    Timber.e(error, "🔶 [AngelPay] Cash payment failed to record to backend — enqueueing for sync")
-                    // Cash rows are first-class queue citizens: QueuedPayment detects the
-                    // CASH-*/EFECTIVO markers and replays with merchant=null + CardDetails.CASH.
-                    _state.value = handleRecordFailure("El pago en efectivo", paymentContext, error)
-                },
-            )
+                    return@launch
+                }
+
+                val timestamp = System.currentTimeMillis()
+                val paymentContext = PaymentContext.AngelPayPayment(
+                    venueId = venueId,
+                    staffId = staffId,
+                    shiftId = cachedShiftId,
+                    amount = pendingAmount,
+                    tip = pendingTip,
+                    rating = pendingRating,
+                    merchantAccountId = null, // Cash = no processor
+                    deviceSerialNumber = TerminalConfig.serialNumber,
+                    idempotencyKey = ensurePaymentAttemptId(), // 🛡️ Idempotency key (2026-04-08)
+                    terminalPaymentRequestId = _socketRequestId, // 📡 POS→TPV arbitration link (null unless socket-sourced)
+                    cardDetails = CardDetails.CASH,
+                    authorizationCode = "EFECTIVO",
+                    referenceNumber = "CASH-$timestamp",
+                    orderId = pendingOrderId,
+                    orderNumber = pendingOrderNumber,
+                    // 📸 Serialized inventory (SIM) proof-of-sale — empty for a normal payment
+                    isPortabilidad = pendingIsPortabilidad,
+                    serialNumbers = pendingSerialNumbers,
+                )
+
+                Timber.d("🔶 [AngelPay] Recording cash payment | amount=$pendingAmount, tip=$pendingTip")
+
+                // 🔴 NonCancellable: si el proceso muere/la pantalla se abandona a media
+                // espera (recordPaymentUseCase reintenta hasta 5 veces con backoff, ~67.5s
+                // peor caso), la llamada NO debe abortarse a medio camino — sin esto el
+                // cobro puede saltarse la cola offline por completo.
+                val recordResult = withContext(NonCancellable + Dispatchers.IO) {
+                    recordPaymentUseCase(
+                        context = paymentContext,
+                        cardDetails = CardDetails.CASH,
+                        authorizationNumber = "EFECTIVO",
+                        referenceNumber = "CASH-$timestamp",
+                    )
+                }
+
+                val successState = AngelPayPaymentState.Success(
+                    authCode = "EFECTIVO",
+                    amount = pendingAmount.toPlainString(),
+                    tipAmount = if (pendingTip > BigDecimal.ZERO) pendingTip.toPlainString() else null,
+                    referenceNumber = "CASH-$timestamp",
+                    orderId = pendingOrderId,
+                    orderNumber = pendingOrderNumber,
+                    isCash = true,
+                )
+
+                recordResult.fold(
+                    onSuccess = { receipt ->
+                        Timber.i("🔶 [AngelPay] Cash payment recorded | receipt=${receipt.receiptUrl}")
+                        _state.value = successState.copy(receipt = receipt)
+                        // 📡 POS→TPV: report success to the caller (no-op unless socket-sourced).
+                        emitSocketResultIfSocketSourced(
+                            status = "success",
+                            paymentId = receipt.paymentId,
+                            transactionId = receipt.paymentId,
+                            receiptUrl = receipt.receiptUrl,
+                            receiptAccessKey = receipt.accessKey,
+                        )
+                    },
+                    onFailure = { error ->
+                        Timber.e(error, "🔶 [AngelPay] Cash payment failed to record to backend — enqueueing for sync")
+                        // Cash rows are first-class queue citizens: QueuedPayment detects the
+                        // CASH-*/EFECTIVO markers and replays with merchant=null + CardDetails.CASH.
+                        _state.value = handleRecordFailure("El pago en efectivo", paymentContext, error)
+                    },
+                )
+            } finally {
+                // Un solo punto de salida: cubre también el `return@launch` de
+                // «venue/staff no recuperable».
+                cobroEnEfectivoEnVuelo.set(false)
+            }
         }
     }
 

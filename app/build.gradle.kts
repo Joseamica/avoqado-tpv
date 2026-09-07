@@ -30,7 +30,12 @@ android {
 
         // Environment variables (NEVER hardcode secrets in code)
         buildConfigField("String", "API_BASE_URL", "\"https://api.avoqado.io/api/v1/\"")
-        buildConfigField("String", "API_BASE_URL_DEV", "\"https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/\"")
+        // QA en hardware: `-Pavoqado.devBaseUrl=http://<ip-de-la-mac>:8799/api/v1/` apunta el build de
+        // depuración al proxy de la Mac (receta `forzar-un-rechazo-del-server-con-un-proxy`). Sin la
+        // propiedad, el túnel ngrok de siempre. Sólo afecta a API_BASE_URL_DEV (builds de depuración).
+        val devBaseUrl = (project.findProperty("avoqado.devBaseUrl") as String?)
+            ?: "https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1/"
+        buildConfigField("String", "API_BASE_URL_DEV", "\"$devBaseUrl\"")
         buildConfigField("String", "SOCKET_URL", "\"https://api.avoqado.io\"")
         buildConfigField("String", "SOCKET_URL_DEV", "\"https://patchiest-noncommemorational-willia.ngrok-free.dev\"")
         buildConfigField("boolean", "ENABLE_PAX_SDK", "true")

@@ -406,6 +406,32 @@ class PaymentViewModel @Inject constructor(
     private var currentStaffId: String = ""  // Staff ID from auth context
     private var currentShiftId: String? = null  // Shift ID from current open shift (null if no shift)
 
+    /**
+     * 🔴 Candado de «cobro en efectivo en vuelo». El guard `as? SelectingMerchant` de
+     * [processCashPayment] NO protege mientras `resolveCurrentShiftForPayment` espera por red:
+     * cada toque pasa el guard, se estaciona y al resolver registra su PROPIO cobro
+     * (SN00396, BAE MEZQUITAL, 2026-09-04: 5 Payment COMPLETED en 1.7 s desde la misma PAX,
+     * referencias distintas y sin llave de idempotencia). El candado se toma SÍNCRONO antes
+     * de lanzar la corrutina y se suelta en el `finally` del propio intento.
+     *
+     * ⚠️ A propósito NO lo limpian `resetPayment()` ni `cancelPayment()`: sólo lo suelta el
+     * intento que lo tomó. Limpiarlo desde fuera reabriría justo la ventana que cierra —
+     * el cajero cancela mientras el POST viaja y el siguiente toque cobra por segunda vez.
+     */
+    private val cobroEnEfectivoEnVuelo = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * La referencia de un cobro en efectivo sale de la LLAVE del intento, no del reloj.
+     *
+     * Antes era `CASH-${System.currentTimeMillis()}`, acuñada dentro de cada corrutina: en una
+     * ráfaga salían N referencias distintas a ~5 ms y la defensa por `referenceNumber` del
+     * servidor no veía nada. Derivada de la llave, un reintento del MISMO intento manda la
+     * MISMA referencia. Conserva el prefijo `CASH-`, que el servidor, la cola offline
+     * (`QueuedPayment.isCashQueuedPayment()`) y el ticket ya reconocen.
+     */
+    private fun referenciaDeEfectivo(attemptId: String, prefijo: String = "CASH-"): String =
+        prefijo + attemptId.replace("-", "").takeLast(16)
+
     // 🪙 CRYPTO PAYMENT: Track pending B4Bit request for Socket.IO matching
     private var currentCryptoRequestId: String? = null  // B4Bit request ID (for matching webhook callback)
 
@@ -4857,8 +4883,19 @@ class PaymentViewModel @Inject constructor(
     fun processCashPayment(totalAmount: String) {
         Timber.d("💵 [Cash Payment] Processing cash payment: \$$totalAmount")
 
-        // 🛡️ IDEMPOTENCY KEY (2026-04-08): Generate UUID for this cash payment attempt
-        ensurePaymentAttemptId()
+        // 🔴 CANDADO DE COBRO EN EFECTIVO EN VUELO (2026-09-07). Se toma SÍNCRONO, antes de
+        // lanzar nada: el guard de estado de abajo vive DENTRO de la corrutina y no protege
+        // mientras se consulta el turno por red. Ver [cobroEnEfectivoEnVuelo].
+        if (!cobroEnEfectivoEnVuelo.compareAndSet(false, true)) {
+            Timber.w("💵 [Cash Payment] Toque ignorado: ya hay un cobro en efectivo en vuelo | attempt=${sessionSnapshot.paymentAttemptId}")
+            return
+        }
+
+        // 🛡️ IDEMPOTENCY KEY (2026-04-08): UNA llave por intento, capturada AQUÍ (síncrona) y
+        // llevada explícita al contexto, a la referencia y a la fila de la cola. Leerla de la
+        // sesión DESPUÉS de la espera es lo que mandó llave vacía en producción: cancelar o
+        // reiniciar la pantalla mientras el toque estaba estacionado la borra.
+        val attemptId = ensurePaymentAttemptId()
 
         com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setPaymentContext(
             processor = "BLUMON",
@@ -4874,6 +4911,12 @@ class PaymentViewModel @Inject constructor(
                 // Get current payment context from SelectingMerchant state BEFORE changing state
                 val currentState = _state.value as? PaymentState.SelectingMerchant
                     ?: throw IllegalStateException("Invalid state for cash payment. Expected SelectingMerchant, got: ${_state.value}")
+
+                // 🔴 OCUPADO ANTES DEL PRIMER AWAIT: la tarjeta «Efectivo» vive en la pantalla
+                // de SelectingMerchant. Fijar «Procesando» sólo DESPUÉS de resolver el turno
+                // (que con el socket medio muerto tarda hasta 30 s) dejaba el botón tocable
+                // durante toda la espera — la ventana exacta de la ráfaga de SN00396.
+                _state.value = PaymentState.Processing("Verificando turno...")
 
                 // 🧾 Keep snapshot aligned with UI state before cash processing
                 updateSessionSnapshot(
@@ -4996,22 +5039,26 @@ class PaymentViewModel @Inject constructor(
                 // ✅ RECONCILIATION: null merchantAccountId = proper separation (cash has no processor cost)
                 // 🆕 Order vs Fast: If orderId present, create OrderPayment (triggers inventory deduction)
                 val orderIdForFlow = getOrderIdForFlow()
+                // 🛡️ `.copy(idempotencyKey = attemptId)`: los helpers la leen de la sesión, que
+                // pudo vaciarse mientras este toque esperaba. La llave capturada al arrancar es
+                // la única que sobrevive a un reset a media espera.
                 val context = if (orderIdForFlow != null) {
                     buildOrderPaymentContext(
                         staffId = currentStaffId!!,
                         merchantAccountId = null,  // ✅ null = cash (no processor)
                         blumonSerial = ""  // No Blumon SDK for cash payments
-                    )
+                    ).copy(idempotencyKey = attemptId)
                 } else {
                     buildFastPaymentContext(
                         staffId = currentStaffId!!,
                         merchantAccountId = null,  // ✅ null = cash (no processor)
                         blumonSerial = ""  // No Blumon SDK for cash payments
-                    )
+                    ).copy(idempotencyKey = attemptId)
                 }
 
-                // Generate cash reference (unique ID for cash payments)
-                val cashReference = "CASH-${System.currentTimeMillis()}"
+                // Referencia derivada de la LLAVE del intento (no del reloj): un reintento del
+                // mismo intento manda la MISMA referencia. Ver [referenciaDeEfectivo].
+                val cashReference = referenciaDeEfectivo(attemptId)
 
                 Timber.d("💵 [Cash Payment] Recording payment to backend...")
                 Timber.d("   💰 Amount: ${context.amount} + Tip: ${context.tip} = Total: ${currentState.totalAmount}")
@@ -5077,6 +5124,18 @@ class PaymentViewModel @Inject constructor(
                         // request settled in CASH still moved money — the replay must close
                         // the TerminalPaymentRequest row or the slot stays held (UNKNOWN).
                         terminalPaymentRequestId = _socketRequestId,
+                        // 🔴 La fila de EFECTIVO nacía SIN llave, SIN orden y SIN seriales: al
+                        // reproducirla, el servidor creaba una venta FAST nueva —sin artículos y
+                        // sin SaleVerification («venta sin SIM» en el dashboard de PlayTelecom)—
+                        // y la orden original quedaba sin cobro. Con la llave, además, el replay
+                        // se deduplica contra el POST que sí llegó.
+                        idempotencyKey = attemptId,
+                        orderId = orderIdForFlow,
+                        orderNumber = getOrderNumberForFlow(),
+                        shiftId = currentShiftId,
+                        deviceSerialNumber = secureStorage.getSerialNumber(),
+                        isPortabilidad = _isPortabilidad.value,
+                        serialNumbers = listOfNotNull(_serialNumber),
                         createdAt = System.currentTimeMillis(),
                         retryCount = 0,
                         lastError = error.message,
@@ -5152,6 +5211,10 @@ class PaymentViewModel @Inject constructor(
                     context = null,
                     canRetry = false
                 )
+            } finally {
+                // 🔴 Un solo punto de salida para el candado: TODOS los `return@launch` de arriba
+                // (sesión vencida, sin turno, kiosco) y las tres ramas de `catch` pasan por aquí.
+                cobroEnEfectivoEnVuelo.set(false)
             }
         }
     }
@@ -5478,9 +5541,16 @@ class PaymentViewModel @Inject constructor(
             return
         }
 
+        // 🔴 MISMO CANDADO que processCashPayment: aquí el PIN puede tocarse dos veces
+        // mientras el POST viaja, y cada toque registraría su propio cobro.
+        if (!cobroEnEfectivoEnVuelo.compareAndSet(false, true)) {
+            Timber.w("🥝 [KIOSK CASH] Toque ignorado: ya hay un cobro en efectivo en vuelo | attempt=${sessionSnapshot.paymentAttemptId}")
+            return
+        }
+
         // 🛡️ IDEMPOTENCY KEY: reuse the one from processCashPayment() if still present,
         // otherwise generate a new one (safety net for reset edge cases)
-        ensurePaymentAttemptId()
+        val attemptId = ensurePaymentAttemptId()
 
         viewModelScope.launch {
             try {
@@ -5520,16 +5590,16 @@ class PaymentViewModel @Inject constructor(
                         staffId = effectiveStaffId,  // 🥝 Session staff for commission/tip
                         merchantAccountId = null,  // Cash has no processor
                         blumonSerial = ""
-                    )
+                    ).copy(idempotencyKey = attemptId)
                 } else {
                     buildFastPaymentContext(
                         staffId = effectiveStaffId,  // 🥝 Session staff for commission/tip
                         merchantAccountId = null,
                         blumonSerial = ""
-                    )
+                    ).copy(idempotencyKey = attemptId)
                 }
 
-                val cashReference = "CASH-KIOSK-${System.currentTimeMillis()}"
+                val cashReference = referenciaDeEfectivo(attemptId, prefijo = "CASH-KIOSK-")
 
                 // Record payment to backend
                 // 🔴 NonCancellable: si el proceso muere/la pantalla se abandona a media
@@ -5589,6 +5659,15 @@ class PaymentViewModel @Inject constructor(
                         authorizationNumber = "EFECTIVO-CONFIRMADO",
                         // 📡 Arbitration link (see the card enqueue site) — same reason as above.
                         terminalPaymentRequestId = _socketRequestId,
+                        // 🔴 Misma carencia que la fila del efectivo de mostrador: sin llave, sin
+                        // orden y sin seriales el replay nacía como venta FAST suelta.
+                        idempotencyKey = attemptId,
+                        orderId = currentState.orderId,
+                        orderNumber = currentState.orderNumber,
+                        shiftId = currentShiftId,
+                        deviceSerialNumber = secureStorage.getSerialNumber(),
+                        isPortabilidad = _isPortabilidad.value,
+                        serialNumbers = listOfNotNull(_serialNumber),
                         createdAt = System.currentTimeMillis(),
                         retryCount = 0,
                         lastError = error.message,
@@ -5652,6 +5731,8 @@ class PaymentViewModel @Inject constructor(
                     context = null,
                     canRetry = false
                 )
+            } finally {
+                cobroEnEfectivoEnVuelo.set(false)
             }
         }
     }
@@ -6636,17 +6717,19 @@ class PaymentViewModel @Inject constructor(
                         // cae a la cola se reproduce como pago rápido suelto y la orden sigue
                         // viéndose SIN PAGAR → el cajero la vuelve a cobrar (doble cobro humano).
                         //
-                        // Esto es SÓLO captura de datos, no cambia el flujo: el único consumidor
-                        // de orderId es la rama ANGELPAY de QueuedPayment.toPaymentContext(), y
-                        // este sitio nunca es ANGELPAY (AngelPay encola desde su propio
-                        // ViewModel; el mapeo de vuelta cae a BLUMON por defecto). En pago
-                        // rápido ambos helpers devuelven null → fila idéntica a la de antes.
-                        //
-                        // ⚠️ Si algún día se unifican los ViewModels de Blumon y AngelPay, esta
-                        // premisa deja de valer y el replay cambiaría EN SILENCIO. Lo fija
-                        // PaymentViewModelTest → "el encolado de tarjeta nunca es ANGELPAY".
+                        // ⚠️ ACTUALIZADO 2026-09-07: este orderId YA NO es sólo captura de datos.
+                        // Desde el arreglo de QueuedPayment.toPaymentContext(), una fila Blumon
+                        // CON orderId se reproduce como PaymentContext.OrderPayment — que es
+                        // justo lo que arregla el defecto descrito arriba. En pago rápido ambos
+                        // helpers siguen devolviendo null → fila y replay idénticos a antes.
                         orderId = getOrderIdForFlow(),
                         orderNumber = getOrderNumberForFlow(),
+                        // 🔗 Sin turno, aparato y seriales, ese replay de ORDEN llegaría sin
+                        // atribución de caja ni prueba de venta (SaleVerification de la SIM).
+                        shiftId = currentShiftId,
+                        deviceSerialNumber = secureStorage.getSerialNumber(),
+                        isPortabilidad = _isPortabilidad.value,
+                        serialNumbers = listOfNotNull(_serialNumber),
                         retryCount = 0,
                         lastError = error.message,
                         syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING

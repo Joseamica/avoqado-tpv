@@ -318,13 +318,18 @@ class PaymentViewModelTest {
      * IMPORTANT: Must cancel viewModelScope at end of each test to prevent
      * runTest hang from infinite StateFlow collectors in init block.
      */
-    private fun createViewModel(): PaymentViewModel {
+    private fun createViewModel(
+        startDetectCardUseCase: com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase =
+            mockk(relaxed = true),
+        startCtlssTransUseCase: com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase =
+            mockk(relaxed = true),
+    ): PaymentViewModel {
         return PaymentViewModel(
             preTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.pre_trans.PreTransUseCase>(relaxed = true),
-            startDetectCardUseCase = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>(relaxed = true),
+            startDetectCardUseCase = startDetectCardUseCase,
             stopDetectCardUseCase = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.stop_detect_card.StopDetectCardUseCase>(relaxed = true),
             startEmvTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransUseCase>(relaxed = true),
-            startCtlssTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>(relaxed = true),
+            startCtlssTransUseCase = startCtlssTransUseCase,
             getEmvTagUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.get_emv_tags.GetEmvTagUseCase>(relaxed = true),
             completeEmvTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.complete_emv_trans.CompleteEmvTransUseCase>(relaxed = true),
             continueConfirmCardUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.continue_confirm_card.ContinueConfirmCardUseCase>(relaxed = true),
@@ -2124,5 +2129,91 @@ class PaymentViewModelTest {
         } finally {
             viewModel.viewModelScope.cancel()
         }
+    }
+
+    // ── Contactless denegado por el KERNEL de la PAX (Testarudo 2026-09-07) ─────────────────
+    // Nueve `CtlssDeniedFailure` en tres ventas; la app pintaba «Error leyendo tarjeta contactless»
+    // y la cajera entraba al bucle cancelar → reenviar → volver a acercar la MISMA tarjeta.
+
+    private fun detectQueDevuelveUnToque(
+        calls: MutableList<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardParams>,
+    ): com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase {
+        val tap = mockk<com.pax.dal.entity.PollingResult>(relaxed = true)
+        every { tap.readerType } returns com.pax.dal.entity.EReaderType.PICC
+        val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>(relaxed = true)
+        coEvery { detect.run(capture(calls)) } returns com.blumonpay.pax.utils.clean.Either.Right(
+            com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardResponse(tap),
+        )
+        return detect
+    }
+
+    private fun kernelQueDeniega(emvCode: Int): com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase {
+        val ctlss = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>(relaxed = true)
+        coEvery { ctlss.run(any()) } returns com.blumonpay.pax.utils.clean.Either.Left(
+            com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransFailure.CtlssDeniedFailure(emvCode),
+        )
+        return ctlss
+    }
+
+    @Test
+    fun `P1 contactless denegado por el kernel dice chip y el reintento abre el lector sin PICC`() = runTest {
+        val detectCalls = mutableListOf<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardParams>()
+        val viewModel = createViewModel(
+            startDetectCardUseCase = detectQueDevuelveUnToque(detectCalls),
+            startCtlssTransUseCase = kernelQueDeniega(emvCode = 12),
+        )
+        viewModel.selectMerchant(testMerchantA)
+        Thread.sleep(1000)
+
+        viewModel.startPayment("100.00")
+        Thread.sleep(1500)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val error = viewModel.state.value as? PaymentState.Error
+        assertThat(error).isNotNull()
+        assertThat(error!!.message).contains("INSERTE")
+        assertThat(error.message).contains("código 12")
+        assertThat(error.message).contains("No es un rechazo del banco")
+        assertThat(error.canRetry).isTrue()
+        assertThat(detectCalls.map { it.readerType }).containsExactly(com.pax.dal.entity.EReaderType.MAG_ICC_PICC)
+
+        // Reintentar: misma venta (monto, propina, merchant), pero el lector ya no escucha el NFC
+        viewModel.retryPayment(error.context)
+        Thread.sleep(1500)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertThat(detectCalls.map { it.readerType })
+            .containsExactly(com.pax.dal.entity.EReaderType.MAG_ICC_PICC, com.pax.dal.entity.EReaderType.MAG_ICC)
+            .inOrder()
+
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 cancelar tras un rechazo contactless deja el lector completo para la siguiente venta`() = runTest {
+        val detectCalls = mutableListOf<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardParams>()
+        val viewModel = createViewModel(
+            startDetectCardUseCase = detectQueDevuelveUnToque(detectCalls),
+            startCtlssTransUseCase = kernelQueDeniega(emvCode = 12),
+        )
+        viewModel.selectMerchant(testMerchantA)
+        Thread.sleep(1000)
+
+        viewModel.startPayment("100.00")
+        Thread.sleep(1500)
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertThat(viewModel.state.value).isInstanceOf(PaymentState.Error::class.java)
+
+        // El cajero cancela y llega OTRO cliente: nada del rechazo anterior puede recortarle el lector
+        viewModel.cancelPayment()
+        viewModel.resetPayment()
+        viewModel.startPayment("80.00")
+        Thread.sleep(1500)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertThat(detectCalls.map { it.readerType })
+            .containsExactly(com.pax.dal.entity.EReaderType.MAG_ICC_PICC, com.pax.dal.entity.EReaderType.MAG_ICC_PICC)
+
+        viewModel.viewModelScope.cancel()
     }
 }

@@ -1813,6 +1813,144 @@ class PaymentViewModelTest {
             viewModel.viewModelScope.cancel()
         }
     }
+    // 🔴 Hueco 2 (2026-09-07): el registro del cobro se cortó (timeout de 25 s con la red VIVA, o
+    // caída de red) y el cobro entró a la cola — pero en el camino Blumon nadie pedía el sync
+    // inmediato: la fila esperaba al periódico de 15 min mientras el servidor mantenía la
+    // terminal «ocupada». AngelPay ya hacía el kick (AngelPayPaymentViewModel). Con la red
+    // viva WorkManager corre en segundos; sin red, la petición única espera al constraint
+    // CONNECTED y dispara sola al volver — sin observador propio ni candados nuevos.
+    @Test
+    fun `P1 tras encolar el cobro pide el sync inmediato en vez de esperar 15 minutos`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        try {
+            coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
+            clearMocks(com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler, answers = false, recordedCalls = true)
+
+            viewModel.handleOfflineQueueOutcome(
+                queuedPayment = queuedPaymentDeHueco2(),
+                context = PaymentContext.FastPayment(
+                    venueId = testVenueId,
+                    staffId = testStaffId,
+                    amount = BigDecimal("25.00"),
+                    merchantAccountId = "merchant_a"
+                ),
+                recordError = RuntimeException("timeout"),
+                referenceNumber = "873257481453",
+                orderIdForFlow = null
+            )
+
+            verify(exactly = 1) { com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.runNow(any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 si la cola NO aceptó el cobro no se pide ningún sync - no hay nada que reproducir`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        try {
+            coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.failure(RuntimeException("disco lleno"))
+            clearMocks(com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler, answers = false, recordedCalls = true)
+
+            viewModel.handleOfflineQueueOutcome(
+                queuedPayment = queuedPaymentDeHueco2(),
+                context = PaymentContext.FastPayment(
+                    venueId = testVenueId,
+                    staffId = testStaffId,
+                    amount = BigDecimal("25.00"),
+                    merchantAccountId = "merchant_a"
+                ),
+                recordError = RuntimeException("timeout"),
+                referenceNumber = "873257481453",
+                orderIdForFlow = null
+            )
+
+            verify(exactly = 0) { com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.runNow(any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    // Los dos sitios de EFECTIVO encolan por el mismo camino (y llevan el `terminalPaymentRequestId`
+    // del cobro que mandó la tablet): sin el kick, la fila del servidor se queda «ocupada» hasta el
+    // periódico de 15 min aunque el dinero ya esté en el cajón.
+    @Test
+    fun `P1 efectivo - tras encolar el cobro pide el sync inmediato`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            coEvery {
+                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            } returns Result.failure(RuntimeException("timeout"))
+            coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
+            clearMocks(com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler, answers = false, recordedCalls = true)
+
+            viewModel.submitAmountDirectToMerchant("100.00")
+            viewModel.setSocketPaymentSource("SOCKET", "req-123")
+            viewModel.processCashPayment("100.00")
+
+            coVerify(timeout = 2000) { mockPaymentQueueRepository.enqueue(any()) }
+            verify(timeout = 2000, exactly = 1) { com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.runNow(any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 efectivo confirmado en kiosco - tras encolar el cobro pide el sync inmediato`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            coEvery {
+                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            } returns Result.failure(RuntimeException("timeout"))
+            coEvery { mockPaymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
+            clearMocks(com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler, answers = false, recordedCalls = true)
+
+            // confirmCashPayment exige AwaitingCashConfirmation: se siembra el estado privado, como
+            // hacen las pruebas de handleOfflineQueueOutcome.
+            val stateField = PaymentViewModel::class.java.getDeclaredField("_state")
+            stateField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val stateFlow = stateField.get(viewModel) as kotlinx.coroutines.flow.MutableStateFlow<PaymentState>
+            stateFlow.value = PaymentState.AwaitingCashConfirmation(
+                subtotal = "100.00",
+                tipAmount = "0.00",
+                totalAmount = "100.00",
+                rating = null,
+                orderId = null,
+                orderNumber = null
+            )
+
+            viewModel.confirmCashPayment(confirmedByStaffId = testStaffId)
+
+            coVerify(timeout = 2000) { mockPaymentQueueRepository.enqueue(any()) }
+            verify(timeout = 2000, exactly = 1) { com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.runNow(any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    private fun queuedPaymentDeHueco2() = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
+        queueId = 0,
+        referenceNumber = "873257481453",
+        venueId = testVenueId,
+        staffId = testStaffId,
+        amount = BigDecimal("25.00"),
+        tip = BigDecimal.ZERO,
+        rating = null,
+        merchantAccountId = "merchant_a",
+        blumonSerialNumber = "2841548417",
+        maskedPan = "**** 4242",
+        cardBrand = "VISA",
+        entryMode = "CHIP",
+        isInternational = false,
+        authorizationNumber = "F628CL",
+        idempotencyKey = "idem-hueco2-1",
+        createdAt = System.currentTimeMillis(),
+        retryCount = 0,
+        lastError = "timeout",
+        syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING
+    )
+
 
     @Test
     fun `reportRecordingLost sends structured telemetry with reference orderId amount venue and both errors`() = runTest {

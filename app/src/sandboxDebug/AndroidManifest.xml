@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Desempate SÓLO para la variante sandboxDebug.
+
+    Dos source sets declaran android:networkSecurityConfig y el merger no puede elegir:
+      · src/debug      → @xml/network_security_config_debug   (cleartext a la Mac de QA, sin trust anchors)
+      · src/sandbox    → @xml/network_security_config         (cleartext a todo + CA de usuario, para mitmproxy)
+    Sin este archivo, `processSandboxDebugMainManifest` falla y con él installSandboxDebug,
+    testSandboxDebugUnitTest y el workflow signed-builds.yml (medido el 7-sep-2026).
+
+    Gana el de SANDBOX, y no es arbitrario: su <base-config cleartextTrafficPermitted="true">
+    ya permite tráfico en claro a TODOS los dominios, así que cubre el proxy de QA de la Mac
+    sin necesidad del otro; y además conserva la confianza en CA de usuario, que es lo único
+    que permite interceptar HTTPS con mitmproxy/Charles. Al revés se perdería esa capacidad
+    a cambio de nada.
+
+    Este archivo es de la VARIANTE (flavor+buildType), que tiene más prioridad que src/debug
+    y que src/sandbox, así que el desempate vive donde está el choque: las demás variantes
+    de depuración (nexgoDebug, productionDebug, tutorialEmuDebug, gymDemoDebug) siguen
+    usando @xml/network_security_config_debug, sin tocar su postura de seguridad.
+    Ninguna variante de release incluye el source set debug: no les afecta.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:networkSecurityConfig="@xml/network_security_config"
+        tools:replace="android:networkSecurityConfig" />
+
+</manifest>

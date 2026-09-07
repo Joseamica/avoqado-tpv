@@ -6,6 +6,7 @@ import com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent
 import io.mockk.*
 import io.socket.client.IO
 import io.socket.client.Socket
+import io.socket.client.Ack
 import io.socket.emitter.Emitter
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -36,6 +37,8 @@ class SocketManagerTest {
     private lateinit var mockSecureStorage: com.jaac.avoqado_tpv.core.data.local.SecureStorage
     private lateinit var mockAuthRepositoryLazy: dagger.Lazy<com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository>
     private lateinit var mockSessionManager: com.jaac.avoqado_tpv.core.session.SessionManager
+    private lateinit var mockRemotePaymentInbox: com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox
+    private lateinit var mockRemotePaymentCoordinator: com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
     private lateinit var socketManager: SocketManager
 
     // Captured listeners for simulating server events
@@ -53,6 +56,8 @@ class SocketManagerTest {
         mockSecureStorage = mockk(relaxed = true)
         mockAuthRepositoryLazy = mockk(relaxed = true)
         mockSessionManager = mockk(relaxed = true)
+        mockRemotePaymentInbox = mockk(relaxed = true)
+        mockRemotePaymentCoordinator = mockk(relaxed = true)
 
         // Capture all event listeners when socket.on() is called
         every { mockSocket.on(any(), any()) } answers {
@@ -77,6 +82,8 @@ class SocketManagerTest {
             secureStorage = mockSecureStorage,
             authRepositoryLazy = mockAuthRepositoryLazy,
             sessionManager = mockSessionManager,
+            remotePaymentInbox = mockRemotePaymentInbox,
+            remotePaymentCoordinator = mockRemotePaymentCoordinator,
         )
         socketManager.connect("https://test.socket.io", "test-token")
     }
@@ -177,6 +184,46 @@ class SocketManagerTest {
     // ========================================
     // EVENT PARSING TESTS
     // ========================================
+
+    @Test
+    fun `terminal payment persists and queues before durable ACK`() = runTest(testDispatcher) {
+        val markers = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val request = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequest(
+            amountCents = 10_000,
+            tipCents = 1_000,
+            rating = 5,
+            skipReview = true,
+            processedByStaffId = "staff-pos",
+            socketRequestId = "req-durable",
+        )
+        coEvery { mockRemotePaymentInbox.receive(any()) } answers {
+            markers += "persist"
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentReceiveDecision.Deliver(request)
+        }
+        every { mockRemotePaymentCoordinator.submitSocketPaymentRequest(request) } answers {
+            markers += "queue"
+            true
+        }
+        val ack = mockk<Ack>()
+        every { ack.call(any()) } answers { markers += "ack" }
+
+        capturedListeners["terminal:payment_request"]?.call(
+            JSONObject().apply {
+                put("requestId", "req-durable")
+                put("amountCents", 10_000)
+                put("tipCents", 1_000)
+                put("rating", 5)
+                put("skipReview", true)
+                put("processedByStaffId", "staff-pos")
+                put("venueId", "venue-1")
+                put("timestamp", "2026-09-03T14:00:00Z")
+            },
+            ack,
+        )
+
+        verify(timeout = 2_000) { ack.call(any()) }
+        assertThat(markers).containsExactly("persist", "queue", "ack").inOrder()
+    }
 
     @Test
     fun `should parse payment_completed event correctly`() = runTest(testDispatcher) {

@@ -3074,8 +3074,8 @@ class AngelPayPaymentViewModel @Inject constructor(
     }
 
     override fun onCleared() {
-        // Antes de super: el emit es síncrono (SocketManager.emitTerminalPaymentResult no suspende
-        // ni lanza) y no depende del viewModelScope, que para cuando corre esto ya está cancelado.
+        // Antes de super: SocketManager persiste y emite en su scope de aplicación, no en
+        // viewModelScope; por eso sobrevive a la cancelación de este ViewModel.
         Timber.d("♻️ [AngelPay] onCleared — la pantalla murió, evaluando si hay que avisarle al POS")
         emitCancelledIfAbandoned()
         super.onCleared()

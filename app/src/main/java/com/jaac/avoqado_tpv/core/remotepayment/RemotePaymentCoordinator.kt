@@ -3,6 +3,9 @@ package com.jaac.avoqado_tpv.core.remotepayment
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.receiveAsFlow
+import org.json.JSONObject
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -74,10 +77,16 @@ data class RemoteRefundRequest(
  * usaba era este bus de requests + cancelaciones, y es lo único que se conservó.
  */
 @Singleton
-class RemotePaymentCoordinator @Inject constructor() {
+class RemotePaymentCoordinator @Inject constructor(
+    private val remotePaymentInbox: RemotePaymentInbox,
+) {
 
-    private val _paymentRequests = MutableSharedFlow<RemotePaymentRequest>(extraBufferCapacity = 1)
-    val paymentRequests: SharedFlow<RemotePaymentRequest> = _paymentRequests.asSharedFlow()
+    // Channel, no SharedFlow: conserva UN request aunque la navegación todavía no
+    // esté colectando. La fila Room es la autoridad entre reinicios; este canal sólo
+    // cubre la ventana dentro del proceso.
+    private val paymentRequestChannel = Channel<RemotePaymentRequest>(capacity = 1)
+    val paymentRequests = paymentRequestChannel.receiveAsFlow()
+    private val queuedRequestIds = mutableSetOf<String>()
 
     // Track current socket payment for cancel verification (idempotency)
     @Volatile
@@ -90,17 +99,29 @@ class RemotePaymentCoordinator @Inject constructor() {
     /**
      * Submit a payment request from Socket.IO (server-routed payment).
      */
-    fun submitSocketPaymentRequest(request: RemotePaymentRequest) {
+    fun submitSocketPaymentRequest(request: RemotePaymentRequest): Boolean {
         Timber.i("📡 [RemotePayment] Forwarding socket payment: ${request.amountCents} cents (requestId=${request.socketRequestId})")
+        val requestId = request.socketRequestId ?: return false
+        synchronized(queuedRequestIds) {
+            if (requestId in queuedRequestIds) return true
+            if (!paymentRequestChannel.trySend(request).isSuccess) return false
+            queuedRequestIds += requestId
+        }
         currentSocketRequestId = request.socketRequestId
-        _paymentRequests.tryEmit(request)
+        return true
+    }
+
+    /** Claim durable justo antes de navegar/abrir cualquier SDK de cobro. */
+    suspend fun claimSocketPaymentRequest(requestId: String): Boolean {
+        synchronized(queuedRequestIds) { queuedRequestIds.remove(requestId) }
+        return remotePaymentInbox.markProcessing(requestId)
     }
 
     /**
      * Cancel a socket payment request (idempotent).
      * Only cancels if the requestId matches the current payment being processed.
      */
-    fun cancelSocketPaymentRequest(requestId: String?) {
+    suspend fun cancelSocketPaymentRequest(requestId: String?) {
         val currentId = currentSocketRequestId
         if (requestId == null || currentId == null) {
             // No requestId provided or no current payment - emit cancel anyway
@@ -112,6 +133,15 @@ class RemotePaymentCoordinator @Inject constructor() {
             Timber.i("🚫 [RemotePayment] Cancelling payment $requestId (matches current)")
             _paymentCancelRequests.tryEmit(requestId)
             currentSocketRequestId = null
+            synchronized(queuedRequestIds) { queuedRequestIds.remove(requestId) }
+            remotePaymentInbox.markResolved(
+                requestId,
+                JSONObject()
+                    .put("requestId", requestId)
+                    .put("status", "cancelled")
+                    .put("errorMessage", "Cancelado por el POS antes de iniciar el cobro")
+                    .toString(),
+            )
         } else {
             // RequestIds don't match - ignore (different payment already started)
             Timber.w("⚠️ [RemotePayment] Cancel ignored - requestId mismatch. Current=$currentId, Cancel=$requestId")

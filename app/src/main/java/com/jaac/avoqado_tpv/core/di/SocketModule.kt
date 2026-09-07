@@ -3,6 +3,8 @@ package com.jaac.avoqado_tpv.core.di
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.realtime.SocketManager
 import com.jaac.avoqado_tpv.core.session.SessionManager
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import dagger.Lazy
 import dagger.Module
@@ -62,11 +64,15 @@ object SocketModule {
         secureStorage: SecureStorage,
         authRepositoryLazy: Lazy<AuthRepository>,
         sessionManager: SessionManager,
+        remotePaymentInbox: RemotePaymentInbox,
+        remotePaymentCoordinator: RemotePaymentCoordinator,
     ): SocketManager {
         return SocketManager(
             secureStorage = secureStorage,
             authRepositoryLazy = authRepositoryLazy,
             sessionManager = sessionManager,
+            remotePaymentInbox = remotePaymentInbox,
+            remotePaymentCoordinator = remotePaymentCoordinator,
         )
     }
 }

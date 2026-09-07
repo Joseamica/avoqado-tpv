@@ -9,6 +9,7 @@ import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthReposito
 import dagger.Lazy
 import io.socket.client.IO
 import io.socket.client.Socket
+import io.socket.client.Ack
 import io.socket.emitter.Emitter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +33,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.random.Random
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentInbox
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentReceiveDecision
 
 /**
  * SocketManager - Centralized Socket.IO client management
@@ -78,6 +82,8 @@ class SocketManager @Inject constructor(
      * (HTTP 401/403 on /auth/refresh) — only path that should NOT keep retrying.
      */
     private val sessionManager: SessionManager,
+    private val remotePaymentInbox: RemotePaymentInbox,
+    private val remotePaymentCoordinator: RemotePaymentCoordinator,
 ) {
 
     // ========================================
@@ -200,6 +206,9 @@ class SocketManager @Inject constructor(
                 auth = buildMap {
                     put("token", token)
                     if (terminalId != null) put("terminalId", terminalId)
+                    // Capability gate para que el backend sólo reentregue a APKs con
+                    // inbox durable; una APK vieja no puede deduplicar con seguridad.
+                    put("terminalPaymentAckVersion", "1")
                 }
 
                 // Transports: WebSocket preferred, fallback to polling
@@ -1512,22 +1521,46 @@ class SocketManager @Inject constructor(
     private val onTerminalPaymentRequest = Emitter.Listener { args ->
         try {
             val data = args.getOrNull(0) as? JSONObject ?: return@Listener
+            val ack = args.lastOrNull() as? Ack
 
             Timber.i("💳 [Socket] Terminal payment request received: ${data.optString("requestId")}")
-            _events.tryEmit(
-                SocketEvent.TerminalPaymentRequest(
-                    requestId = data.optString("requestId", ""),
-                    amountCents = data.optLong("amountCents", 0),
-                    tipCents = data.optLong("tipCents", 0),
-                    rating = data.optInt("rating").takeIf { data.has("rating") },
-                    skipReview = data.optBoolean("skipReview", true),
-                    orderId = data.optString("orderId").takeIf { it.isNotEmpty() },
-                    processedByStaffId = data.optString("processedByStaffId").takeIf { it.isNotEmpty() },
-                    senderDeviceName = data.optString("senderDeviceName").takeIf { it.isNotEmpty() },
-                    venueId = data.optString("venueId", ""),
-                    timestamp = data.optString("timestamp", "")
-                )
+            val event = SocketEvent.TerminalPaymentRequest(
+                requestId = data.optString("requestId", ""),
+                amountCents = data.optLong("amountCents", 0),
+                tipCents = data.optLong("tipCents", 0),
+                rating = data.optInt("rating").takeIf { data.has("rating") },
+                skipReview = data.optBoolean("skipReview", true),
+                orderId = data.optString("orderId").takeIf { it.isNotEmpty() },
+                processedByStaffId = data.optString("processedByStaffId").takeIf { it.isNotEmpty() },
+                senderDeviceName = data.optString("senderDeviceName").takeIf { it.isNotEmpty() },
+                venueId = data.optString("venueId", ""),
+                timestamp = data.optString("timestamp", ""),
             )
+
+            socketScope.launch {
+                when (val decision = remotePaymentInbox.receive(event)) {
+                    is RemotePaymentReceiveDecision.Deliver -> {
+                        val queued = remotePaymentCoordinator.submitSocketPaymentRequest(decision.request)
+                        ack?.call(JSONObject().put("accepted", queued).put("requestId", event.requestId))
+                    }
+                    RemotePaymentReceiveDecision.AckOnly -> {
+                        ack?.call(JSONObject().put("accepted", true).put("requestId", event.requestId))
+                    }
+                    is RemotePaymentReceiveDecision.ReplayResult -> {
+                        ack?.call(JSONObject().put("accepted", true).put("requestId", event.requestId))
+                        emitPersistedTerminalPaymentResult(decision.finalResultJson)
+                    }
+                    is RemotePaymentReceiveDecision.Reject -> {
+                        Timber.e("❌ [Socket] Remote payment rejected before ACK: ${decision.reason}")
+                        ack?.call(
+                            JSONObject()
+                                .put("accepted", false)
+                                .put("requestId", event.requestId)
+                                .put("error", decision.reason),
+                        )
+                    }
+                }
+            }
         } catch (e: Exception) {
             Timber.e(e, "❌ Error parsing terminal:payment_request")
         }
@@ -1921,7 +1954,7 @@ class SocketManager @Inject constructor(
         receiptAccessKey: String? = null
     ) {
         try {
-            socket?.emit("terminal:payment_result", JSONObject().apply {
+            val payload = JSONObject().apply {
                 put("requestId", requestId)
                 put("status", status)
                 put("paymentId", paymentId ?: JSONObject.NULL)
@@ -1939,10 +1972,27 @@ class SocketManager @Inject constructor(
                     })
                 }
                 put("completedAt", java.time.Instant.now().toString())
-            })
-            Timber.i("📡 [Socket] Emitted terminal:payment_result | requestId=$requestId | status=$status")
+            }
+            // Dinero: el resultado va a disco ANTES del socket. Si el proceso muere
+            // entre ambos, la reentrega del mismo requestId reproduce este JSON.
+            socketScope.launch {
+                if (!remotePaymentInbox.markResolved(requestId, payload.toString())) {
+                    Timber.e("❌ [Socket] Result not emitted: durable inbox row missing/already resolved | requestId=$requestId")
+                    return@launch
+                }
+                socket?.emit("terminal:payment_result", payload)
+                Timber.i("📡 [Socket] Emitted durable terminal:payment_result | requestId=$requestId | status=$status")
+            }
         } catch (e: Exception) {
             Timber.e(e, "❌ Failed to emit terminal:payment_result")
+        }
+    }
+
+    private fun emitPersistedTerminalPaymentResult(finalResultJson: String) {
+        try {
+            socket?.emit("terminal:payment_result", JSONObject(finalResultJson))
+        } catch (error: Exception) {
+            Timber.e(error, "❌ Failed to replay durable terminal:payment_result")
         }
     }
 

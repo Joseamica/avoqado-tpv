@@ -25,6 +25,25 @@
 
 ---
 
+## [2.9.1] - 2026-09-07
+
+> Release de **Nexgo/AngelPay** (`nexgoProd`, versionCode **105**). Las variantes PAX conservan 2.8.7 / 104.
+> Junta por fin las dos ramas: TODO lo de 2.8.4 → 2.8.7 (cola durable de reembolsos, arreglos del 5-sep,
+> reporte, contactless) MÁS el acuse de recibo de la 2.9.0, que vivía en `develop` y ninguna terminal corrió.
+
+### **Fixed**
+
+- **Incluye, para Nexgo, todo lo que sigue listado en [Unreleased] al 7-sep**: el candado contra cobros duplicados en efectivo, la fila offline que vuelve a SU orden, el reintento inmediato de la cola tras un registro fallido y la firma del CI con la llave del founder. Se dejan en [Unreleased] porque las variantes PAX (2.8.7 / 104) todavía no los reciben: entran en el siguiente release de PAX.
+
+### **Changed**
+
+- **Room v32.** `remote_payment_requests` (inbox durable del acuse de recibo) llega por `MIGRATION_31_32`.
+  La `MIGRATION_29_30` de `develop` se retira: `main` ya ocupó 29→31 y 30→31 con `pending_refunds`, y la
+  flota en la calle va de 2.7.0 a 2.8.6 (v31 como mucho). El caso «v30 de develop» de la 30→31 queda como
+  defensa por si alguna terminal de laboratorio lo tuviera.
+- La versión de Nexgo vuelve a vivir sólo en el flavor `nexgoProd` (como en la 2.9.0): un release de Nexgo
+  no rebautiza los APK de PAX.
+
 ## [2.8.7] - 2026-09-07
 
 ### **Fixed**
@@ -110,6 +129,19 @@
 - **Nexgo ya no mezcla un cobro remoto cancelado con el siguiente Pago rápido**: al cancelar en la terminal, `skipReview`, la propina/calificación externas y el `socketRequestId` podían quedarse en el `SavedStateHandle` de Inicio; el siguiente cobro manual heredaba `skipReview=true` y ocultaba tanto Propina como Calificación. Ahora cada entrada manual crea un contexto limpio y todas las salidas de AngelPay eliminan el contexto anterior. Además, el flujo AngelPay ya consume la propina y calificación que el POS envió: omitir las pantallas significa “ya fueron contestadas”, no “descartar sus valores”. Se conserva el contrato contable: AngelPay recibe el total a cobrar y Avoqado registra base, propina y calificación por separado. Es una corrección del flujo existente, sin tier ni switch nuevos. 🔴 **Medido en producción (Amaena, NEXGO N860W173570, 2.8.3-nexgo-prod, 2-4 sep):** cada cobro que el POS mandaba a la terminal llegaba con `skipReview=true`, la terminal **descartaba la propina elegida en el POS** (`pendingTip` nacía en cero y el SDK cobraba sólo la base) y, además, dejaba `skipReview=true` pegado en el `SavedStateHandle` de Inicio, así que el siguiente «Pago rápido» hecho a mano en la terminal tampoco mostraba Calificación ni Propina. El personal lo rodeó cancelando en la terminal y tecleando el total con la propina adentro: 4 cobros con propina registrada en $0 ($210). Nada de esto vive en la base de datos: el estado pegado está en la memoria de la app y se limpia reiniciándola — hasta el siguiente cobro remoto, que lo vuelve a pegar. Esta corrección cierra las dos cosas.
 
 - **`:campo` — un WiFi que intercepta la conexión (portal cautivo, proxy corporativo) ya no tumba la app en el login**: `RepositorioAuthCampoImpl.entrar()` sólo atrapaba `IOException`, pero Retrofit parsea el cuerpo de la respuesta CON Gson dentro de `api.login()` — si el servidor responde 200 con un cuerpo que no tiene la forma de `LoginRespuesta` (ej. un array en vez de un objeto), Gson lanza `JsonSyntaxException`/`JsonIOException` (`RuntimeException`, no `IOException`), que escapaba del `try`, salía del `viewModelScope.launch` y cerraba la app entera (`CampoApplication` no tiene manejador). Reproducido con MockWebServer + Retrofit/Gson reales (no un fake) para no adivinar la excepción exacta: medido en este repo con Gson 2.8.5 (la que resuelve `converter-gson 2.9.0`), un HTML crudo de portal cautivo SÍ es una `IOException` (`MalformedJsonException`) que el catch ya atrapaba; el caso que de verdad escapaba es un cuerpo JSON válido pero de forma equivocada. Nuevo catch de `JsonParseException` con mensaje honesto: «No se pudo conectar con Avoqado. Si estás en un WiFi público, revisa que tengas internet.» 6 pruebas en `RepositorioAuthCampoImplTest` (1 nueva), verificada rompiendo el arreglo a propósito.
+
+---
+
+## [2.9.0] - 2026-09-03
+
+> Release exclusivo de Nexgo/AngelPay (`nexgoProd`, versionCode 101). Las variantes PAX
+> conservan 2.8.3 / versionCode 100.
+
+### **Fixed**
+
+- **[Nexgo] POS → TPV ahora confirma recepción sólo después de guardarla y deduplica reentregas**: las builds nuevas anuncian `terminalPaymentAckVersion=1`, persisten en Room el contrato completo (`requestId`, base, propina, calificación, orden y vendedor) antes del ACK y no vuelven a abrir el SDK para una solicitud ya en proceso. Si el resultado ya quedó guardado, una reconexión lo reproduce; un `requestId` repetido con cifras distintas se rechaza. La migración 29→30 es aditiva y conserva intactos los pagos pendientes. Los cobros iniciados directamente en la TPV no pasan por este inbox y mantienen su flujo normal.
+
+- **[Nexgo] Ya no mezcla un cobro remoto cancelado con el siguiente Pago rápido**: al cancelar en la terminal, `skipReview`, la propina/calificación externas y el `socketRequestId` podían quedarse en el `SavedStateHandle` de Inicio; el siguiente cobro manual heredaba `skipReview=true` y ocultaba tanto Propina como Calificación. Ahora cada entrada manual crea un contexto limpio y todas las salidas de AngelPay eliminan el contexto anterior. Además, el flujo AngelPay ya consume la propina y calificación que el POS envió: omitir las pantallas significa “ya fueron contestadas”, no “descartar sus valores”. Se conserva el contrato contable: AngelPay recibe el total a cobrar y Avoqado registra base, propina y calificación por separado. Es una corrección del flujo existente, sin tier ni switch nuevos.
 
 ---
 

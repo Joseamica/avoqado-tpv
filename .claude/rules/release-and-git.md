@@ -95,6 +95,79 @@ Never save APKs to Desktop.
 
 ### 6. Send to Blumon -> PAX re-signs -> final APK for terminals
 
+## 🔴 La llave de firma y el CI
+
+**Android identifica una app por el CERTIFICADO con el que está firmada, no por el nombre del
+keystore.** Todo lo que se ha entregado —Nexgo a AngelPay, PAX a Blumon, el `release-manifest`—
+sale de `~/.android/debug.keystore` de la Mac del founder, cuyo certificado es:
+
+```
+c27a142019340122cfdbb601ee3128f3bfb057ac22ef098a37c4bbdca32e0a11
+```
+
+**Un APK con otra huella NO puede actualizar una terminal que ya tenga Avoqado instalado**
+(`INSTALL_FAILED_UPDATE_INCOMPATIBLE`). Se instala perfecto en un aparato limpio, así que el
+problema no se ve hasta que alguien intenta actualizar una terminal en la calle.
+
+### Lo que pasó el 7-sep-2026 (por eso existe esta sección)
+
+El workflow `.github/workflows/signed-builds.yml` **generaba una keystore nueva** con
+`keytool -genkeypair` en cada corrida. Su comentario decía que la debug.keystore es «la misma en
+cualquier SDK del mundo»: eso vale para el DN (`CN=Android Debug,O=Android,C=US`) y para la
+contraseña (`android`), **no para el par de llaves**, que `keytool` genera al azar cada vez.
+Medido: `app-nexgo-eaf0d18-signed.apk` del release `build-eaf0d18` llevaba `8a4a15e0…`.
+
+🔴 **La firma era VÁLIDA y el `apksigner verify` salía en verde** — la comprobación de esquema v2
+no dice nada de con QUÉ llave se firmó. Por eso el defecto sobrevivió: nada en la corrida fallaba.
+
+### Cómo comprobar la huella de un APK
+
+```bash
+~/Library/Android/sdk/build-tools/36.0.0/apksigner verify --print-certs APK | grep 'SHA-256 digest'
+# Signer #1 certificate SHA-256 digest: c27a1420…  ← la buena
+```
+
+### El secreto `DEBUG_KEYSTORE_BASE64` (paso del founder, una sola vez)
+
+El CI ya no genera la llave: la **reconstruye** desde ese secreto, igual que hace con
+`google-services.json`. Sin el secreto, la corrida **falla en el primer minuto** en vez de publicar
+un APK inservible. Para subirlo:
+
+```bash
+base64 -i ~/.android/debug.keystore | pbcopy   # macOS lo deja en UNA línea (~3,492 caracteres)
+```
+
+Y pegarlo en **GitHub → repo `avoqado-tpv` → Settings → Secrets and variables → Actions →
+New repository secret**, con el nombre exacto `DEBUG_KEYSTORE_BASE64`.
+
+⚠️ **Esa llave privada es la identidad de la app en cada terminal instalada.** Que la contraseña
+sea pública no la vuelve inofensiva: quien la tenga puede firmar un APK que las terminales
+aceptarán como actualización legítima de Avoqado. Va como secreto de repositorio (no de entorno ni
+de organización), y el repo es privado. **Nunca se imprime, nunca se commitea, y si se rota, la
+flota entera deja de poder actualizarse** — habría que reinstalar terminal por terminal.
+
+### El candado que impide que vuelva a pasar
+
+`signed-builds.yml` comprueba la huella **dos veces** contra `HUELLA_ESPERADA`, que va en claro en
+el propio workflow (es una llave pública; ponerla en un secreto permitiría cambiarla en silencio
+para que cuadrara con la keystore equivocada):
+
+1. **Al reconstruir el keystore**, antes de compilar — un secreto ausente o equivocado se caza en
+   segundos, no tras 40 minutos de build.
+2. **Sobre cada APK ya firmado** (`apksigner verify --verbose --print-certs`), justo después del
+   chequeo de esquema v2.
+
+Si alguna no coincide, la corrida falla y **no se publica ningún release**.
+
+### Qué sirve para qué
+
+| Origen del APK | ¿Actualiza una terminal en la calle? |
+|---|---|
+| Mac (ceremonia `/avoqado:release-production` o `assembleNexgoProdRelease` + `apksigner`) | **Sí** — es lo que se entrega a AngelPay y a Blumon |
+| GitHub Actions **con** `DEBUG_KEYSTORE_BASE64` puesto | **Sí** — misma llave, misma huella |
+| GitHub Actions **sin** el secreto | **No corre**: la corrida falla a propósito |
+| Cualquier APK con huella ≠ `c27a1420…` | **No** — sólo instala en un aparato limpio |
+
 ## Version Bump Recommendations
 
 **THE KEY QUESTION: Can the user do something they COULDN'T before?**

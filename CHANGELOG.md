@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+---
+
+## [2.8.7] - 2026-09-07
+
+### **Fixed**
+
+- **🔴 «No pasa el contactless» ya dice qué hacer y deja de pedir toques inútiles (PAX / Blumon TPV)**: cuando el kernel contactless del SDK rechaza una tarjeta (`CtlssDeniedFailure`, `CtlssUseContactFailure`, `EmvNoAppFailure`), la app caía a la rama genérica «Error leyendo tarjeta contactless… intente nuevamente», la cajera cancelaba, la tablet reenviaba el cobro y volvían a acercar la MISMA tarjeta, que el kernel volvía a denegar. Testarudo 2026-09-07: **9 toques denegados en 3 ventas** ($75 ×4, $80 ×1, $55 ×4), las tres entraron con chip a la primera; el portal de Blumon TPV no muestra nada porque el kernel decide dentro de la PAX, antes de autorizar. Ahora `ContactlessKernelResult` (pura, en `main`, sin tipos del SDK) clasifica el fallo por su clase real y su `emvCode`: dice «pide al cliente que INSERTE la tarjeta» con el código y aclara que **no es un rechazo del banco**, y el reintento («Reintentar» conserva monto, propina y merchant) abre el lector **sólo chip y banda** (`EReaderType.MAG_ICC`) — la bandera se consume en ese intento y se limpia en `resetPayment()` y `cancelPayment()` para no contaminar la venta siguiente. `ContactlessSeePhoneFailure` pide confirmar en el teléfono sin recortar el lector; tarjeta retirada, timeout y colisión conservan sus mensajes. **El motivo viaja a observabilidad** (`Contactless no aceptado por el kernel` con `failureClass`, `emvCode`, `outcome`), donde antes sólo quedaba `…CtlssDeniedFailure@2cba583`. Cambio idéntico en `sandbox/` y `production/`. 10 pruebas en `ContactlessKernelResultTest` + 1 en `PaymentViewModelTest`.
+
 ## [2.8.6] - 2026-09-06
 
 > Sustituye a la 2.8.5 (102), que se firmó pero **no se entregó**: la revisión de código del 5-sep encontró en la cola de reembolsos tres defectos —dos de dinero— y un choque de versiones de Room con `develop`. Es la que hay que mandar a AngelPay.

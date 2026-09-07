@@ -31,6 +31,7 @@ import com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.St
 import com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransFailure
 // Contactless (NFC) payment processing
 import com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase
+import com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransFailure
 import com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransParams
 import com.blumonpay.pax.shared_tools.manager.CountryConstants
 import com.example.clean_lib_services.shared.core.domain.entity.sale_data.AuthenticationCard
@@ -482,6 +483,15 @@ class PaymentViewModel @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════════════
     // CARD TYPE DETECTION (CHIP vs CONTACTLESS)
     // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * 🔴 Tras un rechazo del KERNEL contactless (denegada · pide contacto · sin aplicación), el
+     * siguiente `StartDetectCard` abre el lector SIN PICC (sólo chip y banda): volver a acercar la
+     * misma tarjeta sólo la rechazaría otra vez (Testarudo 2026-09-07: cuatro toques por venta).
+     * Se CONSUME en el siguiente intento y se limpia en `resetPayment()` y `cancelPayment()`, para
+     * que nunca contamine la venta del siguiente cliente. Ver [ContactlessKernelResult].
+     */
+    private var chipOnlyOnNextDetect = false
 
     /**
      * Card type detected by StartDetectCardUseCase
@@ -3342,7 +3352,12 @@ class PaymentViewModel @Inject constructor(
                 val displayTotal = calculateTotal(getAmountForFlow(), getTipForFlow())
                 _state.value = PaymentState.DetectingCard(displayTotal)
                 Timber.i("[PHASE 2] StartDetectCard - Waiting for card tap...")
-                val detectParams = StartDetectCardParams(EReaderType.MAG_ICC_PICC)
+                // 🔴 Tras un rechazo del kernel contactless, ESTE intento abre el lector sin PICC:
+                // volver a acercar la misma tarjeta sólo la denegaría otra vez. Se consume aquí.
+                val detectReaderType = if (chipOnlyOnNextDetect) EReaderType.MAG_ICC else EReaderType.MAG_ICC_PICC
+                if (chipOnlyOnNextDetect) Timber.i("[PHASE 2] Reintento tras rechazo contactless → lector sólo chip/banda (MAG_ICC)")
+                chipOnlyOnNextDetect = false
+                val detectParams = StartDetectCardParams(detectReaderType)
                 val detectResult = startDetectCardUseCase.run(detectParams)
 
                 if (!_isPaymentInProgress.value || _state.value !is PaymentState.DetectingCard) {
@@ -5201,26 +5216,31 @@ class PaymentViewModel @Inject constructor(
 
             if (ctlssResult.isLeft) {
                 val error = ctlssResult.leftValue()
-                Timber.e("❌ [CONTACTLESS PHASE 1] Contactless transaction failed: $error")
-
-                // Translate SDK error to user-friendly message
-                val userMessage = when {
-                    error.toString().contains("ReadingContactlessFailure", ignoreCase = true) -> {
-                        "La tarjeta se retiró demasiado rápido.\n\nPor favor, mantenga la tarjeta sobre el lector hasta que aparezca el mensaje de confirmación."
-                    }
-                    error.toString().contains("Timeout", ignoreCase = true) -> {
-                        "Tiempo de espera agotado.\n\nPor favor, mantenga la tarjeta cerca del lector durante toda la transacción."
-                    }
-                    error.toString().contains("Collision", ignoreCase = true) -> {
-                        "Se detectaron múltiples tarjetas.\n\nPor favor, presente solo una tarjeta a la vez."
-                    }
-                    else -> {
-                        "Error leyendo tarjeta contactless.\n\nIntente nuevamente o inserte la tarjeta en el chip."
-                    }
-                }
-
+                // 🔴 El kernel contactless del SDK decide DENTRO de la PAX y ANTES de autorizar: un
+                // `CtlssDenied` / `CtlssUseContact` / `EmvNoApp` nunca llega a Blumon TPV, así que su
+                // portal no lo muestra. Lo único que da el SDK es la CLASE del fallo y su `emvCode`
+                // (el toString() imprime el hash). Testarudo 2026-09-07: 9 toques denegados en 3 ventas.
+                val emvCode = (error as? StartCtlssTransFailure)?.emvCode
+                val verdict = ContactlessKernelResult.classify(
+                    failureClassName = error?.javaClass?.simpleName,
+                    emvCode = emvCode,
+                    failureText = error?.toString(),
+                )
+                Timber.e("❌ [CONTACTLESS PHASE 1] ${verdict.outcome} emvCode=$emvCode (${error?.javaClass?.simpleName})")
+                // 👁️ El MOTIVO real, a nuestra base y a Crashlytics — antes sólo quedaba el hash del objeto.
+                observability.logWarning(
+                    tag = TAG_PAYMENT_TRACE,
+                    message = "Contactless no aceptado por el kernel: ${verdict.outcome}",
+                    metadata = mapOf(
+                        "failureClass" to error?.javaClass?.name,
+                        "emvCode" to emvCode,
+                        "outcome" to verdict.outcome.name,
+                        "chipOnlyOnRetry" to verdict.chipOnlyOnRetry,
+                    ),
+                )
+                chipOnlyOnNextDetect = verdict.chipOnlyOnRetry
                 _state.value = PaymentState.Error(
-                    message = userMessage,
+                    message = verdict.userMessage,
                     context = createPaymentContext()  // 🔄 Preserve context for smart retry
                 )
                 return
@@ -6396,6 +6416,7 @@ class PaymentViewModel @Inject constructor(
             )
             _state.value = PaymentState.Cancelled
             Timber.d("🚫 Payment cancelled by user")
+            chipOnlyOnNextDetect = false  // un cancel no debe heredar el lector recortado a la siguiente venta
         }
     }
 
@@ -6421,6 +6442,7 @@ class PaymentViewModel @Inject constructor(
 
         _state.value = PaymentState.Idle
         _isPaymentInProgress.value = false  // 🚦 Release payment guard
+        chipOnlyOnNextDetect = false  // el siguiente cobro arranca con el lector completo
         isSkipReviewFlow = false
         _flowOrigin.value = PaymentFlowOrigin.FAST
 

@@ -31,6 +31,10 @@
 > Junta por fin las dos ramas: TODO lo de 2.8.4 → 2.8.7 (cola durable de reembolsos, arreglos del 5-sep,
 > reporte, contactless) MÁS el acuse de recibo de la 2.9.0, que vivía en `develop` y ninguna terminal corrió.
 
+### **Fixed**
+
+- **Incluye, para Nexgo, todo lo que sigue listado en [Unreleased] al 7-sep**: el candado contra cobros duplicados en efectivo, la fila offline que vuelve a SU orden, el reintento inmediato de la cola tras un registro fallido y la firma del CI con la llave del founder. Se dejan en [Unreleased] porque las variantes PAX (2.8.7 / 104) todavía no los reciben: entran en el siguiente release de PAX.
+
 ### **Changed**
 
 - **Room v32.** `remote_payment_requests` (inbox durable del acuse de recibo) llega por `MIGRATION_31_32`.

@@ -30,6 +30,8 @@ import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
 import com.jaac.avoqado_tpv.core.data.local.entity.PendingRefundEntity
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantCacheDao
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantCacheEntity
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestDao
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
 
 /**
  * Room database for Avoqado TPV local data persistence.
@@ -126,7 +128,8 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
         com.jaac.avoqado_tpv.core.data.local.entities.MosaicShortcutEntity::class, // ⭐ v21
         AngelPayMerchantCacheEntity::class, // ⭐ v22: AngelPay SDK 1.0.5 multi-merchant cache
         com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity::class, // ⭐ v27: payment_attempts write-ahead ledger (la libreta)
-        PendingRefundEntity::class // ⭐ v31: cola durable de REEMBOLSOS (hermana de pending_payments)
+        PendingRefundEntity::class, // ⭐ v31: cola durable de REEMBOLSOS (hermana de pending_payments)
+        RemotePaymentRequestEntity::class, // ⭐ v32: inbox durable de cobros POS → TPV (acuse de recibo, nexgo-v2.9.0)
     ],
     // ⭐ Version 31: tabla pending_refunds — el reembolso que el SDK ya hizo no se pierde.
     //
@@ -146,7 +149,11 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
     //            crea lo que falte y es no-op sobre lo que ya está.
     // `remote_payment_requests` sobrevive como tabla huérfana en las terminales que la tengan:
     // Room sólo valida las tablas de sus @Entity, así que una tabla de más no rompe nada.
-    version = 31,
+    //
+    // ⭐ Version 32 (7-sep-2026): `remote_payment_requests`, el inbox durable del acuse de recibo que
+    // vivía en `develop` como v30. Al juntar las dos ramas se renumera a 32 (MIGRATION_31_32): la flota
+    // en la calle va de 2.7.0 a 2.8.6 (v31 como mucho) y nadie corrió el v30 de `develop`.
+    version = 32,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -303,6 +310,9 @@ abstract class AvoqadoDatabase : RoomDatabase() {
      * - Sweep/quarantine of stuck attempts (never feeds reports)
      */
     abstract fun paymentAttemptDao(): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao
+
+    /** Inbox durable: el request queda en disco antes del ACK y de abrir el SDK. */
+    abstract fun remotePaymentRequestDao(): RemotePaymentRequestDao
 
     companion object {
         const val DATABASE_NAME = "avoqado_database"
@@ -1788,6 +1798,49 @@ abstract class AvoqadoDatabase : RoomDatabase() {
             db.execSQL("CREATE INDEX IF NOT EXISTS `index_pending_refunds_created_at` ON `pending_refunds` (`created_at`)")
             db.execSQL("CREATE INDEX IF NOT EXISTS `index_pending_refunds_venue_id` ON `pending_refunds` (`venue_id`)")
             db.execSQL("CREATE INDEX IF NOT EXISTS `index_pending_refunds_claim_token` ON `pending_refunds` (`claim_token`)")
+        }
+
+        /**
+         * v31 → v32 — `remote_payment_requests`: inbox durable para cobros delegados por el POS
+         * (acuse de recibo, nexgo-v2.9.0). Venía como MIGRATION_29_30 en `develop`; se renumera a
+         * 31→32 porque `main` ya ocupó 29→31 y 30→31 con `pending_refunds`, y ninguna terminal en la
+         * calle corrió jamás el v30 de `develop` (medido 7-sep-2026: la flota va de 2.7.0 a 2.8.6).
+         *
+         * Aditiva: no toca pending_payments, payment_attempts ni pending_refunds, que pueden contener
+         * dinero aprobado pendiente de registrar. El PK request_id hace idempotente toda reentrega
+         * del servidor. `IF NOT EXISTS` por si una terminal de laboratorio ya tenía la tabla huérfana.
+         */
+        val MIGRATION_31_32 = object : Migration(31, 32) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS remote_payment_requests (
+                        request_id TEXT PRIMARY KEY NOT NULL,
+                        venue_id TEXT NOT NULL,
+                        amount_cents INTEGER NOT NULL,
+                        tip_cents INTEGER NOT NULL,
+                        rating INTEGER,
+                        skip_review INTEGER NOT NULL,
+                        order_id TEXT,
+                        processed_by_staff_id TEXT,
+                        sender_device_name TEXT,
+                        source_timestamp TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        final_result_json TEXT,
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_remote_payment_requests_venue_id_status " +
+                        "ON remote_payment_requests (venue_id, status)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_remote_payment_requests_created_at " +
+                        "ON remote_payment_requests (created_at)",
+                )
+            }
         }
     }
 }

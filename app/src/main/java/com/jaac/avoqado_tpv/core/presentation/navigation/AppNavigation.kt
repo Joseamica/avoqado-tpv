@@ -355,6 +355,12 @@ fun AppNavigation(
                 return@collect
             }
 
+            val durableRequestId = request.socketRequestId
+            if (durableRequestId == null || !remotePaymentCoordinator.claimSocketPaymentRequest(durableRequestId)) {
+                Timber.w("⚠️ [Remote] Request no reclamable o ya procesado; no se relanza SDK (requestId=$durableRequestId)")
+                return@collect
+            }
+
             val currentRoute = navController.currentBackStackEntry?.destination?.route
             val onBlumonPayment = currentRoute == NavRoute.Payment.route
             val onAngelPayPayment = currentRoute == NavRoute.AngelPayPayment.route
@@ -381,9 +387,9 @@ fun AppNavigation(
             if (terminalGenuinelyBusy) {
                 Timber.w("⚠️ [Remote] Payment already in progress - ignoring amount: ${request.amountCents}")
                 // If this came via socket, send rejection back so iOS doesn't hang
-                if (request.source == com.jaac.avoqado_tpv.core.remotepayment.PaymentSource.SOCKET && request.socketRequestId != null) {
+                if (request.source == com.jaac.avoqado_tpv.core.remotepayment.PaymentSource.SOCKET) {
                     socketManager.emitTerminalPaymentResult(
-                        requestId = request.socketRequestId!!,
+                        requestId = durableRequestId,
                         status = "failed",
                         errorMessage = "Ya hay un pago en proceso en el terminal"
                     )
@@ -408,13 +414,18 @@ fun AppNavigation(
             val handle = navController.currentBackStackEntry?.savedStateHandle
             if (handle == null) {
                 Timber.e("❌ [Remote] No backstack entry available - cannot start payment")
+                socketManager.emitTerminalPaymentResult(
+                    requestId = durableRequestId,
+                    status = "failed",
+                    errorMessage = "No se pudo abrir la pantalla de pago en la terminal",
+                )
                 return@collect
             }
 
             if (!awaitPaxPaymentReady(context, initializationManager, "remote (socket) payment")) {
-                if (request.source == com.jaac.avoqado_tpv.core.remotepayment.PaymentSource.SOCKET && request.socketRequestId != null) {
+                if (request.source == com.jaac.avoqado_tpv.core.remotepayment.PaymentSource.SOCKET) {
                     socketManager.emitTerminalPaymentResult(
-                        requestId = request.socketRequestId!!,
+                        requestId = durableRequestId,
                         status = "failed",
                         errorMessage = "Sistema de pagos no inicializado en el terminal"
                     )

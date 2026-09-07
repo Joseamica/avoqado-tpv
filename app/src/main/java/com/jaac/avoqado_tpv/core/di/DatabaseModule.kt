@@ -20,6 +20,7 @@ import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMer
 import com.jaac.avoqado_tpv.features.tables.data.local.SyncIntentDao
 import com.jaac.avoqado_tpv.features.tables.data.local.TablesDatabase
 import com.jaac.avoqado_tpv.features.verification.data.local.VerificationQueueDao
+import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -120,7 +121,8 @@ object DatabaseModule {
                 // v30; 30→31 para quien ya tiene UNO de los dos (el de `develop`, o el de este
                 // árbol que viajó en el APK Nexgo 2.8.5). Detalle en `AvoqadoDatabase`.
                 AvoqadoDatabase.MIGRATION_29_31,
-                AvoqadoDatabase.MIGRATION_30_31
+                AvoqadoDatabase.MIGRATION_30_31,
+                AvoqadoDatabase.MIGRATION_31_32   // 📡 inbox durable POS → TPV (acuse de recibo, nexgo-v2.9.0)
             )
 
             // 🛡️ NO blanket destructive fallback (removed 2026-06-12).
@@ -199,6 +201,10 @@ object DatabaseModule {
     @Provides
     fun providePaymentAttemptDao(database: AvoqadoDatabase): com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptDao =
         database.paymentAttemptDao()
+
+    @Provides
+    fun provideRemotePaymentRequestDao(database: AvoqadoDatabase): RemotePaymentRequestDao =
+        database.remotePaymentRequestDao()
 
     /**
      * Provides MosaicShortcutDao for unified Checkout shortcut tiles.

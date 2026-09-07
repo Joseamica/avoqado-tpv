@@ -19,7 +19,8 @@ import java.math.BigDecimal
  * ```
  * QueuedPayment (Domain)  ←→  PendingPaymentEntity (Room DB)
  *     ↓
- * PaymentContext.FastPayment  (processor = BLUMON)
+ * PaymentContext.FastPayment    (processor = BLUMON, sin orderId)
+ * PaymentContext.OrderPayment   (processor = BLUMON, CON orderId — vuelve a SU orden)
  * PaymentContext.AngelPayPayment (processor = ANGELPAY — preserves orderId + SIM metadata)
  * ```
  *
@@ -109,8 +110,11 @@ data class QueuedPayment(
      * **Use Case:** PaymentSyncWorker calls RecordPaymentUseCase with this context.
      * ANGELPAY rows rebuild [PaymentContext.AngelPayPayment] so RecordPaymentUseCase
      * routes them to the SAME recorder as the online path (order vs fast, processor
-     * tag, SIM proof-of-sale metadata). Everything else keeps the legacy
-     * [PaymentContext.FastPayment] shape.
+     * tag, SIM proof-of-sale metadata).
+     *
+     * 🔴 Las filas Blumon con [orderId] rebuild [PaymentContext.OrderPayment] (2026-09-07):
+     * reproducirlas como [PaymentContext.FastPayment] creaba una venta suelta y dejaba la
+     * orden original sin cobro. Sólo las filas SIN orden conservan la forma FastPayment.
      */
     fun toPaymentContext(): PaymentContext {
         val normalizedMerchantAccountId = if (isCashQueuedPayment()) null else merchantAccountId
@@ -134,6 +138,35 @@ data class QueuedPayment(
                 isPortabilidad = isPortabilidad,
                 serialNumbers = serialNumbers,
                 terminalPaymentRequestId = terminalPaymentRequestId, // 📡 closes the arbitration row on replay
+            )
+        }
+
+        // 🔴 Una fila Blumon de un cobro de ORDEN vuelve a SU orden. Antes toda fila que no
+        // fuera AngelPay se reproducía como FastPayment: el servidor creaba una venta FAST
+        // nueva, sin artículos y sin SaleVerification —«venta sin SIM» en el dashboard de
+        // PlayTelecom (8 casos medidos, jul–sep 2026)— y la orden original quedaba sin cobro.
+        if (!orderId.isNullOrBlank()) {
+            return PaymentContext.OrderPayment(
+                venueId = venueId,
+                staffId = staffId,
+                shiftId = shiftId,
+                orderId = orderId,
+                amount = amount,
+                tip = tip,
+                rating = rating,
+                merchantAccountId = normalizedMerchantAccountId?.ifBlank { null },
+                blumonSerialNumber = blumonSerialNumber,
+                deviceSerialNumber = deviceSerialNumber,
+                idempotencyKey = idempotencyKey,
+                terminalPaymentRequestId = terminalPaymentRequestId,
+                // ⚠️ Limitación declarada: la fila no guarda el split (PERPRODUCT/EQUALPARTS).
+                // Se reproduce como FULLPAYMENT; el servidor cierra la orden por MONTOS
+                // (`isFullyPaid` = saldo ≤ 0.01), no por esta etiqueta, así que el dinero
+                // queda bien y sólo se pierde la marca por producto. Persistirlo pide columnas
+                // nuevas en Room (migración) y va aparte.
+                splitType = SplitType.FULLPAYMENT,
+                isPortabilidad = isPortabilidad,
+                serialNumbers = serialNumbers,
             )
         }
 

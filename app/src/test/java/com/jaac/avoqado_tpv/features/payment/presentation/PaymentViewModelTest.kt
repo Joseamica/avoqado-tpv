@@ -1813,6 +1813,7 @@ class PaymentViewModelTest {
             viewModel.viewModelScope.cancel()
         }
     }
+
     // 🔴 Hueco 2 (2026-09-07): el registro del cobro se cortó (timeout de 25 s con la red VIVA, o
     // caída de red) y el cobro entró a la cola — pero en el camino Blumon nadie pedía el sync
     // inmediato: la fila esperaba al periódico de 15 min mientras el servidor mantenía la
@@ -1950,7 +1951,6 @@ class PaymentViewModelTest {
         lastError = "timeout",
         syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING
     )
-
 
     @Test
     fun `reportRecordingLost sends structured telemetry with reference orderId amount venue and both errors`() = runTest {
@@ -2238,13 +2238,14 @@ class PaymentViewModelTest {
 
     @Test
     fun `card enqueue site never tags the queued payment as ANGELPAY`() = runTest(testDispatcher) {
-        // 🔴 Pins the safety argument documented at the fix site (PaymentViewModel.kt, card
-        // enqueue block in handlePaymentSuccess): orderId is safe to thread through ONLY
-        // because the sole consumer of QueuedPayment.orderId in toPaymentContext() is the
-        // ANGELPAY branch, and this call site never sets processor=ANGELPAY (AngelPay enqueues
-        // from its own ViewModel; this row defaults to BLUMON). If a future refactor unifies
-        // the Blumon/AngelPay ViewModels and starts tagging this site ANGELPAY, replay behavior
-        // changes silently — this test is what catches it.
+        // 🔴 Pins the processor tag of this call site: AngelPay enqueues from its own
+        // ViewModel, so a row created here must stay BLUMON. Si un refactor futuro unifica los
+        // ViewModels de Blumon y AngelPay y empieza a marcar ESTE sitio como ANGELPAY, el
+        // replay cambiaría EN SILENCIO de rama (AngelPayPayment en vez de OrderPayment/
+        // FastPayment) — esta prueba es la que lo caza.
+        // ⚠️ 2026-09-07: `orderId` ya NO es sólo captura de datos — desde el arreglo de
+        // QueuedPayment.toPaymentContext() una fila BLUMON con orderId se reproduce como
+        // PaymentContext.OrderPayment. Lo fija QueuedPaymentTest.
         coEvery {
             mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
         } returns Result.failure(RuntimeException("HTTP 500"))
@@ -2353,5 +2354,214 @@ class PaymentViewModelTest {
             .containsExactly(com.pax.dal.entity.EReaderType.MAG_ICC_PICC, com.pax.dal.entity.EReaderType.MAG_ICC_PICC)
 
         viewModel.viewModelScope.cancel()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Z. COBRO EN EFECTIVO — RÁFAGA DE TOQUES SOBRE UNA PANTALLA CONGELADA
+    //
+    // SN00396 (BAE MEZQUITAL, 2026-09-04): la pantalla se congela esperando el turno
+    // por red, el cajero toca «Efectivo» varias veces, cada toque pasa el guard de
+    // estado (sigue en SelectingMerchant) y se estaciona; al resolver, todos reanudan
+    // y cada uno registra su propio cobro (5 Payment COMPLETED en 1.7 s, referencias
+    // `CASH-<ms>` a 5 ms y llave de idempotencia vacía).
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /** El mismo turno abierto que arma `setup()`, para poder re-devolverlo tras estacionar el fetch. */
+    private fun turnoAbiertoDePrueba() = Shift(
+        id = testShiftId,
+        venueId = testVenueId,
+        staffId = testStaffId,
+        staffName = "Test Staff",
+        startTime = "2026-02-07T10:00:00Z",
+        endTime = null,
+        status = ShiftStatus.OPEN,
+        startingCash = BigDecimal.ZERO,
+        endingCash = null,
+        totalSales = BigDecimal.ZERO,
+        totalTips = BigDecimal.ZERO,
+        totalOrders = 0,
+        totalCashPayments = BigDecimal.ZERO,
+        totalCardPayments = BigDecimal.ZERO,
+        totalVoucherPayments = BigDecimal.ZERO,
+        totalOtherPayments = BigDecimal.ZERO,
+        totalProductsSold = 0,
+        durationMinutes = null,
+    )
+
+    /**
+     * El arranque del pago (`startPaymentWithResolvedInputs`) también consulta el turno, así que
+     * la compuerta sólo puede colgarse DESPUÉS de llegar a SelectingMerchant. Espera activa corta,
+     * el mismo patrón (Thread.sleep) que ya usan las pruebas de esta clase con Dispatchers.IO.
+     */
+    private fun esperarSelectingMerchant(viewModel: PaymentViewModel, timeoutMs: Long = 5000) {
+        val limite = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < limite) {
+            if (viewModel.state.value is PaymentState.SelectingMerchant) return
+            Thread.sleep(20)
+        }
+        throw AssertionError("No llegó a SelectingMerchant. Estado=${viewModel.state.value}")
+    }
+
+    @Test
+    fun `toques repetidos en Efectivo mientras el primero espera el turno registran UN solo cobro`() = runTest {
+        coEvery {
+            mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+        } returns Result.success(
+            PaymentReceipt(
+                paymentId = "pay-1",
+                receiptUrl = "https://receipt.avoqado.io/pay-1",
+                accessKey = "k",
+                amount = BigDecimal("0.00"),
+                tipAmount = BigDecimal.ZERO,
+            )
+        )
+
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountDirectToMerchant(
+                "0.00", orderId = "order-1", orderNumber = "SN00396", skipLocalOrderValidation = true
+            )
+            esperarSelectingMerchant(viewModel)
+
+            // Ahora sí: el fetch del turno se estaciona, como con el socket medio muerto.
+            val compuerta = CompletableDeferred<Unit>()
+            coEvery { mockShiftRepository.getCurrentShift(any()) } coAnswers {
+                compuerta.await()
+                AppResult.Success(turnoAbiertoDePrueba())
+            }
+
+            viewModel.processCashPayment("0.00")
+            viewModel.processCashPayment("0.00")
+            viewModel.processCashPayment("0.00")
+            compuerta.complete(Unit)
+
+            coVerify(timeout = 5000, exactly = 1) {
+                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    /**
+     * 🔴 La prueba que aísla el CANDADO, no el estado.
+     *
+     * Con la pantalla ocupada (`Processing`) el guard de estado ya rechaza el segundo toque, así
+     * que una prueba de «tres toques seguidos» pasa aunque el candado no exista — pasa por el
+     * motivo equivocado. Aquí se le devuelve a la pantalla el estado `SelectingMerchant` MIENTRAS
+     * el primer cobro sigue estacionado (es lo que hace un `resetPayment()`/re-entrada a la
+     * pantalla, justo el escenario que en producción llegó con la llave de idempotencia vacía):
+     * el guard de estado deja pasar el segundo toque y lo único que puede pararlo es el candado.
+     */
+    @Test
+    fun `si la pantalla vuelve a SelectingMerchant con un cobro estacionado, el segundo toque NO registra otro`() = runTest {
+        coEvery {
+            mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+        } returns Result.success(
+            PaymentReceipt(
+                paymentId = "pay-1",
+                receiptUrl = "https://receipt.avoqado.io/pay-1",
+                accessKey = "k",
+                amount = BigDecimal("0.00"),
+                tipAmount = BigDecimal.ZERO,
+            )
+        )
+
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountDirectToMerchant(
+                "0.00", orderId = "order-1", orderNumber = "SN00396", skipLocalOrderValidation = true
+            )
+            esperarSelectingMerchant(viewModel)
+            val pantallaDeCobro = viewModel.state.value as PaymentState.SelectingMerchant
+
+            val compuerta = CompletableDeferred<Unit>()
+            coEvery { mockShiftRepository.getCurrentShift(any()) } coAnswers {
+                compuerta.await()
+                AppResult.Success(turnoAbiertoDePrueba())
+            }
+
+            viewModel.processCashPayment("0.00")           // toque 1: toma el candado y se estaciona
+            forzarEstado(viewModel, pantallaDeCobro)       // la pantalla vuelve a ofrecer «Efectivo»
+            viewModel.processCashPayment("0.00")           // toque 2: el guard de estado ya NO lo para
+            compuerta.complete(Unit)
+
+            coVerify(timeout = 5000, exactly = 1) {
+                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    /** Escribe `_state` por reflexión — mismo patrón que ya usan las pruebas de `handleOfflineQueueOutcome`. */
+    private fun forzarEstado(viewModel: PaymentViewModel, estado: PaymentState) {
+        val stateField = PaymentViewModel::class.java.getDeclaredField("_state")
+        stateField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        (stateField.get(viewModel) as kotlinx.coroutines.flow.MutableStateFlow<PaymentState>).value = estado
+    }
+
+    @Test
+    fun `mientras espera el turno la pantalla ya esta ocupada (Processing), no en SelectingMerchant`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountDirectToMerchant(
+                "0.00", orderId = "order-1", orderNumber = "SN00396", skipLocalOrderValidation = true
+            )
+            esperarSelectingMerchant(viewModel)
+
+            val compuerta = CompletableDeferred<Unit>()
+            coEvery { mockShiftRepository.getCurrentShift(any()) } coAnswers {
+                compuerta.await()
+                AppResult.Success(turnoAbiertoDePrueba())
+            }
+
+            viewModel.processCashPayment("0.00")
+
+            // La tarjeta «Efectivo» vive en la pantalla de SelectingMerchant: si el estado sigue
+            // ahí durante la espera, el botón sigue tocable y la ráfaga vuelve a ser posible.
+            assertThat(viewModel.state.value).isInstanceOf(PaymentState.Processing::class.java)
+        } finally {
+            // La compuerta NO se abre: cancelar con el cobro todavía estacionado evita que esta
+            // prueba deje una corrutina viva registrando pagos durante la SIGUIENTE prueba.
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `la referencia de efectivo sale de la llave y la fila encolada lleva llave, orden y esa misma referencia`() = runTest {
+        val contexto = slot<PaymentContext>()
+        val referencia = slot<String>()
+        val fila = slot<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment>()
+        coEvery {
+            mockRecordPaymentUseCase(
+                context = capture(contexto), cardDetails = any(), authorizationNumber = any(), referenceNumber = capture(referencia)
+            )
+        } returns Result.failure(RuntimeException("HTTP 503"))
+        coEvery { mockPaymentQueueRepository.enqueue(capture(fila)) } returns Result.success(Unit)
+
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountDirectToMerchant(
+                "0.00", orderId = "order-1", orderNumber = "SN00396", skipLocalOrderValidation = true
+            )
+            esperarSelectingMerchant(viewModel)
+
+            viewModel.processCashPayment("0.00")
+
+            coVerify(timeout = 5000) { mockPaymentQueueRepository.enqueue(any()) }
+            val llave = contexto.captured.idempotencyKey
+            assertThat(llave).isNotNull()
+            assertThat(referencia.captured).isEqualTo("CASH-" + llave!!.replace("-", "").takeLast(16))
+            assertThat(fila.captured.idempotencyKey).isEqualTo(llave)
+            assertThat(fila.captured.orderId).isEqualTo("order-1")
+            assertThat(fila.captured.orderNumber).isEqualTo("SN00396")
+            assertThat(fila.captured.referenceNumber).isEqualTo(referencia.captured)
+            assertThat(fila.captured.deviceSerialNumber).isEqualTo("TEST-SERIAL")
+            assertThat(fila.captured.shiftId).isEqualTo(testShiftId)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
     }
 }

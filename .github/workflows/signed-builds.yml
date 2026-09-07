@@ -17,10 +17,36 @@ name: Signed builds (PAX + Nexgo)
 # oficial y versionado; esto es "el binario de hoy, ya firmado, por si hace
 # falta mandarlo o probarlo en un aparato ya".
 #
-# La firma usa la debug.keystore ESTÁNDAR de Android (misma en cualquier SDK
-# del mundo: CN=Android Debug, password "android") — así lo hace hoy la
-# ceremonia manual. No es un secreto: nada de esto protege el binario contra
-# nadie: PAX y AngelPay hacen su propia verificación por fuera.
+# 🔴 LA LLAVE DE FIRMA — lo que decía aquí antes era FALSO y costó caro.
+#
+# Decía que la debug.keystore es «la misma en cualquier SDK del mundo». Sólo
+# son iguales el DN (CN=Android Debug, O=Android, C=US) y la contraseña
+# ("android"): el PAR DE LLAVES lo genera `keytool` AL AZAR en cada corrida.
+# Y Android identifica una app por el CERTIFICADO con el que está firmada, no
+# por el DN — dos keystores con el mismo nombre producen certificados
+# distintos, y la terminal rechaza la actualización con
+# INSTALL_FAILED_UPDATE_INCOMPATIBLE.
+#
+# Medido el 7-sep-2026: `app-nexgo-eaf0d18-signed.apk`, publicado por esta
+# misma CI, llevaba el certificado 8a4a15e0… mientras que TODO lo que se
+# entrega desde la Mac —Nexgo 2.8.5/2.8.6 a AngelPay, PAX 2.8.7 a Blumon, el
+# release-manifest de la 2.9.0— lleva c27a1420…, la ~/.android/debug.keystore
+# del founder. O sea: los APK de esta CI servían para instalar en un aparato
+# LIMPIO y NO para actualizar ninguna terminal en la calle. El fallo no se ve
+# en la corrida (firma y verifica en verde), sólo al intentar la instalación.
+#
+# Por eso la llave ya NO se genera: se reconstruye la MISMA keystore desde el
+# secreto DEBUG_KEYSTORE_BASE64 (mismo patrón que google-services.json) y la
+# huella se comprueba DOS veces contra HUELLA_ESPERADA — al reconstruirla, y
+# sobre cada APK ya firmado. Si no coincide, la corrida falla y no se publica
+# nada.
+#
+# Ojo con el matiz que el comentario viejo tenía a medias: es cierto que la
+# firma no protege el binario frente a PAX ni a AngelPay (ellos verifican por
+# su cuenta), pero esa llave privada ES la identidad de la app en cada
+# terminal instalada. Perderla o rotarla deja a la flota sin poder
+# actualizarse. Cómo se sube el secreto, y qué cuidados lleva:
+# .claude/rules/release-and-git.md → «La llave de firma y el CI».
 
 on:
   push:
@@ -39,6 +65,15 @@ concurrency:
 
 permissions:
   contents: write   # sólo para crear el GitHub Release; nunca empuja un commit
+
+env:
+  # Huella SHA-256 del certificado de la ~/.android/debug.keystore del founder:
+  # la ÚNICA con la que un APK puede actualizar una terminal que ya tiene
+  # Avoqado instalado. Va aquí EN CLARO y no en un secreto a propósito — es una
+  # llave pública (no protege nada) y su valor es justo el candado: un secreto
+  # se puede cambiar en silencio para que cuadre con la keystore equivocada,
+  # este número no se mueve sin que se vea en el diff.
+  HUELLA_ESPERADA: 'c27a142019340122cfdbb601ee3128f3bfb057ac22ef098a37c4bbdca32e0a11'
 
 jobs:
   compilar_y_firmar:
@@ -60,6 +95,41 @@ jobs:
           mkdir -p app
           echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > app/google-services.json
           test -s app/google-services.json || { echo "::error::google-services.json quedó vacío."; exit 1; }
+
+      # 🔴 La llave NO se genera aquí (el porqué, en el encabezado): se
+      # reconstruye la MISMA ~/.android/debug.keystore del founder. Va ANTES de
+      # compilar a propósito — un secreto que falta, o que trae otra keystore,
+      # se caza en segundos y no tras 40 minutos de build.
+      - name: Reconstruir la debug.keystore del founder
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$DEBUG_KEYSTORE_BASE64" ]; then
+            echo "::error::Falta el secreto DEBUG_KEYSTORE_BASE64 del repo."
+            echo "::error::Sin él sólo se podría firmar con una llave inventada, y ese APK NO"
+            echo "::error::actualiza ninguna terminal en la calle. Cómo subirlo:"
+            echo "::error::  .claude/rules/release-and-git.md → «La llave de firma y el CI»"
+            exit 1
+          fi
+          mkdir -p ~/.android
+          # tr -d: tolera que el secreto se haya pegado partido en varias líneas.
+          printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > ~/.android/debug.keystore
+          test -s ~/.android/debug.keystore \
+            || { echo "::error::DEBUG_KEYSTORE_BASE64 no decodificó a nada — ¿se pegó completo?"; exit 1; }
+
+          huella=$(keytool -list -v -keystore ~/.android/debug.keystore \
+            -storepass android -alias androiddebugkey 2>/dev/null \
+            | grep -iE 'SHA-?256:' | head -1 | sed -E 's/.*SHA-?256:[[:space:]]*//' \
+            | tr -d ':[:space:]' | tr 'A-Z' 'a-z')
+          echo "huella del keystore reconstruido: ${huella:-<no se pudo leer>}"
+          if [ "$huella" != "$HUELLA_ESPERADA" ]; then
+            echo "::error::El keystore del secreto NO es el del founder."
+            echo "::error::  esperada: $HUELLA_ESPERADA"
+            echo "::error::  obtenida: ${huella:-<no se pudo leer: alias o contraseña distintos>}"
+            echo "::error::Regenera el secreto desde la Mac: base64 -i ~/.android/debug.keystore | pbcopy"
+            exit 1
+          fi
+          echo "✓ keystore correcto (alias androiddebugkey, huella $HUELLA_ESPERADA)"
 
       # 🔴 Repo PRIVADO: GitHub da la MITAD de recursos que a uno público — 2
       # núcleos / 8 GB, no los 4/16 que tiene avoqado-android (público, OTRA
@@ -114,19 +184,6 @@ jobs:
       - name: Compilar Nexgo (nexgoProd), sin firmar
         run: ./gradlew assembleNexgoProdRelease
 
-      # La debug.keystore estándar: keytool la genera con los MISMOS valores
-      # que trae cualquier instalación del SDK (Android Studio la crea sola
-      # la primera vez). No hay secreto que guardar — es pública por diseño.
-      - name: Generar la debug.keystore estándar
-        run: |
-          mkdir -p ~/.android
-          keytool -genkeypair -v \
-            -keystore ~/.android/debug.keystore \
-            -storepass android -keypass android \
-            -alias androiddebugkey \
-            -keyalg RSA -keysize 2048 -validity 10950 \
-            -dname "CN=Android Debug,O=Android,C=US"
-
       - name: Firmar los dos APK con apksigner (v2 requerido, targetSdk 34+)
         id: firma
         run: |
@@ -147,10 +204,30 @@ jobs:
             "$APKSIGNER" sign --ks ~/.android/debug.keystore \
               --ks-pass pass:android --key-pass pass:android \
               --out "$out" "$unsigned"
-            "$APKSIGNER" verify --verbose "$out" | tee /tmp/verify-$nombre.txt
+            # --print-certs junto a --verbose: una sola llamada da las DOS cosas
+            # que hay que comprobar — el esquema de firma y CON QUÉ llave se firmó.
+            "$APKSIGNER" verify --verbose --print-certs "$out" | tee /tmp/verify-$nombre.txt
             grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" /tmp/verify-$nombre.txt \
               || { echo "::error::$nombre — NO quedó firmado con v2 scheme."; exit 1; }
-            echo "✓ $nombre firmado y verificado: $out"
+
+            # 🔴 La comprobación que faltaba (7-sep-2026): que la firma sea VÁLIDA
+            # no dice nada de con QUÉ llave se firmó. Un APK con otra huella se
+            # instala perfecto en un aparato limpio y es IMPOSIBLE de instalar
+            # encima de una terminal que ya tiene Avoqado. Sin esto, la diferencia
+            # no aparece hasta que alguien intenta actualizar una terminal real.
+            local huella
+            huella=$(grep -m1 -i 'certificate SHA-256 digest' /tmp/verify-$nombre.txt \
+              | sed 's/.*digest: *//' | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+            echo "$nombre — huella del certificado: ${huella:-<no se pudo leer>}"
+            if [ "$huella" != "$HUELLA_ESPERADA" ]; then
+              echo "::error::$nombre — firmado con la llave EQUIVOCADA."
+              echo "::error::  esperada: $HUELLA_ESPERADA (la ~/.android/debug.keystore del founder)"
+              echo "::error::  obtenida: ${huella:-<no se pudo leer>}"
+              echo "::error::Un APK con otra huella NO puede actualizar una terminal que ya tenga"
+              echo "::error::Avoqado (INSTALL_FAILED_UPDATE_INCOMPATIBLE). Revisa DEBUG_KEYSTORE_BASE64."
+              exit 1
+            fi
+            echo "✓ $nombre firmado, v2 verificado y con la llave correcta: $out"
           }
 
           firmar production pax

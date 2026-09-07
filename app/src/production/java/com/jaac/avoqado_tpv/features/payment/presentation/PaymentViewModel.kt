@@ -1053,7 +1053,14 @@ class PaymentViewModel @Inject constructor(
                 // 📒 [Libreta] ENTREGADA_A_COLA — pending_payments owns the money now.
                 context.idempotencyKey?.let { attemptIdForLedger -> paymentAttemptLedger.markDeliveredToQueue(attemptIdForLedger) }
                 Timber.i("✅ [Offline Queue] Payment queued successfully | ref=$referenceNumber")
-                Timber.i("   → PaymentSyncWorker will retry every 15 minutes")
+                // 🔴 Hueco 2 (2026-09-07): pedir el sync YA, no esperar al periódico de 15 min. Con la
+                // red viva (el caso diario: el registro se cortó por timeout) WorkManager lo corre en
+                // segundos; sin red, la petición única espera al constraint CONNECTED y dispara sola
+                // al volver — sin observador propio. AngelPay ya lo hacía; el camino Blumon no, y
+                // mientras tanto el servidor mantenía la terminal «ocupada» (UNKNOWN) para la tablet.
+                // Best-effort: el periódico sigue siendo la garantía (KEEP: nunca pisa una tanda en curso).
+                runCatching { PaymentSyncScheduler.runNow(appContext) }
+                Timber.i("   → Sync inmediato pedido; el PaymentSyncWorker periódico (15 min) es el respaldo")
                 Timber.i("   → Payment will sync automatically when network is available")
 
                 // 🟡 UX (2026-07): this was the previously-silent branch — the charge succeeded
@@ -5080,6 +5087,9 @@ class PaymentViewModel @Inject constructor(
                     queueResult.onSuccess {
                         Timber.i("✅ [Offline Queue] CASH payment queued successfully | ref=$cashReference")
                         Timber.i("   → PaymentSyncWorker will retry when connectivity is available")
+                        // 🔴 Hueco 2: mismo kick que el camino de tarjeta (ver handleOfflineQueueOutcome) —
+                        // esta fila lleva el terminalPaymentRequestId del cobro que mandó la tablet.
+                        runCatching { PaymentSyncScheduler.runNow(appContext) }
 
                         val orderData = loadOrderData(orderIdForFlow)
                         _state.value = PaymentState.Success(
@@ -5588,6 +5598,8 @@ class PaymentViewModel @Inject constructor(
                     val queueResult = paymentQueueRepository.enqueue(queuedPayment)
                     queueResult.onSuccess {
                         Timber.i("✅ [Offline Queue] KIOSK CASH payment queued successfully | ref=$cashReference")
+                        // 🔴 Hueco 2: mismo kick que el camino de tarjeta (ver handleOfflineQueueOutcome).
+                        runCatching { PaymentSyncScheduler.runNow(appContext) }
                         val orderData = loadOrderData(currentState.orderId)
 
                         _state.value = PaymentState.Success(

@@ -31,6 +31,7 @@ import com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.St
 import com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransFailure
 // Contactless (NFC) payment processing
 import com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase
+import com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransFailure
 import com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransParams
 import com.blumonpay.pax.shared_tools.manager.CountryConstants
 import com.example.clean_lib_services.shared.core.domain.entity.sale_data.AuthenticationCard
@@ -225,6 +226,7 @@ class PaymentViewModel @Inject constructor(
     private val authRepository: com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository,
     // 💾 Payment Queue Repository - Offline payment queue for failed backend recordings
     private val paymentQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository,
+    private val refundQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository,
     // 🖨️ Printer Manager - PAX thermal printer for receipt printing
     private val printerManager: com.jaac.avoqado_tpv.core.printer.PrinterManager,
     // 🔌 Socket Manager - Real-time Socket.IO events (payment updates, system alerts)
@@ -473,6 +475,15 @@ class PaymentViewModel @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════════════
     // CARD TYPE DETECTION (CHIP vs CONTACTLESS)
     // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * 🔴 Tras un rechazo del KERNEL contactless (denegada · pide contacto · sin aplicación), el
+     * siguiente `StartDetectCard` abre el lector SIN PICC (sólo chip y banda): volver a acercar la
+     * misma tarjeta sólo la rechazaría otra vez (Testarudo 2026-09-07: cuatro toques por venta).
+     * Se CONSUME en el siguiente intento y se limpia en `resetPayment()` y `cancelPayment()`, para
+     * que nunca contamine la venta del siguiente cliente. Ver [ContactlessKernelResult].
+     */
+    private var chipOnlyOnNextDetect = false
 
     /**
      * Card type detected by StartDetectCardUseCase
@@ -825,6 +836,144 @@ class PaymentViewModel @Inject constructor(
                 "de inmediato, pero quedó en cola en este equipo y se completará solo en cuanto haya " +
                 "conexión — no necesitas hacer nada. NO vuelvas a cobrar. Referencia: $referenceNumber"
         )
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════════
+    // 💸 REEMBOLSOS — los estados honestos, la telemetría y el desenlace de la cola
+    // (Fase 1, Tasks 5-6, 2026-09-03). Espejo de buildPendingSyncState / buildRecordingLostState
+    // / reportRecordingLost / handleOfflineQueueOutcome, con una diferencia que cambia el peso de
+    // cada decisión: aquí el dinero YA SALIÓ. Un cobro encolado que se pierde es una venta no
+    // cobrada; un reembolso encolado que se pierde es dinero entregado que nadie anotó.
+    // ═══════════════════════════════════════════════════════════════════════════════════════
+
+    /** Encolado y se completará solo. Ámbar, nunca rojo: la devolución NO falló. */
+    @VisibleForTesting
+    internal fun buildRefundPendingSyncState(current: PaymentState, referenceNumber: String): PaymentState.Success? {
+        if (current !is PaymentState.Success) return null
+        return current.copy(
+            referenceNumber = referenceNumber,
+            pendingSyncMessage = "La devolución SÍ se hizo. Avoqado no pudo registrarla de inmediato, pero quedó " +
+                "guardada en este equipo y se completará sola en cuanto haya conexión — no necesitas hacer nada. " +
+                "NO vuelvas a reembolsar. Referencia: $referenceNumber"
+        )
+    }
+
+    /** El servidor la rechazó de forma definitiva (400/404/422). Queda en cola como rechazada, bloqueando el cierre hasta que alguien la vea. */
+    @VisibleForTesting
+    internal fun buildRefundRejectedState(current: PaymentState, referenceNumber: String, reason: String): PaymentState.Success? {
+        if (current !is PaymentState.Success) return null
+        return current.copy(
+            referenceNumber = referenceNumber,
+            recordingLostMessage = "La devolución SÍ se hizo, pero el servidor la rechazó: $reason. NO vuelvas a " +
+                "reembolsar. Avisa al supervisor con la referencia $referenceNumber."
+        )
+    }
+
+    /** Ni el servidor ni la cola local. Lo peor que puede pasar aquí: no hay nada que se cure solo. */
+    @VisibleForTesting
+    internal fun buildRefundLostState(current: PaymentState, referenceNumber: String): PaymentState.Success? {
+        if (current !is PaymentState.Success) return null
+        return current.copy(
+            referenceNumber = referenceNumber,
+            recordingLostMessage = "La devolución SÍ se hizo, pero Avoqado no pudo registrarla (ni en el servidor " +
+                "ni en este equipo). NO vuelvas a reembolsar. Avisa al supervisor con la referencia $referenceNumber " +
+                "para conciliarla a mano."
+        )
+    }
+
+    /** Misma forma que [reportRecordingLost]: mismo canal vigilado, agrupado por [RecordingLostException]. */
+    @VisibleForTesting
+    internal fun reportRefundRecordingLost(
+        queued: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund,
+        recordError: Throwable,
+        queueError: Throwable
+    ) {
+        observability.logCritical(
+            tag = "RefundRecordAndQueueLost",
+            message = "Reembolso con tarjeta procesado pero SIN registro (backend y cola local fallaron) — requiere conciliación manual",
+            error = RecordingLostException(queueError),
+            metadata = mapOf(
+                "reference" to queued.referenceNumber,
+                "originalPaymentId" to queued.originalPaymentId,
+                "amount" to queued.amount.toPlainString(),
+                "venueId" to queued.venueId,
+                "recordError" to (recordError.message ?: "unknown"),
+                "queueError" to (queueError.message ?: "unknown")
+            )
+        )
+    }
+
+    /**
+     * El registro falló: se ENCOLA y la pantalla dice la verdad. Se llama ya dentro de
+     * `NonCancellable`, así que el encolado y el aviso no se pueden saltar por un cancel.
+     *
+     * Un rechazo DEFINITIVO (400/404/422, por `classifySyncFailure` — la MISMA función que los
+     * cobros) entra a la cola ya como `FAILED` + `permanent`: no se reintenta solo, pero SIGUE
+     * bloqueando el cierre de turno hasta que un humano lo reconozca (Fase 2). Borrarlo en
+     * silencio devolvería el defecto original: dinero devuelto sin registro y nadie enterado.
+     */
+    /**
+     * 💸 Desenlace de un registro que FALLÓ (auditoría de Codex F1, 4-sep-2026).
+     *
+     * La fila write-ahead ya existe (nació SYNCING y reclamada por este intento con [token]); aquí sólo
+     * se le pone su estado final con compare-and-swap: PENDING si el fallo fue transitorio (el worker
+     * la reproduce), FAILED + permanent si el servidor la rechazó de forma definitiva (bloquea el cierre
+     * hasta que alguien la vea). Si el write-ahead NO se pudo escribir, cae al encolado de respaldo; y
+     * si tampoco, se grita: es lo peor que puede pasar aquí.
+     */
+    private suspend fun settleRefundRecordingFailure(
+        queued: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund,
+        token: String,
+        writeAheadOk: Boolean,
+        recordError: Throwable,
+        referenceNumber: String,
+        /**
+         * 🔴 El fallo es definitivo por CONSTRUCCIÓN, no por lo que dijo el servidor (revisión
+         * 5-sep-2026). Hoy sólo lo usa el caso «la fila no tiene `merchantAccountId`»: ahí nunca
+         * hubo respuesta HTTP que clasificar, y `classifySyncFailure` —que decide por código y ante
+         * la duda reintenta, con razón— lo llamaría `Retryable` para siempre. No se fabrica un
+         * `BackendHttpException(400)` falso para colarlo: sería mentir sobre una respuesta que el
+         * servidor nunca dio.
+         */
+        forzarPermanente: Boolean = false
+    ) {
+        val outcome = com.jaac.avoqado_tpv.features.payment.domain.sync.classifySyncFailure(recordError)
+        val permanent = forzarPermanente || outcome is com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome.Permanent
+        val reason = (outcome as? com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome.Permanent)?.reason ?: (recordError.message ?: "fallo transitorio")
+
+        val durable = if (writeAheadOk) {
+            val affected = if (permanent) {
+                refundQueueRepository.markPermanentlyFailed(queued.idempotencyKey, token, reason)
+            } else {
+                refundQueueRepository.release(queued.idempotencyKey, token, retryCount = 1, error = reason)
+            }
+            if (affected == 0) {
+                Timber.w("💸 [Refund Recording] La fila ya no es de este intento (otro dueño del claim); existe igual | key=${queued.idempotencyKey}")
+            }
+            true
+        } else {
+            val row = if (permanent) {
+                queued.copy(syncStatus = com.jaac.avoqado_tpv.core.data.local.entity.PendingRefundEntity.SYNC_STATUS_FAILED, permanent = true, lastError = reason)
+            } else {
+                queued
+            }
+            refundQueueRepository.enqueue(row)
+                .onFailure { queueError -> reportRefundRecordingLost(queued, recordError, queueError) }
+                .isSuccess
+        }
+
+        if (durable) {
+            paymentAttemptLedger.markDeliveredToQueue(queued.idempotencyKey)
+            // Se relee `_state.value` FRESCO: el cajero pudo haber navegado mientras tanto.
+            val next = if (permanent) {
+                buildRefundRejectedState(_state.value, referenceNumber, reason)
+            } else {
+                buildRefundPendingSyncState(_state.value, referenceNumber)
+            }
+            next?.let { _state.value = it }
+        } else {
+            buildRefundLostState(_state.value, referenceNumber)?.let { _state.value = it }
+        }
     }
 
     /**
@@ -3195,7 +3344,12 @@ class PaymentViewModel @Inject constructor(
                 val displayTotal = calculateTotal(getAmountForFlow(), getTipForFlow())
                 _state.value = PaymentState.DetectingCard(displayTotal)
                 Timber.i("[PHASE 2] StartDetectCard - Waiting for card tap...")
-                val detectParams = StartDetectCardParams(EReaderType.MAG_ICC_PICC)
+                // 🔴 Tras un rechazo del kernel contactless, ESTE intento abre el lector sin PICC:
+                // volver a acercar la misma tarjeta sólo la denegaría otra vez. Se consume aquí.
+                val detectReaderType = if (chipOnlyOnNextDetect) EReaderType.MAG_ICC else EReaderType.MAG_ICC_PICC
+                if (chipOnlyOnNextDetect) Timber.i("[PHASE 2] Reintento tras rechazo contactless → lector sólo chip/banda (MAG_ICC)")
+                chipOnlyOnNextDetect = false
+                val detectParams = StartDetectCardParams(detectReaderType)
                 val detectResult = startDetectCardUseCase.run(detectParams)
 
                 if (!_isPaymentInProgress.value || _state.value !is PaymentState.DetectingCard) {
@@ -4260,6 +4414,20 @@ class PaymentViewModel @Inject constructor(
                     // Success - extract response
                     val response = result.rightValue()
                     Timber.i("✅ [CancelIcc] REFUND Success!")
+                    // 📒 [Libreta] El instante en que el host contestó — ANTES de completar EMV y
+                    // ANTES de publicar Success. Desde aquí, una muerte del proceso deja en disco la
+                    // referencia del reembolso para conciliar. `isLeft` NO se marca a propósito: un
+                    // timeout o un fallo de red no son un rechazo del emisor — el desenlace queda
+                    // INDETERMINADO y lo cuarentena el barrido, igual que en el cobro.
+                    sessionSnapshot.refundAttemptId?.let { attemptIdForLedger ->
+                        paymentAttemptLedger.markHostResponded(
+                            attemptId = attemptIdForLedger,
+                            approved = true,
+                            operationId = null, // CancelIcc no expone un id propio de operación
+                            referenceNumber = response.cancelData.reference,
+                            authCode = null
+                        )
+                    }
                     Timber.i("   Reference: ${response.cancelData.reference}")
                     Timber.i("   Description: ${response.cancelData.description}")
 
@@ -4328,26 +4496,31 @@ class PaymentViewModel @Inject constructor(
 
             if (ctlssResult.isLeft) {
                 val error = ctlssResult.leftValue()
-                Timber.e("❌ [CONTACTLESS PHASE 1] Contactless transaction failed: $error")
-
-                // Translate SDK error to user-friendly message
-                val userMessage = when {
-                    error.toString().contains("ReadingContactlessFailure", ignoreCase = true) -> {
-                        "La tarjeta se retiró demasiado rápido.\n\nPor favor, mantenga la tarjeta sobre el lector hasta que aparezca el mensaje de confirmación."
-                    }
-                    error.toString().contains("Timeout", ignoreCase = true) -> {
-                        "Tiempo de espera agotado.\n\nPor favor, mantenga la tarjeta cerca del lector durante toda la transacción."
-                    }
-                    error.toString().contains("Collision", ignoreCase = true) -> {
-                        "Se detectaron múltiples tarjetas.\n\nPor favor, presente solo una tarjeta a la vez."
-                    }
-                    else -> {
-                        "Error leyendo tarjeta contactless.\n\nIntente nuevamente o inserte la tarjeta en el chip."
-                    }
-                }
-
+                // 🔴 El kernel contactless del SDK decide DENTRO de la PAX y ANTES de autorizar: un
+                // `CtlssDenied` / `CtlssUseContact` / `EmvNoApp` nunca llega a Blumon TPV, así que su
+                // portal no lo muestra. Lo único que da el SDK es la CLASE del fallo y su `emvCode`
+                // (el toString() imprime el hash). Testarudo 2026-09-07: 9 toques denegados en 3 ventas.
+                val emvCode = (error as? StartCtlssTransFailure)?.emvCode
+                val verdict = ContactlessKernelResult.classify(
+                    failureClassName = error?.javaClass?.simpleName,
+                    emvCode = emvCode,
+                    failureText = error?.toString(),
+                )
+                Timber.e("❌ [CONTACTLESS PHASE 1] ${verdict.outcome} emvCode=$emvCode (${error?.javaClass?.simpleName})")
+                // 👁️ El MOTIVO real, a nuestra base y a Crashlytics — antes sólo quedaba el hash del objeto.
+                observability.logWarning(
+                    tag = TAG_PAYMENT_TRACE,
+                    message = "Contactless no aceptado por el kernel: ${verdict.outcome}",
+                    metadata = mapOf(
+                        "failureClass" to error?.javaClass?.name,
+                        "emvCode" to emvCode,
+                        "outcome" to verdict.outcome.name,
+                        "chipOnlyOnRetry" to verdict.chipOnlyOnRetry,
+                    ),
+                )
+                chipOnlyOnNextDetect = verdict.chipOnlyOnRetry
                 _state.value = PaymentState.Error(
-                    message = userMessage,
+                    message = verdict.userMessage,
                     context = createPaymentContext()  // 🔄 Preserve context for smart retry
                 )
                 return
@@ -5520,6 +5693,7 @@ class PaymentViewModel @Inject constructor(
             )
             _state.value = PaymentState.Cancelled
             Timber.d("🚫 Payment cancelled by user")
+            chipOnlyOnNextDetect = false  // un cancel no debe heredar el lector recortado a la siguiente venta
         }
     }
 
@@ -5545,6 +5719,7 @@ class PaymentViewModel @Inject constructor(
 
         _state.value = PaymentState.Idle
         _isPaymentInProgress.value = false  // 🚦 Release payment guard
+        chipOnlyOnNextDetect = false  // el siguiente cobro arranca con el lector completo
         isSkipReviewFlow = false
         _flowOrigin.value = PaymentFlowOrigin.FAST
 
@@ -8208,7 +8383,6 @@ class PaymentViewModel @Inject constructor(
             venueId = currentVenueId,  // 🏢 Payment's venue (NOT auth venue!)
             staffId = currentStaffId   // Current staff processing the refund
         )
-
         // Set amount from context + refund context snapshot
         updateSessionSnapshot(
             reason = "startRefund",
@@ -8218,7 +8392,20 @@ class PaymentViewModel @Inject constructor(
             refundContextOverride = refundContext,
             refundAttemptIdClear = true
         )
-        ensureRefundAttemptId()
+        val refundAttemptId = ensureRefundAttemptId()
+
+        // 💸 Copia FUERA del snapshot (auditoría de Codex F2): si `resetPayment()` limpia la sesión
+        // entre la aprobación del SDK y el registro, el reembolso todavía tiene con qué registrarse.
+        //
+        // 🔴 Y LLEVA LA LLAVE (revisión 5-sep-2026). Antes se copiaba el contexto TAL CUAL, y
+        // `PaymentScreen` lo construye SIN `idempotencyKey` (default null en `PaymentContext`). Por
+        // eso, cuando este respaldo era el que se usaba —el cajero toca atrás durante «Autorizando
+        // reembolso…» y `resetPayment()` vacía la sesión—, el POST del registro salía con la llave en
+        // NULL mientras la fila de la cola nacía con una llave recién generada: el servidor guardaba
+        // el REFUND sin llave y, si esa respuesta se perdía, el replay del worker mandaba la OTRA
+        // llave ⇒ un SEGUNDO `Payment REFUND` sobre el mismo pago. Con la llave puesta aquí, el
+        // respaldo es idéntico al camino normal (`buildRefundPaymentContext`, que ya la rellena).
+        refundContextEnVuelo = refundContext.copy(idempotencyKey = refundAttemptId)
 
         Timber.i("═══════════════════════════════════════════════════════════")
         Timber.i("💸 [REFUND] Starting refund transaction")
@@ -8239,6 +8426,49 @@ class PaymentViewModel @Inject constructor(
                 // ═══════════════════════════════════════════════════════════════════════════
                 // STEP 0: Ensure merchants are loaded (CRITICAL for multi-merchant lookup)
                 // ═══════════════════════════════════════════════════════════════════════════
+                // 💸 CANDADO (auditoría de Codex F7): si este mismo pago ya tiene una devolución que el
+                // SDK aprobó y que aún no está registrada en Avoqado, NO se lanza otra. El servidor
+                // todavía la ve reembolsable, así que un segundo intento —con otra llave— devolvería el
+                // dinero dos veces y el servidor sólo podría anotar uno.
+                val sinRegistrar = runCatching { refundQueueRepository.unresolvedForPayment(context.originalPaymentId) }
+                    .getOrDefault(emptyList())
+                if (sinRegistrar.isNotEmpty()) {
+                    val pendiente = sinRegistrar.first()
+                    Timber.w("⛔ [REFUND] Bloqueado: el pago ${context.originalPaymentId} ya tiene ${sinRegistrar.size} devolución(es) sin registrar")
+                    _isPaymentInProgress.value = false
+                    refundContextEnVuelo = null
+                    _state.value = PaymentState.Error(
+                        message = "Este pago ya tiene una devolución de $${pendiente.amount.setScale(2).toPlainString()} " +
+                            "hecha en la terminal y todavía sin registrar en Avoqado. No se hizo otra. " +
+                            "Espera a que se registre (o revísala en Caja) antes de intentar de nuevo.",
+                        canRetry = false
+                    )
+                    return@launch
+                }
+
+                // 📒 [Libreta] Write-ahead del REEMBOLSO: la fila existe en disco ANTES de que corra
+                // cualquier código del SDK, igual que en el cobro. Si el proceso muere entre la
+                // aprobación de CancelIcc y el POST de registro, queda evidencia con la MISMA llave
+                // (`attemptId == idempotencyKey`) que el servidor usa para deduplicar.
+                // Un fallo de la libreta NUNCA bloquea el reembolso: el helper es runCatching por
+                // dentro y este runCatching cubre además la construcción de los argumentos.
+                runCatching {
+                    val ledgerContext = buildRefundPaymentContext()
+                    val attemptIdForLedger = sessionSnapshot.refundAttemptId
+                    if (ledgerContext != null && attemptIdForLedger != null) {
+                        paymentAttemptLedger.openAttempt(
+                            attemptId = attemptIdForLedger,
+                            venueId = currentVenueId,
+                            processor = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.PROCESSOR_BLUMON,
+                            amountCents = ledgerContext.amount.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact(),
+                            tipCents = ledgerContext.tip.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact(),
+                            recordingRoute = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.ROUTE_REFUND,
+                            contextJson = com.google.gson.Gson().toJson(ledgerContext),
+                            kind = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.KIND_REFUND
+                        )
+                    }
+                }
+
                 _state.value = PaymentState.Processing("Cargando configuración...")
                 awaitMerchantsLoaded()
                 Timber.i("✅ [REFUND] Merchants loaded: ${_merchants.value.size} accounts")
@@ -8358,17 +8588,45 @@ class PaymentViewModel @Inject constructor(
                 // This fixes the "blumonSerialNumber is required" error when original payment
                 // doesn't have blumonSerialNumber stored (older payments before this field was added)
                 // NOTE: Use sessionSnapshot.refundContext to preserve the venueId/staffId we already fixed
+                //
+                // 🔴 Y EL `merchantAccountId` TAMBIÉN (revisión 5-sep-2026). Sólo se rellenaba el
+                // serial; un `merchantAccountId` vacío sobrevivía hasta la fila de la cola (`?: ""`),
+                // y desde ahí `RefundRecorder` lo rechaza con `IllegalArgumentException` en CADA
+                // replay — que `classifySyncFailure` clasifica `Retryable`, así que la fila volvía a
+                // PENDING para siempre, bloqueaba el cierre del turno y no se podía ni reconocer
+                // (sólo se reconocen los rechazos permanentes). Aquí ya sabemos de qué cuenta salió
+                // el dinero: se rellena. Se usa `merchantAccountId` (el CUID del backend), NUNCA `id`
+                // (el id LOCAL): el CUID es lo que el servidor espera, y mandar el otro sería un dato
+                // inventado que el servidor rechazaría.
                 val refundContext = sessionSnapshot.refundContext
-                if (refundContext != null &&
-                    refundContext.blumonSerialNumber.isNullOrBlank() &&
-                    targetMerchant.serialNumber.isNotBlank()
-                ) {
-                    Timber.i("🔧 [REFUND] Fixing missing blumonSerialNumber from target merchant")
-                    val updatedRefundContext = refundContext.copy(blumonSerialNumber = targetMerchant.serialNumber)
-                    updateSessionSnapshot(
-                        reason = "refund-serial-backfill",
-                        refundContextOverride = updatedRefundContext
-                    )
+                if (refundContext != null) {
+                    val serialBackfill = targetMerchant.serialNumber
+                        .takeIf { it.isNotBlank() && refundContext.blumonSerialNumber.isNullOrBlank() }
+                    val merchantBackfill = targetMerchant.merchantAccountId
+                        ?.takeIf { it.isNotBlank() && refundContext.merchantAccountId.isNullOrBlank() }
+                    if (serialBackfill != null || merchantBackfill != null) {
+                        Timber.i(
+                            "🔧 [REFUND] Rellenando del merchant dueño | serial=${serialBackfill != null} | merchantAccountId=${merchantBackfill != null}"
+                        )
+                        val updatedRefundContext = refundContext.copy(
+                            blumonSerialNumber = serialBackfill ?: refundContext.blumonSerialNumber,
+                            merchantAccountId = merchantBackfill ?: refundContext.merchantAccountId,
+                        )
+                        updateSessionSnapshot(
+                            reason = "refund-merchant-backfill",
+                            refundContextOverride = updatedRefundContext
+                        )
+                        // 🔴 El respaldo en vuelo se rellena TAMBIÉN: es justo el que se usa cuando
+                        // `resetPayment()` ya vació la sesión, o sea el caso en el que el hueco duele.
+                        // Conserva la llave que `startRefund` le puso arriba.
+                        val enVuelo = refundContextEnVuelo
+                        if (enVuelo != null) {
+                            refundContextEnVuelo = enVuelo.copy(
+                                blumonSerialNumber = serialBackfill ?: enVuelo.blumonSerialNumber,
+                                merchantAccountId = merchantBackfill ?: enVuelo.merchantAccountId,
+                            )
+                        }
+                    }
                 }
 
                 // ═══════════════════════════════════════════════════════════════════════════
@@ -8560,6 +8818,8 @@ class PaymentViewModel @Inject constructor(
 
             Timber.i("[REFUND PHASE 5] Using CancelIccUseCase with operationID: $originalOpNum")
 
+            // 📒 [Libreta] Barrera pre-SDK: AUTORIZANDO queda en disco antes de que CancelIcc arranque.
+            sessionSnapshot.refundAttemptId?.let { paymentAttemptLedger.markAuthorizing(it) }
             val authResult = performRefundAuthorization(
                 amount = formatAmountDecimal(getAmountForFlow()),
                 track2 = track2,
@@ -8733,6 +8993,8 @@ class PaymentViewModel @Inject constructor(
 
             Timber.i("[CONTACTLESS REFUND] Using CancelIccUseCase with operationID: $originalOpNum")
 
+            // 📒 [Libreta] Barrera pre-SDK: AUTORIZANDO queda en disco antes de que CancelIcc arranque.
+            sessionSnapshot.refundAttemptId?.let { paymentAttemptLedger.markAuthorizing(it) }
             val authResult = performRefundAuthorization(
                 amount = amount,
                 track2 = track2,
@@ -8790,15 +9052,39 @@ class PaymentViewModel @Inject constructor(
      * @param saleData Complete sale data from Blumon SDK (includes binInformation), null for offline refunds
      * @param entryMode How the card was read (CHIP, CONTACTLESS, SWIPE)
      */
+    /** Sólo para pruebas: [handleRefundSuccess] es privado y el SDK no se puede recorrer en la JVM. */
+    @VisibleForTesting
+    internal fun handleRefundSuccessForTest(saleData: Any?, entryMode: CardEntryMode, seedState: PaymentState? = null) {
+        // `seedState` deja al test poner la pantalla en el estado que tiene en PRODUCCIÓN al llegar
+        // aquí (Success tras el CancelIcc). Con mocks relajados, `startRefund` cae en su catch y
+        // deja Error — y desde Error el aviso ámbar no tiene dónde pintarse (se relee el estado
+        // fresco a propósito: el cajero pudo haber navegado).
+        seedState?.let { _state.value = it }
+        handleRefundSuccess(saleData, entryMode)
+    }
+
+    /** El contexto del reembolso en vuelo, fuera del snapshot de sesión (auditoría F2). */
+    @Volatile
+    private var refundContextEnVuelo: PaymentContext.RefundPayment? = null
+
     private fun handleRefundSuccess(
         saleData: Any?, // Blumon SDK SaleData object (null for offline refunds)
         entryMode: CardEntryMode,
     ) {
         viewModelScope.launch {
+            var referenciaParaAviso = "sin referencia"
             try {
-                val refundContext = buildRefundPaymentContext()
+                val refundContext = buildRefundPaymentContext() ?: refundContextEnVuelo
                 if (refundContext == null) {
-                    Timber.e("❌ [Refund Recording] Refund context is NULL - cannot record refund")
+                    // 🔴 El SDK YA devolvió el dinero y no hay con qué registrarlo: JAMÁS un return mudo
+                    // (auditoría de Codex F2). Se grita en el canal vigilado y la pantalla lo dice.
+                    Timber.e("💸🔴 [Refund Recording] Sin contexto tras la aprobación del SDK — devolución SIN registro")
+                    observability.logCritical(
+                        tag = "RefundContextLostAfterApproval",
+                        message = "El SDK aprobó una devolución y el contexto ya no existía: no se pudo registrar ni encolar",
+                        metadata = mapOf("attemptId" to sessionSnapshot.refundAttemptId, "venueId" to currentVenueId),
+                    )
+                    buildRefundLostState(_state.value, referenciaParaAviso)?.let { _state.value = it }
                     return@launch
                 }
 
@@ -8828,19 +9114,18 @@ class PaymentViewModel @Inject constructor(
                 } else {
                     "OFFLINE-${System.currentTimeMillis()}"
                 }
+                referenciaParaAviso = referenceNumber
 
                 Timber.d("💸 [Refund Recording] Starting refund record | auth=$authorizationNumber | ref=$referenceNumber")
                 Timber.d("   Original payment: ${refundContext.originalPaymentId}")
                 Timber.d("   Refund amount: ${refundContext.amount}")
                 Timber.d("   Reason: ${refundContext.refundReason.displayName}")
 
-                // Validate authentication before backend recording
-                val hasAuth = authRepository.isAuthenticated()
-                if (!hasAuth || currentStaffId.isBlank() || currentVenueId.isBlank()) {
-                    Timber.w("⚠️ [Refund Recording] SKIPPED - Missing authentication context")
-                    Timber.w("   → Refund succeeded with Blumon, but backend sync requires login")
-                    return@launch
-                }
+                // 🔴 La sesión NO decide si el reembolso se guarda. Antes, sin sesión, se hacía
+                // `return@launch` y el reembolso —que el SDK YA aprobó— se perdía sin rastro. Ahora
+                // sin sesión se ENCOLA igual y el worker lo registra cuando haya login; sólo se omite
+                // la llamada de red, que sin token está condenada de antemano.
+                val hasAuth = authRepository.isAuthenticated() && currentStaffId.isNotBlank() && currentVenueId.isNotBlank()
 
                 // Extract card details (if saleData available)
                 val cardDetails = if (saleData != null) {
@@ -8857,50 +9142,144 @@ class PaymentViewModel @Inject constructor(
 
                 Timber.d("💸 [Refund Recording] Card: ${cardDetails.cardBrand} ${cardDetails.maskedPan} | Entry: ${entryMode}")
 
-                // Call RecordRefundUseCase — pass the tip-split override (if any)
-                // from the RefundConfirmationScreen.
-                val result = recordRefundUseCase(
-                    context = refundContext,
-                    cardDetails = cardDetails,
+                // La MISMA llave que viaja al servidor es la PK de la fila encolada — así el
+                // reintento local y el remoto hablan de la misma cosa (Fase 0 del servidor).
+                val refundKey = refundContext.idempotencyKey ?: ensureRefundAttemptId()
+
+                // 🔴 EL CONTEXTO QUE VIAJA AL SERVIDOR LLEVA ESA MISMA LLAVE (revisión 5-sep-2026).
+                // Antes `refundKey` sólo se usaba para la fila y al use case iba `refundContext` tal
+                // cual: por el camino de respaldo (`refundContextEnVuelo` tras un `resetPayment()`)
+                // eso era `idempotencyKey = null`, el servidor guardaba el REFUND sin llave, y el
+                // replay del worker —que sí manda la llave de la fila— nacía como un reembolso NUEVO.
+                // Una sola llave para la fila (`queuedRefund.idempotencyKey`), el POST y la libreta.
+                val contextoConLlave = refundContext.copy(idempotencyKey = refundKey)
+
+                // 🔴 El payload se guarda VERBATIM — autorización y referencia incluidas — y jamás se
+                // recalcula al reproducir. En Blumon salen por reflexión del SaleData del SDK, que
+                // ya no existe cuando el worker corre; el servidor las mete en su huella de
+                // idempotencia, así que derivarlas otra vez rompería la deduplicación.
+                val queuedRefund = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund(
+                    idempotencyKey = refundKey,
+                    venueId = refundContext.venueId,
+                    staffId = refundContext.staffId,
+                    processor = com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.BLUMON,
+                    originalPaymentId = refundContext.originalPaymentId,
+                    originalOrderId = refundContext.originalOrderId,
+                    amount = refundContext.amount,
+                    originalTotalAmount = refundContext.originalTotalAmount,
+                    tipRefundCents = refundContext.tipRefundCents,
+                    isPartialRefund = refundContext.isPartialRefund,
+                    refundReason = refundContext.refundReason,
+                    merchantAccountId = refundContext.merchantAccountId ?: "",
+                    blumonSerialNumber = refundContext.blumonSerialNumber,
+                    originalOperationNumber = refundContext.originalOperationNumber,
                     authorizationNumber = authorizationNumber,
                     referenceNumber = referenceNumber,
-                    tipRefundCents = refundContext.tipRefundCents,
+                    maskedPan = cardDetails.maskedPan,
+                    cardBrand = cardDetails.cardBrand.name,
+                    entryMode = cardDetails.entryMode.name,
+                    createdAt = System.currentTimeMillis()
                 )
 
-                result.onSuccess { receipt ->
-                    Timber.i("✅ [Refund Recording] Refund recorded successfully | refundId=${receipt.refundId}")
-                    Timber.i("📄 [Refund Recording] Receipt URL: ${receipt.receiptUrl}")
+                // 🔴 Un `merchantAccountId` en blanco NO puede registrarse nunca (ver el bloque del
+                // POST): se marca aquí para que el desenlace nazca PERMANENTE en vez de reintentarse
+                // eternamente. `startRefund` ya lo rellena desde el merchant dueño cuando se puede;
+                // llegar aquí en blanco significa que no había de dónde sacarlo.
+                val sinMerchant = queuedRefund.merchantAccountId.isBlank()
+                if (sinMerchant) {
+                    Timber.e("💸🔴 [Refund Recording] Sin merchantAccountId — la fila nace PERMANENTE, no en bucle | key=$refundKey")
+                }
 
-                    // Update Success state with refund receipt
-                    val currentState = _state.value
-                    if (currentState is PaymentState.Success) {
-                        // Convert RefundReceipt to PaymentReceipt for display
-                        val paymentReceipt = PaymentReceipt(
-                            paymentId = receipt.refundId,
-                            receiptUrl = receipt.receiptUrl ?: "", // Fallback to empty if no receipt URL
-                            accessKey = "", // Refunds may not have separate access key
-                            amount = refundContext.amount.add(refundContext.tip),
-                            tipAmount = refundContext.tip,
-                            autofacturaAvailable = receipt.autofacturaAvailable
-                        )
+                // 🔴 NonCancellable sobre el REGISTRO y su desenlace entero, no sólo sobre el insert
+                // de la cola: el scope muere cuando el cajero sale de la pantalla, que es justo
+                // después de leer «devolución aprobada». Sin esto, un cancel a media llamada se
+                // llevaba también el encolado y el aviso — el defecto original, un nivel más abajo.
+                withContext(NonCancellable) {
+                    // 1️⃣ WRITE-AHEAD (auditoría de Codex F1): la fila existe en Room ANTES del primer POST,
+                    // nacida ya reclamada por ESTE intento (SYNCING + token). Si el proceso muere a media
+                    // petición, el worker la rescata al caducar el lease y la reproduce con la MISMA llave;
+                    // el servidor deduplica. Un fallo aquí NO detiene la red: el dinero ya salió y hay que
+                    // intentar anotarlo igual — si también falla, se cae al encolado de respaldo.
+                    val claimToken = java.util.UUID.randomUUID().toString()
+                    val writeAhead = refundQueueRepository.enqueueClaimed(queuedRefund, claimToken)
+                    writeAhead.onFailure { Timber.e(it, "💸🔴 [Refund Recording] No se pudo escribir la fila write-ahead | key=$refundKey") }
 
-                        _state.value = currentState.copy(
-                            receipt = paymentReceipt,
-                            cardDetails = cardDetails,
-                            referenceNumber = referenceNumber,
-                            isRefund = true
+                    // 2️⃣ El POST
+                    // 🔴 Sin `merchantAccountId` el registro es IMPOSIBLE, no «todavía no» (revisión
+                    // 5-sep-2026). `RefundRecorder` lo rechaza con `IllegalArgumentException` ANTES de
+                    // tocar la red, y `classifySyncFailure` clasifica eso `Retryable`: la fila volvía a
+                    // PENDING en cada pasada del worker, para siempre, bloqueando el cierre del turno
+                    // sin que nadie pudiera reconocerla (sólo se reconocen los rechazos permanentes).
+                    // La fila SE ESCRIBE igual —el dinero ya salió y borrarla sería el defecto que esta
+                    // cola vino a arreglar— pero nace PERMANENTE: el cajero ve «necesita una persona»
+                    // con el motivo y puede liberar el cierre. Y no se intenta el POST: no hay nada
+                    // que el servidor pueda aceptar.
+                    val result = when {
+                        sinMerchant -> Result.failure(
+                            IllegalArgumentException(
+                                "No se pudo identificar la cuenta del comerciante del pago original. " +
+                                    "La devolución SÍ se hizo en la terminal: hay que registrarla a mano."
+                            )
                         )
-                        Timber.d("🎫 [Refund Receipt] Updated Success state with refund receipt")
+                        !hasAuth -> {
+                            Timber.w("⚠️ [Refund Recording] Sin sesión — se encola sin intentar la red")
+                            Result.failure(IllegalStateException("Sin sesión de staff: el reembolso quedó en cola"))
+                        }
+                        else -> {
+                            // Call RecordRefundUseCase — pass the tip-split override (if any)
+                            // from the RefundConfirmationScreen.
+                            recordRefundUseCase(
+                                context = contextoConLlave,
+                                cardDetails = cardDetails,
+                                authorizationNumber = authorizationNumber,
+                                referenceNumber = referenceNumber,
+                                tipRefundCents = contextoConLlave.tipRefundCents,
+                            )
+                        }
                     }
-                }.onFailure { error ->
-                    Timber.e(error, "❌ [Refund Recording] Failed to record refund: ${error.message}")
-                    Timber.w("   → Refund succeeded with Blumon but NOT recorded to backend")
-                    Timber.w("   → This requires manual reconciliation")
-                    // Note: Unlike payments, we don't queue refunds for offline retry
-                    // Refunds require immediate attention for proper reconciliation
+
+                    result.onSuccess { receipt ->
+                        Timber.i("✅ [Refund Recording] Refund recorded successfully | refundId=${receipt.refundId}")
+                        Timber.i("📄 [Refund Recording] Receipt URL: ${receipt.receiptUrl}")
+                        // 📒 [Libreta] REGISTRADO — el servidor lo tiene.
+                        paymentAttemptLedger.markRecorded(refundKey)
+                        // 3️⃣ La fila write-ahead se cierra con el MISMO token (compare-and-swap).
+                        if (writeAhead.isSuccess) {
+                            val affected = refundQueueRepository.markSuccess(refundKey, claimToken)
+                            if (affected == 0) Timber.w("💸 [Refund Recording] markSuccess no afectó filas (otro dueño del claim) | key=$refundKey")
+                        }
+
+                        // Update Success state with refund receipt
+                        val currentState = _state.value
+                        if (currentState is PaymentState.Success) {
+                            // Convert RefundReceipt to PaymentReceipt for display
+                            val paymentReceipt = PaymentReceipt(
+                                paymentId = receipt.refundId,
+                                receiptUrl = receipt.receiptUrl ?: "", // Fallback to empty if no receipt URL
+                                accessKey = "", // Refunds may not have separate access key
+                                amount = refundContext.amount.add(refundContext.tip),
+                                tipAmount = refundContext.tip,
+                                autofacturaAvailable = receipt.autofacturaAvailable
+                            )
+
+                            _state.value = currentState.copy(
+                                receipt = paymentReceipt,
+                                cardDetails = cardDetails,
+                                referenceNumber = referenceNumber,
+                                isRefund = true
+                            )
+                            Timber.d("🎫 [Refund Receipt] Updated Success state with refund receipt")
+                        }
+                    }.onFailure { error ->
+                        Timber.e(error, "❌ [Refund Recording] Failed to record refund: ${error.message}")
+                        // 📒 [Libreta] REGISTRO_FALLIDO, y de ahí a ENTREGADA_A_COLA si el encolado entra.
+                        paymentAttemptLedger.markRecordFailed(refundKey, error.message)
+                        settleRefundRecordingFailure(queuedRefund, claimToken, writeAhead.isSuccess, error, referenceNumber, forzarPermanente = sinMerchant)
+                    }
                 }
 
                 // Clear refund context after refund completes
+                refundContextEnVuelo = null
                 updateSessionSnapshot(
                     reason = "refund-reset",
                     refundContextClear = true,
@@ -8909,6 +9288,16 @@ class PaymentViewModel @Inject constructor(
 
             } catch (e: Exception) {
                 Timber.e(e, "❌ [Refund Recording] Unexpected error")
+                // 🔴 Auditoría de Codex F2: el `catch` sólo limpiaba el contexto — el reembolso aprobado
+                // desaparecía sin rastro. Se grita en el canal vigilado y la pantalla dice que SÍ se hizo.
+                observability.logCritical(
+                    tag = "RefundRecordingCrashed",
+                    message = "Excepción inesperada registrando una devolución que el SDK YA aprobó",
+                    error = e,
+                    metadata = mapOf("attemptId" to sessionSnapshot.refundAttemptId, "venueId" to currentVenueId, "reference" to referenciaParaAviso),
+                )
+                buildRefundLostState(_state.value, referenciaParaAviso)?.let { _state.value = it }
+                refundContextEnVuelo = null
                 // Reset state even on error
                 updateSessionSnapshot(
                     reason = "refund-reset",

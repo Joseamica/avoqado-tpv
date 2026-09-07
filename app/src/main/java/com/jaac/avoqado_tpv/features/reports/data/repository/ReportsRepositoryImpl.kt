@@ -4,6 +4,8 @@ import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.features.reports.data.aggregators.ComparisonCalculator
 import com.jaac.avoqado_tpv.features.reports.data.aggregators.ShiftAggregator
+import com.jaac.avoqado_tpv.features.reports.data.dto.toTenderRows
+import com.jaac.avoqado_tpv.features.reports.domain.models.TenderBreakdownResult
 import com.jaac.avoqado_tpv.features.reports.data.dto.toDomain
 import com.jaac.avoqado_tpv.features.reports.data.dto.toPaymentBreakdown
 import com.jaac.avoqado_tpv.features.reports.data.dto.toSalesSummary
@@ -128,6 +130,47 @@ class ReportsRepositoryImpl @Inject constructor(
     }
 
     /**
+     * Desglose por metodo CON propina — el MISMO endpoint que el corte de la tablet.
+     *
+     * 🔴 Tres estados, no dos: `Available(vacia)` = el servidor contesto y no hubo
+     * cobros; `Unavailable` = no se pudo preguntar. Confundirlos hace que el ticket
+     * impreso —que se queda en el cajon como comprobante— mienta sobre por que falta
+     * un numero. Es la leccion que ya costo un defecto visible en avoqado-android.
+     */
+    override suspend fun getTenderBreakdown(
+        venueId: String,
+        period: ReportPeriod
+    ): TenderBreakdownResult = withContext(Dispatchers.IO) {
+        try {
+            Timber.d("💳 Fetching tender breakdown (con propina) for period: ${period.getLabel()}")
+
+            val response = apiService.getTenderBreakdown(
+                venueId = venueId,
+                from = period.startDate.toString(),
+                to = period.endDate.toString()
+            )
+
+            val body = response.body()
+            if (!response.isSuccessful || body == null) {
+                Timber.w("⚠️ tender-breakdown failed (${response.code()}) — el ticket lo dira")
+                return@withContext TenderBreakdownResult.Unavailable
+            }
+
+            val rows = body.data.toTenderRows()
+            if (rows == null) {
+                Timber.e("❌ tender-breakdown con renglones ilegibles: se reporta como NO consultado")
+                return@withContext TenderBreakdownResult.Unavailable
+            }
+
+            Timber.i("✅ Tender breakdown: ${rows.size} metodo(s) con propina desglosada")
+            TenderBreakdownResult.Available(rows)
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error fetching tender breakdown")
+            TenderBreakdownResult.Unavailable
+        }
+    }
+
+    /**
      * Get shift history for a specific period
      */
     override suspend fun getShiftHistory(
@@ -180,7 +223,16 @@ class ReportsRepositoryImpl @Inject constructor(
 
             // Fetch all shifts (need both current and previous periods)
             // Use larger limit to cover both periods
-            val shiftsResult = shiftRepository.getShiftHistory(venueId, limit = 200)
+            //
+            // 🔴 `desde` = el inicio del periodo ANTERIOR (5-sep-2026). Es el turno más viejo que la
+            // comparación puede necesitar; en cuanto la paginación pasa esa marca, seguir pidiendo
+            // páginas es gastar red por turnos que `ComparisonCalculator` va a descartar. Sin este
+            // corte, el `limit = 200` recorrería 4 páginas siempre, incluso comparando dos días.
+            val shiftsResult = shiftRepository.getShiftHistory(
+                venueId,
+                limit = 200,
+                desde = period.previousPeriodStart
+            )
 
             when (shiftsResult) {
                 is Result.Success -> {
@@ -359,6 +411,11 @@ class ReportsRepositoryImpl @Inject constructor(
      * Fetches a large batch of shifts and filters by period client-side.
      * Uses limit = 200 to cover most reporting periods (max ~6 months).
      *
+     * 🔴 El `limit = 200` era una MENTIRA hasta el 5-sep-2026: el servidor recorta el `pageSize` a
+     * 50 y sólo llegaban 50 turnos, así que este reporte se calculaba con la cuarta parte de los
+     * datos y sin decirlo. `getShiftHistory` ya pagina; aquí sólo hay que decirle hasta dónde
+     * retroceder para no pedir páginas que el filtro de abajo va a tirar.
+     *
      * @param venueId Venue ID for tenant isolation
      * @param period Report period filter
      * @return Result with filtered list of shifts
@@ -369,7 +426,11 @@ class ReportsRepositoryImpl @Inject constructor(
     ): Result<List<Shift>> {
         // Fetch large batch of shifts (backend returns paginated)
         // TODO: Optimize with backend filtering by date range
-        val shiftsResult = shiftRepository.getShiftHistory(venueId, limit = 200)
+        val shiftsResult = shiftRepository.getShiftHistory(
+            venueId,
+            limit = 200,
+            desde = period.startDate
+        )
 
         return when (shiftsResult) {
             is Result.Success -> {

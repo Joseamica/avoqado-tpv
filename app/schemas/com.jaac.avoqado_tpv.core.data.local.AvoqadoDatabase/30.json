@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 30,
-    "identityHash": "5fd714b73d1e4f7c32dd981571b18663",
+    "identityHash": "49855666b81e6320c207056388823550",
     "entities": [
       {
         "tableName": "pending_payments",
@@ -1754,12 +1754,12 @@
         ]
       },
       {
-        "tableName": "remote_payment_requests",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`request_id` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `amount_cents` INTEGER NOT NULL, `tip_cents` INTEGER NOT NULL, `rating` INTEGER, `skip_review` INTEGER NOT NULL, `order_id` TEXT, `processed_by_staff_id` TEXT, `sender_device_name` TEXT, `source_timestamp` TEXT NOT NULL, `status` TEXT NOT NULL, `final_result_json` TEXT, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`request_id`))",
+        "tableName": "pending_refunds",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`idempotency_key` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `processor` TEXT NOT NULL, `original_payment_id` TEXT NOT NULL, `original_order_id` TEXT, `amount` TEXT NOT NULL, `original_total_amount` TEXT NOT NULL, `tip_refund_cents` INTEGER, `is_partial_refund` INTEGER NOT NULL, `refund_reason` TEXT NOT NULL, `merchant_account_id` TEXT NOT NULL, `blumon_serial_number` TEXT NOT NULL, `original_operation_number` INTEGER NOT NULL, `authorization_number` TEXT NOT NULL, `reference_number` TEXT NOT NULL, `masked_pan` TEXT, `card_brand` TEXT, `entry_mode` TEXT NOT NULL, `created_at` INTEGER NOT NULL, `retry_count` INTEGER NOT NULL, `last_error` TEXT, `sync_status` TEXT NOT NULL, `claim_token` TEXT, `claimed_at` INTEGER, `permanent` INTEGER NOT NULL DEFAULT 0, `acknowledged` INTEGER NOT NULL DEFAULT 0, `acknowledged_by` TEXT, `acknowledged_at` INTEGER, PRIMARY KEY(`idempotency_key`))",
         "fields": [
           {
-            "fieldPath": "requestId",
-            "columnName": "request_id",
+            "fieldPath": "idempotencyKey",
+            "columnName": "idempotency_key",
             "affinity": "TEXT",
             "notNull": true
           },
@@ -1770,59 +1770,102 @@
             "notNull": true
           },
           {
-            "fieldPath": "amountCents",
-            "columnName": "amount_cents",
-            "affinity": "INTEGER",
+            "fieldPath": "staffId",
+            "columnName": "staff_id",
+            "affinity": "TEXT",
             "notNull": true
           },
           {
-            "fieldPath": "tipCents",
-            "columnName": "tip_cents",
-            "affinity": "INTEGER",
+            "fieldPath": "processor",
+            "columnName": "processor",
+            "affinity": "TEXT",
             "notNull": true
           },
           {
-            "fieldPath": "rating",
-            "columnName": "rating",
+            "fieldPath": "originalPaymentId",
+            "columnName": "original_payment_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originalOrderId",
+            "columnName": "original_order_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "amount",
+            "columnName": "amount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originalTotalAmount",
+            "columnName": "original_total_amount",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tipRefundCents",
+            "columnName": "tip_refund_cents",
             "affinity": "INTEGER"
           },
           {
-            "fieldPath": "skipReview",
-            "columnName": "skip_review",
+            "fieldPath": "isPartialRefund",
+            "columnName": "is_partial_refund",
             "affinity": "INTEGER",
             "notNull": true
           },
           {
-            "fieldPath": "orderId",
-            "columnName": "order_id",
-            "affinity": "TEXT"
-          },
-          {
-            "fieldPath": "processedByStaffId",
-            "columnName": "processed_by_staff_id",
-            "affinity": "TEXT"
-          },
-          {
-            "fieldPath": "senderDeviceName",
-            "columnName": "sender_device_name",
-            "affinity": "TEXT"
-          },
-          {
-            "fieldPath": "sourceTimestamp",
-            "columnName": "source_timestamp",
+            "fieldPath": "refundReason",
+            "columnName": "refund_reason",
             "affinity": "TEXT",
             "notNull": true
           },
           {
-            "fieldPath": "status",
-            "columnName": "status",
+            "fieldPath": "merchantAccountId",
+            "columnName": "merchant_account_id",
             "affinity": "TEXT",
             "notNull": true
           },
           {
-            "fieldPath": "finalResultJson",
-            "columnName": "final_result_json",
+            "fieldPath": "blumonSerialNumber",
+            "columnName": "blumon_serial_number",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originalOperationNumber",
+            "columnName": "original_operation_number",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "authorizationNumber",
+            "columnName": "authorization_number",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "referenceNumber",
+            "columnName": "reference_number",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "maskedPan",
+            "columnName": "masked_pan",
             "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "cardBrand",
+            "columnName": "card_brand",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "entryMode",
+            "columnName": "entry_mode",
+            "affinity": "TEXT",
+            "notNull": true
           },
           {
             "fieldPath": "createdAt",
@@ -1831,44 +1874,106 @@
             "notNull": true
           },
           {
-            "fieldPath": "updatedAt",
-            "columnName": "updated_at",
+            "fieldPath": "retryCount",
+            "columnName": "retry_count",
             "affinity": "INTEGER",
             "notNull": true
+          },
+          {
+            "fieldPath": "lastError",
+            "columnName": "last_error",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "syncStatus",
+            "columnName": "sync_status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "claimToken",
+            "columnName": "claim_token",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "claimedAt",
+            "columnName": "claimed_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "permanent",
+            "columnName": "permanent",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "acknowledged",
+            "columnName": "acknowledged",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "acknowledgedBy",
+            "columnName": "acknowledged_by",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "acknowledgedAt",
+            "columnName": "acknowledged_at",
+            "affinity": "INTEGER"
           }
         ],
         "primaryKey": {
           "autoGenerate": false,
           "columnNames": [
-            "request_id"
+            "idempotency_key"
           ]
         },
         "indices": [
           {
-            "name": "index_remote_payment_requests_venue_id_status",
+            "name": "index_pending_refunds_sync_status",
             "unique": false,
             "columnNames": [
-              "venue_id",
-              "status"
+              "sync_status"
             ],
             "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_remote_payment_requests_venue_id_status` ON `${TABLE_NAME}` (`venue_id`, `status`)"
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_pending_refunds_sync_status` ON `${TABLE_NAME}` (`sync_status`)"
           },
           {
-            "name": "index_remote_payment_requests_created_at",
+            "name": "index_pending_refunds_created_at",
             "unique": false,
             "columnNames": [
               "created_at"
             ],
             "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_remote_payment_requests_created_at` ON `${TABLE_NAME}` (`created_at`)"
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_pending_refunds_created_at` ON `${TABLE_NAME}` (`created_at`)"
+          },
+          {
+            "name": "index_pending_refunds_venue_id",
+            "unique": false,
+            "columnNames": [
+              "venue_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_pending_refunds_venue_id` ON `${TABLE_NAME}` (`venue_id`)"
+          },
+          {
+            "name": "index_pending_refunds_claim_token",
+            "unique": false,
+            "columnNames": [
+              "claim_token"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_pending_refunds_claim_token` ON `${TABLE_NAME}` (`claim_token`)"
           }
         ]
       }
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '5fd714b73d1e4f7c32dd981571b18663')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '49855666b81e6320c207056388823550')"
     ]
   }
 }

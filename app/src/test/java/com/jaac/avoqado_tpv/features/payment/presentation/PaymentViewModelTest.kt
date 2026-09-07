@@ -120,6 +120,9 @@ class PaymentViewModelTest {
     // mid-enqueue-cancellation test can control exactly when enqueue() suspends/returns.
     private lateinit var mockPaymentQueueRepository:
         com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
+    // 💸 La cola de REEMBOLSOS (Fase 1): campo con nombre para poder verificar y controlar enqueue().
+    private lateinit var mockRefundQueueRepository:
+        com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository
 
     // Flows needed by init block collectors
     private val socketEventsFlow = MutableSharedFlow<SocketEvent>()
@@ -147,7 +150,8 @@ class PaymentViewModelTest {
         venueId: String = testVenueId,
         staffId: String = testStaffId,
         amount: BigDecimal = BigDecimal("50.00"),
-        originalPaymentId: String = "pay-001"
+        originalPaymentId: String = "pay-001",
+        merchantAccountId: String? = "merchant_a"
     ) = PaymentContext.RefundPayment(
         venueId = venueId,
         staffId = staffId,
@@ -157,7 +161,7 @@ class PaymentViewModelTest {
         originalOrderId = null,
         originalTotalAmount = amount,
         refundReason = RefundReason.CUSTOMER_REQUEST,
-        merchantAccountId = "merchant_a",
+        merchantAccountId = merchantAccountId,
         blumonSerialNumber = "2841548417",
         originalOperationNumber = 75656
     )
@@ -288,6 +292,13 @@ class PaymentViewModelTest {
         mockAppContext = mockk(relaxed = true)
         observabilityManager = mockk(relaxed = true)
         mockPaymentQueueRepository = mockk(relaxed = true)
+        mockRefundQueueRepository = mockk(relaxed = true) {
+            coEvery { enqueue(any()) } returns Result.success(Unit)
+        }
+        // Defaults de la cola de reembolsos: la fila write-ahead y el respaldo "entran". Van AQUÍ y no en
+        // refundReady() para que el `coEvery` de cada prueba (capturas, orden, fallos) mande sobre ellos.
+        coEvery { mockRefundQueueRepository.enqueueClaimed(any(), any()) } returns Result.success(Unit)
+        coEvery { mockRefundQueueRepository.enqueue(any()) } returns Result.success(Unit)
         mockkObject(com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler)
         every { com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.runNow(any()) } just runs
     }
@@ -307,13 +318,18 @@ class PaymentViewModelTest {
      * IMPORTANT: Must cancel viewModelScope at end of each test to prevent
      * runTest hang from infinite StateFlow collectors in init block.
      */
-    private fun createViewModel(): PaymentViewModel {
+    private fun createViewModel(
+        startDetectCardUseCase: com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase =
+            mockk(relaxed = true),
+        startCtlssTransUseCase: com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase =
+            mockk(relaxed = true),
+    ): PaymentViewModel {
         return PaymentViewModel(
             preTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.pre_trans.PreTransUseCase>(relaxed = true),
-            startDetectCardUseCase = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>(relaxed = true),
+            startDetectCardUseCase = startDetectCardUseCase,
             stopDetectCardUseCase = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.stop_detect_card.StopDetectCardUseCase>(relaxed = true),
             startEmvTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransUseCase>(relaxed = true),
-            startCtlssTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>(relaxed = true),
+            startCtlssTransUseCase = startCtlssTransUseCase,
             getEmvTagUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.get_emv_tags.GetEmvTagUseCase>(relaxed = true),
             completeEmvTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.complete_emv_trans.CompleteEmvTransUseCase>(relaxed = true),
             continueConfirmCardUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.continue_confirm_card.ContinueConfirmCardUseCase>(relaxed = true),
@@ -333,6 +349,7 @@ class PaymentViewModelTest {
             recordRefundUseCase = mockRecordRefundUseCase,
             authRepository = mockAuthRepository,
             paymentQueueRepository = mockPaymentQueueRepository,
+            refundQueueRepository = mockRefundQueueRepository,
             printerManager = mockk(relaxed = true),
             socketManager = mockSocketManager,
             shiftRepository = mockShiftRepository,
@@ -863,6 +880,427 @@ class PaymentViewModelTest {
         verify { mockAuthRepository.getStaffId() }
 
         viewModel.viewModelScope.cancel()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // D2. 📒 LA LIBRETA EN EL REEMBOLSO (Fase 1, Task 4 — 2026-09-03)
+    //
+    // Un reembolso que el SDK ya aprobó y cuyo POST falla se perdía sin dejar rastro. La libreta
+    // write-ahead ya cerraba esa ventana para los COBROS; estas pruebas fijan que el reembolso
+    // entra por la misma puerta: fila `kind=REFUND` abierta en `startRefund`, ANTES de que corra
+    // cualquier código del SDK, y con `attemptId == idempotencyKey` — la MISMA llave con la que
+    // el servidor deduplica el reintento. Sin esa igualdad la libreta y el servidor hablarían de
+    // dos cosas distintas y la fila no serviría para conciliar nada.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `P1 startRefund abre la libreta con kind REFUND y attemptId igual a la idempotencyKey`() = runTest {
+        every { mockGetMerchantsUseCase.invoke() } returns flowOf(listOf(testMerchantA))
+        every { mockMultiMerchantSDKManager.isMerchantActive(any()) } returns true
+        val attemptId = slot<String>()
+        val contextJson = slot<String>()
+
+        val viewModel = createViewModel()
+        viewModel.startRefund(createRefundContext(amount = BigDecimal("50.00")))
+
+        coVerify(exactly = 1) {
+            mockPaymentAttemptLedger.openAttempt(
+                attemptId = capture(attemptId),
+                venueId = testVenueId,
+                processor = PaymentAttemptEntity.PROCESSOR_BLUMON,
+                amountCents = 5000L,
+                tipCents = 0L,
+                recordingRoute = PaymentAttemptEntity.ROUTE_REFUND,
+                contextJson = capture(contextJson),
+                kind = PaymentAttemptEntity.KIND_REFUND
+            )
+        }
+        assertThat(attemptId.captured).isNotEmpty()
+        // La llave que viaja al servidor es la MISMA que identifica la fila de la libreta.
+        assertThat(contextJson.captured).contains("\"idempotencyKey\":\"${attemptId.captured}\"")
+
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 cada startRefund abre la libreta con un attemptId NUEVO, nunca reusa el anterior`() = runTest {
+        // Un reintento MANUAL del cajero es una operación nueva del SDK — el dinero se mueve otra
+        // vez — y tiene que llevar llave nueva. Reusarla haría que el servidor deduplicara el
+        // segundo reembolso contra el primero: dinero devuelto dos veces, registrado una.
+        // (El reintento AUTOMÁTICO de la cola sí reusa la llave, pero ése no pasa por aquí.)
+        every { mockGetMerchantsUseCase.invoke() } returns flowOf(listOf(testMerchantA))
+        every { mockMultiMerchantSDKManager.isMerchantActive(any()) } returns true
+        val ids = mutableListOf<String>()
+
+        val viewModel = createViewModel()
+        viewModel.startRefund(createRefundContext(originalPaymentId = "pay-A"))
+        viewModel.startRefund(createRefundContext(originalPaymentId = "pay-B"))
+
+        coVerify(exactly = 2) {
+            mockPaymentAttemptLedger.openAttempt(
+                attemptId = capture(ids), venueId = any(), processor = any(), amountCents = any(),
+                tipCents = any(), recordingRoute = any(), contextJson = any(),
+                kind = PaymentAttemptEntity.KIND_REFUND
+            )
+        }
+        assertThat(ids.toSet()).hasSize(2)
+
+        viewModel.viewModelScope.cancel()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // D3. 💸 EL REEMBOLSO QUE FALLA AL REGISTRARSE SE ENCOLA, NO SE PIERDE (Fase 1, Tasks 5-6)
+    //
+    // Cuando esto corre, el SDK YA devolvió el dinero. Antes, un POST fallido dejaba dos Timber.w
+    // y nada más: el corte del turno cuadraba de más y nadie se enteraba. `handleRefundSuccess`
+    // es privado y el SDK no se puede recorrer en la JVM, así que entra por el shim.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private fun refundReady(isAuthenticated: Boolean = true): PaymentViewModel {
+        every { mockGetMerchantsUseCase.invoke() } returns flowOf(listOf(testMerchantA))
+        every { mockMultiMerchantSDKManager.isMerchantActive(any()) } returns true
+        every { mockAuthRepository.isAuthenticated() } returns isAuthenticated
+        val vm = createViewModel()
+        vm.startRefund(createRefundContext()) // siembra refundContext + attemptId en la sesión
+        return vm
+    }
+
+    private fun exitoSembrado() = PaymentState.Success(authCode = "AUTH", amount = "50.00", isRefund = true)
+
+    private fun filaEncolada(key: String = "k-prev") = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund(
+        idempotencyKey = key, venueId = "venue-1", staffId = "staff-1",
+        processor = com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.BLUMON,
+        originalPaymentId = "pay-001", originalOrderId = null, amount = BigDecimal("50.00"),
+        originalTotalAmount = BigDecimal("100.00"), tipRefundCents = null, isPartialRefund = true,
+        refundReason = com.jaac.avoqado_tpv.features.payment.domain.model.RefundReason.CUSTOMER_REQUEST,
+        merchantAccountId = "m1", blumonSerialNumber = "SER1", originalOperationNumber = 1,
+        authorizationNumber = "502511", referenceNumber = "000000188231", maskedPan = null, cardBrand = null,
+        entryMode = "CHIP", createdAt = 1_000L,
+    )
+
+    private fun PaymentViewModel.registrar() =
+        handleRefundSuccessForTest(saleData = null, entryMode = com.jaac.avoqado_tpv.features.payment.domain.model.CardEntryMode.CHIP, seedState = exitoSembrado())
+
+    @Test
+    fun `P1 la fila se escribe en Room ANTES de tocar la red - write-ahead de verdad`() = runTest {
+        // Auditoría de Codex F1: antes la fila nacía en el onFailure, DESPUÉS del POST. Un proceso muerto
+        // a media petición dejaba dinero devuelto sin fila y sin registro.
+        val orden = mutableListOf<String>()
+        coEvery { mockRefundQueueRepository.enqueueClaimed(any(), any()) } coAnswers { orden += "room"; Result.success(Unit) }
+        coEvery { mockRecordRefundUseCase(any(), any(), any(), any(), any()) } coAnswers {
+            orden += "red"
+            Result.success(mockk(relaxed = true))
+        }
+        val vm = refundReady()
+
+        vm.registrar()
+
+        assertThat(orden).containsExactly("room", "red").inOrder()
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 con exito del servidor la fila write-ahead se cierra con el MISMO token`() = runTest {
+        val fila = slot<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund>()
+        val token = slot<String>()
+        coEvery { mockRefundQueueRepository.enqueueClaimed(capture(fila), capture(token)) } returns Result.success(Unit)
+        coEvery { mockRecordRefundUseCase(any(), any(), any(), any(), any()) } returns Result.success(mockk(relaxed = true))
+        val vm = refundReady()
+
+        vm.registrar()
+
+        coVerify(exactly = 1) { mockRefundQueueRepository.markSuccess(fila.captured.idempotencyKey, token.captured) }
+        coVerify(exactly = 0) { mockRefundQueueRepository.release(any(), any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 sin red la fila queda PENDING para el worker y la pantalla lo dice en ambar`() = runTest {
+        val fila = slot<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund>()
+        val token = slot<String>()
+        coEvery { mockRefundQueueRepository.enqueueClaimed(capture(fila), capture(token)) } returns Result.success(Unit)
+        coEvery { mockRecordRefundUseCase(any(), any(), any(), any(), any()) } returns
+            Result.failure(java.io.IOException("sin red"))
+        val vm = refundReady()
+
+        vm.registrar()
+
+        assertThat(fila.captured.processor).isEqualTo(com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.BLUMON)
+        assertThat(fila.captured.originalPaymentId).isEqualTo("pay-001")
+        assertThat(fila.captured.amount).isEqualTo(BigDecimal("50.00"))
+        coVerify(exactly = 1) { mockRefundQueueRepository.release(fila.captured.idempotencyKey, token.captured, 1, any()) }
+        coVerify(exactly = 0) { mockRefundQueueRepository.markPermanentlyFailed(any(), any(), any()) }
+        coVerify { mockPaymentAttemptLedger.markDeliveredToQueue(any()) }
+        val estado = vm.state.value
+        assertThat(estado).isInstanceOf(PaymentState.Success::class.java)
+        assertThat((estado as PaymentState.Success).pendingSyncMessage).contains("La devolución SÍ se hizo")
+        assertThat(estado.recordingLostMessage).isNull()
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 la fila write-ahead lleva la MISMA llave que viajó al servidor`() = runTest {
+        val contexto = slot<PaymentContext.RefundPayment>()
+        coEvery { mockRecordRefundUseCase(capture(contexto), any(), any(), any(), any()) } returns
+            Result.failure(java.io.IOException("sin red"))
+        val vm = refundReady()
+
+        vm.registrar()
+
+        val llaveEnviada = contexto.captured.idempotencyKey
+        assertThat(llaveEnviada).isNotNull()
+        coVerify { mockRefundQueueRepository.enqueueClaimed(match { it.idempotencyKey == llaveEnviada }, any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 sin sesion TAMBIEN queda en la cola, sin tocar la red`() = runTest {
+        val vm = refundReady(isAuthenticated = false)
+
+        vm.registrar()
+
+        coVerify(exactly = 1) { mockRefundQueueRepository.enqueueClaimed(any(), any()) }
+        coVerify(exactly = 1) { mockRefundQueueRepository.release(any(), any(), 1, any()) }
+        coVerify(exactly = 0) { mockRecordRefundUseCase(any(), any(), any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 un rechazo DEFINITIVO del servidor deja la fila FAILED permanente y la pantalla en rojo`() = runTest {
+        val fila = slot<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund>()
+        val token = slot<String>()
+        coEvery { mockRefundQueueRepository.enqueueClaimed(capture(fila), capture(token)) } returns Result.success(Unit)
+        coEvery { mockRecordRefundUseCase(any(), any(), any(), any(), any()) } returns
+            Result.failure(com.jaac.avoqado_tpv.core.data.network.BackendHttpException(422, "regla de negocio"))
+        val vm = refundReady()
+
+        vm.registrar()
+
+        coVerify(exactly = 1) {
+            mockRefundQueueRepository.markPermanentlyFailed(fila.captured.idempotencyKey, token.captured, match { it.contains("422") })
+        }
+        coVerify(exactly = 0) { mockRefundQueueRepository.release(any(), any(), any(), any()) }
+        assertThat((vm.state.value as PaymentState.Success).recordingLostMessage).contains("regla de negocio")
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 un 401 NO es permanente, es la sesion, y la fila vuelve a PENDING`() = runTest {
+        coEvery { mockRecordRefundUseCase(any(), any(), any(), any(), any()) } returns
+            Result.failure(com.jaac.avoqado_tpv.core.data.network.BackendHttpException(401, "token"))
+        val vm = refundReady()
+
+        vm.registrar()
+
+        coVerify(exactly = 1) { mockRefundQueueRepository.release(any(), any(), 1, any()) }
+        coVerify(exactly = 0) { mockRefundQueueRepository.markPermanentlyFailed(any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 si el write-ahead falla, el fallo de red cae al encolado de respaldo`() = runTest {
+        coEvery { mockRefundQueueRepository.enqueueClaimed(any(), any()) } returns Result.failure(IllegalStateException("room"))
+        coEvery { mockRecordRefundUseCase(any(), any(), any(), any(), any()) } returns
+            Result.failure(java.io.IOException("sin red"))
+        val vm = refundReady()
+
+        vm.registrar()
+
+        coVerify(exactly = 1) { mockRefundQueueRepository.enqueue(match { !it.permanent }) }
+        coVerify(exactly = 0) { mockRefundQueueRepository.release(any(), any(), any(), any()) }
+        assertThat((vm.state.value as PaymentState.Success).pendingSyncMessage).contains("La devolución SÍ se hizo")
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 si fallan write-ahead, backend Y respaldo hay telemetria critica en el canal vigilado`() = runTest {
+        coEvery { mockRefundQueueRepository.enqueueClaimed(any(), any()) } returns Result.failure(IllegalStateException("room"))
+        coEvery { mockRecordRefundUseCase(any(), any(), any(), any(), any()) } returns
+            Result.failure(java.io.IOException("sin red"))
+        coEvery { mockRefundQueueRepository.enqueue(any()) } returns Result.failure(IllegalStateException("disco lleno"))
+        val vm = refundReady()
+
+        vm.registrar()
+
+        verify { observabilityManager.logCritical(tag = "RefundRecordAndQueueLost", message = any(), error = any(), metadata = any()) }
+        assertThat((vm.state.value as PaymentState.Success).recordingLostMessage).contains("ni en el servidor")
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 el desenlace sobrevive a que cancelen el viewModelScope a media llamada de red`() = runTest {
+        // El cajero sale de la pantalla justo después de ver «devolución aprobada»: el scope muere
+        // con el POST en vuelo. Sin NonCancellable, el cierre de la fila y el aviso se cancelan con él.
+        val puerta = CompletableDeferred<Unit>()
+        coEvery { mockRecordRefundUseCase(any(), any(), any(), any(), any()) } coAnswers {
+            puerta.await()
+            Result.failure(java.io.IOException("sin red"))
+        }
+        val vm = refundReady()
+
+        vm.registrar()
+        vm.viewModelScope.cancel() // se va de la pantalla con la llamada suspendida
+        puerta.complete(Unit)      // la red contesta tarde
+
+        coVerify(exactly = 1) { mockRefundQueueRepository.enqueueClaimed(any(), any()) }
+        coVerify(exactly = 1) { mockRefundQueueRepository.release(any(), any(), 1, any()) }
+    }
+
+    @Test
+    fun `P1 startRefund se NIEGA a lanzar otra devolucion si el pago ya tiene una sin registrar`() = runTest {
+        // Auditoría de Codex F7: mientras la primera no esté en el servidor, el saldo remoto sigue
+        // pareciendo reembolsable; una segunda con otra llave devolvería el dinero dos veces.
+        coEvery { mockRefundQueueRepository.unresolvedForPayment("pay-001") } returns listOf(filaEncolada())
+        every { mockGetMerchantsUseCase.invoke() } returns flowOf(listOf(testMerchantA))
+        every { mockMultiMerchantSDKManager.isMerchantActive(any()) } returns true
+        val vm = createViewModel()
+
+        vm.startRefund(createRefundContext())
+
+        val estado = vm.state.value
+        assertThat(estado).isInstanceOf(PaymentState.Error::class.java)
+        assertThat((estado as PaymentState.Error).message).contains("sin registrar")
+        assertThat(estado.canRetry).isFalse()
+        coVerify(exactly = 0) { mockPaymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // D4. 💸 UNA SOLA LLAVE, Y NADA DE BUCLES ETERNOS (revisión del 5-sep-2026)
+    //
+    // Dos defectos de DINERO que la cola durable dejó abiertos, los dos invisibles al compilador:
+    //   • el respaldo `refundContextEnVuelo` mandaba el POST SIN `idempotencyKey` mientras la fila
+    //     nacía con una llave nueva ⇒ el servidor guardaba el REFUND sin llave y el replay del
+    //     worker creaba un SEGUNDO `Payment REFUND` sobre el mismo pago;
+    //   • un `merchantAccountId` en blanco producía una fila que se reintentaba para siempre y
+    //     bloqueaba el cierre del turno sin que nadie pudiera reconocerla.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `P1 tras resetPayment el POST lleva la MISMA llave que la fila, nunca null`() = runTest {
+        // 🔴 El caso REAL: el cajero toca atrás durante «Autorizando reembolso…» (PaymentScreen
+        // llama a `resetPayment()`), el SDK aprueba de todas formas y el registro cae al respaldo
+        // `refundContextEnVuelo`. Ese respaldo se copiaba TAL CUAL del contexto que construye
+        // PaymentScreen, que NO trae `idempotencyKey` (default null en PaymentContext).
+        val contexto = slot<PaymentContext.RefundPayment>()
+        val fila = slot<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund>()
+        coEvery { mockRefundQueueRepository.enqueueClaimed(capture(fila), any()) } returns Result.success(Unit)
+        coEvery { mockRecordRefundUseCase(capture(contexto), any(), any(), any(), any()) } returns
+            Result.success(mockk(relaxed = true))
+        val vm = refundReady()
+
+        vm.resetPayment() // ← la sesión queda vacía: `buildRefundPaymentContext()` devolverá null
+
+        vm.registrar()
+
+        // Sin la llave, el servidor guarda el REFUND con idempotencyKey NULL y el replay del worker
+        // —que sí manda la de la fila— nace como un reembolso NUEVO: dinero devuelto dos veces.
+        assertThat(contexto.captured.idempotencyKey).isNotNull()
+        assertThat(contexto.captured.idempotencyKey).isEqualTo(fila.captured.idempotencyKey)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 sin resetPayment nada cambia - la llave sigue siendo el refundAttemptId de la sesion`() = runTest {
+        // El camino normal no se toca: `buildRefundPaymentContext()` ya rellenaba la llave desde la
+        // sesión. Esta prueba es el control: fija que el arreglo no movió el comportamiento bueno.
+        val contexto = slot<PaymentContext.RefundPayment>()
+        val fila = slot<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund>()
+        coEvery { mockRefundQueueRepository.enqueueClaimed(capture(fila), any()) } returns Result.success(Unit)
+        coEvery { mockRecordRefundUseCase(capture(contexto), any(), any(), any(), any()) } returns
+            Result.success(mockk(relaxed = true))
+        val vm = refundReady()
+
+        vm.registrar()
+
+        assertThat(contexto.captured.idempotencyKey).isNotNull()
+        assertThat(contexto.captured.idempotencyKey).isEqualTo(fila.captured.idempotencyKey)
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 la libreta abre y cierra con la MISMA llave aunque medie un resetPayment`() = runTest {
+        // `openAttempt` corre en startRefund con el `refundAttemptId` de la sesión; `markRecorded`
+        // corría con la llave que se generara en handleRefundSuccess. Tras un reset eran DISTINTAS:
+        // la fila abierta no se cerraba nunca y se marcaba «registrada» una llave sin fila.
+        val abierta = slot<String>()
+        coEvery {
+            mockPaymentAttemptLedger.openAttempt(capture(abierta), any(), any(), any(), any(), any(), any(), any())
+        } returns true
+        coEvery { mockRecordRefundUseCase(any(), any(), any(), any(), any()) } returns
+            Result.success(mockk(relaxed = true))
+        val vm = refundReady()
+
+        vm.resetPayment()
+        vm.registrar()
+
+        coVerify(exactly = 1) { mockPaymentAttemptLedger.markRecorded(abierta.captured) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 sin merchantAccountId la fila nace PERMANENTE y NUNCA se toca la red`() = runTest {
+        // 🔴 `RefundRecorder` rechaza un merchantAccountId vacío con IllegalArgumentException ANTES
+        // de la red, y `classifySyncFailure` clasifica eso `Retryable`: la fila volvía a PENDING en
+        // cada pasada del worker, para siempre, bloqueando el cierre del turno — y sin poder
+        // reconocerla, porque `acknowledgeRefund` sólo acepta filas permanentes.
+        val fila = slot<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund>()
+        val token = slot<String>()
+        coEvery { mockRefundQueueRepository.enqueueClaimed(capture(fila), capture(token)) } returns Result.success(Unit)
+        every { mockGetMerchantsUseCase.invoke() } returns flowOf(emptyList()) // no hay de dónde rellenarlo
+        every { mockAuthRepository.isAuthenticated() } returns true
+        val vm = createViewModel()
+        vm.startRefund(createRefundContext(merchantAccountId = null))
+
+        vm.registrar()
+
+        assertThat(fila.captured.merchantAccountId).isEmpty()
+        coVerify(exactly = 1) {
+            mockRefundQueueRepository.markPermanentlyFailed(fila.captured.idempotencyKey, token.captured, any())
+        }
+        coVerify(exactly = 0) { mockRefundQueueRepository.release(any(), any(), any(), any()) }
+        // Ni se intenta el POST: no hay nada que el servidor pueda aceptar.
+        coVerify(exactly = 0) { mockRecordRefundUseCase(any(), any(), any(), any(), any()) }
+        // Y la pantalla lo dice en rojo, con el motivo: «necesita una persona».
+        assertThat((vm.state.value as PaymentState.Success).recordingLostMessage)
+            .contains("cuenta del comerciante")
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 con merchantAccountId presente el desenlace NO se fuerza a permanente`() = runTest {
+        // Control del arreglo de arriba: un fallo de red con la fila completa sigue siendo PENDING.
+        coEvery { mockRecordRefundUseCase(any(), any(), any(), any(), any()) } returns
+            Result.failure(java.io.IOException("sin red"))
+        val vm = refundReady()
+
+        vm.registrar()
+
+        coVerify(exactly = 1) { mockRefundQueueRepository.release(any(), any(), 1, any()) }
+        coVerify(exactly = 0) { mockRefundQueueRepository.markPermanentlyFailed(any(), any(), any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `los tres textos honestos dicen que la devolucion SI se hizo y que NO se repita`() = runTest {
+        val vm = createViewModel()
+        val exito = PaymentState.Success(authCode = "AUTH", amount = "50.00", isRefund = true)
+
+        val pendiente = vm.buildRefundPendingSyncState(exito, "REF-1")!!
+        val rechazado = vm.buildRefundRejectedState(exito, "REF-1", "monto excede lo reembolsable")!!
+        val perdido = vm.buildRefundLostState(exito, "REF-1")!!
+
+        for (texto in listOf(pendiente.pendingSyncMessage, rechazado.recordingLostMessage, perdido.recordingLostMessage)) {
+            assertThat(texto).contains("La devolución SÍ se hizo")
+            assertThat(texto).contains("NO vuelvas a reembolsar")
+            assertThat(texto).contains("REF-1")
+            assertThat(texto).doesNotContain("Error")
+        }
+        assertThat(rechazado.recordingLostMessage).contains("monto excede lo reembolsable")
+        assertThat(perdido.recordingLostMessage).contains("ni en el servidor")
+        // Fuera de Success no hay nada que anotar: el cajero ya no está viendo esa pantalla.
+        assertThat(vm.buildRefundPendingSyncState(PaymentState.Idle, "REF-1")).isNull()
+        vm.viewModelScope.cancel()
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1691,5 +2129,91 @@ class PaymentViewModelTest {
         } finally {
             viewModel.viewModelScope.cancel()
         }
+    }
+
+    // ── Contactless denegado por el KERNEL de la PAX (Testarudo 2026-09-07) ─────────────────
+    // Nueve `CtlssDeniedFailure` en tres ventas; la app pintaba «Error leyendo tarjeta contactless»
+    // y la cajera entraba al bucle cancelar → reenviar → volver a acercar la MISMA tarjeta.
+
+    private fun detectQueDevuelveUnToque(
+        calls: MutableList<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardParams>,
+    ): com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase {
+        val tap = mockk<com.pax.dal.entity.PollingResult>(relaxed = true)
+        every { tap.readerType } returns com.pax.dal.entity.EReaderType.PICC
+        val detect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>(relaxed = true)
+        coEvery { detect.run(capture(calls)) } returns com.blumonpay.pax.utils.clean.Either.Right(
+            com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardResponse(tap),
+        )
+        return detect
+    }
+
+    private fun kernelQueDeniega(emvCode: Int): com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase {
+        val ctlss = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>(relaxed = true)
+        coEvery { ctlss.run(any()) } returns com.blumonpay.pax.utils.clean.Either.Left(
+            com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransFailure.CtlssDeniedFailure(emvCode),
+        )
+        return ctlss
+    }
+
+    @Test
+    fun `P1 contactless denegado por el kernel dice chip y el reintento abre el lector sin PICC`() = runTest {
+        val detectCalls = mutableListOf<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardParams>()
+        val viewModel = createViewModel(
+            startDetectCardUseCase = detectQueDevuelveUnToque(detectCalls),
+            startCtlssTransUseCase = kernelQueDeniega(emvCode = 12),
+        )
+        viewModel.selectMerchant(testMerchantA)
+        Thread.sleep(1000)
+
+        viewModel.startPayment("100.00")
+        Thread.sleep(1500)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val error = viewModel.state.value as? PaymentState.Error
+        assertThat(error).isNotNull()
+        assertThat(error!!.message).contains("INSERTE")
+        assertThat(error.message).contains("código 12")
+        assertThat(error.message).contains("No es un rechazo del banco")
+        assertThat(error.canRetry).isTrue()
+        assertThat(detectCalls.map { it.readerType }).containsExactly(com.pax.dal.entity.EReaderType.MAG_ICC_PICC)
+
+        // Reintentar: misma venta (monto, propina, merchant), pero el lector ya no escucha el NFC
+        viewModel.retryPayment(error.context)
+        Thread.sleep(1500)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertThat(detectCalls.map { it.readerType })
+            .containsExactly(com.pax.dal.entity.EReaderType.MAG_ICC_PICC, com.pax.dal.entity.EReaderType.MAG_ICC)
+            .inOrder()
+
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 cancelar tras un rechazo contactless deja el lector completo para la siguiente venta`() = runTest {
+        val detectCalls = mutableListOf<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardParams>()
+        val viewModel = createViewModel(
+            startDetectCardUseCase = detectQueDevuelveUnToque(detectCalls),
+            startCtlssTransUseCase = kernelQueDeniega(emvCode = 12),
+        )
+        viewModel.selectMerchant(testMerchantA)
+        Thread.sleep(1000)
+
+        viewModel.startPayment("100.00")
+        Thread.sleep(1500)
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertThat(viewModel.state.value).isInstanceOf(PaymentState.Error::class.java)
+
+        // El cajero cancela y llega OTRO cliente: nada del rechazo anterior puede recortarle el lector
+        viewModel.cancelPayment()
+        viewModel.resetPayment()
+        viewModel.startPayment("80.00")
+        Thread.sleep(1500)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertThat(detectCalls.map { it.readerType })
+            .containsExactly(com.pax.dal.entity.EReaderType.MAG_ICC_PICC, com.pax.dal.entity.EReaderType.MAG_ICC_PICC)
+
+        viewModel.viewModelScope.cancel()
     }
 }

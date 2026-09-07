@@ -11,6 +11,8 @@ import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.util.ConnectivityObserver
 import com.jaac.avoqado_tpv.core.util.ConnectionEventManager
 import com.jaac.avoqado_tpv.core.util.NetworkStatus
+import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund
+import com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository
 import com.jaac.avoqado_tpv.features.permissions.data.repository.PermissionsRepository
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
 import com.jaac.avoqado_tpv.features.shift.domain.CashReconciliationAction
@@ -64,7 +66,9 @@ class ShiftViewModel @Inject constructor(
     private val connectionEventManager: ConnectionEventManager,
     private val cachedShiftDao: CachedShiftDao,
     private val connectivityObserver: ConnectivityObserver,
-    private val permissionsRepository: PermissionsRepository
+    private val permissionsRepository: PermissionsRepository,
+    /** 💸 La cola durable de REEMBOLSOS: lo que impide cerrar la caja (Fase 2, Task 9). */
+    private val refundQueueRepository: RefundQueueRepository
 ) : ViewModel() {
 
     /**
@@ -454,6 +458,33 @@ class ShiftViewModel @Inject constructor(
                 return@launch
             }
 
+            // 💸 BARRERA (Fase 2, Task 9): una devolución que el SDK YA aprobó y que aún no quedó
+            // registrada en el servidor —o que el servidor rechazó y nadie ha visto— impide cerrar.
+            // Cerrar antes firmaría un corte que cuadra DE MÁS por dinero que sí salió del cajón:
+            // el mismo defecto que el retiro sin red que inventaba un faltante de $50 en Android.
+            val bloqueantes = try {
+                refundQueueRepository.blockingForVenue(venueId)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Ante la duda se BLOQUEA, no se cierra a ciegas: no poder leer la cola es no saber
+                // si hay dinero sin anotar. El cajero vuelve a intentar.
+                Timber.e(e, "💸 [Shift] No se pudo leer la cola de reembolsos antes de cerrar")
+                _state.value = ShiftState.Error(
+                    "No se pudo verificar si hay devoluciones sin registrar.\n\nVuelve a intentar cerrar la caja."
+                )
+                return@launch
+            }
+            if (bloqueantes.isNotEmpty()) {
+                Timber.w("💸 [Shift] Cierre BLOQUEADO: ${bloqueantes.size} devolución(es) sin registrar o sin reconocer")
+                _state.value = ShiftState.CloseBlockedByRefunds(
+                    shift = currentState.shift,
+                    shiftHistory = currentState.shiftHistory,
+                    refunds = bloqueantes,
+                )
+                return@launch
+            }
+
             val shiftId = currentState.shift.id
             Timber.i("🔴 Closing shift: $shiftId, reconciliation=${reconciliationAction?.name ?: "LEGACY"}")
 
@@ -509,6 +540,55 @@ class ShiftViewModel @Inject constructor(
     }
 
     /** Acknowledge a COUNTED/SKIPPED result and return to the no-active-shift screen. */
+    /**
+     * 💸 Salida de emergencia de la barrera (Fase 2, Task 9): el cajero vio el aviso de una
+     * devolución que el servidor RECHAZÓ de forma definitiva y libera el cierre.
+     *
+     * 🔴 Sólo aplica a filas `permanent`. Una devolución PENDIENTE no se puede «reconocer»: se va
+     * a registrar sola al volver la red, y dejar que alguien la quite de la barrera cerraría el
+     * corte con dinero sin anotar — justo lo que la barrera existe para impedir. Exige el mismo
+     * permiso que cerrar la caja. La fila queda en la cola para conciliarse a mano.
+     */
+    fun acknowledgeRefund(idempotencyKey: String) {
+        viewModelScope.launch {
+            if (!_canCloseShift.value) {
+                _state.value = ShiftState.Error("No tienes permiso para cerrar la caja.\n\nContacta a tu administrador.")
+                return@launch
+            }
+            val current = _state.value as? ShiftState.CloseBlockedByRefunds ?: return@launch
+            val fila = current.refunds.firstOrNull { it.idempotencyKey == idempotencyKey } ?: return@launch
+            if (!fila.permanent) {
+                Timber.w("💸 [Shift] Se intentó reconocer una devolución PENDIENTE — no se permite | key=$idempotencyKey")
+                return@launch
+            }
+            val venueId = secureStorage.getVenueId() ?: return@launch
+            try {
+                // 🔴 Queda QUIÉN y CUÁNDO en la fila (auditoría de Codex F9): liberar el cierre con dinero
+                // devuelto sin registro exige evidencia durable del responsable. Cero filas afectadas =
+                // no se liberó nada, y se dice.
+                val quien = secureStorage.getStaffId()
+                val afectadas = refundQueueRepository.acknowledge(idempotencyKey, quien)
+                if (afectadas == 0) {
+                    Timber.e("💸 [Shift] acknowledge no afectó filas | key=$idempotencyKey")
+                    _state.value = ShiftState.Error("No se pudo marcar la devolución como vista.\n\nVuelve a intentarlo.")
+                    return@launch
+                }
+                Timber.i("💸 [Shift] Devolución rechazada reconocida | key=$idempotencyKey | staff=$quien")
+                val restantes = refundQueueRepository.blockingForVenue(venueId)
+                _state.value = if (restantes.isEmpty()) {
+                    ShiftState.ShiftActive(shift = current.shift, shiftHistory = current.shiftHistory)
+                } else {
+                    current.copy(refunds = restantes)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.e(e, "💸 [Shift] No se pudo reconocer la devolución | key=$idempotencyKey")
+                _state.value = ShiftState.Error("No se pudo marcar la devolución como vista.\n\nVuelve a intentarlo.")
+            }
+        }
+    }
+
     fun acknowledgeClosedShift() {
         if (_state.value is ShiftState.ShiftClosed) {
             // Clear the guarded result first so the authoritative reload is allowed to proceed.
@@ -621,6 +701,18 @@ sealed class ShiftState {
         val shift: Shift,
         val shiftHistory: List<Shift> = emptyList(),
         val reconciliationAction: CashReconciliationAction? = null
+    ) : ShiftState()
+
+    /**
+     * 💸 El cierre está BLOQUEADO por devoluciones que el SDK ya aprobó y que no están registradas
+     * en el servidor (o que el servidor rechazó y nadie ha reconocido). Fase 2, Task 9.
+     *
+     * @param refunds lo que bloquea, en el orden en que se encoló
+     */
+    data class CloseBlockedByRefunds(
+        val shift: Shift,
+        val shiftHistory: List<Shift> = emptyList(),
+        val refunds: List<QueuedRefund>,
     ) : ShiftState()
 
     /**

@@ -194,12 +194,17 @@ private fun PaymentMethodsChartPreview() {
     AvoqadoTheme {
         val breakdown = PaymentMethodBreakdown(
             cashAmount = BigDecimal("6847.50"),
-            cardAmount = BigDecimal("5229.00"),
+            // Credito y debito por separado, que es como los manda el servidor.
+            creditCardAmount = BigDecimal("3100.00"),
+            debitCardAmount = BigDecimal("2129.00"),
+            unspecifiedCardAmount = BigDecimal.ZERO,
             voucherAmount = BigDecimal("373.50"),
             otherAmount = BigDecimal.ZERO,
             totalAmount = BigDecimal("12450.00"),
             cashPercentage = BigDecimal("55.0"),
-            cardPercentage = BigDecimal("42.0"),
+            creditCardPercentage = BigDecimal("24.9"),
+            debitCardPercentage = BigDecimal("17.1"),
+            unspecifiedCardPercentage = BigDecimal.ZERO,
             voucherPercentage = BigDecimal("3.0"),
             otherPercentage = BigDecimal.ZERO
         )

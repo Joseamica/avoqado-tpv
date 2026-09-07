@@ -263,6 +263,7 @@ class BlumonSaleReferenceTest {
             recordRefundUseCase = mockRecordRefundUseCase,
             authRepository = mockAuthRepository,
             paymentQueueRepository = mockPaymentQueueRepository,
+            refundQueueRepository = mockk(relaxed = true),
             printerManager = mockk(relaxed = true),
             socketManager = mockSocketManager,
             shiftRepository = mockShiftRepository,

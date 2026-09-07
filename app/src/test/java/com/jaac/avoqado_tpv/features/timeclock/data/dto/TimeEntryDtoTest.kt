@@ -30,9 +30,13 @@ class TimeEntryDtoTest {
         val domain = dto.toDomain()
 
         // Assert
-        // Expected: The Instant representation of the UTC string, converted to system default zone
+        // toDomain() convierte con America/Mexico_City FIJO (su propio default, nunca el
+        // reloj del aparato — regla del repo). Antes esta aserción recalculaba con
+        // ZoneId.systemDefault(): pasaba en una Mac puesta en hora de México por
+        // coincidencia, y reventaba en un runner de CI en UTC — verde local, rojo en CI,
+        // sin que el código real tuviera nada malo.
         val expectedInstant = Instant.parse(utcString)
-        val expectedLocal = LocalDateTime.ofInstant(expectedInstant, ZoneId.systemDefault())
+        val expectedLocal = LocalDateTime.ofInstant(expectedInstant, ZoneId.of("America/Mexico_City"))
 
         assertEquals(expectedLocal, domain.clockInTime)
     }

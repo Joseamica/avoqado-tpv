@@ -1,5 +1,6 @@
 package com.jaac.avoqado_tpv.features.reports.presentation
 
+import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -165,6 +166,18 @@ fun ReportsScreen(
     // the Historial tab shows an inline teaser. Printing today's report and
     // everything else in the order flow is untouched.
     val context = LocalContext.current
+
+    // 🔴 Un fallo al imprimir tiene que VERSE. Antes sólo quedaba en el log: el cajero
+    // tocaba "Imprimir", no salía papel y la pantalla callaba — y en una Nexgo eso pasa
+    // SIEMPRE, porque el reporte no tiene camino de impresión ahí. Reusa el `context`
+    // que esta pantalla ya tenía: no hace falta un segundo `LocalContext.current`.
+    val avisoDeImpresion by viewModel.avisoDeImpresion.collectAsStateWithLifecycle()
+    LaunchedEffect(avisoDeImpresion) {
+        avisoDeImpresion?.let { mensaje ->
+            Toast.makeText(context, mensaje, Toast.LENGTH_LONG).show()
+            viewModel.avisoDeImpresionMostrado()
+        }
+    }
     val planManager = remember {
         EntryPointAccessors.fromApplication(
             context.applicationContext,
@@ -1549,12 +1562,17 @@ private fun ReportsScreenPreview() {
 
         val breakdown = PaymentMethodBreakdown(
             cashAmount = BigDecimal("6847.50"),
-            cardAmount = BigDecimal("5229.00"),
+            // Credito y debito por separado, que es como los manda el servidor.
+            creditCardAmount = BigDecimal("3100.00"),
+            debitCardAmount = BigDecimal("2129.00"),
+            unspecifiedCardAmount = BigDecimal.ZERO,
             voucherAmount = BigDecimal("373.50"),
             otherAmount = BigDecimal.ZERO,
             totalAmount = BigDecimal("12450.00"),
             cashPercentage = BigDecimal("55.0"),
-            cardPercentage = BigDecimal("42.0"),
+            creditCardPercentage = BigDecimal("24.9"),
+            debitCardPercentage = BigDecimal("17.1"),
+            unspecifiedCardPercentage = BigDecimal.ZERO,
             voucherPercentage = BigDecimal("3.0"),
             otherPercentage = BigDecimal.ZERO
         )

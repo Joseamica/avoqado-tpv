@@ -20,6 +20,8 @@ import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import java.math.BigDecimal
 import java.text.Normalizer
@@ -54,7 +56,25 @@ class RecordAngelPayRefundUseCase @Inject constructor(
     private val refundRecorder: RefundRecorder,
     private val authRepository: AuthRepository,
     private val postOperationsAdapterFactory: PostOperationsAdapterFactory,
+    /** 💸 La cola durable de REEMBOLSOS (Fase 1, Task 7): un fallo del registro ya no se pierde. */
+    private val refundQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository,
+    /** 📒 La libreta write-ahead, ABIERTA antes del SDK (auditoría de Codex F1): igual que en la PAX. */
+    private val paymentAttemptLedger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger,
 ) {
+
+    /** Lo que devuelve el SDK cuando aprueba: el mensaje para el cajero y la llave que ya nació para este intento. */
+    data class AngelPayRefundApproval(val message: String, val idempotencyKey: String)
+
+    /**
+     * 🛡️ Se llama ANTES del SDK (auditoría de Codex F2). Devuelve el motivo si el reembolso no podría
+     * registrarse después — porque cuando `recordInBackend` corre, el dinero YA salió y ya no hay
+     * forma buena de rechazarlo. Null = adelante.
+     */
+    fun validateBeforeSdk(paymentVenueId: String, merchantAccountId: String): String? = when {
+        paymentVenueId.isBlank() -> "Este pago no trae sucursal y no podría registrarse la devolución."
+        merchantAccountId.isBlank() -> "Este pago no trae cuenta de cobro y no podría registrarse la devolución."
+        else -> null
+    }
 
     /**
      * Executes the AngelPay SDK cancellation or refund post-operation.
@@ -86,7 +106,9 @@ class RecordAngelPayRefundUseCase @Inject constructor(
         requestedAmount: BigDecimal,
         originalAmount: BigDecimal,
         alreadyRefundedAmount: BigDecimal,
-    ): Result<String> {
+        originalPaymentId: String,
+        paymentVenueId: String,
+    ): Result<AngelPayRefundApproval> {
         if (alreadyRefundedAmount > BigDecimal.ZERO || requestedAmount.compareTo(originalAmount) != 0) {
             Timber.w(
                 "⛔ [AngelPay Direct Refund] Partial refund blocked | requested=%s original=%s alreadyRefunded=%s",
@@ -96,6 +118,38 @@ class RecordAngelPayRefundUseCase @Inject constructor(
             )
             return Result.failure(IllegalStateException(PARTIAL_REFUND_UNSUPPORTED_MESSAGE))
         }
+
+        // 💸 CANDADO (auditoría de Codex F7): si este pago ya tiene una devolución aprobada por el SDK y sin
+        // registrar en Avoqado, NO se lanza otra — el servidor aún lo ve reembolsable y una segunda llave
+        // devolvería el dinero dos veces.
+        val sinRegistrar = runCatching { refundQueueRepository.unresolvedForPayment(originalPaymentId) }.getOrDefault(emptyList())
+        if (sinRegistrar.isNotEmpty()) {
+            Timber.w("⛔ [AngelPay Direct Refund] Bloqueado: el pago %s ya tiene %s devolución(es) sin registrar", originalPaymentId, sinRegistrar.size)
+            return Result.failure(
+                IllegalStateException(
+                    "Este pago ya tiene una devolución de $${sinRegistrar.first().amount.setScale(2).toPlainString()} hecha en la terminal " +
+                        "y todavía sin registrar en Avoqado. No se hizo otra. Espera a que se registre (o revísala en Caja)."
+                )
+            )
+        }
+
+        // 🔑 La llave nace AQUÍ, ANTES del SDK, y viaja con la aprobación hasta `recordInBackend`: es la
+        // misma en la libreta, en la fila write-ahead y en el POST (Fase 0 del servidor deduplica con ella).
+        val idempotencyKey = java.util.UUID.randomUUID().toString()
+        // 📒 [Libreta] write-ahead ANTES de que corra el SDK (auditoría F1): si el proceso muere entre la
+        // aprobación y la fila de la cola, queda evidencia con la MISMA llave. Nunca bloquea el reembolso.
+        runCatching {
+            paymentAttemptLedger.openAttempt(
+                attemptId = idempotencyKey,
+                venueId = paymentVenueId,
+                processor = "angelpay",
+                amountCents = requestedAmount.movePointRight(2).setScale(0, java.math.RoundingMode.HALF_UP).longValueExact(),
+                tipCents = 0L,
+                recordingRoute = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.ROUTE_REFUND,
+                contextJson = "{\"originalPaymentId\":\"$originalPaymentId\",\"reference\":\"$paymentReference\",\"processor\":\"angelpay\"}",
+                kind = com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity.KIND_REFUND,
+            )
+        }.onFailure { Timber.w(it, "📒 [AngelPay Direct Refund] La libreta no pudo abrir el intento (no bloquea)") }
 
         val adapter = postOperationsAdapterFactory.get(ProcessorType.ANGELPAY)
         val zone = ZoneId.of("America/Mexico_City")
@@ -437,6 +491,9 @@ class RecordAngelPayRefundUseCase @Inject constructor(
             )
         }
 
+        // 📒 AUTORIZANDO justo antes de tocar el SDK: a partir de aquí el dinero puede moverse.
+        runCatching { paymentAttemptLedger.markAuthorizing(idempotencyKey) }
+
         val cancellationResolution = if (useCancellation) {
             attemptCancellationWithFallbacks(
                 tx = target,
@@ -475,9 +532,7 @@ class RecordAngelPayRefundUseCase @Inject constructor(
         }
 
         if (firstResult.approved) {
-            return Result.success(
-                "$operationLabel aprobada${firstResult.reference?.let { " (ref: $it)" } ?: ""}"
-            )
+            return aprobada(idempotencyKey, "$operationLabel aprobada${firstResult.reference?.let { " (ref: $it)" } ?: ""}", firstResult.reference ?: paymentReference)
         }
 
         // Same-day cancellation may fail for some processor responses.
@@ -514,9 +569,7 @@ class RecordAngelPayRefundUseCase @Inject constructor(
             }
 
             if (fallback.approved) {
-                return Result.success(
-                    "devolución aprobada${fallback.reference?.let { " (ref: $it)" } ?: ""}"
-                )
+                return aprobada(idempotencyKey, "devolución aprobada${fallback.reference?.let { " (ref: $it)" } ?: ""}", fallback.reference ?: paymentReference)
             }
 
             return Result.failure(
@@ -544,6 +597,20 @@ class RecordAngelPayRefundUseCase @Inject constructor(
         return Result.failure(
             IllegalStateException("$operationLabel rechazada: ${firstResult.message ?: "sin detalle"}")
         )
+    }
+
+    /** El SDK aprobó: la libreta lo anota (HOST_RESPONDIO) y la llave viaja con la aprobación. */
+    private suspend fun aprobada(idempotencyKey: String, message: String, reference: String): Result<AngelPayRefundApproval> {
+        runCatching {
+            paymentAttemptLedger.markHostResponded(
+                attemptId = idempotencyKey,
+                approved = true,
+                operationId = null,
+                referenceNumber = reference,
+                authCode = null,
+            )
+        }.onFailure { Timber.w(it, "📒 [AngelPay Direct Refund] La libreta no pudo anotar la aprobación (no bloquea)") }
+        return Result.success(AngelPayRefundApproval(message = message, idempotencyKey = idempotencyKey))
     }
 
     /**
@@ -577,21 +644,28 @@ class RecordAngelPayRefundUseCase @Inject constructor(
         sdkReferenceNumber: String,
         tipRefundCents: Int?,
         refundedAmount: BigDecimal,
+        idempotencyKey: String,
     ): Result<Unit> {
-        val staffId = authRepository.getStaffId()
-            ?: return Result.failure(IllegalStateException("Sin sesión de staff para registrar refund"))
+        // 🔴 Sin sesión NO se descarta: cuando esto corre, el SDK YA devolvió el dinero. Antes se
+        // hacía `return failure` y el reembolso se perdía sin rastro. Ahora se encola igual (con el
+        // staff en blanco: al reproducir, el servidor atribuye al actor autenticado) y sólo se omite la red.
+        val staffId = authRepository.getStaffId().orEmpty()
+        val hasSession = staffId.isNotBlank()
 
-        if (paymentVenueId.isBlank()) {
-            return Result.failure(IllegalStateException("paymentVenueId vacío — no se puede registrar el refund"))
-        }
-        if (merchantAccountId.isBlank()) {
-            return Result.failure(IllegalStateException("merchantAccountId vacío — no se puede registrar el refund"))
+        // Inalcanzables tras `validateBeforeSdk` (se comprueba ANTES del SDK); si aun así llegan aquí, se
+        // grita: el dinero ya salió y esto es una devolución sin registro.
+        if (paymentVenueId.isBlank() || merchantAccountId.isBlank()) {
+            Timber.e("💸🔴 [AngelPay Direct Refund] Devolución aprobada SIN datos para registrarla | venue=%s merchant=%s key=%s", paymentVenueId, merchantAccountId, idempotencyKey)
+            return Result.failure(RefundLostException(idempotencyKey, IllegalStateException("datos del pago incompletos"), IllegalStateException("sin venue/merchant no hay fila que encolar")))
         }
 
         // Determine whether this refund covers the whole remaining balance or
         // a portion of it (drives the backend's `isPartialRefund` flag).
         val remainingRefundable = (originalTotalAmount - refundedAmount).coerceAtLeast(BigDecimal.ZERO)
         val isPartial = refundAmount < remainingRefundable
+
+        // 🔑 La llave llegó con la aprobación del SDK (nació ANTES de tocarlo): es la MISMA en la libreta,
+        // en la fila write-ahead y en el contexto que viaja al servidor.
 
         val context = PaymentContext.RefundPayment(
             venueId = paymentVenueId,
@@ -607,6 +681,7 @@ class RecordAngelPayRefundUseCase @Inject constructor(
             originalTotalAmount = originalTotalAmount,
             refundReason = refundReason,
             isPartialRefund = isPartial,
+            idempotencyKey = idempotencyKey,
             originalOperationNumber = 0, // AngelPay does not use Blumon's CancelIcc opNumber.
         )
 
@@ -618,14 +693,89 @@ class RecordAngelPayRefundUseCase @Inject constructor(
             entryMode = CardEntryMode.OTHER,
         )
 
-        return refundRecorder.recordRefund(
-            context = context,
-            cardDetails = cardDetails,
-            authorizationNumber = "ANGELPAY_SDK", // Placeholder until we expose SDK result.
-            referenceNumber = sdkReferenceNumber,  // Reuse original ref — sufficient for backend booking.
-            tipRefundCents = tipRefundCents,
-            processor = "angelpay",
-        ).map { } // Discard the RefundReceipt — caller only cares about success/failure.
+        // 🔴 Todo el desenlace corre en NonCancellable (auditoría de Codex F2): el llamador es un
+        // `rememberCoroutineScope` de la pantalla, que muere si el cajero sale — y el dinero ya salió.
+        return withContext(NonCancellable) {
+            // 🔴 El payload se guarda VERBATIM: en AngelPay la autorización es un marcador constante y la
+            // referencia es la del pago ORIGINAL — los dos entran en la huella del servidor, así que
+            // deben reproducirse idénticos.
+            val queued = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund(
+                idempotencyKey = idempotencyKey,
+                venueId = paymentVenueId,
+                staffId = staffId,
+                processor = com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.ANGELPAY,
+                originalPaymentId = paymentId,
+                originalOrderId = orderId,
+                amount = refundAmount,
+                originalTotalAmount = originalTotalAmount,
+                tipRefundCents = tipRefundCents,
+                isPartialRefund = isPartial,
+                refundReason = refundReason,
+                merchantAccountId = merchantAccountId,
+                blumonSerialNumber = "",
+                originalOperationNumber = 0,
+                authorizationNumber = "ANGELPAY_SDK",
+                referenceNumber = sdkReferenceNumber,
+                maskedPan = null,
+                cardBrand = null,
+                entryMode = "OTHER",
+                createdAt = System.currentTimeMillis(),
+            )
+
+            // 1️⃣ WRITE-AHEAD (auditoría F1): la fila existe ANTES del POST, ya reclamada por este intento.
+            val claimToken = java.util.UUID.randomUUID().toString()
+            val writeAhead = refundQueueRepository.enqueueClaimed(queued, claimToken)
+            writeAhead.onFailure { Timber.e(it, "💸🔴 [AngelPay Direct Refund] No se pudo escribir la fila write-ahead | key=%s", idempotencyKey) }
+
+            // 2️⃣ El POST
+            val recorded = if (!hasSession) {
+                Result.failure(IllegalStateException("Sin sesión de staff: el reembolso quedó en cola"))
+            } else {
+                refundRecorder.recordRefund(
+                    context = context,
+                    cardDetails = cardDetails,
+                    authorizationNumber = "ANGELPAY_SDK", // Placeholder until we expose SDK result.
+                    referenceNumber = sdkReferenceNumber,  // Reuse original ref — sufficient for backend booking.
+                    tipRefundCents = tipRefundCents,
+                    processor = "angelpay",
+                ).map { } // Discard the RefundReceipt — caller only cares about success/failure.
+            }
+            val recordError = recorded.exceptionOrNull()
+            if (recordError == null) {
+                runCatching { paymentAttemptLedger.markRecorded(idempotencyKey) }
+                if (writeAhead.isSuccess) {
+                    val affected = refundQueueRepository.markSuccess(idempotencyKey, claimToken)
+                    if (affected == 0) Timber.w("💸 [AngelPay Direct Refund] markSuccess no afectó filas (otro dueño del claim) | key=%s", idempotencyKey)
+                }
+                return@withContext Result.success(Unit)
+            }
+            runCatching { paymentAttemptLedger.markRecordFailed(idempotencyKey, recordError.message) }
+
+            // 3️⃣ Desenlace, clasificado con la MISMA función que los cobros: 400/404/422 = rechazo permanente
+            // (bloquea el cierre hasta que alguien lo vea); 401/408/429/5xx/red = se reintenta.
+            val outcome = com.jaac.avoqado_tpv.features.payment.domain.sync.classifySyncFailure(recordError)
+            val permanent = outcome is com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome.Permanent
+            val reason = (outcome as? com.jaac.avoqado_tpv.features.payment.domain.sync.SyncOutcome.Permanent)?.reason ?: (recordError.message ?: "fallo transitorio")
+            val respaldo: Result<Unit> = if (writeAhead.isSuccess) {
+                val affected = if (permanent) {
+                    refundQueueRepository.markPermanentlyFailed(idempotencyKey, claimToken, reason)
+                } else {
+                    refundQueueRepository.release(idempotencyKey, claimToken, retryCount = 1, error = reason)
+                }
+                if (affected == 0) Timber.w("💸 [AngelPay Direct Refund] La fila ya no es de este intento; existe igual | key=%s", idempotencyKey)
+                Result.success(Unit)
+            } else {
+                val row = if (permanent) queued.copy(syncStatus = com.jaac.avoqado_tpv.core.data.local.entity.PendingRefundEntity.SYNC_STATUS_FAILED, permanent = true, lastError = reason) else queued
+                refundQueueRepository.enqueue(row)
+            }
+            respaldo.fold(
+                onSuccess = {
+                    runCatching { paymentAttemptLedger.markDeliveredToQueue(idempotencyKey) }
+                    Result.failure(RefundQueuedException(idempotencyKey, permanent, reason))
+                },
+                onFailure = { queueError -> Result.failure(RefundLostException(idempotencyKey, recordError, queueError)) },
+            )
+        }
     }
 
     companion object {
@@ -940,3 +1090,15 @@ class RecordAngelPayRefundUseCase @Inject constructor(
 interface RecordAngelPayRefundUseCaseEntryPoint {
     fun recordAngelPayRefundUseCase(): RecordAngelPayRefundUseCase
 }
+
+/**
+ * El registro falló pero el reembolso quedó ENCOLADO con [idempotencyKey]. Es un `failure` sólo
+ * para el llamador inmediato (que aún no puede confirmar el registro): el dinero está a salvo.
+ * [permanent] = el servidor lo rechazó de forma definitiva — la fila bloquea el cierre de turno
+ * hasta que alguien la reconozca.
+ */
+class RefundQueuedException(val idempotencyKey: String, val permanent: Boolean, val reason: String) : Exception(reason)
+
+/** Ni el servidor ni la cola local: lo peor que puede pasar. Requiere conciliación manual con la referencia. */
+class RefundLostException(val idempotencyKey: String, val recordError: Throwable, val queueError: Throwable) :
+    Exception("Reembolso sin registro (backend y cola fallaron)", queueError)

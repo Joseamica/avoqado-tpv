@@ -83,6 +83,28 @@ class PrinterManager @Inject constructor(
      */
     private val esHardwarePax: Boolean = BuildConfig.ENABLE_PAX_SDK
 
+    /**
+     * Por qué no hay impresora, dicho con la verdad de ESTA terminal.
+     *
+     * 🔴 Existía UN solo texto para dos hardwares distintos, y en el que no es PAX era
+     * falso: a un cajero de una Nexgo se le pedía "verifica que el dispositivo PAX esté
+     * correctamente configurado" — un aparato que no tiene y que no puede revisar. Lo
+     * manda a buscar una causa inexistente mientras el cliente espera.
+     *
+     * Estaba copiado en 10 sitios, que es como se fabrica un arreglo a medias: se
+     * corrigen unos y los otros siguen mintiendo. Ahora vive aquí y sólo aquí.
+     *
+     * ⚠️ En una Nexgo los RECIBOS sí salen — van por `AngelPaySDK.printTicket`
+     * (`AngelPaySdkPostOperationsAdapter`), no por esta clase. Lo que no tiene ese
+     * camino todavía es el reporte de ventas, y eso es lo que el texto dice.
+     */
+    internal val motivoSinImpresora: String
+        get() = if (!esHardwarePax) {
+            "Esta terminal no imprime desde Avoqado. Pidele el corte a una terminal PAX."
+        } else {
+            "Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado."
+        }
+
     private val dal: IDAL? by lazy {
         if (!esHardwarePax) {
             Timber.i("🖨️ [Printer] Terminal sin hardware PAX — impresora nativa no disponible")
@@ -212,7 +234,7 @@ class PrinterManager @Inject constructor(
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
-                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+                Exception(motivoSinImpresora)
             )
 
             Timber.i("🖨️ [Printer] Starting professional receipt print")
@@ -798,48 +820,6 @@ class PrinterManager @Inject constructor(
     }
 
     /**
-     * Print sales report receipt (Toast/Square POS style).
-     *
-     * Prints a compact, professional summary of sales data optimized for thermal printers.
-     * Follows Toast POS receipt formatting standards.
-     *
-     * **Receipt Layout:**
-     * ```
-     * ================================
-     *     REPORTE DE VENTAS
-     * ================================
-     * Venue Name
-     * 12 Nov - 19 Nov 2024
-     * (Últimos 7 días)
-     *
-     * Impreso: 19 Nov 2024, 14:30
-     * --------------------------------
-     *
-     * RESUMEN DE VENTAS
-     * Total Ventas:      $8,228.28
-     * Total Órdenes:           145
-     * ...
-     * ================================
-     * ```
-     *
-     * @param periodLabel Human-readable period label (e.g., "Últimos 7 días")
-     * @param dateRange Date range string (e.g., "12 Nov - 19 Nov 2024")
-     * @param totalSales Total sales amount formatted
-     * @param totalOrders Total number of orders
-     * @param totalProducts Total products sold
-     * @param avgOrderValue Average order value formatted
-     * @param avgProductsPerOrder Average products per order
-     * @param cashAmount Cash payment amount
-     * @param cardAmount Card payment amount
-     * @param voucherAmount Voucher payment amount
-     * @param cashPercentage Cash percentage
-     * @param cardPercentage Card percentage
-     * @param voucherPercentage Voucher percentage
-     * @param comparisonText Optional comparison text (e.g., "Ventas: +12.5% ↑")
-     * @param venueName Optional venue name for header
-     * @return Result.success if printed, Result.failure if printer unavailable/error
-     */
-    /**
      * Waiter tip entry for receipt printing
      */
     data class WaiterTipPrint(
@@ -855,23 +835,75 @@ class PrinterManager @Inject constructor(
         val totalTips: String
     )
 
+    /**
+     * Imprime el ticket de "Reporte de ventas" (Toast/Square POS style).
+     *
+     * ## Formato aprobado por el founder (3-sep-2026)
+     *
+     * Cada metodo de pago imprime sus TRES numeros y al final los tres totales, para
+     * que nadie tenga que restar ni adivinar que incluye cada cifra:
+     *
+     * ```
+     * ================================
+     *     REPORTE DE VENTAS
+     * ================================
+     * Testarudo Cafe
+     * 3 Sep 2026
+     * (Hoy)
+     *
+     * Impreso: 3 Sep 2026, 19:20
+     * --------------------------------
+     *
+     * RESUMEN DE VENTAS
+     * Total Ordenes:            145
+     * Ticket Promedio:      $139.12
+     *
+     * --------------------------------
+     * DESGLOSE POR METODO DE PAGO
+     *
+     * Tarjeta de debito
+     *   Venta                $8,966.50
+     *   Propina                $804.65
+     *   Total                $9,771.15
+     * ...
+     * --------------------------------
+     * TOTAL VENTA           $20,172.75
+     * TOTAL PROPINA          $1,433.65
+     * TOTAL COBRADO         $21,606.40
+     * ================================
+     * ```
+     *
+     * El bloque del desglose lo arma [ReportPaymentBlock] (puro y con pruebas).
+     *
+     * @param periodLabel Etiqueta legible del periodo (ej. "Ultimos 7 dias")
+     * @param dateRange Rango de fechas (ej. "12 Nov - 19 Nov 2024")
+     * @param totalOrders Numero de ordenes del periodo
+     * @param avgOrderValue Ticket promedio, ya formateado y SIN el signo de pesos
+     * @param tenderBreakdown Desglose por metodo CON propina (mismo endpoint que el
+     *   corte de la tablet). `Unavailable` cuando no se pudo consultar
+     * @param paymentBreakdown Respaldo de `shifts-summary` (venta sin propina)
+     * @param comparisonText Texto opcional de comparacion (ej. "Ventas: +12.5%")
+     * @param venueName Nombre del negocio para el encabezado
+     * @return Result.success si imprimio, Result.failure si la impresora no esta
+     */
     fun printReport(
         periodLabel: String,
         dateRange: String,
-        totalSales: String,
         totalOrders: Int,
-        totalProducts: Int,
         avgOrderValue: String,
-        avgProductsPerOrder: String,
-        cashAmount: String,
-        cardAmount: String,
-        voucherAmount: String,
-        cashPercentage: String,
-        cardPercentage: String,
-        voucherPercentage: String,
+        /**
+         * Desglose por metodo CON propina — el MISMO dato que el corte de la tablet.
+         * Es lo que imprime los tres numeros (Venta / Propina / Total) por metodo.
+         */
+        tenderBreakdown: com.jaac.avoqado_tpv.features.reports.domain.models.TenderBreakdownResult,
+        /**
+         * Respaldo desde `shifts-summary` (venta SIN propina, credito y debito ya
+         * separados). Solo se imprime si [tenderBreakdown] no se pudo consultar, y
+         * entonces el ticket DICE que le falta la propina.
+         */
+        paymentBreakdown: com.jaac.avoqado_tpv.features.reports.domain.models.PaymentMethodBreakdown,
         comparisonText: String? = null,
         venueName: String? = null,
-        totalTips: String = "0.00",
         averageTipPercentage: String? = null,
         waiterTips: List<WaiterTipPrint>? = null,
         ratingsCount: Int? = null,
@@ -880,7 +912,7 @@ class PrinterManager @Inject constructor(
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
-                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+                Exception(motivoSinImpresora)
             )
 
             Timber.i("🖨️ [Printer] Starting sales report print")
@@ -911,35 +943,28 @@ class PrinterManager @Inject constructor(
             // ========================================
             // SALES SUMMARY
             // ========================================
+            // 🔴 "Total Productos" y "Productos/Orden" se RETIRARON (founder, 3-sep-2026):
+            // `shifts-summary` no manda productos, asi que salian SIEMPRE en 0 y el
+            // cliente no los quiere ni aqui ni en el corte.
+            //
+            // 🔴 Y los totales de dinero se movieron al final del DESGLOSE, donde el
+            // founder los pidio, para que aparezcan UNA sola vez. Antes "Total Ventas"
+            // salia aqui desde `shifts-summary` y el desglose se calculaba aparte: dos
+            // cifras casi iguales con etiquetas casi iguales es justo como se fabrica un
+            // "no cuadra".
             printerInstance.printStr("RESUMEN DE VENTAS\n", null)
-            printerInstance.printStr(String.format("%-18s %12s\n", "Total Ventas:", "$$totalSales"), null)
             printerInstance.printStr(String.format("%-18s %12d\n", "Total Ordenes:", totalOrders), null)
-            printerInstance.printStr(String.format("%-18s %12d\n", "Total Productos:", totalProducts), null)
             printerInstance.printStr(String.format("%-18s %12s\n", "Ticket Promedio:", "$$avgOrderValue"), null)
-            printerInstance.printStr(String.format("%-18s %12s\n", "Productos/Orden:", avgProductsPerOrder), null)
-            if (totalTips != "0.00") {
-                printerInstance.printStr(String.format("%-18s %12s\n", "Total Propinas:", "$$totalTips"), null)
-            }
             printerInstance.printStr("\n", null)
 
             // ========================================
             // PAYMENT METHODS
             // ========================================
-            printerInstance.printStr("--------------------------------\n", null)
-            printerInstance.printStr("METODOS DE PAGO\n\n", null)
-
-            if (cashAmount != "0.00") {
-                printerInstance.printStr(String.format("%-14s %9s %4s%%\n", "Efectivo:", "$$cashAmount", cashPercentage), null)
+            // Todo el bloque lo arma `ReportPaymentBlock`, que es puro y SI se puede
+            // probar sin una impresora enfrente. Aqui solo se imprime lo que devuelve.
+            ReportPaymentBlock.lines(tenderBreakdown, paymentBreakdown).forEach { line ->
+                printerInstance.printStr(line + "\n", null)
             }
-            if (cardAmount != "0.00") {
-                printerInstance.printStr(String.format("%-14s %9s %4s%%\n", "Tarjeta:", "$$cardAmount", cardPercentage), null)
-            }
-            if (voucherAmount != "0.00") {
-                printerInstance.printStr(String.format("%-14s %9s %4s%%\n", "Voucher:", "$$voucherAmount", voucherPercentage), null)
-            }
-
-            printerInstance.printStr(String.format("%14s -----------\n", ""), null)
-            printerInstance.printStr(String.format("%-14s %9s\n\n", "Total:", "$$totalSales"), null)
 
             // ========================================
             // COMPARISON (if enabled)
@@ -961,7 +986,7 @@ class PrinterManager @Inject constructor(
                 for (wt in waiterTips) {
                     // Truncate name to 14 chars max to fit line
                     val name = if (wt.name.length > 14) wt.name.take(13) + "." else wt.name
-                    printerInstance.printStr(String.format("%-14s %9s (%d)\n", "$name:", "$$${wt.amount}", wt.count), null)
+                    printerInstance.printStr(String.format("%-14s %9s (%d)\n", "$name:", "$${wt.amount}", wt.count), null)
                 }
 
                 if (averageTipPercentage != null) {
@@ -993,9 +1018,9 @@ class PrinterManager @Inject constructor(
                 for (ss in staffSales) {
                     val name = if (ss.name.length > 20) ss.name.take(19) + "." else ss.name
                     printerInstance.printStr("$name\n", null)
-                    printerInstance.printStr(String.format("  Ventas: %-9s Ordenes: %d\n", "$$${ss.totalSales}", ss.totalOrders), null)
+                    printerInstance.printStr(String.format("  Ventas: %-9s Ordenes: %d\n", "$${ss.totalSales}", ss.totalOrders), null)
                     if (ss.totalTips != "0.00") {
-                        printerInstance.printStr(String.format("  Propinas: %s\n", "$$${ss.totalTips}"), null)
+                        printerInstance.printStr(String.format("  Propinas: %s\n", "$${ss.totalTips}"), null)
                     }
                 }
                 printerInstance.printStr("\n", null)
@@ -1032,7 +1057,7 @@ class PrinterManager @Inject constructor(
     fun printTest(): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
-                Exception("Impresora no disponible")
+                Exception(motivoSinImpresora)
             )
 
             printerInstance.init()
@@ -1083,7 +1108,7 @@ class PrinterManager @Inject constructor(
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
-                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+                Exception(motivoSinImpresora)
             )
 
             Timber.i("🖨️ [Printer] Printing historical period: ${period.label}")
@@ -1192,7 +1217,7 @@ class PrinterManager @Inject constructor(
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
-                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+                Exception(motivoSinImpresora)
             )
 
             if (periods.isEmpty()) {
@@ -1323,7 +1348,7 @@ class PrinterManager @Inject constructor(
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
-                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+                Exception(motivoSinImpresora)
             )
 
             Timber.i("🖨️ [Printer] Printing payment history receipt: ${payment.id}")
@@ -1431,7 +1456,7 @@ class PrinterManager @Inject constructor(
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
-                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+                Exception(motivoSinImpresora)
             )
 
             if (payments.isEmpty()) {
@@ -1587,7 +1612,7 @@ class PrinterManager @Inject constructor(
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
-                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+                Exception(motivoSinImpresora)
             )
 
             if (orderItems.isEmpty()) {
@@ -1737,7 +1762,7 @@ class PrinterManager @Inject constructor(
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
-                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+                Exception(motivoSinImpresora)
             )
 
             Timber.i("🖨️ [Printer] Printing kiosk receipt for order: $orderNumber")
@@ -1877,7 +1902,7 @@ class PrinterManager @Inject constructor(
     ): Result<Unit> {
         return try {
             val printerInstance = printer ?: return Result.failure(
-                Exception("Impresora no disponible. Verifica que el dispositivo PAX esté correctamente configurado.")
+                Exception(motivoSinImpresora)
             )
 
             Timber.i("🖨️ [Printer] Printing kiosk cash confirmation receipt")

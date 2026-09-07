@@ -2189,6 +2189,9 @@ fun AppNavigation(
                 // 🛡️ AngelPay SDK refunds are all-or-nothing (it re-uses the ORIGINAL
                 // sale amount) — hide the partial option on Nexgo builds.
                 allowPartialRefund = BuildConfig.ENABLE_PAX_SDK,
+                // AngelPay refunds the full original total before the backend records it;
+                // only PAX can honor "keep the staff tip" by sending a smaller amount.
+                supportsSaleOnlyRefund = BuildConfig.ENABLE_PAX_SDK,
                 onNavigateBack = {
                     navController.safePopBackStack()
                 },
@@ -2232,8 +2235,18 @@ fun AppNavigation(
                                 return@launch
                             }
 
+                            // 🛡️ Auditoría de Codex F2: lo que impediría REGISTRAR la devolución se comprueba
+                            // ANTES del SDK — después, el dinero ya salió y no hay forma buena de rechazarla.
+                            recordAngelPayRefundUseCase.validateBeforeSdk(paymentVenueId, merchantAccountId)?.let { motivo ->
+                                isNexgoRefundProcessing = false
+                                Toast.makeText(context, "$motivo No se reembolsó nada.", Toast.LENGTH_LONG).show()
+                                return@launch
+                            }
+
                             val result = recordAngelPayRefundUseCase.processSdkRefund(
                                 paymentReference = referenceNumber,
+                                originalPaymentId = paymentId,
+                                paymentVenueId = paymentVenueId,
                                 createdAt = createdAt,
                                 requestedReason = refundReason,
                                 appContext = context.applicationContext,
@@ -2246,7 +2259,8 @@ fun AppNavigation(
                             )
 
                             result.fold(
-                                onSuccess = { message ->
+                                onSuccess = { approval ->
+                                    val message = approval.message
                                     // SDK refund OK → now record in backend so Pagos
                                     // shows it as "Reembolsado" and reports reflect it.
                                     // Best-effort: failure here does NOT undo the SDK
@@ -2264,6 +2278,7 @@ fun AppNavigation(
                                         sdkReferenceNumber = referenceNumber,
                                         tipRefundCents = tipRefundCents,
                                         refundedAmount = refundedAmount,
+                                        idempotencyKey = approval.idempotencyKey,
                                     )
                                     isNexgoRefundProcessing = false
 
@@ -2286,11 +2301,22 @@ fun AppNavigation(
                                                 "⚠️ [AngelPay Refund] SDK refund OK but backend recording FAILED for payment=%s",
                                                 paymentId,
                                             )
-                                            Toast.makeText(
-                                                context,
-                                                "$message\n⚠️ Backend no registró el reembolso — contacta soporte.",
-                                                Toast.LENGTH_LONG,
-                                            ).show()
+                                            // 💸 Fase 1, Task 7: el fallo del registro ya no se pierde — quedó
+                                            // encolado con la MISMA llave que viajó al servidor — y el aviso dice
+                                            // la verdad: la devolución SÍ se hizo. Nunca «contacta soporte» a secas.
+                                            val aviso = when (backendError) {
+                                                is com.jaac.avoqado_tpv.features.payment.domain.usecase.RefundQueuedException ->
+                                                    if (backendError.permanent) {
+                                                        "$message\n⚠️ El servidor rechazó el registro: ${backendError.reason}. NO vuelvas a reembolsar. Avisa al supervisor con la referencia $referenceNumber."
+                                                    } else {
+                                                        "$message\nℹ️ Avoqado no pudo registrarla de inmediato: quedó guardada en este equipo y se completará sola. NO vuelvas a reembolsar."
+                                                    }
+                                                is com.jaac.avoqado_tpv.features.payment.domain.usecase.RefundLostException ->
+                                                    "$message\n⚠️ Avoqado no pudo registrarla ni en el servidor ni en este equipo. NO vuelvas a reembolsar. Avisa al supervisor con la referencia $referenceNumber para conciliarla a mano."
+                                                else ->
+                                                    "$message\n⚠️ Backend no registró el reembolso — contacta soporte."
+                                            }
+                                            Toast.makeText(context, aviso, Toast.LENGTH_LONG).show()
                                             // Still pop back — the SDK cancellation
                                             // already returned money to the customer.
                                             navController.safePopBackStack()

@@ -838,7 +838,7 @@ private fun ErrorContent(
                     onClick = onOpenShift,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("Abrir Turno")
+                    Text("Abrir caja")
                 }
                 Spacer(modifier = Modifier.height(8.dp))
             }

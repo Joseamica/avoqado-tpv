@@ -6,11 +6,15 @@ import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
 import com.jaac.avoqado_tpv.features.payment.data.BlumonAuthManager
 // ⭐ NEW: Backend payment recording dependencies
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
+import com.jaac.avoqado_tpv.core.data.local.dao.PendingRefundDao
 import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
 import com.jaac.avoqado_tpv.features.payment.data.repository.FastPaymentRecorder
 import com.jaac.avoqado_tpv.features.payment.data.repository.OrderPaymentRecorder
 import com.jaac.avoqado_tpv.features.payment.data.repository.PaymentQueueRepositoryImpl
+import com.jaac.avoqado_tpv.features.payment.data.repository.RefundRecorder
+import com.jaac.avoqado_tpv.features.payment.data.repository.RefundQueueRepositoryImpl
 import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
+import com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
 import dagger.Module
 import dagger.Provides
@@ -198,6 +202,29 @@ object PaymentModule {
     ): PaymentQueueRepository {
         return PaymentQueueRepositoryImpl(
             pendingPaymentDao = pendingPaymentDao
+        )
+    }
+
+    /**
+     * La cola durable de REEMBOLSOS.
+     *
+     * Gemela de [providePaymentQueueRepository], con una diferencia que cambia el peso de todo lo
+     * demás: cuando algo entra en esta cola, **el dinero ya salió del cajón**. Un cobro encolado
+     * que se pierde es una venta no cobrada; un reembolso encolado que se pierde es dinero
+     * entregado que nadie anotó, y el corte del turno cuadra de más sin explicación posible.
+     *
+     * **Se inyecta en:** `PaymentViewModel` (Blumon) y el camino de AngelPay para ENCOLAR, y en
+     * `PaymentSyncWorker` para reproducir — siempre DESPUÉS de los cobros.
+     */
+    @Provides
+    @Singleton
+    fun provideRefundQueueRepository(
+        pendingRefundDao: PendingRefundDao,
+        refundRecorder: RefundRecorder
+    ): RefundQueueRepository {
+        return RefundQueueRepositoryImpl(
+            dao = pendingRefundDao,
+            recorder = refundRecorder
         )
     }
 }

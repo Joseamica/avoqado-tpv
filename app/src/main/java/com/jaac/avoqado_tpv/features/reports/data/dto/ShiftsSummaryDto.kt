@@ -97,7 +97,11 @@ fun ShiftsSummaryData.toSalesSummary(): SalesSummary {
     return SalesSummary(
         totalSales = totalSales,
         totalOrders = totalOrders,
-        totalProductsSold = 0, // Not available from shifts-summary endpoint
+        // `shifts-summary` no manda productos. Salian SIEMPRE en 0 y por eso el
+        // ticket dejo de imprimirlos (decision del founder, 3-sep-2026). El campo
+        // se conserva porque el camino de TURNOS (`SalesSummary.fromShifts`) si lo
+        // llena y la pantalla de reportes lo usa.
+        totalProductsSold = 0,
         totalTips = totalTips,
         totalShifts = 0,
         averageOrderValue = averageOrderValue,
@@ -114,7 +118,9 @@ fun ShiftsSummaryData.toSalesSummary(): SalesSummary {
  */
 fun ShiftsSummaryData.toPaymentBreakdown(): PaymentMethodBreakdown {
     var cashAmount = BigDecimal.ZERO
-    var cardAmount = BigDecimal.ZERO
+    var creditCardAmount = BigDecimal.ZERO
+    var debitCardAmount = BigDecimal.ZERO
+    var unspecifiedCardAmount = BigDecimal.ZERO
     var voucherAmount = BigDecimal.ZERO
     var otherAmount = BigDecimal.ZERO
 
@@ -122,13 +128,26 @@ fun ShiftsSummaryData.toPaymentBreakdown(): PaymentMethodBreakdown {
         val amount = BigDecimal.valueOf(pm.total)
         when (pm.method.uppercase()) {
             "CASH" -> cashAmount += amount
-            "CREDIT_CARD", "DEBIT_CARD", "CARD" -> cardAmount += amount
+            // 🔴 CREDIT_CARD y DEBIT_CARD NO se suman entre sí. El servidor ya los
+            // manda separados (son dos valores distintos del enum `PaymentMethod`)
+            // y era ESTA app la que los colapsaba en un solo renglón "Tarjeta".
+            "CREDIT_CARD" -> creditCardAmount += amount
+            "DEBIT_CARD" -> debitCardAmount += amount
+            // "CARD" a secas no existe en el enum del servidor; se acepta por si
+            // alguna versión vieja o algún otro origen lo manda. Cae en "tarjeta
+            // sin especificar" —se imprime como "Tarjeta"— en vez de adivinar.
+            "CARD" -> unspecifiedCardAmount += amount
             "VOUCHER" -> voucherAmount += amount
+            // DIGITAL_WALLET, BANK_TRANSFER, CRYPTOCURRENCY y OTHER caen aquí.
+            // 🔴 Hasta hoy el ticket NO imprimía este renglón pero SÍ lo sumaba en
+            // el total: el desglose no cuadraba con su propia suma y nadie podía
+            // explicar el hueco. Ahora se imprime como "Otros".
             else -> otherAmount += amount
         }
     }
 
-    val totalAmount = cashAmount + cardAmount + voucherAmount + otherAmount
+    val totalAmount = cashAmount + creditCardAmount + debitCardAmount +
+        unspecifiedCardAmount + voucherAmount + otherAmount
 
     fun pct(part: BigDecimal): BigDecimal {
         return if (totalAmount > BigDecimal.ZERO) {
@@ -138,12 +157,16 @@ fun ShiftsSummaryData.toPaymentBreakdown(): PaymentMethodBreakdown {
 
     return PaymentMethodBreakdown(
         cashAmount = cashAmount,
-        cardAmount = cardAmount,
+        creditCardAmount = creditCardAmount,
+        debitCardAmount = debitCardAmount,
+        unspecifiedCardAmount = unspecifiedCardAmount,
         voucherAmount = voucherAmount,
         otherAmount = otherAmount,
         totalAmount = totalAmount,
         cashPercentage = pct(cashAmount),
-        cardPercentage = pct(cardAmount),
+        creditCardPercentage = pct(creditCardAmount),
+        debitCardPercentage = pct(debitCardAmount),
+        unspecifiedCardPercentage = pct(unspecifiedCardAmount),
         voucherPercentage = pct(voucherAmount),
         otherPercentage = pct(otherAmount)
     )

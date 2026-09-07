@@ -12,6 +12,7 @@ import com.jaac.avoqado_tpv.core.data.local.dao.DraftOrderItemDao
 import com.jaac.avoqado_tpv.core.data.local.dao.FloorElementDao
 import com.jaac.avoqado_tpv.core.data.local.dao.HistoricalPeriodDao
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
+import com.jaac.avoqado_tpv.core.data.local.dao.PendingRefundDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductCategoryDao
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
 import com.jaac.avoqado_tpv.core.data.local.dao.TableDao
@@ -26,6 +27,7 @@ import com.jaac.avoqado_tpv.core.data.local.entities.ProductCategoryEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.ProductEntity
 import com.jaac.avoqado_tpv.core.data.local.entities.TableEntity
 import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
+import com.jaac.avoqado_tpv.core.data.local.entity.PendingRefundEntity
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantCacheDao
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantCacheEntity
 import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestDao
@@ -34,7 +36,8 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
 /**
  * Room database for Avoqado TPV local data persistence.
  *
- * **Current Version:** 29
+ * **Current Version:** 30
+ * - v29 → v30: `pending_refunds` — cola durable de REEMBOLSOS (el reembolso que el SDK ya hizo no se pierde; 2026-09-03/04)
  * - v1 → v2: Added blumonSerialNumber to PendingPaymentEntity for merchant account tracking
  * - v2 → v3: Added merchantAccountId to PendingPaymentEntity (provider-agnostic migration)
  * - v3 → v4: Added rating to PendingPaymentEntity (user rating feature - 2025-01-11)
@@ -125,9 +128,32 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
         com.jaac.avoqado_tpv.core.data.local.entities.MosaicShortcutEntity::class, // ⭐ v21
         AngelPayMerchantCacheEntity::class, // ⭐ v22: AngelPay SDK 1.0.5 multi-merchant cache
         com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptEntity::class, // ⭐ v27: payment_attempts write-ahead ledger (la libreta)
-        RemotePaymentRequestEntity::class,
+        PendingRefundEntity::class, // ⭐ v31: cola durable de REEMBOLSOS (hermana de pending_payments)
+        RemotePaymentRequestEntity::class, // ⭐ v32: inbox durable de cobros POS → TPV (acuse de recibo, nexgo-v2.9.0)
     ],
-    version = 30, // v30: inbox durable de cobros POS → TPV
+    // ⭐ Version 31: tabla pending_refunds — el reembolso que el SDK ya hizo no se pierde.
+    //
+    // 🔴 ES 31 Y NO 30 A PROPÓSITO — COLISIÓN RESUELTA (5-sep-2026). `develop` (worktree
+    // `develop-nexgo-integration`, commit 68641a4, tag `nexgo-v2.9.0`) YA declara `version = 30`
+    // con OTRA tabla (`remote_payment_requests`) y su propia MIGRATION_29_30. Dos esquemas
+    // distintos con el mismo número no pueden coexistir: Room compara un hash de identidad al
+    // abrir la base, y toda terminal que tuviera el OTRO v30 entraría en crash-loop al arrancar —
+    // sin poder desinstalar para salir. La regla escrita aquí el 3-sep («quien mergee SEGUNDO
+    // renumera») se aplica ahora a ESTE árbol: `pending_refunds` pasa a v31.
+    //
+    // Por eso hay DOS caminos hacia 31, y los dos son obligatorios:
+    //   • 29→31  para quien viene de un `main` limpio (nunca vio ningún v30).
+    //   • 30→31  para quien ya tiene UN v30, sea el de `develop` (tiene `remote_payment_requests`
+    //            y le falta `pending_refunds`) o el de este árbol (el APK Nexgo 2.8.5 ya firmado,
+    //            que YA tiene `pending_refunds`). Por eso ese camino es `IF NOT EXISTS` puro:
+    //            crea lo que falte y es no-op sobre lo que ya está.
+    // `remote_payment_requests` sobrevive como tabla huérfana en las terminales que la tengan:
+    // Room sólo valida las tablas de sus @Entity, así que una tabla de más no rompe nada.
+    //
+    // ⭐ Version 32 (7-sep-2026): `remote_payment_requests`, el inbox durable del acuse de recibo que
+    // vivía en `develop` como v30. Al juntar las dos ramas se renumera a 32 (MIGRATION_31_32): la flota
+    // en la calle va de 2.7.0 a 2.8.6 (v31 como mucho) y nadie corrió el v30 de `develop`.
+    version = 32,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -143,6 +169,14 @@ abstract class AvoqadoDatabase : RoomDatabase() {
      * - Cleanup old synced payments
      */
     abstract fun pendingPaymentDao(): PendingPaymentDao
+
+    /**
+     * DAO de la cola durable de REEMBOLSOS.
+     *
+     * Hermano de [pendingPaymentDao]: mismo claim por token, mismo lease, mismo CAS. Existe porque
+     * un reembolso que el SDK ya aprobó y cuyo POST falla hoy se pierde en silencio.
+     */
+    abstract fun pendingRefundDao(): PendingRefundDao
 
     /**
      * DAO for local-first draft orders.
@@ -1708,13 +1742,75 @@ abstract class AvoqadoDatabase : RoomDatabase() {
         }
 
         /**
-         * v30: inbox durable para cobros delegados por POS.
+         * v29 → v31 — `pending_refunds`: la cola durable de REEMBOLSOS.
          *
-         * Aditiva: no toca pending_payments ni payment_attempts, que pueden contener
-         * dinero aprobado pendiente de registrar. El PK request_id hace idempotente
-         * toda reentrega del servidor.
+         * Un reembolso que el SDK ya aprobó y cuyo POST falla se perdía en silencio: el
+         * `Payment type=REFUND` nunca nacía, el dinero salió del cajón y el corte del turno cuadra
+         * de más. Esta tabla es la hermana de `pending_payments` para ese carril.
+         *
+         * 🔴 **SALTA EL 30 A PROPÓSITO — COLISIÓN RESUELTA (5-sep-2026).** Nació como
+         * `MIGRATION_29_30`, pero la rama `codex/nexgo-payment-hotfix-qa` (release `nexgo-v2.9.0`,
+         * commit `68641a4`, hoy en `develop`) TAMBIÉN declara la versión 30, con otra tabla:
+         * `remote_payment_requests`. Las dos son correctas por separado —cada una sale de un `main`
+         * en v29— pero **no pueden coexistir**: son dos esquemas distintos con el mismo número, y
+         * Room compara un hash de identidad al abrir la base; toda terminal con el OTRO v30 entraría
+         * en crash-loop al arrancar, sin poder desinstalar para salir. La regla que quedó escrita el
+         * 3-sep («quien mergee SEGUNDO renumera») se aplica a ESTE árbol: `pending_refunds` es v31.
+         *
+         * Este camino es para quien viene de un `main` limpio y nunca vio ningún v30. Quien ya tenga
+         * uno de los dos v30 entra por [MIGRATION_30_31].
          */
-        val MIGRATION_29_30 = object : Migration(29, 30) {
+        val MIGRATION_29_31 = object : Migration(29, 31) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                crearPendingRefunds(db)
+            }
+        }
+
+        /**
+         * v30 → v31 — el MISMO `pending_refunds`, para quien ya tiene un v30 de cualquiera de los
+         * dos árboles (ver la nota de la colisión en `@Database`).
+         *
+         * 🔴 Todo es `IF NOT EXISTS` a propósito, y no es pereza: este camino lo recorren DOS
+         * poblaciones opuestas. Las terminales con el v30 de `develop` no tienen `pending_refunds`
+         * y hay que creárselo; las que ya llevan el APK Nexgo 2.8.5 (v30 de ESTE árbol) SÍ lo
+         * tienen, con el mismo DDL, y para ellas la migración tiene que ser un no-op silencioso —
+         * un `CREATE TABLE` pelón las tumbaría con «table already exists» en el arranque, que es
+         * exactamente el crash-loop que esta renumeración viene a evitar.
+         */
+        val MIGRATION_30_31 = object : Migration(30, 31) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                crearPendingRefunds(db)
+            }
+        }
+
+        /**
+         * El DDL de `pending_refunds`, en UN solo sitio porque lo comparten los dos caminos.
+         *
+         * Copiado VERBATIM del esquema que generó Room, no escrito a mano: escribirlo a mano es lo
+         * que produjo el drift `color` vs `category_color` de la v23→v24 que dejó aparatos en
+         * crash-loop.
+         */
+        private fun crearPendingRefunds(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS `pending_refunds` (`idempotency_key` TEXT NOT NULL, `venue_id` TEXT NOT NULL, `staff_id` TEXT NOT NULL, `processor` TEXT NOT NULL, `original_payment_id` TEXT NOT NULL, `original_order_id` TEXT, `amount` TEXT NOT NULL, `original_total_amount` TEXT NOT NULL, `tip_refund_cents` INTEGER, `is_partial_refund` INTEGER NOT NULL, `refund_reason` TEXT NOT NULL, `merchant_account_id` TEXT NOT NULL, `blumon_serial_number` TEXT NOT NULL, `original_operation_number` INTEGER NOT NULL, `authorization_number` TEXT NOT NULL, `reference_number` TEXT NOT NULL, `masked_pan` TEXT, `card_brand` TEXT, `entry_mode` TEXT NOT NULL, `created_at` INTEGER NOT NULL, `retry_count` INTEGER NOT NULL, `last_error` TEXT, `sync_status` TEXT NOT NULL, `claim_token` TEXT, `claimed_at` INTEGER, `permanent` INTEGER NOT NULL DEFAULT 0, `acknowledged` INTEGER NOT NULL DEFAULT 0, `acknowledged_by` TEXT, `acknowledged_at` INTEGER, PRIMARY KEY(`idempotency_key`))"
+            )
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_pending_refunds_sync_status` ON `pending_refunds` (`sync_status`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_pending_refunds_created_at` ON `pending_refunds` (`created_at`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_pending_refunds_venue_id` ON `pending_refunds` (`venue_id`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_pending_refunds_claim_token` ON `pending_refunds` (`claim_token`)")
+        }
+
+        /**
+         * v31 → v32 — `remote_payment_requests`: inbox durable para cobros delegados por el POS
+         * (acuse de recibo, nexgo-v2.9.0). Venía como MIGRATION_29_30 en `develop`; se renumera a
+         * 31→32 porque `main` ya ocupó 29→31 y 30→31 con `pending_refunds`, y ninguna terminal en la
+         * calle corrió jamás el v30 de `develop` (medido 7-sep-2026: la flota va de 2.7.0 a 2.8.6).
+         *
+         * Aditiva: no toca pending_payments, payment_attempts ni pending_refunds, que pueden contener
+         * dinero aprobado pendiente de registrar. El PK request_id hace idempotente toda reentrega
+         * del servidor. `IF NOT EXISTS` por si una terminal de laboratorio ya tenía la tabla huérfana.
+         */
+        val MIGRATION_31_32 = object : Migration(31, 32) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     """

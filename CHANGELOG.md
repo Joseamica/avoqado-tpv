@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### **Fixed**
+
+- **🔴 Un cobro que no logró registrarse esperaba hasta 15 minutos para reintentar — y la tablet veía la terminal «ocupada» todo ese tiempo (PAX / Blumon TPV, tarjeta y efectivo)**: cuando el registro del cobro en Avoqado fallaba (timeout de 25 s con la red viva —el caso diario, Testarudo—, o caída de red), el cobro entraba a la cola offline (`pending_payments`) pero el camino Blumon **no pedía el sync inmediato**: sólo el `PaymentSyncWorker` periódico de 15 min lo reproducía, y mientras tanto el servidor mantenía la fila `TerminalPaymentRequest` en `UNKNOWN` con la terminal bloqueada para la tablet. El disparador «al reconectar» sí existía, pero vive en el `PaymentViewModel` (muere al salir de la pantalla) y no cubre el timeout con red viva. AngelPay ya hacía el kick tras encolar; ahora el camino Blumon también, en sus tres sitios de encolado: tarjeta (`handleOfflineQueueOutcome`), efectivo (`processCashPayment`) y efectivo confirmado en kiosco (`confirmCashPayment`), con `runCatching { PaymentSyncScheduler.runNow(appContext) }` justo después de que la cola aceptó la fila. Sin red, la petición única lleva el constraint `CONNECTED` y WorkManager la dispara sola al volver —sin observador propio ni candados nuevos—; con red, corre en segundos. `KEEP` garantiza que nunca pisa una tanda en curso, el reintento manda la MISMA `idempotencyKey` (el servidor dedup por `(venueId, idempotencyKey)`), y un resultado tardío cierra la fila del servidor con `lateResult` (ya existía). Si la cola NO aceptó el cobro no se pide nada (no hay qué reproducir; la alarma de «registro perdido» sigue igual). Cambio idéntico en `sandbox/` y `production/`; **no toca avoqado-android, avoqado-ios ni el servidor**. 4 pruebas nuevas en `PaymentViewModelTest` (las 3 de «pide el sync» vistas en rojo antes del arreglo: `runNow(any()) was not called`).
+
 ---
 
 ## [2.8.7] - 2026-09-07

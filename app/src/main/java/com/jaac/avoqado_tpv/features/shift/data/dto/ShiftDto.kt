@@ -92,7 +92,17 @@ data class ShiftHistoryResponse(
 )
 
 /**
- * Pagination metadata for shift history
+ * Pagination metadata for shift history.
+ *
+ * 🔴 Los campos NUEVOS son nullable a propósito (5-sep-2026). Gson NO distingue «el servidor mandó
+ * false» de «el servidor no mandó nada»: con un `Boolean` no-nulo, una respuesta vieja sin el campo
+ * llegaría como `false` y el paginador concluiría «no hay más páginas» — el mismo truncado
+ * silencioso que viene a arreglar. Con `Boolean?`, ausente es `null` y se puede decidir aparte.
+ *
+ * ⚠️ `totalRecords` NUNCA se llena: el servidor manda `totalCount` (verificado en
+ * `avoqado-server/src/services/tpv/shift.tpv.service.ts`), así que Gson lo deja en 0. Se conserva
+ * por compatibilidad de firma —hay llamadas posicionales en las pruebas— y se añade `totalCount`
+ * con el nombre real. Nadie lee ninguno de los dos hoy.
  */
 data class PaginationMeta(
     @SerializedName("totalRecords")
@@ -105,8 +115,25 @@ data class PaginationMeta(
     val currentPage: Int,
 
     @SerializedName("pageSize")
-    val pageSize: Int
-)
+    val pageSize: Int,
+
+    /** `true` mientras queden páginas. `null` = servidor viejo que no lo manda. */
+    @SerializedName("hasNextPage")
+    val hasNextPage: Boolean? = null,
+
+    /** El nombre REAL del total en el servidor. `null` = no vino. */
+    @SerializedName("totalCount")
+    val totalCount: Int? = null
+) {
+    /**
+     * ¿Queda otra página?
+     *
+     * Prefiere lo que el servidor AFIRMA; si no lo manda, lo deduce de página/total, que sí llegan
+     * con los nombres correctos. Sin ninguno de los dos ⇒ `false`: quedarse corto es una lista
+     * truncada, pedir de más contra un servidor que no pagina sería un bucle.
+     */
+    fun hayOtraPagina(): Boolean = hasNextPage ?: (currentPage in 1 until totalPages)
+}
 
 /**
  * Request to open a new shift

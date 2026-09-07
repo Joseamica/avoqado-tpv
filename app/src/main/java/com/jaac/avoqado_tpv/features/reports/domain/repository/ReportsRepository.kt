@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.reports.domain.repository
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.features.reports.domain.models.ComparisonMetrics
 import com.jaac.avoqado_tpv.features.reports.domain.models.PaymentMethodBreakdown
+import com.jaac.avoqado_tpv.features.reports.domain.models.TenderBreakdownResult
 import com.jaac.avoqado_tpv.features.reports.domain.models.ReportPeriod
 import com.jaac.avoqado_tpv.features.reports.domain.models.SalesSummary
 import com.jaac.avoqado_tpv.features.shift.domain.Shift
@@ -39,6 +40,23 @@ interface ReportsRepository {
         venueId: String,
         period: ReportPeriod
     ): Result<PaymentMethodBreakdown>
+
+    /**
+     * Desglose por metodo de pago CON la propina desglosada por metodo.
+     *
+     * 🔴 Mismo endpoint que el corte de caja de avoqado-android
+     * (`cash-drawer/tender-breakdown`): es lo que hace que los dos tickets no puedan
+     * divergir. `getPaymentMethodBreakdown` (shifts-summary) NO trae la propina por
+     * metodo y por eso no basta para el desglose que pidio el cliente.
+     *
+     * Devuelve `Unavailable` —nunca una lista vacia— cuando no se pudo consultar: una
+     * lista vacia es el dato legitimo "no hubo cobros", y confundirlos hace que el
+     * ticket mienta sobre por que falta un numero.
+     */
+    suspend fun getTenderBreakdown(
+        venueId: String,
+        period: ReportPeriod
+    ): TenderBreakdownResult
 
     /**
      * Get shift history for a specific period

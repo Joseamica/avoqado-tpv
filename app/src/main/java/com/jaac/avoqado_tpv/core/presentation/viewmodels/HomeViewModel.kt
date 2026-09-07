@@ -22,6 +22,7 @@ import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommand
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandPriority
 import com.jaac.avoqado_tpv.features.remote_command.data.model.TpvCommandType
 import com.jaac.avoqado_tpv.features.remote_command.domain.CommandExecutor
+import com.jaac.avoqado_tpv.features.remote_command.domain.CommandTarget
 import com.jaac.avoqado_tpv.core.data.repository.HeartbeatRepository
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.core.data.local.dao.ProductDao
@@ -996,6 +997,21 @@ class HomeViewModel @Inject constructor(
                     // TPV ADMIN COMMANDS (from dashboard)
                     // ═══════════════════════════════════════════════════════════
                     is SocketEvent.TPVCommand -> {
+                        // El servidor difunde este evento al VENUE entero, no a una terminal.
+                        // Sin este filtro, un FACTORY_RESET dirigido a UNA terminal lo ejecutan
+                        // TODOS los aparatos conectados del negocio y todos pierden su activación.
+                        if (!CommandTarget.isForThisTerminal(
+                                objetivo = event.terminalId,
+                                serialPropio = secureStorage.getSerialNumber(),
+                                idPropio = secureStorage.getTerminalId(),
+                            )
+                        ) {
+                            Timber.i(
+                                "🙈 [Socket] TPV Command ${event.commandType} ignorado: era para ${event.terminalId}"
+                            )
+                            return@collect
+                        }
+
                         Timber.w("⚙️ [Socket] TPV Command received: ${event.commandType} (requested by: ${event.requestedBy})")
                         _adminCommands.tryEmit(event)
 

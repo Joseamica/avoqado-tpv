@@ -938,6 +938,31 @@ interface ApiService {
         @Query("staffId") staffId: String? = null
     ): Response<com.jaac.avoqado_tpv.features.reports.data.dto.ShiftsSummaryResponse>
 
+    /**
+     * GET /mobile/venues/{venueId}/cash-drawer/tender-breakdown?from=&to=
+     *
+     * Cobros agrupados por metodo de pago CON la propina desglosada por metodo.
+     *
+     * 🔴 Es EL MISMO endpoint que usa el corte de caja de avoqado-android. Se llama
+     * desde aqui a proposito: es lo que hace que el reporte de la PAX y el corte de
+     * la tablet no puedan divergir. `shifts-summary` no trae la propina por metodo,
+     * asi que con el solo no se puede armar el desglose "Venta / Propina / Total"
+     * que pidio el cliente (Testarudo, 3-sep-2026).
+     *
+     * Permiso: `payments:read`. Lo tienen todos los roles que ya podian abrir el
+     * reporte (VIEWER, WAITER, CASHIER, MANAGER traen `payments:read` y `shifts:read`
+     * juntos en `DEFAULT_PERMISSIONS`), asi que no hace falta permiso nuevo.
+     *
+     * ⚠️ Vive bajo `mobile/` y no bajo `tpv/`, pero usa el MISMO
+     * `authenticateTokenMiddleware` que `shifts-summary`: el token de la TPV sirve.
+     */
+    @GET("mobile/venues/{venueId}/cash-drawer/tender-breakdown")
+    suspend fun getTenderBreakdown(
+        @Path("venueId") venueId: String,
+        @Query("from") from: String,
+        @Query("to") to: String
+    ): Response<com.jaac.avoqado_tpv.features.reports.data.dto.TenderBreakdownResponse>
+
     // ========== Reports (Analytics) ==========
 
     /**

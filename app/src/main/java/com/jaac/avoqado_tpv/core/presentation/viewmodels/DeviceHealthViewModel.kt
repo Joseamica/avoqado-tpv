@@ -407,7 +407,9 @@ class DeviceHealthViewModel @Inject constructor(
         if (queueState.hasAnyPayments) {
             alerts.add(DeviceAlert.PendingPayments(
                 pendingCount = queueState.pendingCount,
-                failedCount = queueState.failedCount
+                failedCount = queueState.failedCount,
+                pendingRefundCount = queueState.pendingRefundCount,
+                failedRefundCount = queueState.failedRefundCount,
             ))
         }
 
@@ -624,10 +626,27 @@ sealed class DeviceAlert(
      */
     data class PendingPayments(
         val pendingCount: Int,
-        val failedCount: Int
+        val failedCount: Int,
+        val pendingRefundCount: Int = 0,
+        val failedRefundCount: Int = 0,
     ) : DeviceAlert(4, DeviceAlertType.PENDING_PAYMENTS) {
-        val message: String get() = if (failedCount > 0) "$failedCount pagos fallidos" else "$pendingCount pagos pendientes"
-        val description: String get() = if (failedCount > 0) "Toca para reintentar sincronización" else "Pendientes de sincronizar"
+        // 💸 Las devoluciones se nombran aparte (auditoría de Codex F10): «3 pagos pendientes» que en
+        // realidad son devoluciones sin registrar engañan al cajero sobre qué falta en la caja.
+        val message: String get() {
+            val partes = mutableListOf<String>()
+            if (failedCount > 0) partes += "$failedCount pagos fallidos"
+            if (failedRefundCount > 0) partes += "$failedRefundCount devolucion${if (failedRefundCount == 1) "" else "es"} rechazada${if (failedRefundCount == 1) "" else "s"}"
+            if (partes.isEmpty() && pendingCount > 0) partes += "$pendingCount pagos pendientes"
+            if (partes.isEmpty() && pendingRefundCount > 0) partes += "$pendingRefundCount devolucion${if (pendingRefundCount == 1) "" else "es"} sin registrar"
+            if (partes.isEmpty()) partes += "$pendingCount pagos pendientes"
+            return partes.joinToString(" · ")
+        }
+        val description: String get() = when {
+            failedRefundCount > 0 -> "Revísalas en Caja antes de cerrar el turno"
+            failedCount > 0 -> "Toca para reintentar sincronización"
+            pendingRefundCount > 0 -> "Se registrarán solas al recuperar la conexión"
+            else -> "Pendientes de sincronizar"
+        }
     }
 
     /**

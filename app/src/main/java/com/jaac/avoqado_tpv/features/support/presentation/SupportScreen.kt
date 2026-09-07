@@ -1014,7 +1014,7 @@ data class FAQ(
 private val faqItems = listOf(
     FAQ(
         question = "¿Cómo inicio un turno?",
-        answer = "Ve a la pantalla de Turnos desde el menú principal y presiona 'Abrir Turno'. Ingresa el efectivo inicial en caja y confirma."
+        answer = "Ve a la pantalla de Turnos desde el menú principal y presiona 'Abrir caja'. Ingresa el efectivo inicial en caja y confirma."
     ),
     FAQ(
         question = "¿Cómo registro un pago con tarjeta?",
@@ -1034,7 +1034,7 @@ private val faqItems = listOf(
     ),
     FAQ(
         question = "¿Cómo cierro un turno?",
-        answer = "Ve a Turnos → Cerrar Turno. Registra el efectivo final en caja y cualquier diferencia será calculada automáticamente."
+        answer = "Ve a Turnos → Cerrar caja. Registra el efectivo final en caja y cualquier diferencia será calculada automáticamente."
     )
 )
 

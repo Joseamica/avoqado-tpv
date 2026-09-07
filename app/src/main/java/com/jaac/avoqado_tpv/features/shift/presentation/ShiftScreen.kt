@@ -195,6 +195,14 @@ fun ShiftScreen(
                     )
                 }
 
+                is ShiftState.CloseBlockedByRefunds -> {
+                    CloseBlockedByRefundsContent(
+                        refunds = currentState.refunds,
+                        onAcknowledge = { viewModel.acknowledgeRefund(it) },
+                        onBack = { viewModel.loadCurrentShift() },
+                    )
+                }
+
                 is ShiftState.Error -> {
                     ErrorContent(
                         message = currentState.message,

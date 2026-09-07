@@ -896,7 +896,7 @@ fun PaymentScreen(
                     PaymentErrorContent(
                         message = currentState.message,
                         canRetry = currentState.canRetry,
-                        showOpenShiftButton = currentState.showOpenShiftButton,  // 🆕 Show "Abrir Turno" button
+                        showOpenShiftButton = currentState.showOpenShiftButton,  // 🆕 Show "Abrir caja" button
                         showCashFallback = currentState.showCashFallback,
                         isRefund = isRefundMode,  // 💸 Show "Error en el Reembolso" for refunds
                         onRetry = {
@@ -2550,7 +2550,7 @@ private fun PaymentSuccessContent(
 private fun PaymentErrorContent(
     message: String,
     canRetry: Boolean,
-    showOpenShiftButton: Boolean = false,  // 🆕 Show "Abrir Turno" instead of "Reintentar"
+    showOpenShiftButton: Boolean = false,  // 🆕 Show "Abrir caja" instead of "Reintentar"
     showCashFallback: Boolean = false,
     isRefund: Boolean = false,  // 💸 Show "Error en el Reembolso" instead of "Error en el Pago"
     onRetry: () -> Unit,
@@ -2616,10 +2616,10 @@ private fun PaymentErrorContent(
                             .padding(bottom = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        // ⭐ SHIFT VALIDATION: Show "Abrir Turno" button when no shift is open
+                        // ⭐ SHIFT VALIDATION: Show "Abrir caja" button when no shift is open
                         if (showOpenShiftButton) {
                             AvoqadoButton(
-                                text = "Abrir Turno",
+                                text = "Abrir caja",
                                 onClick = onOpenShift,
                                 fullWidth = true
                             )

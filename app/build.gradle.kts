@@ -16,8 +16,8 @@ android {
         applicationId = "com.jaac.avoqado_tpv"
         minSdk = 27  // Android 8.1 (required by Blumon PAX SDK EMV module)
         targetSdk = 34
-        versionCode = 106
-        versionName = "2.8.8"
+        versionCode = 105
+        versionName = "2.9.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -228,10 +228,11 @@ android {
 
         create("nexgoProd") {
             dimension = "environment"
-            // Nexgo/AngelPay has its own TMS release cadence. Keep this override in the
-            // Nexgo production flavor so a Nexgo-only release never rebadges PAX builds.
-            versionCode = 105
-            versionName = "2.9.1"
+            // El override de versión se retiró el 8-sep-2026: PAX y Nexgo van con el MISMO
+            // número (2.9.1 / 105), que vive sólo en defaultConfig. Existía para que un
+            // release de Nexgo no rebautizara los APK de PAX, y el efecto fue el contrario:
+            // PAX se quedó en 2.8.7 sin los arreglos de dinero que Nexgo ya tenía. Con un
+            // solo número no pueden volver a divergir en silencio.
             // Productive Nexgo build (Avoqado backend prod + AngelPay prod).
             // Reuses the production package id `com.jaac.avoqado_tpv` (no
             // suffix) because `.nexgo` is not yet registered in Firebase

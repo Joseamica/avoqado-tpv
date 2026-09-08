@@ -8,6 +8,7 @@ import com.jaac.avoqado_tpv.core.domain.models.ApiException
 import com.jaac.avoqado_tpv.core.domain.models.Result
 import com.jaac.avoqado_tpv.features.shift.data.dto.CashReconciliationDto
 import com.jaac.avoqado_tpv.features.shift.data.dto.CloseShiftRequest
+import com.jaac.avoqado_tpv.features.shift.data.dto.OpenShiftRequest
 import com.jaac.avoqado_tpv.features.shift.data.dto.PaginationMeta
 import com.jaac.avoqado_tpv.features.shift.data.dto.ShiftDto
 import com.jaac.avoqado_tpv.features.shift.data.dto.ShiftHistoryResponse
@@ -21,6 +22,8 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
@@ -162,6 +165,54 @@ class ShiftRepositoryTest {
         assertThat(result).isInstanceOf(Result.Success::class.java)
         coVerify(exactly = 1) { apiService.closeShift("venue-1", "shift-1", any()) }
         coVerify(exactly = 1) { apiService.getShiftHistory("venue-1", pageSize = 10, pageNumber = 1) }
+    }
+
+    // ─── 🔔 Abrir o cerrar el turno AVISA a las demás pantallas (QA Nexgo N86, 7-sep-2026) ────
+    //
+    // Cada pantalla tiene su propio ShiftViewModel; sin este pulso, «Turnos de caja» abría la caja
+    // e Inicio seguía en «Sin turno de caja» bloqueando Cobrar hasta reiniciar la app.
+
+    @Test
+    fun `abrir el turno con exito avisa por shiftChanges`() = runTest {
+        val avisos = mutableListOf<Unit>()
+        backgroundScope.launch { repository.shiftChanges.collect { avisos += it } }
+        runCurrent()
+        coEvery { apiService.openShift("venue-1", any<OpenShiftRequest>()) } returns
+            Response.success(ShiftResponse(success = true, data = shiftDto(status = "OPEN"), reconciliation = null))
+
+        val result = repository.openShift("venue-1", "staff-1", 500.0)
+        runCurrent()
+
+        assertThat(result).isInstanceOf(Result.Success::class.java)
+        assertThat(avisos).hasSize(1)
+    }
+
+    @Test
+    fun `si abrir el turno falla no se avisa nada`() = runTest {
+        val avisos = mutableListOf<Unit>()
+        backgroundScope.launch { repository.shiftChanges.collect { avisos += it } }
+        runCurrent()
+        coEvery { apiService.openShift("venue-1", any<OpenShiftRequest>()) } returns
+            Response.error(500, "".toResponseBody("application/json".toMediaTypeOrNull()))
+
+        val result = repository.openShift("venue-1", "staff-1", 500.0)
+        runCurrent()
+
+        assertThat(result).isInstanceOf(Result.Error::class.java)
+        assertThat(avisos).isEmpty()
+    }
+
+    @Test
+    fun `cerrar el turno con exito avisa por shiftChanges`() = runTest {
+        val avisos = mutableListOf<Unit>()
+        backgroundScope.launch { repository.shiftChanges.collect { avisos += it } }
+        runCurrent()
+        coEvery { apiService.closeShift("venue-1", "shift-1", any()) } returns Response.success(successfulClose())
+
+        repository.closeShift("venue-1", "shift-1")
+        runCurrent()
+
+        assertThat(avisos).hasSize(1)
     }
 
     private fun successfulClose(

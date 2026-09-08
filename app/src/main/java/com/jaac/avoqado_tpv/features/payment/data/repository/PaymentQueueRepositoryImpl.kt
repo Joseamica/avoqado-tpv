@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.payment.data.repository
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
 import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment
+import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus
 import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
 import kotlinx.coroutines.CancellationException
@@ -317,6 +318,11 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             shiftId = shiftId,
             isPortabilidad = isPortabilidad,
             serialNumbers = serialNumbers.takeIf { it.isNotEmpty() }?.joinToString(","),
+            // ⭐ Split de la orden (v33, 2026-09-07) — misma codificación CSV que serialNumbers
+            splitType = splitType.value,
+            paidProductIds = paidProductIds.takeIf { it.isNotEmpty() }?.joinToString(","),
+            equalPartsPartySize = equalPartsPartySize,
+            equalPartsPayedFor = equalPartsPayedFor,
             createdAt = createdAt,
             retryCount = retryCount,
             lastError = lastError,
@@ -361,6 +367,13 @@ class PaymentQueueRepositoryImpl @Inject constructor(
             shiftId = shiftId,
             isPortabilidad = isPortabilidad,
             serialNumbers = serialNumbers?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty(),
+            // ⭐ Split de la orden (v33, 2026-09-07). NULL (fila anterior a la v33) o un valor
+            // desconocido caen a FULLPAYMENT — `SplitType.fromValue` ya lo hace, y ése es el
+            // comportamiento que esas filas tenían antes de que la columna existiera.
+            splitType = splitType?.let { SplitType.fromValue(it) } ?: SplitType.FULLPAYMENT,
+            paidProductIds = paidProductIds?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }.orEmpty(),
+            equalPartsPartySize = equalPartsPartySize,
+            equalPartsPayedFor = equalPartsPayedFor,
             createdAt = createdAt,
             retryCount = retryCount,
             lastError = lastError,

@@ -1336,7 +1336,7 @@ class HomeViewModel @Inject constructor(
             try {
                 val pending = paymentQueueRepository.getPendingCount()
                 val failed = paymentQueueRepository.getFailedCount()
-                paymentQueueStateManager.refreshCounts(pending, failed)
+                paymentQueueStateManager.refreshPaymentCounts(pending, failed) // sólo pagos: las devoluciones las publica RefundQueueRepositoryImpl
                 if (pending > 0 || failed > 0) {
                     Timber.i("💳 [HomeViewModel] Payment queue: pending=$pending, failed=$failed")
                 }
@@ -1353,7 +1353,7 @@ class HomeViewModel @Inject constructor(
         try {
             val pending = paymentQueueRepository.getPendingCount()
             val failed = paymentQueueRepository.getFailedCount()
-            paymentQueueStateManager.refreshCounts(pending, failed)
+            paymentQueueStateManager.refreshPaymentCounts(pending, failed) // sólo pagos: las devoluciones las publica RefundQueueRepositoryImpl
             Timber.d("💳 [HomeViewModel] Queue counts refreshed: pending=$pending, failed=$failed")
         } catch (e: Exception) {
             Timber.e(e, "❌ [HomeViewModel] Error refreshing queue counts")

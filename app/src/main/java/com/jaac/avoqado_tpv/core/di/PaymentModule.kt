@@ -220,11 +220,13 @@ object PaymentModule {
     @Singleton
     fun provideRefundQueueRepository(
         pendingRefundDao: PendingRefundDao,
-        refundRecorder: RefundRecorder
+        refundRecorder: RefundRecorder,
+        queueState: com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
     ): RefundQueueRepository {
         return RefundQueueRepositoryImpl(
             dao = pendingRefundDao,
-            recorder = refundRecorder
+            recorder = refundRecorder,
+            queueState = queueState
         )
     }
 }

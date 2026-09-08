@@ -257,6 +257,28 @@ class RecordAngelPayRefundUseCaseTest {
     }
 
     @Test
+    fun `el candado dice la verdad si la devolucion previa fue RECHAZADA - no promete que se registre sola`() = runTest {
+        // founder, N86, 7-sep-2026: con la fila FAILED permanente el texto decía «espera a que se
+        // registre», una espera infinita — el servidor ya la rechazó y nadie la reintenta.
+        val rechazada = filaEncolada().copy(
+            syncStatus = com.jaac.avoqado_tpv.core.data.local.entity.PendingRefundEntity.SYNC_STATUS_FAILED,
+            permanent = true,
+            lastError = "HTTP 400: Datos de reembolso inválidos",
+        )
+        coEvery { refundQueue.unresolvedForPayment("pay-001") } returns listOf(rechazada)
+
+        val result = runRefund(requested = "100.00", original = "100.00", alreadyRefunded = "0.00")
+
+        assertTrue(result.isFailure)
+        val msg = result.exceptionOrNull()!!.message!!
+        assertTrue(msg.contains("RECHAZÓ registrar"))
+        assertTrue(msg.contains("HTTP 400: Datos de reembolso inválidos"))
+        assertTrue(msg.contains("no se reintenta sola"))
+        assertTrue(!msg.contains("Espera a que se registre"))
+        coVerify(exactly = 0) { ledger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
     fun `validateBeforeSdk rechaza venue o merchant vacios y deja pasar lo completo`() {
         assertTrue(useCase.validateBeforeSdk("", "merchant-1") != null)
         assertTrue(useCase.validateBeforeSdk("venue-1", "") != null)

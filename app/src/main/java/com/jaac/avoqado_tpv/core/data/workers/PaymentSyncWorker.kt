@@ -4,7 +4,10 @@ import android.content.Context
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
+import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
+import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
 import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund
 import com.jaac.avoqado_tpv.features.payment.domain.repository.PaymentQueueRepository
 import com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository
@@ -244,12 +247,24 @@ class PaymentSyncWorker @AssistedInject constructor(
      * @param payment Queued payment to sync
      * @return true si quedó sincronizado (o el backend ya lo tenía), false si no
      */
-    private suspend fun syncPayment(payment: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment): Boolean {
+    private suspend fun syncPayment(payment: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment): Boolean =
+        registrarYClasificar(payment, payment.toPaymentContext(), permitirCaidaAVentaRapida = true)
+
+    /**
+     * Registra [context] y clasifica el desenlace. Recursiva **una sola vez**, y sólo por el
+     * camino de [esOrdenQueYaNoExiste]: el segundo intento entra con
+     * `permitirCaidaAVentaRapida = false`, así que no puede haber bucle.
+     */
+    private suspend fun registrarYClasificar(
+        payment: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment,
+        context: PaymentContext,
+        permitirCaidaAVentaRapida: Boolean,
+    ): Boolean {
         Timber.d("🔄 [Payment Sync] Syncing payment | ref=${payment.referenceNumber} | queueId=${payment.queueId}")
 
         val result = try {
             recordPaymentUseCase(
-                context = payment.toPaymentContext(),
+                context = context,
                 cardDetails = payment.toCardDetails(),
                 authorizationNumber = payment.authorizationNumber ?: "",
                 referenceNumber = payment.referenceNumber,
@@ -291,6 +306,27 @@ class PaymentSyncWorker @AssistedInject constructor(
             }
 
             is SyncOutcome.Permanent -> {
+                // 🔴 La orden ya no existe (borrada, migrada, de otro venue) — auditoría Codex,
+                // 2026-09-07. Hasta el 7-sep una fila Blumon con `orderId` se reproducía como venta
+                // FAST y el cobro SIEMPRE quedaba registrado; desde que vuelve a SU orden, ese mismo
+                // 404 la mata para siempre (`permanent = true`, que sólo un tap manual revierte) —
+                // incluso a un cobro de TARJETA ya capturado, o sea dinero que salió del cliente y
+                // no existe en Avoqado. Se reintenta UNA vez como venta rápida, con la MISMA llave
+                // de idempotencia y la MISMA referencia: el saldo queda registrado y lo único que
+                // se pierde es el vínculo con una orden que ya no está.
+                if (permitirCaidaAVentaRapida && esOrdenQueYaNoExiste(payment, context, result.exceptionOrNull())) {
+                    Timber.w(
+                        "⚠️ [Payment Sync] orden no encontrada al reproducir: se registró como venta rápida | " +
+                            "ref=%s | orderId=%s",
+                        payment.referenceNumber,
+                        payment.orderId,
+                    )
+                    return registrarYClasificar(
+                        payment,
+                        payment.copy(orderId = null, orderNumber = null).toPaymentContext(),
+                        permitirCaidaAVentaRapida = false,
+                    )
+                }
                 Timber.e(
                     "❌ [Payment Sync] Error permanente (no se reintenta) | ref=%s | %s",
                     payment.referenceNumber,
@@ -319,6 +355,26 @@ class PaymentSyncWorker @AssistedInject constructor(
             }
         }
     }
+
+    /**
+     * ¿El 404 que acabamos de recibir es «la orden ya no existe» sobre un cobro de ORDEN?
+     *
+     * Las TRES condiciones importan:
+     * - el contexto que se mandó era [PaymentContext.OrderPayment] (un pago rápido no tiene
+     *   orden que perder, y volver a mandarlo sería el mismo intento otra vez);
+     * - la fila NO es de AngelPay — su replay de orden es el comportamiento de siempre y no se
+     *   toca (su contexto tampoco es `OrderPayment`, así que esto es cinturón y tirantes);
+     * - el código es **404** exacto. Un 400 (payload mal formado) o un 422 (regla de negocio,
+     *   p.ej. orden ya cerrada) NO se arreglan quitando la orden: ahí sí es permanente.
+     */
+    private fun esOrdenQueYaNoExiste(
+        payment: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment,
+        context: PaymentContext,
+        error: Throwable?,
+    ): Boolean = context is PaymentContext.OrderPayment &&
+        payment.processor != ProcessorType.ANGELPAY &&
+        error is BackendHttpException &&
+        error.statusCode == 404
 
     /**
      * Marca la fila como SUCCESS — compare-and-swap con el `claimToken` que trae [payment]

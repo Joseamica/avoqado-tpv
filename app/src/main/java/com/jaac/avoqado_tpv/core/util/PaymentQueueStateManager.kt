@@ -28,22 +28,44 @@ class PaymentQueueStateManager @Inject constructor() {
      * Refresh queue counts from repository.
      * Called after enqueue, sync, reset, or reconnection.
      */
-    suspend fun refreshCounts(pendingCount: Int, failedCount: Int, pendingRefundCount: Int = 0, failedRefundCount: Int = 0) {
-        val newState = QueueState(
-            pendingCount = pendingCount,
-            failedCount = failedCount,
-            pendingRefundCount = pendingRefundCount,
-            failedRefundCount = failedRefundCount,
+    /**
+     * Refresca los CUATRO conteos de golpe. Es la forma que usa [com.jaac.avoqado_tpv.core.data.workers.PaymentSyncWorker],
+     * que cuenta las dos colas en la misma pasada.
+     *
+     * 🔴 Sin valores por default a propósito (QA Nexgo N86, 7-sep-2026): antes `pendingRefundCount`
+     * y `failedRefundCount` valían 0 si no se pasaban, y Inicio y Salud del aparato —que sólo
+     * cuentan pagos— ponían en CERO las devoluciones que el worker acababa de informar: el aviso
+     * «1 devolución rechazada» aparecía tarde y se borraba al refrescar el inicio. Quien sólo
+     * conoce una de las dos colas usa [refreshPaymentCounts] o [refreshRefundCounts].
+     */
+    suspend fun refreshCounts(pendingCount: Int, failedCount: Int, pendingRefundCount: Int, failedRefundCount: Int) {
+        publicar(
+            QueueState(
+                pendingCount = pendingCount,
+                failedCount = failedCount,
+                pendingRefundCount = pendingRefundCount,
+                failedRefundCount = failedRefundCount,
+            )
         )
+    }
+
+    /** Refresca SÓLO los pagos y conserva las devoluciones tal como estaban. */
+    suspend fun refreshPaymentCounts(pendingCount: Int, failedCount: Int) {
+        publicar(_queueState.value.copy(pendingCount = pendingCount, failedCount = failedCount))
+    }
+
+    /** Refresca SÓLO las devoluciones y conserva los pagos tal como estaban. */
+    suspend fun refreshRefundCounts(pendingRefundCount: Int, failedRefundCount: Int) {
+        publicar(_queueState.value.copy(pendingRefundCount = pendingRefundCount, failedRefundCount = failedRefundCount))
+    }
+
+    private fun publicar(newState: QueueState) {
         if (_queueState.value != newState) {
-            Timber.d("📊 [PaymentQueue] State updated: pending=$pendingCount, failed=$failedCount, refundsPending=$pendingRefundCount, refundsFailed=$failedRefundCount")
+            Timber.d("📊 [PaymentQueue] State updated: pending=${newState.pendingCount}, failed=${newState.failedCount}, refundsPending=${newState.pendingRefundCount}, refundsFailed=${newState.failedRefundCount}")
             _queueState.value = newState
         }
     }
 
-    /**
-     * Reset to empty state (e.g., on logout)
-     */
     fun reset() {
         _queueState.value = QueueState()
     }

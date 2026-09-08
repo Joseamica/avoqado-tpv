@@ -862,13 +862,12 @@ fun AppNavigation(
                     // Reset FAILED→PENDING (incl. permanent). onResult SIEMPRE dispara, aun
                     // con 0: sin eso, un toque que no encontró nada dejaba al operador sin
                     // ninguna señal de que algo pasó.
+                    val alertaDeCola = tappedAlert as
+                        com.jaac.avoqado_tpv.core.presentation.viewmodels.DeviceAlert.PendingPayments
                     deviceHealthViewModel.retryFailedPayments { resetCount ->
-                        Toast.makeText(
-                            context,
-                            if (resetCount == 0) "No hay pagos pendientes de reintentar en este momento"
-                            else "Reintentando $resetCount pago(s)...",
-                            Toast.LENGTH_SHORT
-                        ).show()
+                        // El texto sabe de devoluciones: «1 devolución rechazada» en el banner ya no
+                        // contesta «No hay pagos pendientes» (ver PendingPayments.mensajeTrasReintentar).
+                        Toast.makeText(context, alertaDeCola.mensajeTrasReintentar(resetCount), Toast.LENGTH_SHORT).show()
                     }
                     PaymentSyncScheduler.runNow(context) // no esperar los 15 min del worker
                 } else {
@@ -2307,8 +2306,12 @@ fun AppNavigation(
                                             val aviso = when (backendError) {
                                                 is com.jaac.avoqado_tpv.features.payment.domain.usecase.RefundQueuedException ->
                                                     if (backendError.permanent) {
+                                                        // Sin sync: una fila rechazada no se reproduce, la libera una persona.
                                                         "$message\n⚠️ El servidor rechazó el registro: ${backendError.reason}. NO vuelvas a reembolsar. Avisa al supervisor con la referencia $referenceNumber."
                                                     } else {
+                                                        // 🔔 Sync inmediato (QA Nexgo N86, 7-sep-2026): el cobro encolado ya lo pedía;
+                                                        // la devolución esperaba los 15 min del worker aunque el servidor volviera antes.
+                                                        runCatching { PaymentSyncScheduler.runNow(context) }
                                                         "$message\nℹ️ Avoqado no pudo registrarla de inmediato: quedó guardada en este equipo y se completará sola. NO vuelvas a reembolsar."
                                                     }
                                                 is com.jaac.avoqado_tpv.features.payment.domain.usecase.RefundLostException ->

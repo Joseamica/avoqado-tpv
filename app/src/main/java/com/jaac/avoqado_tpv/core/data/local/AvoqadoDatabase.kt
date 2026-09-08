@@ -153,7 +153,13 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // ⭐ Version 32 (7-sep-2026): `remote_payment_requests`, el inbox durable del acuse de recibo que
     // vivía en `develop` como v30. Al juntar las dos ramas se renumera a 32 (MIGRATION_31_32): la flota
     // en la calle va de 2.7.0 a 2.8.6 (v31 como mucho) y nadie corrió el v30 de `develop`.
-    version = 32,
+    //
+    // ⭐ Version 33 (7-sep-2026): cuatro columnas de SPLIT en `pending_payments`. Una fila PERPRODUCT
+    // se reproducía como FULLPAYMENT sin productos y otra terminal podía volver a cobrar el mismo
+    // artículo (auditoría Codex P1-4). Aditiva y nullable: las filas que ya están en la calle —que
+    // pueden contener dinero YA cobrado y sin registrar— se leen como FULLPAYMENT, exactamente el
+    // comportamiento que tenían antes.
+    version = 33,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -1840,6 +1846,46 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                     "CREATE INDEX IF NOT EXISTS index_remote_payment_requests_created_at " +
                         "ON remote_payment_requests (created_at)",
                 )
+            }
+        }
+
+        /**
+         * v32 → v33 — el SPLIT de la orden sobrevive a la cola offline.
+         *
+         * `pending_payments` no guardaba `splitType`/`paidProductIds`, así que un cobro PERPRODUCT
+         * encolado sin red se reproducía como FULLPAYMENT **sin productos**. El servidor sólo crea
+         * la `PaymentAllocation` por artículo cuando le llegan `PERPRODUCT` + `paidProductIds`
+         * (`payment.tpv.service.ts`), de modo que la orden se quedaba con el artículo marcado como
+         * NO pagado y otra terminal podía cobrarlo por segunda vez (auditoría Codex P1-4, 7-sep-2026).
+         *
+         * 🔴 Cada `ALTER TABLE` va protegido por `PRAGMA table_info`: **SQLite no soporta
+         * `ADD COLUMN IF NOT EXISTS`**, y un `ALTER` sobre una columna que ya existe revienta con
+         * «duplicate column name» EN EL ARRANQUE — el crash-loop del que no se sale sin desinstalar,
+         * y desinstalar borra `pending_payments`, o sea dinero ya cobrado y todavía sin registrar.
+         * Las cuatro son nullable y sin default: aditivas puras, ninguna fila existente se toca.
+         */
+        val MIGRATION_32_33 = object : Migration(32, 33) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                fun columnaExiste(tabla: String, columna: String): Boolean {
+                    db.query("PRAGMA table_info($tabla)").use { cursor ->
+                        val indiceNombre = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(indiceNombre) == columna) return true
+                        }
+                    }
+                    return false
+                }
+
+                fun agregarColumnaSiFalta(columna: String, tipo: String) {
+                    if (!columnaExiste("pending_payments", columna)) {
+                        db.execSQL("ALTER TABLE pending_payments ADD COLUMN $columna $tipo")
+                    }
+                }
+
+                agregarColumnaSiFalta("split_type", "TEXT")
+                agregarColumnaSiFalta("paid_product_ids", "TEXT")
+                agregarColumnaSiFalta("equal_parts_party_size", "INTEGER")
+                agregarColumnaSiFalta("equal_parts_payed_for", "INTEGER")
             }
         }
     }

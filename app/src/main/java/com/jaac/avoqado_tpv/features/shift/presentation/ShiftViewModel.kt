@@ -128,6 +128,7 @@ class ShiftViewModel @Inject constructor(
         refreshShiftPermissions()
         loadCurrentShift()
         listenToConnectionRestored()
+        observeShiftChanges()
         observeConnectivity()
         timber.log.Timber.d("[PERF] ShiftVM.init ALL LAUNCHED")
     }
@@ -236,6 +237,22 @@ class ShiftViewModel @Inject constructor(
      * - Syncing shift closures made by other terminals
      * - Updating shift totals (sales, cash drawer)
      */
+    /**
+     * 🔔 Otra pantalla abrió o cerró el turno (QA Nexgo N86, 7-sep-2026). Cada pantalla tiene su
+     * propio `ShiftViewModel` —el de Inicio vive en el back-stack de Home— y el de «Turnos de caja»
+     * abría la caja sin que Inicio se enterara: seguía en «Sin turno de caja» y bloqueaba Cobrar
+     * hasta reiniciar la app. El repositorio avisa; aquí se recarga del servidor. La instancia que
+     * hizo el cambio también recibe el aviso: `loadCurrentShift` no parpadea si ya tiene turno.
+     */
+    private fun observeShiftChanges() {
+        viewModelScope.launch {
+            shiftRepository.shiftChanges.collect {
+                Timber.i("🔄 [ShiftViewModel] El turno cambió desde otra pantalla — recargando")
+                loadCurrentShift()
+            }
+        }
+    }
+
     private fun listenToConnectionRestored() {
         viewModelScope.launch {
             connectionEventManager.connectionRestoredEvents.collect { event ->

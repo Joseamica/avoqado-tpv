@@ -125,12 +125,7 @@ class RecordAngelPayRefundUseCase @Inject constructor(
         val sinRegistrar = runCatching { refundQueueRepository.unresolvedForPayment(originalPaymentId) }.getOrDefault(emptyList())
         if (sinRegistrar.isNotEmpty()) {
             Timber.w("⛔ [AngelPay Direct Refund] Bloqueado: el pago %s ya tiene %s devolución(es) sin registrar", originalPaymentId, sinRegistrar.size)
-            return Result.failure(
-                IllegalStateException(
-                    "Este pago ya tiene una devolución de $${sinRegistrar.first().amount.setScale(2).toPlainString()} hecha en la terminal " +
-                        "y todavía sin registrar en Avoqado. No se hizo otra. Espera a que se registre (o revísala en Caja)."
-                )
-            )
+            return Result.failure(IllegalStateException(mensajeDelCandado(sinRegistrar.first())))
         }
 
         // 🔑 La llave nace AQUÍ, ANTES del SDK, y viaja con la aprobación hasta `recordInBackend`: es la
@@ -779,6 +774,25 @@ class RecordAngelPayRefundUseCase @Inject constructor(
     }
 
     companion object {
+        /**
+         * Texto del candado contra un SEGUNDO reembolso del mismo pago. Distingue lo que puede
+         * pasar con la devolución que ya existe (founder, N86, 7-sep-2026): una fila PENDING «se
+         * registra sola»; una RECHAZADA por el servidor (`permanent`) **no se reintenta nunca** —
+         * decirle al cajero «espera a que se registre» sería una espera infinita. Ahí lo honesto es
+         * el motivo del rechazo y a quién avisar.
+         */
+        fun mensajeDelCandado(fila: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund): String {
+            val monto = fila.amount.setScale(2).toPlainString()
+            return if (fila.permanent) {
+                val motivo = fila.lastError?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""
+                "Este pago ya tiene una devolución de $$monto hecha en la terminal que Avoqado RECHAZÓ registrar$motivo. " +
+                    "No se hizo otra y no se reintenta sola: avisa al supervisor para registrarla en Avoqado."
+            } else {
+                "Este pago ya tiene una devolución de $$monto hecha en la terminal y todavía sin registrar en Avoqado. " +
+                    "No se hizo otra. Espera a que se registre (o revísala en Caja)."
+            }
+        }
+
         /**
          * Shown when the operator asks for a partial AngelPay refund. Kept as a
          * constant so tests can distinguish the guard from downstream failures.

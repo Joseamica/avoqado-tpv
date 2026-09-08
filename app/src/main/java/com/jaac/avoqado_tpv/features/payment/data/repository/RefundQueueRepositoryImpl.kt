@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.payment.data.repository
 
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingRefundDao
+import com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
 import com.jaac.avoqado_tpv.features.payment.data.repository.RefundRecorder
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardBrand
 import com.jaac.avoqado_tpv.features.payment.domain.model.CardDetails
@@ -23,6 +24,8 @@ import javax.inject.Singleton
 class RefundQueueRepositoryImpl @Inject constructor(
     private val dao: PendingRefundDao,
     private val recorder: RefundRecorder,
+    /** El banner del aparato: quien escribe la cola publica sus conteos (ver [publicarConteos]). */
+    private val queueState: PaymentQueueStateManager,
 ) : RefundQueueRepository {
 
     override suspend fun enqueue(refund: QueuedRefund): Result<Unit> = withContext(NonCancellable) {
@@ -37,6 +40,7 @@ class RefundQueueRepositoryImpl @Inject constructor(
             } else {
                 Timber.i("💸 [RefundQueue] encolado | key=${refund.idempotencyKey} estado=${refund.syncStatus}")
             }
+            publicarConteos()
             Unit
         }.onFailure {
             // Si ni siquiera se pudo escribir en Room, el reembolso se pierde. Es lo peor que puede
@@ -110,7 +114,7 @@ class RefundQueueRepositoryImpl @Inject constructor(
         dao.blockingForVenue(venueId).map { it.toDomain() }
 
     override suspend fun acknowledge(idempotencyKey: String, staffId: String?): Int =
-        dao.acknowledge(idempotencyKey, by = staffId, at = System.currentTimeMillis())
+        dao.acknowledge(idempotencyKey, by = staffId, at = System.currentTimeMillis()).also { publicarConteos() }
 
     override suspend fun claimBatch(limit: Int): List<QueuedRefund> {
         val ahora = System.currentTimeMillis()
@@ -123,13 +127,24 @@ class RefundQueueRepositoryImpl @Inject constructor(
     }
 
     override suspend fun markSuccess(idempotencyKey: String, token: String): Int =
-        dao.markSuccess(idempotencyKey, token)
+        dao.markSuccess(idempotencyKey, token).also { publicarConteos() }
 
     override suspend fun release(idempotencyKey: String, token: String, retryCount: Int, error: String): Int =
-        dao.release(idempotencyKey, token, retryCount, error)
+        dao.release(idempotencyKey, token, retryCount, error).also { publicarConteos() }
 
     override suspend fun markPermanentlyFailed(idempotencyKey: String, token: String, error: String): Int =
-        dao.markPermanentlyFailed(idempotencyKey, token, error)
+        dao.markPermanentlyFailed(idempotencyKey, token, error).also { publicarConteos() }
+
+    /**
+     * 🔔 El banner del aparato se entera EN EL ACTO (QA Nexgo N86, 7-sep-2026). Antes sólo el
+     * `PaymentSyncWorker` de 15 min informaba las devoluciones: una devolución encolada sin red era
+     * invisible hasta la siguiente tanda, y el refresco de Inicio la borraba. Quien escribe la cola
+     * publica sus conteos; contar nunca puede tirar la escritura que ya ocurrió.
+     */
+    private suspend fun publicarConteos() {
+        runCatching { queueState.refreshRefundCounts(dao.getPendingCount(), dao.getFailedCount()) }
+            .onFailure { Timber.w(it, "💸 [RefundQueue] No se pudieron publicar los conteos al banner") }
+    }
 
     override suspend fun getPendingCount(): Int = dao.getPendingCount()
 

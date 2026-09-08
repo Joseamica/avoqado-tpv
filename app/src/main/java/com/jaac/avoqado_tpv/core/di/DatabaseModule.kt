@@ -122,7 +122,8 @@ object DatabaseModule {
                 // árbol que viajó en el APK Nexgo 2.8.5). Detalle en `AvoqadoDatabase`.
                 AvoqadoDatabase.MIGRATION_29_31,
                 AvoqadoDatabase.MIGRATION_30_31,
-                AvoqadoDatabase.MIGRATION_31_32   // 📡 inbox durable POS → TPV (acuse de recibo, nexgo-v2.9.0)
+                AvoqadoDatabase.MIGRATION_31_32,  // 📡 inbox durable POS → TPV (acuse de recibo, nexgo-v2.9.0)
+                AvoqadoDatabase.MIGRATION_32_33   // ⭐ el split de la orden sobrevive a la cola offline
             )
 
             // 🛡️ NO blanket destructive fallback (removed 2026-06-12).

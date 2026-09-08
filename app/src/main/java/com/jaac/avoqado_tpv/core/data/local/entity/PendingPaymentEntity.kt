@@ -134,6 +134,25 @@ data class PendingPaymentEntity(
     @ColumnInfo(name = "serial_numbers")
     val serialNumbers: String? = null,
 
+    // ⭐ SPLIT DE LA ORDEN (v33, 2026-09-07) — sin estas cuatro columnas una fila PERPRODUCT
+    // se reproducía como FULLPAYMENT SIN productos: el servidor sólo crea la PaymentAllocation
+    // por artículo cuando le llegan `PERPRODUCT` + `paidProductIds` (payment.tpv.service.ts),
+    // así que otra terminal seguía viendo el producto como no pagado y podía cobrarlo otra vez.
+    // NULL = fila anterior a la v33 (o pago sin split): se lee como FULLPAYMENT, que es
+    // exactamente lo que esas filas hacían antes.
+    @ColumnInfo(name = "split_type")
+    val splitType: String? = null, // "PERPRODUCT", "EQUALPARTS", "CUSTOMAMOUNT", "FULLPAYMENT"
+
+    // CSV de ids de producto, MISMA codificación que `serial_numbers` (los cuid no llevan coma).
+    @ColumnInfo(name = "paid_product_ids")
+    val paidProductIds: String? = null,
+
+    @ColumnInfo(name = "equal_parts_party_size")
+    val equalPartsPartySize: Int? = null,
+
+    @ColumnInfo(name = "equal_parts_payed_for")
+    val equalPartsPayedFor: Int? = null,
+
     // Metadata for retry logic
     @ColumnInfo(name = "created_at")
     val createdAt: Long, // Unix timestamp (when payment was processed, not when queued)

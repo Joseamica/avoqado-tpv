@@ -4,9 +4,11 @@ import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingPaymentDao
 import com.jaac.avoqado_tpv.core.data.local.entity.PendingPaymentEntity
 import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment
+import com.jaac.avoqado_tpv.features.payment.domain.model.SplitType
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import io.mockk.slot
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -206,5 +208,66 @@ class PendingPaymentEnqueueTest {
         // se habría perdido sin dejar fila en la cola.
         assertThat(insertCompleted).isTrue()
         coVerify(exactly = 1) { dao.insert(any()) }
+    }
+
+    // ------------------------------------------------------------------
+    // El SPLIT sobrevive la ida y vuelta por Room (auditoría Codex P1-4, 2026-09-07).
+    //
+    // Sin estas cuatro columnas, una fila PERPRODUCT se reproducía como FULLPAYMENT sin
+    // productos: el servidor no creaba la PaymentAllocation por artículo y otra terminal
+    // podía volver a cobrar el mismo producto.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `el split va y vuelve por Room sin perder tipo ni productos`() = runTest {
+        val fila = slot<PendingPaymentEntity>()
+        coEvery { dao.insert(capture(fila)) } returns 42L
+
+        val original = queuedPayment(reference = "CASH-9f3a2c1e5b7d4a60").copy(
+            orderId = "order-9",
+            orderNumber = "SN00396",
+            splitType = SplitType.PERPRODUCT,
+            paidProductIds = listOf("item-A", "item-B"),
+            equalPartsPartySize = 4,
+            equalPartsPayedFor = 1,
+        )
+        assertThat(repo.enqueue(original).isSuccess).isTrue()
+
+        // La entidad que se guardó lleva las cuatro columnas...
+        assertThat(fila.captured.splitType).isEqualTo("PERPRODUCT")
+        assertThat(fila.captured.paidProductIds).isEqualTo("item-A,item-B")
+        assertThat(fila.captured.equalPartsPartySize).isEqualTo(4)
+        assertThat(fila.captured.equalPartsPayedFor).isEqualTo(1)
+
+        // ...y al releerla vuelve el mismo dominio.
+        coEvery { dao.getAllPending() } returns listOf(fila.captured)
+        val devuelta = repo.getAllPending().single()
+        assertThat(devuelta.splitType).isEqualTo(SplitType.PERPRODUCT)
+        assertThat(devuelta.paidProductIds).containsExactly("item-A", "item-B").inOrder()
+        assertThat(devuelta.equalPartsPartySize).isEqualTo(4)
+        assertThat(devuelta.equalPartsPayedFor).isEqualTo(1)
+    }
+
+    @Test
+    fun `una fila vieja sin columnas de split se lee como FULLPAYMENT`() = runTest {
+        // Filas escritas antes de la v33: `split_type` llega NULL y no puede convertirse
+        // en un pago por producto sin productos, que es lo que el servidor no sabría cerrar.
+        coEvery { dao.getAllPending() } returns listOf(entity(reference = "000000111111", status = "PENDING"))
+
+        val devuelta = repo.getAllPending().single()
+
+        assertThat(devuelta.splitType).isEqualTo(SplitType.FULLPAYMENT)
+        assertThat(devuelta.paidProductIds).isEmpty()
+        assertThat(devuelta.equalPartsPartySize).isNull()
+        assertThat(devuelta.equalPartsPayedFor).isNull()
+    }
+
+    @Test
+    fun `un split_type desconocido no tumba la lectura - cae a FULLPAYMENT`() = runTest {
+        coEvery { dao.getAllPending() } returns listOf(
+            entity(reference = "000000111112", status = "PENDING").copy(splitType = "MODO_DEL_FUTURO")
+        )
+
+        assertThat(repo.getAllPending().single().splitType).isEqualTo(SplitType.FULLPAYMENT)
     }
 }

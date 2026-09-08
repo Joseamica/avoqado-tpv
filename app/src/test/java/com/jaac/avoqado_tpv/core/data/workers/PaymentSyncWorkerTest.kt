@@ -309,7 +309,7 @@ class PaymentSyncWorkerTest {
         val useCase = mockk<RecordPaymentUseCase>()
         val stateManager = PaymentQueueStateManager()
         // Estado viejo sembrado: el banner cree que hay 2 pendientes.
-        stateManager.refreshCounts(pendingCount = 2, failedCount = 0)
+        stateManager.refreshPaymentCounts(pendingCount = 2, failedCount = 0)
 
         val payment = queuedPayment(reference = "ref-sync-ok")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
@@ -374,8 +374,15 @@ class PaymentSyncWorkerTest {
         reference: String,
         retryCount: Int = 0,
         queueId: Long = 1L,
+        orderId: String? = null,
+        processor: com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType =
+            com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.BLUMON,
+        idempotencyKey: String? = null,
     ): QueuedPayment = QueuedPayment(
         queueId = queueId,
+        orderId = orderId,
+        processor = processor,
+        idempotencyKey = idempotencyKey,
         referenceNumber = reference,
         venueId = "venue-1",
         staffId = "staff-1",
@@ -420,4 +427,100 @@ class PaymentSyncWorkerTest {
         syncStatus = PendingPaymentEntity.SYNC_STATUS_SYNCING,
         claimToken = "claim-token-batch",
     )
+
+    // ------------------------------------------------------------------
+    // Una orden que ya no existe NO mata el cobro (auditoría Codex P2, 2026-09-07).
+    //
+    // Desde que una fila Blumon con `orderId` se reproduce como OrderPayment, un 404 de la
+    // orden (borrada, migrada, de otro venue) la marcaba PERMANENTE: el cobro —incluso uno
+    // de TARJETA ya capturada— se quedaba sin `Payment`. Antes ese dinero se registraba
+    // como venta rápida, y eso es lo que hay que conservar.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `un 404 de la orden al reproducir cae a venta rapida con la misma llave y referencia`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-404", orderId = "order-borrada", idempotencyKey = "k-404")
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+
+        val contextos = mutableListOf<com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext>()
+        val referencias = mutableListOf<String>()
+        coEvery { useCase(capture(contextos), any(), any(), capture(referencias)) } returnsMany listOf(
+            Result.failure(BackendHttpException(404, "Order not found")),
+            Result.success(
+                com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt(
+                    paymentId = "pay-1", receiptUrl = "https://r/pay-1", accessKey = "k",
+                    amount = BigDecimal("100.00"), tipAmount = BigDecimal("10.00"),
+                ),
+            ),
+        )
+
+        buildWorker(repo, useCase).doWork()
+
+        coVerify(exactly = 2) { useCase(any(), any(), any(), any()) }
+        assertThat(contextos[0]).isInstanceOf(
+            com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext.OrderPayment::class.java
+        )
+        assertThat(contextos[1]).isInstanceOf(
+            com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext.FastPayment::class.java
+        )
+        // La MISMA llave y la MISMA referencia: sin eso, el segundo intento sería un cobro nuevo.
+        assertThat(contextos[1].idempotencyKey).isEqualTo("k-404")
+        assertThat(referencias[0]).isEqualTo("ref-404")
+        assertThat(referencias[1]).isEqualTo("ref-404")
+        // La fila se cierra bien, no como fallo permanente.
+        coVerify(exactly = 1) { repo.markSynced(queueId = payment.queueId, token = any()) }
+        coVerify(exactly = 0) { repo.markPermanentlyFailed(any(), any(), any()) }
+    }
+
+    @Test
+    fun `si la venta rapida tambien falla con 404, la fila SI queda permanente (un solo reintento)`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-404b", orderId = "order-borrada")
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any()) } returns
+            Result.failure(BackendHttpException(404, "Venue not found"))
+
+        buildWorker(repo, useCase).doWork()
+
+        // Exactamente DOS: el de orden y UN reintento como venta rápida. Nunca un bucle.
+        coVerify(exactly = 2) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { repo.markPermanentlyFailed(queueId = payment.queueId, token = any(), error = any()) }
+    }
+
+    @Test
+    fun `un 400 de una fila de ORDEN sigue siendo permanente - no se reintenta como venta rapida`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-400", orderId = "order-9")
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any()) } returns
+            Result.failure(BackendHttpException(400, "payload mal formado"))
+
+        buildWorker(repo, useCase).doWork()
+
+        coVerify(exactly = 1) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { repo.markPermanentlyFailed(queueId = payment.queueId, token = any(), error = any()) }
+    }
+
+    @Test
+    fun `una fila ANGELPAY con 404 NUNCA cae a venta rapida - su replay de orden no cambia`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(
+            reference = "ref-ap-404",
+            orderId = "order-9",
+            processor = com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.ANGELPAY,
+        )
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any()) } returns
+            Result.failure(BackendHttpException(404, "Order not found"))
+
+        buildWorker(repo, useCase).doWork()
+
+        coVerify(exactly = 1) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { repo.markPermanentlyFailed(queueId = payment.queueId, token = any(), error = any()) }
+    }
 }

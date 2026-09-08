@@ -413,7 +413,7 @@ class DeviceHealthViewModelTest {
 
     @Test
     fun `pending payments alert when queue has pending items`() = runTest(testDispatcher) {
-        paymentQueueStateManager.refreshCounts(pendingCount = 3, failedCount = 0)
+        paymentQueueStateManager.refreshPaymentCounts(pendingCount = 3, failedCount = 0)
 
         val viewModel = createViewModel()
 
@@ -428,7 +428,7 @@ class DeviceHealthViewModelTest {
 
     @Test
     fun `pending payments alert shows failed count when failures exist`() = runTest(testDispatcher) {
-        paymentQueueStateManager.refreshCounts(pendingCount = 1, failedCount = 2)
+        paymentQueueStateManager.refreshPaymentCounts(pendingCount = 1, failedCount = 2)
 
         val viewModel = createViewModel()
 
@@ -453,7 +453,7 @@ class DeviceHealthViewModelTest {
 
     @Test
     fun `pending payments alert is dismissable`() = runTest(testDispatcher) {
-        paymentQueueStateManager.refreshCounts(pendingCount = 2, failedCount = 0)
+        paymentQueueStateManager.refreshPaymentCounts(pendingCount = 2, failedCount = 0)
 
         val viewModel = createViewModel()
 
@@ -539,5 +539,32 @@ class DeviceHealthViewModelTest {
         assertThat(paymentQueueStateManager.queueState.value.pendingCount).isEqualTo(5)
         assertThat(paymentQueueStateManager.queueState.value.failedCount).isEqualTo(1)
         viewModel.viewModelScope.cancel()
+    }
+    // ── «Reintentar» con devoluciones en el banner (founder, N86, 7-sep-2026) ──────────────
+    // Con «1 devolución rechazada» el botón contestaba «No hay pagos pendientes de reintentar».
+
+    @Test
+    fun `mensaje tras reintentar - pagos reencolados mandan sobre todo lo demas`() {
+        val alerta = DeviceAlert.PendingPayments(pendingCount = 0, failedCount = 2, pendingRefundCount = 1, failedRefundCount = 1)
+        assertThat(alerta.mensajeTrasReintentar(pagosReencolados = 2)).isEqualTo("Reintentando 2 pago(s)...")
+    }
+
+    @Test
+    fun `mensaje tras reintentar - devoluciones PENDING se reintentan solas y lo dice`() {
+        val alerta = DeviceAlert.PendingPayments(pendingCount = 0, failedCount = 0, pendingRefundCount = 1, failedRefundCount = 0)
+        assertThat(alerta.mensajeTrasReintentar(pagosReencolados = 0)).isEqualTo("Reintentando 1 devolución sin registrar...")
+    }
+
+    @Test
+    fun `mensaje tras reintentar - una devolucion RECHAZADA no se reintenta, manda a Caja`() {
+        val alerta = DeviceAlert.PendingPayments(pendingCount = 0, failedCount = 0, pendingRefundCount = 0, failedRefundCount = 1)
+        assertThat(alerta.mensajeTrasReintentar(pagosReencolados = 0))
+            .isEqualTo("Las devoluciones rechazadas no se reintentan: revísalas en Caja al cerrar el turno")
+    }
+
+    @Test
+    fun `mensaje tras reintentar - sin nada que reintentar lo dice como antes`() {
+        val alerta = DeviceAlert.PendingPayments(pendingCount = 0, failedCount = 0)
+        assertThat(alerta.mensajeTrasReintentar(pagosReencolados = 0)).isEqualTo("No hay pagos pendientes de reintentar en este momento")
     }
 }

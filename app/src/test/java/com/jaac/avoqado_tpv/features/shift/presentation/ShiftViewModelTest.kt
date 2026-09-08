@@ -61,6 +61,7 @@ class ShiftViewModelTest {
     // Flows we control
     private val fakeConnectionRestoredEvents = MutableSharedFlow<ConnectionRestoredEvent>()
     private val fakeNetworkStatus = MutableSharedFlow<NetworkStatus>()
+    private val fakeShiftChanges = MutableSharedFlow<Unit>()
 
     private val testShift = Shift(
         id = "shift-123",
@@ -102,6 +103,7 @@ class ShiftViewModelTest {
         every { secureStorage.isCashReconciliationEnabled() } returns false
         every { connectionEventManager.connectionRestoredEvents } returns fakeConnectionRestoredEvents
         every { connectivityObserver.observe() } returns fakeNetworkStatus
+        every { shiftRepository.shiftChanges } returns fakeShiftChanges
 
         // Default permissions: all allowed.
         // 🔴 Nombres EXACTOS del server (`tpv-shifts:*` = operar el turno de ESTA caja).
@@ -697,5 +699,22 @@ class ShiftViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 0) { refundQueueRepository.acknowledge(any(), any()) }
+    }
+    // ── Otra pantalla abre o cierra el turno (QA Nexgo N86, 7-sep-2026) ───────────────────
+    // Cada pantalla tiene su propio ShiftViewModel: el de «Turnos de caja» abría la caja y el
+    // de Inicio seguía en «Sin turno de caja» (bloqueando Cobrar) hasta reiniciar la app.
+
+    @Test
+    fun `cuando el repositorio avisa que el turno cambio, el ViewModel recarga el turno`() = runTest {
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+        coVerify(exactly = 1) { shiftRepository.getCurrentShift("venue-123") }
+
+        coEvery { shiftRepository.getCurrentShift("venue-123") } returns Result.Success(testShift)
+        fakeShiftChanges.emit(Unit)
+        advanceUntilIdle()
+
+        coVerify(exactly = 2) { shiftRepository.getCurrentShift("venue-123") }
+        assertThat(viewModel.state.value).isInstanceOf(ShiftState.ShiftActive::class.java)
     }
 }

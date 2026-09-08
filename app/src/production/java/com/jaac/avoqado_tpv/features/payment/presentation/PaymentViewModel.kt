@@ -990,6 +990,11 @@ class PaymentViewModel @Inject constructor(
 
         if (durable) {
             paymentAttemptLedger.markDeliveredToQueue(queued.idempotencyKey)
+            // 🔔 Sync inmediato (QA Nexgo N86, 7-sep-2026): el COBRO encolado ya lo pedía; la
+            // DEVOLUCIÓN esperaba al periódico de 15 min aunque el servidor volviera antes, y el
+            // corte cuadraba de más mientras tanto. Sólo cuando hay algo que reintentar: una fila
+            // rechazada (permanente) no se reproduce, la libera una persona.
+            if (!permanent) runCatching { PaymentSyncScheduler.runNow(appContext) }
             // Se relee `_state.value` FRESCO: el cajero pudo haber navegado mientras tanto.
             val next = if (permanent) {
                 buildRefundRejectedState(_state.value, referenceNumber, reason)
@@ -4942,6 +4947,36 @@ class PaymentViewModel @Inject constructor(
                 currentVenueId = venueId
                 currentStaffId = staffId
 
+                // 🔴 INTENTO CONGELADO ANTES DEL PRIMER AWAIT (auditoría Codex, 2026-09-07).
+                // La ronda 1 congeló la LLAVE (`attemptId`) y ahí se quedó: monto, propina, orden,
+                // split, seriales, portabilidad y el enlace del arbitraje se leían DESPUÉS de esperar
+                // el turno. `resetPayment()` a media espera pone la sesión en $0.00 y deja
+                // `_serialNumber`/`_socketRequestId` en null ⇒ el POST salía con $0, sin seriales o
+                // sin cerrar la solicitud del POS. Todo se lee AHORA, de una vez; lo único que se
+                // añade después es el turno, que es lo único que de verdad hay que ir a buscar.
+                val orderIdForFlow = getOrderIdForFlow()
+                val orderNumberCongelado = getOrderNumberForFlow()
+                val solicitudDeTerminalCongelada = _socketRequestId
+                val aparatoCongelado = secureStorage.getSerialNumber()
+                val portabilidadCongelada = _isPortabilidad.value
+                val serialesCongelados = listOfNotNull(_serialNumber)
+                // 🛡️ `.copy(idempotencyKey = attemptId)`: los helpers la leen de la sesión, que
+                // pudo vaciarse mientras este toque esperaba. La llave capturada al arrancar es
+                // la única que sobrevive a un reset a media espera.
+                val contextoCongelado: PaymentContext = if (orderIdForFlow != null) {
+                    buildOrderPaymentContext(
+                        staffId = currentStaffId!!,
+                        merchantAccountId = null,  // ✅ null = cash (no processor)
+                        blumonSerial = ""  // No Blumon SDK for cash payments
+                    ).copy(idempotencyKey = attemptId)
+                } else {
+                    buildFastPaymentContext(
+                        staffId = currentStaffId!!,
+                        merchantAccountId = null,  // ✅ null = cash (no processor)
+                        blumonSerial = ""  // No Blumon SDK for cash payments
+                    ).copy(idempotencyKey = attemptId)
+                }
+
                 // ⭐ CRITICAL: Validate shift is open before processing payment (Square/Toast pattern)
                 // Without an open shift, cash reconciliation is impossible
                 // ⚡ Turnos desactivados = CERO red. Este fetch corria ANTES de preguntar
@@ -5017,8 +5052,8 @@ class PaymentViewModel @Inject constructor(
                         tipAmount = currentState.tipAmount,
                         totalAmount = currentState.totalAmount,
                         rating = currentState.rating,
-                        orderId = getOrderIdForFlow(),
-                        orderNumber = getOrderNumberForFlow(),
+                        orderId = orderIdForFlow,
+                        orderNumber = orderNumberCongelado,
                         printerWarning = printerWarning
                     )
 
@@ -5038,22 +5073,13 @@ class PaymentViewModel @Inject constructor(
                 // Create payment context for cash
                 // ✅ RECONCILIATION: null merchantAccountId = proper separation (cash has no processor cost)
                 // 🆕 Order vs Fast: If orderId present, create OrderPayment (triggers inventory deduction)
-                val orderIdForFlow = getOrderIdForFlow()
-                // 🛡️ `.copy(idempotencyKey = attemptId)`: los helpers la leen de la sesión, que
-                // pudo vaciarse mientras este toque esperaba. La llave capturada al arrancar es
-                // la única que sobrevive a un reset a media espera.
-                val context = if (orderIdForFlow != null) {
-                    buildOrderPaymentContext(
-                        staffId = currentStaffId!!,
-                        merchantAccountId = null,  // ✅ null = cash (no processor)
-                        blumonSerial = ""  // No Blumon SDK for cash payments
-                    ).copy(idempotencyKey = attemptId)
-                } else {
-                    buildFastPaymentContext(
-                        staffId = currentStaffId!!,
-                        merchantAccountId = null,  // ✅ null = cash (no processor)
-                        blumonSerial = ""  // No Blumon SDK for cash payments
-                    ).copy(idempotencyKey = attemptId)
+                // El TURNO es lo único que se resuelve por red, así que es lo único que se añade
+                // al intento congelado arriba. Reconstruir el contexto aquí volvería a leer la
+                // sesión viva y reabriría el hueco de la auditoría.
+                val context: PaymentContext = when (contextoCongelado) {
+                    is PaymentContext.OrderPayment -> contextoCongelado.copy(shiftId = currentShiftId)
+                    is PaymentContext.FastPayment -> contextoCongelado.copy(shiftId = currentShiftId)
+                    else -> contextoCongelado
                 }
 
                 // Referencia derivada de la LLAVE del intento (no del reloj): un reintento del
@@ -5094,7 +5120,7 @@ class PaymentViewModel @Inject constructor(
                         cardDetails = CardDetails.CASH,
                         referenceNumber = cashReference,
                         orderId = orderIdForFlow,  // 🆕 Order ID (for loading order items in success screen)
-                        orderNumber = getOrderNumberForFlow(),  // 🆕 Order number (for display)
+                        orderNumber = orderNumberCongelado,  // 🆕 Order number (for display)
                         orderItems = orderData?.items,  // 🆕 Order items (for displaying itemized receipt)
                         remainingBalance = orderData?.remainingBalance,  // ⭐ NEW: For split payment "Continuar pagando" button
                         discountAmount = orderData?.discountAmount?.toPlainString()  // 🆕 Discount for receipt printing
@@ -5104,6 +5130,13 @@ class PaymentViewModel @Inject constructor(
                 }.onFailure { error ->
                     Timber.e(error, "❌ [Cash Payment] Failed to record payment to backend")
                     Timber.w("💾 [Offline Queue] Queueing CASH payment for retry | ref=$cashReference")
+
+                    // ⭐ SPLIT DE LA ORDEN (v33, 2026-09-07). Sale del MISMO contexto que se le
+                    // mandó (o se intentó mandar) al servidor, nunca de la sesión viva: para
+                    // cuando esta fila se arma, el cajero ya pudo haber tocado otra cosa.
+                    // Reproducir un PERPRODUCT como FULLPAYMENT sin productos deja el artículo
+                    // marcado como NO pagado y otra terminal puede cobrarlo dos veces.
+                    val splitDelIntento = context as? PaymentContext.OrderPayment
 
                     val queuedPayment = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
                         queueId = 0, // Auto-generate
@@ -5123,7 +5156,7 @@ class PaymentViewModel @Inject constructor(
                         // 📡 Arbitration link (see the card enqueue site): a socket-dispatched
                         // request settled in CASH still moved money — the replay must close
                         // the TerminalPaymentRequest row or the slot stays held (UNKNOWN).
-                        terminalPaymentRequestId = _socketRequestId,
+                        terminalPaymentRequestId = solicitudDeTerminalCongelada,
                         // 🔴 La fila de EFECTIVO nacía SIN llave, SIN orden y SIN seriales: al
                         // reproducirla, el servidor creaba una venta FAST nueva —sin artículos y
                         // sin SaleVerification («venta sin SIM» en el dashboard de PlayTelecom)—
@@ -5131,11 +5164,15 @@ class PaymentViewModel @Inject constructor(
                         // se deduplica contra el POST que sí llegó.
                         idempotencyKey = attemptId,
                         orderId = orderIdForFlow,
-                        orderNumber = getOrderNumberForFlow(),
+                        orderNumber = orderNumberCongelado,
                         shiftId = currentShiftId,
-                        deviceSerialNumber = secureStorage.getSerialNumber(),
-                        isPortabilidad = _isPortabilidad.value,
-                        serialNumbers = listOfNotNull(_serialNumber),
+                        deviceSerialNumber = aparatoCongelado,
+                        isPortabilidad = portabilidadCongelada,
+                        serialNumbers = serialesCongelados,
+                        splitType = splitDelIntento?.splitType ?: SplitType.FULLPAYMENT,
+                        paidProductIds = splitDelIntento?.paidProductIds ?: emptyList(),
+                        equalPartsPartySize = splitDelIntento?.equalPartsPartySize,
+                        equalPartsPayedFor = splitDelIntento?.equalPartsPayedFor,
                         createdAt = System.currentTimeMillis(),
                         retryCount = 0,
                         lastError = error.message,
@@ -5160,7 +5197,7 @@ class PaymentViewModel @Inject constructor(
                             cardDetails = CardDetails.CASH,
                             referenceNumber = cashReference,
                             orderId = orderIdForFlow,
-                            orderNumber = getOrderNumberForFlow(),
+                            orderNumber = orderNumberCongelado,
                             orderItems = orderData?.items,
                             remainingBalance = orderData?.remainingBalance,
                             discountAmount = orderData?.discountAmount?.toPlainString()
@@ -5601,6 +5638,14 @@ class PaymentViewModel @Inject constructor(
 
                 val cashReference = referenciaDeEfectivo(attemptId, prefijo = "CASH-KIOSK-")
 
+                // 🔴 MISMO CONGELADO que processCashPayment: la fila de la cola se arma DESPUÉS
+                // del POST, y para entonces un `resetPayment()` ya pudo dejar `_socketRequestId` y
+                // `_serialNumber` en null. Se leen aquí, antes de tocar la red.
+                val solicitudDeTerminalCongelada = _socketRequestId
+                val aparatoCongelado = secureStorage.getSerialNumber()
+                val portabilidadCongelada = _isPortabilidad.value
+                val serialesCongelados = listOfNotNull(_serialNumber)
+
                 // Record payment to backend
                 // 🔴 NonCancellable: si el proceso muere/la pantalla se abandona a media
                 // espera, la llamada NO debe abortarse a medio camino — sin esto el cobro
@@ -5642,6 +5687,13 @@ class PaymentViewModel @Inject constructor(
                     Timber.e(error, "❌ [KIOSK CASH] Failed to record confirmed payment")
                     Timber.w("💾 [Offline Queue] Queueing KIOSK CASH payment for retry | ref=$cashReference")
 
+                    // ⭐ SPLIT DE LA ORDEN (v33, 2026-09-07). Sale del MISMO contexto que se le
+                    // mandó (o se intentó mandar) al servidor, nunca de la sesión viva: para
+                    // cuando esta fila se arma, el cajero ya pudo haber tocado otra cosa.
+                    // Reproducir un PERPRODUCT como FULLPAYMENT sin productos deja el artículo
+                    // marcado como NO pagado y otra terminal puede cobrarlo dos veces.
+                    val splitDelIntento = context as? PaymentContext.OrderPayment
+
                     val queuedPayment = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
                         queueId = 0,
                         referenceNumber = cashReference,
@@ -5658,16 +5710,20 @@ class PaymentViewModel @Inject constructor(
                         isInternational = false,
                         authorizationNumber = "EFECTIVO-CONFIRMADO",
                         // 📡 Arbitration link (see the card enqueue site) — same reason as above.
-                        terminalPaymentRequestId = _socketRequestId,
+                        terminalPaymentRequestId = solicitudDeTerminalCongelada,
                         // 🔴 Misma carencia que la fila del efectivo de mostrador: sin llave, sin
                         // orden y sin seriales el replay nacía como venta FAST suelta.
                         idempotencyKey = attemptId,
                         orderId = currentState.orderId,
                         orderNumber = currentState.orderNumber,
                         shiftId = currentShiftId,
-                        deviceSerialNumber = secureStorage.getSerialNumber(),
-                        isPortabilidad = _isPortabilidad.value,
-                        serialNumbers = listOfNotNull(_serialNumber),
+                        deviceSerialNumber = aparatoCongelado,
+                        isPortabilidad = portabilidadCongelada,
+                        serialNumbers = serialesCongelados,
+                        splitType = splitDelIntento?.splitType ?: SplitType.FULLPAYMENT,
+                        paidProductIds = splitDelIntento?.paidProductIds ?: emptyList(),
+                        equalPartsPartySize = splitDelIntento?.equalPartsPartySize,
+                        equalPartsPayedFor = splitDelIntento?.equalPartsPayedFor,
                         createdAt = System.currentTimeMillis(),
                         retryCount = 0,
                         lastError = error.message,
@@ -6691,6 +6747,13 @@ class PaymentViewModel @Inject constructor(
                     // ⭐ Queue payment for offline sync
                     Timber.w("💾 [Offline Queue] Queueing payment for retry | ref=$referenceNumber")
 
+                    // ⭐ SPLIT DE LA ORDEN (v33, 2026-09-07). Sale del MISMO contexto que se le
+                    // mandó (o se intentó mandar) al servidor, nunca de la sesión viva: para
+                    // cuando esta fila se arma, el cajero ya pudo haber tocado otra cosa.
+                    // Reproducir un PERPRODUCT como FULLPAYMENT sin productos deja el artículo
+                    // marcado como NO pagado y otra terminal puede cobrarlo dos veces.
+                    val splitDelIntento = context as? PaymentContext.OrderPayment
+
                     val queuedPayment = com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment(
                         queueId = 0, // Auto-generate
                         referenceNumber = referenceNumber,
@@ -6730,6 +6793,10 @@ class PaymentViewModel @Inject constructor(
                         deviceSerialNumber = secureStorage.getSerialNumber(),
                         isPortabilidad = _isPortabilidad.value,
                         serialNumbers = listOfNotNull(_serialNumber),
+                        splitType = splitDelIntento?.splitType ?: SplitType.FULLPAYMENT,
+                        paidProductIds = splitDelIntento?.paidProductIds ?: emptyList(),
+                        equalPartsPartySize = splitDelIntento?.equalPartsPartySize,
+                        equalPartsPayedFor = splitDelIntento?.equalPartsPayedFor,
                         retryCount = 0,
                         lastError = error.message,
                         syncStatus = com.jaac.avoqado_tpv.features.payment.domain.model.SyncStatus.PENDING

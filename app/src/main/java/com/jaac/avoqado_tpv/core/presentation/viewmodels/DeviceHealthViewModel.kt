@@ -471,7 +471,7 @@ class DeviceHealthViewModel @Inject constructor(
             // el tap se procesó de verdad.
             val pending = paymentQueueRepository.getPendingCount()
             val failed = paymentQueueRepository.getFailedCount()
-            paymentQueueStateManager.refreshCounts(pending, failed)
+            paymentQueueStateManager.refreshPaymentCounts(pending, failed) // sólo pagos: las devoluciones las publica RefundQueueRepositoryImpl
             onResult(count)
         }
     }
@@ -646,6 +646,23 @@ sealed class DeviceAlert(
             failedCount > 0 -> "Toca para reintentar sincronización"
             pendingRefundCount > 0 -> "Se registrarán solas al recuperar la conexión"
             else -> "Pendientes de sincronizar"
+        }
+
+        /**
+         * Qué se le dice al cajero tras tocar «Reintentar», sabiendo cuántos PAGOS se
+         * reencolaron. Las devoluciones no se «reintentan» con el botón: las PENDING las
+         * reproduce el worker solo (el toque ya pidió `runNow`) y las RECHAZADAS necesitan a
+         * una persona en Caja. Antes el texto sólo conocía pagos: con «1 devolución rechazada»
+         * en el banner, el botón contestaba «No hay pagos pendientes de reintentar» (founder, N86,
+         * 7-sep-2026).
+         */
+        fun mensajeTrasReintentar(pagosReencolados: Int): String = when {
+            pagosReencolados > 0 -> "Reintentando $pagosReencolados pago(s)..."
+            pendingRefundCount > 0 ->
+                "Reintentando $pendingRefundCount devolución${if (pendingRefundCount == 1) "" else "es"} sin registrar..."
+            failedRefundCount > 0 ->
+                "Las devoluciones rechazadas no se reintentan: revísalas en Caja al cerrar el turno"
+            else -> "No hay pagos pendientes de reintentar en este momento"
         }
     }
 

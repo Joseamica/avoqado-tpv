@@ -3,6 +3,7 @@ package com.jaac.avoqado_tpv.features.payment.data.repository
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.dao.PendingRefundDao
 import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
+import com.jaac.avoqado_tpv.core.util.PaymentQueueStateManager
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
 import com.jaac.avoqado_tpv.features.payment.domain.model.QueuedRefund
 import com.jaac.avoqado_tpv.features.payment.domain.model.RefundReason
@@ -38,11 +39,13 @@ class RefundQueueRepositoryTest {
     private lateinit var dao: PendingRefundDao
     private lateinit var recorder: RefundRecorder
     private lateinit var repo: RefundQueueRepositoryImpl
+    private lateinit var stateManager: PaymentQueueStateManager
 
     @Before fun setup() {
         dao = mockk(relaxed = true)
         recorder = mockk(relaxed = true)
-        repo = RefundQueueRepositoryImpl(dao, recorder)
+        stateManager = PaymentQueueStateManager()
+        repo = RefundQueueRepositoryImpl(dao, recorder, stateManager)
     }
 
     private fun fila(
@@ -238,5 +241,40 @@ class RefundQueueRepositoryTest {
 
         assertThat(outcome).isEqualTo(SyncOutcome.Retryable)
         coVerify(exactly = 1) { recorder.recordRefund(any(), any(), any(), any(), any(), any()) }
+    }
+    // ── El banner se entera EN EL ACTO (QA Nexgo N86, 7-sep-2026) ─────────────────────────
+    // Sólo el worker de 15 min informaba las devoluciones al banner; una devolución encolada
+    // sin red era invisible hasta la siguiente tanda, y el refresco de Inicio la borraba.
+
+    @Test
+    fun `encolar una devolucion publica los conteos de devoluciones sin pisar los de pagos`() = runTest {
+        stateManager.refreshPaymentCounts(pendingCount = 4, failedCount = 1)
+        coEvery { dao.insertIgnore(any()) } returns 1L
+        coEvery { dao.getPendingCount() } returns 1
+        coEvery { dao.getFailedCount() } returns 2
+
+        repo.enqueue(fila())
+
+        val state = stateManager.queueState.value
+        assertThat(state.pendingRefundCount).isEqualTo(1)
+        assertThat(state.failedRefundCount).isEqualTo(2)
+        assertThat(state.pendingCount).isEqualTo(4)
+        assertThat(state.failedCount).isEqualTo(1)
+    }
+
+    @Test
+    fun `marcar una devolucion como rechazada o liberarla vuelve a publicar los conteos`() = runTest {
+        coEvery { dao.markPermanentlyFailed(any(), any(), any()) } returns 1
+        coEvery { dao.getPendingCount() } returns 0
+        coEvery { dao.getFailedCount() } returns 1
+        repo.markPermanentlyFailed("k-1", "tok", "HTTP 400")
+        assertThat(stateManager.queueState.value.failedRefundCount).isEqualTo(1)
+
+        coEvery { dao.release(any(), any(), any(), any()) } returns 1
+        coEvery { dao.getPendingCount() } returns 1
+        coEvery { dao.getFailedCount() } returns 0
+        repo.release("k-1", "tok", retryCount = 1, error = "timeout")
+        assertThat(stateManager.queueState.value.pendingRefundCount).isEqualTo(1)
+        assertThat(stateManager.queueState.value.failedRefundCount).isEqualTo(0)
     }
 }

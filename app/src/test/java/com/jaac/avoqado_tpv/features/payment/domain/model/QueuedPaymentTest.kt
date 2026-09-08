@@ -259,4 +259,102 @@ class QueuedPaymentTest {
 
         assertThat(context).isInstanceOf(PaymentContext.FastPayment::class.java)
     }
+
+    // ------------------------------------------------------------------
+    // El SPLIT sobrevive a la cola (auditoría Codex P1-4, 2026-09-07).
+    //
+    // Una fila PERPRODUCT que se reproducía como FULLPAYMENT sin productos hacía que el
+    // servidor NO creara la PaymentAllocation por artículo: otra terminal seguía viendo
+    // el producto como no pagado y podía cobrarlo otra vez.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `una fila PERPRODUCT se reproduce con su split y sus productos`() {
+        val queued = QueuedPayment(
+            referenceNumber = "CASH-9f3a2c1e5b7d4a60",
+            venueId = "venue-1",
+            staffId = "staff-1",
+            amount = BigDecimal("120.00"),
+            tip = BigDecimal.ZERO,
+            rating = null,
+            merchantAccountId = "",
+            blumonSerialNumber = "",
+            maskedPan = null,
+            cardBrand = null,
+            entryMode = "MANUAL",
+            isInternational = false,
+            authorizationNumber = "EFECTIVO",
+            idempotencyKey = "k-split-1",
+            orderId = "order-9",
+            orderNumber = "SN00396",
+            splitType = SplitType.PERPRODUCT,
+            paidProductIds = listOf("item-A", "item-B"),
+            createdAt = 1L,
+        )
+
+        val order = queued.toPaymentContext() as PaymentContext.OrderPayment
+
+        assertThat(order.splitType).isEqualTo(SplitType.PERPRODUCT)
+        assertThat(order.paidProductIds).containsExactly("item-A", "item-B").inOrder()
+    }
+
+    @Test
+    fun `una fila EQUALPARTS se reproduce con su reparto por personas`() {
+        val queued = QueuedPayment(
+            referenceNumber = "000000188231",
+            venueId = "venue-1",
+            staffId = "staff-1",
+            amount = BigDecimal("50.00"),
+            tip = BigDecimal.ZERO,
+            rating = null,
+            merchantAccountId = "merchant_cuid_123",
+            blumonSerialNumber = "2841548417",
+            maskedPan = "411111******1111",
+            cardBrand = "VISA",
+            entryMode = "CHIP",
+            isInternational = false,
+            authorizationNumber = "502511",
+            orderId = "order-77",
+            splitType = SplitType.EQUALPARTS,
+            equalPartsPartySize = 4,
+            equalPartsPayedFor = 1,
+            createdAt = 1L,
+        )
+
+        val order = queued.toPaymentContext() as PaymentContext.OrderPayment
+
+        assertThat(order.splitType).isEqualTo(SplitType.EQUALPARTS)
+        assertThat(order.equalPartsPartySize).isEqualTo(4)
+        assertThat(order.equalPartsPayedFor).isEqualTo(1)
+    }
+
+    @Test
+    fun `una fila VIEJA sin split se reproduce como FULLPAYMENT, sin productos`() {
+        // Las filas escritas antes de la v33 no tienen las columnas: el default las deja
+        // exactamente donde estaban — pago completo, sin marca por producto.
+        val queued = QueuedPayment(
+            referenceNumber = "000000188232",
+            venueId = "venue-1",
+            staffId = "staff-1",
+            amount = BigDecimal("250.00"),
+            tip = BigDecimal.ZERO,
+            rating = null,
+            merchantAccountId = "merchant_cuid_123",
+            blumonSerialNumber = "2841548417",
+            maskedPan = null,
+            cardBrand = null,
+            entryMode = "CHIP",
+            isInternational = false,
+            authorizationNumber = "502511",
+            orderId = "order-88",
+            createdAt = 1L,
+        )
+
+        val order = queued.toPaymentContext() as PaymentContext.OrderPayment
+
+        assertThat(order.splitType).isEqualTo(SplitType.FULLPAYMENT)
+        assertThat(order.paidProductIds).isEmpty()
+        assertThat(order.equalPartsPartySize).isNull()
+        assertThat(order.equalPartsPayedFor).isNull()
+    }
 }

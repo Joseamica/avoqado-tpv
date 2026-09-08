@@ -13,6 +13,7 @@ import timber.log.Timber
 import java.math.BigDecimal
 import java.math.RoundingMode
 import javax.inject.Inject
+import kotlinx.coroutines.flow.asSharedFlow
 import javax.inject.Singleton
 
 /**
@@ -69,6 +70,17 @@ class ShiftRepository @Inject constructor(
     private val refundQueueRepository: com.jaac.avoqado_tpv.features.payment.domain.repository.RefundQueueRepository,
 ) {
 
+    private val _shiftChanges = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /**
+     * Avisa cada vez que ESTE aparato abre o cierra el turno con éxito, sin importar desde qué
+     * pantalla (QA Nexgo N86, 7-sep-2026): cada pantalla tiene su propio `ShiftViewModel` —el de
+     * Inicio vive en el back-stack de Home— y el de «Turnos de caja» abría la caja sin que Inicio
+     * se enterara: seguía en «Sin turno de caja» y bloqueaba Cobrar hasta reiniciar la app. Los
+     * ViewModels lo escuchan y recargan; es un pulso sin dato porque la verdad la tiene el servidor.
+     */
+    val shiftChanges: kotlinx.coroutines.flow.SharedFlow<Unit> = _shiftChanges.asSharedFlow()
+
     /**
      * Check if Shift System is enabled
      * Used by UI and Logic to bypass shift requirements
@@ -110,6 +122,7 @@ class ShiftRepository @Inject constructor(
                 val shiftDto = response.body()!!.data
                 val shift = shiftDto.toDomain()
                 Timber.i("✅ Shift opened successfully: ${shift.id}")
+                _shiftChanges.tryEmit(Unit)
                 Result.Success(shift)
             } else {
                 Timber.w("⚠️ Failed to open shift: HTTP ${response.code()}")
@@ -201,6 +214,7 @@ class ShiftRepository @Inject constructor(
                     reconciliation = body.reconciliation?.toDomain()
                 )
                 Timber.i("✅ Shift closed successfully. Sales: $${shift.totalSales}, Products: ${shift.totalProductsSold}")
+                _shiftChanges.tryEmit(Unit)
                 Result.Success(shift)
             } else if (response.code() == 400 || response.code() == 409) {
                 // A close POST is never safe to replay. One bounded read resolves the common case
@@ -210,6 +224,7 @@ class ShiftRepository @Inject constructor(
                 val alreadyClosed = findRecentlyClosedShift(venueId, shiftId)
                 if (alreadyClosed != null) {
                     Timber.i("✅ Shift was already closed: $shiftId")
+                    _shiftChanges.tryEmit(Unit)
                     Result.Success(alreadyClosed)
                 } else {
                     Timber.w("⚠️ Shift close HTTP ${response.code()} remains unresolved: $shiftId")

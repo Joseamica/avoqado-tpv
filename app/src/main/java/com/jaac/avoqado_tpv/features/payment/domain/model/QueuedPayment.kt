@@ -79,6 +79,15 @@ data class QueuedPayment(
     val isPortabilidad: Boolean = false,
     val serialNumbers: List<String> = emptyList(),
 
+    // ⭐ SPLIT DE LA ORDEN (2026-09-07) — reproducir un cobro PERPRODUCT como FULLPAYMENT
+    // sin productos deja la orden con el artículo marcado como NO pagado: otra terminal
+    // puede cobrarlo dos veces. Los defaults son los de un pago completo, así que las filas
+    // escritas antes de la v33 se reproducen exactamente como lo hacían.
+    val splitType: SplitType = SplitType.FULLPAYMENT,
+    val paidProductIds: List<String> = emptyList(),
+    val equalPartsPartySize: Int? = null,
+    val equalPartsPayedFor: Int? = null,
+
     // Retry Tracking
     val createdAt: Long, // Unix timestamp (when payment was originally processed)
     val retryCount: Int = 0,
@@ -159,12 +168,16 @@ data class QueuedPayment(
                 deviceSerialNumber = deviceSerialNumber,
                 idempotencyKey = idempotencyKey,
                 terminalPaymentRequestId = terminalPaymentRequestId,
-                // ⚠️ Limitación declarada: la fila no guarda el split (PERPRODUCT/EQUALPARTS).
-                // Se reproduce como FULLPAYMENT; el servidor cierra la orden por MONTOS
-                // (`isFullyPaid` = saldo ≤ 0.01), no por esta etiqueta, así que el dinero
-                // queda bien y sólo se pierde la marca por producto. Persistirlo pide columnas
-                // nuevas en Room (migración) y va aparte.
-                splitType = SplitType.FULLPAYMENT,
+                // ✅ El split viaja de verdad desde la v33 (2026-09-07). Antes se reproducía
+                // SIEMPRE como FULLPAYMENT sin productos, y el servidor sólo crea la
+                // PaymentAllocation por artículo con `PERPRODUCT` + `paidProductIds`: la orden
+                // se quedaba con el artículo marcado como no pagado y otra terminal podía
+                // volver a cobrarlo. Una fila anterior a la v33 llega con los defaults
+                // (FULLPAYMENT, sin productos) — o sea, exactamente como se comportaba antes.
+                splitType = splitType,
+                paidProductIds = paidProductIds,
+                equalPartsPartySize = equalPartsPartySize,
+                equalPartsPayedFor = equalPartsPayedFor,
                 isPortabilidad = isPortabilidad,
                 serialNumbers = serialNumbers,
             )

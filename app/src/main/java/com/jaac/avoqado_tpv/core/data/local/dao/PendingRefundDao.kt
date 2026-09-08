@@ -155,7 +155,13 @@ interface PendingRefundDao {
     @Query("SELECT COUNT(*) FROM pending_refunds WHERE sync_status IN ('PENDING', 'SYNCING')")
     suspend fun getPendingCount(): Int
 
-    @Query("SELECT COUNT(*) FROM pending_refunds WHERE sync_status = 'FAILED'")
+    /**
+     * Cuenta lo rechazado que NADIE ha reconocido — el mismo criterio que [blockingForVenue].
+     * Antes contaba todo `FAILED`, incluido lo ya reconocido con «Ya lo vi»: el banner decía
+     * «1 devolución rechazada» para siempre y su «Reintentar» no tenía nada que reintentar
+     * (founder, N86, 7-sep-2026). Lo reconocido sigue en la tabla como rastro, pero ya no avisa.
+     */
+    @Query("SELECT COUNT(*) FROM pending_refunds WHERE sync_status = 'FAILED' AND acknowledged = 0")
     suspend fun getFailedCount(): Int
 
     /** Limpieza: sólo lo YA registrado y viejo. Nunca borra pendientes ni rechazados. */

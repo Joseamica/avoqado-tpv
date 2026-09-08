@@ -2564,4 +2564,131 @@ class PaymentViewModelTest {
             viewModel.viewModelScope.cancel()
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Z2. EL INTENTO SE CONGELA ANTES DEL PRIMER AWAIT (auditoría Codex P1-2, 2026-09-07)
+    //
+    // La ronda 1 congeló la LLAVE (`attemptId`) pero no el resto: monto, propina,
+    // orden, split, seriales, portabilidad y el enlace del arbitraje se leían DESPUÉS
+    // de esperar el turno. `resetPayment()` a media espera pone la sesión en $0.00 y
+    // deja `_serialNumber`/`_socketRequestId` en null ⇒ el POST salía con $0, sin
+    // seriales o sin cerrar la solicitud del POS.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `un reset a media espera del turno no cambia el monto, la orden ni la llave del cobro`() = runTest {
+        val compuerta = CompletableDeferred<Unit>()
+        val contexto = slot<PaymentContext>()
+        coEvery {
+            mockRecordPaymentUseCase(
+                context = capture(contexto), cardDetails = any(), authorizationNumber = any(), referenceNumber = any()
+            )
+        } returns Result.success(
+            PaymentReceipt(
+                paymentId = "pay-1",
+                receiptUrl = "https://receipt.avoqado.io/pay-1",
+                accessKey = "k",
+                amount = BigDecimal("100.00"),
+                tipAmount = BigDecimal.ZERO,
+            )
+        )
+
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountDirectToMerchant(
+                "100.00", orderId = "order-1", orderNumber = "SN00396", skipLocalOrderValidation = true
+            )
+            esperarSelectingMerchant(viewModel)
+
+            // El fetch del turno se estaciona, como con el socket medio muerto.
+            coEvery { mockShiftRepository.getCurrentShift(any()) } coAnswers {
+                compuerta.await()
+                AppResult.Success(turnoAbiertoDePrueba())
+            }
+
+            viewModel.processCashPayment("100.00")
+            viewModel.resetPayment()   // el cajero «cancela» mientras el turno sigue en el aire
+            compuerta.complete(Unit)
+
+            coVerify(timeout = 5000, exactly = 1) {
+                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            }
+            val ctx = contexto.captured
+            assertThat(ctx).isInstanceOf(PaymentContext.OrderPayment::class.java)
+            val orden = ctx as PaymentContext.OrderPayment
+            // Sin el congelado, `resetPayment()` deja la sesión en 0.00 y el POST cobra $0.
+            assertThat(orden.amount).isEqualTo(BigDecimal("100.00"))
+            assertThat(orden.orderId).isEqualTo("order-1")
+            assertThat(orden.idempotencyKey).isNotNull()
+        } finally {
+            compuerta.complete(Unit)
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `el candado se suelta al terminar — dos cobros en efectivo seguidos registran dos veces`() = runTest {
+        coEvery {
+            mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+        } returns Result.success(
+            PaymentReceipt(
+                paymentId = "pay-1",
+                receiptUrl = "https://receipt.avoqado.io/pay-1",
+                accessKey = "k",
+                amount = BigDecimal("10.00"),
+                tipAmount = BigDecimal.ZERO,
+            )
+        )
+
+        val viewModel = createViewModel()
+        try {
+            viewModel.submitAmountDirectToMerchant("10.00")
+            esperarSelectingMerchant(viewModel)
+            viewModel.processCashPayment("10.00")
+            coVerify(timeout = 5000, exactly = 1) {
+                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            }
+
+            viewModel.resetPayment()
+            viewModel.submitAmountDirectToMerchant("10.00")
+            esperarSelectingMerchant(viewModel)
+            viewModel.processCashPayment("10.00")
+            coVerify(timeout = 5000, exactly = 2) {
+                mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+            }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+    // ═══════════════════════════════════════════════════════════════════════════
+    // AA. DEVOLUCIÓN ENCOLADA → SYNC INMEDIATO (QA Nexgo N86, 7-sep-2026)
+    //
+    // El COBRO que caía a la cola ya pedía `PaymentSyncScheduler.runNow`; la
+    // DEVOLUCIÓN no: esperaba al periódico de 15 min aunque el servidor volviera
+    // antes, y mientras tanto el corte cuadraba de más.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `una devolucion que queda PENDING pide el sync inmediato`() = runTest {
+        coEvery { mockRecordRefundUseCase(any(), any(), any(), any(), any()) } returns
+            Result.failure(java.io.IOException("timeout"))
+        val vm = refundReady()
+
+        vm.registrar()
+
+        verify(timeout = 2000, exactly = 1) { com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.runNow(any()) }
+        vm.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `una devolucion RECHAZADA por el servidor no pide el sync - no hay nada que reintentar`() = runTest {
+        coEvery { mockRecordRefundUseCase(any(), any(), any(), any(), any()) } returns
+            Result.failure(com.jaac.avoqado_tpv.core.data.network.BackendHttpException(422, "regla de negocio"))
+        val vm = refundReady()
+
+        vm.registrar()
+
+        verify(timeout = 1000, exactly = 0) { com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.runNow(any()) }
+        vm.viewModelScope.cancel()
+    }
 }

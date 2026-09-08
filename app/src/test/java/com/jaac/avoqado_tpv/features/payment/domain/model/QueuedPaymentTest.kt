@@ -357,4 +357,239 @@ class QueuedPaymentTest {
         assertThat(order.equalPartsPartySize).isNull()
         assertThat(order.equalPartsPayedFor).isNull()
     }
+
+    // ------------------------------------------------------------------
+    // El RESPALDO a venta rápida no puede perder la prueba de venta
+    // (2ª auditoría de Codex, 2026-09-07).
+    //
+    // Hay DOS ventas rápidas distintas y no se mezclan: la genérica (cobro sin orden, sin
+    // seriales) y la del módulo de INVENTARIO SERIALIZADO — casi siempre de $0, que viaja con
+    // `serialNumbers`/`isPortabilidad` y de la que el servidor crea la `SaleVerification` por su
+    // camino genérico, sin un solo `if` de cliente. La rama FastPayment omitía esos tres campos
+    // (más el turno): el dinero se registraba y la venta quedaba «sin SIM».
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `P1 el respaldo como venta rapida conserva la SIM, la portabilidad y el turno`() {
+        val queued = QueuedPayment(
+            referenceNumber = "CASH-1a2b3c4d5e6f7a8b",
+            venueId = "venue-1",
+            staffId = "staff-1",
+            amount = BigDecimal("0.00"),
+            tip = BigDecimal.ZERO,
+            rating = null,
+            merchantAccountId = "",
+            blumonSerialNumber = "",
+            deviceSerialNumber = "AVQD-2840744206",
+            maskedPan = null,
+            cardBrand = null,
+            entryMode = "MANUAL",
+            isInternational = false,
+            authorizationNumber = "EFECTIVO",
+            idempotencyKey = "k-sim",
+            orderId = null, // el respaldo del worker es exactamente esta fila: copy(orderId = null)
+            shiftId = "shift-1",
+            isPortabilidad = true,
+            serialNumbers = listOf("8952140064479453293F"),
+            createdAt = 1L,
+        )
+
+        val context = queued.toPaymentContext()
+
+        assertThat(context).isInstanceOf(PaymentContext.FastPayment::class.java)
+        val fast = context as PaymentContext.FastPayment
+        assertThat(fast.serialNumbers).containsExactly("8952140064479453293F")
+        assertThat(fast.isPortabilidad).isTrue()
+        assertThat(fast.shiftId).isEqualTo("shift-1")
+    }
+
+    @Test
+    fun `P1 una venta rapida SIN seriales sigue viajando con la lista vacia`() {
+        val queued = QueuedPayment(
+            referenceNumber = "000000188231",
+            venueId = "venue-1",
+            staffId = "staff-1",
+            amount = BigDecimal("150.00"),
+            tip = BigDecimal("15.00"),
+            rating = 5,
+            merchantAccountId = "merchant_cuid_123",
+            blumonSerialNumber = "2841548417",
+            maskedPan = "411111******1111",
+            cardBrand = "VISA",
+            entryMode = "CHIP",
+            isInternational = false,
+            authorizationNumber = "502511",
+            createdAt = 1L,
+        )
+
+        val fast = queued.toPaymentContext() as PaymentContext.FastPayment
+
+        // Los negocios que no usan inventario serializado viajan igual que siempre: vacío y
+        // portabilidad apagada. El respaldo copia los datos del contexto, no los inventa.
+        assertThat(fast.serialNumbers).isEmpty()
+        assertThat(fast.isPortabilidad).isFalse()
+        assertThat(fast.shiftId).isNull()
+    }
+
+    // ------------------------------------------------------------------
+    // desdeContexto(): la fila de la cola nace del contexto CONGELADO
+    // (2ª auditoría de Codex, P1 parcial — 2026-09-07).
+    //
+    // Los tres sitios de encolado del PaymentViewModel armaban la fila leyendo estado VIVO
+    // (`sessionSnapshot`, `_socketRequestId`, `_serialNumber`, `getOrderIdForFlow()`) DESPUÉS de
+    // esperar al servidor. Un `resetPayment()` a media espera dejaba una fila de $0, sin orden,
+    // sin llave y sin seriales… con la tarjeta YA cobrada. Esta función es la única forma de
+    // armar esa fila: recibe el MISMO contexto que viajó al servidor y no puede leer nada más.
+    // ------------------------------------------------------------------
+
+    private fun contextoDeOrden() = PaymentContext.OrderPayment(
+        venueId = "venue-1",
+        staffId = "staff-kiosco",
+        shiftId = "shift-1",
+        orderId = "order-9",
+        amount = BigDecimal("250.00"),
+        tip = BigDecimal("25.00"),
+        rating = 4,
+        merchantAccountId = "merchant_cuid_123",
+        blumonSerialNumber = "2841548417",
+        deviceSerialNumber = "AVQD-2840744206",
+        idempotencyKey = "k-viva",
+        terminalPaymentRequestId = "req-77",
+        splitType = SplitType.PERPRODUCT,
+        paidProductIds = listOf("prod-1", "prod-2"),
+        isPortabilidad = true,
+        serialNumbers = listOf("8952140064479453293F"),
+    )
+
+    private val tarjeta = CardDetails(
+        maskedPan = "411111******1111",
+        cardBrand = CardBrand.VISA,
+        entryMode = CardEntryMode.CHIP,
+        isInternational = false,
+    )
+
+    @Test
+    fun `P1 desdeContexto con OrderPayment conserva orden, llave, socket, seriales y split`() {
+        val fila = QueuedPayment.desdeContexto(
+            context = contextoDeOrden(),
+            orderNumber = "0099",
+            cardDetails = tarjeta,
+            authorizationNumber = "502511",
+            referenceNumber = "000000188231",
+            error = RuntimeException("HTTP 500"),
+            createdAt = 1_725_000_000_000L,
+        )
+
+        assertThat(fila.orderId).isEqualTo("order-9")
+        assertThat(fila.orderNumber).isEqualTo("0099")
+        assertThat(fila.idempotencyKey).isEqualTo("k-viva")
+        assertThat(fila.terminalPaymentRequestId).isEqualTo("req-77")
+        assertThat(fila.shiftId).isEqualTo("shift-1")
+        assertThat(fila.staffId).isEqualTo("staff-kiosco")   // el MISMO que se le mandó al servidor
+        assertThat(fila.amount).isEqualTo(BigDecimal("250.00"))
+        assertThat(fila.tip).isEqualTo(BigDecimal("25.00"))
+        assertThat(fila.rating).isEqualTo(4)
+        assertThat(fila.merchantAccountId).isEqualTo("merchant_cuid_123")
+        assertThat(fila.blumonSerialNumber).isEqualTo("2841548417")
+        assertThat(fila.deviceSerialNumber).isEqualTo("AVQD-2840744206")
+        assertThat(fila.serialNumbers).containsExactly("8952140064479453293F")
+        assertThat(fila.isPortabilidad).isTrue()
+        assertThat(fila.splitType).isEqualTo(SplitType.PERPRODUCT)
+        assertThat(fila.paidProductIds).containsExactly("prod-1", "prod-2").inOrder()
+        assertThat(fila.maskedPan).isEqualTo("411111******1111")
+        assertThat(fila.cardBrand).isEqualTo("VISA")
+        assertThat(fila.entryMode).isEqualTo("CHIP")
+        assertThat(fila.authorizationNumber).isEqualTo("502511")
+        assertThat(fila.referenceNumber).isEqualTo("000000188231")
+        assertThat(fila.lastError).isEqualTo("HTTP 500")
+        assertThat(fila.createdAt).isEqualTo(1_725_000_000_000L)
+        assertThat(fila.syncStatus).isEqualTo(SyncStatus.PENDING)
+        assertThat(fila.retryCount).isEqualTo(0)
+        assertThat(fila.queueId).isEqualTo(0L)
+        assertThat(fila.processor).isEqualTo(ProcessorType.BLUMON)
+    }
+
+    @Test
+    fun `P1 desdeContexto con FastPayment queda sin orden y sin split`() {
+        val fila = QueuedPayment.desdeContexto(
+            context = PaymentContext.FastPayment(
+                venueId = "venue-1",
+                staffId = "staff-1",
+                shiftId = "shift-1",
+                amount = BigDecimal("15.00"),
+                merchantAccountId = "merchant_cuid_123",
+                blumonSerialNumber = "2841548417",
+                idempotencyKey = "k-fast",
+                isPortabilidad = true,
+                serialNumbers = listOf("8952140064479453293F"),
+            ),
+            orderNumber = null,
+            cardDetails = tarjeta,
+            authorizationNumber = "502511",
+            referenceNumber = "000000188232",
+            error = null,
+        )
+
+        assertThat(fila.orderId).isNull()
+        assertThat(fila.orderNumber).isNull()
+        assertThat(fila.splitType).isEqualTo(SplitType.FULLPAYMENT)
+        assertThat(fila.paidProductIds).isEmpty()
+        assertThat(fila.equalPartsPartySize).isNull()
+        // La venta rápida del módulo de inventario serializado SÍ lleva su prueba de venta.
+        assertThat(fila.serialNumbers).containsExactly("8952140064479453293F")
+        assertThat(fila.isPortabilidad).isTrue()
+        assertThat(fila.lastError).isNull()
+    }
+
+    @Test
+    fun `P1 desdeContexto de un cobro en EFECTIVO deja el merchant vacio y la fila sin marca`() {
+        val fila = QueuedPayment.desdeContexto(
+            context = PaymentContext.FastPayment(
+                venueId = "venue-1",
+                staffId = "staff-1",
+                amount = BigDecimal("0.00"),
+                merchantAccountId = null, // efectivo: sin procesador
+                blumonSerialNumber = "",
+                idempotencyKey = "k-cash",
+            ),
+            orderNumber = null,
+            cardDetails = CardDetails.CASH,
+            authorizationNumber = "EFECTIVO",
+            referenceNumber = "CASH-1a2b3c4d5e6f7a8b",
+            error = RuntimeException("sin red"),
+        )
+
+        // Centinela histórico: "" viaja a la fila y `toPaymentContext()` lo vuelve null al
+        // reproducir (un cobro en efectivo no puede llevar merchant, o el arqueo lo cuenta
+        // como cobro con tarjeta). Marca y PAN quedan nulos, como antes de esta función.
+        assertThat(fila.merchantAccountId).isEmpty()
+        assertThat(fila.maskedPan).isNull()
+        assertThat(fila.cardBrand).isNull()
+        assertThat(fila.entryMode).isEqualTo("MANUAL")
+        assertThat((fila.toPaymentContext() as PaymentContext.FastPayment).merchantAccountId).isNull()
+    }
+
+    @Test
+    fun `P1 desdeContexto NO puede marcar como BLUMON un contexto de AngelPay`() {
+        // Cinturón y tirantes: AngelPay encola desde su propio ViewModel, pero si alguien pasara
+        // su contexto por aquí, marcarlo BLUMON cambiaría EN SILENCIO la rama del replay.
+        val fila = QueuedPayment.desdeContexto(
+            context = PaymentContext.AngelPayPayment(
+                venueId = "venue-1",
+                staffId = "staff-1",
+                amount = BigDecimal("100.00"),
+                orderId = "order-ap",
+                serialNumbers = listOf("895214006447945XXXX"),
+            ),
+            orderNumber = "0100",
+            cardDetails = CardDetails.CASH,
+            authorizationNumber = "AP-1",
+            referenceNumber = "AP-REF-1",
+            error = null,
+        )
+
+        assertThat(fila.processor).isEqualTo(ProcessorType.ANGELPAY)
+        assertThat(fila.orderId).isEqualTo("order-ap")
+        assertThat(fila.serialNumbers).containsExactly("895214006447945XXXX")
+    }
 }

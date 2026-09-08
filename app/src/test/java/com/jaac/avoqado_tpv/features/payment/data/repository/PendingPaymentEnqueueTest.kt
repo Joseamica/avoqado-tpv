@@ -211,15 +211,18 @@ class PendingPaymentEnqueueTest {
     }
 
     // ------------------------------------------------------------------
-    // El SPLIT sobrevive la ida y vuelta por Room (auditoría Codex P1-4, 2026-09-07).
+    // El SPLIT sobrevive el mapeo dominio ↔ entidad (auditoría Codex P1-4, 2026-09-07).
     //
     // Sin estas cuatro columnas, una fila PERPRODUCT se reproducía como FULLPAYMENT sin
     // productos: el servidor no creaba la PaymentAllocation por artículo y otra terminal
     // podía volver a cobrar el mismo producto.
+    //
+    // ⚠️ El DAO es un doble: esto fija el MAPPER (`toEntity`/`toDomain`), no que SQLite guarde
+    // las columnas. La migración de Room se prueba en aparato (`docs/` → Room Migration Testing).
     // ------------------------------------------------------------------
 
     @Test
-    fun `el split va y vuelve por Room sin perder tipo ni productos`() = runTest {
+    fun `el mapper conserva el split (DAO simulado)`() = runTest {
         val fila = slot<PendingPaymentEntity>()
         coEvery { dao.insert(capture(fila)) } returns 42L
 

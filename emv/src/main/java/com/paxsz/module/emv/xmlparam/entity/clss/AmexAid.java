@@ -55,6 +55,20 @@ public class AmexAid {
     private byte[] termAddCapability;
     private byte[] termId;
 
+    /*
+     * Transaction Reference Currency Conversion.
+     *
+     * 🔴 Añadido el 2026-09-08, misma causa que `Config.terminalID`: el SDK
+     * `blumon_sdk-1.6.1.2-sandbox` llama `AmexAid.setConversionRatio(long)` desde
+     * `ExpressPayParser.parser` y esta versión del módulo :emv no lo tenía — la variante
+     * SANDBOX moría con `NoSuchMethodError` al configurar el kernel EMV, o sea al pedir tarjeta.
+     * `blumon_sdk-prod` no lo llama, así que producción no cambia. Ver el comentario largo en
+     * `xmlparam/entity/common/Config.java`: son los DOS únicos métodos que el SDK nuevo pide
+     * y la librería no tiene (medido comparando las 171 llamadas del SDK sandbox contra las
+     * 167 del de producción).
+     */
+    private long conversionRatio;
+
     public AmexAid() {
         // You can set default values for some fields here
         exFunction = new byte[]{1};
@@ -403,6 +417,14 @@ public class AmexAid {
      */
     public void setTermCapability(byte[] termCapability) {
         this.termCapability = termCapability;
+    }
+
+    public long getConversionRatio() {
+        return conversionRatio;
+    }
+
+    public void setConversionRatio(long conversionRatio) {
+        this.conversionRatio = conversionRatio;
     }
 
     /**

@@ -9,6 +9,25 @@
 
 ---
 
+## [2.9.2] - 2026-09-08
+
+> Release de **Nexgo/AngelPay** (`nexgoProd`). Sólo cambia el SDK de AngelPay: **cero líneas de código propio**.
+> `versionCode` **107** — el 106 ya se consumió en la 2.8.8 y el 105 en la 2.9.1; nunca se repite ni se retrocede.
+
+### **Changed**
+
+- **🔴 SDK de AngelPay: 1.0.17 → 1.0.18. Cierra el cuelgue de «Retira la tarjeta…» que dejaba la terminal muerta sin un solo mensaje.** Reportado por Testarudo el 8-sep (13:35): «están fallando ambas terminales con el contactless», la pantalla se quedaba girando y la única salida era Cancelar. La pantalla **no es nuestra**: vive en el AAR de AngelPay (`b0/q.class`), se lanza como Activity propia por ActivityResult, y mientras está encima nuestra app no tiene ni la pantalla ni forma de pintar un error — sólo espera un resultado que en la 1.0.17 **nunca llegaba**. Medido en producción: una solicitud aguantó **173 s** hasta que la cajera canceló (`U100`).
+
+  Lo que trae la 1.0.18, según AngelPay: el lector NFC deja de bloquearse cuando la tarjeta queda apoyada antes de iniciar el cobro; **la pantalla devuelve `PaymentResult` en TODOS los casos**, incluidos error y tiempo agotado (`E618` sin retirar la tarjeta, `U101` por timeout); y `tvr`/`tsi` de `PaymentResult` ya reportan el estado EMV final. *«Sin cambios en la API pública: la actualización sólo requiere reemplazar el archivo AAR.»*
+
+  🔴 **El número de versión del hub MIENTE por partida doble, y por eso esto nos duró tres semanas**: la página titula el release **«v1.0.8»** (le falta un 1) y el archivo que descarga se llama **`angelpaySDK-v1.0.17-fat-release.aar`** — idéntico al que ya teníamos. La única fuente fiable es `com/angelpay/angelpaysdk/BuildConfig.class`, que dice **`VERSION_NAME = "1.0.18"`** contra el `1.0.17` del nuestro. Se guarda como `angelpaySDK-v1.0.18-fat-release.aar`, con su versión REAL. Descarga verificada por `sha256 ae7d0e063be7…`, el mismo que publica el hub. **Comparar por hash, nunca por nombre ni por número.**
+
+  🟢 **Probado en la N86** (`N860W173397`, ambiente QA, contactless, $10) reproduciendo el escenario exacto — tarjeta apoyada en el lector ANTES de iniciar el cobro: el SDK la **detecta** (`EMV.card_still_present event slots=RF,ICC1,SWIPE`), la pantalla pide «Retire la tarjeta del lector.», y a los **15 s** se rinde con motivo (`card_still_present fail`) **devolviendo resultado** (`ActivityResult received | approved=false`, `status=ERROR`) — que es justo lo que la 1.0.17 nunca hacía. Al reintentar: **aprobada en 1.7 s** (`code=00 auth=251259 ref=260908155812`), con `TVR=0000008001 TSI=0000` ya poblados, y el `Payment` de $10.00 COMPLETED registrado. ⚠️ Para soporte: la ventana para retirar la tarjeta es de **15 s**; pasada ésa hay que tocar «Reintentar».
+
+  **Las variantes PAX no cambian**: el AAR entra sólo por `nexgoImplementation`/`nexgoProdImplementation` (más `compileOnly`, que no se empaqueta).
+
+---
+
 ## [2.9.1] - 2026-09-07
 
 > Release de **PAX/Blumon** (`production`) **y Nexgo/AngelPay** (`nexgoProd`), las dos con el mismo

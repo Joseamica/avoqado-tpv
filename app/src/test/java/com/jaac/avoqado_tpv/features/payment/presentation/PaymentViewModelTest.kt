@@ -2183,6 +2183,14 @@ class PaymentViewModelTest {
         staffIdField.set(viewModel, testStaffId)
     }
 
+    /** Abre la llave de idempotencia del intento llamando al `ensurePaymentAttemptId()` privado
+     * — el mismo seam que usa `startPayment()` en producción antes de cobrar. */
+    private fun sembrarLlaveDelIntento(viewModel: PaymentViewModel): String {
+        val method = PaymentViewModel::class.java.getDeclaredMethod("ensurePaymentAttemptId")
+        method.isAccessible = true
+        return method.invoke(viewModel) as String
+    }
+
     @Test
     fun `card enqueue attaches orderId and orderNumber when the payment belongs to an order`() = runTest(testDispatcher) {
         coEvery {
@@ -2266,6 +2274,64 @@ class PaymentViewModelTest {
                 com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.BLUMON
             )
         } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // P1 (2ª auditoría de Codex, 2026-09-07): la fila de TARJETA se armaba con estado VIVO
+    // —`sessionSnapshot`, `_socketRequestId`, `_serialNumber`, `getOrderIdForFlow()`— DESPUÉS de
+    // esperar el registro. Un `resetPayment()` a media espera (el cajero toca cancelar, o la
+    // pantalla se reinicia) deja la sesión en $0.00, sin llave, sin socket y sin seriales: la
+    // fila nacía así, con la TARJETA YA COBRADA. Ahora nace de `QueuedPayment.desdeContexto`
+    // sobre el MISMO contexto que viajó al servidor.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `P1 un reset mientras el registro de TARJETA espera no cambia la fila encolada`() = runTest(testDispatcher) {
+        val compuerta = CompletableDeferred<Unit>()
+        coEvery {
+            mockRecordPaymentUseCase(context = any(), cardDetails = any(), authorizationNumber = any(), referenceNumber = any())
+        } coAnswers {
+            compuerta.await()
+            Result.failure(RuntimeException("HTTP 500"))
+        }
+        val fila = slot<com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment>()
+        coEvery { mockPaymentQueueRepository.enqueue(capture(fila)) } returns Result.success(Unit)
+
+        val viewModel = createViewModel()
+        try {
+            seedAuthenticatedSession(viewModel)
+            // Cobro pedido por el POS (socket) sobre una orden, con la SIM ya escaneada.
+            viewModel.setSocketPaymentSource("SOCKET", "req-77")
+            viewModel.setIsPortabilidad(true)
+            viewModel.setSerializedItemInfo("8952140064479453293F", "SIM")
+            viewModel.submitAmountDirectToMerchant("25.00", orderId = "order-1", orderNumber = "0007")
+            // En producción la abre `startPayment()` antes de cobrar; aquí el flujo entra por
+            // reflexión (el SDK de Blumon no corre en unitarias), así que se abre igual.
+            val llaveDelIntento = sembrarLlaveDelIntento(viewModel)
+
+            invokeHandlePaymentSuccess(viewModel)
+            testDispatcher.scheduler.advanceUntilIdle() // el registro queda esperando en la compuerta
+
+            viewModel.resetPayment() // 💥 la pantalla se reinicia con el cobro YA aprobado
+            testDispatcher.scheduler.advanceUntilIdle()
+            compuerta.complete(Unit) // el servidor por fin contesta… que no
+            testDispatcher.scheduler.advanceUntilIdle()
+
+            coVerify(exactly = 1) { mockPaymentQueueRepository.enqueue(any()) }
+            val encolada = fila.captured
+            assertThat(encolada.amount).isEqualTo(BigDecimal("25.00"))          // no $0.00
+            assertThat(encolada.orderId).isEqualTo("order-1")                   // vuelve a SU orden
+            assertThat(encolada.orderNumber).isEqualTo("0007")
+            // La MISMA llave con la que salió el POST: `resetPayment()` la borra de la sesión, y
+            // sin ella el replay se registra como un cobro NUEVO en vez de deduplicarse.
+            assertThat(encolada.idempotencyKey).isEqualTo(llaveDelIntento)
+            assertThat(encolada.terminalPaymentRequestId).isEqualTo("req-77")   // cierra la solicitud del POS
+            assertThat(encolada.serialNumbers).containsExactly("8952140064479453293F")
+            assertThat(encolada.isPortabilidad).isTrue()
+        } finally {
+            compuerta.complete(Unit)
             viewModel.viewModelScope.cancel()
         }
     }

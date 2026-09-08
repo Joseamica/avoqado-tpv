@@ -101,6 +101,85 @@ data class QueuedPayment(
     // recording. Null only for rows never obtained via claimBatch().
     val claimToken: String? = null
 ) {
+    companion object {
+        /**
+         * Arma la fila de la cola a partir del **contexto que viajó al servidor**, y de nada más.
+         *
+         * 🔴 Por qué existe (2ª auditoría de Codex, 2026-09-07 — P1 parcial): los tres sitios de
+         * encolado del `PaymentViewModel` (efectivo, kiosco y tarjeta) construían la fila leyendo
+         * estado VIVO —`sessionSnapshot`, `_socketRequestId`, `_serialNumber`, `getOrderIdForFlow()`—
+         * DESPUÉS de esperar el registro. Un `resetPayment()` a media espera pone la sesión en
+         * $0.00 y deja seriales y socket en null: la fila nacía de $0, sin orden, sin llave y sin
+         * la prueba de venta… con la tarjeta YA cobrada. La ronda 1 congeló el camino del efectivo
+         * a mano; esta función lo hace imposible de olvidar en los tres, porque **no tiene acceso
+         * a nada vivo**: todo sale de [context], que se construyó ANTES de tocar la red.
+         *
+         * `orderNumber` viaja aparte porque no vive en el contexto — se captura en la MISMA línea
+         * en la que se construye [context], nunca después.
+         *
+         * Los campos de la prueba de venta (`isPortabilidad`, `serialNumbers`) se copian tal cual:
+         * vienen vacíos para casi todos los negocios y llenos para los que usan el módulo genérico
+         * de inventario serializado, donde el servidor crea la `SaleVerification` porque el cuerpo
+         * los trae. Aquí no se decide nada por cliente, marca ni nombre de venue: sólo por datos.
+         */
+        fun desdeContexto(
+            context: PaymentContext,
+            orderNumber: String?,
+            cardDetails: CardDetails,
+            authorizationNumber: String?,
+            referenceNumber: String,
+            error: Throwable?,
+            createdAt: Long = System.currentTimeMillis(),
+        ): QueuedPayment {
+            val orden = context as? PaymentContext.OrderPayment
+            val rapido = context as? PaymentContext.FastPayment
+            // AngelPay encola desde su propio ViewModel y no pasa por aquí; se contempla para que
+            // un contexto suyo NUNCA quede marcado BLUMON — eso cambiaría en silencio la rama del
+            // replay (`toPaymentContext()`), que es la que decide a qué endpoint vuelve el dinero.
+            val angel = context as? PaymentContext.AngelPayPayment
+
+            return QueuedPayment(
+                queueId = 0, // Room la autogenera
+                referenceNumber = referenceNumber,
+                venueId = context.venueId,
+                staffId = context.staffId,
+                shiftId = context.shiftId,
+                amount = context.amount,
+                tip = context.tip,
+                rating = context.rating,
+                // "" es el centinela histórico del efectivo: `toPaymentContext()` lo vuelve null al
+                // reproducir, para que el arqueo no cuente ese cobro como si tuviera procesador.
+                merchantAccountId = context.merchantAccountId ?: "",
+                blumonSerialNumber = context.blumonSerialNumber,
+                deviceSerialNumber = context.deviceSerialNumber,
+                maskedPan = cardDetails.maskedPan.ifBlank { null },
+                cardBrand = cardDetails.cardBrand.name.takeUnless { cardDetails.isCash },
+                entryMode = cardDetails.entryMode.name,
+                isInternational = cardDetails.isInternational,
+                authorizationNumber = authorizationNumber,
+                idempotencyKey = context.idempotencyKey,
+                processor = if (angel != null) ProcessorType.ANGELPAY else ProcessorType.BLUMON,
+                // 📡 Cierra la solicitud del POS al reproducir; sin él la terminal queda «ocupada».
+                terminalPaymentRequestId = context.terminalPaymentRequestId,
+                orderId = orden?.orderId ?: angel?.orderId,
+                orderNumber = orderNumber,
+                isPortabilidad = orden?.isPortabilidad ?: rapido?.isPortabilidad ?: angel?.isPortabilidad ?: false,
+                serialNumbers = orden?.serialNumbers ?: rapido?.serialNumbers ?: angel?.serialNumbers ?: emptyList(),
+                // El split sólo existe en un cobro de ORDEN. Reproducir un PERPRODUCT como
+                // FULLPAYMENT sin productos deja el artículo marcado como NO pagado y otra
+                // terminal puede cobrarlo dos veces.
+                splitType = orden?.splitType ?: SplitType.FULLPAYMENT,
+                paidProductIds = orden?.paidProductIds ?: emptyList(),
+                equalPartsPartySize = orden?.equalPartsPartySize,
+                equalPartsPayedFor = orden?.equalPartsPayedFor,
+                createdAt = createdAt,
+                retryCount = 0,
+                lastError = error?.message,
+                syncStatus = SyncStatus.PENDING,
+            )
+        }
+    }
+
     /**
      * Cash payments are identified by generated references/auth markers.
      *
@@ -186,6 +265,11 @@ data class QueuedPayment(
         return PaymentContext.FastPayment(
             venueId = venueId,
             staffId = staffId,
+            // 🔗 El TURNO viaja también en la venta rápida (2026-09-07): sin él, el cobro se
+            // registra fuera del turno de caja y el corte no cuadra. Antes se perdía tanto en la
+            // fila encolada sin orden como en el RESPALDO del worker, que reproduce una fila de
+            // orden como `copy(orderId = null)` cuando el servidor dice `ORDER_NOT_FOUND`.
+            shiftId = shiftId,
             amount = amount,
             tip = tip,
             rating = rating, // 🆕 Preserve user rating for retry
@@ -193,7 +277,15 @@ data class QueuedPayment(
             blumonSerialNumber = blumonSerialNumber, // ⚠️ LEGACY: Fallback for old records
             deviceSerialNumber = deviceSerialNumber, // ⭐ Terminal attribution (2026-01-08)
             idempotencyKey = idempotencyKey, // 🛡️ Primary dedup key for queue retries (2026-05-29)
-            terminalPaymentRequestId = terminalPaymentRequestId // 📡 closes the arbitration row on replay
+            terminalPaymentRequestId = terminalPaymentRequestId, // 📡 closes the arbitration row on replay
+            // 📸 PRUEBA DE VENTA (2026-09-07). Hay dos ventas rápidas distintas: la genérica —que
+            // viaja con estos campos vacíos, como siempre— y la del módulo de inventario
+            // serializado, casi siempre de $0, donde el servidor crea la `SaleVerification` porque
+            // el cuerpo trae `serialNumbers`. Omitirlos aquí registraba el dinero y dejaba la venta
+            // «sin SIM»: la que el cliente corporativo no paga. Se copian del contexto, tal cual;
+            // nada se decide por nombre de cliente ni por marca.
+            isPortabilidad = isPortabilidad,
+            serialNumbers = serialNumbers,
         )
     }
 

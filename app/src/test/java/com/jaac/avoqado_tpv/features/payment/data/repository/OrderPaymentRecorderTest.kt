@@ -1,6 +1,7 @@
 package com.jaac.avoqado_tpv.features.payment.data.repository
 
 import com.google.common.truth.Truth.assertThat
+import com.jaac.avoqado_tpv.core.data.network.BackendHttpException
 import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
 import com.jaac.avoqado_tpv.features.payment.data.dto.DigitalReceiptData
 import com.jaac.avoqado_tpv.features.payment.data.dto.OrderPaymentRequest
@@ -238,5 +239,75 @@ class OrderPaymentRecorderTest {
         val message = result.exceptionOrNull()?.message.orEmpty()
         // The first 300 chars of raw body bubble up so a future ops engineer can grep it.
         assertThat(message).contains("502 Bad Gateway from Cloudflare")
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // El 404 dice POR QUÉ (auditoría 2 de Codex, P1 nuevo — 2026-09-07)
+    //
+    // `PaymentSyncWorker.esOrdenQueYaNoExiste` aceptaba CUALQUIER 404 y reproducía el cobro
+    // como venta rápida. Este mismo recorder contesta «Venue or Order not found» a los dos
+    // casos: un venue equivocado o una ruta caída convertían una orden VIVA en una venta
+    // suelta, y otra terminal podía volver a cobrarla. El servidor ahora manda
+    // `code: "ORDER_NOT_FOUND"` y el recorder lo sube tal cual en [BackendHttpException.errorCode];
+    // quien decide es el worker, no el texto del mensaje.
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private fun errorResponse404(body: String): Response<PaymentResponse> =
+        Response.error(
+            404,
+            body.toResponseBody("application/json".toMediaTypeOrNull()),
+        )
+
+    @Test
+    fun `P1 un 404 con code ORDER_NOT_FOUND lo propaga en errorCode`() = runTest {
+        coEvery {
+            apiService.recordOrderPayment(any(), any(), any())
+        } returns errorResponse404("""{"message":"Order order_abc not found in venue venue_123","code":"ORDER_NOT_FOUND"}""")
+
+        val result = recorder.recordPayment(
+            context = cardContext(),
+            cardDetails = CardDetails.CASH,
+            authorizationNumber = "EFECTIVO",
+            referenceNumber = "CASH-1",
+        )
+
+        val error = result.exceptionOrNull()
+        assertThat(error).isInstanceOf(BackendHttpException::class.java)
+        assertThat((error as BackendHttpException).statusCode).isEqualTo(404)
+        assertThat(error.errorCode).isEqualTo("ORDER_NOT_FOUND")
+    }
+
+    @Test
+    fun `P1 un 404 SIN cuerpo deja errorCode nulo - no se adivina que la orden no existe`() = runTest {
+        coEvery {
+            apiService.recordOrderPayment(any(), any(), any())
+        } returns errorResponse404("")
+
+        val result = recorder.recordPayment(
+            context = cardContext(),
+            cardDetails = CardDetails.CASH,
+            authorizationNumber = "EFECTIVO",
+            referenceNumber = "CASH-1",
+        )
+
+        val error = result.exceptionOrNull()
+        assertThat(error).isInstanceOf(BackendHttpException::class.java)
+        assertThat((error as BackendHttpException).errorCode).isNull()
+    }
+
+    @Test
+    fun `P1 un 404 con un cuerpo que NO es JSON tampoco inventa un codigo`() = runTest {
+        coEvery {
+            apiService.recordOrderPayment(any(), any(), any())
+        } returns errorResponse404("<html><body>404 Not Found</body></html>")
+
+        val result = recorder.recordPayment(
+            context = cardContext(),
+            cardDetails = CardDetails.CASH,
+            authorizationNumber = "EFECTIVO",
+            referenceNumber = "CASH-1",
+        )
+
+        assertThat((result.exceptionOrNull() as BackendHttpException).errorCode).isNull()
     }
 }

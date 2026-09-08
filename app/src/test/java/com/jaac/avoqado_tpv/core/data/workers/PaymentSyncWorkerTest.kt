@@ -378,11 +378,17 @@ class PaymentSyncWorkerTest {
         processor: com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType =
             com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.BLUMON,
         idempotencyKey: String? = null,
+        serialNumbers: List<String> = emptyList(),
+        isPortabilidad: Boolean = false,
+        shiftId: String? = null,
     ): QueuedPayment = QueuedPayment(
         queueId = queueId,
         orderId = orderId,
         processor = processor,
         idempotencyKey = idempotencyKey,
+        serialNumbers = serialNumbers,
+        isPortabilidad = isPortabilidad,
+        shiftId = shiftId,
         referenceNumber = reference,
         venueId = "venue-1",
         staffId = "staff-1",
@@ -447,7 +453,7 @@ class PaymentSyncWorkerTest {
         val contextos = mutableListOf<com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext>()
         val referencias = mutableListOf<String>()
         coEvery { useCase(capture(contextos), any(), any(), capture(referencias)) } returnsMany listOf(
-            Result.failure(BackendHttpException(404, "Order not found")),
+            Result.failure(BackendHttpException(404, "Order not found", errorCode = "ORDER_NOT_FOUND")),
             Result.success(
                 com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt(
                     paymentId = "pay-1", receiptUrl = "https://r/pay-1", accessKey = "k",
@@ -481,13 +487,93 @@ class PaymentSyncWorkerTest {
         val payment = queuedPayment(reference = "ref-404b", orderId = "order-borrada")
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
         coEvery { useCase(any(), any(), any(), any()) } returns
-            Result.failure(BackendHttpException(404, "Venue not found"))
+            Result.failure(BackendHttpException(404, "Order not found", errorCode = "ORDER_NOT_FOUND"))
 
         buildWorker(repo, useCase).doWork()
 
         // Exactamente DOS: el de orden y UN reintento como venta rápida. Nunca un bucle.
         coVerify(exactly = 2) { useCase(any(), any(), any(), any()) }
         coVerify(exactly = 1) { repo.markPermanentlyFailed(queueId = payment.queueId, token = any(), error = any()) }
+    }
+
+    // 🔴 P1 nuevo de la 2ª auditoría de Codex (2026-09-07): el respaldo a venta rápida sólo
+    // procede cuando el SERVIDOR dijo que la orden no existe. El mismo endpoint contesta 404
+    // con «Venue or Order not found» a un venue equivocado o a una ruta caída — reproducir ESO
+    // como venta suelta deja la orden VIVA sin cobro y otra terminal la vuelve a cobrar.
+    @Test
+    fun `P1 un 404 SIN codigo no cae a venta rapida - la fila queda permanente en un solo intento`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-404-venue", orderId = "order-viva")
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any()) } returns
+            Result.failure(BackendHttpException(404, "Venue or Order not found"))
+
+        buildWorker(repo, useCase).doWork()
+
+        // UN solo intento: nunca se reintentó como venta rápida sobre una orden que quizá sigue viva.
+        coVerify(exactly = 1) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { repo.markPermanentlyFailed(queueId = payment.queueId, token = any(), error = any()) }
+    }
+
+    // 🔴 El código es el REAL del servidor, no uno inventado: ante una orden que SÍ existe pero
+    // pertenece a otra sucursal, `recordOrderPayment` contesta 404 con `ORDER_NOT_IN_VENUE`
+    // (`ORDER_NOT_FOUND` queda para la orden que no existe en ninguna parte). Probar con un
+    // `VENUE_NOT_FOUND` que este endpoint nunca manda dejaba la prueba en verde por un caso
+    // imposible — y el caso real, el único que deja una orden VIVA sin cobro, sin guardia.
+    @Test
+    fun `P1 un 404 con ORDER_NOT_IN_VENUE (orden viva en otra sucursal) tampoco cae a venta rapida`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(reference = "ref-404-otro", orderId = "order-viva")
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        coEvery { useCase(any(), any(), any(), any()) } returns
+            Result.failure(
+                BackendHttpException(404, "La orden pertenece a otra sucursal", errorCode = "ORDER_NOT_IN_VENUE"),
+            )
+
+        buildWorker(repo, useCase).doWork()
+
+        coVerify(exactly = 1) { useCase(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { repo.markPermanentlyFailed(queueId = payment.queueId, token = any(), error = any()) }
+    }
+
+    // 🔴 El respaldo a venta rápida NO puede perder la prueba de venta. En el módulo genérico
+    // de inventario serializado (PlayTelecom es hoy quien lo usa), la `SaleVerification` nace
+    // en el servidor porque el cuerpo del cobro trae `serialNumbers` — casi siempre sobre una
+    // venta de $0. Si el respaldo viaja sin ellos, el dinero se registra y la venta queda «sin
+    // SIM»: la que Walmart no paga. Nada de esto mira nombres de cliente: son datos del contexto.
+    @Test
+    fun `P1 el respaldo a venta rapida conserva los seriales y la portabilidad`() = runTest {
+        val repo = mockk<PaymentQueueRepository>(relaxed = true)
+        val useCase = mockk<RecordPaymentUseCase>()
+        val payment = queuedPayment(
+            reference = "ref-404-sim",
+            orderId = "order-borrada",
+            idempotencyKey = "k-sim",
+            serialNumbers = listOf("8952140064479453293F"),
+            isPortabilidad = true,
+            shiftId = "shift-1",
+        )
+        coEvery { repo.claimBatch(any()) } returns listOf(payment)
+
+        val contextos = mutableListOf<com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext>()
+        coEvery { useCase(capture(contextos), any(), any(), any()) } returnsMany listOf(
+            Result.failure(BackendHttpException(404, "Order not found", errorCode = "ORDER_NOT_FOUND")),
+            Result.success(
+                com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt(
+                    paymentId = "pay-sim", receiptUrl = "https://r/pay-sim", accessKey = "k",
+                    amount = BigDecimal("100.00"), tipAmount = BigDecimal("10.00"),
+                ),
+            ),
+        )
+
+        buildWorker(repo, useCase).doWork()
+
+        val respaldo = contextos[1] as com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext.FastPayment
+        assertThat(respaldo.serialNumbers).containsExactly("8952140064479453293F")
+        assertThat(respaldo.isPortabilidad).isTrue()
+        assertThat(respaldo.shiftId).isEqualTo("shift-1")
     }
 
     @Test
@@ -515,8 +601,9 @@ class PaymentSyncWorkerTest {
             processor = com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType.ANGELPAY,
         )
         coEvery { repo.claimBatch(any()) } returns listOf(payment)
+        // Con el código puesto: lo que la frena es el PROCESADOR, no que falte el código.
         coEvery { useCase(any(), any(), any(), any()) } returns
-            Result.failure(BackendHttpException(404, "Order not found"))
+            Result.failure(BackendHttpException(404, "Order not found", errorCode = "ORDER_NOT_FOUND"))
 
         buildWorker(repo, useCase).doWork()
 

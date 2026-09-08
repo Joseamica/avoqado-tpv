@@ -126,6 +126,15 @@ class PaymentSyncWorker @AssistedInject constructor(
 
         /** Tope de reembolsos por corrida, por la misma razón que [MAX_PAYMENTS_PER_RUN]. */
         private const val MAX_REFUNDS_PER_RUN = 10
+
+        /**
+         * Espejo por nombre EXACTO del `code` del servidor (`NotFoundError(..., 'ORDER_NOT_FOUND')`
+         * en `payment.tpv.service.ts`, serializado por `src/app.ts`). Un nombre mal escrito NO
+         * truena: el respaldo a venta rápida simplemente deja de ocurrir y el cobro queda en
+         * revisión manual — el lado seguro, pero hay que enterarse. Por eso vive en una constante
+         * y no suelto en la comparación.
+         */
+        private const val CODIGO_ORDEN_INEXISTENTE = "ORDER_NOT_FOUND"
     }
 
     /**
@@ -359,13 +368,30 @@ class PaymentSyncWorker @AssistedInject constructor(
     /**
      * ¿El 404 que acabamos de recibir es «la orden ya no existe» sobre un cobro de ORDEN?
      *
-     * Las TRES condiciones importan:
+     * Las CUATRO condiciones importan:
      * - el contexto que se mandó era [PaymentContext.OrderPayment] (un pago rápido no tiene
      *   orden que perder, y volver a mandarlo sería el mismo intento otra vez);
      * - la fila NO es de AngelPay — su replay de orden es el comportamiento de siempre y no se
      *   toca (su contexto tampoco es `OrderPayment`, así que esto es cinturón y tirantes);
      * - el código es **404** exacto. Un 400 (payload mal formado) o un 422 (regla de negocio,
-     *   p.ej. orden ya cerrada) NO se arreglan quitando la orden: ahí sí es permanente.
+     *   p.ej. orden ya cerrada) NO se arreglan quitando la orden: ahí sí es permanente;
+     * - 🔴 y el servidor dijo **`ORDER_NOT_FOUND`**. Aceptar CUALQUIER 404 era el P1 nuevo de la
+     *   2ª auditoría de Codex (2026-09-07): el mismo endpoint contesta 404 con «Venue or Order
+     *   not found» cuando el venue es otro o la ruta cambió, y convertir ESO en venta rápida
+     *   deja una orden VIVA sin cobro — que es exactamente la puerta al doble cobro humano
+     *   (otra terminal la ve sin pagar y la vuelve a cobrar). Sin código, la fila queda
+     *   permanente y la revisa una persona: ruidoso se arregla, silencioso no.
+     *
+     * Los DOS códigos que el servidor distingue en este 404, y qué hace el worker con cada uno:
+     * - **`ORDER_NOT_FOUND`** — la orden no existe en ninguna parte (borrada, migrada) ⇒ se
+     *   reproduce UNA sola vez como **venta rápida**, con la MISMA `idempotencyKey` y la MISMA
+     *   referencia: el dinero queda registrado y lo único que se pierde es el vínculo con una
+     *   orden que ya no está.
+     * - **`ORDER_NOT_IN_VENUE`** — la orden SÍ existe, pero en otra sucursal ⇒ **permanente**,
+     *   revisión humana. Convertirla en venta suelta dejaría esa orden VIVA sin cobro y otra
+     *   terminal la volvería a cobrar: el doble cobro humano que esta guardia existe para evitar.
+     * - Cualquier **otro** código, o **ninguno** (servidor viejo, cuerpo vacío, HTML de un proxy)
+     *   ⇒ permanente, por lo mismo: sin que el servidor lo diga, nadie puede afirmar la causa.
      */
     private fun esOrdenQueYaNoExiste(
         payment: com.jaac.avoqado_tpv.features.payment.domain.model.QueuedPayment,
@@ -374,7 +400,8 @@ class PaymentSyncWorker @AssistedInject constructor(
     ): Boolean = context is PaymentContext.OrderPayment &&
         payment.processor != ProcessorType.ANGELPAY &&
         error is BackendHttpException &&
-        error.statusCode == 404
+        error.statusCode == 404 &&
+        error.errorCode == CODIGO_ORDEN_INEXISTENTE
 
     /**
      * Marca la fila como SUCCESS — compare-and-swap con el `claimToken` que trae [payment]

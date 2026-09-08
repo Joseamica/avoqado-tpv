@@ -178,11 +178,18 @@ class OrderPaymentRecorder @Inject constructor(
                 }
 
                 response.code() == 404 -> {
-                    Timber.w("⚠️ Not Found (404) - Venue or Order not found")
+                    // 🔴 El 404 tiene que decir POR QUÉ (auditoría 2 de Codex, 2026-09-07). Este
+                    // mismo mensaje lo produce «la orden ya no existe» Y «venue equivocado / ruta
+                    // caída», y el worker reproducía el segundo como VENTA RÁPIDA sobre una orden
+                    // viva: otra terminal la volvía a cobrar. El `code` del servidor viaja tal cual
+                    // en el error; si el cuerpo no lo trae, queda null y nadie puede suponerlo.
+                    val errorCode = parseBackendErrorCode(response.errorBody()?.string())
+                    Timber.w("⚠️ Not Found (404) - Venue or Order not found | code=$errorCode")
                     Result.failure(
                         BackendHttpException(
                             statusCode = response.code(),
-                            message = "Orden no encontrada. Verifica que la orden existe."
+                            message = "Orden no encontrada. Verifica que la orden existe.",
+                            errorCode = errorCode
                         )
                     )
                 }
@@ -379,6 +386,24 @@ class OrderPaymentRecorder @Inject constructor(
                     "merchant=${merchantAccountId.take(8)}..."
         )
         return copy(merchantAccountId = null)
+    }
+
+    /**
+     * Devuelve el `code` del cuerpo de error del servidor, o null si no hay uno CONFIABLE.
+     *
+     * Null cuando el cuerpo está vacío, no es JSON, no es un objeto, o no trae `code`: quien
+     * decide dinero con esto (el `PaymentSyncWorker`) tiene que poder distinguir «el servidor
+     * dijo ORDER_NOT_FOUND» de «no sé por qué fue el 404». Nunca se adivina leyendo el mensaje.
+     */
+    private fun parseBackendErrorCode(rawBody: String?): String? {
+        val trimmedBody = rawBody?.trim().orEmpty()
+        if (trimmedBody.isBlank()) return null
+
+        return runCatching {
+            val json = com.google.gson.JsonParser.parseString(trimmedBody)
+            if (!json.isJsonObject) return@runCatching null
+            json.asJsonObject.get("code")?.takeUnless { it.isJsonNull }?.asString
+        }.getOrNull()?.takeIf { it.isNotBlank() }
     }
 
     private fun parseBackendErrorMessage(rawBody: String?, fallback: String): String {

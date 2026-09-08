@@ -9,15 +9,15 @@
 
 ---
 
-## [2.8.8] - 2026-09-08
+## [2.9.1] - 2026-09-07
 
-> Release de **PAX / Blumon** (`production`, versionCode **106**). Recoge toda la tanda que las
-> variantes PAX no habían recibido y que la 2.9.1 ya le había dado a Nexgo: el candado contra
-> cobros duplicados en efectivo, la fila offline que vuelve a SU orden, el split que sobrevive a
-> la cola (Room v33) y el reintento inmediato del registro. Probada en hardware el 8-sep:
-> 5 pruebas en la PAX A910S y 5 en la Nexgo N86, 10 de 10.
-> El **106** salta por encima del 105 de Nexgo a propósito: los dos flavors comparten el mismo
-> `applicationId`, así que un número menor lo rechazaría Android al actualizar.
+> Release de **PAX/Blumon** (`production`) **y Nexgo/AngelPay** (`nexgoProd`), las dos con el mismo
+> versionCode **105**. El 8-sep-2026 se retiró el override de versión del flavor `nexgoProd`: existía
+> para que un release de Nexgo no rebautizara los APK de PAX, y el efecto fue el contrario — PAX se
+> quedó en 2.8.7 (104) sin los arreglos de dinero que Nexgo ya tenía. Ahora el número vive en un solo
+> sitio y las dos variantes no pueden volver a divergir en silencio.
+> Junta por fin las dos ramas: TODO lo de 2.8.4 → 2.8.7 (cola durable de reembolsos, arreglos del 5-sep,
+> reporte, contactless) MÁS el acuse de recibo de la 2.9.0, que vivía en `develop` y ninguna terminal corrió.
 
 ### **Fixed**
 
@@ -58,16 +58,6 @@
 - **`BackendHttpException` gana `errorCode`**: el status HTTP solo no alcanza para decidir dinero — el mismo 404 significa «esta orden ya no existe» y «este venue no es tuyo». El recorder de órdenes sube ahora el `code` que el servidor pone en el cuerpo (`{"message":…,"code":"ORDER_NOT_FOUND"}`), y queda `null` si el cuerpo está vacío, no es JSON o no lo trae: ante la duda, nadie puede afirmar la causa. Parámetro con valor por default — ninguna construcción existente cambia. 3 pruebas nuevas en `OrderPaymentRecorderTest`.
 
 ---
-
-## [2.9.1] - 2026-09-07
-
-> Release de **Nexgo/AngelPay** (`nexgoProd`, versionCode **105**). Las variantes PAX conservan 2.8.7 / 104.
-> Junta por fin las dos ramas: TODO lo de 2.8.4 → 2.8.7 (cola durable de reembolsos, arreglos del 5-sep,
-> reporte, contactless) MÁS el acuse de recibo de la 2.9.0, que vivía en `develop` y ninguna terminal corrió.
-
-### **Fixed**
-
-- **Incluye, para Nexgo, todo lo que quedó listado en [2.8.8] al 7-sep**: el candado contra cobros duplicados en efectivo, la fila offline que vuelve a SU orden, el reintento inmediato de la cola tras un registro fallido y la firma del CI con la llave del founder. Las variantes PAX los recibieron después, en la [2.8.8] (versionCode 106) del 8-sep.
 
 ### **Changed**
 

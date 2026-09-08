@@ -7,6 +7,18 @@
 
 ## [Unreleased]
 
+---
+
+## [2.8.8] - 2026-09-08
+
+> Release de **PAX / Blumon** (`production`, versionCode **106**). Recoge toda la tanda que las
+> variantes PAX no habían recibido y que la 2.9.1 ya le había dado a Nexgo: el candado contra
+> cobros duplicados en efectivo, la fila offline que vuelve a SU orden, el split que sobrevive a
+> la cola (Room v33) y el reintento inmediato del registro. Probada en hardware el 8-sep:
+> 5 pruebas en la PAX A910S y 5 en la Nexgo N86, 10 de 10.
+> El **106** salta por encima del 105 de Nexgo a propósito: los dos flavors comparten el mismo
+> `applicationId`, así que un número menor lo rechazaría Android al actualizar.
+
 ### **Fixed**
 
 - **🔴 El APK `sandbox` no podía cobrar con tarjeta: se cerraba en cuanto pedía la tarjeta (módulo `:emv`)**: el SDK `blumon_sdk-1.6.1.2-sandbox` (integrado el 28-ago) llama a **dos métodos que el módulo `:emv` de este proyecto no tiene**, así que `PreTrans` moría con `NoSuchMethodError: setTerminalID([B)V` y, tras el primero, con `setConversionRatio(J)V`. La app se cerraba antes de leer nada — o sea que **toda la ruta de tarjeta era imposible de probar en sandbox**, y con ella el QA de reembolsos en la PAX. Añadidos, aditivos y documentados en el propio código: `xmlparam/entity/common/Config.java` gana el campo `terminalID` con sus accesores (tag EMV 9F1C) y `xmlparam/entity/clss/AmexAid.java` gana `conversionRatio` con los suyos.
@@ -55,7 +67,7 @@
 
 ### **Fixed**
 
-- **Incluye, para Nexgo, todo lo que sigue listado en [Unreleased] al 7-sep**: el candado contra cobros duplicados en efectivo, la fila offline que vuelve a SU orden, el reintento inmediato de la cola tras un registro fallido y la firma del CI con la llave del founder. Se dejan en [Unreleased] porque las variantes PAX (2.8.7 / 104) todavía no los reciben: entran en el siguiente release de PAX.
+- **Incluye, para Nexgo, todo lo que quedó listado en [2.8.8] al 7-sep**: el candado contra cobros duplicados en efectivo, la fila offline que vuelve a SU orden, el reintento inmediato de la cola tras un registro fallido y la firma del CI con la llave del founder. Las variantes PAX los recibieron después, en la [2.8.8] (versionCode 106) del 8-sep.
 
 ### **Changed**
 

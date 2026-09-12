@@ -5,7 +5,6 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.receiveAsFlow
-import org.json.JSONObject
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -76,6 +75,8 @@ data class RemoteRefundRequest(
  * dispositivos — todo eso murió con el transporte BLE. Lo único que el flujo vivo (SOCKET)
  * usaba era este bus de requests + cancelaciones, y es lo único que se conservó.
  */
+enum class RemotePaymentAdmission { READY, NOT_READY, NOT_CLAIMABLE, VENUE_CHANGED }
+
 @Singleton
 class RemotePaymentCoordinator @Inject constructor(
     private val remotePaymentInbox: RemotePaymentInbox,
@@ -88,13 +89,16 @@ class RemotePaymentCoordinator @Inject constructor(
     val paymentRequests = paymentRequestChannel.receiveAsFlow()
     private val queuedRequestIds = mutableSetOf<String>()
 
-    // Track current socket payment for cancel verification (idempotency)
-    @Volatile
-    private var currentSocketRequestId: String? = null
-
-    // Cancel events for UI to observe
-    private val _paymentCancelRequests = MutableSharedFlow<String?>(extraBufferCapacity = 1)
-    val paymentCancelRequests: SharedFlow<String?> = _paymentCancelRequests.asSharedFlow()
+    /**
+     * 🔴 PRUEBA DE PROPIEDAD (C.5): solicitudes que ESTE proceso reclamó ([prepareSocketPaymentRequest]).
+     *
+     * Es lo único que permite aceptar un cancel del POS sobre una solicitud reclamada que todavía NO tiene
+     * fila en la libreta (la espera de calificación, propina, método o comercio ocurre sin fila). Vive en
+     * memoria a propósito: tras la muerte del proceso nadie puede afirmar qué quedó a medias, así que el
+     * cancel contesta ACTIVE y la solicitud pasa a conciliación. No se registra desde
+     * [claimSocketPaymentRequest], que no abre ninguna pantalla (sólo lo usan las pruebas).
+     */
+    private val reclamadasEnEsteProceso = mutableSetOf<String>()
 
     /**
      * Submit a payment request from Socket.IO (server-routed payment).
@@ -107,7 +111,6 @@ class RemotePaymentCoordinator @Inject constructor(
             if (!paymentRequestChannel.trySend(request).isSuccess) return false
             queuedRequestIds += requestId
         }
-        currentSocketRequestId = request.socketRequestId
         return true
     }
 
@@ -117,42 +120,53 @@ class RemotePaymentCoordinator @Inject constructor(
         return remotePaymentInbox.markProcessing(requestId)
     }
 
-    /**
-     * Cancel a socket payment request (idempotent).
-     * Only cancels if the requestId matches the current payment being processed.
-     */
-    suspend fun cancelSocketPaymentRequest(requestId: String?) {
-        val currentId = currentSocketRequestId
-        if (requestId == null || currentId == null) {
-            // No requestId provided or no current payment - emit cancel anyway
-            Timber.i("🚫 [RemotePayment] Cancel request (no requestId check)")
-            _paymentCancelRequests.tryEmit(requestId)
-            currentSocketRequestId = null
-        } else if (currentId == requestId) {
-            // RequestIds match - this is the correct payment to cancel
-            Timber.i("🚫 [RemotePayment] Cancelling payment $requestId (matches current)")
-            _paymentCancelRequests.tryEmit(requestId)
-            currentSocketRequestId = null
-            synchronized(queuedRequestIds) { queuedRequestIds.remove(requestId) }
-            remotePaymentInbox.markResolved(
-                requestId,
-                JSONObject()
-                    .put("requestId", requestId)
-                    .put("status", "cancelled")
-                    .put("errorMessage", "Cancelado por el POS antes de iniciar el cobro")
-                    .toString(),
-            )
-        } else {
-            // RequestIds don't match - ignore (different payment already started)
-            Timber.w("⚠️ [RemotePayment] Cancel ignored - requestId mismatch. Current=$currentId, Cancel=$requestId")
+    fun observePendingObligationCount(venueId: String) = remotePaymentInbox.observePendingObligationCount(venueId)
+
+    suspend fun prepareSocketPaymentRequest(
+        requestId: String,
+        awaitReady: suspend () -> Boolean,
+        currentVenueId: () -> String?,
+    ): RemotePaymentAdmission {
+        // Cancellation can win while SDK initialization is suspended. Claim only once
+        // readiness has returned, using the current activation and the durable venue.
+        val ready = awaitReady()
+        synchronized(queuedRequestIds) { queuedRequestIds.remove(requestId) }
+        val venueId = currentVenueId()?.takeIf { it.isNotBlank() }
+            ?: return RemotePaymentAdmission.NOT_CLAIMABLE
+        if (!remotePaymentInbox.markProcessingForVenue(requestId, venueId)) {
+            return RemotePaymentAdmission.NOT_CLAIMABLE
         }
+        synchronized(reclamadasEnEsteProceso) { reclamadasEnEsteProceso += requestId }
+        // The Room call suspended: activation may have changed while it ran. This
+        // collector owns the claim but has not opened any SDK, so it may fail safely.
+        if (currentVenueId() != venueId) return RemotePaymentAdmission.VENUE_CHANGED
+        return if (ready) RemotePaymentAdmission.READY else RemotePaymentAdmission.NOT_READY
+    }
+
+    /** Remote cancellation never destroys the UI owner of a claimed SDK execution. */
+    suspend fun cancelSocketPaymentRequest(requestId: String?): RemotePaymentCancelDecision {
+        if (requestId.isNullOrBlank()) return RemotePaymentCancelDecision(RemotePaymentCancelDisposition.ACTIVE)
+        val propia = synchronized(reclamadasEnEsteProceso) { requestId in reclamadasEnEsteProceso }
+        val decision = remotePaymentInbox.cancel(requestId, propiedadEnEsteProceso = propia)
+        if (decision.disposition != RemotePaymentCancelDisposition.ACTIVE) {
+            synchronized(queuedRequestIds) { queuedRequestIds.remove(requestId) }
+            synchronized(reclamadasEnEsteProceso) { reclamadasEnEsteProceso.remove(requestId) }
+        }
+        return decision
     }
 
     /**
-     * Clear current socket request ID (called when payment completes)
+     * Sonda del servidor: contesta desde la bandeja durable; nunca entrega ni navega. El `venueId` viene del propio
+     * evento (el servidor sólo sonda filas del venue de esta terminal) y es el tenant de la lápida que deja NOT_FOUND.
      */
-    fun clearCurrentSocketRequest() {
-        currentSocketRequestId = null
+    suspend fun probeSocketPaymentRequest(requestId: String?, venueId: String): RemotePaymentProbeAnswer {
+        // Sin id no hay lápida posible, y sin lápida no hay NOT_FOUND: ACTIVE conserva la reserva (como el cancel sin id).
+        if (requestId.isNullOrBlank()) return RemotePaymentProbeAnswer(RemotePaymentProbeDisposition.ACTIVE)
+        val answer = remotePaymentInbox.probe(requestId, venueId)
+        if (answer.disposition == RemotePaymentProbeDisposition.RECEIVED_CANCELLED) {
+            synchronized(queuedRequestIds) { queuedRequestIds.remove(requestId) }
+        }
+        return answer
     }
 
     // ========================================

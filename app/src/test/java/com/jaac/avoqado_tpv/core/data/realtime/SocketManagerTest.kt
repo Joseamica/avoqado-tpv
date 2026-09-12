@@ -226,6 +226,154 @@ class SocketManagerTest {
     }
 
     @Test
+    fun `durable ACK remains accepted when in process navigation queue is full`() = runTest(testDispatcher) {
+        val request = com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequest(
+            amountCents = 10000, socketRequestId = "req-queued",
+        )
+        coEvery { mockRemotePaymentInbox.receive(any()) } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentReceiveDecision.Deliver(request)
+        every { mockRemotePaymentCoordinator.submitSocketPaymentRequest(request) } returns false
+        val ack = mockk<Ack>(relaxed = true)
+        capturedListeners["terminal:payment_request"]?.call(
+            JSONObject().put("requestId", "req-queued").put("venueId", "venue-1").put("amountCents", 10000),
+            ack,
+        )
+        verify(timeout = 2000) { ack.call(match<JSONObject> { it.optBoolean("accepted") }) }
+    }
+
+    @Test
+    fun `active cancellation reports disposition without fabricating payment result`() = runTest(testDispatcher) {
+        coEvery { mockRemotePaymentCoordinator.cancelSocketPaymentRequest("req-active") } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCancelDecision(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCancelDisposition.ACTIVE,
+            )
+        capturedListeners["terminal:payment_cancel"]?.call(JSONObject().put("requestId", "req-active"))
+        verify(timeout = 2000) {
+            mockSocket.emit("terminal:payment_cancel_disposition", match<JSONObject> {
+                it.optString("requestId") == "req-active" && it.optString("disposition") == "ACTIVE"
+            })
+        }
+        verify(exactly = 0) { mockSocket.emit("terminal:payment_result", any<JSONObject>()) }
+    }
+
+    @Test
+    fun `accepted cancellation sends actual durable result and explicit disposition`() = runTest(testDispatcher) {
+        val persisted = """{"requestId":"req-cancel","status":"cancelled"}"""
+        coEvery { mockRemotePaymentCoordinator.cancelSocketPaymentRequest("req-cancel") } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCancelDecision(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCancelDisposition.ACCEPTED, persisted,
+            )
+        capturedListeners["terminal:payment_cancel"]?.call(JSONObject().put("requestId", "req-cancel"))
+        verify(timeout = 2000) {
+            mockSocket.emit("terminal:payment_cancel_disposition", match<JSONObject> {
+                it.optString("disposition") == "ACCEPTED"
+            })
+        }
+        verify(timeout = 2000) {
+            mockSocket.emit("terminal:payment_result", match<JSONObject> { it.optString("status") == "cancelled" })
+        }
+    }
+
+    // ═══ C.5 (11-sep): el cancel además AVISA a la pantalla, con su disposición y DESPUÉS de lo durable ═══
+
+    @Test
+    fun `connect() anuncia la version 2 del cancel - acepta cancelar tras reclamar`() = runTest(testDispatcher) {
+        val capturedOptions = slot<IO.Options>()
+        every { IO.socket(any<URI>(), capture(capturedOptions)) } returns mockSocket
+        socketManager.connect("https://test.socket.io", "test-token")
+        val authMap = capturedOptions.captured.auth as? Map<*, *>
+        assertThat(authMap?.get("terminalPaymentCancelDispositionVersion")).isEqualTo("2")
+    }
+
+    @Test
+    fun `la cancelacion aceptada publica el aviso local con su disposicion`() = runTest(testDispatcher) {
+        coEvery { mockRemotePaymentCoordinator.cancelSocketPaymentRequest("req-aviso") } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCancelDecision(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCancelDisposition.ACCEPTED,
+                """{"requestId":"req-aviso","status":"cancelled"}""",
+            )
+        socketManager.events.test {
+            capturedListeners["terminal:payment_cancel"]?.call(JSONObject().put("requestId", "req-aviso"))
+            val evento = awaitItem() as com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent.TerminalPaymentCancel
+            assertThat(evento.requestId).isEqualTo("req-aviso")
+            assertThat(evento.disposition).isEqualTo("ACCEPTED")
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `una cancelacion ACTIVA tambien se avisa, para que la pantalla lo diga sin mentir`() = runTest(testDispatcher) {
+        coEvery { mockRemotePaymentCoordinator.cancelSocketPaymentRequest("req-activo") } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCancelDecision(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCancelDisposition.ACTIVE,
+            )
+        socketManager.events.test {
+            capturedListeners["terminal:payment_cancel"]?.call(JSONObject().put("requestId", "req-activo"))
+            val evento = awaitItem() as com.jaac.avoqado_tpv.core.data.realtime.events.SocketEvent.TerminalPaymentCancel
+            assertThat(evento.disposition).isEqualTo("ACTIVE")
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    // ═══ SONDA de conciliación: contesta desde la bandeja durable y NUNCA entrega ═══
+
+    @Test
+    fun `connect() announces the probe capability in the handshake`() = runTest(testDispatcher) {
+        val capturedOptions = slot<IO.Options>()
+        every { IO.socket(any<URI>(), capture(capturedOptions)) } returns mockSocket
+        socketManager.connect("https://test.socket.io", "test-token")
+        val authMap = capturedOptions.captured.auth as? Map<*, *>
+        assertThat(authMap?.get("terminalPaymentProbeVersion")).isEqualTo("1")
+    }
+
+    @Test
+    fun `probe on a received request answers RECEIVED_CANCELLED with the durable result and never delivers`() = runTest(testDispatcher) {
+        val persisted = """{"requestId":"req-probe","status":"cancelled","outcomeEvidence":"PRE_AUTHORIZATION"}"""
+        coEvery { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-probe", any()) } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeAnswer(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.RECEIVED_CANCELLED, persisted,
+            )
+        capturedListeners["terminal:payment_probe"]?.call(JSONObject().put("requestId", "req-probe"))
+        verify(timeout = 2000) {
+            mockSocket.emit("terminal:payment_probe_result", match<JSONObject> {
+                it.optString("requestId") == "req-probe" &&
+                    it.optString("disposition") == "RECEIVED_CANCELLED" &&
+                    it.optJSONObject("finalResult")?.optString("outcomeEvidence") == "PRE_AUTHORIZATION"
+            })
+        }
+        verify(timeout = 2000) { mockSocket.emit("terminal:payment_result", match<JSONObject> { it.optString("status") == "cancelled" }) }
+        verify(exactly = 0) { mockRemotePaymentCoordinator.submitSocketPaymentRequest(any()) }
+    }
+
+    @Test
+    fun `probe on an active attempt answers ACTIVE with no payment result`() = runTest(testDispatcher) {
+        coEvery { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-live", any()) } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeAnswer(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.ACTIVE,
+            )
+        capturedListeners["terminal:payment_probe"]?.call(JSONObject().put("requestId", "req-live"))
+        verify(timeout = 2000) {
+            mockSocket.emit("terminal:payment_probe_result", match<JSONObject> { it.optString("disposition") == "ACTIVE" && !it.has("finalResult") })
+        }
+        verify(exactly = 0) { mockSocket.emit("terminal:payment_result", any<JSONObject>()) }
+        verify(exactly = 0) { mockRemotePaymentCoordinator.submitSocketPaymentRequest(any()) }
+    }
+
+    @Test
+    fun `probe forwards the venue of the payload so a NOT_FOUND tombstone lands in the right tenant`() = runTest(testDispatcher) {
+        coEvery { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-none", "venue-7") } returns
+            com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeAnswer(
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentProbeDisposition.NOT_FOUND,
+            )
+        capturedListeners["terminal:payment_probe"]?.call(JSONObject().put("requestId", "req-none").put("venueId", "venue-7"))
+        verify(timeout = 2000) {
+            mockSocket.emit("terminal:payment_probe_result", match<JSONObject> { it.optString("requestId") == "req-none" && it.optString("disposition") == "NOT_FOUND" })
+        }
+        coVerify(exactly = 1) { mockRemotePaymentCoordinator.probeSocketPaymentRequest("req-none", "venue-7") }
+        verify(exactly = 0) { mockRemotePaymentCoordinator.submitSocketPaymentRequest(any()) }
+    }
+
+    @Test
     fun `should parse payment_completed event correctly`() = runTest(testDispatcher) {
         // Given
         val paymentJson = JSONObject().apply {

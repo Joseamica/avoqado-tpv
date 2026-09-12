@@ -165,7 +165,10 @@ class AvoqadoTPVApplication : Application(), Configuration.Provider, CameraXConf
         com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setAppContext(
             buildVariant = BuildConfig.BUILD_TYPE + "/" + BuildConfig.FLAVOR,
             environment = BuildConfig.BLUMON_ENV,
-            terminalSerial = runCatching { com.jaac.avoqado_tpv.core.domain.TerminalConfig.serialNumber }.getOrNull(),
+            // T26: aquí `TerminalConfig.serialNumber` todavía vale DEFAULT_SERIAL ("2841548417")
+            // y además es el serial del COMERCIO Blumon. El serial del aparato lo escribe
+            // HomeViewModel (CrashlyticsContext.setTerminalSerial) donde ya se calcula.
+            terminalSerial = null,
             appVersionName = BuildConfig.VERSION_NAME,
             appVersionCode = BuildConfig.VERSION_CODE,
         )

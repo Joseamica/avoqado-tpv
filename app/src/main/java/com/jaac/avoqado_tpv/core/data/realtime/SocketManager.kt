@@ -209,6 +209,10 @@ class SocketManager @Inject constructor(
                     // Capability gate para que el backend sólo reentregue a APKs con
                     // inbox durable; una APK vieja no puede deduplicar con seguridad.
                     put("terminalPaymentAckVersion", "1")
+                    // v2 = acepta el cancel del POS DESPUÉS de reclamar (CAS con la libreta + cerca, C.5).
+                    put("terminalPaymentCancelDispositionVersion", "2")
+                    // v1 = responde `terminal:payment_probe` desde la bandeja durable, sin entregar.
+                    put("terminalPaymentProbeVersion", "1")
                 }
 
                 // Transports: WebSocket preferred, fallback to polling
@@ -513,6 +517,7 @@ class SocketManager @Inject constructor(
 
         on("terminal:payment_request", onTerminalPaymentRequest)
         on("terminal:payment_cancel", onTerminalPaymentCancel)
+        on("terminal:payment_probe", onTerminalPaymentProbe)
         on("terminal:print_receipt_request", onTerminalReceiptPrintRequest)
         on("terminal:refund_request", onTerminalRefundRequest)
 
@@ -1541,7 +1546,13 @@ class SocketManager @Inject constructor(
                 when (val decision = remotePaymentInbox.receive(event)) {
                     is RemotePaymentReceiveDecision.Deliver -> {
                         val queued = remotePaymentCoordinator.submitSocketPaymentRequest(decision.request)
-                        ack?.call(JSONObject().put("accepted", queued).put("requestId", event.requestId))
+                        // ACK means durable receipt, even when navigation has no free slot.
+                        ack?.call(JSONObject().put("accepted", true).put("requestId", event.requestId))
+                        if (!queued) {
+                            // Only reject if RECEIVED still wins against a concurrent claim.
+                            remotePaymentInbox.rejectUnclaimed(event.requestId)
+                                ?.let(::emitPersistedTerminalPaymentResult)
+                        }
                     }
                     RemotePaymentReceiveDecision.AckOnly -> {
                         ack?.call(JSONObject().put("accepted", true).put("requestId", event.requestId))
@@ -1571,15 +1582,70 @@ class SocketManager @Inject constructor(
             val data = args.getOrNull(0) as? JSONObject ?: return@Listener
 
             Timber.i("🚫 [Socket] Terminal payment cancel received: ${data.optString("requestId")}")
-            _events.tryEmit(
-                SocketEvent.TerminalPaymentCancel(
-                    requestId = data.optString("requestId").takeIf { it.isNotEmpty() },
-                    reason = data.optString("reason", "Cancelled by user"),
-                    timestamp = data.optString("timestamp", "")
-                )
-            )
+            val requestId = data.optString("requestId").takeIf { it.isNotBlank() } ?: return@Listener
+            // Handle admission even before Home begins collecting. Room owns the
+            // decision; never navigate away from a claimed execution on remote cancel.
+            socketScope.launch {
+                try {
+                    val decision = remotePaymentCoordinator.cancelSocketPaymentRequest(requestId)
+                    socket?.emit("terminal:payment_cancel_disposition", JSONObject().apply {
+                        put("requestId", requestId)
+                        put("disposition", decision.disposition.name)
+                    })
+                    decision.finalResultJson?.let(::emitPersistedTerminalPaymentResult)
+                    // …y recién ENTONCES se avisa a la pantalla: primero lo durable, después el efecto
+                    // visible. El evento lleva la disposición para que el cobro en curso sepa si de verdad
+                    // quedó cancelado (ACCEPTED) o si el POS llegó tarde (ACTIVE). Los ViewModels filtran
+                    // por su propio requestId: `_events` tiene replay = 1 y un suscriptor nuevo recibe el último.
+                    _events.tryEmit(
+                        SocketEvent.TerminalPaymentCancel(
+                            requestId = requestId,
+                            reason = data.optString("reason").ifBlank { "El POS canceló el cobro" },
+                            timestamp = data.optString("timestamp"),
+                            disposition = decision.disposition.name,
+                        ),
+                    )
+                } catch (error: Exception) {
+                    // No durable decision means no cancellation acknowledgement.
+                    Timber.e(error, "❌ Failed to persist terminal payment cancellation")
+                }
+            }
         } catch (e: Exception) {
             Timber.e(e, "❌ Error parsing terminal:payment_cancel")
+        }
+    }
+
+    /**
+     * SONDA de conciliación: el servidor pregunta por una solicitud sin desenlace acreditado. La
+     * respuesta sale de la bandeja DURABLE (Room), nunca de la UI, y jamás entrega ni arranca un cobro.
+     * Si hay resultado final, además se reproduce por `terminal:payment_result` (el servidor ya sabe
+     * aplicarlo tarde). Un servidor viejo nunca manda este evento; un APK viejo no lo declara.
+     */
+    private val onTerminalPaymentProbe = Emitter.Listener { args ->
+        try {
+            val data = args.getOrNull(0) as? JSONObject ?: return@Listener
+            val ack = args.getOrNull(1) as? Ack
+            val requestId = data.optString("requestId").takeIf { it.isNotBlank() } ?: return@Listener
+            val venueId = data.optString("venueId") // tenant de la lápida NOT_FOUND; el servidor lo manda siempre
+            Timber.i("🔎 [Socket] Terminal payment probe received: $requestId")
+            socketScope.launch {
+                try {
+                    val answer = remotePaymentCoordinator.probeSocketPaymentRequest(requestId, venueId)
+                    val payload = JSONObject().apply {
+                        put("requestId", requestId)
+                        put("disposition", answer.disposition.name)
+                        answer.finalResultJson?.let { put("finalResult", JSONObject(it)) }
+                    }
+                    socket?.emit("terminal:payment_probe_result", payload)
+                    ack?.call(JSONObject().put("accepted", true).put("requestId", requestId))
+                    answer.finalResultJson?.let(::emitPersistedTerminalPaymentResult)
+                } catch (error: Exception) {
+                    // Sin respuesta durable no hay respuesta: el servidor conserva la reserva.
+                    Timber.e(error, "❌ Failed to answer terminal payment probe")
+                }
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "❌ Error parsing terminal:payment_probe")
         }
     }
 
@@ -1951,12 +2017,14 @@ class SocketManager @Inject constructor(
         cardDetails: Map<String, String?>? = null,
         errorMessage: String? = null,
         receiptUrl: String? = null,
-        receiptAccessKey: String? = null
+        receiptAccessKey: String? = null,
+        outcomeEvidence: String? = null
     ) {
         try {
             val payload = JSONObject().apply {
                 put("requestId", requestId)
                 put("status", status)
+                if (outcomeEvidence in setOf("PRE_AUTHORIZATION", "PROCESSOR_DECLINED")) put("outcomeEvidence", outcomeEvidence)
                 put("paymentId", paymentId ?: JSONObject.NULL)
                 put("transactionId", transactionId ?: JSONObject.NULL)
                 put("errorMessage", errorMessage ?: JSONObject.NULL)
@@ -1976,11 +2044,12 @@ class SocketManager @Inject constructor(
             // Dinero: el resultado va a disco ANTES del socket. Si el proceso muere
             // entre ambos, la reentrega del mismo requestId reproduce este JSON.
             socketScope.launch {
-                if (!remotePaymentInbox.markResolved(requestId, payload.toString())) {
-                    Timber.e("❌ [Socket] Result not emitted: durable inbox row missing/already resolved | requestId=$requestId")
+                val persisted = remotePaymentInbox.persistResult(requestId, payload.toString())
+                if (persisted == null) {
+                    Timber.w("⚠️ [Socket] Result not final or no durable inbox row | requestId=$requestId")
                     return@launch
                 }
-                socket?.emit("terminal:payment_result", payload)
+                emitPersistedTerminalPaymentResult(persisted)
                 Timber.i("📡 [Socket] Emitted durable terminal:payment_result | requestId=$requestId | status=$status")
             }
         } catch (e: Exception) {

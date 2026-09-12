@@ -214,7 +214,13 @@ sealed interface SocketEvent {
     data class TerminalPaymentCancel(
         val requestId: String?,
         val reason: String,
-        val timestamp: String
+        val timestamp: String,
+        /**
+         * Disposición DURABLE con la que la terminal contestó (`ACCEPTED` · `ACTIVE` · `ALREADY_RESOLVED`),
+         * o null si la publica un emisor que no decidió nada. La pantalla sólo puede decir «el POS canceló
+         * este cobro» cuando la bandeja YA lo escribió: sin eso sería un aviso sobre un cobro que sigue vivo.
+         */
+        val disposition: String? = null,
     ) : SocketEvent
 
     /**

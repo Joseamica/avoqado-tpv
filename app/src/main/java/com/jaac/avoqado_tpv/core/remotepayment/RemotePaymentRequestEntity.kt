@@ -26,6 +26,23 @@ data class RemotePaymentRequestEntity(
     @ColumnInfo(name = "final_result_json") val finalResultJson: String? = null,
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
+    /**
+     * C.5 (11-sep): el POS canceló DESPUÉS de que esta terminal reclamara la solicitud y la cancelación
+     * se ACEPTÓ (CAS en una transacción con la libreta). Es CERCA: [PaymentAttemptDao.reserveTerminal]
+     * ya no admite ningún intento nuevo de esta solicitud. Room v34.
+     */
+    @ColumnInfo(name = "cancel_accepted_at") val cancelAcceptedAt: Long? = null,
+    /**
+     * C.5: arrancó EFECTIVO o CRIPTO para esta solicitud (CAS antes de registrar). Desde aquí un cancel
+     * remoto contesta ACTIVE y la terminal ya no certifica un «no se cobró». Room v34.
+     */
+    @ColumnInfo(name = "execution_started_at") val executionStartedAt: Long? = null,
+    /**
+     * H.3: ya quedó escrito el desenlace FINAL de esta solicitud (el que se emite al servidor). También
+     * es CERCA: una solicitud tiene a lo más UN final emitido, y desde ese momento la terminal ya no la
+     * ejecuta. Room v34.
+     */
+    @ColumnInfo(name = "final_emitted_at") val finalEmittedAt: Long? = null,
 ) {
     fun sameMoneyContract(event: SocketEvent.TerminalPaymentRequest): Boolean =
         venueId == event.venueId &&
@@ -51,6 +68,28 @@ data class RemotePaymentRequestEntity(
         const val STATUS_RECEIVED = "RECEIVED"
         const val STATUS_PROCESSING = "PROCESSING"
         const val STATUS_RESOLVED = "RESOLVED"
+        /**
+         * LÁPIDA: esta bandeja contestó NOT_FOUND a la sonda del servidor. No es una solicitud entregable (no lleva
+         * contrato de dinero) y NUNCA se ejecuta: si la solicitud con ese `requestId` llega después, `receive` la rechaza.
+         */
+        const val STATUS_NOT_FOUND_ANSWERED = "NOT_FOUND_ANSWERED"
+
+        fun tombstone(requestId: String, venueId: String, now: Long = System.currentTimeMillis()) = RemotePaymentRequestEntity(
+            requestId = requestId,
+            venueId = venueId,
+            amountCents = 0L,
+            tipCents = 0L,
+            rating = null,
+            skipReview = false,
+            orderId = null,
+            processedByStaffId = null,
+            senderDeviceName = null,
+            sourceTimestamp = java.time.Instant.ofEpochMilli(now).toString(),
+            status = STATUS_NOT_FOUND_ANSWERED,
+            finalResultJson = null,
+            createdAt = now,
+            updatedAt = now,
+        )
 
         fun from(
             event: SocketEvent.TerminalPaymentRequest,

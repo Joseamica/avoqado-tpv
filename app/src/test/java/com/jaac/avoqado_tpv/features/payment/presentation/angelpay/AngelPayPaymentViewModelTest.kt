@@ -1,5 +1,7 @@
 package com.jaac.avoqado_tpv.features.payment.presentation.angelpay
 
+import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
+import java.math.BigDecimal
 import android.content.Context
 import android.content.Intent
 import androidx.lifecycle.viewModelScope
@@ -17,12 +19,16 @@ import com.jaac.avoqado_tpv.core.observability.ObservabilityManager
 import com.jaac.avoqado_tpv.core.printer.PrinterManager
 import com.jaac.avoqado_tpv.features.authentication.data.repository.AuthRepository
 import com.jaac.avoqado_tpv.features.payment.data.api.PaymentApiService
+import com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud
 import com.jaac.avoqado_tpv.features.payment.data.local.AuthAttemptTelemetryStore
+import com.jaac.avoqado_tpv.features.payment.presentation.CobroRemotoDelPos
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthState
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayIntentBuilder
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayMerchantRepository
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayChargeVerifier
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.VerificacionDelCobro
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.PaymentStateHolder
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
@@ -33,6 +39,7 @@ import com.jaac.avoqado_tpv.features.payment.domain.processor.ProcessorType
 import com.jaac.avoqado_tpv.features.payment.domain.repository.MerchantRepository
 import com.jaac.avoqado_tpv.features.payment.domain.usecase.RecordPaymentUseCase
 import com.jaac.avoqado_tpv.features.shift.data.repository.ShiftRepository
+import com.jaac.avoqado_tpv.core.domain.TerminalConfig
 import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -51,6 +58,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -101,6 +109,10 @@ class AngelPayPaymentViewModelTest {
     private lateinit var paymentAttemptLedger: com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
     // 📊 Task 6 — relaxed: recording is fire-and-forget and observational only.
     private lateinit var authAttemptTelemetryStore: AuthAttemptTelemetryStore
+    // 🔍 Verificador del desenlace INCIERTO: consulta el historial de AngelPay para saber
+    // si un cobro sin veredicto llego a moverse. Mockeado aqui; su logica vive en
+    // AngelPayChargeVerifierTest.
+    private lateinit var chargeVerifier: AngelPayChargeVerifier
 
     // Backing state for repositories whose flows the VM observes
     private val authStateFlow = MutableStateFlow<AngelPayAuthState>(AngelPayAuthState.Authenticated)
@@ -156,8 +168,16 @@ class AngelPayPaymentViewModelTest {
         observabilityManager = mockk(relaxed = true)
         paymentQueueRepository = mockk(relaxed = true)
         coEvery { paymentQueueRepository.enqueue(any()) } returns Result.success(Unit)
-        paymentAttemptLedger = mockk(relaxed = true)
+        paymentAttemptLedger = mockk(relaxed = true) {
+            coEvery { cobroSinResolver() } returns null
+            coEvery { openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns true
+            coEvery { markAuthorizing(any()) } returns true
+            // C.5: por defecto la solicitud no está cercada y el efectivo/cripto puede arrancar.
+            coEvery { cercaDeSolicitud(any()) } returns CercaDeSolicitud.LIBRE
+            coEvery { iniciarEjecucionNoTarjeta(any()) } returns CercaDeSolicitud.LIBRE
+        }
         authAttemptTelemetryStore = mockk(relaxed = true)
+        chargeVerifier = mockk(relaxed = true)
 
         // Reactive flows the VM observes
         every { angelPayAuthRepository.state } returns authStateFlow
@@ -167,6 +187,15 @@ class AngelPayPaymentViewModelTest {
         every { merchantRepository.getActiveMerchants() } returns merchantsFlow
         every { socketManager.events } returns socketEventsFlow
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings()
+        // T26: la alineación se revalida contra la sesión VIVA del SDK. Por default la sesión
+        // viva coincide con la marca en memoria; una prueba que quiera divergencia lo dice.
+        coEvery { sdkGateway.getUserMerchants() } answers {
+            Result.success(
+                activeMerchantIdFlow.value
+                    ?.let { listOf(MerchantSummary(id = it, name = "x", affiliationNumber = "1", isActive = true)) }
+                    ?: emptyList(),
+            )
+        }
     }
 
     @After
@@ -175,7 +204,9 @@ class AngelPayPaymentViewModelTest {
         unmockkAll()
     }
 
-    private fun createViewModel(): AngelPayPaymentViewModel = AngelPayPaymentViewModel(
+    private fun createViewModel(
+        savedStateHandle: androidx.lifecycle.SavedStateHandle = androidx.lifecycle.SavedStateHandle(),
+    ): AngelPayPaymentViewModel = AngelPayPaymentViewModel(
         appContext = appContext,
         recordPaymentUseCase = recordPaymentUseCase,
         shiftRepository = shiftRepository,
@@ -200,9 +231,12 @@ class AngelPayPaymentViewModelTest {
         paymentQueueRepository = paymentQueueRepository,
         paymentAttemptLedger = paymentAttemptLedger,
         authAttemptTelemetryStore = authAttemptTelemetryStore,
+        // T26: botón «Reintentar» del banner (recuperación MANUAL de la auth de AngelPay).
+        angelPayAuthRecovery = mockk(relaxed = true),
+        chargeVerifier = chargeVerifier,
         // Real handle (a plain in-memory map here) — the socket arbitration fields are backed by
         // it so they survive Activity/VM death while the AngelPay SDK Activity is in front.
-        savedStateHandle = androidx.lifecycle.SavedStateHandle(),
+        savedStateHandle = savedStateHandle,
     )
 
     // ----------------------------------------------------------------------
@@ -368,7 +402,8 @@ class AngelPayPaymentViewModelTest {
     // 6. paymentStateHolder.setCharging set and cleared around payment
     // ----------------------------------------------------------------------
     @Test
-    fun `startCardPayment sets charging then clearChargingOnTerminal clears it on Cancelled`() = runTest(testDispatcher) {
+    fun `empty callback after SDK launch preserves the charging gate`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("sin respuesta")
         // No mismatch — guard short-circuits to true, VM enters Charging.
         activeMerchantIdFlow.value = 11
         authStateFlow.value = AngelPayAuthState.Authenticated
@@ -391,12 +426,11 @@ class AngelPayPaymentViewModelTest {
             // Charging gate engaged before SDK launch.
             coVerify(atLeast = 1) { paymentStateHolder.setCharging(true) }
 
-            // Simulate a cancellation from the AngelPay app — the result handler
-            // must flip the gate back off.
+            // Empty callback cannot prove cancellation after launch.
             vm.onAngelPayResult(resultCode = 0, data = null)
             runCurrent()
 
-            coVerify(atLeast = 1) { paymentStateHolder.setCharging(false) }
+            coVerify(exactly = 0) { paymentStateHolder.setCharging(false) }
         } finally {
             vm.viewModelScope.cancel()
         }
@@ -428,7 +462,7 @@ class AngelPayPaymentViewModelTest {
                 verify(exactly = 1) {
                     socketManager.emitTerminalPaymentResult(
                         requestId = "REQ-RETRY", status = "failed", any(), any(), any(), any(), any(), any(),
-                    )
+                     outcomeEvidence = any())
                 }
 
                 // 🔑 The id must STILL be there — it is the link the recorded payment carries.
@@ -440,7 +474,7 @@ class AngelPayPaymentViewModelTest {
                 verify(exactly = 0) {
                     socketManager.emitTerminalPaymentResult(
                         requestId = "REQ-RETRY", status = "success", any(), any(), any(), any(), any(), any(),
-                    )
+                     outcomeEvidence = any())
                 }
                 // …but the link is STILL intact for the retry's payment record.
                 assertThat(vm.socketRequestIdForTest()).isEqualTo("REQ-RETRY")
@@ -467,15 +501,193 @@ class AngelPayPaymentViewModelTest {
                 verify(exactly = 1) {
                     socketManager.emitTerminalPaymentResult(
                         requestId = "REQ-SAME", status = "success", any(), any(), any(), any(), any(), any(),
-                    )
+                     outcomeEvidence = any())
                 }
             } finally {
                 vm.viewModelScope.cancel()
             }
         }
 
+    // ----------------------------------------------------------------------
+    // P1 · Un ViewModel = UNA solicitud (2026-09-11)
+    //
+    // El VM está atado a la entrada de navegación (hiltViewModel): un cobro remoto NUEVO siempre
+    // llega en una entrada NUEVA con un VM NUEVO. Pero la pantalla lee paymentSource/
+    // socketRequestId del `previousBackStackEntry`, que se calcula contra el TOPE actual: cuando
+    // B tapa la pantalla ya resuelta de A, la pantalla de A que va saliendo se recompone, lee los
+    // argumentos de B y se los pasaba a SU VM. El VM de A quedaba con importe, propina, orden e
+    // intento de A y el id de B; al morir (onCleared) le mandaba al servidor un «cancelled» de B
+    // con evidencia PRE_AUTHORIZATION prestada de A — que el servidor acepta para liberar la
+    // terminal mientras la pantalla de B sigue pidiendo tarjeta. Si luego se cobra B, llega tarde
+    // con 🚨; si el cajero ya cobró en otra terminal, es un cobro doble.
+    // ----------------------------------------------------------------------
+
+    private fun verificarNingunDesenlacePara(requestId: String) {
+        verify(exactly = 0) {
+            socketManager.emitTerminalPaymentResult(
+                requestId, any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any(),
+            )
+        }
+    }
+
     @Test
-    fun `a NEW request id re-opens the emit gate (next charge must report its own result)`() =
+    fun `P1 un VM ya atado a la solicitud A no adopta el id de B que le llega al salir`() =
+        runTest(testDispatcher) {
+            val vm = createViewModel()
+            try {
+                vm.setSocketPaymentSource("SOCKET", "REQ-A")
+                runCurrent()
+                // A se resolvió (rechazo): su pantalla ya no trabaja y el colector la saca.
+                vm.emitSocketResultForTest(status = "failed", errorMessage = "declinada")
+                runCurrent()
+
+                // La pantalla de A, al salir, relee el handle de Home — que ya trae los de B.
+                vm.setSocketPaymentSource("SOCKET", "REQ-B")
+                runCurrent()
+
+                assertThat(vm.socketRequestIdForTest()).isEqualTo("REQ-A")
+
+                // Y al morir ese VM NO puede hablar en nombre de B.
+                vm.emitCancelledIfAbandoned()
+                runCurrent()
+                verificarNingunDesenlacePara("REQ-B")
+            } finally {
+                vm.viewModelScope.cancel()
+            }
+        }
+
+    @Test
+    fun `P1 un VM de un cobro LOCAL no se vuelve remoto por los argumentos de B`() =
+        runTest(testDispatcher) {
+            val vm = createViewModel()
+            try {
+                // Primer compose de un cobro iniciado en la terminal: la pantalla pasa (null, null).
+                vm.setSocketPaymentSource(null, null)
+                runCurrent()
+
+                // B tapa esa pantalla y, al salir, le llegan sus argumentos.
+                vm.setSocketPaymentSource("SOCKET", "REQ-B")
+                runCurrent()
+
+                assertThat(vm.socketRequestIdForTest()).isNull()
+                vm.emitCancelledIfAbandoned()
+                runCurrent()
+                verificarNingunDesenlacePara("REQ-B")
+            } finally {
+                vm.viewModelScope.cancel()
+            }
+        }
+
+    @Test
+    fun `P1 tras resetPayment el VM no adopta ninguna solicitud nueva`() =
+        runTest(testDispatcher) {
+            val vm = createViewModel()
+            try {
+                vm.setSocketPaymentSource("SOCKET", "REQ-A")
+                runCurrent()
+                vm.resetPayment() // avisa cancelled de A y limpia el enlace
+                runCurrent()
+                clearMocks(socketManager, answers = false)
+
+                vm.setSocketPaymentSource("SOCKET", "REQ-B")
+                runCurrent()
+
+                assertThat(vm.socketRequestIdForTest()).isNull()
+                vm.emitCancelledIfAbandoned()
+                runCurrent()
+                verificarNingunDesenlacePara("REQ-B")
+            } finally {
+                vm.viewModelScope.cancel()
+            }
+        }
+
+    @Test
+    fun `P1 el candado sobrevive a la muerte del proceso - el VM restaurado no adopta otro id`() =
+        runTest(testDispatcher) {
+            val handle = androidx.lifecycle.SavedStateHandle()
+            val original = createViewModel(handle)
+            original.setSocketPaymentSource("SOCKET", "REQ-A")
+            runCurrent()
+            original.viewModelScope.cancel()
+
+            val restaurado = createViewModel(
+                androidx.lifecycle.SavedStateHandle(handle.keys().associateWith { handle.get<Any?>(it) }),
+            )
+            try {
+                // El mismo id (la recomposición tras recrear) sigue siendo un no-op…
+                restaurado.setSocketPaymentSource("SOCKET", "REQ-A")
+                // …pero otro id no se adopta.
+                restaurado.setSocketPaymentSource("SOCKET", "REQ-B")
+                runCurrent()
+
+                assertThat(restaurado.socketRequestIdForTest()).isEqualTo("REQ-A")
+            } finally {
+                restaurado.viewModelScope.cancel()
+            }
+        }
+
+    @Test
+    fun `P1 una solicitud B no re-etiqueta al VM de A con un intento sin cerrar`() =
+        runTest(testDispatcher) {
+            // A ya tiene su contexto de pago (importe, intento) y el SDK lanzado: un intento
+            // SIN cerrar. Si B se le pegara aquí, un registro de este VM llevaría el importe de A
+            // con el id de B.
+            val vm = vmConCobroDelPos("REQ-A")
+            try {
+                vm.setSocketPaymentSource("SOCKET", "REQ-B")
+                runCurrent()
+
+                assertThat(vm.socketRequestIdForTest()).isEqualTo("REQ-A")
+                vm.emitCancelledIfAbandoned()
+                runCurrent()
+                verificarNingunDesenlacePara("REQ-B")
+            } finally {
+                vm.viewModelScope.cancel()
+            }
+        }
+
+    @Test
+    fun `P1 el reloj de abandono de A nunca emite con el id de B`() = runTest(testDispatcher) {
+        val vm = vmConCobroDelPos("REQ-A")
+        vm.msAbandonoAvisoEmv = 100L
+        try {
+            // Aviso EMV recuperable: se arma el reloj que cierra la fila de A si nadie retoma.
+            vm.onAngelPaySdkResult(
+                sdkFailureResult(sdkCode = "E608", message = "Limite contactless excedido", category = "EMV"),
+            )
+            runCurrent()
+            // Mientras el reloj corre, llega B (la pantalla de A sale y relee el handle de Home).
+            vm.setSocketPaymentSource("SOCKET", "REQ-B")
+            runCurrent()
+
+            advanceTimeBy(300)
+            runCurrent()
+
+            verificarNingunDesenlacePara("REQ-B")
+            // 🔴 El desenlace del abandono sale con el id de A — que es lo que este P1 guarda — y
+            // con `failed`, NO con `cancelled` (H.3, 11-sep): el rechazo del procesador (E608) ya
+            // dejo evidencia `PROCESSOR_DECLINED`, y el servidor solo la acredita junto a `failed`.
+            // Con `cancelled` la degrada a timeout, la fila queda UNKNOWN y la terminal y la tablet
+            // se quedan bloqueadas. Se fija la evidencia explicita, no `any()`: es lo que convierte
+            // este desenlace en «no se cobro» acreditado.
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    "REQ-A", "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = "PROCESSOR_DECLINED",
+                )
+            }
+            // Y nunca con `cancelled`: si alguien revierte H.3, esta linea cae.
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(
+                    "REQ-A", "cancelled", any(), any(), any(), any(), any(), any(), outcomeEvidence = any(),
+                )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `un VM nuevo si adopta su primera solicitud remota`() =
         runTest(testDispatcher) {
             val vm = createViewModel()
             try {
@@ -483,14 +695,11 @@ class AngelPayPaymentViewModelTest {
                 vm.emitSocketResultForTest(status = "success", paymentId = "pay-1")
                 runCurrent()
 
-                vm.setSocketPaymentSource("SOCKET", "REQ-2")
-                vm.emitSocketResultForTest(status = "success", paymentId = "pay-2")
-                runCurrent()
-
+                assertThat(vm.socketRequestIdForTest()).isEqualTo("REQ-1")
                 verify(exactly = 1) {
                     socketManager.emitTerminalPaymentResult(
-                        requestId = "REQ-2", status = "success", any(), any(), any(), any(), any(), any(),
-                    )
+                        requestId = "REQ-1", status = "success", any(), any(), any(), any(), any(), any(),
+                     outcomeEvidence = any())
                 }
             } finally {
                 vm.viewModelScope.cancel()
@@ -915,7 +1124,7 @@ class AngelPayPaymentViewModelTest {
                     errorMessage = "Propina invalida",
                     receiptUrl = any(),
                     receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
             coVerify(exactly = 0) { recordPaymentUseCase(any(), any(), any(), any()) }
         } finally {
@@ -1110,6 +1319,14 @@ class AngelPayPaymentViewModelTest {
 
             val declined = mockk<PaymentResult>(relaxed = true)
             every { declined.approved } returns false
+            // 🔴 `status` DECLINED es lo que hace de esto un rechazo y no un "no se sabe".
+            // Se declara desde que existen los tres desenlaces (2026-09-08): un
+            // `PaymentResult` sin código de catálogo, sin código del emisor Y sin status
+            // no describe ningún rechazo real — `status` no es nullable en el SDK, así que
+            // ese resultado sólo puede salir de un mock a medio armar. Un resultado así,
+            // en la vida real, es una salida SIN veredicto y se clasifica como INCIERTO.
+            every { declined.status } returns PaymentResult.Status.DECLINED
+            every { declined.code } returns "05"
             every { declined.message } returns "Transaccion declinada"
             every { declined.callResult } returns null
             every { declined.authCode } returns null
@@ -1131,7 +1348,8 @@ class AngelPayPaymentViewModelTest {
     }
 
     @Test
-    fun `cancelled app-to-app result marks the host verdict approved=false`() = runTest(testDispatcher) {
+    fun `empty app-to-app callback after authorization remains unknown`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("sin respuesta")
         every { authRepository.getVenueId() } returns "v1"
         every { authRepository.getStaffId() } returns "s1"
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
@@ -1141,12 +1359,13 @@ class AngelPayPaymentViewModelTest {
             vm.initPayment(amount = "100.00") // caches venue/staff + attemptId
             runCurrent()
 
-            // resultCode != RESULT_OK with no extras → AngelPayResult.Cancelled (no money moved).
+            vm.openLedgerAttemptAndMarkAuthorizing("attempt-empty")
+            // Empty callback cannot prove financial cancellation.
             vm.onAngelPayResult(resultCode = 0, data = null)
             runCurrent()
 
-            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Cancelled::class.java)
-            coVerify(exactly = 1) {
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
+            coVerify(exactly = 0) {
                 paymentAttemptLedger.markHostResponded(any(), false, null, null, null)
             }
         } finally {
@@ -1237,6 +1456,94 @@ class AngelPayPaymentViewModelTest {
         } finally {
             vm.viewModelScope.cancel()
         }
+    }
+
+    @Test
+    fun `app to app G505 preserves unknown instead of recording a decline`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoSePudoVerificar("sin respuesta")
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        io.mockk.mockkConstructor(com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser::class)
+        every { anyConstructed<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser>().parse(any(), any()) } returns
+            com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResult.Failure("Resultado no concluyente", "G505", "GATEWAY")
+        val vm = createViewModel()
+        try {
+            vm.initPayment("100.00")
+            vm.onAngelPayResult(0, null)
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
+            coVerify(exactly = 0) { paymentAttemptLedger.markHostResponded(any(), false, any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+            io.mockk.unmockkConstructor(com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayResultParser::class)
+        }
+    }
+
+    @Test
+    fun `review duplicate barrier cannot authorize second SDK launch when durable CAS loses`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { paymentAttemptLedger.markAuthorizing("attempt-X") } returnsMany listOf(true, false)
+        val vm = createViewModel()
+        try {
+            vm.initPayment("100.00")
+            runCurrent()
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("attempt-X")).isTrue()
+            assertThat(vm.openLedgerAttemptAndMarkAuthorizing("attempt-X")).isFalse()
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `pre-launch persists complete replayable identity before SDK`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        val json = slot<String>()
+        coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), capture(json), any()) } returns true
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00")
+            runCurrent()
+            vm.openLedgerAttemptAndMarkAuthorizing("attempt-X")
+            val saved = com.google.gson.Gson().fromJson(json.captured, PaymentContext.AngelPayPayment::class.java)
+            assertThat(saved.venueId).isEqualTo("v1")
+            assertThat(saved.staffId).isEqualTo("s1")
+            assertThat(saved.idempotencyKey).isEqualTo("attempt-X")
+            assertThat(saved.amount).isEqualTo(BigDecimal("100.00"))
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    /**
+     * 🔴 El serial que se GUARDA en la libreta es el que usará `LedgerUnknownRecovery` para
+     * preguntarle a AngelPay «¿este cobro pasó?» tras un reinicio — lo lee del propio
+     * `payment_context_json` (`LedgerUnknownRecovery:34`). Si ahí queda
+     * `TerminalConfig.serialNumber`, que NO es de este aparato sino de un COMERCIO Blumon
+     * (su defecto es "2841548417", una PAX), la consulta vuelve vacía SIEMPRE y ningún cobro
+     * incierto se puede acreditar nunca.
+     *
+     * Es la otra mitad del arreglo del 11-sep: ahí se corrigió la consulta EN VIVO
+     * (`chargeVerifier.verificar`) y se dejó intacto lo que la libreta persiste, así que la
+     * recuperación automática seguía muerta. Lo destapó la auditoría de Codex del 12-sep.
+     */
+    @Test
+    fun `la libreta guarda el serial del APARATO, no el del comercio Blumon — sin eso la recuperacion tras reinicio nunca acredita`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        every { secureStorage.getSerialNumber() } returns "AVQD-N860W173397"
+        val json = slot<String>()
+        coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), capture(json), any()) } returns true
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00")
+            runCurrent()
+            vm.openLedgerAttemptAndMarkAuthorizing("attempt-S")
+            val saved = com.google.gson.Gson().fromJson(json.captured, PaymentContext.AngelPayPayment::class.java)
+            // Sin el prefijo `AVQD-`: es el ÚNICO valor con el que AngelPay contesta (lo fija
+            // `serialParaAngelPay`, y su condición de aceptación exige serial no vacío).
+            assertThat(saved.deviceSerialNumber).isEqualTo("N860W173397")
+            assertThat(saved.deviceSerialNumber).isNotEqualTo(TerminalConfig.serialNumber)
+        } finally { vm.viewModelScope.cancel() }
     }
 
     @Test
@@ -1378,7 +1685,7 @@ class AngelPayPaymentViewModelTest {
                     errorMessage = any(),
                     receiptUrl = any(),
                     receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -1409,15 +1716,22 @@ class AngelPayPaymentViewModelTest {
                     errorMessage = any(),
                     receiptUrl = any(),
                     receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
         }
     }
 
+    /**
+     * 🛑 H.3 (11-sep): un rechazo del banco NO es un desenlace final mientras la terminal ofrezca
+     * «Reintentar» sobre la MISMA solicitud. Emitirlo ahí hacía que el servidor la diera por NOT_CHARGED
+     * y la tablet soltara su llave… con el botón de reintentar todavía en pantalla: si ese reintento
+     * aprobaba, el cliente pagaba dos veces (P1-2 de la auditoría; 6 filas COMPLETED con failureCode
+     * TPV_ERROR en producción son exactamente ese patrón). Sale al salir, y sale UNO.
+     */
     @Test
-    fun `socket-sourced SDK decline (no money moved) emits failed`() = runTest(testDispatcher) {
+    fun `socket-sourced SDK decline no emite nada mientras se pueda reintentar y al salir emite UN failed`() = runTest(testDispatcher) {
         val vm = createViewModel()
         try {
             vm.setSocketPaymentSource("SOCKET", "req-decline")
@@ -1425,6 +1739,13 @@ class AngelPayPaymentViewModelTest {
             runCurrent()
 
             vm.onAngelPaySdkResult(sdkFailureResult("G500")) // non-session decline → terminal
+            runCurrent()
+
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+
+            vm.resetPayment() // el cajero sale del cobro
             runCurrent()
 
             verify(exactly = 1) {
@@ -1437,7 +1758,73 @@ class AngelPayPaymentViewModelTest {
                     errorMessage = any(),
                     receiptUrl = any(),
                     receiptAccessKey = any(),
+                    outcomeEvidence = "PROCESSOR_DECLINED",
                 )
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    /** El reloj de abandono cierra la fila del POS con UN solo desenlace, y quita el «Reintentar». */
+    @Test
+    fun `un rechazo sin retomar se cierra solo con UN failed mas PROCESSOR_DECLINED`() = runTest(testDispatcher) {
+        val vm = vmConCobroDelPos("req-decline-abandonado")
+        vm.msAbandonoAvisoEmv = 100L
+        try {
+            vm.onAngelPaySdkResult(sdkFailureResult("G500"))
+            runCurrent()
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+
+            advanceTimeBy(300)
+            runCurrent()
+
+            verify(exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-decline-abandonado", status = "failed", paymentId = any(),
+                    transactionId = any(), cardDetails = any(), errorMessage = any(), receiptUrl = any(),
+                    receiptAccessKey = any(), outcomeEvidence = "PROCESSOR_DECLINED",
+                )
+            }
+            val estado = vm.state.value as AngelPayPaymentState.Error
+            assertThat(estado.canRetry).isFalse()
+            assertThat(estado.message).isEqualTo(CobroRemotoDelPos.CERRADO_POR_ABANDONO)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    /** Y si el cajero SÍ retoma y el chip aprueba, el único desenlace es `success`. */
+    @Test
+    fun `tras un rechazo, un reintento aprobado emite success y ningun desenlace negativo`() = runTest(testDispatcher) {
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.success(
+            PaymentReceipt(
+                paymentId = "pay-retry", receiptUrl = "https://receipt/pay-retry", accessKey = "key-retry",
+                amount = java.math.BigDecimal("100.00"), tipAmount = java.math.BigDecimal.ZERO,
+            ),
+        )
+        val vm = vmConCobroDelPos("req-decline-retry")
+        try {
+            vm.onAngelPaySdkResult(sdkFailureResult("G500"))
+            runCurrent()
+            vm.retryAfterError()
+            runCurrent()
+            vm.primeSdkLaunch()
+            runCurrent()
+            vm.onAngelPaySdkResult(approvedSdkResult())
+            runCurrent()
+
+            verify(timeout = 2000, exactly = 1) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-decline-retry", status = "success", paymentId = "pay-retry",
+                    transactionId = any(), cardDetails = any(), errorMessage = any(), receiptUrl = any(),
+                    receiptAccessKey = any(), outcomeEvidence = any(),
+                )
+            }
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -1568,7 +1955,7 @@ class AngelPayPaymentViewModelTest {
             runCurrent()
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
             verify(exactly = 0) {
-                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any())
+                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
             }
 
             // 2) In-session retry: relaunch (resets the consume guard, same as the real
@@ -1589,17 +1976,19 @@ class AngelPayPaymentViewModelTest {
                     errorMessage = any(),
                     receiptUrl = any(),
                     receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
         }
     }
 
+    /**
+     * H.3: un rechazo EMV que el catálogo marca «nunca reintentar» (E606) tampoco emite en el acto — la
+     * pantalla sigue ofreciendo «Reintentar» con otra tarjeta, que es el mismo hueco. Al salir sale UNO.
+     */
     @Test
-    fun `socket-sourced NEVER-retry EMV decline (E606 online rejection) still emits failed`() = runTest(testDispatcher) {
-        // Guard the guard: only IMMEDIATE_AFTER_FIX advisories hold the socket result.
-        // A real EMV decline (vendor retry=NEVER) must keep failing fast to the POS.
+    fun `socket-sourced NEVER-retry EMV decline (E606 online rejection) sale al salir, no al rechazar`() = runTest(testDispatcher) {
         val vm = createViewModel()
         try {
             vm.setSocketPaymentSource("SOCKET", "req-e606")
@@ -1607,6 +1996,12 @@ class AngelPayPaymentViewModelTest {
             runCurrent()
 
             vm.onAngelPaySdkResult(sdkFailureResult(sdkCode = "E606", message = "Rechazo online", category = "EMV"))
+            runCurrent()
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+
+            vm.resetPayment()
             runCurrent()
 
             verify(exactly = 1) {
@@ -1619,7 +2014,7 @@ class AngelPayPaymentViewModelTest {
                     errorMessage = any(),
                     receiptUrl = any(),
                     receiptAccessKey = any(),
-                )
+                 outcomeEvidence = "PROCESSOR_DECLINED")
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -1646,7 +2041,7 @@ class AngelPayPaymentViewModelTest {
                     errorMessage = any(),
                     receiptUrl = any(),
                     receiptAccessKey = any(),
-                )
+                 outcomeEvidence = "PRE_AUTHORIZATION")
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -1672,6 +2067,7 @@ class AngelPayPaymentViewModelTest {
                     errorMessage = any(),
                     receiptUrl = any(),
                     receiptAccessKey = any(),
+                    outcomeEvidence = "PRE_AUTHORIZATION",
                 )
             }
         } finally {
@@ -1693,7 +2089,7 @@ class AngelPayPaymentViewModelTest {
             runCurrent()
 
             verify(exactly = 0) {
-                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any())
+                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -1738,7 +2134,7 @@ class AngelPayPaymentViewModelTest {
                     requestId = "req-cash", status = "success", paymentId = any(),
                     transactionId = any(), cardDetails = any(), errorMessage = any(),
                     receiptUrl = any(), receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -1774,7 +2170,7 @@ class AngelPayPaymentViewModelTest {
                     requestId = "req-card", status = "success", paymentId = any(),
                     transactionId = any(), cardDetails = any(), errorMessage = any(),
                     receiptUrl = any(), receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -1807,7 +2203,7 @@ class AngelPayPaymentViewModelTest {
                     requestId = "req-orphan", status = "success", paymentId = any(),
                     transactionId = any(), cardDetails = any(), errorMessage = any(),
                     receiptUrl = any(), receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -1835,7 +2231,7 @@ class AngelPayPaymentViewModelTest {
             assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
             // No socket result: the request stays open so a terminal retry can still report success.
             verify(exactly = 0) {
-                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any())
+                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -1855,7 +2251,7 @@ class AngelPayPaymentViewModelTest {
             // 1) Transient failure → no emit, _socketRequestId left intact.
             vm.selectMerchant(angelPayMerchantB)
             runCurrent()
-            verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any()) }
+            verify(exactly = 0) { socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any()) }
 
             // 2) Cashier retries → charge succeeds (money-moved/enqueued path emits success).
             vm.handleRecordFailure(
@@ -1870,7 +2266,7 @@ class AngelPayPaymentViewModelTest {
                     requestId = "req-retry", status = "success", paymentId = any(),
                     transactionId = any(), cardDetails = any(), errorMessage = any(),
                     receiptUrl = any(), receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -1878,7 +2274,7 @@ class AngelPayPaymentViewModelTest {
     }
 
     @Test
-    fun `real SDK decline still emits failed (regression)`() = runTest(testDispatcher) {
+    fun `real SDK decline emits failed al salir (regression)`() = runTest(testDispatcher) {
         val vm = createViewModel()
         try {
             vm.setSocketPaymentSource("SOCKET", "req-decline-reg")
@@ -1887,13 +2283,15 @@ class AngelPayPaymentViewModelTest {
 
             vm.onAngelPaySdkResult(sdkFailureResult("G500")) // real decline — money did NOT move
             runCurrent()
+            vm.resetPayment()
+            runCurrent()
 
             verify(exactly = 1) {
                 socketManager.emitTerminalPaymentResult(
                     requestId = "req-decline-reg", status = "failed", paymentId = any(),
                     transactionId = any(), cardDetails = any(), errorMessage = any(),
                     receiptUrl = any(), receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -1980,7 +2378,7 @@ class AngelPayPaymentViewModelTest {
                     errorMessage = any(),
                     receiptUrl = any(),
                     receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -2001,7 +2399,7 @@ class AngelPayPaymentViewModelTest {
                 socketManager.emitTerminalPaymentResult(
                     requestId = any(), status = any(), paymentId = any(), transactionId = any(),
                     cardDetails = any(), errorMessage = any(), receiptUrl = any(), receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -2019,7 +2417,7 @@ class AngelPayPaymentViewModelTest {
                 socketManager.emitTerminalPaymentResult(
                     requestId = any(), status = any(), paymentId = any(), transactionId = any(),
                     cardDetails = any(), errorMessage = any(), receiptUrl = any(), receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -2046,7 +2444,7 @@ class AngelPayPaymentViewModelTest {
                     errorMessage = any(),
                     receiptUrl = any(),
                     receiptAccessKey = any(),
-                )
+                 outcomeEvidence = "PRE_AUTHORIZATION")
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -2070,7 +2468,7 @@ class AngelPayPaymentViewModelTest {
                 socketManager.emitTerminalPaymentResult(
                     requestId = any(), status = any(), paymentId = any(), transactionId = any(),
                     cardDetails = any(), errorMessage = any(), receiptUrl = any(), receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -2091,7 +2489,7 @@ class AngelPayPaymentViewModelTest {
                 socketManager.emitTerminalPaymentResult(
                     requestId = any(), status = any(), paymentId = any(), transactionId = any(),
                     cardDetails = any(), errorMessage = any(), receiptUrl = any(), receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -2118,7 +2516,7 @@ class AngelPayPaymentViewModelTest {
                     requestId = "req-teardown", status = "cancelled", paymentId = any(),
                     transactionId = any(), cardDetails = any(), errorMessage = any(),
                     receiptUrl = any(), receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -2151,7 +2549,7 @@ class AngelPayPaymentViewModelTest {
                     errorMessage = "No hay venue activo",
                     receiptUrl = any(),
                     receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -2189,7 +2587,7 @@ class AngelPayPaymentViewModelTest {
                     requestId = "req-skipreview", status = "cancelled", paymentId = any(),
                     transactionId = any(), cardDetails = any(), errorMessage = any(),
                     receiptUrl = any(), receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -2246,7 +2644,7 @@ class AngelPayPaymentViewModelTest {
                     errorMessage = "No hay staff activo",
                     receiptUrl = any(),
                     receiptAccessKey = any(),
-                )
+                 outcomeEvidence = any())
             }
         } finally {
             vm.viewModelScope.cancel()
@@ -2283,6 +2681,508 @@ class AngelPayPaymentViewModelTest {
             runCurrent()
 
             coVerify(exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Desenlace INCIERTO (2026-09-08) — el SDK vuelve SIN veredicto del procesador
+    // ----------------------------------------------------------------------
+    //
+    // 🔴 El defecto: `U101` («Tiempo de espera agotado») y `PaymentResult.Status.TIMEOUT`
+    // caian en la MISMA rama que un rechazo del emisor. Consecuencia triple, y las tres
+    // le dicen al cajero "no se cobro" sobre un cobro que quiza si ocurrio: pantalla de
+    // error con Reintentar, fila DESCARTADA en la libreta, y `failed` al POS (que ahi
+    // muestra su propio Reintentar). Con la tarjeta ya en la mano del cliente, la accion
+    // que las tres invitan es volver a cobrar.
+
+    /** Resultado del SDK sin veredicto del procesador (por defecto: U101 / tiempo agotado). */
+    private fun sdkInciertoResult(
+        sdkCode: String? = "U101",
+        status: PaymentResult.Status = PaymentResult.Status.CANCELLED,
+        message: String = "Tiempo de espera agotado",
+    ): PaymentResult {
+        val call = sdkCode?.let {
+            mockk<CallResult>(relaxed = true).also { c ->
+                every { c.code } returns it
+                every { c.message } returns "msg-$it"
+                every { c.category } returns "USER"
+            }
+        }
+        val result = mockk<PaymentResult>(relaxed = true)
+        every { result.approved } returns false
+        every { result.status } returns status
+        every { result.callResult } returns call
+        every { result.code } returns null
+        every { result.message } returns message
+        return result
+    }
+
+    private fun kotlinx.coroutines.test.TestScope.vmConCobroDelPos(requestId: String = "req-incierto"): AngelPayPaymentViewModel {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        val vm = createViewModel()
+        vm.initPayment(amount = "100.00")
+        runCurrent()
+        vm.setSocketPaymentSource("SOCKET", requestId)
+        vm.primeSdkLaunch()
+        runCurrent()
+        return vm
+    }
+
+    @Test
+    fun `U101 deja el cobro en ResultadoIncierto y NUNCA reporta failed al POS`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns
+            VerificacionDelCobro.NoSePudoVerificar("sin red")
+        val vm = vmConCobroDelPos()
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult())
+            runCurrent()
+
+            // La pantalla NO puede decir "rechazado": no se sabe.
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
+            // 🔴 Lo que de verdad guarda esta prueba: `failed` es lo que hace que el POS
+            // ofrezca Reintentar sobre un cobro que quiza ya paso.
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `un desenlace incierto marca INDETERMINADO en la libreta, jamas DESCARTADA`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns
+            VerificacionDelCobro.NoSePudoVerificar("sin red")
+        val vm = vmConCobroDelPos()
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult())
+            runCurrent()
+
+            coVerify(atLeast = 1) { paymentAttemptLedger.markIndeterminate(any(), any()) }
+            // DESCARTADA afirma "no se cobro" y ademas se poda a los 7 dias: la evidencia
+            // del unico caso en que hace falta desapareceria.
+            coVerify(exactly = 0) {
+                paymentAttemptLedger.markHostResponded(any(), false, any(), any(), any())
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `PaymentResult con status TIMEOUT tambien es incierto`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns
+            VerificacionDelCobro.NoSePudoVerificar("sin red")
+        val vm = vmConCobroDelPos("req-timeout")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult(sdkCode = null, status = PaymentResult.Status.TIMEOUT))
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `si el historial confirma el cobro se registra y se reporta success`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns
+            VerificacionDelCobro.Cobrado(authCode = "251259", referencia = "260908155812", cardBin = "411111")
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.success(
+            PaymentReceipt(
+                paymentId = "pay-incierto",
+                receiptUrl = "https://receipt/pay-incierto",
+                accessKey = "key-incierto",
+                amount = java.math.BigDecimal("100.00"),
+                tipAmount = java.math.BigDecimal.ZERO,
+            ),
+        )
+        val vm = vmConCobroDelPos("req-cobrado")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult())
+            runCurrent()
+
+            // El dinero SI se movio: la venta se registra con la autorizacion que devolvio
+            // el historial, no se pierde por haber vuelto sin resultado.
+            coVerify(timeout = 2000) {
+                recordPaymentUseCase(any(), any(), "251259", "260908155812")
+            }
+            verify(timeout = 2000) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-cobrado",
+                    status = "success",
+                    paymentId = "pay-incierto",
+                    transactionId = any(),
+                    cardDetails = any(),
+                    errorMessage = any(),
+                    receiptUrl = any(),
+                    receiptAccessKey = any(),
+                 outcomeEvidence = any())
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `legacy NoCobrado without processor proof stays unknown`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any(), any()) } returns VerificacionDelCobro.NoCobrado
+        val vm = vmConCobroDelPos("req-nocobrado")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult())
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+            coVerify(exactly = 0) { paymentAttemptLedger.markHostResponded(any(), false, any(), any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `abandoning generic Error after SDK entry cannot cancel the request`() = runTest(testDispatcher) {
+        val vm = vmConCobroDelPos("req-error-after-launch")
+        try {
+            vm.onIntentLaunched()
+            val field = AngelPayPaymentViewModel::class.java.getDeclaredField("_state").apply { isAccessible = true }
+            @Suppress("UNCHECKED_CAST")
+            val state = field.get(vm) as MutableStateFlow<AngelPayPaymentState>
+            state.value = AngelPayPaymentState.Error("Unexpected callback error", canRetry = false)
+            vm.emitCancelledIfAbandoned()
+            vm.retryAfterError()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            vm.resetPayment()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), "cancelled", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `sin poder verificar se le dice timeout al POS, nunca failed`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns
+            VerificacionDelCobro.NoSePudoVerificar("sin red")
+        val vm = vmConCobroDelPos("req-sinverificar")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult())
+            runCurrent()
+
+            // `timeout` es lo mas cerca de "no se" que admite el contrato del servidor
+            // (success|failed|cancelled|timeout): cierra la fila sin decirle al POS que
+            // fallo, y un cobro que aparezca despues la reconcilia a COMPLETED.
+            verify(timeout = 2000) {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-sinverificar",
+                    status = "timeout",
+                    paymentId = any(),
+                    transactionId = any(),
+                    cardDetails = any(),
+                    errorMessage = any(),
+                    receiptUrl = any(),
+                    receiptAccessKey = any(),
+                 outcomeEvidence = any())
+            }
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `no se puede volver a cobrar mientras el desenlace sigue sin verificar`() = runTest(testDispatcher) {
+        coEvery { chargeVerifier.verificar(any(), any(), any(), any(), any()) } returns
+            VerificacionDelCobro.NoSePudoVerificar("sin red")
+        val vm = vmConCobroDelPos("req-bloqueo")
+        try {
+            vm.onAngelPaySdkResult(sdkInciertoResult())
+            runCurrent()
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.ResultadoIncierto::class.java)
+
+            vm.retryAfterError()
+            runCurrent()
+
+            // Sigue bloqueado: el boton no puede llevar al cajero de vuelta al cobro
+            // mientras nadie sepa si el primero paso.
+            //
+            // 🔴 Desde la cerca durable de C.5 (11-sep) el bloqueo se DICE, en vez de dejar la
+            // pantalla muda en `ResultadoIncierto`: la solicitud ya emitio su desenlace al POS
+            // (`timeout`, lo fija la prueba de arriba) y esta terminal no la vuelve a ejecutar.
+            // Lo que la prueba guarda es lo mismo de siempre —no se puede volver a cobrar— y se
+            // aprieta con las dos cosas que lo garantizan: `canRetry = false` (el boton no
+            // reaparece) y el texto de la tabla unica, que ademas le dice al cajero que hacer.
+            val estado = vm.state.value
+            assertThat(estado).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            assertThat((estado as AngelPayPaymentState.Error).message).isEqualTo(CobroRemotoDelPos.SOLICITUD_CERRADA)
+            assertThat(estado.canRetry).isFalse()
+            // Y sobre todo: nunca vuelve a un estado desde el que se pueda autorizar otra vez.
+            assertThat(estado).isNotInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+            assertThat(estado).isNotInstanceOf(AngelPayPaymentState.LaunchingAngelPay::class.java)
+            assertThat(estado).isNotInstanceOf(AngelPayPaymentState.WaitingForResult::class.java)
+            assertThat(estado).isNotInstanceOf(AngelPayPaymentState.Charging::class.java)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `G500 sigue siendo un rechazo confirmado y no se vuelve incierto`() = runTest(testDispatcher) {
+        // Regresion: la clasificacion nueva no puede convertir rechazos reales del emisor
+        // en "por verificar" — eso bloquearia ventas buenas en cada tarjeta sin fondos.
+        val vm = vmConCobroDelPos("req-g500")
+        try {
+            vm.onAngelPaySdkResult(sdkFailureResult("G500"))
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Error::class.java)
+            coVerify(exactly = 0) { chargeVerifier.verificar(any(), any(), any(), any(), any()) }
+            coVerify(exactly = 0) { paymentAttemptLedger.markIndeterminate(any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `un fallo de registro previo al cobro se recupera aunque llegue con status TIMEOUT`() = runTest(testDispatcher) {
+        // 🔴 La forma de sesion expirada gana sobre "no se sabe": ahi esta demostrado que el
+        // SDK aborto ANTES de llamar al gateway, asi que relanzar no puede duplicar nada.
+        // Sin esta precedencia el cajero perderia la re-autenticacion automatica y se
+        // quedaria con una venta bloqueada por un cobro que nunca salio.
+        coEvery { angelPayAuthRepository.handleAuthExpiry() } answers { Result.success(Unit) }
+        val vm = vmConCobroDelPos("req-registro")
+        try {
+            val fallo = sdkInciertoResult(
+                sdkCode = "N400",
+                status = PaymentResult.Status.TIMEOUT,
+                message = "No se pudo registrar la terminal antes del cobro",
+            )
+            vm.onAngelPaySdkResult(fallo)
+            runCurrent()
+
+            coVerify(exactly = 1) { angelPayAuthRepository.handleAuthExpiry() }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.LaunchingAngelPaySdk::class.java)
+            coVerify(exactly = 0) { paymentAttemptLedger.markIndeterminate(any(), any()) }
+            coVerify(exactly = 0) { chargeVerifier.verificar(any(), any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Aviso EMV recuperable abandonado — cerrar la fila del POS, no dejarla colgando
+    // ----------------------------------------------------------------------
+
+    @Test
+    fun `un aviso EMV abandonado cierra la fila del POS con failed y PROCESSOR_DECLINED`() = runTest(testDispatcher) {
+        // E608 («Limite contactless excedido») no emite nada a proposito: el cajero puede resolver
+        // y reintentar EN la misma sesion. Pero si no vuelve, hoy no se emite nunca: la
+        // fila del POS vence sola y el vigilante del servidor la parquea en UNKNOWN, que
+        // RETIENE el slot de la terminal (incidente Testarudo, PAX bloqueada 3 h).
+        val vm = vmConCobroDelPos("req-e608")
+        // 🔴 100 ms en vez de 2 min: avanzar el reloj virtual dos minutos dentro de este
+        // ViewModel despierta todos sus colectores periódicos y una excepción de cualquiera
+        // de ellos contamina la prueba siguiente. Lo que se prueba es el reloj, no su duración.
+        vm.msAbandonoAvisoEmv = 100L
+        try {
+            vm.onAngelPaySdkResult(
+                sdkFailureResult(sdkCode = "E608", message = "Limite contactless excedido", category = "EMV"),
+            )
+            runCurrent()
+            // De inmediato no se avisa nada: el reintento en sesion sigue vivo.
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+
+            advanceTimeBy(300)
+            runCurrent()
+
+            // Nadie volvio: se cierra de forma inequivoca. Y sale como `failed` + PROCESSOR_DECLINED,
+            // que es la ÚNICA combinación que el servidor acredita como «no se cobró» con esa evidencia:
+            // con `cancelled` la degrada a timeout, la fila queda UNKNOWN y la terminal sigue reservada.
+            // La evidencia es PROCESSOR_DECLINED porque el SDK ya se había lanzado (P2-13: la tabla de
+            // rechazos confirmados es una sola y E608 está en ella).
+            verify {
+                socketManager.emitTerminalPaymentResult(
+                    requestId = "req-e608",
+                    status = "failed",
+                    paymentId = any(),
+                    transactionId = any(),
+                    cardDetails = any(),
+                    errorMessage = any(),
+                    receiptUrl = any(),
+                    receiptAccessKey = any(),
+                 outcomeEvidence = "PROCESSOR_DECLINED")
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // 🛑 C.5 — el POS cancela un cobro que esta terminal YA reclamó
+    // ----------------------------------------------------------------------
+
+    private fun cancelDelPos(requestId: String, disposition: String) = SocketEvent.TerminalPaymentCancel(
+        requestId = requestId, reason = "cancelado desde el POS", timestamp = "2026-09-11T12:00:00Z",
+        disposition = disposition,
+    )
+
+    @Test
+    fun `un cancel ACEPTADO deja la pantalla en Cancelado, sin reintentar y sin emitir otro desenlace`() = runTest(testDispatcher) {
+        val vm = vmConCobroDelPos("req-cancelado")
+        try {
+            vm.manejarCancelacionRemota(cancelDelPos("req-cancelado", "ACCEPTED"))
+            runCurrent()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Cancelled::class.java)
+            assertThat(vm.mensajeDelPos.value).isEqualTo(CobroRemotoDelPos.CANCELADO_POR_EL_POS)
+            // El desenlace durable lo escribió la bandeja: este VM no emite otro, ni al salir.
+            vm.resetPayment()
+            runCurrent()
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `tras un cancel ACEPTADO, Reintentar no vuelve a cobrar`() = runTest(testDispatcher) {
+        val vm = vmConCobroDelPos("req-cancelado-retry")
+        try {
+            vm.manejarCancelacionRemota(cancelDelPos("req-cancelado-retry", "ACCEPTED"))
+            runCurrent()
+
+            vm.retryAfterError()
+            runCurrent()
+
+            val estado = vm.state.value as AngelPayPaymentState.Error
+            assertThat(estado.canRetry).isFalse()
+            assertThat(estado.message).isEqualTo(CobroRemotoDelPos.CANCELADO_POR_EL_POS)
+            coVerify(exactly = 0) { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `un cancel ACTIVO no toca el estado - el cobro ya empezo`() = runTest(testDispatcher) {
+        val vm = vmConCobroDelPos("req-activo")
+        try {
+            val antes = vm.state.value
+            vm.manejarCancelacionRemota(cancelDelPos("req-activo", "ACTIVE"))
+            runCurrent()
+
+            assertThat(vm.state.value).isEqualTo(antes)
+            assertThat(vm.mensajeDelPos.value).isEqualTo(CobroRemotoDelPos.CANCEL_TARDE)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `el cancel de OTRA solicitud no cancela este cobro`() = runTest(testDispatcher) {
+        val vm = vmConCobroDelPos("req-mio")
+        try {
+            val antes = vm.state.value
+            vm.manejarCancelacionRemota(cancelDelPos("req-de-otro", "ACCEPTED"))
+            runCurrent()
+
+            assertThat(vm.state.value).isEqualTo(antes)
+            assertThat(vm.mensajeDelPos.value).isNull()
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `la cerca de la libreta se traduce a - el POS cancelo este cobro - y no a un error de disco`() = runTest(testDispatcher) {
+        coEvery { paymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns false
+        coEvery { paymentAttemptLedger.cercaDeSolicitud(any()) } returns CercaDeSolicitud.CANCELADA_POR_EL_POS
+        val vm = vmConCobroDelPos("req-cercado")
+        try {
+            vm.flujoSdkForzadoParaPruebas = true
+            vm.startCardPayment()
+            runCurrent()
+            advanceUntilIdle()
+
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Cancelled::class.java)
+            assertThat(vm.mensajeDelPos.value).isEqualTo(CobroRemotoDelPos.CANCELADO_POR_EL_POS)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `el efectivo de un cobro remoto no se registra si el POS ya cancelo`() = runTest(testDispatcher) {
+        coEvery { paymentAttemptLedger.iniciarEjecucionNoTarjeta(any()) } returns CercaDeSolicitud.CANCELADA_POR_EL_POS
+        val vm = vmConCobroDelPos("req-efectivo-cancelado")
+        try {
+            vm.startCashPayment()
+            runCurrent()
+            advanceUntilIdle()
+
+            coVerify(exactly = 0) { recordPaymentUseCase(any(), any(), any(), any()) }
+            assertThat(vm.state.value).isInstanceOf(AngelPayPaymentState.Cancelled::class.java)
+            assertThat(vm.mensajeDelPos.value).isEqualTo(CobroRemotoDelPos.CANCELADO_POR_EL_POS)
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `el efectivo de un cobro iniciado en la terminal no consulta la cerca`() = runTest(testDispatcher) {
+        every { authRepository.getVenueId() } returns "v1"
+        every { authRepository.getStaffId() } returns "s1"
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(enableShifts = false)
+        coEvery { recordPaymentUseCase(any(), any(), any(), any()) } returns Result.success(
+            PaymentReceipt(
+                paymentId = "pay-local", receiptUrl = "https://receipt/pay-local", accessKey = "k",
+                amount = java.math.BigDecimal("100.00"), tipAmount = java.math.BigDecimal.ZERO,
+            ),
+        )
+        val vm = createViewModel()
+        try {
+            vm.initPayment(amount = "100.00")
+            runCurrent()
+            vm.startCashPayment()
+            runCurrent()
+            advanceUntilIdle()
+
+            coVerify(exactly = 0) { paymentAttemptLedger.iniciarEjecucionNoTarjeta(any()) }
+            coVerify(timeout = 2000, exactly = 1) { recordPaymentUseCase(any(), any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `si el cajero reintenta tras el aviso EMV, nadie cancela la fila`() = runTest(testDispatcher) {
+        val vm = vmConCobroDelPos("req-e608-retry")
+        vm.msAbandonoAvisoEmv = 100L
+        try {
+            vm.onAngelPaySdkResult(
+                sdkFailureResult(sdkCode = "E608", message = "Limite contactless excedido", category = "EMV"),
+            )
+            runCurrent()
+            vm.retryAfterError()
+            runCurrent()
+
+            advanceTimeBy(300)
+            runCurrent()
+
+            // El reloj de abandono se apaga al retomar: cancelar aqui cerraria la fila
+            // justo cuando el cajero esta por cobrar de verdad.
+            verify(exactly = 0) {
+                socketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
         } finally {
             vm.viewModelScope.cancel()
         }

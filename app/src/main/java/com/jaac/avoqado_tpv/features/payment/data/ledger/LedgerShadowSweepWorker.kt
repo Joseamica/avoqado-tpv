@@ -28,9 +28,9 @@ import java.util.concurrent.TimeUnit
  *  4. Prunes CERRADA/DESCARTADA rows after 7 days (mirror of
  *     deleteOldSyncedPayments).
  *
- * It NEVER records payments, NEVER discards a row "by absence", and NEVER
- * touches pending_payments — reconciliation of REGISTRO_FALLIDO /
- * ENTREGADA_A_COLA is Plan 3; here they are log-only.
+ * First replays durable approvals with their original key through LedgerApprovalRecovery,
+ * independently of shadow mode. Never authorizes, never discards by absence, and never
+ * competes for queue-owned ENTREGADA_A_COLA rows.
  *
  * Own worker on purpose — spec §4.5 forbids touching PaymentSyncWorker.
  * Scheduling: [LedgerSweepScheduler] (unique periodic 6h + one-shot at login).
@@ -42,11 +42,18 @@ class LedgerShadowSweepWorker @AssistedInject constructor(
     private val paymentAttemptDao: PaymentAttemptDao,
     private val settingsRepository: TpvSettingsRepository,
     private val secureStorage: SecureStorage,
-    private val observability: ObservabilityManager
+    private val observability: ObservabilityManager,
+    private val approvalRecovery: LedgerApprovalRecovery,
+    private val unknownRecovery: LedgerUnknownRecovery
 ) : CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result {
         return try {
+            // Financial recovery is mandatory even when shadow telemetry is OFF.
+            secureStorage.getVenueId()?.let { venueId ->
+                unknownRecovery.recover(venueId, System.currentTimeMillis())
+                approvalRecovery.recover(venueId, System.currentTimeMillis())
+            }
             val result = LedgerSweepLogic.runGated(
                 settingsRepository = settingsRepository,
                 secureStorage = secureStorage,
@@ -152,7 +159,17 @@ object LedgerSweepLogic {
         }
 
         // 2. Bookkeeping transitions (venue-scoped; CAS-safe SQL in the DAO).
-        val quarantined = dao.quarantineStaleAuthorizing(venueId, staleCutoff, now)
+        val quarantined = dao.quarantineStaleAuthorizing(venueId, staleCutoff, now) +
+            // 🔴 El proceso murió DENTRO del kernel: pudo aprobar. Se cuarentena, nunca se descarta.
+            dao.quarantineStaleKernel(venueId, staleCutoff, now)
+        // 🔴 Y su contrapeso, de DISPONIBILIDAD: PREPARANDO retiene la terminal, así que una fila
+        // huérfana (proceso muerto entre la reserva y el kernel) dejaría la caja sin poder cobrar.
+        // Liberarla es seguro por construcción: en PREPARANDO ninguna llamada capaz de autorizar
+        // empezó. Es lo ÚNICO del ledger que puede liberarse por tiempo.
+        val releasedPreparing = dao.discardStalePreparing(venueId, staleCutoff, now)
+        if (releasedPreparing > 0) {
+            Timber.w("📒 [Libreta] %d reserva(s) PREPARANDO huérfanas liberadas | venueId=%s", releasedPreparing, venueId)
+        }
         val closed = dao.closeRecordedOlderThan(venueId, now - TimeUnit.HOURS.toMillis(CLOSE_RECORDED_HOURS), now)
         val pruned = dao.pruneTerminalOlderThan(venueId, now - TimeUnit.DAYS.toMillis(PRUNE_DAYS))
 

@@ -20,10 +20,9 @@ import java.util.concurrent.TimeUnit
  * - `runOnceNow()`: unique one-shot catch-up at login/startup, KEEP policy —
  *   repeated starts while one is pending don't duplicate it.
  *
- * No network constraint on purpose: the sweep is pure local Room work
- * (observability logs ship asynchronously through their own pipeline).
- * Gating by paymentLedgerMode/venueId lives INSIDE the worker, so scheduling
- * unconditionally is safe — OFF mode is an immediate no-op success.
+ * Recovery is venue-scoped and runs independently of shadow mode. One-shot startup
+ * runs after two minutes, allowing live recording to finish and freshly persisted rows
+ * to reach the stale cutoff. Failed registration stays durable for bounded later retry.
  */
 object LedgerSweepScheduler {
 
@@ -50,7 +49,9 @@ object LedgerSweepScheduler {
 
     /** One-shot catch-up sweep at login/startup (KEEP — repeated starts don't stack). */
     fun runOnceNow(context: Context) {
-        val request = OneTimeWorkRequestBuilder<LedgerShadowSweepWorker>().build()
+        val request = OneTimeWorkRequestBuilder<LedgerShadowSweepWorker>()
+            .setInitialDelay(2, TimeUnit.MINUTES)
+            .build()
 
         WorkManager.getInstance(context).enqueueUniqueWork(
             ONE_SHOT_WORK_NAME,

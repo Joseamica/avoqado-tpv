@@ -29,27 +29,46 @@ class PaymentAttemptLedgerTest {
     }
 
     @Test
-    fun `OFF mode - no writes at all`() = runTest {
+    fun `OFF observability mode still persists money barrier`() = runTest {
         every { settingsRepository.getCurrentSettings() } returns settingsWith(PaymentLedgerMode.OFF)
+        coEvery { dao.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 1L
         ledger.openAttempt("a1", "v1", PaymentAttemptEntity.PROCESSOR_BLUMON, 10000, 1000, PaymentAttemptEntity.ROUTE_FAST, "{}")
-        ledger.markAuthorizing("a1")
-        coVerify(exactly = 0) { dao.insert(any()) }
-        coVerify(exactly = 0) { dao.casTransition(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { dao.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `missing durable authorizing transition refuses SDK entry`() = runTest {
+        coEvery { dao.casTransition(any(), any(), any(), any()) } returns 0
+        org.junit.Assert.assertEquals(false, ledger.markAuthorizing("a1"))
     }
 
     @Test
     fun `openAttempt inserts PREPARANDO and returns true`() = runTest {
-        coEvery { dao.insert(any()) } returns 1L
+        coEvery { dao.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 1L
         val ok = ledger.openAttempt("a1", "v1", PaymentAttemptEntity.PROCESSOR_BLUMON, 10000, 1000, PaymentAttemptEntity.ROUTE_FAST, "{}")
         assertTrue(ok)
+        // La reserva y el estado PREPARANDO viven ahora DENTRO de la sentencia atómica del DAO;
+        // lo que se fija aquí es que se llama con la identidad y el importe correctos.
         coVerify {
-            dao.insert(match { it.attemptId == "a1" && it.state == PaymentAttemptEntity.STATE_PREPARANDO && it.amountCents == 10000L })
+            dao.reserveTerminal(
+                attemptId = "a1", venueId = "v1", processor = PaymentAttemptEntity.PROCESSOR_BLUMON,
+                kind = any(), amountCents = 10000L, tipCents = 1000L,
+                recordingRoute = PaymentAttemptEntity.ROUTE_FAST, contextJson = any(),
+                orderJsonFragment = null, now = any(), terminalPaymentRequestId = null
+            )
         }
     }
 
     @Test
     fun `openAttempt detects attemptId reuse (PK collision) and returns false`() = runTest {
-        coEvery { dao.insert(any()) } returns -1L // OnConflictStrategy.IGNORE → row existed
+        coEvery { dao.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns -1L // no entró
+        // …y la fila YA existe con ese id ⇒ es reuso de attemptId, no terminal ocupada.
+        coEvery { dao.getById("a1") } returns PaymentAttemptEntity(
+            attemptId = "a1", venueId = "v1", processor = PaymentAttemptEntity.PROCESSOR_BLUMON,
+            state = PaymentAttemptEntity.STATE_PREPARANDO, amountCents = 10000, tipCents = 0,
+            recordingRoute = PaymentAttemptEntity.ROUTE_FAST, paymentContextJson = "{}",
+            createdAt = 1, updatedAt = 1
+        )
         val ok = ledger.openAttempt("a1", "v1", PaymentAttemptEntity.PROCESSOR_BLUMON, 10000, 0, PaymentAttemptEntity.ROUTE_FAST, "{}")
         assertFalse(ok) // the split double-charge signal — caller logs CRITICAL
     }
@@ -63,6 +82,7 @@ class PaymentAttemptLedgerTest {
                 "a1",
                 listOf(
                     PaymentAttemptEntity.STATE_AUTORIZANDO,
+                    PaymentAttemptEntity.STATE_KERNEL_ACTIVO,
                     PaymentAttemptEntity.STATE_PREPARANDO,
                     PaymentAttemptEntity.STATE_INDETERMINADO // late explicit decline resolves a quarantined row
                 ),
@@ -80,6 +100,7 @@ class PaymentAttemptLedgerTest {
                 "a1",
                 listOf(
                     PaymentAttemptEntity.STATE_AUTORIZANDO,
+                    PaymentAttemptEntity.STATE_KERNEL_ACTIVO,
                     PaymentAttemptEntity.STATE_PREPARANDO,
                     PaymentAttemptEntity.STATE_INDETERMINADO // live verdict beats the sweep's quarantine
                 ),
@@ -89,12 +110,22 @@ class PaymentAttemptLedgerTest {
     }
 
     @Test
-    fun `a DAO exception never propagates (never blocks the charge)`() = runTest {
-        coEvery { dao.insert(any()) } throws RuntimeException("disk io")
+    fun `disk failure prevents processor entry`() = runTest {
+        coEvery { dao.reserveTerminal(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } throws RuntimeException("disk io")
         // must not throw AND must return true — a ledger failure degrades to "no row",
         // never to the double-charge signal (false) that callers escalate on
         val ok = ledger.openAttempt("a1", "v1", PaymentAttemptEntity.PROCESSOR_BLUMON, 1, 0, PaymentAttemptEntity.ROUTE_FAST, "{}")
-        assertTrue(ok)
+        assertFalse(ok)
+    }
+
+    @Test
+    fun `preauthorization cancellation proof is true only for committed CAS`() = runTest {
+        coEvery { dao.casWithError(any(), any(), any(), any(), any()) } returns 1
+        assertTrue(ledger.markDiscardedBeforeCharge("a1", "user_cancel"))
+        coEvery { dao.casWithError(any(), any(), any(), any(), any()) } returns 0
+        assertFalse(ledger.markDiscardedBeforeCharge("a1", "user_cancel"))
+        coEvery { dao.casWithError(any(), any(), any(), any(), any()) } throws RuntimeException("disk")
+        assertFalse(ledger.markDiscardedBeforeCharge("a1", "user_cancel"))
     }
 
     @Test
@@ -107,20 +138,20 @@ class PaymentAttemptLedgerTest {
     }
 
     @Test
-    fun `markAuthorizing transitions exactly from PREPARANDO to AUTORIZANDO`() = runTest {
+    fun `markAuthorizing transitions exactly from PREPARANDO or KERNEL_ACTIVO to AUTORIZANDO`() = runTest {
         coEvery { dao.casTransition(any(), any(), any(), any()) } returns 1
         ledger.markAuthorizing("a1")
         coVerify {
             dao.casTransition(
                 "a1",
-                listOf(PaymentAttemptEntity.STATE_PREPARANDO),
+                listOf(PaymentAttemptEntity.STATE_PREPARANDO, PaymentAttemptEntity.STATE_KERNEL_ACTIVO),
                 PaymentAttemptEntity.STATE_AUTORIZANDO, any()
             )
         }
     }
 
     @Test
-    fun `markAuthorized allows exactly HOST_RESPONDIO, AUTORIZANDO, PREPARANDO and INDETERMINADO`() = runTest {
+    fun `markAuthorized allows exactly HOST_RESPONDIO, AUTORIZANDO, KERNEL_ACTIVO, PREPARANDO and INDETERMINADO`() = runTest {
         coEvery { dao.casWithCardDetails(any(), any(), any(), any(), any(), any(), any()) } returns 1
         ledger.markAuthorized("a1", maskedPan = "****1234", cardBrand = "VISA", entryMode = "CONTACTLESS")
         coVerify {
@@ -129,6 +160,7 @@ class PaymentAttemptLedgerTest {
                 listOf(
                     PaymentAttemptEntity.STATE_HOST_RESPONDIO,
                     PaymentAttemptEntity.STATE_AUTORIZANDO,
+                    PaymentAttemptEntity.STATE_KERNEL_ACTIVO, // el kernel aprobó sin salir a la red
                     PaymentAttemptEntity.STATE_PREPARANDO, // contactless offline-approved
                     PaymentAttemptEntity.STATE_INDETERMINADO // live verdict beats the sweep's quarantine
                 ),
@@ -201,5 +233,56 @@ class PaymentAttemptLedgerTest {
                 PaymentAttemptEntity.STATE_ENTREGADA_A_COLA, any()
             )
         }
+    }
+
+    // ── INDETERMINADO en vivo (desenlace incierto del SDK) ───────────
+
+    @Test
+    fun `markIndeterminate lands INDETERMINADO with the reason, never DESCARTADA`() = runTest {
+        coEvery { dao.casWithError(any(), any(), any(), any(), any()) } returns 1
+        ledger.markIndeterminate("a1", reason = "AngelPay U101 sin veredicto")
+        coVerify {
+            dao.casWithError(
+                "a1",
+                listOf(
+                    PaymentAttemptEntity.STATE_AUTORIZANDO,
+                    PaymentAttemptEntity.STATE_KERNEL_ACTIVO, // un kernel sin veredicto también es «no sé»
+                    PaymentAttemptEntity.STATE_PREPARANDO
+                ),
+                PaymentAttemptEntity.STATE_INDETERMINADO, any(), "AngelPay U101 sin veredicto"
+            )
+        }
+        // 🔴 Lo que de verdad guarda esta prueba: un desenlace incierto NUNCA se escribe
+        // como DESCARTADA — esa fila afirma "no se cobró" y encima se poda a los 7 días.
+        coVerify(exactly = 0) {
+            dao.casWithError(any(), any(), PaymentAttemptEntity.STATE_DESCARTADA, any(), any())
+        }
+        coVerify(exactly = 0) { dao.casHostResponded(any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `markIndeterminate never degrades a row that already has a verdict`() = runTest {
+        coEvery { dao.casWithError(any(), any(), any(), any(), any()) } returns 1
+        ledger.markIndeterminate("a1", reason = "x")
+        // Sólo AUTORIZANDO y PREPARANDO: un HOST_RESPONDIO/AUTORIZADO/REGISTRADO ya sabe
+        // lo que pasó, y volverlo "no sé" sería perder información.
+        coVerify {
+            dao.casWithError(
+                any(),
+                match<List<String>> { estados ->
+                    PaymentAttemptEntity.STATE_HOST_RESPONDIO !in estados &&
+                        PaymentAttemptEntity.STATE_AUTORIZADO !in estados &&
+                        PaymentAttemptEntity.STATE_REGISTRADO !in estados
+                },
+                PaymentAttemptEntity.STATE_INDETERMINADO, any(), any()
+            )
+        }
+    }
+
+    @Test
+    fun `OFF mode still durably marks indeterminate financial outcome`() = runTest {
+        every { settingsRepository.getCurrentSettings() } returns settingsWith(PaymentLedgerMode.OFF)
+        ledger.markIndeterminate("a1", reason = "x")
+        coVerify(exactly = 1) { dao.casWithError(any(), any(), any(), any(), any()) }
     }
 }

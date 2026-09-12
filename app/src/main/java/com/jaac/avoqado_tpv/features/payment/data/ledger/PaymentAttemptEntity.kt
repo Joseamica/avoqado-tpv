@@ -13,7 +13,7 @@ import androidx.room.PrimaryKey
  * boundary, so a process death after bank approval (the Mindform $1,400 window:
  * "money moved, no record, no queue") always leaves evidence.
  *
- * NEVER feeds reports. NEVER blocks a charge (all writes are runCatching).
+ * Never feeds financial reports. Persistence is a mandatory pre-authorization barrier.
  */
 @Entity(
     tableName = "payment_attempts",
@@ -56,11 +56,41 @@ data class PaymentAttemptEntity(
     @ColumnInfo(name = "verify_attempts", defaultValue = "0") val verifyAttempts: Int = 0,
     @ColumnInfo(name = "lease_until") val leaseUntil: Long? = null,
     @ColumnInfo(name = "created_at") val createdAt: Long,
-    @ColumnInfo(name = "updated_at") val updatedAt: Long
+    @ColumnInfo(name = "updated_at") val updatedAt: Long,
+    /**
+     * 🔴 Fila que escribió una versión ANTERIOR a Room v34 (la libreta en modo SHADOW de 2.9.x).
+     *
+     * Esas versiones no reservaban la terminal y su semántica de estados era otra: en 2.9.2 el
+     * contactless entraba al kernel con la fila en PREPARANDO (no existía KERNEL_ACTIVO) y un `U101`
+     * terminaba en DESCARTADA. Por eso una fila heredada:
+     *  - NO reserva la terminal ([PaymentAttemptDao.reserveTerminal], `casTransition` a AUTORIZANDO,
+     *    `findTerminalHold`, `findUnresolvedCharge`) — en 2.9.2 no reservaba;
+     *  - SIGUE visible como obligación que conciliar (conteos y el log del barrido);
+     *  - NUNCA se libera por antigüedad (`discardStalePreparing`) — su PREPARANDO no prueba nada;
+     *  - NUNCA acredita un «no se cobró» (el CAS del cancel y el desenlace negativo la tratan como
+     *    bloqueadora).
+     * La migración 33→34 la pone en 1 para TODAS las filas existentes; nada del APK nuevo la escribe en 1.
+     */
+    @ColumnInfo(name = "legacy_shadow", defaultValue = "0") val legacyShadow: Boolean = false
 ) {
     companion object {
         // States (spec §4.2). Spanish on purpose — they surface verbatim in ops tooling.
         const val STATE_PREPARANDO = "PREPARANDO"
+
+        /**
+         * 🔴 Una llamada NATIVA capaz de aprobar por su cuenta ya empezó (kernel contactless/EMV).
+         *
+         * Existe porque PREPARANDO promete algo muy concreto —«ninguna llamada capaz de autorizar
+         * empezó»— y ese es justo el permiso que [STATE_DESCARTADA] necesita para afirmar «no se
+         * cobró». El contactless de la PAX entra al kernel SIN pasar por [STATE_AUTORIZANDO] (ese
+         * tramo es sólo del camino online), así que sin este estado un `RESULT_OFFLINE_APPROVED`
+         * seguido de una muerte del proceso dejaba la fila diciendo PREPARANDO: dinero movido sobre
+         * una fila que afirma que nada empezó, y descartable como prueba PRE_AUTHORIZATION.
+         *
+         * Desde aquí NO se puede descartar. Sólo se sale por veredicto real (host/aprobación) o,
+         * si el proceso muere, por cuarentena a [STATE_INDETERMINADO] — nunca por tiempo a DESCARTADA.
+         */
+        const val STATE_KERNEL_ACTIVO = "KERNEL_ACTIVO"
         const val STATE_AUTORIZANDO = "AUTORIZANDO"
         const val STATE_HOST_RESPONDIO = "HOST_RESPONDIO"
         const val STATE_AUTORIZADO = "AUTORIZADO"
@@ -81,7 +111,7 @@ data class PaymentAttemptEntity(
 
         /** Non-terminal states = "money may have moved with no record" — the sweep watches these. */
         val OPEN_STATES = listOf(
-            STATE_PREPARANDO, STATE_AUTORIZANDO, STATE_HOST_RESPONDIO,
+            STATE_PREPARANDO, STATE_KERNEL_ACTIVO, STATE_AUTORIZANDO, STATE_HOST_RESPONDIO,
             STATE_AUTORIZADO, STATE_REGISTRO_FALLIDO, STATE_INDETERMINADO
         )
     }

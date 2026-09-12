@@ -141,6 +141,25 @@ sealed class AngelPayPaymentState {
         val orderNumber: String? = null,
     ) : AngelPayPaymentState()
 
+    /**
+     * 🔴 El SDK volvió SIN veredicto del procesador (`U101`, `G505`, `TIMEOUT`…): NO se sabe
+     * si la tarjeta se cobró.
+     *
+     * Estado propio y no un [Error] a propósito, por dos motivos que cuestan dinero:
+     *  - [Error] ofrece Reintentar, y reintentar aquí es exactamente lo que produce el
+     *    doble cobro que este estado existe para evitar.
+     *  - `sinDineroEnVuelo` es un `when` exhaustivo: al ser un estado propio, obliga a
+     *    clasificarlo ahí (y se clasifica como "puede haber dinero en vuelo").
+     *
+     * [verificando] = se le está preguntando al historial de AngelPay. Cuando termina, esto
+     * se resuelve solo a Success (el cobro existía) o a Error (no existía); sólo se queda
+     * aquí cuando NO se pudo preguntar.
+     */
+    data class ResultadoIncierto(
+        val message: String,
+        val verificando: Boolean,
+    ) : AngelPayPaymentState()
+
     /** Payment failed with optional retry. */
     data class Error(
         val message: String,
@@ -150,6 +169,13 @@ sealed class AngelPayPaymentState {
 
     /** User cancelled the payment in AngelPay app. */
     data object Cancelled : AngelPayPaymentState()
+
+    /**
+     * T26 (2026-09-11): el cobro con tarjeta está autenticando AngelPay ANTES de esperar al
+     * comercio (tras arrancar sin red la sesión no existe y la espera de 8 s sólo vencía).
+     * Pre-dinero: todavía no se abrió la libreta ni se tocó el SDK.
+     */
+    data object ConectandoAngelPay : AngelPayPaymentState()
 
     /**
      * D2 (spec §18.1): a merchant switch is in flight. The payment-time guard in

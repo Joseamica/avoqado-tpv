@@ -22,6 +22,12 @@ import com.jaac.avoqado_tpv.features.payment.data.ledger.PaymentAttemptLedger
 import com.jaac.avoqado_tpv.features.payment.data.local.AuthAttemptTelemetryStore
 import com.jaac.avoqado_tpv.features.payment.data.repository.TpvSettingsRepository
 import com.jaac.avoqado_tpv.features.payment.domain.PaymentState
+import com.jaac.avoqado_tpv.features.payment.domain.PaymentPhaseTracker
+import com.jaac.avoqado_tpv.features.payment.domain.PaymentSdkCallback
+import com.jaac.avoqado_tpv.features.payment.domain.PaymentSdkPhase
+import com.jaac.avoqado_tpv.features.payment.domain.PhaseOutcome
+import com.jaac.avoqado_tpv.features.payment.domain.mensajeDeFase
+import com.jaac.avoqado_tpv.features.payment.domain.ProcessingClock
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantAccount
 import com.jaac.avoqado_tpv.features.payment.domain.model.MerchantEnvironment
 import com.jaac.avoqado_tpv.features.payment.domain.model.PaymentContext
@@ -268,7 +274,15 @@ class PaymentViewModelTest {
         mockRecordRefundUseCase = mockk(relaxed = true)
 
         // 📒 Ledger (La Libreta) — relaxed: the wiring is observational, tests verify the calls
-        mockPaymentAttemptLedger = mockk(relaxed = true)
+        mockPaymentAttemptLedger = mockk(relaxed = true) {
+            coEvery { openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns true
+            coEvery { markAuthorizing(any()) } returns true
+            coEvery { markKernelEntered(any()) } returns true
+            coEvery { markHostResponded(any(), any(), any(), any(), any()) } returns true
+            // C.5: por defecto la solicitud no está cercada y el efectivo/cripto puede arrancar.
+            coEvery { cercaDeSolicitud(any()) } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud.LIBRE
+            coEvery { iniciarEjecucionNoTarjeta(any()) } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud.LIBRE
+        }
         mockAuthAttemptTelemetryStore = mockk(relaxed = true)
         mockMerchantEligibilityRepository = mockk(relaxed = true) {
             coEvery { evaluate(any(), any(), any()) } returns
@@ -439,6 +453,93 @@ class PaymentViewModelTest {
         assertThat(contextSlot.captured.terminalPaymentRequestId).isEqualTo("req-123")
 
         viewModel.viewModelScope.cancel()
+    }
+
+    /**
+     * 🔴 Un VM = UNA solicitud (2026-09-11, D.7). El VM vive atado a su entrada de navegación y un
+     * cobro remoto nuevo siempre llega en una entrada NUEVA. Pero la pantalla que sale se
+     * recompone y relee el handle del lanzador, que ya trae los argumentos del cobro siguiente:
+     * adoptarlos dejaba este VM hablando en nombre de B (su cancelación salía para B, y un cobro
+     * registrado aquí llevaba el importe de A con el id de B).
+     */
+    @Test
+    fun `P1 un VM ya atado a la solicitud A no adopta el id de B - su cancelacion sale para A`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            viewModel.setSocketPaymentSource("SOCKET", "REQ-A")
+            viewModel.setSocketPaymentSource("SOCKET", "REQ-B")
+
+            viewModel.resetPayment()
+
+            verify(exactly = 0) {
+                mockSocketManager.emitTerminalPaymentResult("REQ-B", any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+            verify(exactly = 1) {
+                mockSocketManager.emitTerminalPaymentResult("REQ-A", "cancelled", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 un VM de un cobro LOCAL no se vuelve remoto por los argumentos de B`() = runTest {
+        val viewModel = createViewModel()
+        try {
+            // Primer compose de un cobro iniciado en la terminal: la pantalla pasa (null, null).
+            viewModel.setSocketPaymentSource(null, null)
+            viewModel.setSocketPaymentSource("SOCKET", "REQ-B")
+
+            viewModel.resetPayment()
+
+            verify(exactly = 0) {
+                mockSocketManager.emitTerminalPaymentResult("REQ-B", any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `P1 el cobro en efectivo de un VM atado a A se registra con A aunque llegue B`() = runTest {
+        val viewModel = createViewModel()
+
+        val contextSlot = slot<PaymentContext>()
+        coEvery {
+            mockRecordPaymentUseCase(
+                context = capture(contextSlot),
+                cardDetails = any(),
+                authorizationNumber = any(),
+                referenceNumber = any()
+            )
+        } returns Result.success(
+            PaymentReceipt(
+                paymentId = "pay-socket-A",
+                receiptUrl = "https://receipt.avoqado.io/pay-socket-A",
+                accessKey = "acc-key",
+                amount = BigDecimal("100.00"),
+                tipAmount = BigDecimal.ZERO
+            )
+        )
+
+        try {
+            viewModel.submitAmountDirectToMerchant("100.00")
+            viewModel.setSocketPaymentSource("SOCKET", "REQ-A")
+            viewModel.setSocketPaymentSource("SOCKET", "REQ-B")
+            viewModel.processCashPayment("100.00")
+
+            coVerify(timeout = 2000) {
+                mockRecordPaymentUseCase(
+                    context = any(),
+                    cardDetails = any(),
+                    authorizationNumber = any(),
+                    referenceNumber = any()
+                )
+            }
+            assertThat(contextSlot.captured.terminalPaymentRequestId).isEqualTo("REQ-A")
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
     }
 
     @Test
@@ -1546,7 +1647,24 @@ class PaymentViewModelTest {
     // handlePaymentSuccess marks need the real Blumon SDK → device drills (Task 7).
 
     @Test
+    fun `review durable snapshot preserves kiosk attribution instead of logged in staff`() = runTest {
+        val savedContext = slot<String>()
+        coEvery { mockPaymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), capture(savedContext), any()) } returns true
+        val vm = createViewModel()
+        try {
+            vm.setKioskPaymentMode(true, "original-kiosk-seller")
+            vm.startPayment("100.00", null)
+            Thread.sleep(1000)
+            testDispatcher.scheduler.advanceUntilIdle()
+            val saved = com.google.gson.Gson().fromJson(savedContext.captured, PaymentContext.FastPayment::class.java)
+            assertThat(saved.staffId).isEqualTo("original-kiosk-seller")
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
     fun `startPayment opens a ledger attempt before charging`() = runTest {
+        val savedContext = slot<String>()
+        coEvery { mockPaymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), capture(savedContext), any()) } returns true
         val viewModel = createViewModel()
 
         viewModel.startPayment("100.00", null)
@@ -1560,6 +1678,10 @@ class PaymentViewModelTest {
             )
         }
 
+        val saved = com.google.gson.Gson().fromJson(savedContext.captured, PaymentContext.FastPayment::class.java)
+        assertThat(saved.venueId).isEqualTo(testVenueId)
+        assertThat(saved.staffId).isNotNull()
+        assertThat(saved.idempotencyKey).isNotNull()
         viewModel.viewModelScope.cancel()
     }
 
@@ -2352,6 +2474,35 @@ class PaymentViewModelTest {
         return detect
     }
 
+    @Test
+    fun `review actual offline kernel approval survives missing auth and cannot reset to PRE`() = runTest {
+        val response = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransResponse>(relaxed = true) {
+            every { transResult!!.transResult } returns com.paxsz.module.emv.process.enums.TransResultEnum.RESULT_OFFLINE_APPROVED
+        }
+        val kernel = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>()
+        coEvery { kernel.run(any()) } answers {
+            // The session disappears exactly as the chip has already approved.
+            every { mockAuthRepository.isAuthenticated() } returns false
+            com.blumonpay.pax.utils.clean.Either.Right(response)
+        }
+        val vm = createViewModel(startDetectCardUseCase = detectQueDevuelveUnToque(mutableListOf()), startCtlssTransUseCase = kernel)
+        try {
+            vm.selectMerchant(testMerchantA)
+            Thread.sleep(1000)
+            vm.setSocketPaymentSource("SOCKET", "offline-approved-request")
+            vm.startPayment("100.00")
+            Thread.sleep(1500)
+            testDispatcher.scheduler.advanceUntilIdle()
+            coVerify(exactly = 1) { kernel.run(any()) }
+            // Approval must be durable even when the registration authentication guard returns.
+            coVerify(atLeast = 1) { mockPaymentAttemptLedger.markHostResponded(any(), true, any(), any(), any()) }
+            vm.resetPayment()
+            verify(exactly = 0) {
+                mockSocketManager.emitTerminalPaymentResult(any(), "cancelled", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
     private fun kernelQueDeniega(emvCode: Int): com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase {
         val ctlss = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>(relaxed = true)
         coEvery { ctlss.run(any()) } returns com.blumonpay.pax.utils.clean.Either.Left(
@@ -2396,6 +2547,8 @@ class PaymentViewModelTest {
 
     @Test
     fun `P1 cancelar tras un rechazo contactless deja el lector completo para la siguiente venta`() = runTest {
+        // The kernel rejected before host authorization; the real ledger is still PREPARANDO.
+        coEvery { mockPaymentAttemptLedger.markDiscardedBeforeCharge(any(), "user_cancel") } returns true
         val detectCalls = mutableListOf<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardParams>()
         val viewModel = createViewModel(
             startDetectCardUseCase = detectQueDevuelveUnToque(detectCalls),
@@ -2408,6 +2561,7 @@ class PaymentViewModelTest {
         Thread.sleep(1500)
         testDispatcher.scheduler.advanceUntilIdle()
         assertThat(viewModel.state.value).isInstanceOf(PaymentState.Error::class.java)
+        coVerify(exactly = 0) { mockPaymentAttemptLedger.markAuthorizing(any()) }
 
         // El cajero cancela y llega OTRO cliente: nada del rechazo anterior puede recortarle el lector
         viewModel.cancelPayment()
@@ -2756,5 +2910,447 @@ class PaymentViewModelTest {
 
         verify(timeout = 1000, exactly = 0) { com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.runNow(any()) }
         vm.viewModelScope.cancel()
+    }
+    // ═══════════════════════════════════════════════════════════════════════════
+    // OBSERVADOR DE FASES (PaymentPhaseTracker) — independiente de la pantalla
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🔴 Por qué existe: el 8-sep-2026 una PAX de Testarudo se quedó congelada en
+    // «Procesando chip…» (PASO 3, StartEmvTrans, con el teclado del PED encima) y NO
+    // hubo forma de saber desde fuera en qué llamada se detuvo. El detector que ya
+    // existía vive en la PANTALLA (`PaymentScreen`, LaunchedEffect(currentState)) y
+    // reinicia su contador CADA vez que cambia el estado — y `Processing` cambia por
+    // el mensaje y por el `watchdogLevel` (8s y 25s). Ese día no disparó.
+    //
+    // Este tracker es PURO: sin Compose, sin Firebase, con el reloj inyectado. El
+    // reloj es MONOTÓNICO en producción (SystemClock.elapsedRealtime) porque si el
+    // kernel EMV bloquea el hilo, un acumulador de `delay` subestima el atasco justo
+    // en el caso que queremos medir.
+
+    private class RelojFalso(var ahora: Long = 0L) : () -> Long {
+        override fun invoke(): Long = ahora
+        fun avanzar(ms: Long) { ahora += ms }
+    }
+
+    @Test
+    fun `el reloj de la fase NO se reinicia cuando cambia el mensaje de la pantalla`() {
+        val reloj = RelojFalso()
+        val tracker = PaymentPhaseTracker(clock = reloj)
+        tracker.beginAttempt(attemptId = "a1", flowOrigin = "FAST_PAYMENT")
+        tracker.enterPhase(PaymentSdkPhase.START_EMV_TRANS)
+
+        // La pantalla republica Processing tres veces (mensaje + watchdogLevel).
+        // El tracker ni se entera: no lo alimenta el estado, lo alimenta el reloj.
+        repeat(3) { reloj.avanzar(20_000) }
+
+        val snapshot = tracker.snapshot()
+        assertThat(snapshot).isNotNull()
+        assertThat(snapshot!!.phase).isEqualTo(PaymentSdkPhase.START_EMV_TRANS)
+        assertThat(snapshot.elapsedInPhaseMs).isEqualTo(60_000)
+    }
+
+    @Test
+    fun `una fase que excede su umbral produce un reporte con la fase exacta`() {
+        val reloj = RelojFalso()
+        val tracker = PaymentPhaseTracker(clock = reloj)
+        tracker.beginAttempt(attemptId = "a1", flowOrigin = "FAST_PAYMENT")
+        tracker.enterPhase(PaymentSdkPhase.START_EMV_TRANS)
+
+        reloj.avanzar(PaymentSdkPhase.START_EMV_TRANS.thresholdMs - 1)
+        assertThat(tracker.evaluateStall()).isNull()
+
+        reloj.avanzar(1)
+        val reporte = tracker.evaluateStall()
+        assertThat(reporte).isNotNull()
+        assertThat(reporte!!.phase).isEqualTo(PaymentSdkPhase.START_EMV_TRANS)
+        assertThat(reporte.attemptId).isEqualTo("a1")
+        assertThat(reporte.flowOrigin).isEqualTo("FAST_PAYMENT")
+    }
+
+    @Test
+    fun `tope de UN evento por intento aunque se atasquen dos fases`() {
+        val reloj = RelojFalso()
+        val tracker = PaymentPhaseTracker(clock = reloj)
+        tracker.beginAttempt(attemptId = "a1", flowOrigin = "FAST_PAYMENT")
+
+        tracker.enterPhase(PaymentSdkPhase.START_EMV_TRANS)
+        reloj.avanzar(PaymentSdkPhase.START_EMV_TRANS.thresholdMs)
+        assertThat(tracker.evaluateStall()).isNotNull()
+
+        // El mismo tick vuelve a evaluar: no puede reportar dos veces.
+        assertThat(tracker.evaluateStall()).isNull()
+
+        // Y otra fase distinta también atascada tampoco abre un segundo evento.
+        tracker.exitPhase(PaymentSdkPhase.START_EMV_TRANS, PhaseOutcome.OK)
+        tracker.enterPhase(PaymentSdkPhase.ONLINE_AUTH)
+        reloj.avanzar(PaymentSdkPhase.ONLINE_AUTH.thresholdMs)
+        assertThat(tracker.evaluateStall()).isNull()
+    }
+
+    @Test
+    fun `un intento nuevo vuelve a armar el reporte`() {
+        val reloj = RelojFalso()
+        val tracker = PaymentPhaseTracker(clock = reloj)
+        tracker.beginAttempt(attemptId = "a1", flowOrigin = "FAST_PAYMENT")
+        tracker.enterPhase(PaymentSdkPhase.START_EMV_TRANS)
+        reloj.avanzar(PaymentSdkPhase.START_EMV_TRANS.thresholdMs)
+        assertThat(tracker.evaluateStall()).isNotNull()
+
+        tracker.beginAttempt(attemptId = "a2", flowOrigin = "FAST_PAYMENT")
+        tracker.enterPhase(PaymentSdkPhase.START_EMV_TRANS)
+        reloj.avanzar(PaymentSdkPhase.START_EMV_TRANS.thresholdMs)
+
+        val segundo = tracker.evaluateStall()
+        assertThat(segundo).isNotNull()
+        assertThat(segundo!!.attemptId).isEqualTo("a2")
+    }
+
+    @Test
+    fun `la traza registra la ENTRADA y la SALIDA de cada llamada al SDK`() {
+        val reloj = RelojFalso()
+        val tracker = PaymentPhaseTracker(clock = reloj)
+        tracker.beginAttempt(attemptId = "a1", flowOrigin = "FAST_PAYMENT")
+
+        tracker.enterPhase(PaymentSdkPhase.DETECT_CARD)
+        reloj.avanzar(4_000)
+        tracker.exitPhase(PaymentSdkPhase.DETECT_CARD, PhaseOutcome.OK)
+        tracker.enterPhase(PaymentSdkPhase.START_EMV_TRANS)
+        reloj.avanzar(PaymentSdkPhase.START_EMV_TRANS.thresholdMs)
+
+        val traza = tracker.evaluateStall()!!.trace
+        // La fase cerrada lleva su duración y su desenlace; la abierta queda marcada.
+        assertThat(traza).contains("DETECT_CARD")
+        assertThat(traza).contains("OK")
+        assertThat(traza).contains("START_EMV_TRANS")
+        assertThat(traza).contains(PaymentPhaseTracker.OPEN_PHASE_MARK)
+    }
+
+    @Test
+    fun `una llamada que falla deja su desenlace en la traza`() {
+        val reloj = RelojFalso()
+        val tracker = PaymentPhaseTracker(clock = reloj)
+        tracker.beginAttempt(attemptId = "a1", flowOrigin = "FAST_PAYMENT")
+        tracker.enterPhase(PaymentSdkPhase.DETECT_CARD)
+        reloj.avanzar(1_000)
+        tracker.exitPhase(PaymentSdkPhase.DETECT_CARD, PhaseOutcome.FAILED)
+        tracker.enterPhase(PaymentSdkPhase.START_EMV_TRANS)
+        reloj.avanzar(PaymentSdkPhase.START_EMV_TRANS.thresholdMs)
+
+        assertThat(tracker.evaluateStall()!!.trace).contains("FAILED")
+    }
+
+    @Test
+    fun `el reporte dice cual fue el ultimo callback del SDK y que le contestamos`() {
+        val reloj = RelojFalso()
+        val tracker = PaymentPhaseTracker(clock = reloj)
+        tracker.beginAttempt(attemptId = "a1", flowOrigin = "FAST_PAYMENT")
+        tracker.enterPhase(PaymentSdkPhase.START_EMV_TRANS)
+
+        tracker.noteCallbackRequested(PaymentSdkCallback.APP_SELECTION, count = 2)
+        tracker.noteCallbackResponded(PaymentSdkCallback.APP_SELECTION, ok = true, code = 0)
+        tracker.noteCallbackRequested(PaymentSdkCallback.PIN_ENTRY)
+
+        reloj.avanzar(PaymentSdkPhase.START_EMV_TRANS.thresholdMs)
+        val reporte = tracker.evaluateStall()!!
+
+        // Lo último que el SDK pidió fue el PIN y todavía NO le hemos contestado:
+        // ése es exactamente el estado en que quedó la PAX de Testarudo.
+        assertThat(reporte.lastCallback).contains("PIN_ENTRY")
+        assertThat(reporte.lastCallbackResponse).isNull()
+        // La respuesta anterior (selección de app) sí quedó registrada en la traza.
+        assertThat(reporte.callbackTrace).contains("APP_SELECTION")
+    }
+
+    @Test
+    fun `el observador NUNCA registra el PIN ni datos de la tarjeta`() {
+        val reloj = RelojFalso()
+        val tracker = PaymentPhaseTracker(clock = reloj)
+        tracker.beginAttempt(attemptId = "a1", flowOrigin = "FAST_PAYMENT")
+        tracker.enterPhase(PaymentSdkPhase.START_EMV_TRANS)
+        tracker.noteCallbackRequested(PaymentSdkCallback.PIN_ENTRY)
+        tracker.noteCallbackResponded(PaymentSdkCallback.PIN_ENTRY, ok = true, code = 0)
+        reloj.avanzar(PaymentSdkPhase.START_EMV_TRANS.thresholdMs)
+
+        val reporte = tracker.evaluateStall()!!
+        val todo = listOf(
+            reporte.trace, reporte.callbackTrace,
+            reporte.lastCallback.orEmpty(), reporte.lastCallbackResponse.orEmpty(),
+            reporte.message,
+        ).joinToString(" ")
+
+        // Ninguna corrida de 4+ dígitos: un PIN, un PAN o un track2 se verían así.
+        // La API sólo acepta enums, Boolean e Int acotados — no hay por dónde colarlos.
+        assertThat(Regex("""\d{4,}""").containsMatchIn(todo)).isFalse()
+    }
+
+    @Test
+    fun `sin fase abierta no hay nada que reportar`() {
+        val reloj = RelojFalso()
+        val tracker = PaymentPhaseTracker(clock = reloj)
+        tracker.beginAttempt(attemptId = "a1", flowOrigin = "FAST_PAYMENT")
+        tracker.enterPhase(PaymentSdkPhase.ONLINE_AUTH)
+        tracker.exitPhase(PaymentSdkPhase.ONLINE_AUTH, PhaseOutcome.OK)
+        tracker.endAttempt()
+
+        reloj.avanzar(10 * 60_000)
+        assertThat(tracker.evaluateStall()).isNull()
+        assertThat(tracker.snapshot()).isNull()
+    }
+
+    @Test
+    fun `exitPhase de una fase que ya no es la abierta se ignora - un resultado tardio no borra la fase en curso`() {
+        val reloj = RelojFalso()
+        val tracker = PaymentPhaseTracker(clock = reloj)
+        tracker.beginAttempt(attemptId = "a1", flowOrigin = "FAST_PAYMENT")
+        tracker.enterPhase(PaymentSdkPhase.ONLINE_AUTH)
+
+        // Llega el desenlace de una llamada ANTERIOR (carrera real: el flujo de
+        // reintento chip-only cierra su DetectCard cuando ya vamos en la autorización).
+        tracker.exitPhase(PaymentSdkPhase.DETECT_CARD, PhaseOutcome.OK)
+
+        reloj.avanzar(PaymentSdkPhase.ONLINE_AUTH.thresholdMs)
+        val reporte = tracker.evaluateStall()
+        assertThat(reporte).isNotNull()
+        assertThat(reporte!!.phase).isEqualTo(PaymentSdkPhase.ONLINE_AUTH)
+    }
+
+    @Test
+    fun `la compuerta del reporte se comparte - quien la toma primero es el unico que reporta`() {
+        val reloj = RelojFalso()
+        val tracker = PaymentPhaseTracker(clock = reloj)
+        tracker.beginAttempt(attemptId = "a1", flowOrigin = "FAST_PAYMENT")
+
+        // La PANTALLA reclama primero (su detector de 45s).
+        assertThat(tracker.claimStallReport()).isTrue()
+        assertThat(tracker.claimStallReport()).isFalse()
+
+        // Y el observador ya no puede abrir un segundo evento en este intento.
+        tracker.enterPhase(PaymentSdkPhase.START_EMV_TRANS)
+        reloj.avanzar(PaymentSdkPhase.START_EMV_TRANS.thresholdMs)
+        assertThat(tracker.evaluateStall()).isNull()
+    }
+
+    // ── El reloj INFORMATIVO de la pantalla ──────────────────────────────────
+
+    @Test
+    fun `el mensaje por fase distingue local, banco y post-aprobacion`() {
+        assertThat(mensajeDeFase(PaymentSdkPhase.START_EMV_TRANS))
+            .isEqualTo(mensajeDeFase(PaymentSdkPhase.DETECT_CARD))
+        assertThat(mensajeDeFase(PaymentSdkPhase.START_EMV_TRANS).lowercase())
+            .contains("teclado")
+        assertThat(mensajeDeFase(PaymentSdkPhase.ONLINE_AUTH).lowercase())
+            .contains("banco")
+        assertThat(mensajeDeFase(PaymentSdkPhase.COMPLETE_EMV_TRANS).lowercase())
+            .contains("aprobado")
+    }
+
+    @Test
+    fun `ningun mensaje del reloj le dice al cajero que NO se cobro`() {
+        // 🔴 La regla de dinero del repo: el tiempo transcurrido NO es evidencia de
+        // que no hubo cargo. Mientras la autorización sigue viva, decir «no se cobró»
+        // invita a cobrar dos veces. Ninguna rama puede depender del reloj.
+        val prohibidas = listOf(
+            "no se cobr", "no se realiz", "no se complet", "no pas", "sin cargo",
+            "cancelad", "fall", "rechaz", "error",
+        )
+        PaymentSdkPhase.entries.forEach { fase ->
+            val texto = mensajeDeFase(fase).lowercase()
+            prohibidas.forEach { prohibida ->
+                assertThat(texto).doesNotContain(prohibida)
+            }
+        }
+    }
+
+    @Test
+    fun `las fases del banco y de post-aprobacion piden explicitamente NO recobrar`() {
+        assertThat(mensajeDeFase(PaymentSdkPhase.ONLINE_AUTH).lowercase()).contains("no ")
+        assertThat(mensajeDeFase(PaymentSdkPhase.COMPLETE_EMV_TRANS).lowercase()).contains("no ")
+    }
+
+    @Test
+    fun `el reloj informativo cuenta desde que arranco la fase, no desde el ultimo repintado`() {
+        val reloj = RelojFalso()
+        val tracker = PaymentPhaseTracker(clock = reloj)
+        tracker.beginAttempt(attemptId = "a1", flowOrigin = "FAST_PAYMENT")
+        tracker.enterPhase(PaymentSdkPhase.ONLINE_AUTH)
+        reloj.avanzar(12_400)
+
+        val reloj_ui = tracker.snapshot()!!.toProcessingClock()
+        assertThat(reloj_ui.elapsedSeconds).isEqualTo(12)
+        assertThat(reloj_ui.message).isEqualTo(mensajeDeFase(PaymentSdkPhase.ONLINE_AUTH))
+    }
+    // ── El observador CABLEADO al ViewModel ──────────────────────────────────
+
+    @Test
+    fun `startPayment rearma la compuerta del reporte para el intento nuevo`() = runTest {
+        val viewModel = createViewModel()
+        // Un intento anterior ya gastó su único evento.
+        assertThat(viewModel.paymentPhaseTracker.claimStallReport()).isTrue()
+
+        viewModel.startPayment("100.00")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // El cobro nuevo vuelve a tener derecho a su evento: si no, un atasco en la
+        // segunda venta del día sería invisible.
+        assertThat(viewModel.paymentPhaseTracker.claimStallReport()).isTrue()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `el detector de la pantalla NO duplica el evento que ya mandó el observador`() {
+        mockkObject(CrashlyticsContext)
+        every { CrashlyticsContext.recordPaymentEmvStall(any(), any(), any()) } just Runs
+        val viewModel = createViewModel()
+        try {
+            // El observador reporta primero (toma la compuerta compartida).
+            assertThat(viewModel.paymentPhaseTracker.claimStallReport()).isTrue()
+
+            // La pantalla llega después con su detector de 45 s: no puede duplicar.
+            viewModel.reportProcessingTimeoutIfNeeded("Procesando chip...", 45)
+
+            verify(exactly = 0) { CrashlyticsContext.recordPaymentEmvStall(any(), any(), any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+            unmockkObject(CrashlyticsContext)
+        }
+    }
+
+    @Test
+    fun `el observador reporta la fase atascada SIN que la pantalla intervenga`() = runTest {
+        mockkObject(CrashlyticsContext)
+        every { CrashlyticsContext.recordPaymentPhaseStall(any()) } just Runs
+        val viewModel = createViewModel()
+        try {
+            val reloj = RelojFalso()
+            viewModel.monotonicClockMs = reloj
+            viewModel.phaseObserverDispatcher = testDispatcher
+            viewModel.paymentPhaseTracker.beginAttempt("a1", "FAST")
+            viewModel.paymentPhaseTracker.enterPhase(PaymentSdkPhase.START_EMV_TRANS)
+            viewModel.startPhaseObserver()
+
+            // Nadie toca el estado ni compone la pantalla: sólo pasa el tiempo.
+            reloj.avanzar(PaymentSdkPhase.START_EMV_TRANS.thresholdMs)
+            testDispatcher.scheduler.advanceTimeBy(2_000)
+
+            verify(exactly = 1) {
+                CrashlyticsContext.recordPaymentPhaseStall(
+                    match { it.phase == PaymentSdkPhase.START_EMV_TRANS }
+                )
+            }
+        } finally {
+            viewModel.viewModelScope.cancel()
+            unmockkObject(CrashlyticsContext)
+        }
+    }
+
+    @Test
+    fun `el observador manda UN solo evento aunque el atasco siga`() = runTest {
+        mockkObject(CrashlyticsContext)
+        every { CrashlyticsContext.recordPaymentPhaseStall(any()) } just Runs
+        val viewModel = createViewModel()
+        try {
+            val reloj = RelojFalso()
+            viewModel.monotonicClockMs = reloj
+            viewModel.phaseObserverDispatcher = testDispatcher
+            viewModel.paymentPhaseTracker.beginAttempt("a1", "FAST")
+            viewModel.paymentPhaseTracker.enterPhase(PaymentSdkPhase.START_EMV_TRANS)
+            viewModel.startPhaseObserver()
+
+            reloj.avanzar(PaymentSdkPhase.START_EMV_TRANS.thresholdMs * 4)
+            testDispatcher.scheduler.advanceTimeBy(10_000)
+
+            verify(exactly = 1) { CrashlyticsContext.recordPaymentPhaseStall(any()) }
+        } finally {
+            viewModel.viewModelScope.cancel()
+            unmockkObject(CrashlyticsContext)
+        }
+    }
+
+    @Test
+    fun `el reloj informativo publica los segundos de la fase sin mirar el estado de la pantalla`() = runTest {
+        val viewModel = createViewModel()
+        val reloj = RelojFalso()
+        viewModel.monotonicClockMs = reloj
+        viewModel.phaseObserverDispatcher = testDispatcher
+        viewModel.paymentPhaseTracker.beginAttempt("a1", "FAST")
+        viewModel.paymentPhaseTracker.enterPhase(PaymentSdkPhase.ONLINE_AUTH)
+        viewModel.startPhaseObserver()
+
+        reloj.avanzar(9_000)
+        testDispatcher.scheduler.advanceTimeBy(1_500)
+
+        // 🔴 El estado NUNCA se tocó en este test: si el reloj dependiera de él —como
+        // el contador viejo de PaymentScreen— aquí no habría nada que leer.
+        val relojUi = viewModel.processingClock.value
+        assertThat(relojUi).isNotNull()
+        assertThat(relojUi!!.elapsedSeconds).isEqualTo(9)
+        assertThat(relojUi.message).isEqualTo(mensajeDeFase(PaymentSdkPhase.ONLINE_AUTH))
+
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `sin fase abierta el reloj informativo se apaga en vez de inventar segundos`() = runTest {
+        val viewModel = createViewModel()
+        val reloj = RelojFalso()
+        viewModel.monotonicClockMs = reloj
+        viewModel.phaseObserverDispatcher = testDispatcher
+        viewModel.paymentPhaseTracker.beginAttempt("a1", "FAST")
+        viewModel.paymentPhaseTracker.enterPhase(PaymentSdkPhase.ONLINE_AUTH)
+        viewModel.startPhaseObserver()
+        reloj.avanzar(5_000)
+        testDispatcher.scheduler.advanceTimeBy(1_500)
+        assertThat(viewModel.processingClock.value).isNotNull()
+
+        // La llamada al SDK volvió: ya no hay nada en vuelo que cronometrar.
+        viewModel.paymentPhaseTracker.exitPhase(PaymentSdkPhase.ONLINE_AUTH, PhaseOutcome.OK)
+        testDispatcher.scheduler.advanceTimeBy(1_500)
+
+        assertThat(viewModel.processingClock.value).isNull()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `cancelar el cobro cierra el intento y apaga el reloj informativo`() = runTest {
+        val viewModel = createViewModel()
+        val reloj = RelojFalso()
+        viewModel.monotonicClockMs = reloj
+        viewModel.phaseObserverDispatcher = testDispatcher
+        viewModel.paymentPhaseTracker.beginAttempt("a1", "FAST")
+        viewModel.paymentPhaseTracker.enterPhase(PaymentSdkPhase.START_EMV_TRANS)
+        viewModel.startPhaseObserver()
+        reloj.avanzar(3_000)
+        testDispatcher.scheduler.advanceTimeBy(1_500)
+        assertThat(viewModel.processingClock.value).isNotNull()
+
+        viewModel.cancelPayment()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertThat(viewModel.processingClock.value).isNull()
+        assertThat(viewModel.paymentPhaseTracker.snapshot()).isNull()
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `la PANTALLA ya no cuenta el tiempo del estado Processing`() {
+        // 🔴 Prueba ESTRUCTURAL, y es la que impide que vuelva el defecto de Testarudo:
+        // el contador vivía en PaymentScreen dentro de `LaunchedEffect(currentState)`,
+        // así que cada republicación de Processing —mensaje nuevo, watchdogLevel nuevo—
+        // lo devolvía a cero y nunca llegaba a los 45 s. El tiempo lo lleva ahora el
+        // ViewModel con un reloj monotónico; si alguien reintroduce un contador local
+        // en ese bloque, este test cae.
+        val fuente = java.io.File(
+            "src/main/java/com/jaac/avoqado_tpv/features/payment/presentation/PaymentScreen.kt"
+        )
+        assertThat(fuente.exists()).isTrue()
+        val texto = fuente.readText()
+        val inicio = texto.indexOf("is PaymentState.Processing ->")
+        assertThat(inicio).isGreaterThan(0)
+        // Sin las líneas de comentario: el bloque EXPLICA el defecto citándolo, y un
+        // test que mirara el comentario prohibiría documentar lo que se arregló.
+        val bloque = texto.substring(inicio, minOf(inicio + 3_000, texto.length))
+            .lineSequence()
+            .filterNot { it.trimStart().startsWith("//") }
+            .joinToString("\n")
+        assertThat(bloque).doesNotContain("LaunchedEffect(currentState)")
     }
 }

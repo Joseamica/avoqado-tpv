@@ -76,6 +76,9 @@ fun MerchantSelectionContent(
     enableMsiPromotions: Boolean = false,
     hideAccountSelector: Boolean = false,  // 🥝 KIOSK: Hide merchant list when default is pre-configured
     routingBannerMessage: String? = null,  // 🧭 MERCHANT_ROUTING_RULES: "showing all accounts" notice when no rule matched
+    // T26: el efectivo puede tener su propio bloqueo (AngelPay: la auth en fondo no lo apaga).
+    // Por default es el mismo que el de la tarjeta → Blumon y el kiosco quedan idénticos.
+    cashSwitchingLoading: Boolean = merchantSwitchingLoading,
 ) {
     // 💵 State for cash payment confirmation dialog
     var showCashConfirmationDialog by remember { mutableStateOf(false) }
@@ -361,7 +364,7 @@ fun MerchantSelectionContent(
                     // Segmented button group
                     val buttonShape = RoundedCornerShape(12.dp)
                     val cardEnabled = !merchantSwitchingLoading && currentMerchant != null
-                    val cashEnabled = !merchantSwitchingLoading
+                    val cashEnabled = !cashSwitchingLoading
                     val enabledMethodBackground = MaterialTheme.colorScheme.surfaceVariant
                     val disabledMethodBackground = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
 

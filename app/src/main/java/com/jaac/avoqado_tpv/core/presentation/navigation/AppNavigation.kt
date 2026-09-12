@@ -1,9 +1,12 @@
 package com.jaac.avoqado_tpv.core.presentation.navigation
 
+import com.jaac.avoqado_tpv.core.remotepayment.rejectRemotePaymentBeforeAuthorization
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
@@ -12,9 +15,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -33,6 +39,7 @@ import com.jaac.avoqado_tpv.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.activity.ComponentActivity
@@ -324,6 +331,14 @@ fun AppNavigation(
     val recordAngelPayRefundUseCase = remember { kioskEntryPoint.recordAngelPayRefundUseCase() }
     val paymentStateProvider = remember { kioskEntryPoint.paymentStateProvider() }
 
+    // Durable approved-but-unregistered attempts catch up after reconnect. Unique
+    // WorkManager KEEP scheduling prevents repeated connection callbacks piling up.
+    LaunchedEffect(socketManager) {
+        socketManager.isConnected.distinctUntilChanged().collect { connected ->
+            if (connected) LedgerSweepScheduler.runOnceNow(context)
+        }
+    }
+
     // 📥 UPDATE REQUEST OBSERVATION (Remote update commands from dashboard)
     // When dashboard sends REQUEST_UPDATE command, show dialog to user
     val updateRequestManager = remember {
@@ -355,10 +370,30 @@ fun AppNavigation(
                 return@collect
             }
 
-            val durableRequestId = request.socketRequestId
-            if (durableRequestId == null || !remotePaymentCoordinator.claimSocketPaymentRequest(durableRequestId)) {
-                Timber.w("⚠️ [Remote] Request no reclamable o ya procesado; no se relanza SDK (requestId=$durableRequestId)")
-                return@collect
+            val durableRequestId = request.socketRequestId ?: return@collect
+            val admission = remotePaymentCoordinator.prepareSocketPaymentRequest(
+                requestId = durableRequestId,
+                awaitReady = { awaitPaxPaymentReady(context, initializationManager, "remote (socket) payment") },
+                currentVenueId = { secureStorage.getVenueId() },
+            )
+            when (admission) {
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NOT_CLAIMABLE -> {
+                    Timber.w("⚠️ [Remote] Request not claimable in active venue; no SDK launch (requestId=$durableRequestId)")
+                    return@collect
+                }
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.NOT_READY,
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.VENUE_CHANGED -> {
+                    // This collector owns the claim and has not started any SDK.
+                    rejectRemotePaymentBeforeAuthorization(
+                        socketManager = socketManager,
+                        requestId = durableRequestId,
+                        errorMessage = if (admission == com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.VENUE_CHANGED)
+                            "La terminal cambió de sede antes de iniciar el cobro"
+                        else "Sistema de pagos no inicializado en el terminal",
+                    )
+                    return@collect
+                }
+                com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentAdmission.READY -> Unit
             }
 
             val currentRoute = navController.currentBackStackEntry?.destination?.route
@@ -388,9 +423,9 @@ fun AppNavigation(
                 Timber.w("⚠️ [Remote] Payment already in progress - ignoring amount: ${request.amountCents}")
                 // If this came via socket, send rejection back so iOS doesn't hang
                 if (request.source == com.jaac.avoqado_tpv.core.remotepayment.PaymentSource.SOCKET) {
-                    socketManager.emitTerminalPaymentResult(
+                    rejectRemotePaymentBeforeAuthorization(
+                        socketManager = socketManager,
                         requestId = durableRequestId,
-                        status = "failed",
                         errorMessage = "Ya hay un pago en proceso en el terminal"
                     )
                     Timber.i("📡 [Socket] Sent rejection for requestId=${request.socketRequestId}")
@@ -414,22 +449,11 @@ fun AppNavigation(
             val handle = navController.currentBackStackEntry?.savedStateHandle
             if (handle == null) {
                 Timber.e("❌ [Remote] No backstack entry available - cannot start payment")
-                socketManager.emitTerminalPaymentResult(
+                rejectRemotePaymentBeforeAuthorization(
+                    socketManager = socketManager,
                     requestId = durableRequestId,
-                    status = "failed",
                     errorMessage = "No se pudo abrir la pantalla de pago en la terminal",
                 )
-                return@collect
-            }
-
-            if (!awaitPaxPaymentReady(context, initializationManager, "remote (socket) payment")) {
-                if (request.source == com.jaac.avoqado_tpv.core.remotepayment.PaymentSource.SOCKET) {
-                    socketManager.emitTerminalPaymentResult(
-                        requestId = durableRequestId,
-                        status = "failed",
-                        errorMessage = "Sistema de pagos no inicializado en el terminal"
-                    )
-                }
                 return@collect
             }
 
@@ -461,47 +485,6 @@ fun AppNavigation(
             Timber.i("🔵 [$sourceLabel] Navigating to payment | amount=$formattedAmount | cents=${request.amountCents} | orderId=${request.orderId ?: "null"} | nexgo=${isAppToAppPayment()}")
             navController.navigate(getPaymentRoute()) {
                 launchSingleTop = true
-            }
-        }
-    }
-
-    // 🚫 PAYMENT CANCEL from iOS - Navigate back to Welcome
-    LaunchedEffect(remotePaymentCoordinator) {
-        remotePaymentCoordinator.paymentCancelRequests.collect { requestId ->
-            val currentRoute = navController.currentBackStackEntry?.destination?.route
-            if (currentRoute == NavRoute.Payment.route || currentRoute == NavRoute.AngelPayPayment.route) {
-                // 🔒 MONEY WINDOW gate (Square NOT_CANCELABLE / Stripe terminal_reader_busy
-                // pattern): while a charge is launched and its result is pending — Blumon:
-                // PaymentState.Processing (card presented → EMV → online auth → recording);
-                // AngelPay: SDK/app-to-app flow in flight — navigating away would destroy
-                // the component that receives the money result, silently orphaning a
-                // possibly-APPROVED charge. REFUSE the cancel and emit NOTHING to the server:
-                // reporting "cancel failed" would mark the row FAILED and free the terminal
-                // slot with the charge still live. The row stays CANCEL_REQUESTED; either the
-                // result arrives (REST close reconciles → POS sees Pagado, 🚨 alert fires) or
-                // it declines (slot frees normally). Cancel while merely WAITING for a card
-                // (DetectingCard / tip / rating / merchant selection) still works below.
-                if (paymentStateProvider.isCharging()) {
-                    Timber.w("🚫 [Cancel] REFUSED — charge in flight, result handler must survive (requestId=$requestId)")
-                    return@collect
-                }
-                Timber.i("🚫 [Cancel] Cancelling payment (requestId=$requestId) - navigating to Home")
-                // 🧹 CRITICAL: Clear stale payment args from Home's handle BEFORE navigating.
-                // Without this, the next manual Fast Payment inherits paymentSource=SOCKET,
-                // skipReview=true, externalTipCents=N, etc. → the TPV silently uses socket
-                // values for a manual cobro (skips tip selection, applies stale amount/tip).
-                // Repro: socket request → cancel from iOS → cashier taps "Cobro Rápido" →
-                // tip screen is skipped using the cancelled request's values.
-                navController.previousBackStackEntry?.savedStateHandle?.let { homeHandle ->
-                    clearPaymentArgs(homeHandle)
-                    Timber.d("🧹 [Cancel] Cleared payment args from Home savedStateHandle")
-                }
-                navController.navigate(NavRoute.Home.route) {
-                    popUpTo(NavRoute.Home.route) { inclusive = false }
-                    launchSingleTop = true
-                }
-            } else {
-                Timber.w("⚠️ [Cancel] Not on Payment screen (current=$currentRoute) - ignoring cancel")
             }
         }
     }
@@ -888,6 +871,38 @@ fun AppNavigation(
                 }
             } // For update alerts
         )
+
+        // Persisted uncertain/approved-but-unregistered attempts remain visible after
+        // restart. A venue key resets collection immediately when activation changes.
+        val bannerRoute = navController.currentBackStackEntryAsState().value?.destination?.route
+        val bannerVenueId = secureStorage.getVenueId()
+        if (bannerRoute == NavRoute.Home.route && !bannerVenueId.isNullOrBlank()) {
+            key(bannerVenueId) {
+                val pendingFlow = remember(bannerVenueId) {
+                    remotePaymentCoordinator.observePendingObligationCount(bannerVenueId)
+                }
+                val unresolvedCount by pendingFlow.collectAsStateWithLifecycle(initialValue = 0)
+                if (unresolvedCount > 0) {
+                    Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                text = "Hay $unresolvedCount " +
+                                    (if (unresolvedCount == 1) "cobro pendiente" else "cobros pendientes") +
+                                    " de confirmar. No repitas esas ventas.",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f),
+                            )
+                            TextButton(onClick = { navController.navigate(NavRoute.Support.route) }) {
+                                Text("Ayuda")
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Main navigation content (takes remaining space)
         Box(modifier = Modifier.weight(1f)) {
@@ -1635,7 +1650,7 @@ fun AppNavigation(
         }
 
         // Payment Screen - EMV chip card payment with online authorization
-        composable(NavRoute.Payment.route) {
+        composable(NavRoute.Payment.route) { backStackEntry ->
             // 🔐 SECURITY: Require authentication before processing payments
             // This prevents payments without backend recording (Blumon succeeds, but no receipt)
             LaunchedEffect(Unit) {
@@ -1664,71 +1679,85 @@ fun AppNavigation(
                 return@composable
             }
 
+            // 🔴 D.7 (2026-09-11): los argumentos del cobro se leen UNA vez, de la entrada PROPIA.
+            // Antes se releían del `previousBackStackEntry` en cada recomposición; ese valor se
+            // calcula contra el TOPE actual, así que la pantalla que salía se llevaba los
+            // argumentos del cobro siguiente (camino 1), y salir con el atrás del sistema dejaba
+            // los de una solicitud remota pegados en el lanzador para el próximo cobro local
+            // (camino 2). [congelarArgumentosDeCobro] los copia a esta entrada y los borra del
+            // lanzador en el mismo paso, así que ninguna salida puede dejarlos atrás.
+            val argumentosDelCobro = remember(backStackEntry) {
+                congelarArgumentosDeCobro(
+                    propio = backStackEntry.savedStateHandle,
+                    lanzador = navController.previousBackStackEntry?.savedStateHandle,
+                )
+            }
+
             // Get initial amount from previous screen (if coming from Home with amount)
-            val initialAmount = navController.previousBackStackEntry?.savedStateHandle?.get<String>("initialAmount")
+            val initialAmount = argumentosDelCobro.get<String>("initialAmount")
 
             // 🧪 Get skipReview flag (test payment from SuperAdmin)
-            val skipReview = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("skipReview") ?: false
+            val skipReview = argumentosDelCobro.get<Boolean>("skipReview") ?: false
             // 📡 Remote payment inputs (socket-routed charge from another POS)
-            val externalTipCents = navController.previousBackStackEntry?.savedStateHandle?.get<Long>("externalTipCents")
-            val externalRating = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("externalRating")
-            val externalSkipReview = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("externalSkipReview") ?: false
+            val externalTipCents = argumentosDelCobro.get<Long>("externalTipCents")
+            val externalRating = argumentosDelCobro.get<Int>("externalRating")
+            val externalSkipReview = argumentosDelCobro.get<Boolean>("externalSkipReview") ?: false
 
             // 🆕 Get order details (if coming from MenuScreen with order)
-            val orderId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderId")
-            val orderNumber = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderNumber")
-            val tableId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("tableId")
+            val orderId = argumentosDelCobro.get<String>("orderId")
+            val orderNumber = argumentosDelCobro.get<String>("orderNumber")
+            val tableId = argumentosDelCobro.get<String>("tableId")
             // 🛒 Source identifier — when "checkout", post-success "Nueva Orden"
             // / "Nuevo Pago" route back to the unified Cart instead of the
             // legacy MenuScreen / FastPaymentEntry.
-            val entryPoint = navController.previousBackStackEntry?.savedStateHandle?.get<String>("entryPoint")
+            val entryPoint = argumentosDelCobro.get<String>("entryPoint")
             val cameFromCheckout = entryPoint == "checkout"
             // 🪑 Mesas (Plan C, Task 8) — TableCheckoutScreen tagged this charge.
             // "Nueva Orden"/"Continuar pagando" must return to the Mesas module,
             // never the unified Cart or legacy Menu — see the two branches below.
             val cameFromTables = entryPoint == "tables"
             // 📱 SERIALIZED SALE: Skip local order validation (order exists only on backend)
-            val skipLocalOrderValidation = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("skipLocalOrderValidation") ?: false
+            val skipLocalOrderValidation = argumentosDelCobro.get<Boolean>("skipLocalOrderValidation") ?: false
             // 📱 PORTABILIDAD: Controls 1 vs 2 proof-of-sale photos
-            val isPortabilidad = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("isPortabilidad") ?: false
+            val isPortabilidad = argumentosDelCobro.get<Boolean>("isPortabilidad") ?: false
             // 📱 SERIALIZED: Serial number (ICCID) and category name for receipt
-            val serialNumber = navController.previousBackStackEntry?.savedStateHandle?.get<String>("serialNumber")
-            val categoryName = navController.previousBackStackEntry?.savedStateHandle?.get<String>("categoryName")
+            val serialNumber = argumentosDelCobro.get<String>("serialNumber")
+            val categoryName = argumentosDelCobro.get<String>("categoryName")
 
             // ⭐ Split payment params (from SplitByPersonScreen or SplitByProductScreen)
-            val splitType = navController.previousBackStackEntry?.savedStateHandle?.get<String>("splitType")
-            val equalPartsPartySize = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("equalPartsPartySize")
-            val equalPartsPayedFor = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("equalPartsPayedFor")
-            val paidProductIds = navController.previousBackStackEntry?.savedStateHandle?.get<List<String>>("paidProductIds") ?: emptyList()
+            val splitType = argumentosDelCobro.get<String>("splitType")
+            val equalPartsPartySize = argumentosDelCobro.get<Int>("equalPartsPartySize")
+            val equalPartsPayedFor = argumentosDelCobro.get<Int>("equalPartsPayedFor")
+            val paidProductIds = argumentosDelCobro.get<List<String>>("paidProductIds") ?: emptyList()
 
             // 💸 REFUND MODE PARAMS (from RefundConfirmationScreen)
-            val isRefundMode = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("isRefundMode") ?: false
-            val refundAmount = navController.previousBackStackEntry?.savedStateHandle?.get<String>("refundAmount")
-            val refundReason = navController.previousBackStackEntry?.savedStateHandle?.get<String>("refundReason")
-            val originalPaymentId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("originalPaymentId")
-            val originalOrderId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("originalOrderId")
-            val originalTotalAmount = navController.previousBackStackEntry?.savedStateHandle?.get<String>("originalTotalAmount")
-            val originalTipAmount = navController.previousBackStackEntry?.savedStateHandle?.get<String>("originalTipAmount")
-            val refundMerchantAccountId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("merchantAccountId")
-            val refundBlumonSerialNumber = navController.previousBackStackEntry?.savedStateHandle?.get<String>("blumonSerialNumber")
+            val isRefundMode = argumentosDelCobro.get<Boolean>("isRefundMode") ?: false
+            val refundAmount = argumentosDelCobro.get<String>("refundAmount")
+            val refundReason = argumentosDelCobro.get<String>("refundReason")
+            val originalPaymentId = argumentosDelCobro.get<String>("originalPaymentId")
+            val originalOrderId = argumentosDelCobro.get<String>("originalOrderId")
+            val originalTotalAmount = argumentosDelCobro.get<String>("originalTotalAmount")
+            val originalTipAmount = argumentosDelCobro.get<String>("originalTipAmount")
+            val refundMerchantAccountId = argumentosDelCobro.get<String>("merchantAccountId")
+            val refundBlumonSerialNumber = argumentosDelCobro.get<String>("blumonSerialNumber")
             // 🎫 CRITICAL: Blumon operation number for CancelIcc (from webhook, NOT SDK referenceNumber!)
-            val originalOperationNumber = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("blumonOperationNumber")
+            val originalOperationNumber = argumentosDelCobro.get<Int>("blumonOperationNumber")
             // 🏢 CRITICAL: Payment's venueId for refund API call (NOT auth context's venue!)
-            val refundVenueId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("paymentVenueId")
+            val refundVenueId = argumentosDelCobro.get<String>("paymentVenueId")
             // 💸 Explicit tip-split override from RefundConfirmationScreen (null = backend default)
-            val refundTipCents = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("tipRefundCents")
+            val refundTipCents = argumentosDelCobro.get<Int>("tipRefundCents")
 
             // 💳 PAY-LATER CONTEXT PARAMS (from OrderListScreen/OrderDetailsBottomSheet)
-            val wasPayLaterOrder = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("wasPayLaterOrder") ?: false
-            val payLaterOrdersCount = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("payLaterOrdersCount") ?: 0
+            val wasPayLaterOrder = argumentosDelCobro.get<Boolean>("wasPayLaterOrder") ?: false
+            val payLaterOrdersCount = argumentosDelCobro.get<Int>("payLaterOrdersCount") ?: 0
 
             // 🥝 KIOSK MODE PARAMS
-            val isKioskPayment = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("isKioskPayment") ?: false
+            val isKioskPayment = argumentosDelCobro.get<Boolean>("isKioskPayment") ?: false
 
             // 📡 SOCKET PAYMENT SOURCE (for sending result back via Socket.IO)
-            val paymentSourceStr = navController.previousBackStackEntry?.savedStateHandle?.get<String>("paymentSource")
-            val socketRequestId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("socketRequestId")
-            val socketProcessedByStaffId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("socketProcessedByStaffId")
+            val paymentSourceStr = argumentosDelCobro.get<String>("paymentSource")
+            val socketRequestId = argumentosDelCobro.get<String>("socketRequestId")
+            val socketProcessedByStaffId = argumentosDelCobro.get<String>("socketProcessedByStaffId")
 
             Timber.d("💳 [Payment] Pay-later context: wasPayLaterOrder=$wasPayLaterOrder, count=$payLaterOrdersCount, isKiosk=$isKioskPayment, source=$paymentSourceStr")
 
@@ -2757,15 +2786,21 @@ fun AppNavigation(
 
         // 🔶 ANGELPAY Payment Screen — SDK embebido con fallback app-to-app en Nexgo
         // COMPLETELY ISOLATED from Blumon PaymentScreen (separate ViewModel, state, route)
-        composable(NavRoute.AngelPayPayment.route) {
-            val initialAmount = navController.previousBackStackEntry?.savedStateHandle?.get<String>("initialAmount")
-            val orderId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderId")
-            val orderNumber = navController.previousBackStackEntry?.savedStateHandle?.get<String>("orderNumber")
+        composable(NavRoute.AngelPayPayment.route) { backStackEntry ->
+            // 🔴 D.7 (2026-09-11): mismos argumentos congelados que el riel Blumon (ver allá el
+            // porqué). El lanzador se captura UNA vez: es a quien le pertenecían estos argumentos.
+            val lanzadorDelCobro = remember(backStackEntry) { navController.previousBackStackEntry?.savedStateHandle }
+            val argumentosDelCobro = remember(backStackEntry) {
+                congelarArgumentosDeCobro(propio = backStackEntry.savedStateHandle, lanzador = lanzadorDelCobro)
+            }
+            val initialAmount = argumentosDelCobro.get<String>("initialAmount")
+            val orderId = argumentosDelCobro.get<String>("orderId")
+            val orderNumber = argumentosDelCobro.get<String>("orderNumber")
             // ENTRY POINT — matches Blumon PaymentScreen pattern. When Cobrar
             // (unified Checkout) drove us here, the "Nuevo Cobro" success
             // button must return to a fresh CheckoutScreen, not pop to the
             // legacy FastPaymentEntry/MenuScreen.
-            val entryPoint = navController.previousBackStackEntry?.savedStateHandle?.get<String>("entryPoint")
+            val entryPoint = argumentosDelCobro.get<String>("entryPoint")
             val cameFromCheckout = entryPoint == "checkout"
             // 🪑 Mesas (Plan C, Task 8) — see the Blumon Payment composable above
             // for the full rationale. Nexgo/AngelPay has NO split-payment params
@@ -2780,20 +2815,20 @@ fun AppNavigation(
 
             // 📸 Serialized inventory (SIM) sale — set by SerializedSaleScreen's
             // onNavigateToPayment. Null/false for a normal AngelPay charge.
-            val serialNumber = navController.previousBackStackEntry?.savedStateHandle?.get<String>("serialNumber")
-            val isPortabilidad = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("isPortabilidad") ?: false
-            val skipReview = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("skipReview") ?: false
-            val externalTipCents = navController.previousBackStackEntry?.savedStateHandle?.get<Long>("externalTipCents")
-            val externalRating = navController.previousBackStackEntry?.savedStateHandle?.get<Int>("externalRating")
-            val externalSkipReview = navController.previousBackStackEntry?.savedStateHandle?.get<Boolean>("externalSkipReview") ?: false
-            val paymentArgsHandle = navController.previousBackStackEntry?.savedStateHandle
+            val serialNumber = argumentosDelCobro.get<String>("serialNumber")
+            val isPortabilidad = argumentosDelCobro.get<Boolean>("isPortabilidad") ?: false
+            val skipReview = argumentosDelCobro.get<Boolean>("skipReview") ?: false
+            val externalTipCents = argumentosDelCobro.get<Long>("externalTipCents")
+            val externalRating = argumentosDelCobro.get<Int>("externalRating")
+            val externalSkipReview = argumentosDelCobro.get<Boolean>("externalSkipReview") ?: false
+            val paymentArgsHandle = lanzadorDelCobro
 
             // 📡 POS→TPV terminal arbitration: a socket-initiated charge (the socket handler routes
             // to BOTH the Blumon Payment route and this AngelPay route) stashes these keys. The
             // Blumon PaymentScreen already reads them; wire the AngelPay screen the same way so a
             // socket-sourced Nexgo charge reports its result back to the caller (POS long-poll).
-            val paymentSource = navController.previousBackStackEntry?.savedStateHandle?.get<String>("paymentSource")
-            val socketRequestId = navController.previousBackStackEntry?.savedStateHandle?.get<String>("socketRequestId")
+            val paymentSource = argumentosDelCobro.get<String>("paymentSource")
+            val socketRequestId = argumentosDelCobro.get<String>("socketRequestId")
 
             com.jaac.avoqado_tpv.features.payment.presentation.angelpay.AngelPayPaymentScreen(
                 initialAmount = initialAmount,
@@ -3208,6 +3243,51 @@ internal fun prepareManualPaymentArgs(handle: SavedStateHandle, amount: String) 
     clearPaymentArgs(handle)
     handle["initialAmount"] = amount
     handle["skipReview"] = false
+}
+
+/**
+ * Todas las claves que las dos pantallas de cobro (Blumon y AngelPay) leen de quien las lanzó.
+ * Una clave que se lea en esas pantallas y no esté aquí llegaría siempre nula: lo vigila
+ * `ArgumentosDelCobroSeLeenUnaVezTest`.
+ */
+internal val CLAVES_DE_COBRO: List<String> = listOf(
+    "initialAmount", "skipReview", "externalTipCents", "externalRating", "externalSkipReview",
+    "orderId", "orderNumber", "tableId", "entryPoint", "skipLocalOrderValidation",
+    "isPortabilidad", "serialNumber", "categoryName",
+    "splitType", "equalPartsPartySize", "equalPartsPayedFor", "paidProductIds",
+    "isRefundMode", "refundAmount", "refundReason", "originalPaymentId", "originalOrderId",
+    "originalTotalAmount", "originalTipAmount", "merchantAccountId", "blumonSerialNumber",
+    "blumonOperationNumber", "paymentVenueId", "tipRefundCents",
+    "wasPayLaterOrder", "payLaterOrdersCount", "isKioskPayment",
+    "paymentSource", "socketRequestId", "socketProcessedByStaffId",
+)
+
+private const val CLAVE_ARGUMENTOS_CONGELADOS = "paymentArgsFrozen"
+
+/**
+ * 🔴 D.7 (2026-09-11) — los argumentos de un cobro son de UN solo uso y los lee UNA sola vez la
+ * entrada del propio cobro.
+ *
+ * La primera vez que se compone una pantalla de cobro, copia sus argumentos del handle de quien
+ * la lanzó a SU propia entrada ([propio]) y los BORRA del lanzador, en el mismo paso. Después
+ * la pantalla lee sólo de [propio] (sobrevive a la recreación y a la muerte del proceso), y:
+ *  - la pantalla que sale ya no puede leer los argumentos de la solicitud remota siguiente,
+ *    que el colector escribe en ese mismo handle antes de empujar otra entrada (camino 1);
+ *  - salir por CUALQUIER vía —callbacks, atrás del sistema, un pop del colector, la muerte del
+ *    proceso— deja al lanzador limpio: el siguiente cobro local no nace remoto ni hereda la
+ *    propina o la orden de otra solicitud (camino 2).
+ * Idempotente: una segunda llamada sobre la misma entrada no vuelve a copiar nada.
+ */
+internal fun congelarArgumentosDeCobro(propio: SavedStateHandle, lanzador: SavedStateHandle?): SavedStateHandle {
+    if (propio.get<Boolean>(CLAVE_ARGUMENTOS_CONGELADOS) == true) return propio
+    if (lanzador != null && lanzador !== propio) {
+        CLAVES_DE_COBRO.forEach { clave ->
+            if (lanzador.contains(clave)) propio[clave] = lanzador.get<Any?>(clave)
+        }
+        CLAVES_DE_COBRO.forEach { clave -> lanzador.remove<Any?>(clave) }
+    }
+    propio[CLAVE_ARGUMENTOS_CONGELADOS] = true
+    return propio
 }
 
 private fun formatAmountFromCents(amountCents: Long): String {

@@ -25,6 +25,10 @@ import com.angelpay.angelpaysdk.models.MerchantOption
  *     │       └── HardBlock → AuthError (payments blocked)
  *     ├── handleAuthExpiry() → logout() → Unauthenticated → ensureAuthenticated()
  *     └── logout() → Unauthenticated
+ * AuthError(kind recuperable: SIN_RED · SIN_CREDENCIALES · CUENTA_NO_EN_CONFIG) / Unauthenticated
+ *     └── AngelPayAuthRecovery (red de vuelta, config leída, servidor, «Reintentar»; T26)
+ *             → Recuperando → Authenticated | SelectingMerchant | AuthError
+ *             (multicuenta sin cuenta conocida → Unauthenticated: «requiere autenticación»)
  * AccountSuspended
  *     └── (terminal — only cleared by external account reactivation + cold start)
  * ConfigMismatchBanner
@@ -40,6 +44,14 @@ sealed class AngelPayAuthState {
     object Authenticating : AngelPayAuthState()
 
     /**
+     * T26: la recuperación de FONDO está re-autenticando (red recuperada, config leída,
+     * servidor de vuelta o «Reintentar»). Estado propio y no [Authenticating] a propósito:
+     * apaga la Tarjeta pero NO el Efectivo — el efectivo no usa la sesión de AngelPay y la
+     * recuperación no toca el estado de la pantalla de cobro.
+     */
+    object Recuperando : AngelPayAuthState()
+
+    /**
      * The SDK returned [com.angelpay.angelpaysdk.models.AuthenticateSimpleResult.MerchantSelectionRequired].
      * The ViewModel must prompt the cashier to pick a merchant and call
      * [AngelPayAuthRepository.completeMerchantSelection] with the choice plus the
@@ -53,8 +65,18 @@ sealed class AngelPayAuthState {
     /** Auth + initial merchant selection both complete. SDK is ready to charge. */
     object Authenticated : AngelPayAuthState()
 
-    /** Surfaced for cashier — operator banner. Payments are blocked. */
-    data class AuthError(val message: String) : AngelPayAuthState()
+    /**
+     * Surfaced for cashier — operator banner. Payments are blocked.
+     *
+     * [kind] (T26, 2026-09-11) separa las tres causas que antes salían todas como
+     * «credentials missing»: sin red, sin credenciales en el panel, y cuenta que ya no
+     * está en la config. Por defecto [AuthErrorKind.OTHER] para no romper vistas previas,
+     * pruebas ni los errores que no son de auth (el bloqueo de config D5).
+     */
+    data class AuthError(
+        val message: String,
+        val kind: AuthErrorKind = AuthErrorKind.OTHER,
+    ) : AngelPayAuthState()
 
     /**
      * Backend reports the venue's `AngelPayUserAccount.status != ACTIVE` (spec §6.5).
@@ -75,4 +97,27 @@ sealed class AngelPayAuthState {
         val onlyInSdk: Set<Int>,
         val onlyInAvoqado: Set<Int>,
     ) : AngelPayAuthState()
+}
+
+/**
+ * T26 (Testarudo, 2026-09-11): por qué falló la autenticación de AngelPay.
+ *
+ * La distinción no es cosmética: decide si la terminal puede recuperarse SOLA y si se
+ * permite caer a la cuenta primaria del venue.
+ *  - [SIN_RED]: no se pudo consultar la config ni hablar con AngelPay. Se reintenta sola al
+ *    volver la red, y NUNCA cae a la primaria (sin red no se puede afirmar que la cuenta del
+ *    comercio ya no existe — regla de Amaena).
+ *  - [SIN_CREDENCIALES]: la config SÍ se leyó y no trae credenciales de AngelPay.
+ *  - [CUENTA_NO_EN_CONFIG]: la config SÍ se leyó y la cuenta del comercio elegido no está.
+ *  - [OTHER]: cualquier otra (PIN rechazado, bloqueo de config D5…). No se reintenta en
+ *    fondo: repetir credenciales malas contra AngelPay no arregla nada.
+ */
+enum class AuthErrorKind {
+    SIN_RED,
+    SIN_CREDENCIALES,
+    CUENTA_NO_EN_CONFIG,
+    OTHER;
+
+    /** Reintentar en fondo no manda credenciales rechazadas a AngelPay. */
+    val recuperableEnFondo: Boolean get() = this != OTHER
 }

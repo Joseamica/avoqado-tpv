@@ -48,6 +48,12 @@ class AngelPayResultParser {
 
         // Logic from AngelPay example app (SaleScreen.kt)
         return when {
+            // A transport/SDK uncertainty cannot be overwritten by a separate issuer code.
+            // Keep the existing consumer contract conservative until both signals can be verified.
+            tx?.approved != true && call != null &&
+                AngelPayOutcomeClassifier.clasificar(false, call.status, call.code, tx?.code) == DesenlaceDelCobro.INCIERTO ->
+                AngelPayResult.Failure(call.message ?: tx?.message ?: "Resultado no concluyente", "UNKNOWN", call.category)
+
             // Approved: RESULT_OK + tx.approved == true
             resultCode == Activity.RESULT_OK && tx?.approved == true -> {
                 Timber.i("🔶 [AngelPay] Transaction APPROVED | auth=${tx.authCode}, ref=${tx.reference}, amount=${tx.amount}")
@@ -73,10 +79,10 @@ class AngelPayResultParser {
                 )
             }
 
-            // Cancelled: no data at all (user pressed back)
+            // Missing or malformed result is not evidence that the processor did not charge.
             tx == null && call == null -> {
-                Timber.w("🔶 [AngelPay] Transaction CANCELLED (no tx, no call)")
-                AngelPayResult.Cancelled
+                Timber.w("🔶 [AngelPay] Transaction UNKNOWN (no tx, no call)")
+                AngelPayResult.Failure("No se recibió un resultado verificable de AngelPay", "UNKNOWN", null)
             }
 
             // Error with call details

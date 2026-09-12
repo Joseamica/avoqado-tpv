@@ -82,5 +82,14 @@ abstract class AngelPayBindingsModule {
         @Provides
         @Singleton
         fun provideAngelPayReportApi(impl: AngelPayReportApiImpl): AngelPayReportApi? = impl
+
+        /**
+         * T26: reloj de pared para medir cuánto lleva atorada la auth de AngelPay y el
+         * enfriamiento de la recuperación. Interfaz propia (no `() -> Long`) para no
+         * publicar un `Function0<Long>` genérico en el grafo.
+         */
+        @Provides
+        @Singleton
+        fun provideAngelPayClock(): AngelPayClock = AngelPayClock.SISTEMA
     }
 }

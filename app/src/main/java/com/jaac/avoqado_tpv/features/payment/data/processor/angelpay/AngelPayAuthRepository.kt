@@ -2,12 +2,17 @@ package com.jaac.avoqado_tpv.features.payment.data.processor.angelpay
 
 import com.angelpay.angelpaysdk.models.AuthenticateSimpleResult
 import com.google.firebase.crashlytics.FirebaseCrashlytics
+import com.jaac.avoqado_tpv.core.data.repository.TerminalConfigUnreachableException
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
+import com.jaac.avoqado_tpv.core.observability.CrashlyticsContext
 import com.jaac.avoqado_tpv.core.util.DeviceInfoManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -66,6 +71,8 @@ class AngelPayAuthRepository @Inject constructor(
      * to the cashier-facing auth flow.
      */
     private val reportApi: AngelPayReportApi? = null,
+    /** T26: reloj para "atorada desde". Default para no tocar las pruebas existentes. */
+    private val clock: AngelPayClock = AngelPayClock.SISTEMA,
 ) {
     private val _state = MutableStateFlow<AngelPayAuthState>(AngelPayAuthState.Unauthenticated)
     val state: StateFlow<AngelPayAuthState> = _state.asStateFlow()
@@ -80,9 +87,248 @@ class AngelPayAuthRepository @Inject constructor(
      * requires swapping AngelPay logins via [switchAccount].
      */
     private var currentAngelPayAccountId: String? = null
+        set(value) {
+            field = value
+            // T26: la recuperación sola vuelve a ESTA cuenta, nunca a la primaria por default.
+            if (value != null) ultimaCuentaConocida = value
+        }
+
+    /**
+     * T26: UNA corrida de auth a la vez. Antes nada impedía que el arranque, el cobro y un
+     * comando del dashboard llamaran `authenticateSimple` al mismo tiempo y se pisaran la
+     * sesión del SDK. Cubre el NÚCLEO: los métodos públicos toman el candado y llaman a sus
+     * cuerpos `…Locked`, que se anidan entre sí sin volver a tomarlo (el Mutex de Kotlin no
+     * es reentrante: `ensureAuthenticatedAs → ensureAuthenticated` se auto-bloquearía).
+     */
+    private val nucleo = Mutex()
+
+    /**
+     * T26 — DUEÑO ÚNICO de la sesión del SDK para el tramo «auth → alineación → lanzamiento».
+     *
+     * Incidente de Amaena ($4,344.50): con varias cuentas, el cobro hace
+     * `ensureAuthenticatedAs(cuenta elegida)` (que hace logout) ANTES de `setCharging(true)`;
+     * en esa ventana `isCharging` es false. Cualquier auth ajena que entre ahí —recuperación
+     * de fondo, FETCH_ANGELPAY_MERCHANTS, el arranque— puede dejar la sesión en OTRA cuenta
+     * y el SDK cobraría por ella. El [nucleo] no basta: serializa cada auth, pero no impide
+     * que la ajena corra DESPUÉS de la del cobro.
+     *
+     * Reglas: el cobro lo toma desde `startCardPayment` hasta lanzar el SDK o fallar (y
+     * espera si otro lo tiene); la recuperación, FETCH y el arranque sólo entran con
+     * `tryLock` y revalidan adentro. Orden fijo: primero éste, luego [nucleo] — nunca al revés.
+     */
+    val candadoDeSesion = Mutex()
+
+    /**
+     * T26: ¿hay un cobro en curso? `isCharging` sólo cubre desde el lanzamiento; cualquier
+     * estado de la pantalla de cobro distinto de Idle/Error/Success/Queued/Cancelled
+     * ([PaymentStateProvider.isChargeAttemptActive]) también cuenta.
+     */
+    fun hayCobroEnCurso(): Boolean =
+        paymentStateProvider.isCharging() || paymentStateProvider.isChargeAttemptActive()
+
+    /**
+     * T26: corre [bloque] como dueño de la sesión SÓLO si nadie más lo es (tryLock). Devuelve
+     * false sin correrlo si un cobro (u otra auth de fondo) la tiene.
+     */
+    suspend fun siLaSesionEstaLibre(bloque: suspend () -> Unit): Boolean {
+        if (!candadoDeSesion.tryLock()) return false
+        try {
+            bloque()
+        } finally {
+            candadoDeSesion.unlock()
+        }
+        return true
+    }
+
+    /** T26: la auth en curso la corre la recuperación de fondo → estado [AngelPayAuthState.Recuperando]. */
+    @Volatile
+    private var enRecuperacion = false
+
+    /** T26: cuándo empezó la racha de error actual (para Crashlytics y el reporte). */
+    @Volatile
+    private var atoradaDesdeMs: Long? = null
+
+    @Volatile
+    private var ultimoTipoAtorada: AuthErrorKind? = null
+
+    /** T26: la última cuenta objetivo que se pidió o se autenticó. */
+    @Volatile
+    private var ultimaCuentaConocida: String? = null
 
     /** Snapshot of the AngelPay account ID currently authenticated, or null. */
     fun getCurrentAngelPayAccountId(): String? = currentAngelPayAccountId
+
+    // ── T26: recuperación sola tras arrancar sin red ──────────────────────────
+
+    /**
+     * ¿La auth quedó atorada de una forma que la recuperación de fondo puede arreglar?
+     * Sólo un error recuperable ([AuthErrorKind.recuperableEnFondo]) o sin autenticar, Y
+     * sin sesión del SDK: una sesión viva nunca se toca desde el fondo. Si ni siquiera se
+     * puede preguntar al SDK, se asume que SÍ hay sesión (lado seguro).
+     */
+    fun estaAtorada(): Boolean {
+        val estado = _state.value
+        val recuperable = estado is AngelPayAuthState.Unauthenticated ||
+            (estado is AngelPayAuthState.AuthError && estado.kind.recuperableEnFondo)
+        return recuperable && !runCatching { sdkGateway.isAuthenticated() }.getOrDefault(true)
+    }
+
+    /**
+     * Para [AngelPayAuthRecovery], que YA tomó [candadoDeSesion]: re-autentica SÓLO si, con el
+     * [nucleo] tomado, sigue atorada y no hay cobro en curso.
+     *
+     * Nunca la primaria en un venue con varias cuentas (incidente de Amaena): vuelve a la
+     * última cuenta pedida o autenticada, o a la del último comercio activo cacheado; si no
+     * hay ninguna y el venue tiene (o podría tener) más de una cuenta, NO autentica —queda
+     * «requiere auth» y el cobro autenticará la cuenta que el cajero elija—. Sólo con una
+     * cuenta usa el genérico, igual que el arranque. Nunca `switchAccount` ni el logout de
+     * una sesión viva (la condición de arriba garantiza que no la hay).
+     */
+    suspend fun recuperarSiSigueAtorada(
+        pantallaDeCobroQuieta: Boolean = false,
+        cuentaDelComercioElegido: String? = null,
+    ): IntentoDeRecuperacion = nucleo.withLock {
+        if (!estaAtorada()) return@withLock IntentoDeRecuperacion.NoAtorada
+        val cobro = paymentStateProvider.isCharging() ||
+            (!pantallaDeCobroQuieta && paymentStateProvider.isChargeAttemptActive())
+        if (cobro) return@withLock IntentoDeRecuperacion.CobroEnCurso
+        val estado = _state.value
+        val tipo = (estado as? AngelPayAuthState.AuthError)?.kind?.name ?: "NO_AUTENTICADA"
+        val desde = atoradaDesdeMs
+        val objetivo = cuentaDelComercioElegido?.let { ObjetivoDeRecuperacion.Cuenta(it) } ?: objetivoDeRecuperacion()
+        Timber.tag(LOG_TAG).i("Recuperación sola: tipo=$tipo objetivo=$objetivo")
+        val cuenta = when (objetivo) {
+            is ObjetivoDeRecuperacion.Cuenta -> objetivo.accountId
+            ObjetivoDeRecuperacion.UnicaCuenta -> null
+            ObjetivoDeRecuperacion.Ninguno -> {
+                // Sólo se marca «requiere auth»: el cobro autenticará la cuenta que el cajero elija
+                // (y el «Reintentar» del banner manda la del comercio elegido en pantalla).
+                _state.value = AngelPayAuthState.Unauthenticated
+                return@withLock IntentoDeRecuperacion.SinCuentaSegura
+            }
+        }
+        enRecuperacion = true
+        val resultado = try {
+            if (cuenta != null) ensureAuthenticatedAsLocked(cuenta) else ensureAuthenticatedLocked()
+        } finally {
+            enRecuperacion = false
+        }
+        IntentoDeRecuperacion.Hecho(resultado = resultado, tipo = tipo, atoradaDesdeMs = desde)
+    }
+
+    /** A qué cuenta puede volver la recuperación sin arriesgar la primaria. Exige [nucleo] tomado. */
+    private suspend fun objetivoDeRecuperacion(): ObjetivoDeRecuperacion {
+        ultimaCuentaConocida?.let { return ObjetivoDeRecuperacion.Cuenta(it) }
+        var cuentas = cuentasConocidas()
+        if (cuentas == null) {
+            // Sin config en caché no se sabe cuántas cuentas hay: se lee una vez.
+            refrescarConfigParaAuth()
+            cuentas = cuentasConocidas()
+        }
+        // No se sabe cuántas cuentas hay (sigue sin config): no se adivina.
+        if (cuentas == null) return ObjetivoDeRecuperacion.Ninguno
+        val comercio = merchantRepository.ultimoComercioActivoConocido()
+        val cuentaDelComercio = comercio?.let { resolveAccountIdFromSdkMerchantIds(setOf(it)) }
+        if (cuentaDelComercio != null) return ObjetivoDeRecuperacion.Cuenta(cuentaDelComercio)
+        return if (cuentas <= 1) ObjetivoDeRecuperacion.UnicaCuenta else ObjetivoDeRecuperacion.Ninguno
+    }
+
+    /** Cuántas cuentas AngelPay trae la config en caché; null si todavía no hay config. */
+    private fun cuentasConocidas(): Int? {
+        val lista = terminalConfigRepository.getCachedAngelPayAccounts()
+        if (lista.isNotEmpty()) return lista.size
+        return if (terminalConfigRepository.getCachedAngelPayAuth() != null) 1 else null
+    }
+
+    /**
+     * T26 — FETCH_ANGELPAY_MERCHANTS (comando del panel) con el MISMO candado que el cobro:
+     * sólo entra si nadie es dueño de la sesión y no hay cobro en curso. Antes el comando
+     * podía llegar en la ventana «auth del cobro → lanzamiento» y dejar la sesión en otra
+     * cuenta (switchAccount hace logout).
+     */
+    suspend fun refrescarComerciosParaElPanel(targetAccountId: String?): Result<Unit> {
+        if (!candadoDeSesion.tryLock()) {
+            return Result.failure(IllegalStateException("Cobro en curso en la terminal — reintenta en unos segundos"))
+        }
+        try {
+            if (hayCobroEnCurso()) {
+                return Result.failure(IllegalStateException("Cobro en curso en la terminal — reintenta en unos segundos"))
+            }
+            if (!targetAccountId.isNullOrBlank()) {
+                val cambio = switchAccount(targetAccountId, reportMerchants = true)
+                if (cambio.isFailure) {
+                    val detalle = cambio.exceptionOrNull()?.message ?: "switchAccount failed"
+                    return Result.failure(IllegalStateException("No se pudo cambiar a cuenta AngelPay $targetAccountId: $detalle"))
+                }
+            }
+            val auth = ensureAuthenticated(reportMerchants = true)
+            if (auth.isFailure) {
+                val detalle = auth.exceptionOrNull()?.message ?: "auth failed"
+                return Result.failure(IllegalStateException("AngelPay auth failed: $detalle"))
+            }
+            return Result.success(Unit)
+        } finally {
+            candadoDeSesion.unlock()
+        }
+    }
+
+    /**
+     * Aviso dispara-y-olvida al servidor de que la terminal estuvo atorada (cuánto, por qué y
+     * qué la despertó). Va por `report-validation` porque es el único canal de la cuenta; el
+     * `AUTHENTICATED` de la auth ya salió antes, así que en el panel queda como «último error».
+     */
+    suspend fun reportarAtoradaRecuperada(texto: String) {
+        Timber.tag(LOG_TAG).i("Auth recuperada: $texto")
+        runCatching { crashlytics.log("[AngelPay/Auth] recuperada: $texto") }
+        reportValidation(currentAngelPayAccountId, success = false, error = texto)
+    }
+
+    /**
+     * Único punto que deja la auth en [AngelPayAuthState.AuthError] por una falla de auth.
+     * Reporta a Crashlytics UNA excepción tipada con su causa y actualiza la llave
+     * `angelpay_auth_state` — sólo al empezar la racha o al cambiar de tipo, para que un
+     * reintento que falla igual no llene Crashlytics.
+     */
+    private fun fallar(kind: AuthErrorKind, mensaje: String, causa: Throwable?): AngelPayAuthFailure {
+        val falla = AngelPayAuthFailure(kind, mensaje, causa)
+        val nuevaRacha = atoradaDesdeMs == null
+        val desde = atoradaDesdeMs ?: clock.nowMs().also { atoradaDesdeMs = it }
+        val cambioDeTipo = ultimoTipoAtorada != kind
+        ultimoTipoAtorada = kind
+        _state.value = AngelPayAuthState.AuthError(mensaje, kind)
+        if (nuevaRacha || cambioDeTipo) {
+            runCatching {
+                crashlytics.setCustomKey(
+                    CrashlyticsContext.KEY_ANGELPAY_AUTH_STATE,
+                    "${kind.name} desde=${java.time.Instant.ofEpochMilli(desde)}",
+                )
+                crashlytics.recordException(falla)
+            }
+        }
+        return falla
+    }
+
+    /** T26: la auth salió bien — termina la racha de error, si la había. */
+    private fun salirDeAtorada() {
+        if (atoradaDesdeMs == null && ultimoTipoAtorada == null) return
+        atoradaDesdeMs = null
+        ultimoTipoAtorada = null
+        runCatching {
+            crashlytics.setCustomKey(
+                CrashlyticsContext.KEY_ANGELPAY_AUTH_STATE,
+                "OK desde=${java.time.Instant.ofEpochMilli(clock.nowMs())}",
+            )
+        }
+    }
+
+    /** Self-heal de config: null = se leyó bien; si no, la causa (red, 5xx, 404…). */
+    private suspend fun refrescarConfigParaAuth(): Throwable? = try {
+        terminalConfigRepository.fetchConfig(deviceInfoManager.getSerialNumber()).exceptionOrNull()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        error
+    }
 
     /**
      * Lazy + idempotent. Resolves creds, drives `authenticateSimple` with retries,
@@ -109,7 +355,11 @@ class AngelPayAuthRepository @Inject constructor(
      *   [reportValidation] (auth ok/fail telemetry) is NOT gated by this
      *   flag — it doesn't create merchant rows, just records observability.
      */
-    suspend fun ensureAuthenticated(reportMerchants: Boolean = false): Result<Unit> {
+    suspend fun ensureAuthenticated(reportMerchants: Boolean = false): Result<Unit> =
+        nucleo.withLock { ensureAuthenticatedLocked(reportMerchants) }
+
+    /** Cuerpo de [ensureAuthenticated]. Exige [nucleo] tomado (T26). */
+    private suspend fun ensureAuthenticatedLocked(reportMerchants: Boolean = false): Result<Unit> {
         Timber.tag(LOG_TAG).i("ensureAuthenticated() called")
         if (sdkGateway.isAuthenticated()) {
             // Probe SDK session health BEFORE trusting the cached auth flag.
@@ -128,6 +378,7 @@ class AngelPayAuthRepository @Inject constructor(
             } else {
                 Timber.tag(LOG_TAG).i("SDK already authenticated with ${cachedMerchants.size} merchants — short-circuit to Authenticated state")
                 _state.value = AngelPayAuthState.Authenticated
+                salirDeAtorada()
 
                 // Multi-AngelPay accounts per venue — only populate if NOT already
                 // set. Trust the in-memory value, because after a `switchAccount`
@@ -193,6 +444,7 @@ class AngelPayAuthRepository @Inject constructor(
 
         Timber.tag(LOG_TAG).i("SDK not authenticated yet → resolving credentials")
         var credsResult = credentialResolver.resolve()
+        var fallaRefresco: Throwable? = null
 
         // Self-heal: if the cache doesn't have backend creds, force a fresh fetch
         // and retry once. The cache may be empty for legitimate reasons:
@@ -205,10 +457,12 @@ class AngelPayAuthRepository @Inject constructor(
         // to remember to refresh the config first.
         if (credsResult.isFailure) {
             Timber.tag(LOG_TAG).w("Resolver returned failure on first try — forcing terminal config refresh and retrying")
-            val serial = deviceInfoManager.getSerialNumber()
-            terminalConfigRepository.fetchConfig(serial)
-                .onSuccess { Timber.tag(LOG_TAG).i("Self-heal fetch succeeded — retrying resolver") }
-                .onFailure { Timber.tag(LOG_TAG).e(it, "Self-heal fetch FAILED — resolver will fail again") }
+            fallaRefresco = refrescarConfigParaAuth()
+            if (fallaRefresco == null) {
+                Timber.tag(LOG_TAG).i("Self-heal fetch succeeded — retrying resolver")
+            } else {
+                Timber.tag(LOG_TAG).e(fallaRefresco, "Self-heal fetch FAILED — resolver will fail again")
+            }
             credsResult = credentialResolver.resolve()
         }
 
@@ -220,8 +474,20 @@ class AngelPayAuthRepository @Inject constructor(
                 "(a) dashboard shows AngelPay account ACTIVE for this venue, " +
                 "(b) the venue this terminal belongs to matches the venue with the AngelPay account, " +
                 "(c) BuildConfig.ANGELPAY_QA_* are empty (expected post-Task-21).")
-            _state.value = AngelPayAuthState.AuthError(err.message ?: "Missing AngelPay credentials")
-            return Result.failure(err)
+            // T26: tres causas distintas, antes todas «credentials missing».
+            return when {
+                fallaRefresco != null && esFallaDeRed(fallaRefresco) -> Result.failure(
+                    fallar(AuthErrorKind.SIN_RED, "Sin conexión: no se pudo leer la config de AngelPay", fallaRefresco),
+                )
+                fallaRefresco != null -> Result.failure(
+                    fallar(AuthErrorKind.OTHER, "No se pudo leer la config de AngelPay", fallaRefresco),
+                )
+                else -> {
+                    // La config SÍ se leyó y no trae credenciales: se conserva el error de siempre.
+                    fallar(AuthErrorKind.SIN_CREDENCIALES, "Sin credenciales de AngelPay en el panel", err)
+                    Result.failure(err)
+                }
+            }
         }
         val creds = credsResult.getOrThrow()
         return authenticateWithCreds(creds, reportMerchants = reportMerchants)
@@ -242,7 +508,8 @@ class AngelPayAuthRepository @Inject constructor(
     ): Result<Unit> {
         Timber.tag(LOG_TAG).i("authenticateWithCreds(source=${creds.source}, accountId=${creds.accountId}, email=${creds.email}, env=${creds.environment}) → calling authenticateSimple")
 
-        _state.value = AngelPayAuthState.Authenticating
+        // T26: la recuperación de fondo tiene su propio estado (no apaga el Efectivo).
+        _state.value = if (enRecuperacion) AngelPayAuthState.Recuperando else AngelPayAuthState.Authenticating
 
         // 5 attempts with longer backoff (1s → 3s → 5s → 10s → 20s, ~39s total).
         // AngelPay QA `initKeys` endpoint occasionally takes 15+ sec under load;
@@ -258,6 +525,7 @@ class AngelPayAuthRepository @Inject constructor(
                     is AuthenticateSimpleResult.Success -> {
                         Timber.tag(LOG_TAG).i("authenticateSimple → Success (single-merchant flow). Transitioning to Authenticated.")
                         _state.value = AngelPayAuthState.Authenticated
+                        salirDeAtorada()
                         currentAngelPayAccountId = creds.accountId
                         reportValidation(creds.accountId, success = true)
                         // Seed the active merchant from the live SDK session so the
@@ -287,6 +555,7 @@ class AngelPayAuthRepository @Inject constructor(
                             merchants = sdkResult.merchants,
                             temporaryToken = sdkResult.temporaryToken,
                         )
+                        salirDeAtorada()
                         // NOTE: `reportValidation(AUTHENTICATED)` deliberately NOT
                         // called here. The SDK has a session but no merchant is
                         // selected yet → `getSessionInfo()?.userId` returns null →
@@ -320,9 +589,10 @@ class AngelPayAuthRepository @Inject constructor(
             },
             onFailure = { err ->
                 Timber.tag(LOG_TAG).e(err, "authenticateSimple FAILED after 3 retries → AuthError state")
-                _state.value = AngelPayAuthState.AuthError(err.message ?: "Unknown auth error")
+                // T26: el fallo de TRANSPORTE (sin red, DNS, timeout) es recuperable solo.
+                val kind = if (esFallaDeRed(err)) AuthErrorKind.SIN_RED else AuthErrorKind.OTHER
+                fallar(kind, err.message ?: "Unknown auth error", err)
                 reportValidation(creds.accountId, success = false, error = err.message)
-                runCatching { crashlytics.recordException(err) }
                 Result.failure(err)
             },
         )
@@ -353,6 +623,12 @@ class AngelPayAuthRepository @Inject constructor(
     suspend fun switchAccount(
         accountId: String,
         reportMerchants: Boolean = false,
+    ): Result<Unit> = nucleo.withLock { switchAccountLocked(accountId, reportMerchants) }
+
+    /** Cuerpo de [switchAccount]. Exige [nucleo] tomado (T26). */
+    private suspend fun switchAccountLocked(
+        accountId: String,
+        reportMerchants: Boolean,
     ): Result<Unit> {
         // 🛡️ P1 fix (2026-07-09): a dashboard FETCH_ANGELPAY_MERCHANTS command can
         // land mid-charge (commands arrive via heartbeat/socket regardless of what
@@ -384,6 +660,7 @@ class AngelPayAuthRepository @Inject constructor(
             // Fall through to the credential-resolve + authenticate path below.
         }
         Timber.tag(LOG_TAG).i("switchAccount: $currentAngelPayAccountId → $accountId")
+        ultimaCuentaConocida = accountId
 
         // Self-heal: if the requested accountId isn't in the cached config's
         // angelpayAccounts list, force a terminal-config refetch and retry
@@ -400,13 +677,14 @@ class AngelPayAuthRepository @Inject constructor(
         // Reproduced 2026-05-20 on venue `cmpe64yq2001f9k92m0lbhmf4` (post-
         // venue-recreation) with accountId `cmpe6s63400119k3y9euvmf70`.
         var credsResult = credentialResolver.resolveByAccountId(accountId)
+        var fallaRefresco: Throwable? = null
         if (credsResult.isFailure) {
             Timber.tag(LOG_TAG).w("switchAccount: resolveByAccountId($accountId) miss on first try — refreshing terminal config and retrying")
-            runCatching {
-                val serial = deviceInfoManager.getSerialNumber()
-                terminalConfigRepository.fetchConfig(serial)
-                    .onSuccess { Timber.tag(LOG_TAG).i("Self-heal config refresh succeeded — retrying resolver") }
-                    .onFailure { Timber.tag(LOG_TAG).e(it, "Self-heal config refresh FAILED — resolver will fail again") }
+            fallaRefresco = refrescarConfigParaAuth()
+            if (fallaRefresco == null) {
+                Timber.tag(LOG_TAG).i("Self-heal config refresh succeeded — retrying resolver")
+            } else {
+                Timber.tag(LOG_TAG).e(fallaRefresco, "Self-heal config refresh FAILED — resolver will fail again")
             }
             credsResult = credentialResolver.resolveByAccountId(accountId)
         }
@@ -418,8 +696,15 @@ class AngelPayAuthRepository @Inject constructor(
                 "(a) the AngelPayUserAccount row exists and is ACTIVE, " +
                 "(b) it belongs to the SAME venue as this terminal, " +
                 "(c) the terminal config response includes the angelpayAccounts array.")
-            _state.value = AngelPayAuthState.AuthError(err.message ?: "Cuenta AngelPay no encontrada")
-            return Result.failure(err)
+            val falla = when {
+                fallaRefresco != null && esFallaDeRed(fallaRefresco) ->
+                    fallar(AuthErrorKind.SIN_RED, "Sin conexión: no se pudo confirmar la cuenta de AngelPay", fallaRefresco)
+                fallaRefresco != null ->
+                    fallar(AuthErrorKind.OTHER, "No se pudo leer la config de AngelPay", fallaRefresco)
+                else ->
+                    fallar(AuthErrorKind.CUENTA_NO_EN_CONFIG, "La cuenta AngelPay del comercio no está en el panel", err)
+            }
+            return Result.failure(falla)
         }
         val creds = credsResult.getOrThrow()
 
@@ -450,10 +735,11 @@ class AngelPayAuthRepository @Inject constructor(
         merchantId: Int,
         temporaryToken: String,
         reportMerchants: Boolean = false,
-    ): Result<Unit> {
+    ): Result<Unit> = nucleo.withLock {
         val result = merchantRepository.completeInitialSelection(merchantId, temporaryToken)
         if (result.isSuccess) {
             _state.value = AngelPayAuthState.Authenticated
+            salirDeAtorada()
             // Now the SDK has a fully-authenticated session with externalUserId
             // populated — fire the deferred validation report that we skipped
             // in the MerchantSelectionRequired branch of authenticateWithCreds.
@@ -468,9 +754,10 @@ class AngelPayAuthRepository @Inject constructor(
             runConfigValidation()
         } else {
             val err = result.exceptionOrNull()
-            _state.value = AngelPayAuthState.AuthError(err?.message ?: "Merchant selection failed")
+            val kind = if (esFallaDeRed(err)) AuthErrorKind.SIN_RED else AuthErrorKind.OTHER
+            fallar(kind, err?.message ?: "Merchant selection failed", err)
         }
-        return result
+        result
     }
 
     /**
@@ -478,7 +765,7 @@ class AngelPayAuthRepository @Inject constructor(
      * [AngelPayAuthExpiredError]. Forces a clean logout + one re-auth attempt;
      * the caller (PaymentViewModel) decides whether to retry the charge.
      */
-    suspend fun handleAuthExpiry(): Result<Unit> {
+    suspend fun handleAuthExpiry(): Result<Unit> = nucleo.withLock {
         // Incidente Amaena (2026-07-29): recuerda a qué cuenta pertenecía la sesión muerta
         // ANTES de limpiar. `ensureAuthenticated()` a secas re-autentica la cuenta PRIMARIA
         // del venue (angelpayAccounts[0] del config) — en venues multi-cuenta eso cambiaba
@@ -489,10 +776,10 @@ class AngelPayAuthRepository @Inject constructor(
         merchantRepository.clearActive()
         currentAngelPayAccountId = null
         _state.value = AngelPayAuthState.Unauthenticated
-        return if (previousAccountId != null) {
-            ensureAuthenticatedAs(previousAccountId)
+        if (previousAccountId != null) {
+            ensureAuthenticatedAsLocked(previousAccountId)
         } else {
-            ensureAuthenticated()
+            ensureAuthenticatedLocked()
         }
     }
 
@@ -518,7 +805,12 @@ class AngelPayAuthRepository @Inject constructor(
      * pago (pre-lanzamiento y recuperación D308), donde "charging" describe ESTE intento
      * aún no lanzado/fallido — no hay cobro ajeno en vuelo que proteger.
      */
-    suspend fun ensureAuthenticatedAs(accountId: String): Result<Unit> {
+    suspend fun ensureAuthenticatedAs(accountId: String): Result<Unit> =
+        nucleo.withLock { ensureAuthenticatedAsLocked(accountId) }
+
+    /** Cuerpo de [ensureAuthenticatedAs]. Exige [nucleo] tomado (T26). */
+    private suspend fun ensureAuthenticatedAsLocked(accountId: String): Result<Unit> {
+        ultimaCuentaConocida = accountId
         if (sdkGateway.isAuthenticated()) {
             val cachedMerchants = runCatching { sdkGateway.getUserMerchants().getOrNull() }.getOrNull()
             if (!cachedMerchants.isNullOrEmpty()) {
@@ -527,7 +819,7 @@ class AngelPayAuthRepository @Inject constructor(
                         resolveAccountIdFromSdkMerchantIds(cachedMerchants.map { it.id }.toSet())
                 }
                 if (currentAngelPayAccountId == accountId) {
-                    return ensureAuthenticated()
+                    return ensureAuthenticatedLocked()
                 }
                 Timber.tag(LOG_TAG).w(
                     "ensureAuthenticatedAs($accountId): live session belongs to ${currentAngelPayAccountId ?: "unknown"} — re-authenticating as the target account",
@@ -536,13 +828,24 @@ class AngelPayAuthRepository @Inject constructor(
         }
 
         var credsResult = credentialResolver.resolveByAccountId(accountId)
+        var fallaRefresco: Throwable? = null
         if (credsResult.isFailure) {
             // Mismo self-heal que switchAccount: el cache de config puede estar frío.
-            runCatching {
-                val serial = deviceInfoManager.getSerialNumber()
-                terminalConfigRepository.fetchConfig(serial)
-            }
+            fallaRefresco = refrescarConfigParaAuth()
             credsResult = credentialResolver.resolveByAccountId(accountId)
+        }
+        if (credsResult.isFailure && fallaRefresco != null && esFallaDeRed(fallaRefresco)) {
+            // 🔴 T26 / regla de Amaena: sin red NO se puede afirmar que la cuenta del comercio
+            // ya no existe. Caer a la primaria aquí autenticaba OTRA afiliación a media venta
+            // (el candado de alineación lo frenaba, pero la terminal quedaba en la cuenta
+            // equivocada). Se falla con SIN_RED y la recuperación vuelve a ESTA cuenta.
+            Timber.tag(LOG_TAG).e(
+                fallaRefresco,
+                "ensureAuthenticatedAs($accountId): sin red — NO se cae a la primaria",
+            )
+            return Result.failure(
+                fallar(AuthErrorKind.SIN_RED, "Sin conexión: no se pudo confirmar la cuenta de AngelPay", fallaRefresco),
+            )
         }
         if (credsResult.isFailure) {
             Timber.tag(LOG_TAG).e(
@@ -550,7 +853,7 @@ class AngelPayAuthRepository @Inject constructor(
                 "ensureAuthenticatedAs($accountId): target account no longer resolves — falling back to the venue PRIMARY. " +
                     "A session↔merchant mismatch is possible; the payment flow's alignment guard must block the charge.",
             )
-            return ensureAuthenticated()
+            return ensureAuthenticatedLocked()
         }
 
         runCatching { sdkGateway.logout() }
@@ -849,3 +1152,14 @@ data class DiscoveredMerchantDto(
     val affiliationNumber: String,
     val isActive: Boolean,
 )
+
+/**
+ * T26: ¿la falla vino de la RED (sin conexión, DNS, timeout, servidor inalcanzable)?
+ * Recorre la cadena de causas: `mapSdkError` convierte "Unable to resolve host auth…" en
+ * [AngelPayAuthExpiredError] por la palabra "auth", pero la causa sigue siendo un
+ * `UnknownHostException`.
+ */
+internal fun esFallaDeRed(error: Throwable?): Boolean =
+    generateSequence(error) { it.cause }.take(10).any {
+        it is java.io.IOException || it is AngelPayNetworkError || it is TerminalConfigUnreachableException
+    }

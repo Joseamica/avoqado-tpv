@@ -7,21 +7,27 @@ import com.jaac.avoqado_tpv.core.data.network.dto.AngelPayAuthDto
 import com.jaac.avoqado_tpv.core.data.network.dto.MerchantAccountDto
 import com.jaac.avoqado_tpv.core.data.network.dto.TerminalConfigData
 import com.jaac.avoqado_tpv.core.domain.repository.TerminalConfigRepository
+import com.jaac.avoqado_tpv.core.data.repository.TerminalConfigUnreachableException
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.unmockkAll
 import io.mockk.verify
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -75,6 +81,7 @@ class AngelPayAuthRepositoryTest {
         merchantRepository = mockk(relaxed = true)
         paymentStateProvider = mockk()
         every { paymentStateProvider.isCharging() } returns false
+        every { paymentStateProvider.isChargeAttemptActive() } returns false
         crashlytics = mockk(relaxed = true)
 
         // Sensible defaults — individual tests override.
@@ -201,7 +208,10 @@ class AngelPayAuthRepositoryTest {
             assertEquals("PIN invalido", (state as AngelPayAuthState.AuthError).message)
             // 5 attempts × authenticateSimple (maxAttempts changed from 3 → 5, 2026-05-19).
             coVerify(exactly = 5) { sdkGateway.authenticateSimple(any(), any()) }
-            verify(atLeast = 1) { crashlytics.recordException(authErr) }
+            // T26: se reporta TIPADA (AngelPayAuthFailure) con la causa real adentro.
+            verify(atLeast = 1) {
+                crashlytics.recordException(match { it is AngelPayAuthFailure && it.cause === authErr })
+            }
         }
 
     // ----------------------------------------------------------------------
@@ -539,4 +549,201 @@ class AngelPayAuthRepositoryTest {
             coVerify(exactly = 1) { sdkGateway.authenticateSimple("ventas@venue.io", any()) }
             assertEquals("acc-cuid-2", repo.getCurrentAngelPayAccountId())
         }
+
+    // ----------------------------------------------------------------------
+    // T26 (Testarudo, 2026-09-11): la N86 arrancó sin red y quedó ~4 h sin poder
+    // cobrar. El error de red salía como «credentials missing» y, peor, sin red
+    // ensureAuthenticatedAs caía a la cuenta PRIMARIA del venue.
+    // ----------------------------------------------------------------------
+
+    private fun sinRed(): Result<Nothing> = Result.failure(
+        TerminalConfigUnreachableException("Sin conexión a internet.", java.net.UnknownHostException("api.avoqado.io")),
+    )
+
+    @Test
+    fun `P1 sin red ensureAuthenticatedAs NO cae a la cuenta primaria`() = runTest(dispatcher) {
+        coEvery { credentialResolver.resolveByAccountId("acc-cuid-2") } returns Result.failure(MissingAngelPayCredsError)
+        coEvery { terminalConfigRepository.fetchConfig(any()) } returns sinRed()
+        coEvery { sdkGateway.authenticateSimple(any(), any()) } returns Result.success(AuthenticateSimpleResult.Success)
+
+        val result = repo.ensureAuthenticatedAs("acc-cuid-2")
+
+        assertTrue(result.isFailure)
+        // Sin red no se puede afirmar que la cuenta ya no existe: jamás a la primaria.
+        coVerify(exactly = 0) { sdkGateway.authenticateSimple(any(), any()) }
+        val state = repo.state.value as AngelPayAuthState.AuthError
+        assertEquals(AuthErrorKind.SIN_RED, state.kind)
+    }
+
+    @Test
+    fun `P1 sin red al arrancar el error es SIN_RED y no dice que faltan credenciales`() = runTest(dispatcher) {
+        every { credentialResolver.resolve() } returns Result.failure(MissingAngelPayCredsError)
+        coEvery { terminalConfigRepository.fetchConfig(any()) } returns sinRed()
+
+        val result = repo.ensureAuthenticated()
+
+        assertTrue(result.isFailure)
+        val state = repo.state.value as AngelPayAuthState.AuthError
+        assertEquals(AuthErrorKind.SIN_RED, state.kind)
+        assertFalse(state.message.contains("credentials missing"))
+    }
+
+    @Test
+    fun `config fresca sin credenciales es SIN_CREDENCIALES y conserva MissingAngelPayCredsError`() = runTest(dispatcher) {
+        every { credentialResolver.resolve() } returns Result.failure(MissingAngelPayCredsError)
+        coEvery { terminalConfigRepository.fetchConfig(any()) } returns Result.success(mockk(relaxed = true))
+
+        val result = repo.ensureAuthenticated()
+
+        assertSame(MissingAngelPayCredsError, result.exceptionOrNull())
+        val state = repo.state.value as AngelPayAuthState.AuthError
+        assertEquals(AuthErrorKind.SIN_CREDENCIALES, state.kind)
+    }
+
+    @Test
+    fun `switchAccount con la cuenta ausente de la config fresca es CUENTA_NO_EN_CONFIG`() = runTest(dispatcher) {
+        coEvery { credentialResolver.resolveByAccountId("acc-x") } returns Result.failure(MissingAngelPayCredsError)
+        coEvery { terminalConfigRepository.fetchConfig(any()) } returns Result.success(mockk(relaxed = true))
+
+        val result = repo.switchAccount("acc-x")
+
+        assertTrue(result.isFailure)
+        val state = repo.state.value as AngelPayAuthState.AuthError
+        assertEquals(AuthErrorKind.CUENTA_NO_EN_CONFIG, state.kind)
+    }
+
+    @Test
+    fun `switchAccount sin red es SIN_RED`() = runTest(dispatcher) {
+        coEvery { credentialResolver.resolveByAccountId("acc-x") } returns Result.failure(MissingAngelPayCredsError)
+        coEvery { terminalConfigRepository.fetchConfig(any()) } returns sinRed()
+
+        repo.switchAccount("acc-x")
+
+        assertEquals(AuthErrorKind.SIN_RED, (repo.state.value as AngelPayAuthState.AuthError).kind)
+    }
+
+    @Test
+    fun `falla de transporte de authenticateSimple es SIN_RED`() = runTest(dispatcher) {
+        coEvery { sdkGateway.authenticateSimple(any(), any()) } returns Result.failure(AngelPayNetworkError())
+
+        repo.ensureAuthenticated()
+
+        assertEquals(AuthErrorKind.SIN_RED, (repo.state.value as AngelPayAuthState.AuthError).kind)
+    }
+
+    @Test
+    fun `DNS caido dentro de la cadena de causas tambien es SIN_RED`() = runTest(dispatcher) {
+        // mapSdkError convierte "Unable to resolve host auth..." en AuthExpired por la palabra "auth".
+        coEvery { sdkGateway.authenticateSimple(any(), any()) } returns
+            Result.failure(AngelPayAuthExpiredError(cause = java.net.UnknownHostException("auth.angelpay.mx")))
+
+        repo.ensureAuthenticated()
+
+        assertEquals(AuthErrorKind.SIN_RED, (repo.state.value as AngelPayAuthState.AuthError).kind)
+    }
+
+    @Test
+    fun `reporta a Crashlytics una excepcion tipada con su causa y la llave angelpay_auth_state`() = runTest(dispatcher) {
+        every { credentialResolver.resolve() } returns Result.failure(MissingAngelPayCredsError)
+        coEvery { terminalConfigRepository.fetchConfig(any()) } returns sinRed()
+
+        repo.ensureAuthenticated()
+
+        verify(exactly = 1) {
+            crashlytics.recordException(
+                match {
+                    it is AngelPayAuthFailure && it.kind == AuthErrorKind.SIN_RED &&
+                        it.cause is TerminalConfigUnreachableException
+                },
+            )
+        }
+        verify(exactly = 1) {
+            crashlytics.setCustomKey("angelpay_auth_state", match<String> { it.startsWith("SIN_RED desde=") })
+        }
+    }
+
+    @Test
+    fun `dos autenticaciones simultaneas nunca corren a la vez`() = runTest(dispatcher) {
+        val puerta = CompletableDeferred<Unit>()
+        var enVuelo = 0
+        var maximo = 0
+        var sesion = false
+        every { sdkGateway.isAuthenticated() } answers { sesion }
+        coEvery { sdkGateway.getUserMerchants() } answers {
+            if (sesion) Result.success(listOf(mockk(relaxed = true) { every { id } returns 11 }))
+            else Result.success(emptyList())
+        }
+        coEvery { credentialResolver.resolveByAccountId("acc-cuid-2") } returns Result.success(
+            backendCreds.copy(email = "ventas@venue.io", accountId = "acc-cuid-2"),
+        )
+        coEvery { sdkGateway.authenticateSimple(any(), any()) } coAnswers {
+            enVuelo++
+            maximo = maxOf(maximo, enVuelo)
+            puerta.await()
+            enVuelo--
+            sesion = true
+            Result.success(AuthenticateSimpleResult.Success)
+        }
+
+        val arranque = async { repo.ensureAuthenticated() }
+        val cobro = async { repo.ensureAuthenticatedAs("acc-cuid-2") }
+        runCurrent()
+        puerta.complete(Unit)
+        arranque.await()
+        cobro.await()
+
+        assertEquals("dos authenticateSimple a la vez pisan la sesión del SDK", 1, maximo)
+    }
+
+    // ----------------------------------------------------------------------
+    // T26, segunda indicación: FETCH_ANGELPAY_MERCHANTS respeta al dueño de la sesión.
+    // switchAccount hace logout: en la ventana «auth del cobro → lanzamiento» dejaba la
+    // sesión en otra cuenta (incidente de Amaena).
+    // ----------------------------------------------------------------------
+
+    @Test
+    fun `P1 FETCH_ANGELPAY_MERCHANTS no toca la sesion si un cobro es duenio`() = runTest(dispatcher) {
+        assertTrue(repo.candadoDeSesion.tryLock()) // el cobro
+
+        val result = repo.refrescarComerciosParaElPanel("acc-cuid-2")
+
+        assertTrue(result.isFailure)
+        verify(exactly = 0) { sdkGateway.logout() }
+        coVerify(exactly = 0) { sdkGateway.authenticateSimple(any(), any()) }
+        repo.candadoDeSesion.unlock()
+    }
+
+    @Test
+    fun `P1 FETCH_ANGELPAY_MERCHANTS no entra con la pantalla de cobro trabajando`() = runTest(dispatcher) {
+        every { paymentStateProvider.isChargeAttemptActive() } returns true
+
+        val result = repo.refrescarComerciosParaElPanel("acc-cuid-2")
+
+        assertTrue(result.isFailure)
+        verify(exactly = 0) { sdkGateway.logout() }
+        coVerify(exactly = 0) { sdkGateway.authenticateSimple(any(), any()) }
+        assertFalse(repo.candadoDeSesion.isLocked)
+    }
+
+    @Test
+    fun `FETCH_ANGELPAY_MERCHANTS con la sesion libre cambia a la cuenta pedida y suelta el candado`() = runTest(dispatcher) {
+        var sesion = false
+        every { sdkGateway.isAuthenticated() } answers { sesion }
+        coEvery { sdkGateway.getUserMerchants() } answers {
+            if (sesion) Result.success(listOf(mockk(relaxed = true) { every { id } returns 22 }))
+            else Result.success(emptyList())
+        }
+        coEvery { credentialResolver.resolveByAccountId("acc-cuid-2") } returns Result.success(secondAccountCreds)
+        coEvery { sdkGateway.authenticateSimple(any(), any()) } answers {
+            sesion = true
+            Result.success(AuthenticateSimpleResult.Success)
+        }
+
+        val result = repo.refrescarComerciosParaElPanel("acc-cuid-2")
+
+        assertTrue("esperaba éxito, fue $result", result.isSuccess)
+        coVerify(exactly = 1) { sdkGateway.authenticateSimple("ventas@venue.io", any()) }
+        coVerify(exactly = 0) { sdkGateway.authenticateSimple("ops@venue.io", any()) }
+        assertFalse(repo.candadoDeSesion.isLocked)
+    }
 }

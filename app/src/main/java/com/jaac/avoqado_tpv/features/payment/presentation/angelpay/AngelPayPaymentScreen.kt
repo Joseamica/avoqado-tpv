@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -58,6 +59,7 @@ import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.core.util.ForegroundRecoveryGate
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthState
 import com.jaac.avoqado_tpv.features.payment.domain.AuthWatchdogLevel
+import com.jaac.avoqado_tpv.features.payment.presentation.CobroRemotoDelPos
 import com.jaac.avoqado_tpv.features.payment.presentation.MerchantSelectionContent
 import com.jaac.avoqado_tpv.features.payment.presentation.ReviewScreen
 import com.jaac.avoqado_tpv.features.payment.presentation.TipScreen
@@ -141,6 +143,8 @@ fun AngelPayPaymentScreen(
     val cachedMerchants by viewModel.cachedMerchants.collectAsStateWithLifecycle(initialValue = emptyList())
     val inFlightSwitch by viewModel.inFlightSwitch.collectAsStateWithLifecycle()
     val selectionInProgress by viewModel.selectionInProgress.collectAsStateWithLifecycle()
+    // 🛑 Lo que el POS hizo con este cobro (canceló, o llegó tarde). Null = no hay nada que decir.
+    val mensajeDelPos by viewModel.mensajeDelPos.collectAsStateWithLifecycle()
     val activeMerchantName = cachedMerchants.firstOrNull { it.id == activeAngelPayMerchantId }?.name
 
     // Toast for receipt send result
@@ -400,6 +404,7 @@ fun AngelPayPaymentScreen(
         is AngelPayPaymentState.RecordingPayment,
         is AngelPayPaymentState.ProcessingCash -> "Registrando"
         is AngelPayPaymentState.Error -> "Error"
+        is AngelPayPaymentState.ResultadoIncierto -> "Sin confirmar"
         is AngelPayPaymentState.Cancelled -> "Cancelado"
         else -> "Cobro AngelPay"
     }
@@ -433,6 +438,12 @@ fun AngelPayPaymentScreen(
                                 viewModel.resetPayment()
                                 onNavigateBack()
                             }
+                            // 🔴 Se puede SALIR (secuestrar la terminal por un cobro sin
+                            // confirmar sería peor), pero sin `resetPayment()`: esa limpieza
+                            // avisaría "cancelado" al POS sobre un cobro que quizá sí pasó.
+                            // El desenlace lo cierra la verificación o el vigilante del
+                            // servidor, que para eso tiene el estado UNKNOWN.
+                            is AngelPayPaymentState.ResultadoIncierto -> onNavigateBack()
                             else -> { /* No back during processing */ }
                         }
                     },
@@ -456,6 +467,8 @@ fun AngelPayPaymentScreen(
                 AngelPayAuthBanner(
                     state = authState,
                     activeMerchantName = activeMerchantName,
+                    // T26: la Nexgo atorada tras un arranque sin red se puede reintentar aquí.
+                    onRetry = { viewModel.retryAngelPayAuth() },
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 8.dp),
@@ -555,6 +568,12 @@ fun AngelPayPaymentScreen(
                     val routingBanner = if (routing?.showFallbackBanner == true) {
                         "Mostrando todas las cuentas: ninguna regla de cobro aplica a esta venta."
                     } else null
+                    // T26: la auth en fondo apaga Tarjeta pero no Efectivo (ver AngelPayMetodosDePago.kt).
+                    val bloqueo = bloqueoDeMetodosDePago(
+                        selectionInProgress = selectionInProgress,
+                        inFlightSwitch = inFlightSwitch,
+                        authState = authState,
+                    )
                     MerchantSelectionContent(
                         subtotalAmount = currentState.subtotal,
                         totalAmount = currentState.totalAmount,
@@ -584,16 +603,19 @@ fun AngelPayPaymentScreen(
                         // (`selectionInProgress`) closes the race window
                         // BEFORE either of the other two fires — set
                         // synchronously at the start of `selectMerchant`.
-                        merchantSwitchingLoading = selectionInProgress ||
-                            inFlightSwitch != null ||
-                            authState is AngelPayAuthState.Authenticating,
+                        merchantSwitchingLoading = bloqueo.tarjeta,
+                        cashSwitchingLoading = bloqueo.efectivo,
                         onSelectMerchant = { viewModel.selectMerchant(it) },
                         onStartPayment = { viewModel.startCardPayment() },
                         onStartCashPayment = { viewModel.startCashPayment() },
                         onStartCryptoPayment = { viewModel.processCryptoPayment(currentState.totalAmount) },
                         onNavigateBack = null, // Back handled by Scaffold top bar
-                        showCashOption = true,
-                        showCryptoOption = viewModel.showCryptoOption,
+                        // 🛑 Efectivo y cripto NO se ofrecen en un cobro que pidió el POS: la terminal los
+                        // cobra y registra por su cuenta, pero el servidor sólo cierra la solicitud con
+                        // TARJETA (interino mientras el founder decide — ver [CobroRemotoDelPos]).
+                        showCashOption = CobroRemotoDelPos.permiteEfectivoYCripto(paymentSource),
+                        showCryptoOption = viewModel.showCryptoOption &&
+                            CobroRemotoDelPos.permiteEfectivoYCripto(paymentSource),
                         hideAccountSelector = visibleMerchants.size <= 1,
                         // 🧭 MERCHANT_ROUTING_RULES: "showing all accounts" notice when no rule matched
                         routingBannerMessage = routingBanner,
@@ -645,6 +667,15 @@ fun AngelPayPaymentScreen(
                     )
                 }
 
+                // T26: autenticando AngelPay antes de cobrar (tras un arranque sin red).
+                is AngelPayPaymentState.ConectandoAngelPay -> {
+                    LoadingContent(
+                        message = "Conectando con AngelPay…",
+                        subtitle = "No cierres esta pantalla",
+                        largeSpinner = true,
+                    )
+                }
+
                 is AngelPayPaymentState.Charging -> {
                     LoadingContent(
                         message = "Procesando cobro…",
@@ -682,6 +713,10 @@ fun AngelPayPaymentScreen(
                     )
                 }
 
+                is AngelPayPaymentState.ResultadoIncierto -> {
+                    ResultadoInciertoContent(state = currentState, onGoBack = onNavigateBack)
+                }
+
                 is AngelPayPaymentState.Error -> {
                     ErrorContent(
                         state = currentState,
@@ -703,7 +738,9 @@ fun AngelPayPaymentScreen(
                 }
 
                 is AngelPayPaymentState.Cancelled -> {
-                    CancelledContent(onNavigateBack = onNavigateBack)
+                    // 🛑 Cuando el POS canceló, la pantalla lo DICE con todas sus letras en vez del
+                    // «Pago cancelado» genérico: el cajero tiene que saber que no fue él.
+                    CancelledContent(onNavigateBack = onNavigateBack, mensaje = mensajeDelPos)
                 }
             }
             }
@@ -793,6 +830,69 @@ private fun LoadingContent(
     }
 }
 
+/**
+ * 🔴 El cobro volvió SIN veredicto del procesador: no se sabe si la tarjeta se cobró.
+ *
+ * Ámbar y no rojo a propósito: rojo se lee como «falló», y lo que hay que comunicar es
+ * justo lo contrario — *no se sabe*. Y **sin botón de Reintentar**: la única acción que
+ * este estado no puede ofrecer es la que produce el doble cobro.
+ */
+@Composable
+private fun ResultadoInciertoContent(
+    state: AngelPayPaymentState.ResultadoIncierto,
+    onGoBack: () -> Unit,
+) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val minContentHeight = maxHeight
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .heightIn(min = minContentHeight)
+                .padding(32.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Default.Warning,
+                contentDescription = null,
+                tint = MaterialTheme.avoqadoColors.statusWarning,
+                modifier = Modifier.size(64.dp),
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "Cobro sin confirmar",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.avoqadoColors.statusWarning,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = state.message,
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+            )
+            if (state.verificando) {
+                Spacer(modifier = Modifier.height(24.dp))
+                CircularProgressIndicator()
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "Consultando con AngelPay...",
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                )
+            } else {
+                Spacer(modifier = Modifier.height(24.dp))
+                // Salir sí; volver a cobrar no. La salida existe para que la terminal no
+                // quede secuestrada, no para reintentar el cobro por otra puerta.
+                OutlinedButton(onClick = onGoBack, modifier = Modifier.fillMaxWidth()) {
+                    Text("Salir")
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun ErrorContent(
     state: AngelPayPaymentState.Error,
@@ -864,7 +964,7 @@ private fun ErrorContent(
 }
 
 @Composable
-private fun CancelledContent(onNavigateBack: () -> Unit) {
+private fun CancelledContent(onNavigateBack: () -> Unit, mensaje: String? = null) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
@@ -878,8 +978,9 @@ private fun CancelledContent(onNavigateBack: () -> Unit) {
         )
         Spacer(modifier = Modifier.height(16.dp))
         Text(
-            text = "Pago cancelado",
+            text = mensaje ?: "Pago cancelado",
             style = MaterialTheme.typography.titleLarge,
+            textAlign = TextAlign.Center,
         )
         Spacer(modifier = Modifier.height(24.dp))
         Button(
@@ -959,6 +1060,36 @@ private fun AngelPayErrorPreview() {
             onRetry = {},
             onGoBack = {},
             onOpenShift = {},
+        )
+    }
+}
+
+@Preview(device = PAX_A910S, showSystemUi = true)
+@Composable
+private fun AngelPayResultadoInciertoVerificandoPreview() {
+    AvoqadoTheme {
+        ResultadoInciertoContent(
+            state = AngelPayPaymentState.ResultadoIncierto(
+                message = "Tiempo de espera agotado\n\nCobro sin confirmar: NO vuelvas a cobrar hasta " +
+                    "verificar. Estamos consultando con AngelPay si el pago pasó.",
+                verificando = true,
+            ),
+            onGoBack = {},
+        )
+    }
+}
+
+@Preview(device = PAX_A910S, showSystemUi = true)
+@Composable
+private fun AngelPayResultadoInciertoSinVerificarPreview() {
+    AvoqadoTheme {
+        ResultadoInciertoContent(
+            state = AngelPayPaymentState.ResultadoIncierto(
+                message = "No se pudo confirmar si el cobro pasó (sin red).\n\nNO vuelvas a cobrar: " +
+                    "revisa Transacciones o pregúntale al supervisor antes de intentarlo otra vez.",
+                verificando = false,
+            ),
+            onGoBack = {},
         )
     }
 }

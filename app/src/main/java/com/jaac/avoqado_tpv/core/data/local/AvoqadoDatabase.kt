@@ -159,7 +159,14 @@ import com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentRequestEntity
     // artículo (auditoría Codex P1-4). Aditiva y nullable: las filas que ya están en la calle —que
     // pueden contener dinero YA cobrado y sin registrar— se leen como FULLPAYMENT, exactamente el
     // comportamiento que tenían antes.
-    version = 33,
+    //
+    // ⭐ Version 34 (11-sep-2026): cancelación segura y desenlace único del cobro remoto (N3 / H.3).
+    // `remote_payment_requests` gana `cancel_accepted_at`, `execution_started_at` y `final_emitted_at`
+    // (la CERCA: ningún intento nuevo de una solicitud cancelada o ya cerrada), y `payment_attempts`
+    // gana `legacy_shadow` (las filas que dejó la libreta SHADOW de 2.9.x no reservan la terminal).
+    // 🔴 Cruza versión de esquema: un regreso a 2.9.2 (v33) sería un downgrade DESTRUCTIVO
+    // (`fallbackToDestructiveMigrationOnDowngrade`). El retroceso exige un APK de retroceso con v34.
+    version = 34,
     exportSchema = true // Schema JSONs in app/schemas/ — canonical DDL for writing migrations
 )
 @TypeConverters(ProductTypeConverters::class)  // Add ProductTypeConverters for ModifierGroups
@@ -1886,6 +1893,46 @@ abstract class AvoqadoDatabase : RoomDatabase() {
                 agregarColumnaSiFalta("paid_product_ids", "TEXT")
                 agregarColumnaSiFalta("equal_parts_party_size", "INTEGER")
                 agregarColumnaSiFalta("equal_parts_payed_for", "INTEGER")
+            }
+        }
+
+        /**
+         * v33 → v34 — cancelación segura y desenlace único del cobro remoto (N3 / H.3, 11-sep-2026).
+         *
+         *  - `remote_payment_requests`: `cancel_accepted_at`, `execution_started_at`, `final_emitted_at`
+         *    (INTEGER, nulas). Las filas que ya existen quedan con las tres en NULL: nada se inventa
+         *    sobre solicitudes que resolvió una versión anterior.
+         *  - `payment_attempts`: `legacy_shadow INTEGER NOT NULL DEFAULT 0`, y TODAS las filas que ya
+         *    existen se marcan `legacy_shadow = 1` — las escribió una versión anterior (la libreta
+         *    SHADOW de 2.9.x, que no reservaba la terminal y cuyo PREPARANDO no prueba «no se cobró»).
+         *
+         * Aditiva e idempotente: cada `ALTER` va protegido por `PRAGMA table_info` (SQLite no tiene
+         * `ADD COLUMN IF NOT EXISTS`, y un duplicado revienta en el arranque = crash-loop sobre
+         * `pending_payments`). El marcado de las filas heredadas corre SÓLO cuando la columna se crea
+         * aquí: una segunda pasada no puede marcar como heredada una fila que ya escribió el APK nuevo.
+         * No toca `pending_payments` ni `pending_refunds`.
+         */
+        val MIGRATION_33_34 = object : Migration(33, 34) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                fun columnaExiste(tabla: String, columna: String): Boolean {
+                    db.query("PRAGMA table_info($tabla)").use { cursor ->
+                        val indiceNombre = cursor.getColumnIndex("name")
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(indiceNombre) == columna) return true
+                        }
+                    }
+                    return false
+                }
+
+                for (columna in listOf("cancel_accepted_at", "execution_started_at", "final_emitted_at")) {
+                    if (!columnaExiste("remote_payment_requests", columna)) {
+                        db.execSQL("ALTER TABLE remote_payment_requests ADD COLUMN $columna INTEGER")
+                    }
+                }
+                if (!columnaExiste("payment_attempts", "legacy_shadow")) {
+                    db.execSQL("ALTER TABLE payment_attempts ADD COLUMN legacy_shadow INTEGER NOT NULL DEFAULT 0")
+                    db.execSQL("UPDATE payment_attempts SET legacy_shadow = 1")
+                }
             }
         }
     }

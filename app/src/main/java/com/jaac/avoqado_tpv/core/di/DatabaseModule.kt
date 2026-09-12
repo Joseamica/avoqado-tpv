@@ -123,7 +123,8 @@ object DatabaseModule {
                 AvoqadoDatabase.MIGRATION_29_31,
                 AvoqadoDatabase.MIGRATION_30_31,
                 AvoqadoDatabase.MIGRATION_31_32,  // 📡 inbox durable POS → TPV (acuse de recibo, nexgo-v2.9.0)
-                AvoqadoDatabase.MIGRATION_32_33   // ⭐ el split de la orden sobrevive a la cola offline
+                AvoqadoDatabase.MIGRATION_32_33,  // ⭐ el split de la orden sobrevive a la cola offline
+                AvoqadoDatabase.MIGRATION_33_34   // 🛑 cerca del cobro remoto + libreta SHADOW heredada (N3 / H.3)
             )
 
             // 🛡️ NO blanket destructive fallback (removed 2026-06-12).

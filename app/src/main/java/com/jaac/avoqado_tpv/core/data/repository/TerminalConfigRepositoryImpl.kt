@@ -96,7 +96,11 @@ class TerminalConfigRepositoryImpl @Inject constructor(
                 }
 
                 Timber.e("❌ [TerminalConfig] API error: ${response.code()} - ${response.message()}")
-                return Result.failure(Exception(errorMessage))
+                // T26: un 5xx es «no pude preguntar», igual que sin red — nunca «no existe».
+                return Result.failure(
+                    if (response.code() in 500..599) TerminalConfigUnreachableException(errorMessage)
+                    else Exception(errorMessage),
+                )
             }
 
             val body = response.body()
@@ -164,7 +168,13 @@ class TerminalConfigRepositoryImpl @Inject constructor(
 
         } catch (e: Exception) {
             Timber.e(e, "❌ [TECHNICAL] Failed to fetch terminal config")
-            Result.failure(Exception(mapNetworkErrorToUserMessage(e)))
+            // T26: se CONSERVA la causa. Antes `Exception(msg)` la tiraba y AngelPay no podía
+            // distinguir «sin red» de «sin credenciales».
+            val mensaje = mapNetworkErrorToUserMessage(e)
+            Result.failure(
+                if (e is java.io.IOException) TerminalConfigUnreachableException(mensaje, e)
+                else Exception(mensaje, e),
+            )
         }
     }
 
@@ -206,3 +216,17 @@ class TerminalConfigRepositoryImpl @Inject constructor(
         }
     }
 }
+
+/**
+ * T26 (2026-09-11): el servidor de Avoqado no se pudo alcanzar al leer la config de la
+ * terminal (sin red, DNS caído, timeout, o 5xx). Conserva la [cause] real.
+ *
+ * Existe porque AngelPay necesita distinguir «no pude preguntar» de «pregunté y la cuenta
+ * no está»: sólo lo segundo autoriza a caer a la cuenta primaria del venue. Antes el
+ * `catch` convertía un `UnknownHostException` en `Exception(msg)` sin causa y la terminal
+ * mostraba «credentials missing» con la red caída.
+ */
+class TerminalConfigUnreachableException(
+    message: String,
+    cause: Throwable? = null,
+) : Exception(message, cause)

@@ -52,6 +52,27 @@ object CrashlyticsContext {
         }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to set app context — Firebase not ready?") }
     }
 
+    /**
+     * T26 (2026-09-11): el serial REAL del aparato. Antes `setAppContext` recibía
+     * `TerminalConfig.serialNumber`, que en `Application.onCreate` todavía vale el
+     * `DEFAULT_SERIAL` ("2841548417") y además es el serial del COMERCIO Blumon — los
+     * reportes de la N86 de Testarudo decían venir de una PAX. Se escribe desde
+     * `HomeViewModel`, donde ya se calcula `DeviceInfoManager.getSerialNumber()`.
+     */
+    fun setTerminalSerial(serial: String?) {
+        if (serial.isNullOrBlank()) return
+        runCatching {
+            FirebaseCrashlytics.getInstance().setCustomKey("app_terminal_serial", serial)
+        }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to set terminal serial") }
+    }
+
+    /**
+     * T26: UNA sola llave para el estado de la auth de AngelPay — tipo + desde cuándo
+     * (p. ej. `SIN_RED desde=2026-09-11T14:43:00Z`). La escribe `AngelPayAuthRepository`
+     * con su FirebaseCrashlytics inyectado. Una llave y no tres por el tope de 64.
+     */
+    const val KEY_ANGELPAY_AUTH_STATE = "angelpay_auth_state"
+
     // ── Session (set on login, cleared on logout) ─────────────────────
 
     fun setSessionContext(
@@ -156,6 +177,55 @@ object CrashlyticsContext {
                 PaymentEmvStallException("Payment EMV chip processing stuck for ${elapsedSeconds}s")
             )
         }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to record EMV stall") }
+    }
+
+    /**
+     * 🔴 Atasco de una FASE del cobro, detectado por el observador independiente de la
+     * pantalla ([com.jaac.avoqado_tpv.features.payment.domain.PaymentPhaseTracker]).
+     *
+     * Contesta la pregunta que el 8-sep-2026 no se pudo contestar de la PAX de
+     * Testarudo: **¿en qué llamada al SDK se detuvo?** [recordPaymentEmvStall] sólo
+     * podía decir "el estado Processing lleva 45 s con este mensaje"; esto dice la
+     * fase exacta, cuánto lleva dentro y fuera de ella, la traza de entradas y
+     * salidas de cada llamada, y qué callback quedó sin contestar.
+     *
+     * Consolidado en 3 custom keys (no 8) por el tope de 64 de Firebase — el archivo
+     * ya ronda las 53. Mismo criterio que `sdk_state_snapshot`.
+     *
+     * 🔒 Nada de lo que se escribe aquí puede contener un PIN ni datos de tarjeta:
+     * el reporte lo arma un tracker cuya API sólo acepta enums, Boolean e Int.
+     */
+    fun recordPaymentPhaseStall(
+        report: com.jaac.avoqado_tpv.features.payment.domain.PaymentStallReport,
+    ) {
+        runCatching {
+            val crashlytics = FirebaseCrashlytics.getInstance()
+            crashlytics.setCustomKey("payment_phase", report.phase.name)
+            crashlytics.setCustomKey(
+                "payment_phase_stall",
+                "enFase=${report.elapsedInPhaseSeconds}s " +
+                    "enIntento=${report.elapsedInAttemptSeconds}s " +
+                    "flow=${report.flowOrigin} " +
+                    "intento=${report.attemptId ?: "sin-intento"} " +
+                    "ultimoCallback=${report.lastCallback ?: "ninguno"} " +
+                    "respuesta=${report.lastCallbackResponse ?: "SIN_RESPONDER"}",
+            )
+            crashlytics.setCustomKey(
+                "payment_phase_trace",
+                "fases=${report.trace} | callbacks=${report.callbackTrace}",
+            )
+            crashlytics.log(
+                "[Payment/Phase] ${report.phase.name} lleva ${report.elapsedInPhaseSeconds}s " +
+                    "| traza=${report.trace} | callbacks=${report.callbackTrace}"
+            )
+            crashlytics.recordException(
+                PaymentPhaseStallException(
+                    "Payment stuck in ${report.phase.name} for ${report.elapsedInPhaseSeconds}s " +
+                        "(last SDK callback: ${report.lastCallback ?: "none"}, " +
+                        "our response: ${report.lastCallbackResponse ?: "NOT SENT"})"
+                )
+            )
+        }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to record payment phase stall") }
     }
 
     /**
@@ -456,9 +526,32 @@ object CrashlyticsContext {
         }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to record socket auth failure") }
     }
 
+    /**
+     * 🔴 D.7 (2026-09-11): la pantalla de un cobro le pasó a su ViewModel el id de OTRA solicitud
+     * remota y el ViewModel lo rechazó (un VM = una solicitud). La navegación ya congela los
+     * argumentos, así que esto no debería pasar nunca: si pasa, algo volvió a leer los argumentos
+     * del lanzador. Se registra como non-fatal para contarlo; sólo lleva el riel y los dos ids
+     * (identificadores opacos): ni montos ni datos de tarjeta.
+     */
+    fun recordSolicitudRemotaAjena(riel: String, solicitudDelCobro: String?, solicitudRecibida: String) {
+        runCatching {
+            val crashlytics = FirebaseCrashlytics.getInstance()
+            crashlytics.log(
+                "[Payment/Remote] $riel ignoró la solicitud $solicitudRecibida: el cobro es de " +
+                    (solicitudDelCobro ?: "un cobro local"),
+            )
+            crashlytics.recordException(
+                SolicitudRemotaAjenaException("$riel: el ViewModel rechazó re-etiquetarse con otra solicitud remota"),
+            )
+        }.onFailure { Timber.w(it, "🛡️ [Crashlytics] Failed to record foreign remote request") }
+    }
+
     private class PaymentEmvStallException(message: String) : Exception(message)
+
+    private class PaymentPhaseStallException(message: String) : Exception(message)
     private class LoadingStateStallException(message: String, cause: Throwable?) : Exception(message, cause)
     private class BackendUnreachableException(message: String, cause: Throwable?) : Exception(message, cause)
     private class AuthRefreshSlowException(message: String, cause: Throwable?) : Exception(message, cause)
     private class SocketAuthFailureException(message: String) : Exception(message)
+    private class SolicitudRemotaAjenaException(message: String) : Exception(message)
 }

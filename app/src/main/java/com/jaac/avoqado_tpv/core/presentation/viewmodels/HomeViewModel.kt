@@ -60,6 +60,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
@@ -104,6 +105,11 @@ class HomeViewModel @Inject constructor(
     // init cost at HomeViewModel creation time.
     private val angelPaySdkGatewayProvider: javax.inject.Provider<AngelPaySdkGateway>,
     private val angelPayAuthRepositoryProvider: javax.inject.Provider<AngelPayAuthRepository>,
+    // 🔁 T26: la Nexgo recupera su auth de AngelPay SOLA al volver la red. Provider por la misma
+    // razón que el de arriba: en PAX nunca se resuelve (el candado de sabor va antes del get()).
+    private val angelPayAuthRecoveryProvider: javax.inject.Provider<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRecovery>,
+    // 🔁 T26: `hasServer` que sube a true también despierta la recuperación de AngelPay.
+    private val connectionStateManager: com.jaac.avoqado_tpv.core.util.ConnectionStateManager,
     // 📡 Socket.IO Payment Bridge - Forward socket payment requests to the remote-payment bus
     private val remotePaymentCoordinator: com.jaac.avoqado_tpv.core.remotepayment.RemotePaymentCoordinator,
     private val printerManager: com.jaac.avoqado_tpv.core.printer.PrinterManager,
@@ -341,9 +347,12 @@ class HomeViewModel @Inject constructor(
      * Also activates RemoteLogger (Socket.IO) and FileLogger (offline).
      */
     private fun initializeObservability() {
+        val terminalId = deviceInfoManager.getSerialNumber()
+        // T26: el serial REAL del aparato. Application.onCreate ya no lo escribe (allí sólo
+        // existía TerminalConfig.serialNumber = DEFAULT_SERIAL, el serial de un comercio Blumon).
+        com.jaac.avoqado_tpv.core.observability.CrashlyticsContext.setTerminalSerial(terminalId)
         val venueId = secureStorage.getVenueId() ?: return
         val userId = secureStorage.getStaffId() ?: "unknown"
-        val terminalId = deviceInfoManager.getSerialNumber()
         observabilityManager.initialize(
             venueId = venueId,
             terminalId = terminalId,
@@ -909,6 +918,9 @@ class HomeViewModel @Inject constructor(
                     initializeBlumonSDK()
                 }
 
+                // 🔁 T26: la auth de AngelPay que falló sin red se recupera SOLA (sólo Nexgo).
+                recuperarAngelPaySiAtorada("RED_RECUPERADA")
+
                 // Re-fetch data that may have failed during init due to no connection
                 fetchAttendanceState()
                 fetchSalesGoal(skipDelay = true)
@@ -946,6 +958,8 @@ class HomeViewModel @Inject constructor(
                 val result = merchantRepository.refreshMerchants()
                 result.onSuccess {
                     Timber.i("✅ [HomeViewModel] Merchants refreshed from backend")
+                    // 🔁 T26: la config (y con ella las credenciales de AngelPay) ya está en caché.
+                    recuperarAngelPaySiAtorada("CONFIG_ACTUALIZADA")
                     // Re-init SDK with real merchants if it was initialized with fallback
                     Timber.i("🔧 [HomeViewModel] Re-initializing Blumon SDK with real merchants...")
                     initializeBlumonSDK()
@@ -1087,11 +1101,9 @@ class HomeViewModel @Inject constructor(
                         remotePaymentCoordinator.submitSocketPaymentRequest(request)
                     }
 
-                    is SocketEvent.TerminalPaymentCancel -> {
-                        Timber.i("🚫 [Socket] Terminal payment cancel: requestId=${event.requestId} reason=${event.reason}")
-                        // Cancel only if the requestId matches the current payment (idempotency)
-                        remotePaymentCoordinator.cancelSocketPaymentRequest(event.requestId)
-                    }
+                    // SocketManager handles cancellation admission durably, including
+                    // cold startup before this collector exists.
+                    is SocketEvent.TerminalPaymentCancel -> Unit
 
                     is SocketEvent.TerminalReceiptPrintRequest -> {
                         Timber.i("🖨️ [Socket] Terminal receipt print request: requestId=${event.requestId}")
@@ -1207,7 +1219,10 @@ class HomeViewModel @Inject constructor(
                         staffName = receipt.stringValue("cashierName") ?: secureStorage.getStaffName(),
                         orderNumber = receipt.stringValue("orderNumber"),
                         orderItems = items,
-                        discountAmount = receipt.optionalCentsValue("discountAmount")?.toMoneyString()
+                        discountAmount = receipt.optionalCentsValue("discountAmount")?.toMoneyString(),
+                        // 🔴 La bandera venía en el payload y se tiraba: la terminal imprimía
+                        // siempre «…y factura», también para negocios sin autofacturación.
+                        autofacturaAvailable = receipt.booleanValue("autofacturaAvailable")
                     )
                 } catch (e: Exception) {
                     kotlin.Result.failure(e)
@@ -1236,6 +1251,17 @@ class HomeViewModel @Inject constructor(
     }
 
     private fun Map<*, *>.centsValue(key: String): Int = intValue(key) ?: 0
+
+    /**
+     * Lee una bandera del payload. Ausente o ilegible ⇒ `false`: en el único uso de hoy
+     * (`autofacturaAvailable`) el lado seguro es NO prometer una factura que quizá no exista.
+     * Acepta también la cadena "true" porque el payload viaja como JSON genérico.
+     */
+    private fun Map<*, *>.booleanValue(key: String): Boolean = when (val value = this[key]) {
+        is Boolean -> value
+        is String -> value.equals("true", ignoreCase = true)
+        else -> false
+    }
 
     private fun Map<*, *>.optionalCentsValue(key: String): Int? =
         if (containsKey(key)) intValue(key) else null
@@ -1478,11 +1504,58 @@ class HomeViewModel @Inject constructor(
                 // banner shows "requiere autenticación" even though SDK is fine.
                 Timber.i("🔶 [HomeViewModel] Auto-triggering AngelPay startup auth (zero-touch discovery)")
                 val authRepo = angelPayAuthRepositoryProvider.get()
-                authRepo.ensureAuthenticated()
-                    .onSuccess { Timber.i("🔶 [HomeViewModel] AngelPay startup auth success") }
-                    .onFailure { Timber.w(it, "🔶 [HomeViewModel] AngelPay startup auth failed — banner will surface state") }
+                // 🔴 T26: con el candado de dueño de la sesión. Si un cobro ya lo tiene (p. ej. un
+                // cobro remoto que llegó durante el arranque), el cobro autentica la cuenta que
+                // eligió; el arranque NO se le encima con la primaria (incidente de Amaena).
+                val corrio = authRepo.siLaSesionEstaLibre {
+                    authRepo.ensureAuthenticated()
+                        .onSuccess { Timber.i("🔶 [HomeViewModel] AngelPay startup auth success") }
+                        .onFailure { Timber.w(it, "🔶 [HomeViewModel] AngelPay startup auth failed — banner will surface state") }
+                }
+                if (!corrio) Timber.i("🔶 [HomeViewModel] Startup auth omitida: un cobro es dueño de la sesión")
             } catch (e: Throwable) {
                 Timber.e(e, "🔶 [HomeViewModel] Startup auth threw — non-fatal, ignoring")
+            }
+        }
+        // 🔁 T26: `hasServer` que SUBE a true también despierta la recuperación. Mismo candado de
+        // sabor que arriba (esta función ya salió en PAX); el get() va dentro de él.
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                angelPayAuthRecoveryProvider.get().observarServidor(
+                    connectionStateManager.connectionState.map { it.hasServer },
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Timber.e(e, "🔁 [HomeViewModel] Observador de servidor para AngelPay terminó con error")
+            }
+        }
+    }
+
+    /**
+     * 🔁 T26 (Testarudo, 2026-09-11): la N86 arrancó sin red, la auth de AngelPay falló UNA vez
+     * y nada la reintentó — ~4 h sin poder cobrar con tarjeta. Cada disparador (red recuperada,
+     * config leída, servidor alcanzable) pide la recuperación; los candados (sin cobro en
+     * curso, sin tocar una sesión viva, una corrida a la vez, enfriamiento) viven en
+     * `AngelPayAuthRecovery`.
+     *
+     * 🔴 Candado de sabor ANTES del `get()`: en PAX nunca se resuelve el Provider, así que las
+     * clases de AngelPay no se cargan (mismo patrón que el arranque y que Application). El
+     * disparador llega como TEXTO a propósito: el argumento se evalúa antes del candado, y un
+     * `DisparadorRecuperacion.X` en la llamada cargaría esa clase del paquete de AngelPay en PAX.
+     */
+    private fun recuperarAngelPaySiAtorada(disparador: String) {
+        if (BuildConfig.SUPPORTED_PROCESSOR != "ANGELPAY") return
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val resultado = angelPayAuthRecoveryProvider.get().recoverIfStuck(
+                    com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.DisparadorRecuperacion.valueOf(disparador),
+                )
+                Timber.i("🔁 [HomeViewModel] Recuperación AngelPay ($disparador) → $resultado")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Timber.e(e, "🔁 [HomeViewModel] Recuperación AngelPay ($disparador) lanzó — no fatal")
             }
         }
     }

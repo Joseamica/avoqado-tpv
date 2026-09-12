@@ -3,8 +3,12 @@ package com.jaac.avoqado_tpv.core.data.repository
 import com.google.common.truth.Truth.assertThat
 import com.jaac.avoqado_tpv.core.data.local.SecureStorage
 import com.jaac.avoqado_tpv.core.data.network.ApiService
+import io.mockk.coEvery
 import io.mockk.mockk
+import kotlinx.coroutines.test.runTest
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Test
+import retrofit2.Response
 import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
@@ -70,5 +74,48 @@ class TerminalConfigRepositoryImplTest {
         val e = IllegalStateException("unexpected null field")
         val message = repository.mapNetworkErrorToUserMessage(e)
         assertThat(message).contains("Error inesperado")
+    }
+
+    // ── T26 (Testarudo, 2026-09-11) ──────────────────────────────────────────
+    // Sin red, el `catch` convertía el UnknownHostException en `Exception(msg)` SIN causa:
+    // AngelPay no podía distinguir «no pude preguntar» de «pregunté y no hay credenciales»,
+    // mostraba «credentials missing» y caía a la cuenta primaria del venue.
+
+    @Test
+    fun `P1 fetchConfig sin red conserva la causa y marca el servidor como inalcanzable`() = runTest {
+        val api = mockk<ApiService>()
+        coEvery { api.getTerminalConfig(any()) } throws UnknownHostException("api.avoqado.io")
+        val repo = TerminalConfigRepositoryImpl(apiService = api, secureStorage = mockk(relaxed = true))
+
+        val error = repo.fetchConfig("N860W173397").exceptionOrNull()
+
+        assertThat(error).isInstanceOf(TerminalConfigUnreachableException::class.java)
+        assertThat(error!!.cause).isInstanceOf(UnknownHostException::class.java)
+        // El texto para el operador no cambia.
+        assertThat(error.message).contains("Sin conexión a internet")
+    }
+
+    @Test
+    fun `fetchConfig con 503 tambien marca el servidor como inalcanzable`() = runTest {
+        val api = mockk<ApiService>()
+        coEvery { api.getTerminalConfig(any()) } returns Response.error(503, "{}".toResponseBody())
+        val repo = TerminalConfigRepositoryImpl(apiService = api, secureStorage = mockk(relaxed = true))
+
+        val error = repo.fetchConfig("N860W173397").exceptionOrNull()
+
+        assertThat(error).isInstanceOf(TerminalConfigUnreachableException::class.java)
+        assertThat(error!!.message).contains("Error del servidor")
+    }
+
+    @Test
+    fun `fetchConfig con 404 NO es servidor inalcanzable`() = runTest {
+        val api = mockk<ApiService>()
+        coEvery { api.getTerminalConfig(any()) } returns Response.error(404, "{}".toResponseBody())
+        val repo = TerminalConfigRepositoryImpl(apiService = api, secureStorage = mockk(relaxed = true))
+
+        val error = repo.fetchConfig("N860W173397").exceptionOrNull()
+
+        assertThat(error).isNotNull()
+        assertThat(error).isNotInstanceOf(TerminalConfigUnreachableException::class.java)
     }
 }

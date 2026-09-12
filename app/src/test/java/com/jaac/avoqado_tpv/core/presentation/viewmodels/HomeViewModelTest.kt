@@ -33,6 +33,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -69,6 +71,9 @@ class HomeViewModelTest {
     private lateinit var deviceInfoManager: DeviceInfoManager
     private lateinit var angelPaySdkGatewayProvider: javax.inject.Provider<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPaySdkGateway>
     private lateinit var angelPayAuthRepositoryProvider: javax.inject.Provider<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRepository>
+    private lateinit var angelPayAuthRecoveryProvider: javax.inject.Provider<com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthRecovery>
+    private lateinit var connectionStateManager: com.jaac.avoqado_tpv.core.util.ConnectionStateManager
+    private val fakeConnectionState = MutableStateFlow(com.jaac.avoqado_tpv.core.util.ConnectionState())
     private lateinit var remotePaymentCoordinator: RemotePaymentCoordinator
     private lateinit var updateCheckManager: UpdateCheckManager
     private lateinit var sessionManager: SessionManager
@@ -110,6 +115,9 @@ class HomeViewModelTest {
         deviceInfoManager = mockk(relaxed = true)
         angelPaySdkGatewayProvider = mockk(relaxed = true)
         angelPayAuthRepositoryProvider = mockk(relaxed = true)
+        angelPayAuthRecoveryProvider = mockk(relaxed = true)
+        connectionStateManager = mockk(relaxed = true)
+        every { connectionStateManager.connectionState } returns fakeConnectionState
         remotePaymentCoordinator = mockk(relaxed = true)
         updateCheckManager = mockk(relaxed = true)
         sessionManager = mockk(relaxed = true)
@@ -164,6 +172,8 @@ class HomeViewModelTest {
             deviceInfoManager = deviceInfoManager,
             angelPaySdkGatewayProvider = angelPaySdkGatewayProvider,
             angelPayAuthRepositoryProvider = angelPayAuthRepositoryProvider,
+            angelPayAuthRecoveryProvider = angelPayAuthRecoveryProvider,
+            connectionStateManager = connectionStateManager,
             remotePaymentCoordinator = remotePaymentCoordinator,
             printerManager = printerManager,
             updateCheckManager = updateCheckManager,
@@ -383,6 +393,47 @@ class HomeViewModelTest {
         val flattened = Exception("InitializerUseCase failed: NetworkConnectionFailure")
 
         assertThat(viewModel.isNetworkRelatedInitError(flattened)).isTrue()
+        viewModel.viewModelScope.cancel()
+    }
+
+    // ========================================
+    // T26 (Testarudo, 2026-09-11)
+    // ========================================
+
+    @Test
+    fun `app_terminal_serial lleva el serial del aparato, no el serial por defecto`() = runTest(testDispatcher) {
+        // Antes la escribía Application.onCreate con TerminalConfig.serialNumber, que ahí
+        // todavía vale DEFAULT_SERIAL "2841548417" (y es el serial del comercio Blumon):
+        // los reportes de la N86 de Testarudo decían venir de una PAX.
+        val crashlytics = mockk<com.google.firebase.crashlytics.FirebaseCrashlytics>(relaxed = true)
+        mockkStatic(com.google.firebase.crashlytics.FirebaseCrashlytics::class)
+        every { com.google.firebase.crashlytics.FirebaseCrashlytics.getInstance() } returns crashlytics
+        every { deviceInfoManager.getSerialNumber() } returns "N860W173397"
+
+        val viewModel = createViewModel()
+
+        verify(atLeast = 1) { crashlytics.setCustomKey("app_terminal_serial", "N860W173397") }
+        verify(exactly = 0) { crashlytics.setCustomKey("app_terminal_serial", "2841548417") }
+        viewModel.viewModelScope.cancel()
+    }
+
+    @Test
+    fun `P1 en PAX volver la red o el servidor jamas resuelve la recuperacion de AngelPay`() = runTest(testDispatcher) {
+        // El sabor de pruebas es BLUMON (sandbox). Resolver el Provider cargaría clases de
+        // AngelPay en una PAX: el candado de sabor va ANTES del get(), igual que el arranque.
+        val viewModel = createViewModel()
+        advanceTimeBy(2_000)
+        runCurrent()
+
+        fakeConnectionRestoredEvents.emit(
+            com.jaac.avoqado_tpv.core.util.ConnectionRestoredEvent(timestamp = "t", attemptsBeforeReconnection = 3),
+        )
+        fakeConnectionState.value = fakeConnectionState.value.copy(hasServer = false)
+        fakeConnectionState.value = fakeConnectionState.value.copy(hasServer = true)
+        runCurrent()
+
+        verify(exactly = 0) { angelPayAuthRecoveryProvider.get() }
+        verify(exactly = 0) { angelPayAuthRepositoryProvider.get() }
         viewModel.viewModelScope.cancel()
     }
 }

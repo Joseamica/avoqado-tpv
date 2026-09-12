@@ -11,6 +11,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -21,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import com.jaac.avoqado_tpv.core.presentation.theme.AvoqadoTheme
 import com.jaac.avoqado_tpv.core.presentation.theme.avoqadoColors
 import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AngelPayAuthState
+import com.jaac.avoqado_tpv.features.payment.data.processor.angelpay.AuthErrorKind
 
 /**
  * AngelPay auth status banner — color-coded chip mirroring the 7 [AngelPayAuthState]
@@ -43,6 +45,8 @@ fun AngelPayAuthBanner(
     state: AngelPayAuthState,
     activeMerchantName: String?,
     modifier: Modifier = Modifier,
+    // T26: «Reintentar» — sólo se muestra donde reintentar puede arreglar algo.
+    onRetry: (() -> Unit)? = null,
 ) {
     val cfg = bannerConfig(state, activeMerchantName)
 
@@ -69,7 +73,14 @@ fun AngelPayAuthBanner(
                 color = cfg.textColor,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f, fill = false),
             )
+            if (onRetry != null && ofreceReintentarAuth(state)) {
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = onRetry) {
+                    Text(text = "Reintentar", color = cfg.textColor, fontWeight = FontWeight.Bold)
+                }
+            }
         }
     }
 }
@@ -107,6 +118,13 @@ private fun bannerConfig(
             text = "AngelPay: autenticando...",
             showSpinner = true,
         )
+        // T26: la recuperación de fondo — la Tarjeta espera, el Efectivo sigue disponible.
+        is AngelPayAuthState.Recuperando -> BannerConfig(
+            backgroundColor = yellow.copy(alpha = 0.15f),
+            textColor = yellow,
+            text = "AngelPay: reconectando…",
+            showSpinner = true,
+        )
         is AngelPayAuthState.SelectingMerchant -> BannerConfig(
             backgroundColor = yellow.copy(alpha = 0.15f),
             textColor = yellow,
@@ -116,7 +134,7 @@ private fun bannerConfig(
         is AngelPayAuthState.AuthError -> BannerConfig(
             backgroundColor = red.copy(alpha = 0.15f),
             textColor = red,
-            text = "AngelPay: ${truncate(state.message, 60)}",
+            text = "AngelPay: ${textoDeAuthError(state)}",
             showSpinner = false,
         )
         is AngelPayAuthState.AccountSuspended -> BannerConfig(
@@ -141,6 +159,30 @@ private fun bannerConfig(
             showSpinner = false,
         )
     }
+}
+
+/**
+ * T26: texto del banner para un error de auth. Las tres causas de la terminal atorada tienen
+ * texto propio en español (antes salía «AngelPay credentials missing from both backend
+ * confi…» en inglés y truncado, también con la red caída). Cualquier otro error conserva su
+ * mensaje, truncado a 60 caracteres.
+ */
+internal fun textoDeAuthError(state: AngelPayAuthState.AuthError): String = when (state.kind) {
+    AuthErrorKind.SIN_RED -> "sin conexión, se reintenta sola"
+    AuthErrorKind.SIN_CREDENCIALES -> "faltan credenciales en el panel"
+    AuthErrorKind.CUENTA_NO_EN_CONFIG -> "la cuenta del comercio no está en el panel"
+    AuthErrorKind.OTHER -> truncate(state.message, 60)
+}
+
+/**
+ * T26: ¿el banner ofrece «Reintentar»? Sólo donde reintentar puede arreglar algo: sin red,
+ * config que pudo cambiar en el panel, o sin autenticar. Un PIN rechazado o un bloqueo de
+ * config no se arreglan repitiendo (y tocar Tarjeta re-autentica igual).
+ */
+internal fun ofreceReintentarAuth(state: AngelPayAuthState): Boolean = when (state) {
+    is AngelPayAuthState.AuthError -> state.kind.recuperableEnFondo
+    is AngelPayAuthState.Unauthenticated -> true
+    else -> false
 }
 
 private fun truncate(s: String, max: Int): String =
@@ -195,6 +237,18 @@ private fun AngelPayAuthBannerAuthErrorPreview() {
                 message = "Credenciales inválidas tras 3 reintentos",
             ),
             activeMerchantName = null,
+        )
+    }
+}
+
+@Preview(widthDp = 360, heightDp = 640, showBackground = true)
+@Composable
+private fun AngelPayAuthBannerSinRedPreview() {
+    AvoqadoTheme {
+        AngelPayAuthBanner(
+            state = AngelPayAuthState.AuthError(message = "sin red", kind = AuthErrorKind.SIN_RED),
+            activeMerchantName = null,
+            onRetry = {},
         )
     }
 }

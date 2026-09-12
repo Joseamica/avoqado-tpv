@@ -21,6 +21,7 @@ class AngelPaySdkPostOperationsAdapter @Inject constructor(
             endDate = query.endDate,
             reference = query.reference,
             terminal = query.terminal,
+            integratorReference = query.integratorReference,
         ).map { response ->
             response.items.map { item ->
                 UnifiedTransaction(
@@ -51,6 +52,7 @@ class AngelPaySdkPostOperationsAdapter @Inject constructor(
                     postOperationReference = item.postOperation?.reference,
                     postOperationAuthorization = item.postOperation?.authorization,
                     postOperationStatus = item.postOperation?.status,
+                    integratorReference = item.integratorReference,
                 )
             }
         }

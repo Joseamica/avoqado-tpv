@@ -39,6 +39,7 @@ data class TransactionHistoryQuery(
     val endDate: String,
     val reference: String? = null,
     val terminal: String? = null,
+    val integratorReference: String? = null,
 )
 
 data class UnifiedTransaction(
@@ -69,6 +70,12 @@ data class UnifiedTransaction(
     val postOperationReference: String?,
     val postOperationAuthorization: String?,
     val postOperationStatus: String?,
+    /**
+     * Referencia que el INTEGRADOR (esta app) mandó con el cobro — nuestro `paymentAttemptId`.
+     * AngelPay la devuelve tal cual, y es lo único que permite reconocer un cobro propio en
+     * el historial sin adivinar por monto y hora. Opcional: Blumon no expone equivalente.
+     */
+    val integratorReference: String? = null,
 )
 
 data class PostOperationResult(

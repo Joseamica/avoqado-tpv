@@ -227,6 +227,23 @@ class AngelPayMerchantRepository @Inject constructor(
         cacheDao.markActive(activeId)
     }
 
+    /**
+     * T26: el último comercio activo que se conoce — el de la sesión en memoria o, si ya se
+     * limpió (logout, auth caída, proceso nuevo), el marcado en el caché de Room, que
+     * sobrevive a reinicios. Sirve para que la recuperación de fondo vuelva a la cuenta de
+     * ESE comercio en vez de a la primaria del venue.
+     */
+    suspend fun ultimoComercioActivoConocido(): Int? {
+        _activeAngelPayMerchantId.value?.let { return it }
+        return try {
+            cacheDao.getAll().firstOrNull { it.isActive }?.merchantId
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            null // sin caché legible no se inventa un comercio
+        }
+    }
+
     /** Called from AngelPayAuthRepository on logout / unrecoverable auth failure. */
     fun clearActive() {
         _activeAngelPayMerchantId.value = null

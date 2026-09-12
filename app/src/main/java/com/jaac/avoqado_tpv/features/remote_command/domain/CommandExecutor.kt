@@ -1238,40 +1238,17 @@ class CommandExecutor @Inject constructor(
         return try {
             val authRepo = angelPayAuthRepositoryProvider.get()
 
-            // If a specific account was requested, switch the SDK to it first.
-            // Without it, ensureAuthenticated uses whatever account the resolver
-            // picks (typically the first one in cached config).
-            if (!targetAccountId.isNullOrBlank()) {
-                Timber.i("🔶 [$TAG] Switching AngelPay account before fetch: $targetAccountId")
-                // reportMerchants = true: this is the dashboard explicitly
-                // asking the TPV to refresh and publish the merchant list.
-                // ALL other call sites of switchAccount pass false (the
-                // default) so cashier-driven account switches never mutate
-                // the backend's MerchantAccount table — discovery is a
-                // dashboard-initiated action only (gated 2026-05-28).
-                val switchResult = authRepo.switchAccount(targetAccountId, reportMerchants = true)
-                if (switchResult.isFailure) {
-                    val err = switchResult.exceptionOrNull()?.message ?: "switchAccount failed"
-                    Timber.w("⚠️ [$TAG] switchAccount($targetAccountId) failed: $err")
-                    return CommandResult.failed("No se pudo cambiar a cuenta AngelPay $targetAccountId: $err")
-                }
-            }
-
-            // ensureAuthenticated() handles the full flow internally:
-            // 1. Resolves creds (force config refresh on self-heal if cache empty)
-            // 2. SDK authenticateSimple (with retry backoff)
-            // 3. On Success: reports discovered merchants to backend ONLY
-            //    when reportMerchants=true (gated 2026-05-28) — every other
-            //    caller (HomeViewModel pre-warm, AngelPayPaymentViewModel
-            //    pre-payment, cashier-driven flows) passes false default
-            //    so reboots/screen entries no longer mutate backend state.
-            // 4. Refreshes terminal config so validator sees fresh intersection
-            // 5. Runs config validation
-            val authResult = authRepo.ensureAuthenticated(reportMerchants = true)
+            // 🔴 T26 (incidente de Amaena): el comando entra por la MISMA ventana que el cobro
+            // («auth → alineación → lanzamiento»), y switchAccount hace logout. Por eso va por
+            // el repositorio, que sólo actúa como dueño de la sesión (tryLock) y sin cobro en
+            // curso. Adentro: switchAccount(targetAccountId, reportMerchants = true) si viene
+            // cuenta, y luego ensureAuthenticated(reportMerchants = true) — reportMerchants sigue
+            // siendo exclusivo de este comando (gated 2026-05-28).
+            val authResult = authRepo.refrescarComerciosParaElPanel(targetAccountId)
             if (authResult.isFailure) {
                 val err = authResult.exceptionOrNull()?.message ?: "auth failed"
-                Timber.e("❌ [$TAG] FETCH_ANGELPAY_MERCHANTS auth failed: $err")
-                return CommandResult.failed("AngelPay auth failed: $err")
+                Timber.e("❌ [$TAG] FETCH_ANGELPAY_MERCHANTS failed: $err")
+                return CommandResult.failed(err)
             }
 
             Timber.i("✅ [$TAG] FETCH_ANGELPAY_MERCHANTS completed — backend should have received discovered merchants")

@@ -130,7 +130,12 @@ class AngelPayWatchdogTest {
         verificationUploadManager = mockk(relaxed = true)
         observabilityManager = mockk(relaxed = true)
         paymentQueueRepository = mockk(relaxed = true)
-        paymentAttemptLedger = mockk(relaxed = true)
+        paymentAttemptLedger = mockk(relaxed = true) {
+            io.mockk.coEvery { cobroSinResolver() } returns null
+            // C.5: por defecto la solicitud no está cercada y el efectivo/cripto puede arrancar.
+            io.mockk.coEvery { cercaDeSolicitud(any()) } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud.LIBRE
+            io.mockk.coEvery { iniciarEjecucionNoTarjeta(any()) } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud.LIBRE
+        }
         authAttemptTelemetryStore = mockk(relaxed = true)
 
         every { angelPayAuthRepository.state } returns authStateFlow
@@ -173,6 +178,9 @@ class AngelPayWatchdogTest {
         paymentQueueRepository = paymentQueueRepository,
         paymentAttemptLedger = paymentAttemptLedger,
         authAttemptTelemetryStore = authAttemptTelemetryStore,
+        // T26: botón «Reintentar» del banner (recuperación MANUAL de la auth de AngelPay).
+        angelPayAuthRecovery = mockk(relaxed = true),
+        chargeVerifier = mockk(relaxed = true),
         savedStateHandle = SavedStateHandle(),
     )
 

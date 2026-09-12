@@ -53,8 +53,11 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import io.mockk.verify
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -107,6 +110,7 @@ class PaymentViewModelWatchdogTest {
     // ⭐ El único mock que este archivo necesita controlar activamente: la llamada SDK que
     // el vigilante observa (nunca cancela) durante la autorización online.
     private lateinit var mockSaleIccUseCase: SaleIccUseCase
+    private lateinit var mockSaleCtlsUseCase: com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_ctls.SaleCtlsUseCase
 
     private val socketEventsFlow = MutableSharedFlow<SocketEvent>()
     private val connectionRestoredFlow = MutableSharedFlow<com.jaac.avoqado_tpv.core.util.ConnectionRestoredEvent>()
@@ -190,7 +194,14 @@ class PaymentViewModelWatchdogTest {
 
         mockRecordPaymentUseCase = mockk(relaxed = true)
         mockRecordRefundUseCase = mockk(relaxed = true)
-        mockPaymentAttemptLedger = mockk(relaxed = true)
+        mockPaymentAttemptLedger = mockk(relaxed = true) {
+            coEvery { markAuthorizing(any()) } returns true
+            coEvery { markKernelEntered(any()) } returns true
+            coEvery { markHostResponded(any(), any(), any(), any(), any()) } returns true
+            // C.5: por defecto la solicitud no está cercada y el efectivo/cripto puede arrancar.
+            coEvery { cercaDeSolicitud(any()) } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud.LIBRE
+            coEvery { iniciarEjecucionNoTarjeta(any()) } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud.LIBRE
+        }
         mockAuthAttemptTelemetryStore = mockk(relaxed = true)
         mockMerchantEligibilityRepository = mockk(relaxed = true) {
             coEvery { evaluate(any(), any(), any()) } returns
@@ -215,6 +226,7 @@ class PaymentViewModelWatchdogTest {
         every { com.jaac.avoqado_tpv.core.util.PaymentSyncScheduler.runNow(any()) } just Runs
 
         mockSaleIccUseCase = mockk(relaxed = true)
+        mockSaleCtlsUseCase = mockk(relaxed = true)
     }
 
     @After
@@ -225,11 +237,14 @@ class PaymentViewModelWatchdogTest {
         Dispatchers.resetMain()
     }
 
-    private fun createViewModel(): PaymentViewModel {
+    private fun createViewModel(
+        stopDetectCardUseCase: com.blumonpay.pax.shared.neptune_polling.domain.use_case.stop_detect_card.StopDetectCardUseCase =
+            mockk(relaxed = true),
+    ): PaymentViewModel {
         return PaymentViewModel(
             preTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.pre_trans.PreTransUseCase>(relaxed = true),
             startDetectCardUseCase = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.start_detect_card.StartDetectCardUseCase>(relaxed = true),
-            stopDetectCardUseCase = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.stop_detect_card.StopDetectCardUseCase>(relaxed = true),
+            stopDetectCardUseCase = stopDetectCardUseCase,
             startEmvTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.strat_emv_trans.StartEmvTransUseCase>(relaxed = true),
             startCtlssTransUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.start_ctlss_trans.StartCtlssTransUseCase>(relaxed = true),
             getEmvTagUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.get_emv_tags.GetEmvTagUseCase>(relaxed = true),
@@ -237,7 +252,7 @@ class PaymentViewModelWatchdogTest {
             continueConfirmCardUseCase = mockk<com.blumonpay.pax.shared.trans_process.domain.use_case.continue_confirm_card.ContinueConfirmCardUseCase>(relaxed = true),
             setSelectAppCodeUseCase = mockSetSelectAppCodeUseCase,
             saleIccUseCase = mockSaleIccUseCase,
-            saleCtlsUseCase = mockk<com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_ctls.SaleCtlsUseCase>(relaxed = true),
+            saleCtlsUseCase = mockSaleCtlsUseCase,
             cancelIccUseCase = mockk<com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.cancel_icc.CancelIccUseCase>(relaxed = true),
             validateCancelUseCase = mockk<com.example.clean_lib_services.shared.core.domain.use_case.cancel_package.validate_cancel.ValidateCancelUseCase>(relaxed = true),
             transProcessRepository = mockTransProcessRepository,
@@ -289,8 +304,11 @@ class PaymentViewModelWatchdogTest {
      * recorrer todo `startPayment()` — evitar esto ahorra tener que simular PreTrans/
      * StartEmvTrans/GetEmvTags, que no son parte de lo que este task cablea.
      */
-    private fun buildViewModelWithPendingAuthorization(): PaymentViewModel {
+    private fun buildViewModelWithPendingAuthorization(isContactless: Boolean = false): PaymentViewModel {
         val vm = createViewModel()
+        PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }.set(
+            vm, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession.empty().copy(paymentAttemptId = "test-attempt")
+        )
 
         val merchantField = PaymentViewModel::class.java.getDeclaredField("_currentMerchant")
         merchantField.isAccessible = true
@@ -318,10 +336,209 @@ class PaymentViewModelWatchdogTest {
                 amount = "100.00",
                 track2 = "",
                 cardHolderName = "CARDHOLDER",
-                emvTagList = ""
+                emvTagList = "",
+                isContactless = isContactless,
             )
         }
         return vm
+    }
+
+    @Test
+    fun `exception after authorization entry blocks legacy retry`() {
+        val vm = buildViewModelWithPendingAuthorization()
+        scheduler.runCurrent()
+        completeAuthorization(vm)
+        vm.retryPayment(null)
+        val state = vm.state.value
+        org.junit.Assert.assertTrue("Unknown authorization must remain visible", state is PaymentState.Error)
+        org.junit.Assert.assertFalse((state as PaymentState.Error).canRetry)
+        org.junit.Assert.assertTrue(state.message.contains("No vuelvas a pasar la tarjeta"))
+    }
+
+    @Test
+    fun `GenericFailure after authorization preserves unknown and never authorizes on retry`() {
+        val vm = buildViewModelWithPendingAuthorization()
+        coEvery { mockSaleIccUseCase.run(any()) } returns
+            com.example.clean_lib_services.utils.clean.Either.Left(
+                com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccFailure.GenericFailure("response lost")
+            )
+        try {
+            scheduler.runCurrent()
+            vm.retryPayment(null)
+            scheduler.runCurrent()
+            val state = vm.state.value as PaymentState.Error
+            org.junit.Assert.assertFalse(state.canRetry)
+            org.junit.Assert.assertTrue(state.message.contains("No vuelvas a pasar la tarjeta"))
+            coVerify(exactly = 1) { mockSaleIccUseCase.run(any()) }
+            coVerify(exactly = 1) { mockPaymentAttemptLedger.markIndeterminate("test-attempt", "GenericFailure") }
+            coVerify(exactly = 0) { mockPaymentAttemptLedger.markHostResponded(any(), false, any(), any(), any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `partial SDK response without authorization or issuer verdict remains unknown`() {
+        val vm = buildViewModelWithPendingAuthorization()
+        val response = mockk<com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccResponse>(relaxed = true) {
+            every { saleData.authorization } returns ""
+            every { saleData.emvResponseCode } returns ""
+            every { saleData.description } returns ""
+        }
+        coEvery { mockSaleIccUseCase.run(any()) } returns
+            com.example.clean_lib_services.utils.clean.Either.Right(response)
+        try {
+            scheduler.runCurrent()
+            vm.retryPayment(null)
+            scheduler.runCurrent()
+            org.junit.Assert.assertTrue("Partial response must preserve unknown Error, got ${vm.state.value}", vm.state.value is PaymentState.Error)
+            val state = vm.state.value as PaymentState.Error
+            org.junit.Assert.assertFalse(state.canRetry)
+            org.junit.Assert.assertTrue(state.message.contains("No vuelvas a pasar la tarjeta"))
+            coVerify(exactly = 1) { mockSaleIccUseCase.run(any()) }
+            coVerify(exactly = 0) { mockPaymentAttemptLedger.markHostResponded(any(), false, any(), any(), any()) }
+            coVerify(exactly = 1) { mockPaymentAttemptLedger.markIndeterminate("test-attempt", any()) }
+        } finally {
+            vm.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `cancel queued before authorization cannot publish cancellation after SDK entry`() {
+        val vm = buildViewModelWithPendingAuthorization()
+        try {
+            // cancel's synchronous guard runs before the already-queued SDK coroutine.
+            vm.cancelPayment()
+            scheduler.runCurrent()
+            org.junit.Assert.assertFalse(vm.state.value is PaymentState.Cancelled)
+            coVerify(exactly = 1) { mockSaleIccUseCase.run(any()) }
+            coVerify(exactly = 0) { mockPaymentAttemptLedger.markDiscardedBeforeCharge(any(), any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `reset after approved durable queue handoff never reports cancelled`() {
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "approved-queued")
+            PaymentViewModel::class.java.getDeclaredField("authorizationApproved").apply { isAccessible = true }.set(vm, true)
+            // Approval remains true after the queue takes durable ownership; unknown is false.
+            vm.resetPayment()
+            io.mockk.verify(exactly = 0) {
+                mockSocketManager.emitTerminalPaymentResult(any(), "cancelled", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `review missing posId cannot publish PRE when durable discard did not commit`() {
+        val vm = buildViewModelWithPendingAuthorization()
+        vm.setSocketPaymentSource("SOCKET", "missing-pos-id")
+        val merchantField = PaymentViewModel::class.java.getDeclaredField("_currentMerchant").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val merchant = merchantField.get(vm) as MutableStateFlow<MerchantAccount?>
+        merchant.value = testMerchantA.copy(posId = null)
+        coEvery { mockPaymentAttemptLedger.markDiscardedBeforeCharge(any(), any()) } returns false
+        try {
+            scheduler.runCurrent()
+            val stateField = PaymentViewModel::class.java.getDeclaredField("_state").apply { isAccessible = true }
+            @Suppress("UNCHECKED_CAST")
+            val state = stateField.get(vm) as MutableStateFlow<PaymentState>
+            state.value = PaymentState.Error("Missing posId", canRetry = false)
+            scheduler.runCurrent()
+            io.mockk.verify(exactly = 0) {
+                mockSocketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = "PRE_AUTHORIZATION")
+            }
+            coVerify(exactly = 0) { mockSaleIccUseCase.run(any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `explicit issuer decline carries processor evidence to socket result`() {
+        val vm = buildViewModelWithPendingAuthorization()
+        vm.setSocketPaymentSource("SOCKET", "issuer-decline")
+        val response = mockk<com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccResponse>(relaxed = true) {
+            every { saleData.authorization } returns ""
+            every { saleData.emvResponseCode } returns "3035"
+            every { saleData.description } returns "Do not honor"
+        }
+        coEvery { mockSaleIccUseCase.run(any()) } returns com.example.clean_lib_services.utils.clean.Either.Right(response)
+        try {
+            scheduler.runCurrent()
+            val field = PaymentViewModel::class.java.getDeclaredField("_state").apply { isAccessible = true }
+            @Suppress("UNCHECKED_CAST")
+            val state = field.get(vm) as MutableStateFlow<PaymentState>
+            state.value = PaymentState.Error("Issuer declined", canRetry = false)
+            scheduler.runCurrent()
+            io.mockk.verify(exactly = 1) {
+                mockSocketManager.emitTerminalPaymentResult(
+                    any(), "failed", any(), any(), any(), any(), any(), any(),
+                    outcomeEvidence = "PROCESSOR_DECLINED",
+                )
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `cancel before any financial operation carries preauthorization proof`() {
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "pre-sdk-cancel")
+            vm.cancelPayment()
+            scheduler.runCurrent()
+            io.mockk.verify(exactly = 1) {
+                mockSocketManager.emitTerminalPaymentResult(any(), "cancelled", any(), any(), any(), any(), any(), any(), outcomeEvidence = "PRE_AUTHORIZATION")
+            }
+            coVerify(exactly = 0) { mockSaleIccUseCase.run(any()) }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `cancel with preparing attempt carries proof only after committed discard`() {
+        val vm = createViewModel()
+        PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }.set(
+            vm, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession.empty().copy(paymentAttemptId = "preparing")
+        )
+        coEvery { mockPaymentAttemptLedger.markDiscardedBeforeCharge("preparing", any()) } returns true
+        try {
+            vm.setSocketPaymentSource("SOCKET", "preparing-cancel")
+            vm.cancelPayment()
+            scheduler.runCurrent()
+            io.mockk.verify(exactly = 1) {
+                mockSocketManager.emitTerminalPaymentResult(any(), "cancelled", any(), any(), any(), any(), any(), any(), outcomeEvidence = "PRE_AUTHORIZATION")
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `uncommitted discard cannot carry preauthorization proof`() {
+        val vm = createViewModel()
+        PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }.set(
+            vm, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession.empty().copy(paymentAttemptId = "preparing")
+        )
+        coEvery { mockPaymentAttemptLedger.markDiscardedBeforeCharge("preparing", any()) } returns false
+        try {
+            vm.setSocketPaymentSource("SOCKET", "failed-discard")
+            vm.cancelPayment()
+            scheduler.runCurrent()
+            io.mockk.verify(exactly = 0) {
+                mockSocketManager.emitTerminalPaymentResult(any(), "cancelled", any(), any(), any(), any(), any(), any(), outcomeEvidence = "PRE_AUTHORIZATION")
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `contactless generic chip insertion text cannot prove issuer refusal`() {
+        val vm = buildViewModelWithPendingAuthorization(isContactless = true)
+        coEvery { mockSaleCtlsUseCase.run(any()) } returns com.example.clean_lib_services.utils.clean.Either.Left(
+            com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_ctls.SaleCtlsFailure.GenericFailure("description=INSERTE TARJETA")
+        )
+        try {
+            scheduler.runCurrent()
+            coVerify(exactly = 1) { mockSaleCtlsUseCase.run(any()) }
+            coVerify(exactly = 0) { mockPaymentAttemptLedger.markHostResponded(any(), false, any(), any(), any()) }
+            coVerify(exactly = 1) { mockPaymentAttemptLedger.markIndeterminate("test-attempt", any()) }
+        } finally { vm.viewModelScope.cancel() }
     }
 
     private fun completeAuthorization(vm: PaymentViewModel) {
@@ -405,12 +622,253 @@ class PaymentViewModelWatchdogTest {
         every { mockShiftRepository.isShiftSystemEnabled() } returns false
 
         val vm = createViewModel()
+        PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }.set(
+            vm, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession.empty().copy(paymentAttemptId = "test-attempt")
+        )
         vm.startPayment("100.00")
         scheduler.advanceUntilIdle()
 
         coVerify(exactly = 0) { mockShiftRepository.getCurrentShift(any()) }
 
         vm.viewModelScope.cancel()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // 🛑 H.3 + C.5 (11-sep) — el desenlace de un cobro remoto sale UNA vez, y el POS puede cancelarlo
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private fun ponerEstado(vm: PaymentViewModel, estado: PaymentState) {
+        val campo = PaymentViewModel::class.java.getDeclaredField("_state").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        (campo.get(vm) as MutableStateFlow<PaymentState>).value = estado
+    }
+
+    /** Deja el VM como tras un RECHAZO del emisor (autorización en blanco + código 05), como el flujo real. */
+    private fun vmConRechazoDelBanco(requestId: String): PaymentViewModel {
+        val vm = createViewModel()
+        PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }.set(
+            vm, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession.empty().copy(paymentAttemptId = "attempt-rechazado"),
+        )
+        val merchantField = PaymentViewModel::class.java.getDeclaredField("_currentMerchant").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        (merchantField.get(vm) as MutableStateFlow<MerchantAccount?>).value = testMerchantA
+        vm.setSocketPaymentSource("SOCKET", requestId)
+
+        val respuesta = mockk<com.example.clean_lib_services.shared.core.domain.use_case.sale_package.sale_icc.SaleIccResponse>(relaxed = true)
+        every { respuesta.saleData.authorization } returns "" // rechazo del emisor: autorización en blanco
+        every { respuesta.saleData.emvResponseCode } returns "05"
+        every { respuesta.saleData.description } returns "PAGO NO PERMITIDO EMISOR"
+        coEvery { mockSaleIccUseCase.run(any()) } returns
+            com.example.clean_lib_services.utils.clean.Either.Right(respuesta)
+
+        vm.viewModelScope.launch {
+            vm.performOnlineAuthorization(amount = "100.00", track2 = "", cardHolderName = "CARDHOLDER", emvTagList = "")
+        }
+        scheduler.advanceUntilIdle()
+        return vm
+    }
+
+    @Test
+    fun `un rechazo del banco no emite nada mientras se pueda reintentar, y al salir sale failed con PROCESSOR_DECLINED`() =
+        runTest(scheduler) {
+            val vm = vmConRechazoDelBanco("req-rechazo")
+            try {
+                // El flujo publica el Error REINTENTABLE que ve el cajero.
+                ponerEstado(vm, PaymentState.Error(message = "Pago rechazado por el banco", context = null, canRetry = true))
+                scheduler.runCurrent()
+
+                verify(exactly = 0) {
+                    mockSocketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+                }
+
+                vm.resetPayment()
+                scheduler.advanceUntilIdle()
+
+                // 🛑 `failed`, no `cancelled`: el servidor sólo acredita PROCESSOR_DECLINED con `failed`.
+                verify(exactly = 1) {
+                    mockSocketManager.emitTerminalPaymentResult(
+                        "req-rechazo", "failed", any(), any(), any(), any(), any(), any(),
+                        outcomeEvidence = "PROCESSOR_DECLINED",
+                    )
+                }
+                verify(exactly = 0) {
+                    mockSocketManager.emitTerminalPaymentResult(any(), "cancelled", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+                }
+            } finally { vm.viewModelScope.cancel() }
+        }
+
+    @Test
+    fun `un cobro remoto que nadie retoma se cierra solo con UN desenlace`() = runTest(scheduler) {
+        val vm = vmConRechazoDelBanco("req-abandonado")
+        vm.msAbandonoDelCobroRemoto = 100L
+        try {
+            ponerEstado(vm, PaymentState.Error(message = "Pago rechazado por el banco", context = null, canRetry = true))
+            scheduler.runCurrent()
+
+            scheduler.advanceTimeBy(300)
+            scheduler.runCurrent()
+
+            verify(exactly = 1) {
+                mockSocketManager.emitTerminalPaymentResult(
+                    "req-abandonado", "failed", any(), any(), any(), any(), any(), any(),
+                    outcomeEvidence = "PROCESSOR_DECLINED",
+                )
+            }
+            val estado = vm.state.value as PaymentState.Error
+            assertFalse(estado.canRetry)
+            assertEquals(CobroRemotoDelPos.CERRADO_POR_ABANDONO, estado.message)
+
+            // Y al salir NO sale un segundo desenlace: una solicitud tiene a lo más UNO.
+            vm.resetPayment()
+            scheduler.advanceUntilIdle()
+            verify(exactly = 1) {
+                mockSocketManager.emitTerminalPaymentResult(
+                    "req-abandonado", any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any(),
+                )
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `tras un rechazo, un reintento aprobado emite success y ningun desenlace negativo`() = runTest(scheduler) {
+        val vm = vmConRechazoDelBanco("req-rechazo-y-exito")
+        try {
+            ponerEstado(vm, PaymentState.Error(message = "Pago rechazado por el banco", context = null, canRetry = true))
+            scheduler.runCurrent()
+            // El cajero reintenta con otra tarjeta y esta vez aprueba: el cobro se registra.
+            ponerEstado(
+                vm,
+                PaymentState.Success(
+                    authCode = "A1", amount = "100.00", tipAmount = "0.00",
+                    receipt = com.jaac.avoqado_tpv.features.payment.domain.model.PaymentReceipt(
+                        paymentId = "pay-ok", receiptUrl = "https://receipt/pay-ok", accessKey = "k",
+                        amount = java.math.BigDecimal("100.00"), tipAmount = java.math.BigDecimal.ZERO,
+                    ),
+                ),
+            )
+            scheduler.advanceUntilIdle()
+
+            verify(exactly = 1) {
+                mockSocketManager.emitTerminalPaymentResult(
+                    "req-rechazo-y-exito", "success", any(), any(), any(), any(), any(), any(), outcomeEvidence = any(),
+                )
+            }
+            verify(exactly = 0) {
+                mockSocketManager.emitTerminalPaymentResult(any(), "failed", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+            verify(exactly = 0) {
+                mockSocketManager.emitTerminalPaymentResult(any(), "cancelled", any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    /**
+     * 🛑 Evidencia POR INTENTO: el rechazo del intento anterior no puede viajar como prueba de un intento
+     * NUEVO. Sin esto, un `PROCESSOR_DECLINED` del primero certificaba «no se cobró» sobre un segundo
+     * intento que quedó incierto (contactless con TIMEOUT, resultado desconocido).
+     */
+    @Test
+    fun `un intento nuevo no hereda la evidencia del rechazo anterior`() = runTest(scheduler) {
+        every { mockShiftRepository.isShiftSystemEnabled() } returns false
+        val vm = vmConRechazoDelBanco("req-evidencia")
+        try {
+            vm.startPayment("100.00") // intento NUEVO: la evidencia del anterior se limpia
+            scheduler.advanceUntilIdle()
+
+            vm.resetPayment()
+            scheduler.advanceUntilIdle()
+
+            // El intento nuevo quedó INCIERTO: sale un desenlace, pero SIN evidencia negativa.
+            verify(exactly = 1) {
+                mockSocketManager.emitTerminalPaymentResult(
+                    "req-evidencia", any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = null,
+                )
+            }
+            verify(exactly = 0) {
+                mockSocketManager.emitTerminalPaymentResult(
+                    any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = "PROCESSOR_DECLINED",
+                )
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `un cancel ACEPTADO del POS detiene la lectura, lo dice en pantalla y no emite otro desenlace`() = runTest(scheduler) {
+        val stopDetect = mockk<com.blumonpay.pax.shared.neptune_polling.domain.use_case.stop_detect_card.StopDetectCardUseCase>(relaxed = true)
+        val vm = createViewModel(stopDetectCardUseCase = stopDetect)
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-cancelado")
+            ponerEstado(vm, PaymentState.DetectingCard("100.00"))
+            scheduler.runCurrent()
+
+            vm.manejarCancelacionRemota(
+                SocketEvent.TerminalPaymentCancel("req-cancelado", "cancelado desde el POS", "2026-09-11T12:00:00Z", "ACCEPTED"),
+            )
+            scheduler.advanceUntilIdle()
+
+            coVerify(atLeast = 1) { stopDetect.runInfallible(any()) }
+            val estado = vm.state.value as PaymentState.Error
+            assertFalse(estado.canRetry)
+            assertEquals(CobroRemotoDelPos.CANCELADO_POR_EL_POS, estado.message)
+            assertEquals(CobroRemotoDelPos.CANCELADO_POR_EL_POS, vm.mensajeDelPos.value)
+            // La bandeja ya escribió el desenlace durable: este VM no emite otro, ni al salir.
+            vm.resetPayment()
+            scheduler.advanceUntilIdle()
+            verify(exactly = 0) {
+                mockSocketManager.emitTerminalPaymentResult(any(), any(), any(), any(), any(), any(), any(), any(), outcomeEvidence = any())
+            }
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `el cancel de OTRA solicitud no toca este cobro`() = runTest(scheduler) {
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-mio")
+            ponerEstado(vm, PaymentState.DetectingCard("100.00"))
+            scheduler.runCurrent()
+
+            vm.manejarCancelacionRemota(
+                SocketEvent.TerminalPaymentCancel("req-de-otro", "cancelado desde el POS", "2026-09-11T12:00:00Z", "ACCEPTED"),
+            )
+            scheduler.advanceUntilIdle()
+
+            assertTrue(vm.state.value is PaymentState.DetectingCard)
+            assertEquals(null, vm.mensajeDelPos.value)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `la cerca de la libreta se traduce a - el POS cancelo este cobro -`() = runTest(scheduler) {
+        every { mockShiftRepository.isShiftSystemEnabled() } returns false
+        coEvery { mockPaymentAttemptLedger.openAttempt(any(), any(), any(), any(), any(), any(), any(), any()) } returns false
+        coEvery { mockPaymentAttemptLedger.cercaDeSolicitud(any()) } returns
+            com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud.CANCELADA_POR_EL_POS
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-cercado")
+            vm.startPayment("100.00")
+            scheduler.advanceUntilIdle()
+
+            val estado = vm.state.value as PaymentState.Error
+            assertEquals(CobroRemotoDelPos.CANCELADO_POR_EL_POS, estado.message)
+            assertFalse(estado.canRetry)
+        } finally { vm.viewModelScope.cancel() }
+    }
+
+    @Test
+    fun `el efectivo de un cobro remoto no se registra si el POS ya cancelo`() = runTest(scheduler) {
+        coEvery { mockPaymentAttemptLedger.iniciarEjecucionNoTarjeta(any()) } returns
+            com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud.CANCELADA_POR_EL_POS
+        val vm = createViewModel()
+        try {
+            vm.setSocketPaymentSource("SOCKET", "req-efectivo")
+            vm.processCashPayment("100.00")
+            scheduler.advanceUntilIdle()
+
+            coVerify(exactly = 0) { mockRecordPaymentUseCase(any(), any(), any(), any()) }
+            assertEquals(CobroRemotoDelPos.CANCELADO_POR_EL_POS, (vm.state.value as PaymentState.Error).message)
+        } finally { vm.viewModelScope.cancel() }
     }
 
     /**
@@ -425,6 +883,9 @@ class PaymentViewModelWatchdogTest {
             com.jaac.avoqado_tpv.core.domain.models.Result.Success(null)
 
         val vm = createViewModel()
+        PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }.set(
+            vm, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession.empty().copy(paymentAttemptId = "test-attempt")
+        )
         vm.startPayment("100.00")
         scheduler.advanceUntilIdle()
 

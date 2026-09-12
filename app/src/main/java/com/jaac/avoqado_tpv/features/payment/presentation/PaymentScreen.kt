@@ -180,6 +180,9 @@ fun PaymentScreen(
     val tpvSettings by viewModel.tpvSettings.collectAsStateWithLifecycle()
     val pinEntryState by viewModel.pinEntryState.collectAsStateWithLifecycle()  // PIN asterisks feedback
     val isPinDialogVisible by viewModel.isPinDialogVisible.collectAsStateWithLifecycle()  // PIN dialog visibility
+    // 🔴 Reloj de fase, del ViewModel y con reloj monotónico (Testarudo 8-sep-2026).
+    // Antes lo contaba esta pantalla y se reiniciaba con cada republicación de estado.
+    val processingClock by viewModel.processingClock.collectAsStateWithLifecycle()
     val isSendingReceipt by viewModel.isSendingReceipt.collectAsStateWithLifecycle()  // 📧 Send receipt loading
     val isPrinting by viewModel.isPrinting.collectAsStateWithLifecycle()  // 🖨️ Receipt printing loading
     val sendReceiptMessage by viewModel.sendReceiptMessage.collectAsStateWithLifecycle()  // 📧 Send receipt result
@@ -526,9 +529,11 @@ fun PaymentScreen(
                             viewModel.processCryptoPayment(currentState.totalAmount)
                         },
                         // 🥝 KIOSK MODE: Cash is enabled (customers may want to pay in cash)
-                        showCashOption = true,
+                        // 🛑 …salvo en un cobro que pidió el POS: ver [CobroRemotoDelPos] (interino, P2-9).
+                        showCashOption = CobroRemotoDelPos.permiteEfectivoYCripto(paymentSource),
                         // 🪙 Crypto option: controlled by TpvSettings from dashboard
-                        showCryptoOption = tpvSettings?.showCryptoOption ?: false,
+                        showCryptoOption = (tpvSettings?.showCryptoOption ?: false) &&
+                            CobroRemotoDelPos.permiteEfectivoYCripto(paymentSource),
                         enableMsiPromotions = true,
                         // 🥝 KIOSK MODE: Hide merchant selector when admin pre-configured a default merchant
                         hideAccountSelector = hideKioskMerchantSelector,
@@ -691,23 +696,26 @@ fun PaymentScreen(
                     )
                 }
                 is PaymentState.Processing -> {
-                    // Track elapsed time for this state
-                    var elapsedSeconds by remember { mutableIntStateOf(0) }
-                    LaunchedEffect(currentState) {
-                        elapsedSeconds = 0
-                        while (true) {
-                            kotlinx.coroutines.delay(1_000)
-                            elapsedSeconds++
-                            if (elapsedSeconds == 45) {
-                                viewModel.reportProcessingTimeoutIfNeeded(
-                                    message = currentState.message,
-                                    elapsedSeconds = elapsedSeconds
-                                )
-                            }
+                    // 🔴 El tiempo ya NO se cuenta aquí (Testarudo, 8-sep-2026). Este bloque
+                    // tenía su propio contador dentro de `LaunchedEffect(currentState)`, y
+                    // `Processing` se republica con cada cambio de mensaje y cada escalón del
+                    // vigilante (8 s y 25 s): el contador volvía a cero una y otra vez y nunca
+                    // llegaba a los 45 s. Ese día la terminal se quedó congelada en «Procesando
+                    // chip…» y no salió un solo evento. Ahora el tiempo lo lleva el ViewModel,
+                    // por FASE y por INTENTO, con un reloj monotónico y fuera de la pantalla.
+                    val elapsedSeconds = processingClock?.elapsedSeconds ?: 0
+                    LaunchedEffect(elapsedSeconds) {
+                        if (elapsedSeconds == 45) {
+                            viewModel.reportProcessingTimeoutIfNeeded(
+                                message = currentState.message,
+                                elapsedSeconds = elapsedSeconds
+                            )
                         }
                     }
                     PaymentLoadingContent(
                         message = currentState.message,
+                        phaseHint = processingClock?.message,
+                        elapsedSeconds = elapsedSeconds,
                         pinState = pinEntryState,  // Show asterisks when user types PIN
                         showPinSection = isPinDialogVisible,  // Keep PIN section visible even when cleared
                         showTimeoutWarning = elapsedSeconds >= 30,
@@ -897,7 +905,8 @@ fun PaymentScreen(
                         message = currentState.message,
                         canRetry = currentState.canRetry,
                         showOpenShiftButton = currentState.showOpenShiftButton,  // 🆕 Show "Abrir caja" button
-                        showCashFallback = currentState.showCashFallback,
+                        showCashFallback = currentState.showCashFallback &&
+                            CobroRemotoDelPos.permiteEfectivoYCripto(paymentSource),
                         isRefund = isRefundMode,  // 💸 Show "Error en el Reembolso" for refunds
                         onRetry = {
                             // 🔄 Smart Retry: Restore context if available, otherwise reset
@@ -1314,6 +1323,10 @@ private fun PaymentDetectingCard(
 @Composable
 private fun PaymentLoadingContent(
     message: String,
+    // 🔴 Reloj INFORMATIVO: el texto depende SÓLO de la fase, jamás de los segundos.
+    // Ver mensajeDeFase() en PaymentPhaseTracker.kt.
+    phaseHint: String? = null,
+    elapsedSeconds: Int = 0,
     pinState: String = "",  // Asterisks from SDK ("*", "**", "***", "****")
     showPinSection: Boolean = false,  // True when SDK is waiting for PIN (even if cleared)
     showTimeoutWarning: Boolean = false,
@@ -1382,6 +1395,24 @@ private fun PaymentLoadingContent(
                     color = MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.Center
                 )
+
+                // 🔴 Segundos + qué está pasando, en gris y sin icono de advertencia: que
+                // un cobro tarde NO es evidencia de que no hubo cargo. Ninguna rama de este
+                // texto mira el reloj — sólo la fase. Cuando el vigilante ya está hablando
+                // se muestran sólo los segundos, para no decir dos veces lo mismo.
+                if (elapsedSeconds > 0) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = if (phaseHint != null && watchdogLevel == AuthWatchdogLevel.NONE) {
+                            "${elapsedSeconds}s · $phaseHint"
+                        } else {
+                            "${elapsedSeconds}s"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
 
                 // 🔴 Vigilante de autorizacion — banda NO bloqueante bajo el indicador.
                 // NUNCA cancela la autorizacion (ver AuthorizationWatchdog.kt): solo avisa.

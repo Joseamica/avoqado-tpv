@@ -201,7 +201,14 @@ class BlumonSaleReferenceTest {
 
         mockRecordPaymentUseCase = mockk(relaxed = true)
         mockRecordRefundUseCase = mockk(relaxed = true)
-        mockPaymentAttemptLedger = mockk(relaxed = true)
+        mockPaymentAttemptLedger = mockk(relaxed = true) {
+            coEvery { markAuthorizing(any()) } returns true
+            coEvery { markKernelEntered(any()) } returns true
+            coEvery { markHostResponded(any(), any(), any(), any(), any()) } returns true
+            // C.5: por defecto la solicitud no está cercada y el efectivo/cripto puede arrancar.
+            coEvery { cercaDeSolicitud(any()) } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud.LIBRE
+            coEvery { iniciarEjecucionNoTarjeta(any()) } returns com.jaac.avoqado_tpv.features.payment.data.ledger.CercaDeSolicitud.LIBRE
+        }
         mockAuthAttemptTelemetryStore = mockk(relaxed = true)
         mockMerchantEligibilityRepository = mockk(relaxed = true) {
             coEvery { evaluate(any(), any(), any()) } returns
@@ -296,6 +303,9 @@ class BlumonSaleReferenceTest {
      */
     private fun viewModelReadyToAuthorize(): PaymentViewModel {
         val vm = createViewModel()
+        PaymentViewModel::class.java.getDeclaredField("sessionSnapshot").apply { isAccessible = true }.set(
+            vm, com.jaac.avoqado_tpv.features.payment.domain.model.PaymentSession.empty().copy(paymentAttemptId = "test-attempt")
+        )
 
         val merchantField = PaymentViewModel::class.java.getDeclaredField("_currentMerchant")
         merchantField.isAccessible = true
